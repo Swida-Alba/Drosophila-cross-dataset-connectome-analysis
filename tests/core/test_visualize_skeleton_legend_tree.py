@@ -159,14 +159,15 @@ def test_legend_tree_html_contains_panel_and_markers():
     # the exported panel explains the configured timing to users
     assert 'Double-click window: under ' in html
     assert 'CONFIG.doubleClickMs' in html
-    # Custom bodyId layers with skeleton + soma traces count one neuron and
-    # render as one direct row instead of a redundant child leaf.
+    # Custom bodyId layers with skeleton + soma traces count one neuron, and
+    # every group row stays expandable down to its bodyId-level children —
+    # singleton groups included; only bodyId leaf rows are childless.
     assert 'custom: false' in html
     assert 'g.custom = g.custom || !!lg.customGroup;' in html
     assert 'function groupNeuronItemCount(g)' in html
     assert 'var neuronCount = neuronItemCount || (g.indices.length - g.sites.length);' in html
-    assert 'if (g.custom && neuronItemCount === 1 && g.sites.length === 0)' in html
-    assert 'attachDirectRow(panel, name, color, 1, g.indices);' in html
+    assert 'attachDirectRow' not in html
+    assert 'neuronItemCount === 1' not in html
     assert 'var typeNeuronCount = tt.itemOrder.length;' in html
     # explicit closed/open caret glyphs keep the direction in sync with state
     assert '\\u25B6' in html
@@ -180,6 +181,20 @@ def test_legend_tree_html_contains_panel_and_markers():
     assert "children.length > 10" in html
     assert '.drocat-lt-items.drocat-lt-scroll{max-height:224px;' in html
     assert 'min-width:0;overflow:auto;}' in html
+    # horizontal overflow must stay mouse-reachable: modern macOS browsers
+    # render native bars overlay-only, so the panel mounts its own bar
+    assert ('#drocat-legend-tree::-webkit-scrollbar:horizontal,'
+            '.drocat-lt-items.drocat-lt-scroll::-webkit-scrollbar:horizontal'
+            '{display:none;}') in html
+    assert ('.drocat-lt-hscroll{position:sticky;bottom:0;left:0;'
+            'display:none;height:10px;width:100%;cursor:pointer;'
+            'background:rgba(255,255,255,0.92);border-radius:4px;}') in html
+    assert ('body.drocat-theme-dark .drocat-lt-hscroll-thumb'
+            '{background:rgba(255,255,255,0.4);}') in html
+    assert 'function mountHScrollbar(container)' in html
+    assert 'function updateHScrollbars()' in html
+    assert 'mountHScrollbar(panel);' in html
+    assert 'updateHScrollbars();' in html
 
 
 def test_write_plotly_html_embeds_tree_only_when_requested(tmp_path):
@@ -198,6 +213,34 @@ def test_write_plotly_html_embeds_tree_only_when_requested(tmp_path):
     off_html = off_path.read_text(encoding='utf-8')
     assert 'drocat-legend-tree' not in off_html
     assert 'drocatLegend' in off_html  # meta is harmless without the panel
+
+
+def test_singleton_custom_group_page_embeds_group_and_bodyid(tmp_path):
+    """A single-neuron custom group keeps its bodyId-level data in the
+    page: the client-side tree renders every group row expandable down
+    to its bodyId leaf, so the figure must carry group and item labels."""
+    fig = go.Figure()
+    trace = go.Scatter3d(
+        x=[0, 1], y=[0, 1], z=[0, 1], mode='lines',
+        line=dict(color='#d62728', width=4),
+        name='r1_SLP459_x1', legendgroup='r1_SLP459_x1', showlegend=True,
+    )
+    trace.legendrank = 0
+    trace.meta = {'drocatLegend': {
+        'kind': 'neuron', 'group': 'r1_SLP459_x1', 'type': 'SLP459',
+        'item': '459_SLP459_R', 'color': '#d62728', 'customGroup': True,
+    }}
+    fig.add_trace(trace)
+
+    visualizer = _make_visualizer()
+    page = tmp_path / 'singleton.html'
+    visualizer._write_plotly_html(fig, str(page), legend_tree=True)
+    html = page.read_text(encoding='utf-8')
+    assert 'drocat-legend-tree' in html
+    assert 'r1_SLP459_x1' in html
+    assert '459_SLP459_R' in html
+    # no direct-row flattening: the singleton group renders like any group
+    assert 'attachDirectRow' not in html
 
 
 def test_tree_injection_is_idempotent(tmp_path):

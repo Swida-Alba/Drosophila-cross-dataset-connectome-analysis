@@ -3768,9 +3768,10 @@ class VisualizeSkeleton:
         Custom groups come from custom_layer_names (or a layer_map_csv,
         which fills the same field); each layer then holds a mixed set of
         neurons, so the tree becomes group > type > bodyId. In the generated
-        HTML, a custom group with one unique neuron item is flattened to one
-        direct row; group counts are unique neuron items, not raw Plotly
-        traces such as a skeleton plus its soma mesh.
+        HTML, every group row stays expandable and exposes its bodyId-level
+        children even when the group holds a single neuron; group counts
+        are unique neuron items, not raw Plotly traces such as a skeleton
+        plus its soma mesh.
         """
         return bool(getattr(self, 'custom_layer_names', None))
 
@@ -3783,16 +3784,20 @@ class VisualizeSkeleton:
         the row-to-trace mapping can never drift from the figure. The
         hierarchy is type -> bodyId/instance for ordinary layers and
         group -> type -> bodyId/instance when custom layer names are used.
-        Custom singleton groups are rendered as direct rows with one unique
-        neuron count and no redundant child leaf; multi-trace neurons still
-        count once. Cross-dataset query overlays use their source row's
-        native type for the bodyId label, rather than a mapped crosswalk
-        value such as ``flywireType``. The native Plotly legend is hidden on
+        Every group row stays expandable and exposes its bodyId-level
+        children, even singleton groups; only bodyId leaf rows are
+        childless. Multi-trace neurons still count once. Cross-dataset
+        query overlays use their source row's native type for the bodyId
+        label, rather than a mapped crosswalk value such as ``flywireType``.
+        The native Plotly legend is hidden on
         these pages; static exports
         never receive this injection and keep the native type-level
         legend. Type toggles cover the type's skeleton plus its pre/post
         site traces; synapse-group and mesh traces get their own rows,
-        with meshes pinned last.
+        with meshes pinned last. A custom always-visible horizontal
+        scrollbar is mounted on the panel and the capped leaf lists,
+        because modern macOS browsers keep native bars overlay-only and
+        a mouse can never reach them.
         """
         baked = {
             'meshRankBase': ROI_MESH_LEGEND_RANK_BASE,
@@ -3836,6 +3841,21 @@ class VisualizeSkeleton:
             '.drocat-lt-help{opacity:.62;padding:0 2px 4px;font-size:10px;}'
             '.drocat-lt-items.drocat-lt-scroll{max-height:224px;'
             'min-width:0;overflow:auto;}'
+            # Custom horizontal scrollbar: modern macOS browsers keep native
+            # bars overlay-only (reachable only via trackpad gestures), which
+            # a mouse can never drag, so panels carry their own bar.
+            '#drocat-legend-tree::-webkit-scrollbar:horizontal,'
+            '.drocat-lt-items.drocat-lt-scroll::-webkit-scrollbar:horizontal'
+            '{display:none;}'
+            '.drocat-lt-hscroll{position:sticky;bottom:0;left:0;'
+            'display:none;height:10px;width:100%;cursor:pointer;'
+            'background:rgba(255,255,255,0.92);border-radius:4px;}'
+            '.drocat-lt-hscroll-thumb{height:6px;margin-top:2px;'
+            'background:rgba(0,0,0,0.35);border-radius:3px;}'
+            'body.drocat-theme-dark .drocat-lt-hscroll'
+            '{background:rgba(28,28,30,0.92);}'
+            'body.drocat-theme-dark .drocat-lt-hscroll-thumb'
+            '{background:rgba(255,255,255,0.4);}'
             '.drocat-lt-section{font-weight:600;opacity:.65;'
             'margin:6px 0 2px 2px;font-size:10px;text-transform:uppercase;'
             'letter-spacing:.4px;}'
@@ -4130,39 +4150,11 @@ class VisualizeSkeleton:
       groupEl.classList.toggle('drocat-lt-expanded', open);
       caret.textContent = open ? '\\u25BC' : '\\u25B6';
       row.setAttribute('aria-expanded', open ? 'true' : 'false');
+      updateHScrollbars();
     }
     caret.addEventListener('click', toggleExpand);
     label.addEventListener('click', toggleExpand);
     return itemsEl;
-  }
-
-  function attachDirectRow(parent, labelText, color, count, eyeIndices) {
-    /* A singleton custom bodyId group is already the desired legend row.
-       Keep its toggle/isolate behavior, but do not create a child leaf. */
-    var row = makeEl('div', 'drocat-lt-row drocat-lt-group-row');
-    var swatch = makeEl('span', 'drocat-lt-swatch');
-    swatch.style.background = color;
-    var label = makeEl('span', 'drocat-lt-label', labelText);
-    label.title = labelText;
-    var countEl = makeEl('span', 'drocat-lt-count', count);
-    var eye = makeEl('span', 'drocat-lt-eye');
-    row.appendChild(swatch);
-    row.appendChild(label);
-    row.appendChild(countEl);
-    row.appendChild(eye);
-    parent.appendChild(row);
-    records.push({row: row, eye: eye, indices: eyeIndices});
-    eye.addEventListener('click', function(e) {
-      e.stopPropagation();
-      var gd = graphDiv();
-      if (!gd) { return; }
-      var on = eyeIndices.every(function(i) { return isVisible(gd.data[i]); });
-      Plotly.restyle(gd, {visible: !on}, eyeIndices);
-      sync();
-    });
-    row.addEventListener('click', function() {
-      if (isDoubleClick(eyeIndices)) { isolate(eyeIndices); }
-    });
   }
 
   function attachLeaf(parent, labelText, color, indices) {
@@ -4193,6 +4185,60 @@ class VisualizeSkeleton:
     return m ? (m[1] + ' sites') : (meta.item || 'site');
   }
 
+  var hScrollbars = [];
+  function mountHScrollbar(container) {
+    /* Custom always-visible horizontal scrollbar. Native bars on macOS are
+       overlay-only, so a mouse can never reach horizontal overflow. */
+    var track = makeEl('div', 'drocat-lt-hscroll');
+    var thumb = makeEl('div', 'drocat-lt-hscroll-thumb');
+    track.appendChild(thumb);
+    function thumbWidth() {
+      return parseFloat(thumb.style.width) || 24;
+    }
+    function dragFrom(e) {
+      var startX = e.clientX;
+      var startLeft = container.scrollLeft;
+      var maxScroll = container.scrollWidth - container.clientWidth;
+      var maxThumb = Math.max(1, track.clientWidth - thumbWidth());
+      function onMove(ev) {
+        container.scrollLeft = startLeft
+          + (ev.clientX - startX) * maxScroll / maxThumb;
+      }
+      function onUp() {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      }
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    }
+    track.addEventListener('pointerdown', function(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      var bar = track.getBoundingClientRect();
+      var maxScroll = container.scrollWidth - container.clientWidth;
+      var target = maxScroll * (e.clientX - bar.left - thumbWidth() / 2)
+        / Math.max(1, bar.width - thumbWidth());
+      container.scrollLeft = Math.max(0, Math.min(maxScroll, target));
+      dragFrom(e);
+    });
+    container.appendChild(track);
+    hScrollbars.push({container: container, track: track, thumb: thumb});
+  }
+  function updateHScrollbars() {
+    hScrollbars.forEach(function(sb) {
+      var c = sb.container;
+      var overflow = c.scrollWidth - c.clientWidth;
+      if (overflow <= 1) { sb.track.style.display = 'none'; return; }
+      sb.track.style.display = 'block';
+      var tw = Math.max(24, Math.round(
+        c.clientWidth * c.clientWidth / c.scrollWidth));
+      var maxThumb = Math.max(1, c.clientWidth - tw);
+      sb.thumb.style.width = tw + 'px';
+      sb.thumb.style.transform =
+        'translateX(' + (c.scrollLeft / overflow * maxThumb) + 'px)';
+    });
+  }
+
   function render(model, data) {
     panel.innerHTML = '';
     var header = makeEl('div', 'drocat-lt-header');
@@ -4214,10 +4260,6 @@ class VisualizeSkeleton:
       var color = groupColor(data, g, name);
       var neuronItemCount = groupNeuronItemCount(g);
       var neuronCount = neuronItemCount || (g.indices.length - g.sites.length);
-      if (g.custom && neuronItemCount === 1 && g.sites.length === 0) {
-        attachDirectRow(panel, name, color, 1, g.indices);
-        return;
-      }
       var itemsEl = attachExpandable(panel, name, color, neuronCount,
                                      g.indices);
       var sitesByType = {};
@@ -4331,6 +4373,13 @@ class VisualizeSkeleton:
     panel.querySelectorAll('.drocat-lt-items').forEach(function(el) {
       if (el.children.length > 10) { el.classList.add('drocat-lt-scroll'); }
     });
+    /* Fresh rows replaced any previous bars; remount for the panel and the
+       capped lists, then size the thumbs to the current overflow. */
+    hScrollbars = [];
+    mountHScrollbar(panel);
+    panel.querySelectorAll('.drocat-lt-items.drocat-lt-scroll')
+      .forEach(mountHScrollbar);
+    updateHScrollbars();
     sync();
   }
 
@@ -4356,7 +4405,11 @@ class VisualizeSkeleton:
       positionPanel();
       sync();
       try { gd.on('plotly_restyle', function() { sync(); }); } catch (err) {}
-      window.addEventListener('resize', positionPanel);
+      panel.addEventListener('scroll', updateHScrollbars, true);
+      window.addEventListener('resize', function() {
+        positionPanel();
+        updateHScrollbars();
+      });
       window.addEventListener('load', positionPanel);
       return;
     }
@@ -6459,11 +6512,17 @@ class VisualizeSkeleton:
                 target_label='layers', tip_parameter='neuron_colors',
                 warn=False,
                 continuous=self._neuron_colors_continuous)
-            # One shared color for every overlay layer: the per-neuron
-            # legend entries read as one group (query_transformed_*).
+            # One shared color for query_transformed_* overlay layers (the
+            # homolog/find-similar query overlays read as one group).
+            # Other custom layers keep their caller-supplied color so
+            # callers can color query vs matched layers distinctly
+            # (plan-type-mapping-validation-pipeline.md Revision 3, Bug C).
             self.neuron_colors = list(self.neuron_colors)
-            for _i in range(len(self._custom_neurons_by_layer)):
-                self.neuron_colors[_i] = QUERY_OVERLAY_COLOR
+            for _i, _lname in enumerate(
+                    list(self.layer_names)
+                    [:len(self._custom_neurons_by_layer)]):
+                if str(_lname).startswith('query_transformed'):
+                    self.neuron_colors[_i] = QUERY_OVERLAY_COLOR
             self._vprint(
                 '  ➕ Overlay layer(s) injected (pre-transformed, no '
                 f'fetch/coordinate transform): '
@@ -11850,6 +11909,19 @@ class VisualizeSkeleton:
                                     neuron_type = neuron_type_map.get(vname, None)
                                 except:
                                     pass
+
+                        # Caller override (plan-type-mapping-validation-
+                        # pipeline.md Revision 3): a neuron stamped with
+                        # ``_drocat_legend_type`` (e.g. 'query · APDN3' or
+                        # 'matched · CL125 · verified') takes precedence
+                        # over the table-derived type so exporters can
+                        # category-prefix the collapsed type roots.
+                        if source_index < len(neuron_vols):
+                            override_type = getattr(
+                                neuron_vols[source_index],
+                                '_drocat_legend_type', None)
+                            if override_type:
+                                neuron_type = str(override_type)
 
                         if neuron_type:
                             legend_group = f"{neuron_type}"

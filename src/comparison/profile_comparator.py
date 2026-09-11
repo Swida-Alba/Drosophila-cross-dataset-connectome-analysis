@@ -8235,8 +8235,8 @@ class HomologFinder:
                         
                         # Create single VisualizeSkeleton with all bodyIds as separate layers
                         # legend_mode='layer' gives each bodyId its own call-site
-                        # group name; an interactive tree legend collapses each
-                        # singleton group to one direct bodyId row.
+                        # group name; an interactive tree legend keeps every
+                        # group expandable down to its bodyId-level rows.
                         vs_bodyid = VisualizeSkeleton(**_visualizer_kwargs(
                             {
                                 'show_fig': False,
