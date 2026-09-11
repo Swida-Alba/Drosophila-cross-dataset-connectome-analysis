@@ -13,7 +13,7 @@ from ..runner import ScriptRunner
 
 def create_nb_colabel_tab():
     runner = ScriptRunner()
-    output_panel = OutputPanel("Co-Labeling Output")
+    output_panel = OutputPanel("Co-Labeling Output", state_key="nb_colabel")
 
     form_col, results_col = tool_page(
         "Co-Labeling Analysis",

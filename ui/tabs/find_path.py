@@ -19,7 +19,7 @@ from ..type_suggestions import dataset_suggestions
 def create_find_path_tab():
     """Create the FindPath tab UI."""
     runner = ScriptRunner()
-    output_panel = OutputPanel("Pathfinding Output")
+    output_panel = OutputPanel("Pathfinding Output", state_key="find_path")
     dataset = None
     search_columns = None
 

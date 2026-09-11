@@ -20,7 +20,7 @@ from ..type_suggestions import dataset_suggestions
 def create_network_tab():
     """Create the Network tab UI (FindNetwork)."""
     runner = ScriptRunner()
-    output_panel = OutputPanel("Network Output")
+    output_panel = OutputPanel("Network Output", state_key="network")
     dataset = None
     search_columns = None
 

@@ -46,7 +46,9 @@ def _has_multiple_source_type_queries(values, search_columns="auto"):
 def create_find_shortest_tab():
     """Create the Shortest Paths tab UI."""
     runner = ScriptRunner()
-    output_panel = OutputPanel("Shortest Pathfinding Output")
+    output_panel = OutputPanel(
+        "Shortest Pathfinding Output", state_key="find_shortest"
+    )
     dataset = None
     search_columns = None
 

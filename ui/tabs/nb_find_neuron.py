@@ -13,7 +13,7 @@ from ..runner import ScriptRunner
 
 def create_nb_find_neuron_tab():
     runner = ScriptRunner()
-    output_panel = OutputPanel("EM Neurons Output")
+    output_panel = OutputPanel("EM Neurons Output", state_key="nb_find_neuron")
 
     form_col, results_col = tool_page(
         "Find EM Neurons",

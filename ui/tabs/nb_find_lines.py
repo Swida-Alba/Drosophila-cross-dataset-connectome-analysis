@@ -14,7 +14,7 @@ from ..type_suggestions import dataset_suggestions, datasets_suggestions
 
 def create_nb_find_lines_tab():
     runner = ScriptRunner()
-    output_panel = OutputPanel("Driver Lines Output")
+    output_panel = OutputPanel("Driver Lines Output", state_key="nb_find_lines")
     dataset = None
 
     def _type_suggest(text):

@@ -6,7 +6,7 @@ live log console and output files rendered as selectable cards.
 """
 
 from nicegui import ui
-from typing import List, Optional, Dict
+from typing import Any, Callable, List, Optional, Dict
 from pathlib import Path
 import re
 
@@ -14,6 +14,7 @@ from ..runner import open_folder, open_file
 from .free_log import FreeLog
 from .page_progress import PageProgress
 from .result_previews import add_result_previews
+from ..run_state import ACTIVE_STATUSES, RUN_MANAGER, TERMINAL_STATUSES
 
 
 # Label of a tqdm-style progress bar, e.g. "Building target profiles:" from
@@ -77,6 +78,9 @@ _STATUS_COLORS = {
     "success": "green",
     "failed": "red",
     "completed": "green",
+    "cancelled": "orange",
+    "interrupted": "orange",
+    "queued": "blue",
 }
 
 
@@ -166,8 +170,9 @@ _COPY_LOG_JS = """
 class OutputPanel:
     """Reusable panel for displaying logs and output files."""
 
-    def __init__(self, title: str = "Output"):
+    def __init__(self, title: str = "Output", state_key: Optional[str] = None):
         self.title = title
+        self.state_key = state_key or title.lower().replace(" ", "_")
         self._dom_id = f"drocat-results-{id(self)}"
         self._log_dom_id = f"drocat-exec-log-{id(self)}"
         self.log_wrapper: Optional[ui.element] = None
@@ -192,6 +197,14 @@ class OutputPanel:
         # open/closed state.
         self._poll_timer = None
         self._file_expansions: Dict[str, ui.expansion] = {}
+        self.restore_label: Optional[ui.label] = None
+        self.run_meta_label: Optional[ui.label] = None
+        self.run_summary_label: Optional[ui.label] = None
+        self._run_id: Optional[str] = None
+        self._unsubscribe: Optional[Callable[[], None]] = None
+        self._client = None
+        self._ui_alive = True
+        self._restoring = False
 
     def create(
         self,
@@ -208,7 +221,9 @@ class OutputPanel:
                     with ui.element("div").classes("drocat-results-mark"):
                         ui.icon("receipt_long").classes("text-white")
                     ui.label(self.title).classes("drocat-card-title")
-                self.status_label = ui.badge("Idle", color="grey-5").props("outline")
+                self.status_label = ui.badge("Idle", color="grey-5").props(
+                    'outline role="status" aria-live="polite"'
+                )
 
             # Action bar: Run / Cancel
             with ui.row().classes("w-full items-center gap-2 drocat-action-bar"):
@@ -216,13 +231,32 @@ class OutputPanel:
                     run_label,
                     icon=run_icon,
                     color="primary",
-                ).classes("drocat-run-btn")
+                ).classes("drocat-run-btn").props(
+                    f'id="{self._dom_id}-run" aria-label="{run_label}"'
+                )
                 self.cancel_button = ui.button(
                     "Cancel",
                     icon="stop",
                     color="negative",
-                ).classes("drocat-cancel-btn")
+                ).classes("drocat-cancel-btn").props(
+                    f'id="{self._dom_id}-cancel" aria-label="Cancel execution"'
+                )
                 self.cancel_button.disable()
+                # Keep cancellation attached to the run manager as well as
+                # the tab's legacy runner callback. This makes Cancel work
+                # after a page refresh, when the tab owns a new ScriptRunner
+                # instance but the application still owns the active run.
+                self.cancel_button.on_click(self._cancel_current_run)
+
+            self.restore_label = ui.label("").classes(
+                "w-full text-caption drocat-muted drocat-run-recovery"
+            ).set_visibility(False)
+            self.run_meta_label = ui.label("").classes(
+                "w-full text-caption drocat-muted drocat-run-meta"
+            ).set_visibility(False)
+            self.run_summary_label = ui.label("").classes(
+                "w-full drocat-run-summary"
+            ).set_visibility(False)
 
             # Persistent run notice (F6): a banner parked above the log —
             # the effective-threshold summary survives log streams and
@@ -301,9 +335,205 @@ class OutputPanel:
                         "drocat-empty")
             self.previews_section.set_visibility(False)
 
+        self._bind_client_lifecycle()
+        self._unsubscribe = RUN_MANAGER.subscribe(
+            self.state_key, self._on_run_event
+        )
+
+    def _bind_client_lifecycle(self) -> None:
+        """Detach the panel from live updates before NiceGUI deletes it."""
+        try:
+            element = self.status_label or self.files_container
+            self._client = element.client if element is not None else None
+            if self._client is not None:
+                self._client.on_delete(self._on_client_delete)
+        except Exception:
+            # Script-mode/component tests can build elements without a live
+            # client. The panel remains usable; its update methods still have
+            # their element-level safety checks.
+            self._client = None
+
+    def _on_client_delete(self) -> None:
+        """Release page resources without cancelling the underlying run."""
+        self._ui_alive = False
+        unsubscribe = self._unsubscribe
+        self._unsubscribe = None
+        if unsubscribe is not None:
+            try:
+                unsubscribe()
+            except Exception:
+                pass
+        self._stop_file_streaming()
+        if self.page_progress is not None:
+            self.page_progress.detach()
+
+    def _ui_is_live(self) -> bool:
+        """Return whether this panel can still send updates to NiceGUI."""
+        if not self._ui_alive:
+            return False
+        try:
+            client = self._client
+            if client is None and self.status_label is not None:
+                client = self.status_label.client
+            if client is None or client.is_deleted:
+                self._ui_alive = False
+                return False
+            element = self.status_label or self.files_container
+            if element is not None and element.is_deleted:
+                self._ui_alive = False
+                return False
+            return True
+        except Exception:
+            self._ui_alive = False
+            return False
+
+    def _set_recovery_notice(self, message: str) -> None:
+        if self.restore_label is None or not self._ui_is_live():
+            return
+        try:
+            self.restore_label.set_text(message)
+            self.restore_label.set_visibility(bool(message))
+        except Exception:
+            pass
+
+    def _set_run_meta(self, record: dict) -> None:
+        """Show compact identity/timing context beneath the action bar."""
+        if self.run_meta_label is None or not self._ui_is_live():
+            return
+        bits = []
+        if record.get("run_id"):
+            bits.append(f"Run {str(record['run_id'])[:8]}")
+        duration = record.get("duration")
+        if isinstance(duration, (int, float)):
+            bits.append(f"{float(duration):.1f}s")
+        output_folder = record.get("output_folder")
+        if output_folder:
+            bits.append(str(output_folder))
+        text = "  ·  ".join(bits)
+        try:
+            self.run_meta_label.set_text(text)
+            self.run_meta_label.set_visibility(bool(text))
+        except Exception:
+            pass
+
+    def _set_run_summary(self, record: dict) -> None:
+        """Show the human-readable terminal/recovery message prominently."""
+        if self.run_summary_label is None or not self._ui_is_live():
+            return
+        message = str(record.get("message", "") or "").strip()
+        try:
+            self.run_summary_label.set_text(message)
+            self.run_summary_label.set_visibility(bool(message))
+        except Exception:
+            pass
+
+    def _cancel_current_run(self, _event: Any = None) -> None:
+        """Cancel through the application manager so refresh remains safe."""
+        if not RUN_MANAGER.request_cancel(self._run_id) and self._ui_is_live():
+            self.log("No active in-process execution is available to cancel.", "error")
+
+    def _on_run_event(self, event: dict) -> None:
+        """Apply a manager event to this page-local view."""
+        if not self._ui_is_live():
+            return
+        kind = event.get("kind")
+        record = event.get("record") or {}
+        if kind == "snapshot":
+            self._restore_record(record, event.get("logs") or [])
+            return
+        if record.get("run_id") and record.get("run_id") != self._run_id:
+            # A new run on the same tab supersedes the previous record. An
+            # old run may still emit its terminal event afterward, so accept
+            # only events whose run is still the manager's latest record.
+            latest = RUN_MANAGER.store.latest(
+                self.state_key, session_id=RUN_MANAGER.session_id
+            )
+            if not latest or latest.get("run_id") != record.get("run_id"):
+                return
+        if kind == "log":
+            self.log(event.get("message", ""), event.get("level", "stdout"))
+        elif kind == "progress":
+            progress = record.get("progress") or {}
+            if self.page_progress is not None:
+                self.page_progress.update_phase(
+                    progress.get("phase", ""), progress.get("label", "")
+                )
+        elif kind == "state":
+            self._apply_record(record)
+
+    def _restore_record(self, record: dict, logs: list[tuple[str, str]]) -> None:
+        """Rebuild the output view from a persisted run snapshot."""
+        run_id = record.get("run_id")
+        if not run_id:
+            return
+        self._run_id = run_id
+        self._restoring = True
+        try:
+            self.clear()
+            for level, message in logs:
+                self.log(message, level)
+            self._apply_record(record)
+            status = str(record.get("status", "")).strip()
+            self._set_recovery_notice(
+                "Reconnected to the active execution."
+                if status in ACTIVE_STATUSES
+                else "Restored from the previous execution."
+            )
+        finally:
+            self._restoring = False
+
+    def _apply_record(self, record: dict) -> None:
+        """Render status, progress, files, and previews from a run record."""
+        if not record or not self._ui_is_live():
+            return
+        run_id = record.get("run_id")
+        if run_id:
+            self._run_id = run_id
+        status = str(record.get("status", "Idle"))
+        normalized = status.lower()
+        self._set_run_meta(record)
+        self._set_run_summary(record)
+        if normalized in {item.lower() for item in ACTIVE_STATUSES}:
+            self._set_recovery_notice("")
+            self.set_running(True)
+        elif normalized in {item.lower() for item in TERMINAL_STATUSES}:
+            self.set_running(False)
+            self.set_status(status)
+        else:
+            self.set_status(status)
+
+        if self.page_progress is not None:
+            summary = record.get("input_summary") or {}
+            context = {}
+            if isinstance(summary, dict):
+                context.update(summary.get("constructor") or {})
+                context.update(summary.get("method") or {})
+            self.page_progress.restore_state(
+                tool_name=record.get("tool_name"),
+                method_name=record.get("method_name"),
+                context=context,
+                status=status,
+                progress=record.get("progress") or {},
+            )
+
+        if normalized in {item.lower() for item in TERMINAL_STATUSES}:
+            self.show_files(
+                record.get("files") or [],
+                record.get("output_folder") or record.get("output_dir"),
+            )
+            if normalized == "completed":
+                self._show_result_previews(
+                    {
+                        "returncode": record.get("return_code"),
+                        "cancelled": False,
+                        "output_folder": record.get("output_folder"),
+                    },
+                    record.get("tool_name", ""),
+                )
+
     def log(self, message: str, level: str = "stdout"):
         """Add a log message to the panel."""
-        if not self.log_area:
+        if not self.log_area or not self._ui_is_live():
             return
         try:
             # Drop trailing whitespace (tqdm clears lines with spaces) and
@@ -387,19 +617,25 @@ class OutputPanel:
         browser DOM, so collecting them there reflects exactly what the user
         sees (in-place tqdm refreshes and the max_lines trim included).
         """
-        if self.log_area is None:
+        if self.log_area is None or not self._ui_is_live():
             return
-        ui.run_javascript(_COPY_LOG_JS.replace("__LOG_ID__", self._log_dom_id))
+        try:
+            ui.run_javascript(_COPY_LOG_JS.replace("__LOG_ID__", self._log_dom_id))
+        except Exception:
+            pass
 
     def set_notice(self, message: str) -> None:
         """Show the persistent notice banner (F6 effective-threshold
         summary). Empty text clears it."""
         notice_label = getattr(self, "notice_label", None)
-        if not notice_label:
+        if not notice_label or not self._ui_is_live():
             return
         text = (message or "").strip()
-        notice_label.set_text(text)
-        notice_label.set_visibility(bool(text))
+        try:
+            notice_label.set_text(text)
+            notice_label.set_visibility(bool(text))
+        except Exception:
+            pass
 
     def clear_notice(self) -> None:
         """Hide the persistent notice banner."""
@@ -407,15 +643,20 @@ class OutputPanel:
 
     def set_status(self, status: str, color: str = "grey"):
         """Update the status pill."""
-        if self.status_label:
-            self.status_label.text = status
-            color = _STATUS_COLORS.get(status.lower(), color)
-            self.status_label.props(f"color={color}")
+        if not self._ui_is_live():
+            return
+        color = _STATUS_COLORS.get(status.lower(), color)
+        try:
+            if self.status_label:
+                self.status_label.text = status
+                self.status_label.props(f"color={color}")
+        except Exception:
+            return
         if self.page_progress is not None:
             normalized = status.lower()
             if normalized in {"completed", "success"}:
                 self.page_progress.finish(True)
-            elif normalized in {"failed", "error", "cancelled"}:
+            elif normalized in {"failed", "error", "cancelled", "interrupted"}:
                 self.page_progress.finish(False, status)
             elif normalized == "running":
                 self.page_progress.set_status("Running", "blue")
@@ -424,6 +665,8 @@ class OutputPanel:
 
     def set_running(self, running: bool):
         """Update UI for running state."""
+        if not self._ui_is_live():
+            return
         if running:
             self.set_status("Running", "blue")
             if self.run_button:
@@ -438,10 +681,13 @@ class OutputPanel:
                 self.page_progress.start()
                 self.page_progress.container.set_visibility(True)
             # Make sure the results panel (with the log) is visible
-            ui.run_javascript(
-                f"const card = document.getElementById('{self._dom_id}');"
-                "if (card) card.scrollIntoView({behavior:'smooth', block:'nearest'});"
-            )
+            try:
+                ui.run_javascript(
+                    f"const card = document.getElementById('{self._dom_id}');"
+                    "if (card) card.scrollIntoView({behavior:'smooth', block:'nearest'});"
+                )
+            except Exception:
+                pass
         else:
             self._stop_file_streaming()
             if self.run_button:
@@ -463,7 +709,10 @@ class OutputPanel:
     def _stop_file_streaming(self):
         """Stop the output-folder polling timer (run finished or cancelled)."""
         if self._poll_timer is not None:
-            self._poll_timer.cancel()
+            try:
+                self._poll_timer.cancel()
+            except Exception:
+                pass
             self._poll_timer = None
 
     def _poll_output_files(self, runner, output_dir: str):
@@ -475,6 +724,9 @@ class OutputPanel:
         folder is known, so files from older runs are never shown.
         """
         try:
+            if not self._ui_is_live():
+                self._stop_file_streaming()
+                return
             if not runner.is_running:
                 return
             run_folder = runner._resolve_scan_dir(output_dir)
@@ -507,7 +759,7 @@ class OutputPanel:
         failing the handler and leaving an empty log with a stuck Run button).
         """
         try:
-            if self.page_progress is not None:
+            if self.page_progress is not None and self._ui_is_live():
                 # Method-level flags (visualization toggles, report/summary
                 # switches, export options) decide which steps a run has, so
                 # the step checklist is built from the merged parameter set.
@@ -523,33 +775,71 @@ class OutputPanel:
             # even without a caller-provided dir: the run folder is resolved
             # from the backend's own output-folder marker in that case.
             self._stop_file_streaming()
-            self._poll_timer = ui.timer(
-                1.5, lambda: self._poll_output_files(runner, output_dir)
+            if self._ui_is_live():
+                try:
+                    self._poll_timer = ui.timer(
+                        1.5, lambda: self._poll_output_files(runner, output_dir)
+                    )
+                except Exception:
+                    # A direct component test or a non-NiceGUI caller may
+                    # invoke this coroutine without an active slot. File
+                    # streaming is optional; execution state is not.
+                    self._poll_timer = None
+            run_record = RUN_MANAGER.begin(
+                tab_key=self.state_key,
+                title=self.title,
+                tool_name=tool_name,
+                method_name=method_name,
+                constructor_params=constructor_params,
+                method_params=method_params,
+                output_dir=output_dir,
             )
+            self._run_id = run_record["run_id"]
+            RUN_MANAGER.register_runner(self._run_id, runner)
             result = await runner.run(
                 tool_name,
                 constructor_params,
                 method_name,
                 method_params=method_params,
-                log_callback=self.log,
-                progress_callback=self._runner_progress,
+                log_callback=lambda line, level: RUN_MANAGER.append_log(
+                    self._run_id, line, level
+                ),
+                progress_callback=lambda phase, label: RUN_MANAGER.update_progress(
+                    self._run_id, phase, label
+                ),
                 output_dir=output_dir,
             )
-            self._show_result_previews(result, tool_name)
+            RUN_MANAGER.finish(self._run_id, result)
             return result
         except Exception as exc:  # noqa: BLE001
             import traceback
-            self.log(
-                f"[DROCAT] Unexpected UI error: {type(exc).__name__}: {exc}", "error"
-            )
-            self.log(traceback.format_exc().rstrip(), "error")
-            return {"returncode": -1, "files": [], "duration": 0, "cancelled": False}
+            error_message = f"[DROCAT] Unexpected UI error: {type(exc).__name__}: {exc}"
+            if self._run_id:
+                RUN_MANAGER.append_log(self._run_id, error_message, "error")
+                RUN_MANAGER.append_log(
+                    self._run_id, traceback.format_exc().rstrip(), "error"
+                )
+                RUN_MANAGER.finish(
+                    self._run_id,
+                    {"returncode": -1, "files": [], "duration": 0, "cancelled": False},
+                    error=str(exc),
+                )
+            else:
+                self.log(error_message, "error")
+                self.log(traceback.format_exc().rstrip(), "error")
+            return {
+                "returncode": -1,
+                "files": [],
+                "duration": 0,
+                "cancelled": False,
+                "output_folder": None,
+            }
         finally:
             self._stop_file_streaming()
 
     def _runner_progress(self, phase: str, label: str = "") -> None:
         """Forward generic subprocess lifecycle phases to the page tracker."""
-        if self.page_progress is not None:
+        if self.page_progress is not None and self._ui_is_live():
             self.page_progress.update_phase(phase, label)
 
     def _show_result_previews(self, result: dict, tool_name: str) -> None:
@@ -566,6 +856,7 @@ class OutputPanel:
             or result.get("cancelled")
             or not folder
             or self.previews_container is None
+            or not self._ui_is_live()
         ):
             return
         try:
@@ -586,6 +877,8 @@ class OutputPanel:
         which folder expansions the user has open, so newly created files
         appear without collapsing anything.
         """
+        if not self._ui_is_live():
+            return
         self._files = files
 
         if not self.files_container:
@@ -612,7 +905,7 @@ class OutputPanel:
                         "Open Output Folder",
                         icon="folder_open",
                         on_click=lambda: open_folder(output_dir),
-                    ).props("flat dense color=primary")
+                    ).props('flat dense color=primary aria-label="Open output folder"')
                     ui.label(str(Path(output_dir))).classes("text-caption drocat-muted drocat-truncate")
 
             tree = _build_file_tree(files, output_dir)
@@ -636,9 +929,13 @@ class OutputPanel:
 
     def _render_file_row(self, f: dict):
         """One clickable file row (icon + name + size + open button)."""
-        with ui.row().classes(
+        row = ui.row().classes(
             "drocat-file-row items-center gap-2"
-        ).on("click", lambda path=f["path"]: open_file(path)):
+        ).props('role="button" tabindex="0" aria-label="Open output file"')
+        row.on("click", lambda path=f["path"]: open_file(path))
+        row.on("keydown.enter", lambda path=f["path"]: open_file(path))
+        row.on("keydown.space", lambda path=f["path"]: open_file(path))
+        with row:
             ui.icon("insert_drive_file").classes("drocat-file-icon")
             ui.label(f["name"]).classes("drocat-file-name flex-grow")
             ui.label(self._format_size(f.get("size", 0))).classes(
@@ -647,7 +944,9 @@ class OutputPanel:
             ui.button(
                 icon="open_in_new",
                 on_click=lambda path=f["path"]: open_file(path),
-            ).props("flat dense round").classes("drocat-file-open")
+            ).props(
+                'flat dense round aria-label="Open output file"'
+            ).classes("drocat-file-open")
 
     def _format_size(self, size: int) -> str:
         """Format file size in human-readable format."""
@@ -664,9 +963,24 @@ class OutputPanel:
         self._last_progress_name = None
         self._stop_file_streaming()
         self._file_expansions = {}
+        self._files = []
+        if not self._ui_is_live():
+            return
+        self._set_recovery_notice("")
+        if self.run_meta_label is not None:
+            try:
+                self.run_meta_label.set_text("")
+                self.run_meta_label.set_visibility(False)
+            except Exception:
+                pass
+        if self.run_summary_label is not None:
+            try:
+                self.run_summary_label.set_text("")
+                self.run_summary_label.set_visibility(False)
+            except Exception:
+                pass
         if self.log_area:
             self.log_area.clear()
-        self._files = []
         if self.files_container:
             self.files_container.clear()
             with self.files_container:

@@ -202,7 +202,9 @@ def banc_synapse_warning(dataset: str, view: str):
 
 def create_skeleton_tab():
     skeleton_runner = ScriptRunner()
-    skeleton_output = OutputPanel("3D Skeleton Output")
+    skeleton_output = OutputPanel(
+        "3D Skeleton Output", state_key="visualization_skeleton"
+    )
 
     form_col, results_col = tool_page(
         "3D Skeleton",
@@ -1318,7 +1320,9 @@ def create_skeleton_tab():
 def create_net_viz_tab():
     """Create the standalone PlotPath pathway-graph tab (Net-Viz)."""
     net_viz_runner = ScriptRunner()
-    net_viz_output = OutputPanel("Net-Viz Output")
+    net_viz_output = OutputPanel(
+        "Net-Viz Output", state_key="visualization_net_viz"
+    )
     path_file_path = {"path": None}
 
     form_col, results_col = tool_page(

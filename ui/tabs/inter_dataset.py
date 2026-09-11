@@ -18,7 +18,7 @@ from ..type_suggestions import dataset_aware_suggestions
 
 def create_inter_dataset_tab():
     runner = ScriptRunner()
-    output_panel = OutputPanel("Comparison Output")
+    output_panel = OutputPanel("Comparison Output", state_key="inter_dataset")
     datasets_select = None
     search_columns = None
 

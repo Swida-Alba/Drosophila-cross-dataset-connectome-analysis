@@ -271,6 +271,9 @@ class PageProgress:
         self._running = False
         self._active_index: Optional[int] = None
         self._current_step_label = ""
+        self._ui_alive = True
+        self._status_text = "Ready"
+        self._status_color = "grey-5"
 
     def create(self, compact: bool = False, visible: bool = True) -> "PageProgress":
         """Create the tracker in the current slot.
@@ -280,6 +283,7 @@ class PageProgress:
         of becoming a separate card above the workspace. The compact tracker
         relies on the parent output header for the single status badge.
         """
+        self._ui_alive = True
         root = ui.column() if compact else ui.card()
         root_classes = "w-full drocat-page-progress gap-2"
         if not compact:
@@ -331,15 +335,36 @@ class PageProgress:
         """Return the last determinate fraction sent to the progress bar."""
         return self._value
 
+    def detach(self) -> None:
+        """Stop sending element updates after the owning page is deleted."""
+        self._ui_alive = False
+
+    @staticmethod
+    def _element_is_live(element) -> bool:
+        if element is None:
+            return False
+        try:
+            client = element.client
+            return not client.is_deleted and not element.is_deleted
+        except Exception:
+            return False
+
     def _render_steps(self) -> None:
         """Retained as a no-op compatibility hook for callers."""
         return
 
     def set_status(self, text: str, color: str) -> None:
+        self._status_text = text
+        self._status_color = color
+        if not self._ui_alive or not self._element_is_live(self.status_label):
+            return
         if self.status_label is None:
             return
-        self.status_label.text = text
-        self.status_label.props(f"color={color}")
+        try:
+            self.status_label.text = text
+            self.status_label.props(f"color={color}")
+        except Exception:
+            pass
 
     def _set_progress(
         self,
@@ -350,18 +375,23 @@ class PageProgress:
     ) -> None:
         self._value = max(0.0, min(1.0, float(value)))
         self._active_index = None if completed else active_index
-        if self.progress_bar is not None:
-            # Remove the static boolean prop as well as setting the dynamic
-            # value. Leaving both props in place makes Quasar keep rendering
-            # the bar as indeterminate even though its value changes.
-            self.progress_bar.props(
-                ":indeterminate='false'", remove="indeterminate"
-            )
-            self.progress_bar.set_value(self._value)
-        if self.percent_label is not None:
-            self.percent_label.text = f"{round(self._value * 100):.0f}%"
-        if self.progress_label is not None:
-            self.progress_label.text = label
+        if not self._ui_alive or not self._element_is_live(self.progress_bar):
+            return
+        try:
+            if self.progress_bar is not None:
+                # Remove the static boolean prop as well as setting the dynamic
+                # value. Leaving both props in place makes Quasar keep rendering
+                # the bar as indeterminate even though its value changes.
+                self.progress_bar.props(
+                    ":indeterminate='false'", remove="indeterminate"
+                )
+                self.progress_bar.set_value(self._value)
+            if self.percent_label is not None:
+                self.percent_label.text = f"{round(self._value * 100):.0f}%"
+            if self.progress_label is not None:
+                self.progress_label.text = label
+        except Exception:
+            pass
 
     def reset(self) -> None:
         """Return the page tracker to its idle state."""
@@ -557,8 +587,11 @@ class PageProgress:
     def finish(self, success: bool = True, message: str = "") -> None:
         """Finish while preserving the last live step on failure."""
         self._running = False
-        if self.container is not None:
-            self.container.set_visibility(True)
+        if self._ui_alive and self._element_is_live(self.container):
+            try:
+                self.container.set_visibility(True)
+            except Exception:
+                pass
         if success:
             self.set_status("Completed", "green")
             self._set_progress(1.0, "Completed successfully!", completed=True)
@@ -572,3 +605,78 @@ class PageProgress:
                 f"Failed during {failed_during}",
                 active_index=self._active_index,
             )
+
+    def restore_state(
+        self,
+        *,
+        tool_name: Optional[str],
+        method_name: Optional[str],
+        context: Optional[dict],
+        status: str,
+        progress: Optional[dict],
+    ) -> None:
+        """Restore a persisted run without replaying the whole live run."""
+        progress = dict(progress or {})
+        self._tool_name = tool_name
+        self._method_name = method_name
+        self._context = dict(context or {})
+        self._steps = progress_steps_for(
+            tool_name, method_name=method_name, context=context
+        ) or list(DEFAULT_PROGRESS_STEPS)
+        self._backend_mode = bool(progress.get("step"))
+        self._counter_mode = bool(progress.get("counter_total"))
+        value = float(progress.get("value", 0.0) or 0.0)
+        if progress.get("step") and progress.get("total"):
+            value = max(
+                value,
+                (max(1, int(progress["step"])) - 1)
+                / max(1, int(progress["total"])),
+            )
+        if progress.get("counter_total") and not progress.get("value"):
+            value = max(
+                value,
+                min(
+                    0.99,
+                    float(progress.get("counter_current", 0) or 0)
+                    / max(1, int(progress["counter_total"])),
+                ),
+            )
+        if str(status).lower() == "completed":
+            value = 1.0
+        self._value = max(0.0, min(1.0, value))
+        self._active_index = progress.get("active_index")
+        if self._active_index is not None:
+            self._active_index = max(0, int(self._active_index))
+        self._current_step_label = str(progress.get("label", "") or "")
+        active = str(status).lower() in {"queued", "running"}
+        self._running = active
+        color = {
+            "completed": "green",
+            "failed": "red",
+            "cancelled": "orange",
+            "interrupted": "orange",
+            "running": "blue",
+            "queued": "blue",
+        }.get(str(status).lower(), "grey-5")
+        self.set_status(status, color)
+        label = self._current_step_label or str(progress.get("phase", "") or "")
+        if progress.get("step") and progress.get("total"):
+            label = (
+                f"Step {int(progress['step'])}/{int(progress['total'])}: "
+                f"{label}".rstrip()
+            )
+        elif not label:
+            label = {
+                "completed": "Completed successfully!",
+                "failed": "Run failed",
+                "cancelled": "Execution cancelled",
+                "interrupted": "Execution interrupted",
+                "running": "Running analysis",
+                "queued": "Queued",
+            }.get(str(status).lower(), "Ready to run.")
+        self._set_progress(
+            self._value,
+            label,
+            active_index=self._active_index,
+            completed=str(status).lower() == "completed",
+        )

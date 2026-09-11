@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -28,6 +29,7 @@ app.add_static_files("/docs", PROJECT_ROOT / "docs")
 
 from ui.config import APP_TITLE, APP_VERSION, APP_PORT, APP_HOST
 from ui.components.banner import create_banner_stack
+from ui.run_state import ACTIVE_STATUSES, RUN_MANAGER
 
 
 class _TimerTeardownNoiseFilter(logging.Filter):
@@ -109,6 +111,34 @@ def _saved_dark_mode() -> bool | None:
         return False
     # 'auto', missing, or unrecognized -> follow the OS preference.
     return None
+
+
+_DROCAT_TAB_NAMES = {
+    "Complete Paths",
+    "Shortest Paths",
+    "Network",
+    "Cross-Dataset",
+    "Skeleton",
+    "Net-Viz",
+    "Connectivity",
+    "Morphology",
+    "Find Lines",
+    "Find Neurons",
+    "Co-Labeling",
+    "Downloader",
+    "Settings",
+}
+
+
+def _saved_active_tab() -> str:
+    """Restore the last selected tab from a lightweight browser cookie."""
+    try:
+        saved = unquote(str(ui.context.client.request.cookies.get(
+            "drocat_active_tab", ""
+        )))
+    except Exception:
+        saved = ""
+    return saved if saved in _DROCAT_TAB_NAMES else "Complete Paths"
 
 
 from ui.tabs import (
@@ -349,6 +379,22 @@ html, body {
     text-decoration: none !important;
 }
 .drocat-header-link:hover { color: var(--drocat-cobalt) !important; }
+.drocat-activity-btn {
+    color: var(--drocat-muted) !important;
+    min-height: 36px;
+}
+.drocat-activity-btn:hover { color: var(--drocat-cobalt) !important; }
+.drocat-activity-card { width: min(560px, 92vw); max-width: 92vw; }
+.drocat-activity-list { max-height: min(62vh, 620px); overflow-y: auto; }
+.drocat-activity-row {
+    border: 1px solid var(--drocat-line);
+    border-radius: 10px;
+    padding: 9px 10px;
+    background: var(--drocat-surface);
+}
+.drocat-activity-row:hover { background: var(--drocat-soft); }
+.drocat-activity-title { color: var(--drocat-navy); font-weight: 650; }
+.drocat-activity-meta { color: var(--drocat-muted); font-size: 11px; }
 .drocat-doc-link {
     color: var(--drocat-cobalt) !important;
     font-size: 11px;
@@ -1185,6 +1231,7 @@ html, body {
     min-height: 54px;
     padding: 6px 4px;
     border-radius: 9px;
+    position: relative;
     transition: background .16s ease, color .16s ease, box-shadow .16s ease;
 }
 .drocat-group-tab.q-btn--flat { color: var(--drocat-navy); }
@@ -1206,6 +1253,21 @@ html, body {
     background: var(--drocat-surface) !important;
     box-shadow: 0 2px 6px rgba(11, 31, 58, .10);
 }
+.drocat-group-tab.drocat-tab-running::after,
+.drocat-group-tab.drocat-tab-failed::after,
+.drocat-group-tab.drocat-tab-completed::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--drocat-surface);
+}
+.drocat-group-tab.drocat-tab-running::after { background: var(--drocat-cobalt); }
+.drocat-group-tab.drocat-tab-failed::after { background: var(--drocat-err); }
+.drocat-group-tab.drocat-tab-completed::after { background: var(--drocat-ok); }
 /* The active segment takes its group's accent color. */
 .drocat-tint-connection .drocat-group-tab.drocat-active { color: var(--drocat-cobalt) !important; }
 .drocat-tint-visualization .drocat-group-tab.drocat-active { color: #0e7490 !important; }
@@ -2295,6 +2357,27 @@ html, body {
 }
 .drocat-results-mark .q-icon { font-size: 16px; }
 .drocat-action-bar { padding: 12px 0 10px; border-top: 1px solid var(--drocat-line); }
+.drocat-run-recovery {
+    padding: 4px 8px;
+    border-left: 3px solid var(--drocat-cobalt);
+    background: var(--drocat-cobalt-soft);
+    border-radius: 0 8px 8px 0;
+}
+.drocat-run-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.drocat-run-summary {
+    padding: 7px 9px;
+    border: 1px solid var(--drocat-line);
+    border-radius: 8px;
+    background: var(--drocat-soft);
+    color: var(--drocat-navy);
+    font-size: 12px;
+    line-height: 1.35;
+}
 .drocat-progress-row { padding-bottom: 4px; }
 .drocat-mini-label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--drocat-faint); margin: 8px 0 4px; }
 .drocat-empty { color: var(--drocat-faint); font-style: italic; font-size: 12.5px; }
@@ -2360,6 +2443,16 @@ html, body {
 .q-badge { border-radius: 999px; font-weight: 650; }
 .q-expansion-item__toggle-icon { color: var(--drocat-muted); }
 .q-chip { border-radius: 8px; background: var(--drocat-soft) !important; color: var(--drocat-navy) !important; }
+.q-btn:focus-visible,
+.q-field:focus-within,
+.q-expansion-item:focus-within {
+    outline: 3px solid rgba(20, 92, 255, .28);
+    outline-offset: 2px;
+}
+.drocat-file-row:focus-visible {
+    outline: 3px solid rgba(20, 92, 255, .28);
+    outline-offset: 2px;
+}
 .q-spinner { color: var(--drocat-cobalt) !important; }
 .nicegui-upload { border: 1px dashed var(--drocat-line-strong) !important; border-radius: 10px !important; }
 /* Auto-suggest inputs (pathfinding tabs) replace the native QSelect popup
@@ -2476,6 +2569,7 @@ body.body--dark .drocat-banner-fold .drocat-banner-fold-icon { color: #f0d9c4; }
 }
 """
 
+
 def _neuprint_token_configured() -> bool:
     """Whether a NeuPrint token is configured.
 
@@ -2543,6 +2637,11 @@ def main_page():
         with ui.row().classes("items-center gap-4"):
             ui.label(f"v{APP_VERSION}").classes("drocat-version-pill")
             ui.link("Documentation", "docs/ui_guides/README.html").classes("drocat-header-link")
+            activity_btn = ui.button("Activity", icon="history").props(
+                'flat no-caps id="drocat-activity-button"'
+            ).classes("drocat-activity-btn").tooltip(
+                "View recent and active executions"
+            )
             theme_button = ui.button().props("flat").classes(
                 "drocat-dark-toggle"
             ).tooltip("Theme")
@@ -2642,7 +2741,7 @@ def main_page():
             # Settings is promoted to the header (beside the theme toggle), so it
             # is no longer rendered as a left-nav tool-tab card below the groups.
 
-        with ui.tab_panels(value="Complete Paths").classes("w-full bg-transparent") as nav_panels:
+        with ui.tab_panels(value=_saved_active_tab()).classes("w-full bg-transparent") as nav_panels:
             # Connection
             with ui.tab_panel("Complete Paths").classes("p-0"):
                 create_find_path_tab()
@@ -2688,8 +2787,157 @@ def main_page():
                 else:
                     button.classes(remove="drocat-active")
 
-        nav_panels.on_value_change(lambda event: sync_active_tab(event.value))
+        def remember_active_tab(value):
+            sync_active_tab(value)
+            if value not in _DROCAT_TAB_NAMES:
+                return
+            try:
+                ui.run_javascript(
+                    "document.cookie = 'drocat_active_tab=' + "
+                    "encodeURIComponent(" + repr(value) + ") + "
+                    "'; max-age=31536000; path=/; SameSite=Lax'"
+                )
+            except Exception:
+                pass
+
+        nav_panels.on_value_change(lambda event: remember_active_tab(event.value))
         sync_active_tab(nav_panels.value)
+
+        # Application-level execution overview. Each output panel remains the
+        # detailed view, while this compact surface makes work discoverable
+        # even when it was started in another tab.
+        tab_activity_keys = {
+            "Complete Paths": ["find_path"],
+            "Shortest Paths": ["find_shortest"],
+            "Network": ["network"],
+            "Cross-Dataset": ["inter_dataset"],
+            "Skeleton": ["visualization_skeleton"],
+            "Net-Viz": ["visualization_net_viz"],
+            "Connectivity": ["connectivity_similar", "connectivity_comparison"],
+            "Morphology": ["morphology_similar", "morphology_comparison"],
+            "Find Lines": ["nb_find_lines"],
+            "Find Neurons": ["nb_find_neuron"],
+            "Co-Labeling": ["nb_colabel"],
+            "Downloader": ["flylight"],
+            "Settings": [],
+        }
+
+        def _latest_activity(label):
+            records = [
+                RUN_MANAGER.store.latest(
+                    key, session_id=RUN_MANAGER.session_id
+                )
+                for key in tab_activity_keys.get(label, [])
+            ]
+            records = [record for record in records if record]
+            return max(
+                records,
+                key=lambda record: str(
+                    record.get("updated_at") or record.get("created_at") or ""
+                ),
+                default=None,
+            )
+
+        def sync_run_activity() -> None:
+            active_count = 0
+            for label, button in tab_buttons.items():
+                record = _latest_activity(label)
+                status = str(record.get("status", "")) if record else ""
+                normalized = status.lower()
+                if normalized in {item.lower() for item in ACTIVE_STATUSES}:
+                    active_count += 1
+                try:
+                    button.classes(
+                        remove="drocat-tab-running drocat-tab-failed drocat-tab-completed"
+                    )
+                    if normalized in {item.lower() for item in ACTIVE_STATUSES}:
+                        button.classes(add="drocat-tab-running")
+                    elif normalized in {"failed", "interrupted", "cancelled"}:
+                        button.classes(add="drocat-tab-failed")
+                    elif normalized == "completed":
+                        button.classes(add="drocat-tab-completed")
+                    description = f"{label}: {status or 'no recent execution'}"
+                    button.props(f'aria-label="{description}"')
+                except Exception:
+                    pass
+            try:
+                activity_btn.props(
+                    f'aria-label="Activity ({active_count} active)"'
+                )
+            except Exception:
+                pass
+
+        activity_dialog = ui.dialog()
+        with activity_dialog, ui.card().classes("drocat-activity-card gap-3"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("Recent Activity").classes("text-h6")
+                with ui.row().classes("items-center gap-1"):
+                    ui.button(
+                        icon="refresh", on_click=lambda: refresh_activity()
+                    ).props("flat dense round").tooltip("Refresh activity")
+                    ui.button(icon="close", on_click=activity_dialog.close).props(
+                        "flat dense round"
+                    ).tooltip("Close")
+            activity_list = ui.column().classes("w-full gap-2 drocat-activity-list")
+
+        def _activity_time(record):
+            value = record.get("finished_at") or record.get("started_at") or ""
+            return str(value).replace("T", " ").replace("+00:00", " UTC")
+
+        def _open_activity_tab(label: str) -> None:
+            nav_panels.set_value(label)
+            activity_dialog.close()
+
+        def refresh_activity() -> None:
+            try:
+                activity_list.clear()
+                records = RUN_MANAGER.recent_runs(20)
+                with activity_list:
+                    if not records:
+                        ui.label("No executions yet.").classes("drocat-empty")
+                    for record in records:
+                        tab_label = next(
+                            (
+                                label
+                                for label, keys in tab_activity_keys.items()
+                                if record.get("tab_key") in keys
+                            ),
+                            record.get("title", "Tool"),
+                        )
+                        status = str(record.get("status", "Unknown"))
+                        duration = record.get("duration")
+                        duration_text = (
+                            f"{float(duration):.1f}s"
+                            if isinstance(duration, (int, float))
+                            else "duration unavailable"
+                        )
+                        with ui.row().classes(
+                            "w-full items-center justify-between gap-3 drocat-activity-row"
+                        ):
+                            with ui.column().classes("gap-0 min-w-0"):
+                                ui.label(record.get("title", "Execution")).classes(
+                                    "drocat-activity-title"
+                                )
+                                ui.label(
+                                    f"{tab_label}  ·  {status}  ·  {duration_text}"
+                                ).classes("drocat-activity-meta")
+                                ui.label(_activity_time(record)).classes(
+                                    "drocat-activity-meta"
+                                )
+                            ui.button(
+                                "Open",
+                                on_click=lambda label=tab_label: _open_activity_tab(label),
+                            ).props("flat dense color=primary")
+            except Exception:
+                pass
+
+        def open_activity() -> None:
+            refresh_activity()
+            activity_dialog.open()
+
+        activity_btn.on_click(open_activity)
+        sync_run_activity()
+        ui.timer(2.0, sync_run_activity)
 
         # Offer any auto-saved (uncommitted) layer style draft only when the
         # user switches to the Skeleton tab, so the recovery dialog does not
@@ -2762,6 +3010,11 @@ def main():
         "off",
     }
 
+    # Run-state manifests/logs are refresh-recovery cache, not permanent
+    # application data. Remove terminal entries from older UI sessions before
+    # serving a new session; output folders and analysis results are preserved.
+    RUN_MANAGER.cleanup_stale_cache()
+
     # NiceGUI prints its ready line during the server lifespan startup.  This
     # handler runs immediately afterward, so the launcher output includes a
     # usable browser fallback directly below that line on macOS, Windows, and
@@ -2773,6 +3026,10 @@ def main():
             flush=True,
         )
     )
+    # Keep backend ownership aligned with the UI server lifetime. This is
+    # distinct from page/client deletion: refreshing a browser page does not
+    # stop the server or invoke this hook.
+    app.on_shutdown(RUN_MANAGER.shutdown)
     ui.run(
         title=APP_TITLE,
         host=host,

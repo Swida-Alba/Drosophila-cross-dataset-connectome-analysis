@@ -45,8 +45,12 @@ def create_connectivity_tab():
     # process and orphan the other).
     similar_runner = ScriptRunner()
     comparison_runner = ScriptRunner()
-    similar_output = OutputPanel("Similarity Output")
-    comparison_output = OutputPanel("Comparison Output")
+    similar_output = OutputPanel(
+        "Similarity Output", state_key="connectivity_similar"
+    )
+    comparison_output = OutputPanel(
+        "Comparison Output", state_key="connectivity_comparison"
+    )
     source_dataset = None
     datasets_select = None
 

@@ -75,7 +75,7 @@ def _fetch_file_preview(
 
 def create_flylight_tab():
     runner = ScriptRunner()
-    output_panel = OutputPanel("FlyLight Output")
+    output_panel = OutputPanel("FlyLight Output", state_key="flylight")
 
     form_col, results_col = tool_page(
         "FlyLight Downloader",

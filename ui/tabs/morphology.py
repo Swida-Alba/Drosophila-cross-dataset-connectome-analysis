@@ -46,8 +46,10 @@ def create_morphology_tab():
     # process and orphan the other).
     similar_runner = ScriptRunner()
     comparison_runner = ScriptRunner()
-    output_panel = OutputPanel("Morphology Output")
-    comparison_output = OutputPanel("Comparison Output")
+    output_panel = OutputPanel("Morphology Output", state_key="morphology_similar")
+    comparison_output = OutputPanel(
+        "Comparison Output", state_key="morphology_comparison"
+    )
     dataset = None
     comparison_dataset = None
 
