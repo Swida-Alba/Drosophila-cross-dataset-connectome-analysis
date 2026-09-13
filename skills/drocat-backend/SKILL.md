@@ -56,6 +56,7 @@ approval; otherwise continue until the task is complete.
 | [morphology-similarity](modules/morphology-similarity.md) | `MorphologyComparer`, `SkeletonVectorCache` | morphological similarity, skeleton vector cache |
 | [comparison](modules/comparison.md) | `ComparisonParameters`, `ComparisonAnalyzer`, `quick_compare`, `CrossDatasetTypeMapper`, `LabelMapper` | cross-dataset comparison, type mapping |
 | [profile-comparator](modules/profile-comparator.md) | `ConnectivityProfileComparer`, `HomologFinder`, `ProfileComparator` | connectivity profiles, homologs, profile similarity |
+| [morph-cross-dataset](modules/morph-cross-dataset.md) | `CrossDatasetMorphComparer`, morph qualification helpers | cross-dataset morphology comparison, null-calibrated homolog qualification, BANC bootstrap |
 | [neuronbridge](modules/neuronbridge.md) | `NeuronBridgeFinder` | EM↔LM lines, neurons, co-labeling |
 | [flylight](modules/flylight.md) | `FlyLightDownloader` | FlyLight image/metadata download |
 | [visualize-skeleton](modules/visualize-skeleton.md) | `VisualizeSkeleton` | 3D morphology, ROI meshes, exports |

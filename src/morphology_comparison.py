@@ -47,11 +47,14 @@ import pandas as pd
 try:
     from morphology import (
         DEFAULT_V2_BLOCK_WEIGHTS,
+        TYPE_RENDER_MEMBER_CAP,
         MorphologyComparer,
         NEUPRINT_FETCH_MAX_THREADS,
         VECTOR_BASIS_RAW,
         _canonical_dataset_body_id,
+        _dataset_folder,
         _dataset_soma_side_map,
+        _import_visualizer,
         _load_neuron_type_map,
         _neuron_rep,
         apply_whitening,
@@ -63,11 +66,14 @@ try:
 except ImportError:  # direct src/ execution
     from morphology import (  # type: ignore
         DEFAULT_V2_BLOCK_WEIGHTS,
+        TYPE_RENDER_MEMBER_CAP,
         MorphologyComparer,
         NEUPRINT_FETCH_MAX_THREADS,
         VECTOR_BASIS_RAW,
         _canonical_dataset_body_id,
+        _dataset_folder,
         _dataset_soma_side_map,
+        _import_visualizer,
         _load_neuron_type_map,
         _neuron_rep,
         apply_whitening,
@@ -76,6 +82,21 @@ except ImportError:  # direct src/ execution
         load_local_release_skeletons,
         v2_pairwise_matrix,
     )
+
+try:
+    from utils.label_utils import body_id_label_map
+except ImportError:  # pragma: no cover - direct src/ execution
+    from label_utils import body_id_label_map  # type: ignore
+
+try:
+    from visualization_options import default_analysis_skeleton_mesh_simplification
+except ImportError:  # pragma: no cover - direct src/ execution
+    try:
+        from src.visualization_options import (
+            default_analysis_skeleton_mesh_simplification)  # type: ignore
+    except ImportError:
+        def default_analysis_skeleton_mesh_simplification(dataset, pipeline):
+            return None
 
 try:
     from flywire_ids import is_banc_dataset, is_fafb_dataset
@@ -155,6 +176,8 @@ class MorphologyProfileComparer:
         verbose: bool = True,
         n_workers: int = 8,
         project_root: Optional[str] = None,
+        visualize: bool = False,
+        visualization_settings: Optional[Dict[str, object]] = None,
     ):
         self.dataset = dataset
         self.query = query
@@ -169,6 +192,8 @@ class MorphologyProfileComparer:
         self.use_cache = bool(use_cache)
         self.verbose = bool(verbose)
         self.n_workers = max(1, int(n_workers))
+        self.visualize = bool(visualize)
+        self.visualization_settings = dict(visualization_settings or {})
         self.project_root = (
             Path(project_root) if project_root
             else Path(__file__).parent.parent
@@ -216,6 +241,10 @@ class MorphologyProfileComparer:
             raise ValueError(
                 f"Dataset '{self.dataset}' has no local neuron table; pull "
                 "the dataset first (Settings → Dataset Cache).")
+        # Cached for the bodyId display labels and the members table so the
+        # neuron table is read once per run.
+        self._type_map = type_map
+        self._instance_map = instance_map
         all_types = sorted({str(t or "").strip() for t in type_map.values()
                             if str(t or "").strip()})
 
@@ -587,6 +616,14 @@ class MorphologyProfileComparer:
                       csv_links: Dict[str, str],
                       params: Dict[str, object]) -> None:
         member_rows = params.pop("_member_rows", [])
+        plot3d_link = str(params.pop("_plot3d_link", "") or "")
+        plot3d_html = ""
+        if plot3d_link:
+            plot3d_html = (
+                "<div class='card'><h2>3D skeleton visualization</h2>"
+                f"<p><a href='{plot3d_link}'>Open plot-3d scene</a> — one "
+                "layer per compared type; the legend tree lists every "
+                "bodyId leaf.</p></div>")
         member_lines = "".join(
             f"<tr><td>{m['type']}</td><td>{m['bodyId']}</td>"
             f"<td>{m['instance']}</td><td>{m['status']}</td></tr>"
@@ -610,7 +647,8 @@ class MorphologyProfileComparer:
                 f"<p>{df.shape[0]}×{df.shape[1]} · {scored} scored cells · "
                 f"<a href='{heatmap}'>interactive heatmap</a>"
                 + (f" · <a href='{csv_rel}'>CSV</a>" if csv_rel else "")
-                + f"</p><table><tr><th></th>{header}</tr>{cells}</table></div>")
+                + f"</p><div class='scroll'><table><tr><th></th>{header}"
+                  f"</tr>{cells}</table></div></div>")
 
         html = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Morphology Comparison Report</title><style>
@@ -618,15 +656,225 @@ body{{font-family:system-ui,sans-serif;margin:2rem;color:#222}}
 h1{{font-size:1.4rem}} table{{border-collapse:collapse;margin:0.5rem 0 1.5rem}}
 th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align:left}}
 .card{{margin-bottom:2rem}} .muted{{color:#777;font-size:0.85rem}}
+.scroll{{overflow-x:auto;max-height:32rem;overflow-y:auto}}
 </style></head><body>
 <h1>Morphology Comparison — {self.dataset}</h1>
 <p class="muted">Intra-dataset only · method: {_METHOD_LABELS.get(self.method, self.method)}</p>
 <h2>Parameters</h2><table>{param_rows}</table>
 <h2>Compared neurons</h2><table><tr><th>type</th><th>bodyId</th><th>instance</th><th>status</th></tr>{member_lines}</table>
 {''.join(_frame(n, d) for n, d in matrices.items())}
+{plot3d_html}
 <p class="muted">Generated {datetime.now().isoformat(timespec='seconds')}</p>
 </body></html>"""
         report_path.write_text(html, encoding="utf-8")
+
+    # ------------------------------------------------------------- 3d scene
+    def _display_labels(self, body_ids: List[object]) -> List[str]:
+        """Tree-legend display labels ('{bodyId}_{instance}' or
+        '{bodyId}_{type}_{L|R}') for the bodyId-level matrix axes."""
+        canon_ids = [self._body_id(b) for b in body_ids]
+        label_map = body_id_label_map(
+            self.dataset, canon_ids, str(self.project_root),
+            type_map=getattr(self, "_type_map", None),
+            instance_map=getattr(self, "_instance_map", None))
+        return [label_map.get(str(bid), str(bid)) for bid in canon_ids]
+
+    def _offline_render_filter(
+            self, members: Dict[str, List[object]]
+    ) -> Tuple[Dict[str, List[object]], List[str]]:
+        """Drop members whose raw skeletons are not locally cached.
+
+        Only applies when ``fetch_online=False`` and the dataset is
+        NeuPrint-hosted: VisualizeSkeleton would otherwise attempt the
+        declined online fetch for the missing members and abort the whole
+        scene. FAFB/BANC resolve offline through the healed bundle /
+        public bucket, so no filtering is needed there. Returns the
+        filtered members plus human-readable skip notes.
+        """
+        if self.fetch_online:
+            return members, []
+        if is_fafb_dataset(self.dataset) or is_banc_dataset(self.dataset):
+            return members, []
+        try:
+            from morphology import find_similar_raw_cache
+            raw_cache = find_similar_raw_cache(
+                self.dataset, project_root=str(self.project_root),
+                verbose=False)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Raw cache unavailable for the offline scene: {exc}")
+            return members, []
+        filtered: Dict[str, List[object]] = {}
+        skipped: List[str] = []
+        for type_name, ids in members.items():
+            kept = []
+            for bid in ids:
+                try:
+                    neuron = raw_cache.load_skeleton(int(self._body_id(bid)))
+                except Exception:  # noqa: BLE001
+                    neuron = None
+                # Mirror VisualizeSkeleton's render-cache policy: only
+                # level-0 raw files are renderable sources; legacy simp90
+                # files would abort the scene when they cannot be
+                # refreshed online.
+                level = 0
+                if neuron is not None:
+                    try:
+                        level = max(0, int(
+                            getattr(neuron, '_drocat_simplification', 0)
+                            or 0))
+                    except (TypeError, ValueError):
+                        level = 0
+                ok = neuron is not None and level == 0
+                (kept if ok else skipped).append(
+                    bid if ok else f"{type_name}:{self._body_id(bid)}")
+            if kept:
+                filtered[type_name] = kept
+        if skipped:
+            self._log(
+                f"Offline scene: skipping {len(skipped)} member(s) whose "
+                f"skeletons are not cached (fetch_online=False); turn on "
+                f"'Fetch Missing Skeletons Online' to include them.")
+        return filtered, skipped
+
+    def _visualize_members(self, output_path: Path,
+                           members: Dict[str, List[object]]
+                           ) -> Optional[str]:
+        """Render the compared neurons as one skeleton layer per type.
+
+        Mirrors Find Similar's 3D scene (line skeletons, layer legend,
+        template brain, no synapses); each compared type contributes one
+        layer capped at ``TYPE_RENDER_MEMBER_CAP`` members for the render
+        only. With ``fetch_online=False`` the scene is strictly offline:
+        members without locally cached skeletons are skipped (reported)
+        instead of triggering a doomed online fetch that would abort the
+        whole scene. Returns the report-relative scene link, or None when
+        the renderer is unavailable or fails — a visualization problem
+        never fails the comparison.
+        """
+        try:
+            VisualizeSkeleton = _import_visualizer()
+        except Exception as exc:
+            self._log(f"3D visualization failed (comparison kept): {exc}")
+            return None
+        if VisualizeSkeleton is None:
+            self._log(
+                "3D visualization skipped: visualize_skeleton unavailable.")
+            return None
+
+        # Unified offline behavior: with fetch_online=False, only members
+        # whose raw skeletons are locally cached enter the scene (the
+        # cross-dataset mode follows the same cache-first rule).
+        members, _offline_skipped = self._offline_render_filter(members)
+        if not members:
+            self._log(
+                "3D visualization skipped: no locally cached member "
+                "skeletons (fetch_online=False). Turn on 'Fetch Missing "
+                "Skeletons Online' to fetch and render them.")
+            return None
+
+        layers: List[List[object]] = []
+        names: List[str] = []
+        notes: List[str] = []
+        for rank, (type_name, ids) in enumerate(members.items(), start=1):
+            canon_ids = [self._body_id(b) for b in ids]
+            shown = canon_ids[:TYPE_RENDER_MEMBER_CAP]
+            layers.append(shown)
+            safe_type = _safe_name(type_name, 40)
+            names.append(f"t{rank}_{safe_type}_x{len(shown)}")
+            if len(canon_ids) > len(shown):
+                notes.append(
+                    f"t{rank}_{safe_type}: showing {len(shown)} of "
+                    f"{len(canon_ids)} members of type '{type_name}' "
+                    f"(per-layer render cap {TYPE_RENDER_MEMBER_CAP})")
+        if not layers:
+            self._log("3D visualization skipped: no compared neurons.")
+            return None
+
+        self._log(
+            f"3D visualization: {len(layers)} compared type layer(s), "
+            f"{sum(len(layer) for layer in layers)} neurons.")
+
+        settings = dict(self.visualization_settings)
+        pipeline = str(
+            settings.get("neuprint_skeleton_pipeline", "fine") or "fine"
+        ).strip().lower()
+        local_release = is_fafb_dataset(self.dataset) or is_banc_dataset(
+            self.dataset)
+        saveas = _dataset_folder(self.dataset)
+        before = {p.name for p in output_path.iterdir() if p.is_dir()}
+        viz_kwargs: Dict[str, object] = {
+            "dataset": self.dataset,
+            "output_dir": str(output_path),
+            "neuron_layers": layers,
+            "custom_layer_names": names,
+            "saveas": saveas,
+            "include_timestamp": False,
+            "skip_synapse": True,
+            # Analysis visualizations default to the light-weight line
+            # representation, like Find Similar.
+            "skeleton_mode": settings.get("skeleton_mode", "line"),
+            "legend_mode": "layer",
+            "brain_mesh": "template",
+            "export_views": False,
+            "show_fig": False,
+            "cache_neurons": (
+                True if local_release
+                else pipeline not in {"fast", "direct", "artistic",
+                                      "fine_opt1"}),
+            "verbose": "simple",
+            "layer_sample_notes": notes or None,
+        }
+        # The settings panel carries the same keyword names as
+        # VisualizeSkeleton; ranking controls belong to the caller.
+        for key, value in settings.items():
+            if key in {"visualize_top_n", "visualize_by",
+                       "use_default_simplification"}:
+                continue
+            if key == "mesh_color" and value == "auto":
+                continue
+            if key == "legend_mode":
+                # Comparison layers are grouped per compared type; only the
+                # interactive 'tree' preference may override 'layer'.
+                if value != "tree":
+                    continue
+            viz_kwargs[key] = value
+        if viz_kwargs.get("skeleton_mesh_simplification") is None:
+            viz_kwargs["skeleton_mesh_simplification"] = (
+                default_analysis_skeleton_mesh_simplification(
+                    self.dataset, pipeline))
+
+        try:
+            vs = VisualizeSkeleton(**viz_kwargs)
+            vs.plot_neurons()
+        except Exception as exc:
+            self._log(f"3D visualization failed (comparison kept): {exc}")
+            return None
+        scene_link = self._scene_link(output_path, before, saveas)
+        if scene_link:
+            self._log(f"3D visualization saved to: {output_path / scene_link}")
+        return scene_link
+
+    @staticmethod
+    def _scene_link(output_path: Path, before: set,
+                    saveas: str) -> Optional[str]:
+        """Report-relative path of the freshly rendered 3D scene.
+
+        VisualizeSkeleton owns the folder naming (plot-3d_{abbrev}_{stem}),
+        so the link is discovered by diffing the run folder: prefer the new
+        plot-3d directory's '{saveas}.html', then any top-level HTML.
+        """
+        new_dirs = [p for p in output_path.iterdir()
+                    if p.is_dir() and p.name.startswith("plot-3d_")]
+        candidates = [p for p in new_dirs if p.name not in before] or new_dirs
+        for folder in sorted(candidates, key=lambda p: p.stat().st_mtime,
+                             reverse=True):
+            preferred = folder / f"{saveas}.html"
+            if preferred.exists():
+                return f"{folder.name}/{preferred.name}"
+            htmls = sorted(folder.glob("*.html"))
+            if htmls:
+                return f"{folder.name}/{htmls[0].name}"
+        return None
 
     # -------------------------------------------------------------------- run
     def run(self) -> Dict[str, object]:
@@ -680,6 +928,13 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
         labels = [self._body_id(b) for b in all_ids]
         body_df = pd.DataFrame(body_matrix, index=labels, columns=labels)
         type_df = self._type_level_matrix(body_matrix, labels, members)
+        # BodyId rows read as '{bodyId}_{instance}' or
+        # '{bodyId}_{type}_{L|R}' (the tree-legend rule). The type-level
+        # aggregation above resolves members by canonical bodyId, so the
+        # display relabel happens only after it has run.
+        display_labels = self._display_labels(all_ids)
+        body_df.index = display_labels
+        body_df.columns = display_labels
 
         output_path = self._output_path(
             "_".join(str(t) for t in list(members.keys())[:4]))
@@ -691,8 +946,8 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
         body_df.to_csv(output_path / "bodyid_level"
                        / f"bodyid_similarity_{self.method}.csv")
 
-        type_map, instance_map = _load_neuron_type_map(
-            self.dataset, str(self.project_root))
+        type_map = getattr(self, "_type_map", {}) or {}
+        instance_map = getattr(self, "_instance_map", {}) or {}
         member_rows: List[Dict[str, object]] = []
         for type_name, ids in members.items():
             for bid in ids:
@@ -715,6 +970,10 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
             heatmap_files = self._write_heatmaps(
                 matrices, output_path / "visualization")
 
+        plot3d_link: Optional[str] = None
+        if self.visualize:
+            plot3d_link = self._visualize_members(output_path, members)
+
         params = {
             "dataset": self.dataset,
             "query": [str(q) for q in
@@ -729,11 +988,14 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
                 1 for m in member_rows if m["status"] == "compared")),
             "intra_dataset_only": True,
             "generate_heatmaps": self.generate_heatmaps,
+            "visualize": self.visualize,
             "duration_s": round(time.time() - started, 1),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
         report_params = dict(params)
         report_params["_member_rows"] = member_rows
+        if plot3d_link:
+            report_params["_plot3d_link"] = plot3d_link
         (output_path / "parameters.json").write_text(
             json.dumps(params, indent=2, default=str), encoding="utf-8")
         self._write_report(
@@ -772,9 +1034,16 @@ Output layout:
   type_level/type_similarity_{self.method}.csv   type×type matrix
   bodyid_level/bodyid_similarity_{self.method}.csv  bodyId×bodyId matrix
   visualization/heatmap_*.html                 interactive heatmaps
+  plot-3d_<dataset>/                           3D skeleton scene (when enabled;
+                                               one layer per compared type)
   report.html                                  summary report
 
+bodyId-level rows/axes are labeled '{{bodyId}}_{{instance}}' (NeuPrint-style
+datasets) or '{{bodyId}}_{{type}}_L/_R' (FAFB/BANC); members.csv maps every
+label back to its raw bodyId.
+
 Morphological comparison is intra-dataset only: skeletons are scored in one
-dataset's coordinate space against that dataset's caches. Cross-dataset
-workflows belong to the Connectivity tab.
+dataset's coordinate space against that dataset's caches. Select two or
+more datasets in the Comparison sub-tab to switch to the cross-dataset
+comparison (morph_cross_dataset.CrossDatasetMorphComparer) instead.
 """

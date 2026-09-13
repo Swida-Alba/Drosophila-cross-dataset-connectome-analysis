@@ -288,6 +288,16 @@ TOOL_REGISTRY: Dict[str, dict] = {
             "run": "comparer.run()",
         },
     },
+    "morph_cross_dataset": {
+        "label": "Cross-Dataset Morphology Comparison",
+        "import": "from comparison.morph_cross_dataset import CrossDatasetMorphComparer",
+        "class": "CrossDatasetMorphComparer",
+        "var": "comparer",
+        "init_method": None,
+        "methods": {
+            "run": "comparer.run()",
+        },
+    },
 }
 
 
@@ -871,7 +881,7 @@ print("[DROCAT] Done.")
     # many runs — it must never be scanned as the current run's folder.
     _RUN_FOLDER_PREFIX_RE = re.compile(
         r"^(find-paths-complete|find-paths-shortest|find-network|cross-dataset|plot-3d|plot-network|"
-        r"homologs|similar-morphology|similar-connectivity|similar|profiling|morphology_comparison|NB-find-lines|NB-find-neurons|NB-colabeling|flylight-downloads|flylignt-downloads|"
+        r"homologs|similar-morphology|similar-connectivity|similar|profiling|morphology_comparison|morph_cross|NB-find-lines|NB-find-neurons|NB-colabeling|flylight-downloads|flylignt-downloads|"
         r"findpath|findallpath|findshortestpath|findnetwork|finddirect|findhomologs|interdataset|"
         r"plot3d|plotpath|colabel|findlines|findneuron|findsimilar)_"
     )

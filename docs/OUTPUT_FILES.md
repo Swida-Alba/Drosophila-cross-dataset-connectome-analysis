@@ -51,7 +51,7 @@ Pulled NeuPrint datasets are stored under `datasets/<dataset>/` with a
 | **Score Calculations**       | [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md)             | Formulas for connection ratio, traversal probability, path probability |
 | **Pathfinding Methods**      | [PathFinding_Methods](core-features/PathFinding_Methods.md)                   | Layer traversal, forward-only mode, filtering                          |
 | **Cross-Dataset Comparison** | [CrossDatasetComparison_Guide](core-features/CrossDatasetComparison_Guide.md) | Multi-dataset analysis and comparison modes                            |
-| **Connectivity → Find Similar** | [HomologFinding_Guide](core-features/HomologFinding_Guide.md)              | Profile-based homolog discovery (cross- or intra-dataset)              |
+| **Connectivity → Find Homolog** | [HomologFinding_Guide](core-features/HomologFinding_Guide.md)              | Profile-based homolog discovery (cross- or intra-dataset), with optional morph qualification |
 | **Connectivity → Comparison** | [CONNECTIVITY_PROFILING](CONNECTIVITY_PROFILING.md)                           | ConnectivityProfiler and ConnectivityProfileComparer                   |
 | **NeuronBridge**             | [NeuronBridge_Guide](core-features/NeuronBridge_Guide.md)                     | EM↔LM mapping and co-labeling analysis                                 |
 | **FlyLight Downloads**       | [FlyLight_Guide](core-features/FlyLight_Guide.md)                             | Image downloading and processing                                       |
@@ -122,6 +122,7 @@ fields remain decimal-valued.
 *   **`connection_info_bodyId.csv`**: BodyId-level edge table (only when `skip_bodyId=False`)
 *   **`hemisphere_unconserved_edges.csv`**: Edges removed by hemisphere-unconserved-edge filtering (only when that filter is active)
 *   **`untyped_dropped_records.csv`**: Connection rows removed by the **Drop Untyped Neurons** filter (`drop_untyped`, default on; applied in both Complete and Shortest Paths after label enrichment and before graph construction, so an untyped neuron can never be an intermediate node of a returned path or visualization). Written only when rows were actually dropped. Columns: `dataset`, `threshold`, `conn_layer`, then the connection columns present (`bodyId_pre`, `bodyId_post`, `type_pre`, `type_post`, `weight`, `roi`, `instance_pre`, `instance_post`, `nt_type`, `custom_group_*`, `connection_ratio`, `traversal_probability`, `synapse`), plus a final `untyped_side` (`pre` | `post` | `pre+post`). An untyped label is one that is empty after strip, one of the Unknown/None/NaN sentinels (case-insensitive), or all-digit (numeric bodyId fallback) — the same predicate Cross-Dataset Comparison uses. Note: an untyped source/target can remain enrolled in `source_neurons.csv` / `target_neurons.csv` while its incident edges were removed.
+    **BANC caveat:** the BANC meta table contains ~70,000 `Unknown`-type rows plus numeric-fallback labels, so with the default `drop_untyped=True` a BANC run can drop a very large share of its connections (in the 2026-09-12 Windows test, `ORN_DA1 -> DA1_lPN` dropped 320,191 connections touching 293,547 neurons). Check `untyped_dropped_records.csv` and the `[untyped dropped]` entry in `user_warning_notes.txt`; turn **Drop Untyped Neurons** off (or pass `drop_untyped=False`) to keep untyped neurons in the network.
 *   **`connection_custom_groups.csv`**: Custom query-group definitions (only when custom groups are used)
 *   **`{source}_to_{target}_allpaths_type_excluded.csv`**: Paths excluded by the active filters
 *   **`{source}_to_{target}_allpaths_group_excluded.csv`**: Group-level paths excluded by the filters (group queries only)
@@ -255,8 +256,8 @@ Example: `homologs_MCNS_to_FAFB_aMe12_20260815_143540/`
 ### Key Output Files
 
 #### Results (`results/`)
-*   **`homolog_results.csv`**: Full results with all similarity columns, sorted by the chosen metric. Columns: `source_bodyId`, `source_type`, `target_bodyId`, `target_type`, `target_dataset`, `adjacency_score`, `shared_type_count`, `union_type_count`, `rank_union`, `jaccard`, `weighted_jaccard`, `cosine`, `is_same_type`, `is_same_dataset`, `source_status`, `target_status`, `weak_source`, `weak_target`, `source_partner_count`, `target_partner_count` (`rank_corr` is retained internally for sorting but deliberately not exported; metric definitions in the Appendix).
-*   **`bodyid_results.csv`**: BodyId-level results (sorted by source, then metric). Same score columns, one row per source×target bodyId pair, without `target_dataset`/`weighted_jaccard`. Targets that never resolved to a real cell type carry an empty `target_type`.
+*   **`homolog_results.csv`**: Full results with all similarity columns, sorted by the chosen metric. Columns: `source_bodyId`, `source_type`, `source_instance`, `target_bodyId`, `target_type`, `target_instance`, `target_dataset`, `adjacency_score`, `shared_type_count`, `union_type_count`, `rank_union`, `jaccard`, `weighted_jaccard`, `cosine`, `is_same_type`, `is_same_dataset`, `source_status`, `target_status`, `weak_source`, `weak_target`, `source_partner_count`, `target_partner_count` (`rank_corr` is retained internally for sorting but deliberately not exported; metric definitions in the Appendix). The `*_instance` columns resolve from each row's dataset neuron table (empty when the neuron is unknown to it).
+*   **`bodyid_results.csv`**: BodyId-level results (sorted by source, then metric). Same score columns — including `source_instance`/`target_instance` — one row per source×target bodyId pair, without `target_dataset`/`weighted_jaccard`. Targets that never resolved to a real cell type carry an empty `target_type`. **Morph qualification** (cross-dataset option, off by default) appends `morph_v2`, `morph_null_p95`, `morph_z`, `morph_qualified` — filled only on the rows the visualization rendered (the visualized top-N scored against the transformed query with vector_v2; the bar is the per-query p95 of 200 seeded random target neurons). Failing candidates stay in the table with `morph_qualified = False` but are excluded from the rendered scenes.
 *   **`type_summary.csv`**: Type-mean aggregated FROM the bodyId-level results (a bodyId-level aggregation view, not a type-level profile comparison). Columns: `query`, `source_dataset`, `target_dataset`, `source_type`, `target_type`, `n_bodyid_comparisons`, `avg_jaccard`, `avg_rank_union`, `avg_cosine`, `avg_adjacency_score`, `avg_shared_type_count`, `avg_union_type_count`, `n_complete_sources`, `n_incomplete_sources`; when scenes were rendered, also `visualized` (the type appears in a rendered scene) and the one-based `visualization_rank` (its order across the rendered scenes — type-level scene first, then the bodyId-level scene). Rows whose target never resolved to a real cell type are excluded.
 *   **`type_level_results.csv`**: True type-level homolog ranking — pooled all-adjacency type profiles (every connection of each type's neurons, no top-k truncation) scored against every typed target type. One row per source×target type: `source_type`, `target_type`, `target_type_members` (candidate type's member count in the target dataset — very large counts indicate coarse/hemilineage-scale annotations, e.g. Mi15), `is_same_type`, `target_dataset`, `jaccard`, `weighted_jaccard`, `cosine`, `rank_union`, `rank` (1 = best under the run's metric).
 *   **Folder layout**: multi-type runs group per-type output under `by_type/<query_type>/` next to the combined `results/`. A run that resolves to a **single query type** skips the `by_type/` nesting — `results/`, `profiles/`, `overlaps/` and `visualization/` sit directly in the run folder. Cross-dataset runs render the query source inside the target brain as the `query_transformed_*` overlay layer of the `bodyId_level/` + `type_level/` scenes; `visualization/source_neurons/` is only a fallback scene in the source dataset's own template, drawn when the transform is unavailable.
@@ -265,8 +266,8 @@ Example: `homologs_MCNS_to_FAFB_aMe12_20260815_143540/`
 *   **`shuffle_test.json`**: Random-control (shuffle) test statistics — only when `run_shuffle_test=True`.
 
 #### Profiles (`profiles/`)
-*   **`query/{type}.csv`** and **`query/source_bodyids.csv`**: Connectivity profiles of the query neuron(s). Profile columns: `neuron_type`, `dataset`, `direction`, `partner_type`, `weight`, `rank`.
-*   **`matches/{type}.csv`** and **`matches/top_target_bodyids.csv`**: Profiles of the top candidate matches (same columns).
+*   **`query/{type}.csv`** and **`query/source_bodyids.csv`**: Connectivity profiles of the query neuron(s). Profile columns: `neuron_type`, `dataset`, `direction`, `partner_type`, `weight`, `rank`. `source_bodyids.csv` also lists `source_type`, `source_instance`, status, and partner count per source neuron.
+*   **`matches/{type}.csv`** and **`matches/top_target_bodyids.csv`**: Profiles of the top candidate matches (same columns; `top_target_bodyids.csv` also lists `target_type`, `target_instance`, status, partner count, and scores).
 
 #### Overlaps (`overlaps/`)
 *   **`{source}_vs_{target}.csv`**: Partner overlap details for top candidates (which partners are shared vs unique). Columns: `partner_type`, `in_a`, `in_b`, `weight_a`, `weight_b`, `rank_a`, `rank_b`, `status`, `direction`.
@@ -290,8 +291,10 @@ Example: `homologs_MCNS_to_FAFB_aMe12_20260815_143540/`
 The Morphology tab's **Find Similar** sub-tab searches for morphologically
 similar neurons **within one dataset** (intra-dataset only — skeleton
 scoring and the vector caches are per-dataset). Connectivity-based similar
-search, including the cross-dataset homolog search, lives in the
-Connectivity tab's Find Similar sub-tab (Section 5 layout).
+search, including the cross-dataset homolog search (now named Find Homolog,
+with optional morph qualification), lives in the Connectivity tab
+(Section 5 layout); cross-dataset morphology *comparison* lives in the
+Morphology tab's Comparison sub-tab with two or more datasets (Section 6c).
 
 ### 6a. Morphological Similarity (MorphologyComparer)
 
@@ -312,7 +315,7 @@ Example: `similar-morphology_flywire_FAFB_v783_aMe12_20260815_143601/`
 
 The removed "Connectivity similarity" UI mode used this `similar-connectivity`
 output prefix. The UI path for connectivity similar search is now
-**Connectivity → Find Similar** (Target = Source for intra-dataset runs),
+**Connectivity → Find Homolog** (Target = Source for intra-dataset runs),
 which writes the Section 5 `homologs_*` layout. The `similar-connectivity`
 prefix remains available programmatically via `HomologFinder`'s
 `output_folder_prefix` parameter.
@@ -329,9 +332,12 @@ Same layout as Section 5, plus:
 
 ## 6c. Morphology Comparison (MorphologyProfileComparer)
 
-Intra-dataset N×N morphology comparison (Morphology tab → Comparison sub-tab):
-2+ queried neurons (types, bodyIds, or patterns) produce a bodyId-level
-similarity matrix and a type-level aggregation. The type-level entry is the
+Intra-dataset N×N morphology comparison (Morphology tab → Comparison
+sub-tab with exactly one selected dataset): 2+ queried neurons (types,
+bodyIds, or patterns) produce a bodyId-level similarity matrix and a
+type-level aggregation. With two or more datasets the same sub-tab
+dispatches to the cross-dataset comparison (`morph_cross_*` folders,
+Section 6d-style layout under `local_data/morph_cross_dataset/`). The type-level entry is the
 mean over the cross-member bodyId pairs; the diagonal is the type's
 intra-type cohesion. `vector_v2` scores the per-dataset whitened vector
 cache (missing skeletons are fetched online by default and persist into
@@ -351,9 +357,16 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     skeleton carry empty matrix cells instead of biasing the averages.
 *   **`type_level/type_similarity_{method}.csv`**: Type×type matrix.
 *   **`bodyid_level/bodyid_similarity_{method}.csv`**: BodyId×bodyId matrix
-    (every individual pair; dropped neurons keep NaN rows).
+    (every individual pair; dropped neurons keep NaN rows). Rows/columns
+    read as `{bodyId}_{instance}` (NeuPrint-style datasets) or
+    `{bodyId}_{type}_L/_R` (FAFB/BANC) — the same labels the 3D skeleton
+    legend tree uses; `members.csv` maps every label back to its raw
+    bodyId.
 *   **`visualization/heatmap_{type|bodyid}_{method}.html`**: Interactive
     (VisPath) heatmaps, plotly fallback when VisPath is unavailable.
+*   **`plot-3d_{dataset_folder}/`**: Optional 3D skeleton scene (Comparison
+    panel → "3D Skeleton Visualization" checkbox) — one skeleton layer per
+    compared type, line rendering by default; linked from `report.html`.
 *   **`report.html` / `parameters.json` / `README.txt`**: Summary report,
     parameters, and layout description.
 
@@ -387,6 +400,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`avg_prob_data.csv`**, **`avg_ratio_data.csv`**, **`edge_count_data.csv`**, **`total_weight_data.csv`**: Aggregated metrics per dataset (Standard; Custom uses the `*_by_query.csv` variants below)
 *   **`avg_prob_data_by_query.csv`**, **`avg_ratio_data_by_query.csv`**, **`edge_count_data_by_query.csv`**, **`total_weight_data_by_query.csv`**: The same four chart tables for Custom combination runs, with `query_id`/`query_label` columns and each dataset cell read at its requested threshold
 *   **`provenance_by_query.csv`**, **`threshold_combinations.csv`**: Query-keyed applied-threshold provenance and a copy of the canonical query manifest backing the Custom report tables
+*   **`query_resolution.csv`**: One row per query token × dataset: `token`, `dataset`, `role`, `status`, `method`, `target_types`, `matched_column`, `evidence_chain`, `confidence`, `note`, `evidence`. Statuses: `same_name_identity` (native same-name type; `evidence` = `confirmed` | `contradicted` | `none`), `taxonomy` (taxonomy-column value expanded to member types), `taxonomy_mapped` (concept bridged by mapping the members through the auto mapper), `mapped`/`bridged`/`valid_split` (mapper-evidence resolution), `evidence_only`, `same_name_fallback` (bare name echo, lowest confidence), `conflict`, `body_id`, `group`, `pattern`, `unmatched`
 *   **`ratio_data_t{N}.csv`**: Ratio data for threshold N (Standard)
 
 #### Comparison Results (`comparison_results/`)
@@ -417,11 +431,17 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 #### Raw Threshold-Schedule Diagnostics (`comparison_results/`)
 *   **`edge_density_per_threshold.csv`**, **`threshold_alignment_matrix.csv`**, **`threshold_alignment_best_matches.csv`** (+ `comparison_visualizations/threshold_alignment_matrix.png`, `edge_density_threshold_curves.png`): Raw-run schedule diagnostics over the sorted union of executed `(dataset, threshold)` cells. In Custom combination mode every row is stamped `threshold_scope=raw_run_schedule_diagnostic`; these files describe the raw execution/cache schedule, never the Custom query axis. Use `threshold_combinations.csv` for the comparison rows.
 
+#### Query-Scoped Density Curves (`comparison_results/`, every pathfinding mode)
+*   **`density_curves.csv`**: per queried dataset, one row per integer Min Synapse Count over its own window `[w_start, w_star_measured]` (minimal available threshold → measured `max(path bottlenecks)`), computed on the cone (the searched graph at the lowest executed threshold). `density = edge_count / N` with a t-independent `N`; `basis` records the edge universe (`bodyId_edges_typed` with Drop Untyped on, `bodyId_edges_all_but_debris` when off — debris ids absent from the curated table are always excluded). Rendered as `comparison_visualizations/density_alignment_threshold_curves.png` (edge density primary; path count diagnostic).
+*   **`density_windows.csv`**: per-dataset window plus node classes (`n_nodes_typed`, `n_nodes_untyped`, `n_nodes_debris`) and the stored-vs-measured `w_star` mismatch flag. `n_edges` is the all-class cone count at the applied threshold (a capture-level fact); `n_edges_active_basis` re-counts it under the active basis, so it equals `density_curves.csv` `edge_count` at `w_start`.
+*   **`density_alignment_best_matches.csv`** (auto mode only): the vertical (same-threshold) and horizontal (same-density) aligned integer rows, runnable as a combination query. When both modes coexist, read the vertical rows as the like-for-like spine (one identical threshold for every dataset) and the horizontal rows as the density-matched envelope (per-dataset thresholds equalizing E(t)/N, meaningful even where no shared complete threshold exists).
+*   **`dataset_data/{dataset}/_density/`**: the persisted capture — `density_edges.npz` (cone weights + endpoint classes), `density_path_bottlenecks.npy`, `density_meta.json` (window, node-class counts, drop/budget provenance). Each `minsyn_*` folder carries a pointer `density_meta.json`.
+
 #### Conserved Reciprocal Graph (`conserved_reciprocal_graph/`)
 *   **`conserved_reciprocal_t{N}_network.html`**: Network graph of hemisphere-conserved reciprocal connections, one file per threshold (only when both hemisphere-conservation and reciprocal options are enabled)
 
 #### Dataset Data (`dataset_data/`)
-*   **`{dataset_folder}/minsyn_{N}/`**: Raw `FindNeuronConnection` outputs per dataset/threshold (see Section 1) — each threshold folder carries the same applied-threshold provenance block as a standalone run, plus **`connections_edge.csv`** (raw edge list). Includes `hemisphere_symmetry/` and `find_reciprocal/` subfolders when those options are enabled.
+*   **`{dataset_folder}/minsyn_*/`**: Raw `FindNeuronConnection` outputs per materialized threshold (see Section 1) — each folder carries the applied-threshold provenance block of a standalone run, plus **`connections_edge.csv`** (raw edge list). Includes `hemisphere_symmetry/` and `find_reciprocal/` subfolders when those options are enabled. Folder naming follows the applied-threshold grammar: a genuine requested run keeps the bare **`minsyn_{requested}`**; the collapse floor other requesters alias to is **`minsyn_{applied}_applied_floor`** (never a bare name, and no separate `_equal_...` variant when the floor value coincides with a requested level). Requested thresholds whose applied value differs get a marker folder **`minsyn_{requested}_skipped/README.txt`** instead of data; a requested level that coincides with its own floor is skipped silently. Each dataset also carries **`APPLIED_THRESHOLDS.md`** mapping requested → applied with the reason and folder.
 
 ---
 
@@ -438,7 +458,13 @@ The `ConnectivityProfileComparer` class (in `src/comparison/profile_comparator.p
 
 ### Folder Structure
 
-`profiling_{FIRST_DATASET_ABBREV}_{query_name}_{ts}/`
+Intra-/multi-dataset runs: `profiling_{DATASET_LABELS}_{query_name}_{ts}/` —
+one unique 4-char label per dataset (`MCNS`, `HEMI`, ...); two versions of
+the same family gain a version suffix (`MCNS_v1_0_MCNS_v0_9`).
+
+Cross-dataset (dict-query) runs:
+`profiling_{DS_A}_vs_{DS_B}_{ts}/` (same label vocabulary, e.g.
+`profiling_MCNS_vs_HEMI_20260913_000135/`).
 
 Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0 + flywire_FAFB_v783)
 
@@ -451,19 +477,19 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 
 #### Intra-Dataset Results (`intra_dataset/{dataset_folder}/`)
 *   **`results/similarity_{direction}_{metric}.csv`**: Type-level N×N similarity matrices
-*   **`results/bodyid_similarity_{metric}_{direction}.csv`**: BodyId-to-bodyId comparisons
+*   **`results/bodyid_similarity_{metric}_{direction}.csv`**: BodyId-to-bodyId comparisons — rows/columns read as `{bodyId}_{instance}` (NeuPrint-style datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC); the resolved comparison type is the fallback when the neuron table has no metadata
 *   **`results/type_avg_bodyid_similarity_{metric}_{direction}.csv`**: Type similarities averaged from bodyId pairs
 *   **`visualization/heatmap_intra_{direction}_{metric}.html`** and **`visualization/heatmap_intra_type_avg_{direction}_{metric}.html`**: Interactive heatmaps
 *   Metrics: `jaccard`, `weighted_jaccard`, `cosine`, `rank_corr`, `rank_union`; directions: `upstream`, `downstream`, `overall` (both directions)
 
 #### Cross-Dataset Results (`cross_dataset/`)
 *   **`mapping_summary.csv`**: Resolved type names per dataset with same-name flags — columns `anchor`, one column per queried dataset, `same name`
-*   **`all_types/results/similarity_{direction}_{metric}.csv`**: N×M similarity matrices comparing the queried types across datasets
+*   **`all_types/results/similarity_{direction}_{metric}.csv`**: N×M similarity matrices comparing the queried types across datasets. Queried bodyIds carry their resolved type in the row/column labels (`{bodyId}_{type}`)
 *   **`all_types/visualization/heatmap_inter_all_types_{direction}_{metric}.html`**: Interactive cross-dataset heatmaps
 
 #### Profiles (`profiles/{dataset_folder}/`)
 *   **`aggregated/{type}_profile.json`**: Type-aggregated connectivity profiles
-*   **`individual/{bodyId}_{type}_profile.json`**: Individual bodyId profiles
+*   **`individual/{bodyId}_{type}_profile.json`**: Individual bodyId profiles (fields include `bodyId`, `type`, `instance`, `dataset`)
 
 ---
 

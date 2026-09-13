@@ -67,6 +67,12 @@ finder = HomologFinder(
 
 results = finder.find_homologs_fast()   # fast adjacency search (UI default)
 # results = finder.find_homologs()        # slower comprehensive search
+# results = finder.find_homologs_multi(   # multi-query UI entry; optional
+#     source=["aMe12", "aMe10"],
+#     source_dataset="male-cns:v1.0", target_dataset="flywire_FAFB_v783",
+#     morph_qualify=True,        # cross-dataset vector_v2 qualification of
+#     morph_null_k=200,          # the visualized top-N against a seeded
+#     morph_bar_offset=0.0)      # null bar; see morph-cross-dataset module
 # results = finder.find_novel_homologs()  # novel-only homologs (Similar Neurons)
 # results = finder.find_homologs_intra_dataset(...)
 ```

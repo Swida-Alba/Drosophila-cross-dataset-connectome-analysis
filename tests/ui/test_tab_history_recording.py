@@ -39,7 +39,7 @@ def isolated_history(tmp_path, monkeypatch):
     return hs
 
 
-def _mock_output_panel_run(monkeypatch, returncode=0):
+def _mock_output_panel_run(monkeypatch, returncode=0, neuron_match=None):
     """Stub the panel runner and its UI-touching methods.
 
     The run handlers are driven through ``asyncio.run``, which runs on a
@@ -54,7 +54,7 @@ def _mock_output_panel_run(monkeypatch, returncode=0):
         captured.append((tool_name, constructor_params, method_params))
         return {"returncode": returncode, "files": [], "duration": 0,
                 "cancelled": False, "output_folder": None,
-                "neuron_match": None}
+                "neuron_match": neuron_match}
 
     monkeypatch.setattr(OutputPanel, "run", fake_run)
     monkeypatch.setattr(OutputPanel, "set_running", lambda self, value: None)
@@ -130,6 +130,79 @@ class TestComparisonHistory:
         assert isolated_history.recent() == []
 
 
+class TestInterDatasetHistory:
+    def test_multi_dataset_run_records_per_value_provenance(
+        self, isolated_history, monkeypatch
+    ):
+        """A cross-dataset run stamps each chip with only the selected
+        datasets whose local pools actually contain it, so a male-cns-only
+        type never carries the other datasets' tags; a chip resolving in no
+        pool (regex pattern) keeps the whole run selection."""
+        captured = _mock_output_panel_run(
+            monkeypatch, neuron_match={"any_pair": True})
+
+        from ui import type_suggestions as ts
+        from ui.tabs.inter_dataset import create_inter_dataset_tab
+
+        pools = {
+            "banc_v888": {"type": [("LNd_b", "type")]},
+            "male-cns:v1.0": {
+                "type": [("LNd_b", "type"), ("5thsLNv_LNd6", "type")],
+            },
+        }
+        monkeypatch.setattr(
+            ts, "get_dataset_pools", lambda ds: pools.get(str(ds), {}))
+
+        client = Client(page("/history-inter-dataset"))
+        with client:
+            create_inter_dataset_tab()
+
+        selector = next(
+            element for element in client.elements.values()
+            if type(element).__name__ == "Select"
+            and str(element._props.get("label", "")).startswith(
+                "Datasets to compare")
+        )
+        selector.value = ["banc_v888", "male-cns:v1.0"]
+        _chip_input(client, "Source Neurons").add_values(
+            ["5thsLNv_LNd6", "LNd_b", "PPL.*"])
+        _click_run(client, "Run Comparison")
+
+        assert captured and captured[0][0] == "inter_dataset"
+        assert isolated_history.datasets_of("5thsLNv_LNd6") == ["male-cns:v1.0"]
+        assert isolated_history.datasets_of("LNd_b") == [
+            "banc_v888", "male-cns:v1.0"]
+        assert isolated_history.datasets_of("PPL.*") == [
+            "banc_v888", "male-cns:v1.0"]
+
+    def test_multi_dataset_run_without_local_pools_keeps_run_selection(
+        self, isolated_history, monkeypatch
+    ):
+        """No local evidence (pools missing) degrades to the old behavior:
+        every recorded chip carries the run selection."""
+        captured = _mock_output_panel_run(
+            monkeypatch, neuron_match={"any_pair": True})
+
+        from ui.tabs.inter_dataset import create_inter_dataset_tab
+
+        client = Client(page("/history-inter-dataset-no-pools"))
+        with client:
+            create_inter_dataset_tab()
+
+        selector = next(
+            element for element in client.elements.values()
+            if type(element).__name__ == "Select"
+            and str(element._props.get("label", "")).startswith(
+                "Datasets to compare")
+        )
+        selector.value = ["banc_v888"]
+        _chip_input(client, "Source Neurons").add_values(["LNd_b"])
+        _click_run(client, "Run Comparison")
+
+        assert captured and captured[0][0] == "inter_dataset"
+        assert isolated_history.datasets_of("LNd_b") == ["banc_v888"]
+
+
 class TestSimilarHistory:
     def test_similar_records_each_source_with_source_dataset(
         self, isolated_history, monkeypatch
@@ -141,7 +214,7 @@ class TestSimilarHistory:
         _chip_input(client, "Source Neuron(s) (type or bodyId)").add_values(
             ["aMe12", "aMe10"]
         )
-        _click_run(client, "Find Similar Neurons")
+        _click_run(client, "Find Homologs")
 
         assert captured and captured[0][0] == "find_homologs"
         assert set(isolated_history.recent()) == {"aMe12", "aMe10"}

@@ -613,8 +613,10 @@ class TestRunner:
             for el in client.elements.values()
         )
 
-        # The two sub-tabs are independent, outlined buttons rather than one
-        # segmented toggle, so each remains easy to target and read.
+        # The two sub-tabs are independent, outlined buttons rather than
+        # one segmented toggle, so each remains easy to target and read.
+        # The Comparison sub-tab covers intra- AND cross-dataset
+        # comparison, dispatched by the number of selected datasets.
         mode_buttons = {
             getattr(el, "text", ""): el
             for el in client.elements.values()
@@ -636,10 +638,17 @@ class TestRunner:
         assert labels.count("Method") == 2  # Find Similar + Comparison
         assert "Run Comparison" in texts
         assert "Find Similar Neurons" in texts
+
+        # Cross-dataset mode lives inside the Comparison sub-tab (two or
+        # more selected datasets dispatch to the cross-dataset backend).
+        assert "Datasets to compare" in labels
+        assert "Reference Template (scenes)" in labels
+        assert "Null Sample Size" in labels
+        assert "Auto Type Mapping" in labels
         assert not any("Coming in a future update" in text for text in texts)
 
     def test_connectivity_tab_hosts_find_similar_and_comparison(self):
-        """The Connectivity tab hosts the Find Similar (homolog engine) and
+        """The Connectivity tab hosts the Find Homolog (homolog engine) and
         Comparison sub-tabs; the removed connectivity-similarity knobs are
         gone and Sort By keeps its jaccard default."""
         from nicegui import Client
@@ -666,9 +675,10 @@ class TestRunner:
                       "Source Neuron(s) (type or bodyId)",
                       "Top N Candidates", "Top K Partners", "Min Types (M)",
                       "Sort By", "Min Synapse Threshold",
-                      "Auto Type Mapping", "Visualize Top N Candidates"):
+                      "Auto Type Mapping", "Visualize Top N Candidates",
+                      "Qualification bar offset above the null p95"):
             assert label in labels or label in texts, \
-                f"missing Find Similar control: {label}"
+                f"missing Find Homolog control: {label}"
         # Comparison controls
         for label in ("Datasets to compare (select one or more)",
                       "Neurons to Compare", "Aggregation Level",
@@ -692,9 +702,9 @@ class TestRunner:
         mode_buttons = {
             getattr(el, "text", ""): el
             for el in client.elements.values()
-            if getattr(el, "text", "") in {"Find Similar", "Comparison"}
+            if getattr(el, "text", "") in {"Find Homolog", "Comparison"}
         }
-        assert set(mode_buttons) == {"Find Similar", "Comparison"}
+        assert set(mode_buttons) == {"Find Homolog", "Comparison"}
         assert len(mode_buttons) == 2
 
     def test_analysis_visualization_simplification_uses_analysis_default(self):

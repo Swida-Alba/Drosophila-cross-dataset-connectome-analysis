@@ -1,9 +1,11 @@
 """Morphology Tab - Morphological similarity search and comparison.
 
-Two sub-tabs share this page:
+Two sub-tabs share this page (mirroring the Connectivity tab's structure):
 - Find Similar: query-vs-all morphological similarity search (intra-dataset).
-- Comparison: N×N morphology comparison of already-identified neurons
-  (intra-dataset only; vector_v2 or NBLAST scoring).
+- Comparison: N×N comparison of queried neurons. One selected dataset runs
+  the intra-dataset comparison (vector_v2 or NBLAST scoring); two or more
+  datasets run the cross-dataset comparison (FAFB / male-cns / BANC,
+  vector_v2 only, transform-based with null baselines).
 """
 
 from nicegui import ui
@@ -18,15 +20,44 @@ from ..config import (
     get_user_default,
 )
 from ..components.common import (
-    dataset_selector, neuron_list_input, number_input, select_input,
-    checkbox_input, dir_input, section_header, param_grid, tool_page,
-    apply_filter_mode,
+    dataset_selector, dataset_multi_selector, neuron_list_input,
+    number_input, select_input, checkbox_input, dir_input, section_header,
+    param_grid, tool_page, apply_filter_mode,
 )
 from ..components.output_panel import OutputPanel
 from ..components.skeleton_visualization_settings import skeleton_visualization_settings
 from ..runner import ScriptRunner
-from ..type_suggestions import dataset_suggestions
+from ..type_suggestions import dataset_suggestions, datasets_suggestions
 from ..dataset_service import is_banc_dataset
+
+
+def _cross_allowed_datasets():
+    """Datasets eligible for cross-dataset morphology (FAFB/male-cns v1.0/BANC).
+
+    Mirrors the backend's dataset_scope families: every other dataset has
+    no bridging transform within the 2-hop accuracy guard, and male-cns
+    v0.9 / optic-lobe lack vector_v2 population artifacts — all refused
+    with an explicit banner.
+    """
+    try:
+        from .dataset_service import get_all_datasets
+        names = get_all_datasets()
+    except Exception:
+        return []
+    allowed = []
+    for name in names:
+        low = str(name).lower()
+        if "male-cns" in low or "malecns" in low:
+            if "v0.9" in low or "optic" in low:
+                continue
+            allowed.append(name)
+            continue
+        if "banc" in low:
+            allowed.append(name)
+            continue
+        if "fafb" in low or ("flywire" in low and "banc" not in low):
+            allowed.append(name)
+    return allowed
 
 # Option lists live centrally in ui/config; labels for the method select
 # stay local because the backend only knows the raw keys.
@@ -51,15 +82,18 @@ def create_morphology_tab():
         "Comparison Output", state_key="morphology_comparison"
     )
     dataset = None
-    comparison_dataset = None
+    comparison_datasets = None
 
     def _morph_suggest(text):
         dataset_name = dataset.value if dataset is not None else ""
         return dataset_suggestions(text, dataset_name, limit=None)
 
     def _comparison_suggest(text):
-        dataset_name = comparison_dataset.value if comparison_dataset is not None else ""
-        return dataset_suggestions(text, dataset_name, limit=None)
+        selected = (list(comparison_datasets.value or [])
+                    if comparison_datasets is not None else [])
+        if len(selected) == 1:
+            return dataset_suggestions(text, selected[0], limit=None)
+        return datasets_suggestions(text, selected, limit=None)
 
     form_col, results_col = tool_page(
         "Morphology",
@@ -69,7 +103,10 @@ def create_morphology_tab():
     )
 
     with form_col:
-        # Sub-tab switch: Find Similar vs Comparison
+        # Sub-tab switch: Find Similar vs Comparison (the Comparison
+        # sub-tab covers intra- AND cross-dataset comparison, dispatched
+        # by the number of selected datasets — same pattern as the
+        # Connectivity tab's Comparison sub-tab).
         mode_value = {"value": "Find Similar"}
         with ui.row().classes(
             "w-full items-center justify-between gap-8 px-2"
@@ -201,32 +238,6 @@ def create_morphology_tab():
                         dataset_watchers=[dataset],
                     )
 
-            with ui.card().classes("w-full drocat-card"):
-                section_header("Skeleton Vector Cache", "memory")
-                coverage_label = ui.label("Coverage: checking...").classes(
-                    "text-caption drocat-muted"
-                )
-                with ui.row().classes("items-center gap-2"):
-                    build_button = ui.button(
-                        "Build Vector Cache", icon="auto_awesome"
-                    ).props("color=secondary outline").on_click(
-                        lambda: build_cache()
-                    )
-                    ui.label(
-                        "One-time build from cached skeletons (auto-triggered on "
-                        "first query); incremental afterwards."
-                    ).classes("text-caption drocat-muted")
-
-                ui.label(
-                    "Raw skeletons fetched by Find Similar, visualization, and "
-                    "dataset pulls are always stored as reusable .swc.zst files "
-                    "under cache/<dataset>/skeletons/raw_skeletons/ (legacy "
-                    ".swc.gz remains readable). Use "
-                    "Settings → Dataset Cache → Download All Skeletons "
-                    "to prefetch "
-                    "the shared population."
-                ).classes("text-caption drocat-muted")
-
             def refresh_roi_options():
                 # ROI data availability differs per dataset (male-cns has 114
                 # ROIs; hemibrain's connection cache has none).
@@ -252,116 +263,30 @@ def create_morphology_tab():
                 except Exception:
                     roi_filter.set_visibility(False)
 
-            def refresh_coverage():
-                # Lightweight: no navis/statvis import at page build (they are
-                # heavy and would slow the first page response). The vector
-                # cache is a plain parquet file, countable with polars.
-                try:
-                    from pathlib import Path
-                    dataset_folder = (Path(PROJECT_ROOT) / "cache"
-                                      / dataset.value.replace(":", "_").replace(".", "_"))
-                    vector_folder = dataset_folder / "find_similar"
-                    # recursive: raw-cache downloads may be grouped in nested
-                    # folders by a dataset-specific source.
-                    raw_dir = dataset_folder / "skeletons" / "raw_skeletons"
-                    raw_files = (list(raw_dir.rglob("*.pkl"))
-                                 + list(raw_dir.rglob("*.swc.gz"))
-                                 + list(raw_dir.rglob("*.swc.zst")))
-                    legacy_raw_dir = vector_folder / "raw_skeletons"
-                    raw_files += (list(legacy_raw_dir.rglob("*.pkl"))
-                                  + list(legacy_raw_dir.rglob("*.swc.gz"))
-                                  + list(legacy_raw_dir.rglob("*.swc.zst")))
-                    n_skel = len({
-                        p.name.removesuffix(".swc.zst").removesuffix(".swc.gz")
-                        .removesuffix(".pkl")
-                        for p in raw_files
-                    })
-                    # FAFB v783: the healed zip is the real skeleton source
-                    # (served directly; a legacy .zst is opened read-only
-                    # when no zip exists; the pickle cache holds meshes).
-                    dataset_folder_name = dataset.value.replace(":", "_").replace(".", "_")
-                    dataset_dir = Path(PROJECT_ROOT) / "datasets" / dataset_folder_name
-                    bundle_path = dataset_dir / "sk_lod1_783_healed.zst"
-                    zip_path = dataset_dir / "sk_lod1_783_healed.zip"
-                    if bundle_path.exists() or zip_path.exists():
-                        try:
-                            import sys as _sys
-                            if str(SRC_DIR) not in _sys.path:
-                                _sys.path.insert(0, str(SRC_DIR))
-                            from fafb_bundle import FAFBSkeletonBundle
-                            reader = FAFBSkeletonBundle(
-                                bundle_path if bundle_path.exists() else None,
-                                zip_path=zip_path if zip_path.exists() else None,
-                                lazy_convert=False)
-                            try:
-                                n_skel = reader.count()
-                            finally:
-                                reader.close()
-                        except Exception:
-                            pass
-                    n_vec = 0
-                    vec_file = (vector_folder / "morphology"
-                                / "skeleton__vectors_v2.parquet")
-                    if vec_file.exists():
-                        import polars as pl
-                        n_vec = pl.read_parquet(vec_file).height
-                    coverage_label.text = (
-                        f"Dataset skeletons: {n_skel}  ·  vectorized: {n_vec}"
-                    )
-                except Exception:
-                    coverage_label.text = "Coverage unavailable."
-
-            async def build_cache():
-                if is_banc_dataset(dataset.value):
-                    morph_dataset_warning.set_visibility(True)
-                    ui.notify(
-                        "BANC morphological similarity is unavailable; select a non-BANC dataset.",
-                        type="warning",
-                    )
-                    return
-                build_button.disable()
-                ui.notify(
-                    "Building skeleton vector cache (this can take a few minutes)...",
-                    type="info",
-                )
-                try:
-                    import asyncio
-                    import sys
-                    sys.path.insert(0, str(SRC_DIR))
-                    from morphology import find_similar_dataset_cache_v2
-
-                    def _run():
-                        cache = find_similar_dataset_cache_v2(
-                            dataset.value, n_workers=8, verbose=False
-                        )
-                        return cache.build(fetch_missing=0)
-
-                    stats = await asyncio.to_thread(_run)
-                    ui.notify(
-                        f"Vector cache ready: {stats['rows']} rows "
-                        f"({stats['new']} new)"
-                    )
-                    refresh_coverage()
-                except Exception as ex:
-                    ui.notify(f"Cache build failed: {ex}", type="negative")
-                finally:
-                    build_button.enable()
-
         # ================= Comparison panel (profile comparison) =================
         with ui.column().classes("w-full gap-1") as comparison_panel:
-            with ui.row().classes("w-full items-center justify-end px-2"):
+            with ui.row().classes("w-full items-center justify-end gap-4 px-2"):
                 ui.link(
                     "Instructions",
                     "docs/ui_guides/morphology_comparison.html",
                 ).classes("drocat-doc-link")
+                ui.link(
+                    "Cross-Dataset Instructions",
+                    "docs/ui_guides/cross_dataset_morphology.html",
+                ).classes("drocat-doc-link")
             with ui.card().classes("w-full drocat-card").props(
                 'id="card-morphology-comparison-dataset"'
             ):
-                section_header("Dataset", "storage")
-                comparison_dataset = dataset_selector(
-                    disable_banc=True,
-                    hint="Dataset whose neurons are compared. Morphological "
-                         "comparison is intra-dataset only.",
+                section_header("Datasets", "storage")
+                comparison_datasets = dataset_multi_selector(
+                    label="Datasets to compare",
+                    default=["male-cns:v1.0"],
+                    hint="One dataset runs the intra-dataset N×N comparison "
+                         "(vector_v2 or NBLAST). Two or more run the "
+                         "cross-dataset comparison of the queried neurons "
+                         "(FAFB / male-cns / BANC only — vector_v2 in each "
+                         "target's render space, with null baselines; other "
+                         "datasets raise a banner error).",
                 )
                 comparison_output_dir = dir_input(scope="morphology_comparison")
                 comparison_banc_warning = ui.label(
@@ -369,6 +294,15 @@ def create_morphology_tab():
                     "L2/full skeletons still need vector-quality validation. "
                     "3D skeleton visualization for BANC is available."
                 ).classes("text-caption text-amber-8").set_visibility(False)
+                cross_banc_warning = ui.label(
+                    "⚠️ BANC morphology is experimental: public skeleton "
+                    "products mix L2/full/µm sources, so cross-dataset "
+                    "scores involving BANC are less reliable. Population "
+                    "artifacts are bootstrapped from cached skeletons on "
+                    "first use."
+                ).classes("text-caption text-amber-8").set_visibility(False)
+                cross_rejected_warning = ui.label("").classes(
+                    "text-caption text-red-8").set_visibility(False)
 
             with ui.card().classes("w-full drocat-card").props(
                 'id="card-morphology-comparison-neurons"'
@@ -377,63 +311,143 @@ def create_morphology_tab():
                 comparison_query_input = neuron_list_input(
                     label="Neurons to Compare",
                     placeholder="Type or upload CSV/TSV/Excel (e.g., aMe12, aMe10, aMe9)",
-                    hint="Enter 2+ neuron types, bodyIds, or patterns "
+                    hint="Enter neuron types, bodyIds, or patterns "
                          "(e.g. aMe.*). Each type is one matrix row; its "
-                         "members supply the pairwise scores.",
+                         "members supply the pairwise scores. With two or "
+                         "more datasets, types are resolved per dataset "
+                         "(same-name/pattern, or via Auto Type Mapping) "
+                         "and missing types show up as explicit empty "
+                         "rows.",
                     suggestions=_comparison_suggest,
-                    available_neurons=lambda: comparison_dataset.value
-                    if comparison_dataset is not None else "",
+                    available_neurons=lambda: list(
+                        comparison_datasets.value or [])
+                    if comparison_datasets is not None else [],
                 ).classes("drocat-fixed-neuron-input")
 
             with ui.card().classes("w-full drocat-card"):
                 section_header("Comparison Parameters", "tune")
                 with param_grid(2):
-                    comparison_method = select_input(
-                        "Method", MORPH_METHODS, "vector_v2",
-                        hint="'Vector (spatial)' (default): the Find Similar "
-                             "vector_v2 score on whitened vectors — fast, "
-                             "whole-population whitening comes from the "
-                             "dataset cache. 'NBLAST': canonical normalized "
-                             "NBLAST on raw-skeleton dotprops; capped at 30 "
-                             "total neurons.",
-                    )
                     comparison_max_members = number_input(
                         "Max Members per Type", 25, 1, 200,
-                        hint="Members sampled per type for the pairwise "
-                             "scores (large types are truncated; the member "
-                             "list is written to members.csv).",
+                        hint="Members sampled per type (and dataset) for "
+                             "the pairwise scores (large types are "
+                             "truncated; the member list is written to "
+                             "members.csv).",
                     )
+                # --- intra-dataset-only parameters (exactly one dataset) ---
+                with ui.column().classes("w-full gap-1") as intra_params_box:
+                    with param_grid(2):
+                        comparison_method = select_input(
+                            "Method", MORPH_METHODS, "vector_v2",
+                            hint="'Vector (spatial)' (default): the Find "
+                                 "Similar vector_v2 score on whitened "
+                                 "vectors — fast, whole-population "
+                                 "whitening comes from the dataset cache. "
+                                 "'NBLAST': canonical normalized NBLAST on "
+                                 "raw-skeleton dotprops; capped at 30 "
+                                 "total neurons.",
+                        )
+                    with ui.row().classes("w-full items-center gap-4"):
+                        comparison_visualize = checkbox_input(
+                            "3D Skeleton Visualization", False,
+                            hint="Render the compared neurons as one "
+                                 "skeleton layer per compared type (line "
+                                 "rendering by default; written to "
+                                 "plot-3d_<dataset> inside the run folder "
+                                 "and linked from report.html).",
+                        )
+                    comparison_visualization_settings = (
+                        skeleton_visualization_settings(
+                            include_ranking=False,
+                            show_high_quality_warning=True,
+                            dataset_provider=lambda: (
+                                list(comparison_datasets.value or [None])[0]),
+                            dataset_watchers=[comparison_datasets],
+                        ))
+                # --- cross-dataset-only parameters (two or more datasets) ---
+                with ui.column().classes("w-full gap-1") as cross_params_box:
+                    with param_grid(3):
+                        cross_null_k = number_input(
+                            "Null Sample Size", 200, 10, 1000,
+                            hint="Seeded random target neurons per dataset "
+                                 "pair defining the null baseline (p95). "
+                                 "The sample is shared across queries and "
+                                 "runs.",
+                        )
+                        cross_scene_members = number_input(
+                            "Scene Members per Type", 3, 1, 10,
+                            hint="Members rendered per type and dataset in "
+                                 "the 3D overlay scenes.",
+                        )
+                    cross_reference = select_input(
+                        "Reference Template (scenes)",
+                        ["(first selected)"], "(first selected)",
+                        hint="Template the 3D overlay scenes render in. "
+                             "Scores always live in each target's render "
+                             "space regardless of this choice (frame "
+                             "disclosure in the report).",
+                    )
+                    cross_auto_mapping = checkbox_input(
+                        "Auto Type Mapping", True,
+                        hint="Resolve query type names across datasets via "
+                             "the shared validity-aware mapper: curated "
+                             "renames (e.g. APDN3 → SLP249) and valid "
+                             "splits resolve, conflicts fail closed, "
+                             "unmapped names fall back to the raw name. "
+                             "Turn off for strict same-name/pattern "
+                             "matching.",
+                    )
+                    with ui.row().classes("w-full items-center gap-4"):
+                        cross_visualize = checkbox_input(
+                            "3D Overlay Scenes", True,
+                            hint="Render one overlay scene per run: every "
+                                 "dataset's members bridged into the "
+                                 "reference template (line rendering, "
+                                 "layer legend).",
+                        )
+                        cross_fetch = checkbox_input(
+                            "Fetch Missing Skeletons Online", True,
+                            hint="Pull skeletons missing from the local "
+                                 "cache through the dataset APIs and "
+                                 "persist them. Turn off for a strictly "
+                                 "offline comparison.",
+                        )
+                cross_params_box.set_visibility(False)
 
-            # --- Advanced Settings (kept at the bottom, in its own card) ---
-            with ui.card().classes("w-full drocat-card").props(
+            # --- Advanced Settings (kept at the bottom, in its own card;
+            #     intra-dataset only — hidden in cross-dataset mode) ---
+            advanced_card = ui.card().classes("w-full drocat-card").props(
                 'id="card-morphology-advanced"'
-            ):
+            )
+            with advanced_card:
                 with ui.expansion(
                     "Advanced Settings", icon="settings_suggest",
                 ).classes("w-full drocat-section-expansion"):
-                    comparison_fetch = checkbox_input(
-                        "Fetch Missing Skeletons Online", True,
-                        hint="Pull skeletons for neurons missing from the "
-                             "vector cache through the API (NeuPrint raw "
-                             "SWC; FAFB healed bundle → CAVE fallback) and "
-                             "persist them into the shared cache. Turn off "
-                             "for a strictly offline comparison.",
-                    )
-                    comparison_max_total = number_input(
-                        "Max Total Neurons", 200, 2, 2000,
-                        hint="Safety cap on the vectorized population "
-                             "(NBLAST is always limited to 30 total).",
-                    )
-                    with ui.row().classes("gap-4"):
-                        comparison_heatmaps = checkbox_input(
-                            "Generate Heatmaps", True,
-                            hint="Create interactive (VisPath) heatmaps for "
-                                 "both levels.",
+                        comparison_fetch = checkbox_input(
+                            "Fetch Missing Skeletons Online", True,
+                            hint="Pull skeletons for neurons missing from "
+                                 "the vector cache through the API "
+                                 "(NeuPrint raw SWC; FAFB healed bundle → "
+                                 "CAVE fallback) and persist them into the "
+                                 "shared cache. Turn off for a strictly "
+                                 "offline comparison.",
                         )
-                        comparison_show_figures = checkbox_input(
-                            "Show Figures", False,
-                            hint="Open generated heatmaps in the browser.",
+                        comparison_max_total = number_input(
+                            "Max Total Neurons", 200, 2, 2000,
+                            hint="Safety cap on the vectorized population "
+                                 "(NBLAST is always limited to 30 total).",
                         )
+                        with ui.row().classes("gap-4"):
+                            comparison_heatmaps = checkbox_input(
+                                "Generate Heatmaps", True,
+                                hint="Create interactive (VisPath) "
+                                     "heatmaps for both levels.",
+                            )
+                            comparison_show_figures = checkbox_input(
+                                "Show Figures", False,
+                                hint="Open generated heatmaps in the "
+                                     "browser.",
+                            )
 
         def sync_mode():
             is_find = mode_value["value"] == "Find Similar"
@@ -457,8 +471,34 @@ def create_morphology_tab():
             morph_best_dataset_warning.set_visibility(
                 str(dataset.value or "").strip().lower() != "male-cns:v1.0"
             )
-            refresh_coverage()
             refresh_roi_options()
+
+        def _on_comparison_datasets_change(_e=None):
+            selected = list(comparison_datasets.value or [])
+            intra = len(selected) <= 1
+            intra_params_box.set_visibility(intra)
+            advanced_card.set_visibility(intra)
+            cross_params_box.set_visibility(not intra)
+            options = ["(first selected)"] + selected
+            cross_reference.options = options
+            if cross_reference.value not in options:
+                cross_reference.value = options[0]
+            has_banc = any(is_banc_dataset(d) for d in selected)
+            comparison_banc_warning.set_visibility(intra and has_banc)
+            cross_banc_warning.set_visibility((not intra) and has_banc)
+            rejected = ([] if intra else
+                        [d for d in selected
+                         if d not in _cross_allowed_datasets()])
+            if rejected:
+                cross_rejected_warning.set_text(
+                    "⛔ Not supported for cross-dataset morphology "
+                    "(no ≤2-hop bridging transform / no population "
+                    "artifacts): " + ", ".join(str(d) for d in rejected))
+                cross_rejected_warning.set_visibility(True)
+            else:
+                cross_rejected_warning.set_visibility(False)
+
+        comparison_datasets.on_value_change(_on_comparison_datasets_change)
 
         find_mode_button.on_click(lambda _event: set_mode("Find Similar"))
         comparison_mode_button.on_click(lambda _event: set_mode("Comparison"))
@@ -591,42 +631,99 @@ def create_morphology_tab():
     output_panel.cancel_button.on_click(similar_runner.cancel)
 
     async def run_comparison():
-        if is_banc_dataset(comparison_dataset.value):
-            comparison_banc_warning.set_visibility(True)
-            ui.notify(
-                "BANC morphological comparison is unavailable; select a non-BANC dataset.",
-                type="warning",
-            )
+        selected = list(comparison_datasets.value or [])
+        if not selected:
+            ui.notify("Please select at least one dataset", type="warning")
             return
         mode, neurons = comparison_query_input.get_value()
         query = apply_filter_mode(neurons, mode)
-        if len(query) < 2:
+        if len(query) < 2 and len(selected) == 1:
             ui.notify(
                 "Please enter at least two neurons to compare",
+                type="warning",
+            )
+            return
+        if not query:
+            ui.notify("Please enter at least one query neuron",
+                      type="warning")
+            return
+
+        cross = len(selected) > 1
+        if cross:
+            rejected = [d for d in selected
+                        if d not in _cross_allowed_datasets()]
+            if rejected:
+                cross_rejected_warning.set_text(
+                    "⛔ Not supported for cross-dataset morphology "
+                    "(no ≤2-hop bridging transform / no population "
+                    "artifacts): " + ", ".join(str(d) for d in rejected))
+                cross_rejected_warning.set_visibility(True)
+                ui.notify(
+                    "Cross-dataset comparison refused: "
+                    + ", ".join(str(d) for d in rejected),
+                    type="warning",
+                )
+                return
+        elif is_banc_dataset(selected[0]):
+            comparison_banc_warning.set_visibility(True)
+            ui.notify(
+                "BANC morphological comparison is unavailable; select a "
+                "non-BANC dataset.",
                 type="warning",
             )
             return
 
         comparison_output.clear()
         comparison_output.set_running(True)
-        constructor_params = {
-            "dataset": comparison_dataset.value,
-            "query": query,
-            "method": comparison_method.value,
-            "max_members_per_type": int(comparison_max_members.value),
-            "max_total_neurons": int(comparison_max_total.value),
-            "fetch_online": comparison_fetch.value,
-            "output_dir": comparison_output_dir.value,
-            "saveas": "",
-            "generate_heatmaps": comparison_heatmaps.value,
-            "show_figures": comparison_show_figures.value,
-            "verbose": True,
-            "n_workers": 8,
-            "use_cache": get_user_default("use_cache"),
-        }
         try:
+            if cross:
+                reference = cross_reference.value
+                if str(reference).startswith("("):
+                    reference = None
+                constructor_params = {
+                    "datasets": selected,
+                    "query": query,
+                    "output_dir": comparison_output_dir.value,
+                    "max_members_per_type": int(comparison_max_members.value),
+                    "null_k": int(cross_null_k.value),
+                    "reference_template": reference,
+                    "scene_members_per_type": int(cross_scene_members.value),
+                    "visualize": bool(cross_visualize.value),
+                    "fetch_online": bool(cross_fetch.value),
+                    "use_auto_type_mapping": bool(cross_auto_mapping.value),
+                    "use_cache": True,
+                    "verbose": True,
+                }
+                tool = "morph_cross_dataset"
+            else:
+                visualization_values = (
+                    comparison_visualization_settings.values())
+                viz_on = bool(comparison_visualize.value)
+                if viz_on:
+                    comparison_visualization_settings \
+                        .warn_empty_custom_palettes()
+                constructor_params = {
+                    "dataset": selected[0],
+                    "query": query,
+                    "method": comparison_method.value,
+                    "max_members_per_type": int(comparison_max_members.value),
+                    "max_total_neurons": int(comparison_max_total.value),
+                    "fetch_online": bool(comparison_fetch.value),
+                    "output_dir": comparison_output_dir.value,
+                    "saveas": "",
+                    "generate_heatmaps": bool(comparison_heatmaps.value),
+                    "show_figures": bool(comparison_show_figures.value),
+                    "verbose": True,
+                    "n_workers": 8,
+                    "use_cache": get_user_default("use_cache"),
+                    "visualize": viz_on,
+                    "visualization_settings": (
+                        visualization_values if viz_on else {}),
+                }
+                tool = "morphology_comparison"
+
             result = await comparison_output.run(
-                comparison_runner, "morphology_comparison", constructor_params,
+                comparison_runner, tool, constructor_params,
                 "run", output_dir=comparison_output_dir.value,
             )
             succeeded = result.get("returncode") == 0
@@ -641,14 +738,14 @@ def create_morphology_tab():
                 from ..history_store import record as _record_history
                 _record_history(
                     [str(v) for v in query],
-                    datasets=[comparison_dataset.value]
-                    if comparison_dataset.value else [],
+                    datasets=selected,
                 )
             files = result.get("files", [])
             if files:
                 comparison_output.show_files(
                     list(files),
-                    result.get("output_folder") or comparison_output_dir.value,
+                    result.get("output_folder")
+                    or comparison_output_dir.value,
                 )
         finally:
             comparison_output.set_running(False)
@@ -656,12 +753,6 @@ def create_morphology_tab():
     comparison_output.run_button.on_click(run_comparison)
     comparison_output.cancel_button.on_click(comparison_runner.cancel)
 
-    def _on_comparison_dataset_change(_e=None):
-        comparison_banc_warning.set_visibility(
-            is_banc_dataset(comparison_dataset.value))
-
-    comparison_dataset.on_value_change(_on_comparison_dataset_change)
-
     sync_mode()
     on_dataset_change()
-    _on_comparison_dataset_change()
+    _on_comparison_datasets_change()

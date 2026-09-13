@@ -4,8 +4,10 @@ Module `src/morphology_comparison.py`. One class:
 
 - `MorphologyProfileComparer` — N×N morphology comparison of 2+ queried
   neurons within ONE dataset (drives the Morphology tab → Comparison
-  sub-tab). Builds on `morphology.MorphologyComparer` / `SkeletonVectorCacheV2`
-  without modifying them.
+  sub-tab with exactly one selected dataset; two or more datasets dispatch
+  to `morph_cross_dataset.CrossDatasetMorphComparer` instead). Builds on
+  `morphology.MorphologyComparer` / `SkeletonVectorCacheV2` without
+  modifying them.
 
 ## MorphologyProfileComparer
 
@@ -30,7 +32,18 @@ results = comparer.run()   # {"output_folder", "types_compared",
                            #  "neurons_compared", "files"}
 ```
 
+## Unified skeleton acquisition
+
+Both comparison modes share one skeleton contract: local raw cache first,
+online fetch (persisting into the shared cache) when ``fetch_online`` is
+on, explicit skip notes when offline and uncached. With
+``fetch_online=False`` and ``visualize=True``, the 3D scene renders only
+members whose raw skeletons are locally cached — it never triggers the
+declined online fetch (which would otherwise abort the whole scene for
+NeuPrint datasets missing a token).
+
 ## Semantics
+
 
 - **Resolution**: exact type names win over pattern interpretation; numeric
   tokens are bodyIds resolved through `_load_neuron_type_map`; patterns

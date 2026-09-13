@@ -38,10 +38,10 @@ import heapq
 import json
 import re
 try:
-    from ..utils.naming_utils import dataset_abbrev
+    from ..utils.naming_utils import dataset_abbrev, make_unique_dataset_labels
 except ImportError:
     try:
-        from utils.naming_utils import dataset_abbrev
+        from utils.naming_utils import dataset_abbrev, make_unique_dataset_labels
     except ImportError:
         # Last-resort fallback with the same mapping as utils.naming_utils,
         # so run-folder names stay meaningful even if that module is missing.
@@ -61,6 +61,9 @@ except ImportError:
                     return abbrev
             letters = "".join(c for c in ds.split(":")[0] if c.isalpha())
             return (letters[:4] or "DS").upper()
+
+        def make_unique_dataset_labels(datasets, labels=None):
+            return [dataset_abbrev(d) for d in (datasets or [])]
 
 import numpy as np
 import pandas as pd
@@ -97,6 +100,14 @@ except ImportError:
         is_fafb_dataset,
         is_local_connectome_dataset,
     )
+
+try:
+    from ..utils.label_utils import build_body_id_label
+except ImportError:  # pragma: no cover - direct src/ execution
+    try:
+        from utils.label_utils import build_body_id_label
+    except ImportError:  # last resort: bare '{bodyId}_{type}' labels
+        build_body_id_label = None
 
 if TYPE_CHECKING:
     from .connectivity_profiler import ConnectivityStatus
@@ -4358,8 +4369,21 @@ class HomologFinder:
         for source_bid in source_profiles.keys():
             candidate_map[source_bid] = {bid: 1 for bid in target_profiles.keys() if (is_cross_dataset or bid != source_bid)}
 
-        # Build source_type_lookup
-        source_type_lookup = {bid: (profile.neuron_type if profile.neuron_type else str(query)) for bid, profile in source_profiles.items()}
+        # Build source_type_lookup. BodyId queries build profiles without a
+        # neuron_type (the profile builder never resolves it), so resolve the
+        # missing source types once here instead of exporting the raw
+        # bodyId as the source's type.
+        _missing_type_bids = [bid for bid, profile in source_profiles.items()
+                              if not profile.neuron_type]
+        _resolved_source_types: Dict[int, Optional[str]] = {}
+        if _missing_type_bids:
+            _resolved_source_types = self.profiler.get_types_for_bodyids(
+                _missing_type_bids, source_dataset) or {}
+        source_type_lookup = {
+            bid: (profile.neuron_type
+                  or _resolved_source_types.get(bid)
+                  or str(query))
+            for bid, profile in source_profiles.items()}
 
         # Get type mapper for cross-dataset comparison
         type_mapper = self._get_type_mapper_for_comparison(is_cross_dataset)
@@ -6896,6 +6920,9 @@ class HomologFinder:
         visualize_top_n: Optional[int] = None,
         similarity_metric: Optional[str] = None,
         use_fast: bool = True,
+        morph_qualify: bool = False,
+        morph_null_k: int = 200,
+        morph_bar_offset: float = 0.0,
     ) -> pd.DataFrame:
         """Run homolog discovery for several types / higher-category labels and
         aggregate all results into one combined output folder grouped by query
@@ -6918,6 +6945,19 @@ class HomologFinder:
         A single resolved query type skips the by_type/ nesting: the full
         per-type output (results/, profiles/, overlaps/, visualization/) is
         written directly into <combined_name>/.
+
+        Morph qualification (``morph_qualify=True``, cross-dataset only,
+        requires visualization): after the connectivity ranking, the
+        visualized top-N candidates are scored against the transformed
+        query with the production vector_v2 scorer (no NBLAST
+        cross-dataset) and gated by a per-query null bar — the p95 of
+        ``morph_null_k`` seeded random target neurons plus
+        ``morph_bar_offset``. Candidates below the bar are excluded from
+        the rendered scenes; the results tables keep every row and gain
+        ``morph_v2`` / ``morph_null_p95`` / ``morph_z`` /
+        ``morph_qualified`` on the scored rows, plus a
+        ``results/morph_qualification.json`` provenance summary. With the
+        option off, output is byte-identical to the classic behavior.
 
         Args: same as ``find_homologs_fast`` except ``source`` may be a list.
 
@@ -7067,6 +7107,32 @@ class HomologFinder:
             self._log("No homolog results produced for any query type")
             return pd.DataFrame()
 
+        # ---- Morph qualification (optional). Pool the would-be visualized
+        # pairs of EVERY resolved type into ONE scoring call so the target
+        # transforms, vectorizations, and the shared null sample are
+        # computed once per run (plan-morph-qualification-find-homolog.md).
+        # With the option off this block is skipped entirely — output stays
+        # byte-identical.
+        morph_state = None
+        if morph_qualify and visualize_skeleton and fetched:
+            if source_dataset == target_dataset:
+                self._log("Morph qualification needs a cross-dataset target; "
+                          "skipping.")
+            else:
+                try:
+                    morph_state = self._run_morph_qualification(
+                        fetched, source_dataset, target_dataset,
+                        visualize_top_n=visualize_top_n,
+                        null_k=morph_null_k,
+                        bar_offset=morph_bar_offset)
+                except Exception as exc:
+                    self._log(f"Morph qualification failed "
+                              f"(continuing without it): {exc}")
+            if morph_state is not None:
+                self._write_morph_qualification_summary(
+                    combined_path / 'results' / 'morph_qualification.json',
+                    morph_state, source_dataset, target_dataset)
+
         # ---- Phase 2: visualizations per resolved type, after ALL fetching.
         # The per-type save (phase 1) already wrote results/type_summary.csv,
         # so the renderer reuses it to stay identical to the inline path.
@@ -7099,9 +7165,14 @@ class HomologFinder:
                     files_saved=[],
                     type_summary=type_summary,
                     type_level_df=type_level_df,
+                    morph_qualification=morph_state,
                 )
 
         combined_df = pd.concat(all_dfs, ignore_index=True)
+
+        if morph_state is not None:
+            combined_df = self._merge_morph_columns(
+                combined_df, morph_state)
 
         # Sort grouped by query_type, then the selected similarity metric.
         sort_metric = similarity_metric if similarity_metric in combined_df.columns else 'jaccard'
@@ -7122,6 +7193,10 @@ class HomologFinder:
                 "Single query type: results written directly to the run "
                 "folder (no by_type/ nesting)"
             )
+            if morph_state is not None:
+                self._rewrite_bodyid_csv_with_morph(
+                    combined_path / 'results' / 'bodyid_results.csv',
+                    morph_state)
         else:
             self._save_multi_results(
                 combined_df=combined_df,
@@ -7136,6 +7211,137 @@ class HomologFinder:
             )
 
         return combined_df
+
+    def _import_morph_cross_dataset(self):
+        try:
+            from comparison import morph_cross_dataset
+        except ImportError:
+            import morph_cross_dataset
+        return morph_cross_dataset
+
+    def _run_morph_qualification(self, fetched, source_dataset,
+                                 target_dataset, visualize_top_n,
+                                 null_k, bar_offset):
+        """Pooled morph-qualification pass over the visualized top-N.
+
+        Scores exactly the pairs the visualization would render (same
+        selection logic) plus one shared seeded null sample per run;
+        returns the MorphQualification used for scene exclusion and CSV
+        annotation, or None when nothing usable was scored.
+        """
+        mcd = self._import_morph_cross_dataset()
+        pairs = []
+        for (_idx, _qtype, _real, _per_source, _path, unit_df) in fetched:
+            pairs.extend(mcd.select_visualized_pairs(unit_df,
+                                                     visualize_top_n))
+        if not pairs:
+            self._log("Morph qualification: no visualized pairs found")
+            return None
+        self._log(f"Morph qualification: scoring {len(pairs)} visualized "
+                  f"pair(s) against a shared null sample (vector_v2, no "
+                  f"NBLAST)...")
+        state = mcd.qualify_visualized_pairs(
+            source_dataset, target_dataset, pairs, null_k=null_k,
+            bar_offset=bar_offset, log=self._log)
+        for warning in state.warnings:
+            self._log(f"[morph-qualify] {warning}")
+        if not state.active:
+            return None
+        return state
+
+    def _merge_morph_columns(self, combined_df, morph_state):
+        mcd = self._import_morph_cross_dataset()
+        combined_df = mcd.merge_morph_columns(combined_df, morph_state)
+        self._log("Annotated bodyId results with morph-qualification "
+                  "columns (visualized rows only)")
+        return combined_df
+
+    def _rewrite_bodyid_csv_with_morph(self, csv_path, morph_state):
+        """Fold qualification columns into the phase-1 bodyId CSV.
+
+        Single-type runs write their results during phase 1 — before the
+        qualification pass runs — so the existing CSV is re-read and
+        extended in place, preserving row order and formatting.
+        """
+        mcd = self._import_morph_cross_dataset()
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            return
+        try:
+            df = pd.read_csv(csv_path)
+            df = mcd.merge_morph_columns(df, morph_state)
+            df.to_csv(csv_path, index=False)
+            self._log("Updated: results/bodyid_results.csv "
+                      "(morph-qualification columns, visualized rows only)")
+        except Exception as exc:
+            self._log(f"Warning: could not add morph columns to "
+                      f"{csv_path.name}: {exc}")
+
+    def _write_morph_qualification_summary(self, json_path, morph_state,
+                                           source_dataset, target_dataset):
+        """Persist the qualification provenance (bars, pairs, exclusions)."""
+        mcd = self._import_morph_cross_dataset()
+        try:
+            payload = {
+                'source_dataset': source_dataset,
+                'target_dataset': target_dataset,
+                'null_k': morph_state.null_k,
+                'bar_offset': morph_state.bar_offset,
+                'bar_definition': 'morph_v2 >= null_p95 + bar_offset',
+                'scorer': 'vector_v2 (production block-weighted whitened '
+                          'cosine; no NBLAST cross-dataset)',
+                'per_source': {
+                    str(bid): {**stats, 'bar': morph_state.bar(bid)}
+                    for bid, stats in morph_state.null_stats.items()},
+                'scored_pairs': [
+                    {'source_bodyId': src, 'target_bodyId': tgt,
+                     'morph_v2': morph_state.scores[(src, tgt)],
+                     'qualified': morph_state.is_qualified(src, tgt)}
+                    for src, tgt in sorted(morph_state.scores)],
+                'warnings': list(morph_state.warnings),
+            }
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(payload, indent=2))
+            self._log("Saved: results/morph_qualification.json")
+        except Exception as exc:
+            self._log(f"Warning: could not write morph-qualification "
+                      f"summary: {exc}")
+
+    def _attach_instance_columns(self, df: pd.DataFrame,
+                                 source_dataset: str,
+                                 target_dataset: str) -> pd.DataFrame:
+        """Add ``source_instance`` / ``target_instance`` next to the types.
+
+        Instance names follow the tree-legend export convention and resolve
+        from the row's dataset (the ``target_dataset`` column wins on
+        cross-dataset runs). Missing metadata leaves the column empty
+        instead of failing the export.
+        """
+        if df is None or df.empty:
+            return df
+        if ('source_type' in df.columns
+                and 'source_instance' not in df.columns):
+            if 'source_bodyId' in df.columns:
+                instances = df['source_bodyId'].map(
+                    lambda v: _body_id_instance_name(source_dataset, v))
+            else:
+                instances = pd.Series([''] * len(df), index=df.index)
+            df.insert(df.columns.get_loc('source_type') + 1,
+                      'source_instance', instances)
+        if ('target_type' in df.columns
+                and 'target_instance' not in df.columns):
+            if 'target_bodyId' in df.columns:
+                def _target_instance(row):
+                    ds = str(row.get('target_dataset') or ''
+                             ).strip() or str(target_dataset or ''
+                                              ).strip() or source_dataset
+                    return _body_id_instance_name(ds, row['target_bodyId'])
+                instances = df.apply(_target_instance, axis=1)
+            else:
+                instances = pd.Series([''] * len(df), index=df.index)
+            df.insert(df.columns.get_loc('target_type') + 1,
+                      'target_instance', instances)
+        return df
 
     def _save_multi_results(
         self,
@@ -7158,6 +7364,8 @@ class HomologFinder:
         for col in numeric_cols:
             if col in rounded.columns:
                 rounded[col] = rounded[col].round(4)
+        rounded = self._attach_instance_columns(
+            rounded, source_dataset, target_dataset)
 
         # 1) homolog_results.csv (legacy, sorted by the selected metric).
         sort_metric = similarity_metric if similarity_metric in rounded.columns else 'jaccard'
@@ -7174,12 +7382,14 @@ class HomologFinder:
 
         # 2) bodyid_results.csv (grouped per query_type).
         bodyid_cols = [
-            'query_type', 'source_bodyId', 'source_type', 'target_bodyId',
-            'target_type', 'rank_union',
+            'query_type', 'source_bodyId', 'source_type', 'source_instance',
+            'target_bodyId', 'target_type', 'target_instance', 'rank_union',
             'jaccard', 'cosine', 'adjacency_score', 'shared_type_count',
             'union_type_count', 'is_same_type', 'is_same_dataset',
             'source_status', 'target_status', 'weak_source', 'weak_target',
             'source_partner_count', 'target_partner_count',
+            # Morph qualification (present only when the option ran):
+            'morph_v2', 'morph_null_p95', 'morph_z', 'morph_qualified',
         ]
         available = [c for c in bodyid_cols if c in rounded.columns]
         bodyid_df = rounded[available].copy()
@@ -7564,6 +7774,10 @@ class HomologFinder:
         # 2. Save bodyId-level results (always saved, sorted by source_bodyId then rank_corr)
         # This is the foundational comparison data showing each source-target bodyId pair
         if not results_df.empty:
+            # Instance names alongside the type columns (tree-legend export
+            # convention) for every downstream bodyId-level table.
+            results_df = self._attach_instance_columns(
+                results_df, source_dataset, target_dataset)
             # Round numeric columns for better readability
             numeric_cols = ['rank_corr', 'rank_union', 'rank_union_raw', 'jaccard', 'cosine']
             results_rounded = results_df.copy()
@@ -7599,7 +7813,8 @@ class HomologFinder:
                 # Include source/target_partner_count to diagnose comparison (bodyIds for intra, types for cross)
                 # shared_type_count shows how many shared types were used for rank correlation
                 # union_type_count shows total unique types in union (for rank_union)
-                bodyid_cols = ['source_bodyId', 'source_type', 'target_bodyId', 'target_type',
+                bodyid_cols = ['source_bodyId', 'source_type', 'source_instance',
+                              'target_bodyId', 'target_type', 'target_instance',
                               'rank_union',
                               'jaccard', 'cosine',
                               'adjacency_score', 'shared_type_count', 'union_type_count',
@@ -7708,8 +7923,8 @@ class HomologFinder:
         # If bodyId-level comparison, also save source bodyId summary
         if has_bodyid_cols and not results_df.empty:
             # Create summary of source bodyIds with their status and connectivity
-            source_cols = ['source_bodyId', 'source_type', 'source_status',
-                           'source_partner_count']
+            source_cols = ['source_bodyId', 'source_type', 'source_instance',
+                           'source_status', 'source_partner_count']
             available_source_cols = [c for c in source_cols if c in results_df.columns]
             source_summary = results_df[available_source_cols].drop_duplicates()
             source_summary = source_summary.sort_values('source_bodyId')
@@ -7725,8 +7940,9 @@ class HomologFinder:
             
             # For bodyId-level comparisons, save target bodyId summary for top matches
             if has_bodyid_cols:
-                target_cols = ['target_bodyId', 'target_type', 'target_status', 
-                              'target_partner_count', 'rank_union', 'jaccard']
+                target_cols = ['target_bodyId', 'target_type', 'target_instance',
+                              'target_status', 'target_partner_count',
+                              'rank_union', 'jaccard']
                 available_target_cols = [c for c in target_cols if c in top_matches.columns]
                 target_summary = top_matches[available_target_cols].drop_duplicates(subset=['target_bodyId'])
                 if 'jaccard' in target_summary.columns:
@@ -8014,6 +8230,7 @@ class HomologFinder:
         type_summary: Optional[pd.DataFrame] = None,
         type_level_df: Optional[pd.DataFrame] = None,
         individual_profiles: bool = False,
+        morph_qualification=None,
     ) -> List[str]:
         """
         Generate 3D skeleton visualizations for top homolog candidates.
@@ -8188,6 +8405,35 @@ class HomologFinder:
                     top_matches = candidate_results.head(top_n)
             else:
                 top_matches = candidate_results
+
+            # Morph qualification (optional): exclude pairs below the null
+            # bar from the RENDERED set only — the results tables keep
+            # every row (plan-morph-qualification-find-homolog.md).
+            morph_failed_types: set = set()
+            if morph_qualification is not None:
+                mcd = self._import_morph_cross_dataset()
+                top_matches, morph_excluded = (
+                    mcd.filter_qualified_top_matches(
+                        top_matches, morph_qualification))
+                if len(morph_excluded):
+                    morph_failed_types = {
+                        str(v) for v in
+                        morph_excluded[target_col].dropna().tolist()
+                        if str(v)} if target_col in morph_excluded.columns \
+                        else set()
+                    preview = ", ".join(
+                        f"{int(r['source_bodyId'])}->{int(r['target_bodyId'])}"
+                        for _i, r in morph_excluded.iterrows()
+                        if pd.notna(r.get('source_bodyId'))
+                        and pd.notna(r.get('target_bodyId')))
+                    more = (" …" if len(morph_excluded) > 10 else "")
+                    self._log(
+                        f"  Morph qualification: {len(morph_excluded)} "
+                        "visualized candidate(s) below the null bar, "
+                        f"excluded from the scene: {preview}{more}")
+                    self._log(
+                        "  (Rows stay in results/bodyid_results.csv with "
+                        "morph_qualified = False.)")
             
             # =====================================================================
             # 1. BodyId-level visualizations: Batch all bodyIds as separate layers
@@ -8363,6 +8609,21 @@ class HomologFinder:
                 unique_types.append(target_type)
                 if top_n and top_n > 0 and len(unique_types) >= top_n:
                     break
+
+            # Morph qualification (optional): a type whose every SCORED
+            # member failed the bar has no qualified representation —
+            # exclude it from the type-level scene. Types that were never
+            # part of the visualized set (no qualification data) render.
+            if morph_failed_types and unique_types:
+                dropped_types = [t for t in unique_types
+                                 if str(t) in morph_failed_types]
+                if dropped_types:
+                    unique_types = [t for t in unique_types
+                                    if str(t) not in morph_failed_types]
+                    self._log(
+                        f"  Morph qualification: {len(dropped_types)} "
+                        "type(s) without a qualified member excluded from "
+                        "the type-level scene.")
 
             type_layers = []
             type_layer_names = []
@@ -9589,6 +9850,121 @@ class HomologFinder:
 # Connectivity Profile Comparer Class
 # ============================================================================
 
+# ============================================================================
+# BodyId display labels (instance / type+hemisphere)
+# ============================================================================
+#
+# BodyId-level exports label every row as '{bodyId}_{instance}' (NeuPrint-style
+# datasets) or '{bodyId}_{type}_{L|R}' (FAFB/BANC), mirroring the
+# visualization tree legend (``VisualizeSkeleton._tree_neuron_label``). The
+# identity maps come from the dataset neuron table, then the neuron index —
+# the same source priority as type mapping. Missing metadata degrades to the
+# resolved comparison type label, then the bare bodyId (the pre-existing
+# behavior), so label generation can never fail a run.
+
+_BODY_ID_LABEL_MAPS_CACHE: Dict[str, Tuple[dict, dict, dict]] = {}
+
+
+def _load_body_id_label_maps(dataset: str) -> Tuple[dict, dict, dict]:
+    """(bodyId -> type, bodyId -> instance, bodyId -> side) for one dataset."""
+    key = str(dataset or "")
+    cached = _BODY_ID_LABEL_MAPS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    from pathlib import Path as _Path
+    safe_name = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
+    project_root = _Path(__file__).parent.parent.parent
+    candidates = [
+        project_root / 'datasets' / safe_name
+        / f'{safe_name}_allneurons_neuron_df.parquet',
+        project_root / 'datasets' / safe_name
+        / f'{safe_name}_allneurons_neuron_df.csv',
+        project_root / 'neuron_indexes' / safe_name / 'neuron_index.parquet',
+    ]
+    wanted = ('bodyId', 'type', 'instance', 'somaSide', 'hemisphere')
+    type_map: dict = {}
+    instance_map: dict = {}
+    side_map: dict = {}
+    for path in candidates:
+        if type_map and instance_map and side_map:
+            break
+        if not path.exists():
+            continue
+        try:
+            if path.suffix.lower() == '.parquet':
+                try:
+                    import pyarrow.parquet as _pq
+                    available = set(_pq.read_schema(path).names)
+                    columns = [c for c in wanted if c in available]
+                except Exception:
+                    columns = None
+                df = pd.read_parquet(path, columns=columns)
+            else:
+                df = pd.read_csv(path, low_memory=False)
+        except Exception:
+            continue
+        if 'bodyId' not in df.columns:
+            continue
+        ids = df['bodyId']
+        if 'type' in df.columns and not type_map:
+            type_map = dict(zip(ids, df['type'].fillna('').astype(str)))
+        if 'instance' in df.columns and not instance_map:
+            instance_map = dict(zip(ids, df['instance'].fillna('').astype(str)))
+        side_col = next(
+            (c for c in ('somaSide', 'hemisphere') if c in df.columns), None)
+        if side_col and not side_map:
+            side_map = dict(zip(ids, df[side_col].fillna('').astype(str)))
+
+    maps = (type_map, instance_map, side_map)
+    _BODY_ID_LABEL_MAPS_CACHE[key] = maps
+    return maps
+
+
+def _body_id_display_label(dataset: str, bid, fallback_type: str = None) -> str:
+    """Tree-legend display label for one bodyId (never fails)."""
+    bid_text = str(bid).strip()
+    if build_body_id_label is None:
+        label = (f"{bid_text}_{fallback_type}" if fallback_type else bid_text)
+        return label
+    type_map, instance_map, side_map = _load_body_id_label_maps(dataset)
+    try:
+        return build_body_id_label(
+            dataset, bid, type_map, instance_map, side_map,
+            fallback_type=fallback_type)
+    except Exception:
+        return (f"{bid_text}_{fallback_type}" if fallback_type else bid_text)
+
+
+def _body_id_instance_name(dataset: str, bid) -> str:
+    """Instance name for one bodyId from the dataset maps ('' when unknown)."""
+    _, instance_map, _ = _load_body_id_label_maps(dataset)
+    for key in (bid, str(bid)):
+        if key in instance_map:
+            return str(instance_map.get(key) or "").strip()
+    text = str(bid).strip()
+    if text.isdigit():
+        try:
+            return str(instance_map.get(int(text)) or "").strip()
+        except (TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _bodyid_profile_stem(bid, type_label) -> str:
+    """Filename stem for one bodyId connectivity profile.
+
+    At bodyid aggregation the type label already reads
+    ``'{bodyId}_{instance/type}'``; avoid the doubled
+    ``'{bid}_{bid}_...'`` stem by prefixing only when needed.
+    """
+    bid_text = str(bid)
+    label = str(type_label)
+    if label.startswith(f"{bid_text}_"):
+        return label
+    return f"{bid_text}_{label}"
+
+
 class ConnectivityProfileComparer:
     """
     Compare connectivity profiles within or across datasets.
@@ -10422,10 +10798,22 @@ class ConnectivityProfileComparer:
             return f"{first}_etc"
     
     def _get_output_path(self) -> Path:
-        """Generate the full output path with timestamp."""
+        """Generate the full output path with timestamp.
+
+        Run folders use the unique 4-char dataset labels (MCNS/HEMI/...);
+        two versions of the same family gain a version suffix
+        (MCNS_v1_0_MCNS_v0_9) — the same vocabulary as the Cross-Dataset
+        Comparison tab's legends.
+        """
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        datasets = list(getattr(self, 'datasets', None) or [])
+        primary = getattr(self, 'dataset', None)
+        if primary and not datasets:
+            datasets = [primary]
+        ds_part = ('_'.join(make_unique_dataset_labels(datasets))
+                   if datasets else dataset_abbrev(primary))
         folder_name = (
-            f"profiling_{dataset_abbrev(getattr(self, 'dataset', None))}"
+            f"profiling_{ds_part}"
             f"_{self.query_name}_{timestamp}"
         )
         
@@ -10661,8 +11049,9 @@ class ConnectivityProfileComparer:
         for bid in bodyid_items:
             ntype = bodyid_to_type.get(bid)
             if effective_aggregation == 'bodyid':
-                # rows are individual neurons
-                label = f"{bid}_{ntype}" if ntype else str(bid)
+                # rows are individual neurons (tree-legend labels:
+                # '{bodyId}_{instance}' / '{bodyId}_{type}_{L|R}')
+                label = _body_id_display_label(dataset, bid, fallback_type=ntype)
                 neurons[label] = [bid]
             elif ntype:
                 if ntype not in neurons:
@@ -10690,7 +11079,8 @@ class ConnectivityProfileComparer:
                 for real_type, ids in label_groups.items():
                     if effective_aggregation == 'bodyid':
                         for bid in ids:
-                            neurons[f"{bid}_{real_type}"] = [bid]
+                            neurons[_body_id_display_label(
+                                dataset, bid, fallback_type=real_type)] = [bid]
                     else:
                         if real_type not in neurons:
                             neurons[real_type] = []
@@ -10711,7 +11101,8 @@ class ConnectivityProfileComparer:
                             continue
                         if effective_aggregation == 'bodyid':
                             for bid in tids:
-                                neurons[f"{bid}_{tname}"] = [bid]
+                                neurons[_body_id_display_label(
+                                    dataset, bid, fallback_type=tname)] = [bid]
                         else:
                             neurons[tname] = tids
                 else:
@@ -10726,7 +11117,8 @@ class ConnectivityProfileComparer:
                 if effective_aggregation == 'bodyid':
                     # every bodyId of the type is its own row
                     for bid in body_ids:
-                        neurons[f"{bid}_{item_str}"] = [bid]
+                        neurons[_body_id_display_label(
+                            dataset, bid, fallback_type=item_str)] = [bid]
                 else:
                     neurons[item_str] = body_ids
             else:
@@ -10947,7 +11339,10 @@ class ConnectivityProfileComparer:
                     licensed = self._licensed_anchor_label(ntype, ds)
                     candidate_labels = [licensed] if licensed is not None else []
                     if self.aggregation_level == 'bodyid':
-                        candidate_labels.insert(0, f"{bid}_{ntype}")
+                        # Must mirror the label the resolution step built for
+                        # this bodyId (tree-legend display label).
+                        candidate_labels.insert(0, _body_id_display_label(
+                            ds, bid, fallback_type=ntype))
                     for label in candidate_labels:
                         if label in profiles:
                             per_ds[ds] = (label, profiles[label])
@@ -11051,6 +11446,7 @@ class ConnectivityProfileComparer:
     def _aggregate_inter_dataset_matrices(
         self,
         inter_matrices: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+        anchor_profiles: Optional[Dict[str, Dict[str, Tuple[str, ConnectivityProfile]]]] = None,
     ) -> Dict[str, Dict[str, pd.DataFrame]]:
         """Combine per-anchor inter-dataset scores into comparison heatmaps.
 
@@ -11060,7 +11456,8 @@ class ConnectivityProfileComparer:
         profiling query contains many neurons.  Reports and overview
         visualizations use this companion layout instead:
 
-        * rows: queried neuron/type anchors
+        * rows: queried neuron/type anchors (bodyId anchors read
+          ``'{bodyId}_{resolved type}'``)
         * columns: dataset pairs (for example ``dataset_a vs dataset_b``)
         * values: the selected similarity metric for that anchor/pair
 
@@ -11075,6 +11472,10 @@ class ConnectivityProfileComparer:
         pair_specs = list(combinations(self.datasets, 2))
         pair_labels = [f"{dataset_a} vs {dataset_b}" for dataset_a, dataset_b in pair_specs]
         anchors = list(inter_matrices.keys())
+        anchor_row_labels = {
+            anchor: self._anchor_row_label(anchor, (anchor_profiles or {}).get(anchor))
+            for anchor in anchors
+        }
         directions = (
             ['overall', 'upstream', 'downstream']
             if self.direction == 'both'
@@ -11119,12 +11520,33 @@ class ConnectivityProfileComparer:
                         values.append(value)
                     rows.append(values)
 
-                frame = pd.DataFrame(rows, index=anchors, columns=pair_labels, dtype=float)
+                frame = pd.DataFrame(
+                    rows,
+                    index=[anchor_row_labels.get(a, a) for a in anchors],
+                    columns=pair_labels, dtype=float)
                 frame.index.name = 'neuron_type'
                 metric_frames[metric] = frame
             aggregate[direction] = metric_frames
 
         return aggregate
+
+    @staticmethod
+    def _anchor_row_label(anchor, per_ds) -> str:
+        """Aggregate-matrix row label for one anchor.
+
+        bodyId anchors read ``'{bodyId}_{resolved type}'`` — the resolved
+        per-dataset name from the first dataset that has one (dataset order
+        first, then any). Named anchors (types/groups/patterns) pass through
+        unchanged, and an unresolvable anchor keeps its raw text.
+        """
+        text = str(anchor)
+        if not text.strip().isdigit():
+            return text
+        datasets_first = [entry for entry in (per_ds or {}).values()
+                          if entry and str(entry[0] or "").strip()]
+        if not datasets_first:
+            return text
+        return f"{text}_{datasets_first[0][0]}"
     
     def _extract_cross_dataset_profiles(
         self
@@ -11155,22 +11577,24 @@ class ConnectivityProfileComparer:
             
             for neuron_query in neurons:
                 # Resolve neuron query to bodyIds
+                is_bodyid_query = isinstance(neuron_query, int) or str(
+                    neuron_query).strip().isdigit()
                 if isinstance(neuron_query, int):
                     # BodyId query
                     body_ids = [neuron_query]
                     label = str(neuron_query)
-                elif str(neuron_query).isdigit():
+                elif is_bodyid_query:
                     body_ids = [int(neuron_query)]
                     label = neuron_query
                 else:
                     # Type name or pattern
                     body_ids = self.profiler.get_bodyids_for_type(str(neuron_query), dataset)
                     label = str(neuron_query)
-                
+
                 if not body_ids:
                     self._log(f"  Warning: No bodyIds found for '{neuron_query}' in {dataset}")
                     continue
-                
+
                 # Get profiles for these bodyIds
                 individual_profiles = []
                 for bid in body_ids:
@@ -11180,10 +11604,21 @@ class ConnectivityProfileComparer:
                             individual_profiles.append(profile)
                     except Exception as e:
                         self._log(f"  Warning: Failed to get profile for {bid}: {e}")
-                
+
                 if not individual_profiles:
                     self._log(f"  Warning: No profiles extracted for '{neuron_query}'")
                     continue
+
+                # BodyId queries carry their resolved type in the label so
+                # the exported rows never read as a bare numeric id
+                # (tree-legend rule, per dataset — each matrix axis below
+                # belongs to exactly one dataset).
+                if is_bodyid_query:
+                    resolved_type = str(
+                        getattr(individual_profiles[0], 'neuron_type', '') or ''
+                    ).strip()
+                    label = _body_id_display_label(
+                        dataset, body_ids[0], fallback_type=resolved_type)
                 
                 # Aggregate profiles for this type
                 if len(individual_profiles) == 1:
@@ -11604,18 +12039,31 @@ class ConnectivityProfileComparer:
     ) -> Dict[str, Dict[str, pd.DataFrame]]:
         """
         Compute pairwise similarity matrices for bodyId-level profiles.
-        
-        Labels are formatted as {bodyId}_{type} for clarity.
-        
+
+        Labels follow the tree-legend rule: '{bodyId}_{instance}' or
+        '{bodyId}_{type}_{L|R}' (dataset-specific); the resolved comparison
+        type label is the fallback so the axis never reads as a bare id.
+
         Args:
             bodyid_profiles: Dictionary mapping (type_label, bodyId) -> ConnectivityProfile
-        
+
         Returns:
             Nested dictionary: {direction: {metric: DataFrame}}
         """
-        # Create labels as {bodyId}_{type}
-        keys = sorted(bodyid_profiles.keys(), key=lambda x: (x[0], x[1]))  # Sort by type, then bodyId
-        labels = [f"{bid}_{type_label}" for type_label, bid in keys]
+        # Sort by type, then bodyId
+        keys = sorted(bodyid_profiles.keys(), key=lambda x: (x[0], x[1]))
+        labels: List[str] = []
+        seen_labels: Dict[str, Tuple[str, int]] = {}
+        for key in keys:
+            type_label, bid = key
+            label = _body_id_display_label(
+                bodyid_profiles[key].dataset, bid, fallback_type=type_label)
+            if label in seen_labels and seen_labels[label] != key:
+                # Same display label under two type groups: keep the axes
+                # unique by re-appending the resolved type label.
+                label = f"{label}_{type_label}"
+            seen_labels[label] = key
+            labels.append(label)
         n = len(labels)
         
         directions = ['both', 'upstream', 'downstream'] if self.direction == 'both' else [self.direction]
@@ -11935,6 +12383,9 @@ class ConnectivityProfileComparer:
             "Notes:",
             "- type_level: Compares aggregated (mean-pooled) type profiles",
             "- bodyid_level/bodyid_*: Direct bodyId-to-bodyId comparisons",
+            "- bodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
+            "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
+            "  is the fallback when the neuron table has no metadata",
             "- bodyid_level/type_avg_*: Type similarities averaged from bodyId pairs",
             "  (diagonal = intra-type avg, off-diagonal = inter-type avg)",
             "- report.html: Overall report linking every metric and heatmap",
@@ -11974,12 +12425,18 @@ class ConnectivityProfileComparer:
         # === Save Individual BodyId Profiles ===
         self._log("Saving individual connectivity profiles...")
         for (type_label, bid), profile in bodyid_profiles.items():
-            safe_label = f"{bid}_{type_label}".replace('/', '_').replace(':', '_').replace('.', '_')
+            safe_label = _bodyid_profile_stem(bid, type_label).replace(
+                '/', '_').replace(':', '_').replace('.', '_')
             
             profile_data = {
                 'bodyId': bid,
                 'type': type_label,
+                # Resolved type name, matching the to_dict()-based JSONs
+                # written by the multi-/cross-dataset paths (now backfilled
+                # by the profiler for bodyId-queried profiles).
+                'neuron_type': profile.neuron_type,
                 'dataset': profile.dataset,
+                'instance': _body_id_instance_name(profile.dataset, bid),
                 'upstream_partners': {str(k): float(v) for k, v in profile.upstream_partners.items()},
                 'downstream_partners': {str(k): float(v) for k, v in profile.downstream_partners.items()},
                 'upstream_ranks': {str(k): int(v) for k, v in (profile.upstream_ranks or {}).items()},
@@ -13040,7 +13497,8 @@ a:hover { text-decoration: underline; }
         # The per-anchor matrices are aggregated into one report-facing matrix
         # whose rows are anchors and whose columns are dataset pairs. Only the
         # consolidated form is exported.
-        inter_type_matrices = self._aggregate_inter_dataset_matrices(inter_matrices)
+        inter_type_matrices = self._aggregate_inter_dataset_matrices(
+            inter_matrices, anchor_profiles)
         saved['inter_type_matrices'] = inter_type_matrices
         
         # --- intra-dataset matrices + heatmaps per dataset ---
@@ -13093,10 +13551,17 @@ a:hover { text-decoration: underline; }
             bodyid_dir = ds_root / 'individual'
             bodyid_dir.mkdir(parents=True, exist_ok=True)
             for (type_label, bid), profile in bodyid_profiles_by_dataset.get(ds, {}).items():
-                safe_label = self._safe_folder_name(f'{bid}_{type_label}')
+                safe_label = self._safe_folder_name(
+                    _bodyid_profile_stem(bid, type_label))
                 profile_path = bodyid_dir / f'{safe_label}_profile.json'
+                profile_data = profile.to_dict()
+                # Instance name next to type/dataset (tree-legend export
+                # convention); the to_dict value wins when already set.
+                if not str(profile_data.get('instance') or '').strip():
+                    profile_data['instance'] = _body_id_instance_name(
+                        profile.dataset, bid)
                 with open(profile_path, 'w') as f:
-                    json.dump(profile.to_dict(), f, indent=2)
+                    json.dump(profile_data, f, indent=2)
                 saved['profiles_saved'].append(str(profile_path))
 
         # --- aggregate inter-dataset matrices + heatmaps (all neurons) ---
@@ -13175,6 +13640,9 @@ a:hover { text-decoration: underline; }
             "intra_dataset/{dataset}/: per-dataset N×N similarity at three levels:",
             "  results/similarity_* (type), bodyid_similarity_* (bodyId), and",
             "  type_avg_bodyid_similarity_* (type similarity averaged from bodyIds).",
+            "  BodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
+            "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
+            "  is the fallback when the neuron table has no metadata.",
             "profiles/{dataset}/individual/: individual bodyId connectivity profiles.",
             "profiles/{dataset}/aggregated/: mean-pooled type/group profiles.",
             "cross_dataset/all_types/: overview matrices with neurons as rows and",
@@ -13218,7 +13686,8 @@ a:hover { text-decoration: underline; }
         ds_list = list(self.datasets)
         directions = self._report_directions()
         if inter_type_matrices is None:
-            inter_type_matrices = self._aggregate_inter_dataset_matrices(inter_matrices)
+            inter_type_matrices = self._aggregate_inter_dataset_matrices(
+                inter_matrices, anchor_profiles)
 
         lines = [
             '<!DOCTYPE html>',
@@ -13729,10 +14198,14 @@ a:hover { text-decoration: underline; }
             Dictionary with paths to saved files
         """
         ds_list = list(self._cross_dataset_query.keys())
-        
-        # Create output directory
+
+        # Create output directory. Run folders use the unique 4-char dataset
+        # labels (MCNS/HEMI/...); two versions of the same family gain a
+        # version suffix (MCNS_v1_0_vs_MCNS_v0_9) — the same vocabulary as
+        # the Cross-Dataset Comparison tab's legends.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_ds_name = f"{ds_list[0]}_vs_{ds_list[1]}".replace(' ', '_').replace('/', '_')
+        unique_labels = make_unique_dataset_labels(ds_list[:2])
+        safe_ds_name = "_vs_".join(unique_labels).replace(' ', '_').replace('/', '_')
         base_dir = os.path.join(self.output_dir, f"profiling_{safe_ds_name}_{timestamp}")
         cross_dir = os.path.join(base_dir, "cross_dataset")
         profiles_dir = os.path.join(base_dir, "profiles")
@@ -13796,8 +14269,14 @@ a:hover { text-decoration: underline; }
             for label, profile in profiles.items():
                 safe_label = label.replace('/', '_').replace(' ', '_')
                 profile_path = os.path.join(ds_dir, f"{safe_label}_profile.json")
+                profile_data = profile.to_dict()
+                # Instance name next to type/dataset (tree-legend export
+                # convention); '' when the neuron table has no metadata.
+                if not str(profile_data.get('instance') or '').strip():
+                    profile_data['instance'] = _body_id_instance_name(
+                        profile.dataset, profile.neuron_id)
                 with open(profile_path, 'w') as f:
-                    json.dump(profile.to_dict(), f, indent=2)
+                    json.dump(profile_data, f, indent=2)
         
         # Save metadata
         metadata = {

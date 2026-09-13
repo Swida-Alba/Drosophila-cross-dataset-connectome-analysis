@@ -1,8 +1,9 @@
-"""Connectivity Tab - Similar-neuron finding and connectivity profile comparison.
+"""Connectivity Tab - Homolog finding and connectivity profile comparison.
 
 Two sub-tabs share this page:
-- Find Similar: homolog-style connectivity search (Target = Source gives the
-  intra-dataset similar-neuron search).
+- Find Homolog: homolog-style connectivity search (Target = Source gives the
+  intra-dataset similar-neuron search), with an optional cross-dataset
+  morphological qualification of the visualized top matches.
 - Comparison: profile existing neurons within and across datasets.
 """
 
@@ -64,19 +65,19 @@ def create_connectivity_tab():
 
     form_col, results_col = tool_page(
         "Connectivity",
-        "Find similar neurons by connectivity profile and compare profiles "
+        "Find homologs by connectivity profile and compare profiles "
         "within and across datasets.",
         icon="analytics",
         doc="connectivity.md",
     )
 
     with form_col:
-        # Sub-tab switch: Find Similar vs Comparison
-        mode_value = {"value": "Find Similar"}
+        # Sub-tab switch: Find Homolog vs Comparison
+        mode_value = {"value": "Find Homolog"}
         with ui.row().classes(
             "w-full items-center justify-between gap-8 px-2"
         ):
-            similar_mode_button = ui.button("Find Similar").props(
+            similar_mode_button = ui.button("Find Homolog").props(
                 "outline no-caps"
             ).classes("w-5/12")
             comparison_mode_button = ui.button("Comparison").props(
@@ -88,7 +89,7 @@ def create_connectivity_tab():
                     "font-weight: 700;"
                 )
 
-        # ================= Find Similar panel (homolog search) =================
+        # ================= Find Homolog panel (homolog search) =================
         with ui.column().classes("w-full gap-1") as similar_panel:
             with ui.card().classes("w-full drocat-card").props(
                 'id="card-connectivity-similar-datasets"'
@@ -193,6 +194,59 @@ def create_connectivity_tab():
                          "Very slow on first use (can take hours); leave off to fetch only "
                          "the connections the search needs.",
                 )
+
+                # --- Morph qualification (cross-dataset; plan-morph-
+                #     qualification-find-homolog.md). Off by default; applies
+                #     to the visualized top-N only. ---
+                morph_qualify = checkbox_input(
+                    "Morph Qualification (cross-dataset)", False,
+                    hint="Score the visualized top-N candidates against the "
+                         "transformed query (production vector_v2, no NBLAST) "
+                         "and gate them by a per-query null bar — the p95 of "
+                         "200 seeded random target neurons. Candidates below "
+                         "the bar are excluded from the 3D scene; the results "
+                         "tables keep every row and gain morph columns. "
+                         "Requires Visualize Candidates on and a "
+                         "cross-dataset target (FAFB / male-cns / BANC).",
+                )
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Qualification bar offset above the null p95") \
+                        .classes("text-caption drocat-muted")
+                    morph_bar_offset = ui.slider(
+                        min=0.0, max=0.2, step=0.01, value=0.0
+                    ).props("label-always").classes("w-48")
+                    morph_bar_offset_value = ui.label("0.00 (bar = null p95)")
+                    morph_bar_offset.on_value_change(
+                        lambda e: morph_bar_offset_value.set_value(
+                            f"{float(e.value or 0):.2f}"
+                            + (" (bar = null p95)" if not e.value else ""))
+                    )
+                morph_scope_warning = ui.label("").classes(
+                    "text-caption text-amber-8").set_visibility(False)
+
+                def _morph_option_guard(_e=None):
+                    src = str(source_dataset.value or "")
+                    tgt = str(target_dataset.value or "")
+                    allowed = any(k in tgt.lower() for k in (
+                        "fafb", "flywire", "banc", "male-cns", "malecns"))
+                    cross = bool(src) and bool(tgt) and src != tgt
+                    ok = cross and allowed
+                    morph_qualify.set_enabled(ok)
+                    if not ok:
+                        if not cross:
+                            morph_scope_warning.set_text(
+                                "Morph qualification needs a cross-dataset "
+                                "target (set Target ≠ Source).")
+                        else:
+                            morph_scope_warning.set_text(
+                                "Morph qualification supports FAFB, "
+                                "male-cns and BANC targets only.")
+                        morph_scope_warning.set_visibility(True)
+                    else:
+                        morph_scope_warning.set_visibility(False)
+
+                source_dataset.on_value_change(_morph_option_guard)
+                target_dataset.on_value_change(_morph_option_guard)
 
         # ================= Comparison panel (profile comparison) =================
         with ui.column().classes("w-full gap-1") as comparison_panel:
@@ -319,12 +373,12 @@ def create_connectivity_tab():
 
     with results_col:
         with ui.column().classes("w-full gap-1") as similar_output_container:
-            similar_output.create(run_label="Find Similar Neurons", run_icon="play_arrow")
+            similar_output.create(run_label="Find Homologs", run_icon="play_arrow")
         with ui.column().classes("w-full gap-1") as comparison_output_container:
             comparison_output.create(run_label="Run Comparison", run_icon="play_arrow")
 
     def sync_mode():
-        is_similar = mode_value["value"] == "Find Similar"
+        is_similar = mode_value["value"] == "Find Homolog"
         similar_panel.set_visibility(is_similar)
         comparison_panel.set_visibility(not is_similar)
         similar_output_container.set_visibility(is_similar)
@@ -340,7 +394,7 @@ def create_connectivity_tab():
         mode_value["value"] = value
         sync_mode()
 
-    similar_mode_button.on_click(lambda _event: set_mode("Find Similar"))
+    similar_mode_button.on_click(lambda _event: set_mode("Find Homolog"))
     comparison_mode_button.on_click(lambda _event: set_mode("Comparison"))
 
     async def run_similar():
@@ -362,6 +416,15 @@ def create_connectivity_tab():
         visualization_values = visualization_settings.values()
         if visualize.value:
             visualization_settings.warn_empty_custom_palettes()
+
+        # Morph qualification is defined on the visualized set: without
+        # visualization there is nothing to qualify (the plan's guard).
+        morph_qualify_on = bool(morph_qualify.value)
+        if morph_qualify_on and not visualize.value:
+            ui.notify(
+                "Morph qualification requires 'Visualize Candidates'; "
+                "running without it.", type="warning")
+            morph_qualify_on = False
 
         # Single combined run: pass the full list of source neurons so the
         # backend resolves each into its real types (coarse labels / other
@@ -390,7 +453,11 @@ def create_connectivity_tab():
             "use_auto_type_mapping": use_auto_type_mapping.value,
             "ensure_cache_complete": full_cache.value,
         }
-        method_params = {"use_fast": use_fast.value}
+        method_params = {
+            "use_fast": use_fast.value,
+            "morph_qualify": morph_qualify_on,
+            "morph_bar_offset": float(morph_bar_offset.value or 0.0),
+        }
 
         try:
             result = await similar_output.run(

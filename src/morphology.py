@@ -9163,6 +9163,7 @@ def compute_morph_similarity_vs_queries(
     verbose: bool = False,
     query_bids: Optional[List[int]] = None,
     source_dataset: Optional[str] = None,
+    target_vector_cache: Optional[Dict[int, object]] = None,
 ) -> pd.DataFrame:
     """Pairwise morphological similarity of transformed query neurons vs
     target neurons, in the target scene's render space.
@@ -9186,6 +9187,14 @@ def compute_morph_similarity_vs_queries(
 
     Failure-isolated per neuron: unavailable skeletons yield NaN; no
     exception escapes.
+
+    ``target_vector_cache`` optionally maps bodyId -> raw 256-dim feature
+    vector previously computed in THIS target frame (same bounds /
+    lateral normalization). Hits skip the target re-vectorization and
+    freshly computed vectors are written back, letting callers (the
+    cross-dataset comparison / homolog morph qualification) persist the
+    null-sample vectors across runs. Vectors must describe the same frame
+    this call derives; the caller owns frame-keyed invalidation.
     """
     import navis
 
@@ -9433,6 +9442,12 @@ def compute_morph_similarity_vs_queries(
                     navis.NeuronList([tn])[0] / 1000.0, k=20)
             except Exception:
                 pass
+        if tb not in t_vecs and target_vector_cache is not None:
+            cached_vec = target_vector_cache.get(tb)
+            if (cached_vec is not None
+                    and np.asarray(cached_vec).ndim == 1
+                    and len(cached_vec) == VECTOR_V2_DIM):
+                t_vecs[tb] = np.asarray(cached_vec, dtype=float)
         if tb not in t_vecs:
             # Identity space: the cached raw row IS the native-space vector —
             # exact Find Similar parity without re-vectorizing.
@@ -9450,6 +9465,8 @@ def compute_morph_similarity_vs_queries(
                 _, vec = vectorize_neuron_v2(tn, spatial_bounds=v2_bounds,
                                              lateral_normalize=True)
                 t_vecs[tb] = np.asarray(vec, dtype=float)
+                if target_vector_cache is not None:
+                    target_vector_cache[tb] = t_vecs[tb]
             except Exception:
                 pass
         for qbid, qv in q_vecs.items():

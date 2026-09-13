@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morphology · Comparison (Cross-Dataset) - DROCAT Instructions</title>
+  <link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<main class="guide">
+  <header class="guide-top">
+    <a class="back" href="README.html">&larr; Back to guides</a>
+    <span class="tag">Connectome</span>
+  </header>
+  <h1>Comparison — Cross-Dataset <span class="tag">Morphology tab</span></h1>
+  <p class="lede">
+    Compare the morphology of the <b>queried neurons across datasets</b>:
+    enter query types, select two or more datasets, and get pairwise
+    <b>vector_v2</b> similarity matrices per dataset pair, a seeded null
+    baseline for context, and 3D overlay scenes with every dataset bridged
+    into one reference template.
+  </p>
+
+  <div class="callout warning">
+    <b>Dataset scope.</b> Only <b>FAFB</b>, <b>male-cns</b> and <b>BANC</b>
+    participate — these are the datasets with a bridging transform inside
+    the 2-hop accuracy guard (FAFB↔male-cns, FAFB↔BANC, male-cns↔BANC are
+    1–2 transforms; everything else, e.g. hemibrain or MANC, needs 7–9 and
+    is refused with a banner). <b>BANC comparisons carry a standing
+    reliability warning</b>: public BANC skeleton products mix L2 / full /
+    µm sources. First BANC use bootstraps its morphology population
+    artifacts from the locally cached skeletons (one-time, offline).
+  </div>
+
+  <h2>Quick start</h2>
+  <ol>
+    <li>Select <b>two or more datasets</b> (the list is limited to the
+      eligible ones).</li>
+    <li>Enter the <b>Neurons to Compare</b> — types or patterns (e.g.
+      <code>APDN3</code>, <code>aMe.*</code>). Each type is resolved in
+      every dataset by same-name/pattern; a type missing in one dataset
+      shows up as an explicit empty row in the report.</li>
+    <li>Optionally pick a <b>Reference Template</b> for the overlay scenes
+      (defaults to the first selected dataset).</li>
+    <li>Click <b>Run Cross-Dataset Comparison</b>.</li>
+  </ol>
+
+  <h2>How scoring works</h2>
+  <ul>
+    <li>For each ordered dataset pair <i>A → B</i>, the queried neurons'
+      members of <i>A</i> are transformed into <i>B</i>'s render space and
+      scored against the members of <i>B</i> with the production
+      <b>vector_v2</b> scorer (block-weighted whitened cosine — the same
+      scorer Find Similar uses). <b>NBLAST is not used cross-dataset.</b></li>
+    <li>Raw cross-dataset scores have a high, query-dependent baseline.
+      Every pair therefore reports a <b>null baseline</b>: the p95/median of
+      the same queries scored against ~200 seeded random target neurons.
+      The sample is shared across queries and runs, so repeat runs are
+      fast. Member pairs above the baseline p95 are flagged in
+      <code>bodyid_scores.csv</code>.</li>
+    <li>Scores are comparable <i>within</i> a dataset pair (one frame), not
+      across pairs — the report states each pair's frame (frame
+      disclosure).</li>
+    <li>Per type and dataset, at most <b>Max Members per Type</b> neurons
+      (default 25) enter the scoring; the 3D scenes render at most
+      <b>Scene Members per Type</b> (default 3) per dataset for
+      legibility.</li>
+  </ul>
+
+  <h2>Output</h2>
+  <pre><code>{output_dir}/morph_cross_{datasets}_{queries}_{timestamp}/
+  overview.csv                    # queried type × pair: best target-type match
+  parameters.json / README.txt    # run config, warnings, resolution notes
+  report.html                     # full report with matrices + baselines
+  &lt;SRC&gt;_to_&lt;TGT&gt;/                 # one folder per dataset pair
+    bodyid_scores.csv             # member-level scores + above_baseline flag
+    type_matrix.csv               # type × type mean vector_v2
+    null_baseline.json            # seeded null reference per query
+  plot-3d_crossmorph_*/           # overlay scenes (reference template)</code></pre>
+
+  <div class="callout info">
+    <b>Comparison, not discovery.</b> With two or more datasets this mode compares the neurons you
+    queried. To search a whole dataset morphologically, use the
+    <b>Find Similar</b> sub-tab (intra-dataset); for cross-dataset homolog
+    discovery, use the <a href="find_homologs.html">Connectivity tab's
+    Find Homolog</a> search with its optional morph qualification.
+  </div>
+</main>
+</body>
+</html>

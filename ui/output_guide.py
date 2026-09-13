@@ -42,6 +42,11 @@ NO_WARNINGS_TEXT = "No warnings were recorded for this run."
 COLUMN_GLOSSARY = {
     # --- Identifiers ---------------------------------------------------------
     "bodyId": ("Unique numeric neuron identifier.", "integer"),
+    "queried_type": ("Neuron type as entered in the comparison query (one row per queried type).", "text"),
+    "morph_v2": ("Production cross-dataset vector_v2 similarity (block-weighted whitened cosine; no NBLAST cross-dataset).", "number 0-1"),
+    "morph_null_p95": ("Per-query null bar: the p95 of this query's vector_v2 scores against ~200 seeded random target neurons.", "number"),
+    "morph_z": ("morph_v2 expressed in null-distribution standard deviations above the null median.", "number"),
+    "morph_qualified": ("Whether the visualized candidate passed the morph bar (morph_v2 >= null p95). Failing candidates are excluded from the rendered scenes but keep their result rows.", "boolean"),
     "layer": ("One-based visualization layer assignment used by the reusable layer map.", "integer or text"),
     "neuron": ("Neuron identifier resolved by the Skeleton layer-map parser.", "text or integer"),
     "color": ("Effective neuron display color.", "CSS color"),
@@ -59,6 +64,19 @@ COLUMN_GLOSSARY = {
     "edge_key": ("Canonical edge identifier: 'source -> target'.", "text"),
     "group": ("Custom query group the neuron belongs to.", "text"),
     "dataset": ("Dataset the record comes from.", "text"),
+    "token": ("Raw input query token the row resolves.", "text"),
+    "role": ("Query side of the token: source or target.", "text"),
+    "status": ("Resolution outcome (same_name_identity, taxonomy, "
+               "taxonomy_mapped, mapped, bridged, valid_split, "
+               "evidence_only, same_name_fallback, conflict, body_id, "
+               "group, pattern, unmatched).", "text"),
+    "method": ("Resolution mechanism that produced the answer.", "text"),
+    "evidence": ("For identity rows: confirmed, contradicted or none — "
+                 "what the cross-dataset relation says about the identity.",
+                 "text"),
+    "target_types": ("Resolved type name(s) queried in the dataset.", "text"),
+    "confidence": ("Resolution confidence tier (higher = more trustworthy).",
+                   "number"),
     "query_id": ("Stable identifier for one cross-dataset threshold query row.", "text"),
     "query_label": ("Human-readable label for one cross-dataset threshold query row.", "text"),
     "threshold_mode": ("Threshold query mode: standard same-threshold rows or explicit combinations.", "text"),
@@ -207,6 +225,7 @@ COLUMN_GLOSSARY = {
     "target_dataset": ("Dataset of the candidate/target neurons.", "text"),
     "source_bodyId": ("BodyId of the source neuron.", "integer"),
     "source_type": ("Type of the source neuron.", "text"),
+    "source_instance": ("Instance name of the source neuron.", "text"),
     "target_bodyId": ("BodyId of the candidate neuron.", "integer"),
     "target_type": ("Type of the candidate neuron.", "text"),
     "target_instance": ("Instance name of the candidate neuron.", "text"),
@@ -314,10 +333,15 @@ COLUMN_GLOSSARY = {
     "duplicate_of": ("For skipped thresholds: the earlier input threshold (or "
                      "the τ folder, applied_folder) whose run this row "
                      "duplicates.", "integer"),
-    "applied_folder": ("F5 τ-folder discipline: the minsyn_{N} folder holding "
-                       "this threshold's real output. Collapsed thresholds have "
-                       "no folder of their own — their frames alias this "
-                       "folder's materialization (fresh τ denominators).", "integer"),
+    "applied_folder": ("F5 τ-folder discipline: the applied-threshold value "
+                       "holding this threshold's real output. Collapsed "
+                       "thresholds have no folder of their own — their frames "
+                       "alias that applied folder's materialization (fresh τ "
+                       "denominators). On disk: a genuine requested run keeps "
+                       "the bare minsyn_{requested}; the collapse floor is "
+                       "minsyn_{applied}_applied_floor. A requested level "
+                       "coinciding with the floor it aliases to is skipped "
+                       "silently (no _skipped marker).", "integer"),
     "max_paths_bodyid": ("Path budget for StrongestFirst enumeration (0/empty "
                          "uses the internal 1,000,000 auto budget; legacy "
                          "unbounded enumerators require an explicit API "
@@ -387,6 +411,71 @@ COLUMN_GLOSSARY = {
     "Q3_score": ("Third-quartile NeuronBridge score of the matched neurons.", "number"),
     "typed_N_in_dataset": ("Number of typed neurons in the dataset.", "integer"),
     "_passes_min_score": ("Whether the match passes the run's min_score cutoff.", "boolean"),
+    # --- Auto threshold-density alignment (plan §8c.2) -----------------------
+    "density": ("Edge density at the threshold: E(t)/N with a t-independent "
+                "N (annotated nodes in the searched graph), i.e. bodyId edges "
+                "per searched neuron at or above the Min Synapse Count.", "number"),
+    "normalizer": ("Density normalizer in use (per_node = E(t)/N primary; "
+                   "raw/per_source/cone are diagnostics only).", "text"),
+    "basis": ("Graph object the density counts: bodyId_edges for auto mode "
+              "(type_pairs for the whole-dataset prober diagnostic).", "text"),
+    "w_start": ("Low end of a dataset's threshold window: max(3, applied "
+                "threshold).", "integer"),
+    "w_star_measured": ("Measured retained ceiling: max bottleneck over the "
+                        "actually enumerated paths (= high end of the "
+                        "window).", "integer"),
+    "w_star_stored": ("Provenance-stored strongest_retained_bottleneck; "
+                      "untrusted when it disagrees with w_star_measured.",
+                      "integer"),
+    "w_star_mismatch": ("True when the stored strongest_retained_bottleneck "
+                        "differs from the measured retained ceiling.",
+                        "boolean"),
+    "path_complete_from": ("Threshold from which the path curve is complete "
+                           "(max(w_start, tau_canonical)); below it the path "
+                           "curve is unknown.", "integer"),
+    "is_materialized": ("Whether this threshold was actually materialized "
+                        "(vs an interpolated curve point).", "boolean"),
+    "edge_count": ("Number of bodyId edges with weight >= the threshold in the "
+                   "query-scoped searched graph.", "integer"),
+    "path_count": ("Number of enumerated bodyId paths with bottleneck >= the "
+                   "threshold (diagnostic; hub-inflated).", "integer"),
+    "applied": ("Applied (materialized) threshold actually compared for the "
+                "dataset.", "integer"),
+    "budget_bitten": ("Whether the StrongestFirst path budget cut the "
+                      "enumeration at the requested threshold.", "boolean"),
+    "n_paths": ("Number of enumerated bodyId paths.", "integer"),
+    "n_edges": ("Number of bodyId edges in the query-scoped searched graph "
+                "at the applied threshold.", "integer"),
+    "n_nodes": ("Number of bodyId nodes enrolled in the searched graph.",
+                "integer"),
+    "mode": ("Row origin for aligned density rows: vertical (same threshold), "
+             "horizontal (same density), or both.", "text"),
+    "level_continuous": ("Vertical row's shared integer threshold, or the "
+                         "density level for a horizontal row.", "number"),
+    "level_normalized": ("Normalized density level a horizontal row is "
+                         "aligned at.", "number"),
+    "degenerate": ("True when a mode collapsed to a single (or empty) "
+                   "aligned row.", "boolean"),
+    "clamped": ("True when an inverted threshold was clamped to its dataset's "
+                "window boundary.", "boolean"),
+    "max_abs_deviation": ("Largest distance between the target density level "
+                          "and the density actually achieved at each dataset's "
+                          "chosen integer threshold (quantization gap).",
+                          "number"),
+    "n_nodes_typed": ("Searched-graph nodes whose type label is a real name "
+                      "(Unknown/empty/digit labels are untyped) — the primary "
+                      "density denominator N.", "integer"),
+    "n_nodes_untyped": ("Searched-graph nodes with an untyped label (present "
+                        "in the curated table but Unknown/empty/digit).",
+                        "integer"),
+    "n_nodes_debris": ("Searched-graph ids absent from the curated neuron "
+                       "table (segmentation debris); always excluded from "
+                       "the density universe.", "integer"),
+    "n_edges_active_basis": ("Cone edges at w_start counted under the "
+                             "active basis (typed with Drop Untyped on, "
+                             "all-but-debris when off) — the same number "
+                             "density_curves.csv reports at w_start.",
+                             "integer"),
 }
 
 
@@ -949,7 +1038,8 @@ _HOMOLOG_FILES = [
      "preview": True,
      "preview_title": "BodyId-level homologs",
      "columns": [
-         "source_bodyId", "source_type", "target_bodyId", "target_type",
+         "source_bodyId", "source_type", "source_instance",
+         "target_bodyId", "target_type", "target_instance",
          "rank_union", "jaccard",
          "cosine", "adjacency_score", "shared_type_count",
          "union_type_count", "is_same_type", "is_same_dataset",
@@ -1147,8 +1237,9 @@ TOOL_GUIDE_SPECS = {
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "intra_dataset/*/results/bodyid_similarity_*.csv",
              "description": "BodyId-to-bodyId similarity matrices.",
-             "matrix": "rows/columns = bodyId_type labels, values = "
-                       "similarity",
+             "matrix": "rows/columns = '{bodyId}_{instance}' (or "
+                       "'{bodyId}_{type}_{L|R}' on FAFB/BANC) labels, "
+                       "values = similarity",
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "intra_dataset/*/results/type_avg_bodyid_similarity_*.csv",
              "description": "Type similarities averaged from bodyId pairs.",
@@ -1174,7 +1265,49 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "profiles/*/aggregated/*_profile.json",
              "description": "Type-aggregated connectivity profiles."},
             {"pattern": "profiles/*/individual/*_profile.json",
-             "description": "Individual bodyId connectivity profiles."},
+             "description": "Individual bodyId connectivity profiles "
+                            "(bodyId, type, instance, dataset)."},
+        ],
+    },
+    "morph_cross_dataset": {
+        "title": "Morphology · Cross-Dataset Comparison",
+        "summary": "Compares the queried neurons' morphology across FAFB / "
+                   "male-cns / BANC: pairwise vector_v2 per dataset pair "
+                   "with a seeded null baseline and overlay scenes.",
+        "files": [
+            {"pattern": "report.html",
+             "description": "Summary report: queries, datasets, per-pair "
+                            "null baselines, type matrices, warnings, and "
+                            "overlay-scene links."},
+            {"pattern": "parameters.json",
+             "description": "All analysis parameters (queries, datasets, "
+                            "member caps, null sample size, reference "
+                            "template) plus run warnings."},
+            {"pattern": "README.txt",
+             "description": "Human-readable summary with the output "
+                            "structure."},
+            {"pattern": "overview.csv",
+             "description": "Queried type x dataset-pair mean vector_v2 "
+                            "scores with each pair's baseline p95.",
+             "preview": True,
+             "preview_title": "Overview",
+             "columns": ["queried_type"]},
+            {"pattern": "*_to_*/bodyid_scores.csv",
+             "description": "Member-level scores for one dataset pair: "
+                            "vector_v2 per source x target bodyId with the "
+                            "null p95 and the above_baseline flag.",
+             "preview": True,
+             "preview_title": "BodyId scores",
+             "columns": ["source_bodyId", "target_bodyId", "morph_v2"]},
+            {"pattern": "*_to_*/type_matrix.csv",
+             "description": "Type x type mean vector_v2 matrix for one "
+                            "dataset pair (mean over cross-member pairs)."},
+            {"pattern": "*_to_*/null_baseline.json",
+             "description": "Seeded random-target null reference for one "
+                            "dataset pair (p95/median/std/n per query)."},
+            {"pattern": "plot-3d_*/**",
+             "description": "3D overlay scenes: each dataset's members "
+                            "bridged into the reference template."},
         ],
     },
     "morphology_comparison": {
@@ -1208,10 +1341,15 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "bodyid_level/bodyid_similarity_*.csv",
              "description": "BodyId-to-bodyId similarity matrix (every "
                             "individual pair).",
-             "matrix": "rows/columns = bodyIds, values = morphological "
-                       "similarity"},
+             "matrix": "rows/columns = '{bodyId}_{instance}' (or "
+                       "'{bodyId}_{type}_{L|R}' on FAFB/BANC) labels, "
+                       "values = morphological similarity"},
             {"pattern": "visualization/heatmap_*.html",
              "description": "Interactive heatmaps for both levels."},
+            {"pattern": "plot-3d_*/",
+             "description": "Optional 3D skeleton scene (3D Skeleton "
+                            "Visualization checkbox): one layer per "
+                            "compared type, linked from report.html."},
         ],
     },
     "inter_dataset": {
@@ -1270,6 +1408,13 @@ TOOL_GUIDE_SPECS = {
                             "resolution counts (basis unique_type_resolutions) "
                             "plus the partner-occurrence metric, and whether "
                             "raw-name fallback occurred."},
+            {"pattern": "comparison_report_used_data/query_resolution.csv",
+             "description": "Per-token, per-dataset query resolution with "
+                            "method, status, confidence and evidence "
+                            "(same_name_identity, taxonomy expansions, "
+                            "taxonomy member mapping, fallbacks, conflicts).",
+             "columns": ["token", "dataset", "role", "status", "method",
+                         "target_types", "evidence", "confidence"]},
             {"pattern": "comparison_report_used_data/*.csv",
              "description": "Aggregated metrics backing the report. Standard "
                             "files use threshold keys; Custom combination files "
@@ -1430,6 +1575,57 @@ TOOL_GUIDE_SPECS = {
                              "flagged. In combination mode, threshold_scope marks "
                              "this as a raw-run schedule diagnostic. Rendered as "
                              "edge_density_threshold_curves.png."},
+            {"pattern": "comparison_results/density_curves.csv",
+             "description": "Per-dataset query-scoped density curves for "
+                            "every pathfinding mode, from each dataset's "
+                            "minimal available threshold to its measured "
+                            "ceiling. y is a DENSITY (E(t)/N, fixed N); x is "
+                            "the per-connection Min Synapse Count. The edge "
+                            "basis follows the run's Drop Untyped setting "
+                            "(bodyId_edges_typed when on, "
+                            "bodyId_edges_all_but_debris when off; "
+                            "segmentation debris is always excluded).",
+             "columns": ["dataset", "threshold", "edge_count", "path_count",
+                         "density", "normalizer", "basis", "w_start",
+                         "w_star_measured", "path_complete_from",
+                         "is_materialized"]},
+            {"pattern": "comparison_results/density_windows.csv",
+             "description": "Per-dataset completeness window [w_start, "
+                            "w_star_measured] and the stored-vs-measured "
+                            "ceiling check, with the searched-graph node "
+                            "classes: typed neurons, untyped (Unknown/empty "
+                            "label; counted only when Drop Untyped is off) "
+                            "and segmentation debris (never counted). "
+                            "n_edges is the all-class cone count at the "
+                            "applied threshold; n_edges_active_basis "
+                            "re-counts it under the active basis so it "
+                            "matches density_curves.csv edge_count at "
+                            "w_start.",
+             "columns": ["dataset", "applied", "w_start", "w_star_stored",
+                         "w_star_measured", "w_star_mismatch", "budget_bitten",
+                         "paths_complete", "path_complete_from", "n_paths",
+                         "n_edges", "n_edges_active_basis", "n_nodes",
+                         "n_nodes_typed", "n_nodes_untyped",
+                         "n_nodes_debris"]},
+            {"pattern": "comparison_results/density_alignment_best_matches.csv",
+             "description": "Auto threshold mode: vertical (same-threshold) and "
+                            "horizontal (same-density) aligned threshold rows, "
+                            "one integer per dataset. These rows are runnable as "
+                            "a combination query. When both modes coexist, read "
+                            "vertical rows as the like-for-like spine and "
+                            "horizontal rows as the density-matched envelope. "
+                            "Horizontal rows also carry "
+                            "density_at_<dataset> columns (the achieved density "
+                            "at each chosen integer threshold) and "
+                            "max_abs_deviation (worst distance from the target "
+                            "level after integer quantization).",
+             "columns": ["mode", "level_continuous", "level_normalized",
+                         "degenerate", "clamped", "max_abs_deviation"]},
+            {"pattern": "dataset_data/*/_density/density_meta.json",
+             "description": "The query-scoped density capture persisted by "
+                            "every delegated pathfinding run (one copy per "
+                            "dataset, referenced by each minsyn_* folder's "
+                            "density_meta.json)."},
             {"pattern": "comparison_results/path_count_comparison.csv",
              "description": "Path-count comparison across datasets. "
                             "Combination rows carry query_id/query_label and "

@@ -125,6 +125,20 @@ logging.getLogger("navis").setLevel(logging.ERROR)
 import navis.interfaces.neuprint as neu
 from neuprint import Client, fetch_synapse_connections, SynapseCriteria, fetch_meta
 
+# Console encoding guard (Defect B): status output prints ⚠/✓, which aborts
+# with UnicodeEncodeError on legacy Windows code pages when stdout is
+# redirected.  Usually a no-op here — importing coana already ran it — but
+# this module is also launched directly by scripts.
+try:
+    from .utils.console_encoding import ensure_utf8_stdio
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    try:
+        from utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
+
 try:
     from .utils.naming_utils import (
         BRAIN_MESH_OPTIONS,
@@ -236,7 +250,8 @@ DEFAULT_BRAIN_VNC_MESH_ALPHA = 0.05
 
 # Legend modes. 'tree' renders exactly like 'type' (same native legend,
 # used by static exports) and additionally tags traces so the exported
-# interactive HTML can embed a collapsible type -> neuron legend panel.
+# interactive HTML can embed a collapsible type -> neuron legend panel;
+# neuron hovers read like their bodyId leaf rows in both hierarchies.
 LEGEND_MODES = ('single', 'type', 'tree', 'layer')
 # Plotly 6.4.0's native ``config.doubleClickDelay`` default is 300 ms. The
 # tree panel owns its row events, so keep its manual detector in sync with
@@ -3762,6 +3777,61 @@ class VisualizeSkeleton:
                 return 'L'
         return None
 
+    @staticmethod
+    def _tree_hover_body_id(neuron_vols, source_index, neuron_id):
+        """int bodyId for a tree leaf hover, or None when unresolvable."""
+        if source_index is not None and \
+                0 <= source_index < len(neuron_vols or []):
+            try:
+                return int(getattr(neuron_vols[source_index], 'id',
+                                   neuron_id))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _apply_tree_leaf_hover(trace, tree_label, hover_bid) -> bool:
+        """BodyId-level hoverlabel for a tree-mode neuron trace.
+
+        Hovering a neuron skeleton in the interactive HTML should read
+        like its tree leaf ('{bodyId}_{instance/…}') plus the bare
+        bodyId, independent of the type-level name the trace keeps for
+        the native/static legend. The label is embedded literally:
+        scatter3d ``%{customdata}`` support varies across plotly
+        versions. Returns True when the bodyId could be embedded.
+        """
+        if hover_bid is not None:
+            trace.hovertemplate = (f'<b>{tree_label}</b>'
+                                   f'<extra>bodyId {hover_bid}</extra>')
+            return True
+        trace.hovertemplate = f'<b>{tree_label}</b><extra></extra>'
+        return False
+
+    @staticmethod
+    def _apply_tree_leaf_trace_identity(trace, tree_label, neuron_vols,
+                                        source_index, neuron_id) -> bool:
+        """Revision 3.5 Issue 1 (plan-type-mapping-validation-pipeline.md):
+        in custom-group tree scenes the trace identity is the bodyId leaf,
+        not the collapsed category root.
+
+        Names the trace after its tree item and puts the bodyId on the
+        hover (see _apply_tree_leaf_hover).  ``legendgroup`` /
+        ``legendrank`` and the ``drocatLegend`` meta stay at the group
+        level — the tree panel is index-based (built client-side from
+        the meta), so show/hide is unaffected. Returns True when the
+        bodyId could be embedded in the hover.
+        """
+        trace.name = tree_label
+        hover_bid = VisualizeSkeleton._tree_hover_body_id(
+            neuron_vols, source_index, neuron_id)
+        if hover_bid is not None:
+            # plotly customdata is per-point array-valued; the template
+            # embeds the literal bodyId so the hover works on any plotly
+            # version (scatter3d %{customdata} support varies).
+            trace.customdata = [hover_bid]
+        return VisualizeSkeleton._apply_tree_leaf_hover(
+            trace, tree_label, hover_bid)
+
     def _tree_uses_custom_groups(self):
         """Whether tree mode organizes the legend by custom group first.
 
@@ -3784,6 +3854,9 @@ class VisualizeSkeleton:
         the row-to-trace mapping can never drift from the figure. The
         hierarchy is type -> bodyId/instance for ordinary layers and
         group -> type -> bodyId/instance when custom layer names are used.
+        Every neuron trace's hoverlabel carries the same bodyId-level
+        info as its leaf row, so scene inspection identifies the neuron
+        even without reading the panel.
         Every group row stays expandable and exposes its bodyId-level
         children, even singleton groups; only bodyId leaf rows are
         childless. Multi-trace neurons still count once. Cross-dataset
@@ -3882,6 +3955,17 @@ class VisualizeSkeleton:
     if (tr.marker && tr.marker.color) { return tr.marker.color; }
     if (tr.line && tr.line.color) { return tr.line.color; }
     return tr.color || null;
+  }
+
+  function itemColor(data, indices, fallback) {
+    /* The member neurons' own baked legend color (per-layer / per-category
+       palette), falling back to the caller's group color. */
+    for (var j = 0; j < indices.length; j++) {
+      var src = data[indices[j]].meta;
+      var lg2 = src && src.drocatLegend;
+      if (lg2 && lg2.color) { return lg2.color; }
+    }
+    return fallback;
   }
 
   var records = [];  /* {row, eye, indices} kept in sync with the plot */
@@ -4106,21 +4190,22 @@ class VisualizeSkeleton:
     return {row: row, eye: eye};
   }
 
-  function attachExpandable(parent, labelText, color, count, eyeIndices) {
+  function attachExpandable(parent, labelText, color, count, eyeIndices, opts) {
     /* One expandable row (caret + swatch + label + count + eye) with a
        hidden container for its children. Returns the children container;
        the caller fills it with leaf rows or nested expandables. */
     var groupEl = makeEl('div', 'drocat-lt-group');
     var caret = makeEl('span', 'drocat-lt-caret', '\\u25B6');
     var row = makeEl('div', 'drocat-lt-row drocat-lt-group-row');
+    var showSwatch = !(opts && opts.noSwatch);
     var swatch = makeEl('span', 'drocat-lt-swatch');
     swatch.style.background = color;
+    if (showSwatch) { row.appendChild(swatch); }
     var label = makeEl('span', 'drocat-lt-label', labelText);
     label.title = labelText;
     var countEl = makeEl('span', 'drocat-lt-count', count);
     var eye = makeEl('span', 'drocat-lt-eye');
     row.appendChild(caret);
-    row.appendChild(swatch);
     row.appendChild(label);
     row.appendChild(countEl);
     row.appendChild(eye);
@@ -4260,8 +4345,19 @@ class VisualizeSkeleton:
       var color = groupColor(data, g, name);
       var neuronItemCount = groupNeuronItemCount(g);
       var neuronCount = neuronItemCount || (g.indices.length - g.sites.length);
+      /* Group roots whose leaves carry different colors (per-category
+         palette) get NO color square — one swatch would mislabel the
+         group (Revision 3.3 legend design). */
+      var leafColors = [];
+      g.indices.forEach(function(i) {
+        var m = data[i].meta && data[i].meta.drocatLegend;
+        if (m && m.color && leafColors.indexOf(m.color) < 0) {
+          leafColors.push(m.color);
+        }
+      });
+      var noSwatch = leafColors.length > 1;
       var itemsEl = attachExpandable(panel, name, color, neuronCount,
-                                     g.indices);
+                                     g.indices, {noSwatch: noSwatch});
       var sitesByType = {};
       g.sites.forEach(function(s) {
         (sitesByType[s.type] = sitesByType[s.type] || []).push(s.index);
@@ -4278,24 +4374,33 @@ class VisualizeSkeleton:
       }
 
       if (g.typeOrder.length > 1) {
-        /* Mixed custom group (2+ types): type sub-rows for types with 2+
-           neurons; singletons and untyped neurons become direct leaves. */
+        /* Mixed custom group (2+ types): type sub-rows carrying their
+           members' own color; a type label with a category prefix
+           ('query · X', 'matched · Y · verified', …) always stays a
+           collapsed root even for a single neuron, so the category never
+           degenerates into a bare bodyId row. */
         g.typeOrder.forEach(function(t) {
           var tt = g.types[t];
           var typeNeuronCount = tt.itemOrder.length;
-          if (typeNeuronCount < 2) {
-            /* Singleton type: no sub-row, show its bodyId directly. */
+          var tColor = itemColor(data, tt.indices, color);
+          var prefixed = String(t).indexOf(' · ') >= 0;
+          if (typeNeuronCount < 2 && !prefixed) {
+            /* Singleton plain type: no sub-row, show its bodyId directly. */
             tt.itemOrder.forEach(function(itemName) {
-              attachLeaf(itemsEl, itemName, color, tt.items[itemName]);
+              attachLeaf(itemsEl, itemName,
+                         itemColor(data, tt.items[itemName], tColor),
+                         tt.items[itemName]);
             });
             addSiteLeaves(itemsEl, t);
             return;
           }
           var eyeIdx = tt.indices.concat(sitesByType[t] || []);
-          var subEl = attachExpandable(itemsEl, t, color,
+          var subEl = attachExpandable(itemsEl, t, tColor,
                                        typeNeuronCount, eyeIdx);
           tt.itemOrder.forEach(function(itemName) {
-            attachLeaf(subEl, itemName, color, tt.items[itemName]);
+            attachLeaf(subEl, itemName,
+                       itemColor(data, tt.items[itemName], tColor),
+                       tt.items[itemName]);
           });
           addSiteLeaves(subEl, t);
         });
@@ -4306,14 +4411,32 @@ class VisualizeSkeleton:
       } else {
         /* Single-type (or untyped) group: the group row is already the
            type level, so render the bodyId/instance leaves directly
-           instead of nesting a redundant type row. */
+           instead of nesting a redundant type row — unless the type
+           carries a category prefix, which must stay a collapsed root. */
         if (g.typeOrder.length) {
           var t0 = g.typeOrder[0];
-          g.types[t0].itemOrder.forEach(function(itemName) {
-            attachLeaf(itemsEl, itemName, color,
-                       g.types[t0].items[itemName]);
-          });
-          addSiteLeaves(itemsEl, t0);
+          var tColor0 = itemColor(data, g.types[t0].indices, color);
+          var prefixed0 = String(t0).indexOf(' · ') >= 0;
+          if (prefixed0) {
+            var subEl0 = attachExpandable(itemsEl, t0, tColor0,
+                                          g.types[t0].itemOrder.length,
+                                          g.types[t0].indices);
+            g.types[t0].itemOrder.forEach(function(itemName) {
+              attachLeaf(subEl0, itemName,
+                         itemColor(data, g.types[t0].items[itemName],
+                                   tColor0),
+                         g.types[t0].items[itemName]);
+            });
+            addSiteLeaves(subEl0, t0);
+          } else {
+            g.types[t0].itemOrder.forEach(function(itemName) {
+              attachLeaf(itemsEl, itemName,
+                         itemColor(data, g.types[t0].items[itemName],
+                                   tColor0),
+                         g.types[t0].items[itemName]);
+            });
+            addSiteLeaves(itemsEl, t0);
+          }
         }
         g.directOrder.forEach(function(itemName) {
           attachLeaf(itemsEl, itemName, color, g.direct[itemName]);
@@ -6393,10 +6516,27 @@ class VisualizeSkeleton:
                 return s
 
             keys = frame['bodyId'].map(_body_id_key)
-            rows = frame[keys.isin(wanted)]
+            rows = frame[keys.isin(wanted)].copy()
             if rows.empty:
                 continue
-            return rows.reset_index(drop=True)
+            # Positionally align the rows to the caller's bids order: the
+            # render loop reads overlay metadata by neuron position
+            # (``neuron_dfs[i].iloc[source_index]``), so a table-ordered
+            # frame mislabels every legend leaf whenever the table order
+            # differs from the layer order (Revision 3.5 Issue 6 — the
+            # ancestor of the R5 61430/50274 mislabelling).  Missing ids
+            # keep their row (with NaN metadata) so positions never shift.
+            rows['_body_key'] = keys[keys.isin(wanted)]
+            try:
+                rows = (rows.set_index('_body_key')
+                        .reindex([str(int(b)) for b in bids])
+                        .reset_index(drop=True))
+            except (ValueError, TypeError):
+                # duplicate keys in the table: keep table order (legacy
+                # behaviour) rather than fail the render
+                continue
+            rows['bodyId'] = [int(b) for b in bids]
+            return rows
         return None
 
     def _inject_custom_neurons(self):
@@ -6753,15 +6893,29 @@ class VisualizeSkeleton:
                         return bool(re.search(
                             r'\b401\b|\bUnauthorized\b', text))
 
+                    def _client_unusable(exc) -> bool:
+                        # A rejected token is a configuration error the user
+                        # must fix; server/network failures (5xx, timeouts,
+                        # refused connections) are not — the render can
+                        # still proceed entirely from the local skeleton
+                        # cache, and the skeleton fetch phase raises its own
+                        # precise remedy when the cache cannot cover the
+                        # request. Never degrade into a silent empty render.
+                        return not _token_rejected(exc)
+
                     if self.token:
                         try:
                             self.client = Client(self.server, dataset=self.dataset, token=self.token)
                             self.client.fetch_version()
                         except Exception as exc:
-                            if not _token_rejected(exc):
+                            if not _client_unusable(exc):
+                                self._warn_neuprint_token_rejected()
                                 raise
-                            self._warn_neuprint_token_rejected()
-                            raise
+                            self.client = None
+                            self._vprint(
+                                f'  ⚠️  NeuPrint client unavailable '
+                                f'({exc}); falling back to locally cached '
+                                'skeletons', level='simple')
                         else:
                             # Set as default to avoid "multiple clients" error
                             neuprint.set_default_client(self.client)
@@ -6772,10 +6926,14 @@ class VisualizeSkeleton:
                             self.client = Client(self.server, dataset=self.dataset)
                             self.client.fetch_version()
                         except Exception as exc:
-                            if not _token_rejected(exc):
+                            if not _client_unusable(exc):
+                                self._warn_neuprint_token_rejected(from_env=True)
                                 raise
-                            self._warn_neuprint_token_rejected(from_env=True)
-                            raise
+                            self.client = None
+                            self._vprint(
+                                f'  ⚠️  NeuPrint client unavailable '
+                                f'({exc}); falling back to locally cached '
+                                'skeletons', level='simple')
                         else:
                             # Set as default to avoid "multiple clients" error
                             neuprint.set_default_client(self.client)
@@ -8808,15 +8966,25 @@ class VisualizeSkeleton:
                     break
 
             if fetch_ids and not online_fetched:
-                # Never fall through to a silent empty render: a fully
-                # failed fetch means the figure would contain no neurons.
+                # Never fall through to a silent empty render: with no
+                # renderable neuron at all the figure would be empty, so
+                # raise with the remedy. When the cache already covers a
+                # subset, degrade instead — render the cached neurons and
+                # say loudly which part of the request is missing (same
+                # failure-isolation contract as per-neuron fetches).
                 detail = '' if self.client else (
                     ' No NeuPrint client is configured — check '
                     "tokens.neuprint in config.json / config_local.json or "
                     'the NEUPRINT_APPLICATION_CREDENTIALS variable.')
-                raise RuntimeError(
-                    f'NeuPrint skeleton fetch failed for all '
-                    f'{len(fetch_ids)} requested neurons.{detail}')
+                if not fetched:
+                    raise RuntimeError(
+                        f'NeuPrint skeleton fetch failed for all '
+                        f'{len(fetch_ids)} requested neurons.{detail}')
+                tqdm.write(
+                    f'  ⚠️  NeuPrint online fetch failed for '
+                    f'{len(fetch_ids)} of {len(body_ids)} requested '
+                    f'neurons{detail}; rendering the '
+                    f'{len(fetched)} cached neuron(s) only.')
 
             self._vprint(
                 f'  ✓ Skeleton fetch phase complete: {len(online_fetched)}/'
@@ -11912,16 +12080,27 @@ class VisualizeSkeleton:
 
                         # Caller override (plan-type-mapping-validation-
                         # pipeline.md Revision 3): a neuron stamped with
-                        # ``_drocat_legend_type`` (e.g. 'query · APDN3' or
-                        # 'matched · CL125 · verified') takes precedence
-                        # over the table-derived type so exporters can
-                        # category-prefix the collapsed type roots.
+                        # ``_drocat_legend_type`` or registered in the
+                        # scene-level ``_drocat_legend_type_overrides``
+                        # map (bodyId -> label) takes precedence over the
+                        # table-derived type, so exporters can
+                        # category-prefix the collapsed type roots
+                        # ('query · APDN3', 'matched · CL125 · verified')
+                        # even when line preparation re-wraps neurons.
+                        override_type = None
                         if source_index < len(neuron_vols):
                             override_type = getattr(
                                 neuron_vols[source_index],
                                 '_drocat_legend_type', None)
-                            if override_type:
-                                neuron_type = str(override_type)
+                        if not override_type:
+                            override_map = getattr(
+                                self, '_drocat_legend_type_overrides',
+                                None) or {}
+                            override_type = (
+                                override_map.get(neuron_id)
+                                or override_map.get(str(neuron_id)))
+                        if override_type:
+                            neuron_type = str(override_type)
 
                         if neuron_type:
                             legend_group = f"{neuron_type}"
@@ -11976,6 +12155,12 @@ class VisualizeSkeleton:
                                 display_color = None
                             tree_meta = dict(getattr(trace, 'meta', None) or {})
                             if self._tree_uses_custom_groups():
+                                # Revision 3.5 Issue 1: per-bodyId trace
+                                # identity + hover in branch-group scenes
+                                # (see _apply_tree_leaf_trace_identity).
+                                self._apply_tree_leaf_trace_identity(
+                                    trace, tree_label, neuron_vols,
+                                    source_index, neuron_id)
                                 # Homolog/find-similar query overlays
                                 # (query_transformed_* layers) collapse into
                                 # one shared group instead of one group per
@@ -11984,7 +12169,15 @@ class VisualizeSkeleton:
                                         'query_transformed'):
                                     group_name = 'query_transformed'
                                 else:
-                                    group_name = self.layer_names[i]
+                                    # ' :: ' splits layer name from legend
+                                    # group so callers can register many
+                                    # uniquely-named layers under ONE
+                                    # merged tree group (Revision 3:
+                                    # branch groups with query/matched
+                                    # category layers).
+                                    group_name = str(
+                                        self.layer_names[i]).split(
+                                        ' :: ')[0]
                                 tree_meta['drocatLegend'] = {
                                     'kind': 'neuron',
                                     'group': group_name,
@@ -11994,6 +12187,15 @@ class VisualizeSkeleton:
                                     'customGroup': True,
                                 }
                             else:
+                                # The interactive hover reads like the
+                                # bodyId leaf it belongs to, while the
+                                # trace name stays at the type level
+                                # for the native/static legend.
+                                self._apply_tree_leaf_hover(
+                                    trace, tree_label,
+                                    self._tree_hover_body_id(
+                                        neuron_vols, source_index,
+                                        neuron_id))
                                 tree_meta['drocatLegend'] = {
                                     'kind': 'neuron',
                                     'group': legend_group,

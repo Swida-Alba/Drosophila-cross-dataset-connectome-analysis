@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connectivity · Find Similar - DROCAT Instructions</title>
+  <title>Connectivity · Find Homolog - DROCAT Instructions</title>
   <link rel="stylesheet" href="guide.css">
 </head>
 <body>
@@ -12,11 +12,13 @@
     <a class="back" href="README.html">&larr; Back to guides</a>
     <span class="tag">Connectome</span>
   </header>
-  <h1>Find Similar <span class="tag">Connectivity tab</span></h1>
+  <h1>Find Homolog <span class="tag">Connectivity tab</span></h1>
   <p class="lede">
     Find neurons similar to a source neuron via connectivity profile
-    similarity. With different <b>Source</b> and <b>Target</b> datasets this
-    is the cross-dataset <b>homolog search</b> (e.g. <code>aMe12</code> in
+    similarity (formerly the <i>Find Similar</i> sub-tab — renamed to
+    reflect its purpose; the backend engine is unchanged). With different
+    <b>Source</b> and <b>Target</b> datasets this is the cross-dataset
+    <b>homolog search</b> (e.g. <code>aMe12</code> in
     <code>male-cns</code> → candidates in <code>hemibrain</code>); setting
     <b>Target = Source</b> gives the within-dataset (intra-dataset)
     similar-neuron search. Both run the same engine
@@ -29,7 +31,7 @@
       input is searched independently and receives its own output folder.</li>
     <li>Choose <b>Source Dataset</b> and <b>Target Dataset</b> (set Target =
       Source for a within-dataset search).</li>
-    <li>Click <b>Find Similar Neurons</b> (Fast Search is on by default).</li>
+    <li>Click <b>Find Homologs</b> (Fast Search is on by default).</li>
   </ol>
 
   <h2>Inputs &amp; examples</h2>
@@ -113,6 +115,28 @@
       what it needs.</li>
   </ul>
 
+  <h2>Morph qualification (cross-dataset, optional)</h2>
+  <p><b>Morph Qualification</b> adds a morphological second opinion to the
+    connectivity ranking. It runs only on the <b>visualized top-N</b>
+    candidates, and only for cross-dataset targets among
+    <b>FAFB / male-cns / BANC</b>:</p>
+  <ul>
+    <li>The query skeleton is transformed into the target's render space and
+      scored with the production <b>vector_v2</b> scorer (no NBLAST
+      cross-dataset).</li>
+    <li>A per-query <b>null bar</b> — the p95 of 200 seeded random target
+      neurons — calibrates the raw score: cross-dataset morph scores have a
+      high, query-dependent baseline, so only the distance above the noise
+      floor is meaningful.</li>
+    <li>Candidates below the bar are <b>excluded from the 3D scene</b> and
+      reported; the results tables keep every row and gain
+      <code>morph_v2</code>, <code>morph_null_p95</code>, <code>morph_z</code>
+      and <code>morph_qualified</code> columns on the scored rows.</li>
+    <li>The <b>bar offset</b> slider raises the bar above the p95 for a
+      stricter confirmation. With the option off, output is byte-identical
+      to the classic behavior.</li>
+  </ul>
+
   <h2>Loose search (more candidates)</h2>
   <p>The loose-search knobs (<b>Min Shared Partners</b>, <b>Candidate
     Prune %</b>), formerly exposed by the removed "Connectivity similarity"
@@ -142,6 +166,12 @@
     matches/{type}.csv, matches/top_target_bodyids.csv
   overlaps/{source}_vs_{target}.csv    # partner overlap details
   visualization/...            (when visualization enabled)</code></pre>
+  <p>BodyId-level tables (<code>results/bodyid_results.csv</code>,
+    <code>profiles/query/source_bodyids.csv</code>,
+    <code>profiles/matches/top_target_bodyids.csv</code>) list the neuron's
+    <code>instance</code> next to its type, resolved from that row's dataset
+    neuron table (empty when the neuron is unknown to it) — no bodyId-level
+    export identifies a neuron by its bare numeric id alone.</p>
 
   <div class="callout info">
     <b>Exported run guide:</b> every successful run also writes
