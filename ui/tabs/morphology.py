@@ -40,10 +40,17 @@ def _cross_allowed_datasets():
     with an explicit banner.
     """
     try:
-        from .dataset_service import get_all_datasets
-        names = get_all_datasets()
+        from ..dataset_service import get_dataset_service
+        names = get_dataset_service().get_all_datasets()
     except Exception:
-        return []
+        # Never leave the allow-list empty on a service hiccup: the backend
+        # still validates every pair, so an empty filter would wrongly
+        # banner the production FAFB <-> male-cns pair.
+        return ["male-cns:v1.0", "flywire_FAFB_v783", "banc_v888",
+                "banc_v626"]
+    if not names:
+        return ["male-cns:v1.0", "flywire_FAFB_v783", "banc_v888",
+                "banc_v626"]
     allowed = []
     for name in names:
         low = str(name).lower()
