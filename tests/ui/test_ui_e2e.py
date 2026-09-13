@@ -5237,17 +5237,27 @@ class TestComponents:
 
     def test_history_rows_show_dataset_provenance_badges(self, tmp_path, monkeypatch):
         """With ``show_history_datasets`` (cross-dataset tab), history rows
-        carry a gray tag only for datasets currently SELECTED in the tab's
-        dataset input; the default dropdown shows no dataset tags at all."""
+        carry a gray tag only for SELECTED datasets whose local pool actually
+        contains the value — a multi-dataset run's recorded selection never
+        tags a value with a dataset it does not resolve in; the default
+        dropdown shows no dataset tags at all."""
         from nicegui import Client
         from nicegui.page import page
         import ui.history_store as hs
+        import ui.type_suggestions as ts
         from ui.components.common import neuron_list_input
 
         dataset_a = "male-cns:v1.0"
         dataset_b = "hemibrain:v1.2.1"
         monkeypatch.setattr(hs, "_HISTORY_PATH", tmp_path / "neuron_history.json")
-        hs.record(["aMe12"], now="2026-08-11T10:00:00",
+        pools = {
+            dataset_a: {"type": [("aMe12", "type")]},
+            dataset_b: {"type": [("aMe12", "type"), ("KC", "type")]},
+        }
+        monkeypatch.setattr(
+            ts, "get_dataset_pools", lambda dataset: pools.get(str(dataset), {}))
+        # Recorded like a multi-dataset run: both chips carry both datasets.
+        hs.record(["aMe12", "KC"], now="2026-08-11T10:00:00",
                   datasets=[dataset_a, dataset_b])
         selected = {"value": [dataset_a]}
 
@@ -5269,33 +5279,44 @@ class TestComponents:
                 out.extend(subtree_texts(child))
             return out
 
-        def focus_and_read(box):
-            focus = next(
+        def focus(box):
+            listener = next(
                 listener for listener in box.chip_input._event_listeners.values()
                 if listener.type == "focus"
             )
-            box.chip_input._handle_event({"listener_id": focus.id, "args": None})
+            box.chip_input._handle_event({"listener_id": listener.id, "args": None})
+
+        def row_texts(box, value):
+            focus(box)
             for child in box.suggest_menu.default_slot.children:
                 texts = subtree_texts(child)
-                if "aMe12" in texts:
+                if value in texts:
                     return texts
-            raise AssertionError("aMe12 history row not found")
+            raise AssertionError(f"{value} history row not found")
 
         # Default dropdown: entries are shown without dataset tags.
-        assert "male-cns:v1.0" not in focus_and_read(plain)
+        assert "male-cns:v1.0" not in row_texts(plain, "aMe12")
 
-        # Cross-dataset dropdown: only the SELECTED dataset is tagged, even
-        # though the entry was also recorded for hemibrain.
-        cross_texts = focus_and_read(cross)
+        # Cross-dataset dropdown: aMe12 is tagged male-cns only — the
+        # recorded hemibrain provenance never becomes a badge it does not
+        # resolve in.
+        cross_texts = row_texts(cross, "aMe12")
         assert "male-cns:v1.0" in cross_texts
         assert "hemibrain:v1.2.1" not in cross_texts
 
         # Selecting the other dataset swaps the visible tag.
         cross.suggest_menu.close()
         selected["value"] = [dataset_b]
-        cross_texts = focus_and_read(cross)
+        cross_texts = row_texts(cross, "aMe12")
         assert "hemibrain:v1.2.1" in cross_texts
         assert "male-cns:v1.0" not in cross_texts
+
+        # KC resolves only in hemibrain: under a male-cns-only selection the
+        # row stays (recorded scope still intersects) but shows no badge.
+        selected["value"] = [dataset_a]
+        cross.suggest_menu.close()
+        assert "hemibrain:v1.2.1" not in row_texts(cross, "KC")
+        assert "male-cns:v1.0" not in row_texts(cross, "KC")
 
     def test_history_rows_show_category_hint_like_suggestions(self, tmp_path, monkeypatch):
         """History rows resolve their searched column (type/instance/bodyId)

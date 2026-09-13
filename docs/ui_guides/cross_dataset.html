@@ -41,6 +41,21 @@
   </div>
 
   <h2>Inputs &amp; examples</h2>
+  <p>The <b>Source Neurons</b> and <b>Target Neurons</b> boxes accept one
+    query per chip (exact / starts with / contains / ends with / regex) and
+    help while you type: dataset-aware suggestions list matching type /
+    instance / bodyId names with a gray hint naming the matched column and
+    dataset (<code>type &middot; male-cns:v1.0</code>). With the field empty,
+    the <b>Recent/Frequent</b> history lists your previously run queries.
+    Each history row carries one gray tag per <i>selected</i> dataset whose
+    local neuron pool actually contains the value &mdash; a male-cns-only
+    type such as <code>5thsLNv_LNd6</code> is tagged
+    <code>male-cns:v1.0</code> only, never the other datasets that merely
+    shared the same run. Values that resolve in none of the selected
+    datasets (regex patterns, names only in datasets without local tables)
+    show no tags. The Recent/Frequent list itself stays scoped to your
+    selection: a query recorded only for datasets you have deselected is
+    hidden until you select one of them again.</p>
   <table>
     <tr><th>Example</th><th>Behavior</th></tr>
     <tr><td>Datasets: male-cns:v0.9, hemibrain:v1.2.1</td><td>Two datasets compared using their automatic display names</td></tr>
@@ -60,7 +75,8 @@
     <tr><td>Edge Budget</td><td>1,000,000</td><td>Fix D (budget-fit search): after the lossless prunes, discovery cones exceeding this many bodyId edges are floored at the weakest weight tier whose lossless-closed cone still fits the cap — exactly equivalent to raising the threshold; the applied floor is reported as <code>edge_weight_floor</code> with the residual slack and probe trace. 0 = off; shortest mode never floors</td></tr>
     <tr><td>Visualization Edge Limit</td><td>500</td><td>Caps edges drawn in each network/Sankey/heatmap visualization; it does not alter fetched connections or pathfinding</td></tr>
     <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>StrongestFirst path budget: when the search exceeds it, ALL paths above the achieved strength cutoff (tau) are kept and tau is reported. StrongestFirst is the built-in 'all'-mode algorithm (the selector was removed); see the <a href="pathfinding_algorithms.html">pathfinding algorithms guide</a>.</td></tr>
-    <tr><td>Threshold mode: Standard</td><td>default</td><td>Each entered chip is one query and the same requested N is applied to every selected dataset.</td></tr>
+    <tr><td>Threshold mode: Auto</td><td>default</td><td>Requires at least two selected datasets. Threshold chips are optional: an empty box uses the bootstrap floor (Min Synapse Count 3), and entered chips raise the floor to the lowest chip. One bootstrap pathfinding run per dataset (floor = Min Synapse Count 3) measures each dataset's own window <code>[w_start, w_star_measured]</code> from its <b>searched graph</b> (not the whole dataset); the vertical (same-threshold) and horizontal (same-density) integer rows are then emitted and run through the combination engine. <b>Auto covers both comparisons: the per-threshold analysis (vertical rows) and the density-aligned analysis (horizontal rows).</b> <b>Density alignment is computed on the query's bodyId searched graph; the compared matrices are type-level projections of the same search. A threshold here is a per-connection synapse count (Min Synapse Count).</b> The run guide mirrors every <code>[auto threshold]</code> / <code>[density]</code> warning.</td></tr>
+    <tr><td>Threshold mode: Standard</td><td>off</td><td>Each entered chip is one query and the same requested N is applied to every selected dataset.</td></tr>
     <tr><td>Threshold mode: Custom combination</td><td>off</td><td>Requires at least two selected datasets. Core Parameters shows a table with datasets as columns and query rows. Every row is one complete comparison identity, such as BANC=3 + FAFB=7; it is not an independent threshold list per dataset. The sorted union is used only to deduplicate raw jobs.</td></tr>
     <tr><td>Replay Paths</td><td>on</td><td>Path mode 'all': enumerate once at the lowest threshold and materialize higher thresholds from the bottleneck-annotated path set (identical outputs, no re-enumeration). With a tau collapse, folders exist only for real thresholds — the tau folder is materialized fresh (tau denominators) and collapsed thresholds alias it. Shortest mode is never replayed</td></tr>
     <tr><td>Auto-extend Collapsed Thresholds</td><td>off</td><td>F7: when a run's effective tau collapses asked thresholds, extend each dataset with k × τ_ref points (τ_ref = max per-dataset tau) while ≤ 2× the max asked threshold — the schedule is global, so the expanded points stay shared across datasets</td></tr>
@@ -82,6 +98,28 @@
   <p>The raw jobs are deduplicated across rows. For example, rows
     <code>(BANC=3, FAFB=7)</code> and <code>(BANC=5, FAFB=7)</code> reuse the
     FAFB@7 raw run but remain two distinct comparison queries.</p>
+  <p><b>Auto</b> is the default mode (listed first; it covers both the per-threshold and the density-aligned comparison, so no threshold chips are needed). It runs one bootstrap
+    enumeration per dataset at the floor (Min Synapse Count 3), measures each
+    dataset's completeness window <code>[w_start, w_star_measured]</code>
+    from the query's own searched graph (the ceiling is the measured
+    <code>max(path bottlenecks)</code>, not the stored provenance value),
+    and then emits integer aligned rows: vertical rows share one threshold
+    across all datasets, horizontal rows share a normalized edge density
+    <code>E(t)/N</code> (N = typed searched nodes, fixed in t). The rows
+    feed the same combination engine, so the comparison runs end-to-end with
+    no new pathfinder. Outputs: <code>comparison_results/density_curves.csv</code>,
+    <code>density_windows.csv</code>, and
+    <code>density_alignment_best_matches.csv</code>; the run guide
+    (<code>_UserGuide_please_read_me</code>) mirrors the auto warnings.</p>
+  <p>Density curves are not exclusive to auto mode: <b>every pathfinding
+    comparison</b> exports <code>density_curves.csv</code> and
+    <code>density_windows.csv</code> for every queried dataset, spanning its
+    own window from the minimal available threshold to the measured ceiling,
+    computed on the cone (the searched graph at the lowest executed
+    threshold). The edge basis follows the Drop Untyped setting
+    (<code>bodyId_edges_typed</code> when on,
+    <code>bodyId_edges_all_but_debris</code> when off); segmentation debris
+    is always excluded.</p>
 
   <h2>Release-aware type mapping</h2>
   <p>BANC v626 and v888 remain separate type/bodyId namespaces. Their
@@ -122,9 +160,15 @@
     <tr><td><code>W*</code> / <code>strongest_retained_bottleneck</code></td><td>The widest-path ceiling after lossless pruning; lossless pruning does not change it.</td></tr>
     <tr><td><code>paths_complete</code></td><td>Whether all intact paths within the search/depth bound were emitted; false means a budget affected the materialized set.</td></tr>
   </table>
-  <p>The same block is exported in each <code>dataset_data/.../minsyn_N/</code>
-    folder (<code>parameters.txt</code>, <code>all_attributes.json</code>, and
-    <code>data_details/parameters.csv</code>). The comparison root also writes
+  <p>The same block is exported in each materialized data folder under
+    <code>dataset_data/.../</code> — a genuine requested run keeps the bare
+    <code>minsyn_{requested}</code>, the collapse floor others alias to is
+    <code>minsyn_{applied}_applied_floor</code>, and an aliased requested level
+    is a marker folder <code>minsyn_{requested}_skipped/</code> (README only, no
+    data; a requested level coinciding with its own floor is skipped silently).
+    Each folder carries <code>parameters.txt</code>, <code>all_attributes.json</code>, and
+    <code>data_details/parameters.csv</code>; each dataset also writes
+    <code>APPLIED_THRESHOLDS.md</code>. The comparison root also writes
     <code>effective_thresholds.json</code> for the UI notice and one row per
     dataset/threshold in
     <code>comparison_results/pathfinding_provenance.csv</code>. Combination
@@ -180,7 +224,7 @@
       edges, reciprocal graphs.</li>
   </ul>
 
-  <h2>The Type Mapping panel</h2>
+  <h2 id="type-mapping-panel">The Type Mapping panel</h2>
   <p>The <b>Type Mapping</b> button (enabled when &ge; 2 selected datasets
     have cached neuron indexes) previews the auto type mapping the run
     will use — informational only, please double check. The same
@@ -348,7 +392,7 @@
   similarity_matrices/similarity_threshold_{N}.csv
   similarity_matrices/similarity_query_{query_id}.csv
   similarity_matrices/similarity_by_query.csv
-  dataset_data/{dataset_folder}/minsyn_{N}/...   # per-dataset FindAllPath
+  dataset_data/{dataset_folder}/minsyn_*/...      # per-dataset FindAllPath
                                                  # outputs (see Complete
                                                  # Paths guide), incl.
                                                  # hemisphere_symmetry/

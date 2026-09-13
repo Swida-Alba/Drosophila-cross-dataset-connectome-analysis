@@ -72,8 +72,10 @@ def create_inter_dataset_tab():
                 hint="Source neurons for pathfinding. Type one query per chip or upload a CSV/TSV/Excel file (first column).",
                 suggestions=_type_suggest,
                 available_neurons=lambda: datasets_select.value if datasets_select is not None else [],
-                # History rows tag the selected datasets they were recorded
-                # for, so cross-dataset entries stay traceable.
+                # History rows tag the selected datasets where the value
+                # actually resolves (exact local-pool membership), so
+                # cross-dataset entries stay traceable without claiming
+                # datasets a type does not exist in.
                 show_history_datasets=True,
             ).classes("drocat-fixed-neuron-input")
             target_input = neuron_list_input(
@@ -114,25 +116,26 @@ def create_inter_dataset_tab():
                          "and a high unreachable number (e.g. 99) gives an effectively "
                          "unlimited search.",
                 )
-            # Keep the mode selector in a fixed position above both editors.
-            # This follows the segmented-button treatment used by the
-            # Visualization > Skeleton tab: changing mode only swaps the
-            # panel below these buttons and never moves the selector.
-            threshold_mode_value = {"value": "standard"}
+            # Auto is the default mode: it measures each dataset's own
+            # threshold window from one bootstrap run and emits BOTH the
+            # per-threshold (vertical) and density-matched (horizontal)
+            # comparisons — no threshold chips required.
+            threshold_mode_value = {"value": "auto"}
             threshold_mode_buttons = {}
             section_header("Threshold Mode", "tune")
             with ui.row().classes(
                 "w-full items-center justify-between gap-4 px-2 flex-nowrap"
             ):
                 for _mode, _label in (
+                    ("auto", "Auto"),
                     ("standard", "Standard"),
                     ("combinations", "Custom combination"),
                 ):
                     _button = ui.button(_label).props(
                         "outline no-caps"
-                    ).classes("w-1/2")
+                    ).classes("w-1/3")
                     _button.style(
-                        "min-height: 3rem; font-size: 1.05rem; font-weight: 700;"
+                        "min-height: 3rem; font-size: 1.0rem; font-weight: 700;"
                     )
                     threshold_mode_buttons[_mode] = _button
 
@@ -149,6 +152,17 @@ def create_inter_dataset_tab():
             standard_threshold_hint = ui.label(
                 "Standard mode: each chip is one comparison query shared by all selected datasets."
             ).classes("text-xs opacity-60 w-full")
+            auto_threshold_hint = ui.label(
+                "Auto: one bootstrap pathfinding run per dataset (floor = Min "
+                "Synapse Count 3) measures each dataset's own threshold window "
+                "[w_start, w_star_measured] from its searched graph, then emits "
+                "BOTH comparisons — per-threshold rows (vertical: one identical "
+                "threshold for every dataset, the like-for-like spine) and "
+                "density-matched rows (horizontal: thresholds chosen per "
+                "dataset to equalize E(t)/N, the density-matched envelope). "
+                "No threshold chips needed."
+            ).classes("text-xs opacity-60 w-full")
+            auto_threshold_hint.set_visibility(False)
             combination_panel = ui.column().classes("w-full gap-2")
             combination_rows = [
                 {"id": "combo_001", "label": "Combination 1", "values": {}}
@@ -232,6 +246,13 @@ def create_inter_dataset_tab():
                             "Add combination", icon="add", on_click=_add_combination_row
                         ).props("outline dense")
                         add.tooltip("Add one complete cross-dataset threshold query")
+                        seed = ui.button(
+                            "Suggest from alignment", icon="insights",
+                            on_click=_seed_from_alignment,
+                        ).props("outline dense")
+                        seed.tooltip(
+                            "Prefill rows with density-equivalent thresholds from "
+                            "a completed run's threshold_alignment output.")
 
             def _add_combination_row(_event=None):
                 _capture_combination_rows()
@@ -264,6 +285,58 @@ def create_inter_dataset_tab():
                 ]
                 _rebuild_combination_table()
 
+            def _seed_from_alignment(_event=None):
+                """Prefill rows from a completed run's alignment suggestion.
+
+                Reads comparison_results/suggested_threshold_combinations.json
+                from the run output folder (solved by a prior standard run).
+                """
+                import json as _json
+                import os as _os
+                base = output_dir.value
+                if not base:
+                    ui.notify("Set an output folder first.", type="warning")
+                    return
+                path = _os.path.join(
+                    base, "comparison_results",
+                    "suggested_threshold_combinations.json")
+                if not _os.path.exists(path):
+                    ui.notify(
+                        "No alignment suggestion found. Run a comparison "
+                        "first; the suggestion is written to "
+                        "comparison_results/suggested_threshold_combinations.json.",
+                        type="warning")
+                    return
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        payload = _json.load(fh)
+                    rows = payload.get("combinations", [])
+                except Exception as exc:
+                    ui.notify(f"Could not read suggestion: {exc}", type="negative")
+                    return
+                if not rows:
+                    ui.notify("The suggestion file has no complete rows.",
+                              type="warning")
+                    return
+                _capture_combination_rows()
+                selected = set(_combination_datasets())
+                combination_rows.clear()
+                for i, row in enumerate(rows, start=1):
+                    cell = {
+                        ds: str(row["thresholds"][ds])
+                        for ds in selected
+                        if ds in row.get("thresholds", {})
+                    }
+                    combination_rows.append({
+                        "id": row.get("id") or f"combo_{i:03d}",
+                        "label": row.get("label") or f"Aligned {i}",
+                        "values": cell,
+                    })
+                _rebuild_combination_table()
+                ui.notify(
+                    f"Seeded {len(rows)} aligned combination(s) from "
+                    f"{_os.path.basename(path)}.", type="positive")
+
             with combination_panel:
                 ui.label(
                     "Custom combination mode: each row is one query; every selected dataset "
@@ -273,9 +346,16 @@ def create_inter_dataset_tab():
             combination_panel.set_visibility(False)
 
             def _sync_threshold_mode():
-                advanced = threshold_mode_value["value"] == "combinations"
-                thresholds_input.set_visibility(not advanced)
-                standard_threshold_hint.set_visibility(not advanced)
+                mode = threshold_mode_value["value"]
+                advanced = mode == "combinations"
+                is_auto = mode == "auto"
+                # Auto mode needs no threshold chips (the bootstrap floor
+                # defaults to 3), so the chip editor only belongs to the
+                # Standard and Custom combination modes.
+                thresholds_input.set_visibility(not advanced and not is_auto)
+                standard_threshold_hint.set_visibility(
+                    not advanced and not is_auto)
+                auto_threshold_hint.set_visibility(is_auto)
                 combination_panel.set_visibility(advanced)
                 for _mode, _button in threshold_mode_buttons.items():
                     _button.props(
@@ -301,6 +381,26 @@ def create_inter_dataset_tab():
                 """Return the canonical threshold payload for the active mode."""
                 selected = _combination_datasets()
                 mode = threshold_mode_value["value"]
+                if mode == "auto":
+                    # Auto mode never requires threshold chips: an empty box
+                    # is valid and the bootstrap floor defaults to 3. Chips,
+                    # when present, raise the floor to the lowest chip.
+                    try:
+                        values = [
+                            int(value)
+                            for item in thresholds_input.get_value()[1]
+                            for value in str(item).replace(" ", "").split(",")
+                            if value
+                        ]
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "Invalid thresholds format. Use positive integers."
+                        ) from exc
+                    if any(value <= 0 for value in values):
+                        raise ValueError(
+                            "Synapse thresholds must be positive integers."
+                        )
+                    return mode, sorted(set(values)) or [3], None
                 if mode == "standard":
                     try:
                         values = [
@@ -315,10 +415,10 @@ def create_inter_dataset_tab():
                         ) from exc
                     if not values or any(value <= 0 for value in values):
                         raise ValueError(
-                            "Please enter at least one positive synapse threshold."
+                            "Please enter at least one positive synapse "
+                            "threshold."
                         )
                     return mode, sorted(set(values)), None
-
                 _capture_combination_rows()
                 if len(selected) < 2:
                     raise ValueError(
@@ -610,6 +710,7 @@ def create_inter_dataset_tab():
             "threshold_mode": threshold_mode,
             "threshold_dataset_order": list(datasets),
             "threshold_combinations": threshold_combinations,
+            "density_normalizer": "per_node",
             "replay_paths": replay_paths.value,
             "auto_extend_thresholds": auto_extend_thresholds.value,
             "drop_untyped": drop_untyped.value,
@@ -670,9 +771,23 @@ def create_inter_dataset_tab():
         match_info = result.get("neuron_match") or {}
         if match_info.get("any_pair"):
             from ..history_store import record as _record_history
+            # Per-value dataset provenance: stamp only the selected datasets
+            # whose local pools actually contain the value, so a male-cns-only
+            # type never carries banc/flywire badges just because they were
+            # selected for the same run. Unresolvable chips (regex patterns,
+            # names matched through remote-only data) fall back to the whole
+            # selection and keep the run-scope meaning.
+            values = [str(v) for v in sources + targets]
+            try:
+                from ..type_suggestions import datasets_resolving
+                value_datasets = datasets_resolving(
+                    values, list(datasets_select.value or []))
+            except Exception:
+                value_datasets = {}
             _record_history(
-                [str(v) for v in sources + targets],
+                values,
                 datasets=list(datasets_select.value or []),
+                value_datasets=value_datasets,
             )
 
         output_panel.set_running(False)

@@ -2676,6 +2676,17 @@ class ComparisonAnalyzer:
         )
 
         fnc.InitializeNeuronInfo()
+        # Same provenance marker as run_path_analysis: the UI runner parses
+        # this to record query history; without it the replay flow (the
+        # default path) never reports the resolved set sizes and the tab
+        # silently skips recording.
+        source_df = getattr(fnc, "source_df", None)
+        target_df = getattr(fnc, "target_df", None)
+        print(
+            f"[DROCAT][neuron-match] source={len(source_df) if source_df is not None else 0} "
+            f"target={len(target_df) if target_df is not None else 0}",
+            flush=True,
+        )
         if self.parameters.path_mode == 'shortest':
             # Not reachable: replay is only enabled for path_mode='all'
             fnc.FindShortestPath(find_reciprocal=self.parameters.find_reciprocal)

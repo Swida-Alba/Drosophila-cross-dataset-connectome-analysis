@@ -13,7 +13,7 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 _HISTORY_PATH = Path(__file__).resolve().parent / "neuron_history.json"
 _LIMIT_RECENT = 10
@@ -157,7 +157,8 @@ def _save(values: Dict[str, dict], history_path: Optional[Path] = None) -> None:
 
 def record(values: List[str], now: Optional[str] = None,
            custom_values: Optional[Iterable[str]] = None,
-           datasets=None, *, _history_path: Optional[Path] = None) -> None:
+           datasets=None, value_datasets=None, *,
+           _history_path: Optional[Path] = None) -> None:
     """Record searched values (raw chips, pre-pattern): bump the count and
     refresh the last-used timestamp of each value.
 
@@ -166,7 +167,11 @@ def record(values: List[str], now: Optional[str] = None,
     the time of deletion. ``custom_values`` is injectable for callers and
     tests; omitted values are resolved from the group registry. ``datasets``
     records the selected dataset(s) so later history menus can use the same
-    scope as suggestions.
+    scope as suggestions. ``value_datasets`` optionally maps a value to the
+    datasets it actually resolved in (cross-dataset tab): only those datasets
+    are stored for it, instead of the whole run selection. Values missing
+    from the mapping — regex patterns, or names matched through data without
+    local tables — fall back to the shared ``datasets`` selection.
     """
     if not values:
         return
@@ -177,6 +182,11 @@ def record(values: List[str], now: Optional[str] = None,
             _current_custom_values()
             if custom_values is None else custom_values
         ) if str(value).strip()
+    }
+    per_value = {
+        str(value).strip(): resolved
+        for value, resolved in (value_datasets or {}).items()
+        if str(value).strip()
     }
     with _LOCK:
         data = _load(history_path)
@@ -194,7 +204,8 @@ def record(values: List[str], now: Optional[str] = None,
                 # its custom group has been removed; do not retain stale
                 # custom provenance in that case.
                 entry.pop("kind", None)
-            dataset_values = _normalize_datasets(datasets)
+            dataset_values = _normalize_datasets(
+                per_value.get(value) or datasets)
             if dataset_values:
                 prior_datasets = {
                     str(dataset).strip()
@@ -225,6 +236,52 @@ def datasets_of(value: str, *, _history_path: Optional[Path] = None) -> List[str
             for dataset in (entry.get("datasets") or [])
             if str(dataset).strip()
         })
+
+
+def prune_dataset_provenance(
+    resolve: Callable[[List[str], List[str]], Dict[str, List[str]]],
+    *, _history_path: Optional[Path] = None,
+) -> Dict[str, List[str]]:
+    """Prune recorded dataset provenance down to verifiable datasets.
+
+    Legacy entries were stamped with the whole run selection, so a
+    male-cns-only type can carry datasets it does not exist in. ``resolve``
+    maps values to the datasets they actually resolve in given a candidate
+    dataset list (the cross-dataset tab passes
+    ``type_suggestions.datasets_resolving``); each entry's recorded list is
+    rewritten to the verified subset. Values that verify against none of
+    their recorded datasets — regex patterns, remote-only matches, datasets
+    without local tables — keep their recorded scope untouched, and entries
+    without recorded datasets are left alone. Returns only the changed
+    entries as ``{value: kept_datasets}`` (empty when nothing changed).
+    """
+    with _LOCK:
+        data = _load(_history_path)
+        candidates = {
+            value: [
+                str(dataset).strip()
+                for dataset in (entry.get("datasets") or [])
+                if str(dataset).strip()
+            ]
+            for value, entry in data.items()
+            if isinstance(entry, dict) and (entry.get("datasets") or [])
+        }
+        if not candidates:
+            return {}
+        all_datasets = sorted({d for datasets in candidates.values() for d in datasets})
+        resolved = resolve(list(candidates), all_datasets)
+        changed: Dict[str, List[str]] = {}
+        for value, recorded in candidates.items():
+            verified = resolved.get(value) or []
+            if not verified:
+                continue
+            kept = sorted(set(recorded) & set(verified))
+            if kept and kept != sorted(set(recorded)):
+                data[value]["datasets"] = kept
+                changed[value] = kept
+        if changed:
+            _save(data, _history_path)
+        return changed
 
 
 def mark_custom(values: Iterable[str], *, _history_path: Optional[Path] = None) -> None:

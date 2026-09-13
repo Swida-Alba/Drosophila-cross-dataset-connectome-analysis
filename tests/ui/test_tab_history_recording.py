@@ -195,12 +195,15 @@ class TestInterDatasetHistory:
             and str(element._props.get("label", "")).startswith(
                 "Datasets to compare")
         )
-        selector.value = ["banc_v888"]
+        # Dataset names with no local neuron index or table: pools are
+        # missing entirely, so the run selection is kept.
+        selector.value = ["remote-ds-a", "remote-ds-b"]
         _chip_input(client, "Source Neurons").add_values(["LNd_b"])
         _click_run(client, "Run Comparison")
 
         assert captured and captured[0][0] == "inter_dataset"
-        assert isolated_history.datasets_of("LNd_b") == ["banc_v888"]
+        assert isolated_history.datasets_of("LNd_b") == [
+            "remote-ds-a", "remote-ds-b"]
 
 
 class TestSimilarHistory:

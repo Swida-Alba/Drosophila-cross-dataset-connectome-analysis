@@ -490,6 +490,52 @@ class TestDatasetAwareSuggestions:
         ]
 
 
+class TestDatasetsResolving:
+    """Per-value resolving-dataset lists behind the cross-dataset history
+    badge tags: exact membership, the caller's dataset order, and values
+    found nowhere (patterns) absent from the mapping."""
+
+    POOLS_A = {
+        "type": [("APL", "type"), ("aMe12", "type")],
+        "instance": [("APL_1", "instance")],
+        "bodyId": [("5813012345", "aMe12_1")],
+    }
+    POOLS_B = {
+        "type": [("APL", "type"), ("KC", "type")],
+        "instance": [("KC_1", "instance")],
+        "bodyId": [("5813012345", "aMe12_2")],
+    }
+
+    @pytest.fixture
+    def pools(self, monkeypatch):
+        monkeypatch.setattr(
+            "ui.type_suggestions.get_dataset_pools",
+            lambda ds: self.POOLS_A if ds == "A" else self.POOLS_B,
+        )
+
+    def test_membership_order_and_absent_values(self, pools):
+        from ui.type_suggestions import datasets_resolving
+
+        assert datasets_resolving(
+            ["APL", "KC", "5813012345", "AP.*"], ["A", "B"]
+        ) == {
+            "APL": ["A", "B"],
+            "KC": ["B"],
+            "5813012345": ["A", "B"],
+        }
+
+    def test_restricted_to_requested_datasets(self, pools):
+        from ui.type_suggestions import datasets_resolving
+
+        assert datasets_resolving(["APL", "KC"], ["A"]) == {"APL": ["A"]}
+        assert datasets_resolving(["APL", "KC"], []) == {}
+
+    def test_empty_and_blank_values_ignored(self, pools):
+        from ui.type_suggestions import datasets_resolving
+
+        assert datasets_resolving(["", "  ", None], ["A", "B"]) == {}
+
+
 def test_clean_split_breaks_combined_cells_into_names():
     """Combined additional_type(s) cells become individual suggestions."""
     from ui.type_suggestions import _clean_split

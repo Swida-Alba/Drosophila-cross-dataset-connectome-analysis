@@ -35,6 +35,14 @@ params = ComparisonParameters(
     #   {"id": "combo_001", "thresholds":
     #       {"hemibrain:v1.2.1": 3, "male-cns:v0.9": 8}},
     # ],
+    # Auto (default in the UI; needs >= 2 datasets and path mode 'all';
+    # threshold chips are optional — an empty box uses the bootstrap floor
+    # and entered chips raise the floor to the lowest chip) measures each
+    # dataset's window from one bootstrap
+    # enumeration and installs BOTH the per-threshold (vertical) and the
+    # density-matched (horizontal) aligned rows:
+    # threshold_mode="auto",
+    # threshold_dataset_order=["hemibrain:v1.2.1", "male-cns:v0.9"],
     top_edges=500,
     graph_edge_limit_bodyid=0,          # Edge Budget off; set ~1_000_000 to cap the discovery cone
     edgeN_limit=500,
@@ -88,8 +96,10 @@ python skills/drocat-usage/scripts/run_direct.py \
   written. Dropped rows land in `comparison_results/untyped_dropped_records.csv`
   with an `untyped_side` column (`pre` / `post` / `pre+post`); counts are
   appended to `user_warning_notes.txt` only when rows were dropped.
-- **Threshold modes:** the Core Parameters editor defaults to Standard N-chip
-  thresholds, where each chip is applied to every selected dataset. Advanced
+- **Threshold modes:** the Core Parameters editor defaults to Auto
+  (density-aligned; requires >= 2 datasets, see the constructor comment
+  above). Standard applies N threshold chips to every selected dataset.
+  Advanced
   threshold combinations use dataset columns and query rows; each row must
   have one threshold for every dataset. The row is the alignment/comparison
   identity, while the sorted cell union is only a deduplicated raw-run
@@ -136,6 +146,27 @@ python skills/drocat-usage/scripts/run_direct.py \
   `threshold_alignment_best_matches.csv` are raw-run schedule diagnostics
   (`threshold_scope=raw_run_schedule_diagnostic` in combination mode); use
   `threshold_combinations.csv` for the actual query rows.
+- **Density curves** (every pathfinding mode):
+  `comparison_results/density_curves.csv` and `density_windows.csv` give
+  each queried dataset a cone-scoped curve over its own window
+  `[w_start, w_star_measured]` — from the minimal available threshold to
+  the measured `max(path bottlenecks)`. The edge basis follows
+  `drop_untyped`: `bodyId_edges_typed` when on (N = typed searched nodes),
+  `bodyId_edges_all_but_debris` when off (N = typed + untyped); segmentation
+  debris (ids absent from the curated table) is always excluded. The raw
+  capture lives in `dataset_data/{dataset}/_density/` (`density_edges.npz`,
+  `density_path_bottlenecks.npy`, `density_meta.json`); the two-panel figure
+  is `comparison_visualizations/density_alignment_threshold_curves.png`. In
+  auto mode, `comparison_results/density_alignment_best_matches.csv`
+  additionally holds the measured vertical/horizontal aligned rows, and
+  `[auto threshold]` / `[density]` warnings mirror into the run guide. When
+  both row modes coexist, read the vertical rows as the like-for-like spine
+  (one identical threshold for every dataset) and the horizontal rows as
+  the density-matched envelope (per-dataset thresholds equalizing E(t)/N,
+  valid even where no shared complete threshold exists). Horizontal labels
+  carry their explicit per-dataset thresholds; the comparison report
+  renders the two analyses as separate sections (per-threshold vs
+  combination style).
 - `degree_*`, `top_edges_*`, and `unique_to_*` exports are Standard-only;
   Custom combination runs omit them rather than infer a union threshold.
 - Use `auto_type_mapping=True` (and `overall_mapping_json`) when type names differ

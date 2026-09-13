@@ -858,9 +858,13 @@ def neuron_list_input(
       exact membership over those datasets' local pools; the history list
       itself stays unscoped. With
       ``show_history_datasets=True`` (the cross-dataset tab), history rows
-      additionally show a gray tag per dataset the value was recorded for —
-      restricted to the datasets currently selected in the tab's dataset
-      input. Arrow keys navigate the open dropdown: ArrowDown enters the list
+      additionally show a gray tag per selected dataset whose local pool
+      actually contains the value — exact membership, restricted to the
+      datasets currently selected in the tab's dataset input, so a
+      male-cns-only type never carries badges for the other datasets that
+      merely shared the same run. Values resolving in none of the selected
+      datasets (patterns, not-pulled datasets) show no tags. Arrow keys
+      navigate the open dropdown: ArrowDown enters the list
       from the editor, ArrowUp returns to the editor from the first row, and
       Enter or Tab picks the highlighted row — the highlight then advances
       to the next entry and stays on the list, so repeated presses keep
@@ -1615,6 +1619,23 @@ def neuron_list_input(
                     _history_hints = dataset_aware_history_hints(
                         [*recents, *freqs], hint_datasets)
 
+            # Dataset provenance tags (cross-dataset tab): one batched,
+            # exact-membership lookup over the selected datasets' local pools.
+            # A badge then claims only datasets where the value actually
+            # resolves — the recorded run scope alone would tag every chip
+            # of a multi-dataset run with the whole selection. Only a failed
+            # lookup (None) falls back to the recorded scope below.
+            _resolved_datasets = None
+            if show_history_datasets and history_kind != "line" \
+                    and dataset_scope is not None:
+                try:
+                    from ..type_suggestions import datasets_resolving
+
+                    _resolved_datasets = datasets_resolving(
+                        [*recents, *freqs], dataset_scope)
+                except Exception:
+                    _resolved_datasets = None
+
             def _remove_history_value(value: str):
                 # Removing an item is deliberately independent from picking
                 # it. The client-side stopPropagation below keeps the parent
@@ -1664,7 +1685,15 @@ def neuron_list_input(
 
             def _history_datasets(value: str) -> List[str]:
                 """Dataset tags for one row, restricted to the datasets
-                currently selected in the tab's dataset input."""
+                currently selected in the tab's dataset input.
+
+                Tags come from exact membership over the selected datasets'
+                local pools: values that resolve in none of them (regex
+                patterns, names only in datasets without local tables) stay
+                unannotated rather than re-claiming the recorded run scope.
+                Only a failed membership lookup falls back to the recorded
+                scope.
+                """
                 if (
                     history_kind == "line"
                     or not show_history_datasets
@@ -1672,6 +1701,13 @@ def neuron_list_input(
                 ):
                     return []
                 scope = set(dataset_scope)
+                if _resolved_datasets is not None:
+                    return [
+                        dataset
+                        for dataset in _resolved_datasets.get(
+                            str(value).strip(), [])
+                        if dataset in scope
+                    ]
                 return [
                     dataset for dataset in _datasets_of(value)
                     if dataset in scope
@@ -1745,9 +1781,10 @@ def neuron_list_input(
                     if hint:
                         ui.label(str(hint)).classes("text-caption drocat-muted")
                     # Dataset provenance tags (cross-dataset tab): one gray
-                    # tag per SELECTED dataset the value was recorded for.
-                    # Entries recorded outside the current selection show no
-                    # tags here.
+                    # tag per SELECTED dataset whose local pool actually
+                    # contains the value. Values resolving in none of the
+                    # selected datasets (patterns, not-pulled datasets) show
+                    # no tags here.
                     for dataset_name in datasets or []:
                         ui.badge(str(dataset_name)).props(
                             "outline dense").classes(

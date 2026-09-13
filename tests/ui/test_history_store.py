@@ -119,6 +119,78 @@ class TestRecord:
         assert store.datasets_of("missing") == []
         assert store.datasets_of("") == []
 
+    def test_value_datasets_record_per_value_provenance(self, store):
+        """Cross-dataset runs stamp each value with only the datasets it
+        actually resolved in; values absent from the mapping (patterns,
+        remote-only matches) keep the whole run selection."""
+        store.record(
+            ["aMe12", "PPL.*"], now="2026-08-11T10:00:00",
+            datasets=["dataset-a", "dataset-b"],
+            value_datasets={"aMe12": ["dataset-b"]},
+        )
+        assert store.datasets_of("aMe12") == ["dataset-b"]
+        assert store.datasets_of("PPL.*") == ["dataset-a", "dataset-b"]
+
+        # The dataset-scoped history list follows the per-value provenance.
+        assert store.recent(datasets=["dataset-a"]) == ["PPL.*"]
+        assert store.recent(datasets=["dataset-b"]) == ["aMe12", "PPL.*"]
+
+        # Later runs merge per value: a resolved value never widens to a
+        # dataset it does not resolve in.
+        store.record(
+            ["aMe12", "PPL.*"], now="2026-08-11T10:01:00",
+            datasets=["dataset-a", "dataset-b"],
+            value_datasets={"aMe12": ["dataset-b"]},
+        )
+        assert store.datasets_of("aMe12") == ["dataset-b"]
+        assert store.datasets_of("PPL.*") == ["dataset-a", "dataset-b"]
+
+        # A value that resolves in another dataset later accumulates both.
+        store.record(
+            ["aMe12"], now="2026-08-11T10:02:00",
+            datasets=["dataset-a", "dataset-b"],
+            value_datasets={"aMe12": ["dataset-a"]},
+        )
+        assert store.datasets_of("aMe12") == ["dataset-a", "dataset-b"]
+
+    def test_prune_dataset_provenance_keeps_only_verifiable_datasets(self, store):
+        """Legacy run-selection stamps are pruned to the datasets a value
+        actually resolves in; unresolvable values (patterns, remote-only
+        matches) keep their recorded scope, and legacy entries without
+        provenance are untouched."""
+        store.record(
+            ["aMe12", "PPL.*", "5813012345"], now="2026-08-11T10:00:00",
+            datasets=["dataset-a", "dataset-b", "dataset-c"])
+        store.record(["legacy"], now="2026-08-11T10:01:00")
+
+        def resolve(values, datasets):
+            out = {}
+            for value in values:
+                if value == "aMe12":
+                    out[value] = [d for d in datasets
+                                  if d in ("dataset-a", "dataset-b")]
+                elif value == "5813012345":
+                    out[value] = ["dataset-c"]
+            return out
+
+        changed = store.prune_dataset_provenance(resolve)
+        assert changed == {
+            "aMe12": ["dataset-a", "dataset-b"],
+            "5813012345": ["dataset-c"],
+        }
+        assert store.datasets_of("aMe12") == ["dataset-a", "dataset-b"]
+        # Unresolvable values keep their recorded run scope.
+        assert store.datasets_of("PPL.*") == [
+            "dataset-a", "dataset-b", "dataset-c"]
+        assert store.datasets_of("5813012345") == ["dataset-c"]
+        assert store.datasets_of("legacy") == []
+        # Counts and recency survive the prune.
+        assert store.recent(datasets=["dataset-a"]) == [
+            "legacy", "aMe12", "PPL.*"]
+
+        # Idempotent: a second prune changes nothing.
+        assert store.prune_dataset_provenance(resolve) == {}
+
     def test_custom_group_and_saved_map_follow_their_member_datasets(
         self, store, tmp_path, monkeypatch
     ):

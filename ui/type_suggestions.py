@@ -430,23 +430,19 @@ def dataset_aware_suggestions(
     return entries
 
 
-def dataset_aware_history_hints(
+def _membership_pairs(
     values: Sequence[str],
     datasets: Sequence[str],
-) -> Dict[str, Optional[str]]:
-    """Suggestion-style gray hints for query-history rows.
+) -> Tuple[List[str], Dict[str, List[Tuple[str, str]]]]:
+    """Exact local-pool membership scan shared by the history hint strings
+    and the per-value resolving-datasets map.
 
-    The cross-dataset counterpart of :func:`dataset_aware_suggestions` for
-    COMPLETE stored queries: each value gets the same gray hint its
-    auto-suggestion row shows — the matched column and the dataset it came
-    from (``type · male-cns:v1.0``), with identical columns grouped across
-    datasets (``type · ds1, ds2``) and differing columns listed per dataset
-    (``type · ds1 · instance · ds2``). Membership is exact, with the same
-    staged priority as suggestions: a type match hides same-value matches in
-    the other columns (suggestions stop at the first non-empty stage), and a
-    numeric value resolves through the bodyId pool to its cached instance.
-    Values found in no local pool map to ``None`` so their rows stay
-    unannotated — history also keeps regex patterns that no pool contains.
+    Returns the deduplicated ``wanted`` values and, for every value found in
+    at least one pool, its ``(column_hint, dataset)`` pairs in the caller's
+    dataset order. Membership uses the same staged priority as suggestions:
+    a type match hides same-value matches in the other columns (suggestions
+    stop at the first non-empty stage), and a numeric value resolves through
+    the bodyId pool to its cached instance.
     """
     wanted: List[str] = []
     seen: set = set()
@@ -455,9 +451,6 @@ def dataset_aware_history_hints(
         if text and text not in seen:
             seen.add(text)
             wanted.append(text)
-    hints: Dict[str, Optional[str]] = {value: None for value in wanted}
-    if not wanted:
-        return hints
 
     # value -> [(hint, dataset)] in the caller's dataset order.
     pairs: Dict[str, List[Tuple[str, str]]] = {}
@@ -498,7 +491,27 @@ def dataset_aware_history_hints(
                 if column != "type" and value in sets[column]:
                     pairs.setdefault(value, []).append(
                         (column, str(dataset)))
+    return wanted, pairs
 
+
+def dataset_aware_history_hints(
+    values: Sequence[str],
+    datasets: Sequence[str],
+) -> Dict[str, Optional[str]]:
+    """Suggestion-style gray hints for query-history rows.
+
+    The cross-dataset counterpart of :func:`dataset_aware_suggestions` for
+    COMPLETE stored queries: each value gets the same gray hint its
+    auto-suggestion row shows — the matched column and the dataset it came
+    from (``type · male-cns:v1.0``), with identical columns grouped across
+    datasets (``type · ds1, ds2``) and differing columns listed per dataset
+    (``type · ds1 · instance · ds2``). Membership is exact (see
+    :func:`_membership_pairs`). Values found in no local pool map to
+    ``None`` so their rows stay unannotated — history also keeps regex
+    patterns that no pool contains.
+    """
+    wanted, pairs = _membership_pairs(values, datasets)
+    hints: Dict[str, Optional[str]] = {value: None for value in wanted}
     for value, entries in pairs.items():
         grouped: Dict[str, List[str]] = {}
         for hint, dataset in entries:
@@ -508,6 +521,32 @@ def dataset_aware_history_hints(
             for hint, ds_list in grouped.items()
         )
     return hints
+
+
+def datasets_resolving(
+    values: Sequence[str],
+    datasets: Sequence[str],
+) -> Dict[str, List[str]]:
+    """Datasets whose local pools contain each value, in caller order.
+
+    The badge counterpart of :func:`dataset_aware_history_hints`: exact
+    membership (see :func:`_membership_pairs`) per value, deduplicated while
+    keeping the caller's dataset order. Values found in no local pool —
+    regex patterns, or names living only in datasets without local tables —
+    are absent from the mapping, so callers can distinguish "resolves here"
+    from "no local evidence".
+    """
+    _wanted, pairs = _membership_pairs(values, datasets)
+    resolved: Dict[str, List[str]] = {}
+    for value, entries in pairs.items():
+        seen_datasets: set = set()
+        ordered: List[str] = []
+        for _hint, dataset in entries:
+            if dataset not in seen_datasets:
+                seen_datasets.add(dataset)
+                ordered.append(dataset)
+        resolved[value] = ordered
+    return resolved
 
 
 def filter_candidate_entries(
