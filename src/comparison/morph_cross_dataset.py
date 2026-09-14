@@ -1895,8 +1895,10 @@ a{{color:#0b66d0}}
             matrix = info.get('type_matrix')
             if matrix is not None and not matrix.empty:
                 slug = f"{_dataset_abbrev(a)}_{_dataset_abbrev(b)}"
-                links = (f'<a href="{esc(slug)}">bodyid_scores.csv</a>'
-                         f' · <a href="{esc(slug)}">type_matrix.csv</a>')
+                pair_dir = f"{self._abbrevs.get(a, _dataset_abbrev(a))}_" \
+                           f"to_{self._abbrevs.get(b, _dataset_abbrev(b))}"
+                links = (f'<a href="{esc(pair_dir)}">bodyid_scores.csv</a>'
+                         f' · <a href="{esc(pair_dir)}">type_matrix.csv</a>')
                 parts.append(similarity_matrix_card(
                     f"matrix_{slug}",
                     f'Type × type mean vector_v2 ({abbrev})',
@@ -1913,7 +1915,8 @@ a{{color:#0b66d0}}
 
         if scenes:
             parts.append('<h2>Overlay scenes</h2><div class="card"><ul>' +
-                         ''.join(f'<li><a href="{esc(p.name)}">'
+                         ''.join(f'<li><a href="{esc(p.parent.name)}/'
+                                 f'{esc(p.name)}">'
                                  f'{esc(Path(p.parent.name) / p.name)}</a></li>'
                                  for p in scenes) + '</ul>'
                          f'<p class="note">Scene frame: '
