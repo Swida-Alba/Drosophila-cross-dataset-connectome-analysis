@@ -633,9 +633,27 @@ class MorphologyProfileComparer:
             for k, v in params.items())
 
         def _frame(name: str, df: pd.DataFrame) -> str:
+            """Connectivity-report-style card: an in-page Plotly similarity
+            heatmap with annotated cells; very large bodyId matrices fall
+            back to the scrollable table (the standalone interactive
+            heatmap and CSV links are always offered)."""
+            import html as _html
             scored = int(df.notna().sum().sum())
             heatmap = f"visualization/heatmap_{name}_{self.method}.html"
             csv_rel = csv_links.get(name, "")
+            links = (f"{df.shape[0]}×{df.shape[1]} · {scored} scored cells · "
+                     f"<a href='{heatmap}'>interactive heatmap</a>"
+                     + (f" · <a href='{csv_rel}'>CSV</a>" if csv_rel else ""))
+            if max(df.shape) <= 60:
+                try:
+                    from comparison.morph_cross_dataset import (
+                        similarity_matrix_card)
+                except ImportError:
+                    from morph_cross_dataset import similarity_matrix_card
+                return similarity_matrix_card(
+                    f"morph_{name}", f"{name} level — similarity matrix",
+                    [str(c) for c in df.columns], df,
+                    links_html=links)
             cells = ""
             for idx, row in zip(df.index, df.values):
                 cells += f"<tr><th>{idx}</th>" + "".join(
@@ -643,21 +661,27 @@ class MorphologyProfileComparer:
                     for v in row) + "</tr>"
             header = "".join(f"<th>{c}</th>" for c in df.columns)
             return (
-                f"<div class='card'><h2>{name} level</h2>"
-                f"<p>{df.shape[0]}×{df.shape[1]} · {scored} scored cells · "
-                f"<a href='{heatmap}'>interactive heatmap</a>"
-                + (f" · <a href='{csv_rel}'>CSV</a>" if csv_rel else "")
-                + f"</p><div class='scroll'><table><tr><th></th>{header}"
-                  f"</tr>{cells}</table></div></div>")
+                f"<div class='card'><h2>{_html.escape(name)} level</h2>"
+                f"<p>{links}</p><div class='scroll'>"
+                f"<table><tr><th></th>{header}</tr>{cells}"
+                f"</table></div></div>")
 
+        try:
+            from comparison.morph_cross_dataset import plotly_header_tag
+        except ImportError:
+            from morph_cross_dataset import plotly_header_tag
         html = f"""<!doctype html><html><head><meta charset="utf-8">
-<title>Morphology Comparison Report</title><style>
+<title>Morphology Comparison Report</title>
+{plotly_header_tag()}<style>
 body{{font-family:system-ui,sans-serif;margin:2rem;color:#222}}
-h1{{font-size:1.4rem}} table{{border-collapse:collapse;margin:0.5rem 0 1.5rem}}
+h1{{font-size:1.4rem}} h2{{font-size:1.1rem}} table{{border-collapse:collapse;margin:0.5rem 0 1.5rem}}
 th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align:left}}
-.card{{margin-bottom:2rem}} .muted{{color:#777;font-size:0.85rem}}
+.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-bottom:1.5rem}}
+.muted{{color:#777;font-size:0.85rem}}
 .scroll{{overflow-x:auto;max-height:32rem;overflow-y:auto}}
+#plotly-cdn-missing{{display:none;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;color:#92400e;font-size:0.85rem;margin:10px 0}}
 </style></head><body>
+<div id="plotly-cdn-missing">⚠️ Plotly failed to load (CDN unreachable) — the interactive matrices need an internet connection; the CSV and standalone heatmaps still work offline.</div>
 <h1>Morphology Comparison — {self.dataset}</h1>
 <p class="muted">Intra-dataset only · method: {_METHOD_LABELS.get(self.method, self.method)}</p>
 <h2>Parameters</h2><table>{param_rows}</table>
@@ -741,8 +765,8 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
                            ) -> Optional[str]:
         """Render the compared neurons as one skeleton layer per type.
 
-        Mirrors Find Similar's 3D scene (line skeletons, layer legend,
-        template brain, no synapses); each compared type contributes one
+        Mirrors Find Similar's 3D scene (line skeletons, interactive
+        tree legend, template brain, no synapses); each compared type contributes one
         layer capped at ``TYPE_RENDER_MEMBER_CAP`` members for the render
         only. With ``fetch_online=False`` the scene is strictly offline:
         members without locally cached skeletons are skipped (reported)
@@ -813,7 +837,7 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
             # Analysis visualizations default to the light-weight line
             # representation, like Find Similar.
             "skeleton_mode": settings.get("skeleton_mode", "line"),
-            "legend_mode": "layer",
+            "legend_mode": "tree",
             "brain_mesh": "template",
             "export_views": False,
             "show_fig": False,
@@ -832,11 +856,8 @@ th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align
                 continue
             if key == "mesh_color" and value == "auto":
                 continue
-            if key == "legend_mode":
-                # Comparison layers are grouped per compared type; only the
-                # interactive 'tree' preference may override 'layer'.
-                if value != "tree":
-                    continue
+            # 'tree' is the default; an explicit settings value wins so
+            # the user can pick 'layer' or 'tree' either way.
             viz_kwargs[key] = value
         if viz_kwargs.get("skeleton_mesh_simplification") is None:
             viz_kwargs["skeleton_mesh_simplification"] = (

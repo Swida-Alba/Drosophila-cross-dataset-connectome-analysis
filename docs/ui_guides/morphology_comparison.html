@@ -21,9 +21,12 @@
   </p>
 
   <div class="callout warning">
-    <b>Intra-dataset only.</b> Skeletons are scored in one dataset's
-    coordinate space against that dataset's caches. Cross-dataset workflows
-    belong to the <a href="connectivity.html">Connectivity</a> tab.
+    <b>One dataset = intra-dataset.</b> Skeletons are scored in one
+    dataset's coordinate space against that dataset's caches. Select
+    <b>two or more datasets</b> to switch this sub-tab into the
+    <a href="cross_dataset_morphology.html">cross-dataset comparison</a>
+    (queried neurons across FAFB / male-cns / BANC, null-baselined
+    vector_v2).
   </div>
 
   <h2>Quick start</h2>
@@ -81,7 +84,22 @@
       (turn off for a strictly offline comparison)</td></tr>
     <tr><td>Generate Heatmaps</td><td>on</td><td>Interactive (VisPath)
       heatmaps for both levels</td></tr>
+    <tr><td>3D Skeleton Visualization</td><td>off</td><td>Render the
+      compared neurons as one skeleton layer per compared type (line
+      rendering by default; Advanced Visualization exposes the full render
+      settings shared with Find Similar). With <b>Fetch Missing Skeletons
+      Online</b> off, only members whose skeletons are already cached are
+      rendered — the rest are skipped with a note instead of triggering an
+      online fetch</td></tr>
   </table>
+
+  <h2>3D skeleton scene</h2>
+  <p>With <b>3D Skeleton Visualization</b> enabled, the run also renders the
+    compared population into <code>plot-3d_{dataset}/</code> inside the run
+    folder: one skeleton layer per compared type (capped at 20 members per
+    type for the render, with an in-page note when a layer is sampled), line
+    skeletons on a template brain, no synapses. The scene is linked from
+    <code>report.html</code>, and the legend tree lists every neuron leaf.</p>
 
   <h2>Output</h2>
   <pre><code>{output_dir}/morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/
@@ -92,7 +110,14 @@
   bodyid_level/bodyid_similarity_{method}.csv  # bodyId×bodyId matrix
   visualization/heatmap_type_{method}.html
   visualization/heatmap_bodyid_{method}.html
+  plot-3d_{dataset}/                       # optional 3D skeleton scene
   report.html</code></pre>
+  <p>BodyId-level rows and axes are labeled
+    <code>{bodyId}_{instance}</code> (NeuPrint-style datasets, e.g.
+    <code>11309_aMe4_L</code>) or <code>{bodyId}_{type}_L/_R</code>
+    (FAFB/BANC) — the same labels the 3D legend tree uses — so no export
+    reads as a bare numeric id. <code>members.csv</code> maps every label
+    back to its raw bodyId.</p>
   <p>Neurons that stay unavailable even after the online fetch (no
     skeleton at the source) are reported in <code>members.csv</code>
     (<code>no vector</code> / <code>no dotprops</code>) and carry empty

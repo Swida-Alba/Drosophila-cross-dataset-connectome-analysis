@@ -1039,6 +1039,82 @@ def ensure_population_artifacts(
 # Cross-dataset comparison backend (Similarity -> Morphology -> Cross-Dataset)
 # ---------------------------------------------------------------------------
 
+def plotly_header_tag() -> str:
+    """CDN Plotly include, identical to the connectivity report header.
+
+    Comparison reports embed their similarity matrices as in-page Plotly
+    heatmaps (the connectivity report's format); offline viewers see the
+    CDN fallback note instead of blank charts.
+    """
+    return ('<script src="https://cdn.plot.ly/plotly-2.27.0.min.js">'
+            '</script>'
+            '<script>if (typeof Plotly === "undefined") { '
+            'window.addEventListener("DOMContentLoaded", function() { '
+            "var b = document.getElementById('plotly-cdn-missing'); "
+            'if (b) { b.style.display = "block"; } }); }</script>')
+
+
+def similarity_matrix_card(dom_key: str, title: str, labels: List[str],
+                           matrix, *, links_html: str = '',
+                           note_html: str = '') -> str:
+    """One connectivity-report-style in-page Plotly similarity heatmap.
+
+    Green [0, 1] colorscale with per-cell value annotations and square
+    cells, mirroring ``html_report_generator._similarity_heatmap_card``.
+    ``matrix`` is a square DataFrame (NaN cells render as N/A). ``labels``
+    are the shared row/column names; ``links_html`` is emitted raw below
+    the title (CSV / interactive-heatmap links).
+    """
+    import html as _html
+    values = [[None if pd.isna(v) else round(float(v), 4) for v in row]
+              for row in matrix.values]
+    row_labels = [str(r) for r in matrix.index]
+    col_labels = [str(c) for c in matrix.columns]
+    n = max(len(col_labels), 1)
+    chart_size = min(n * 26 + 90, 640)
+    payload = json.dumps({'labels': col_labels, 'rows': row_labels,
+                          'z': values})
+    links = (f'<p style="font-size:0.8rem;margin:6px 0;">{links_html}</p>'
+             if links_html else '')
+    note = (f'<p style="font-size:0.8rem;color:#64748b;margin:6px 0;">'
+            f'{_html.escape(note_html)}</p>' if note_html else '')
+    return f"""
+    <div class="card">
+        <h2>{_html.escape(title)}</h2>
+        {links}{note}
+        <div class="scroll">
+            <div id="matrix_{_html.escape(dom_key)}"
+                 style="width:100%;height:{chart_size}px;"></div>
+        </div>
+    </div>
+    <script>
+    (function() {{
+        const data = {payload};
+        const greenScale = [[0, "#ffffff"], [0.3, "#c6efce"],
+                            [0.6, "#22c55e"], [1, "#166534"]];
+        const annotations = data.z.flatMap((row, i) => row.map((val, j) => ({{
+            x: data.labels[j], y: data.rows[i],
+            text: val === null ? "N/A" : val.toFixed(2),
+            showarrow: false,
+            font: {{ color: (val === null || val > 0.5) ? "white" : "black",
+                    size: 10 }}
+        }})));
+        Plotly.newPlot("matrix_{_html.escape(dom_key)}", [{{
+
+            z: data.z, x: data.labels, y: data.rows, type: "heatmap",
+            colorscale: greenScale, zmin: 0, zmax: 1, showscale: true
+        }}], {{
+            margin: {{ l: 90, r: 20, t: 20, b: 90 }},
+            xaxis: {{ tickangle: -45, scaleanchor: "y",
+                      constrain: "domain", tickfont: {{ size: 9 }} }},
+            yaxis: {{ autorange: "reversed", constrain: "domain",
+                      tickfont: {{ size: 9 }} }},
+            annotations: annotations
+        }}, {{ responsive: true }});
+    }})();
+    </script>"""
+
+
 def _safe_name(text: str, limit: int = 40) -> str:
     safe = ''.join(ch if ch.isalnum() or ch in '._-' else '_'
                    for ch in str(text))
@@ -1710,7 +1786,7 @@ class CrossDatasetMorphComparer:
             'include_timestamp': False,
             'skip_synapse': True,
             'skeleton_mode': 'line',
-            'legend_mode': 'layer',
+            'legend_mode': 'tree',
             'brain_mesh': 'template',
             'export_views': False,
             'show_fig': False,
@@ -1758,20 +1834,24 @@ class CrossDatasetMorphComparer:
                       existing: Optional[List[Path]] = None) -> List[Path]:
         esc = lambda s: (str(s).replace('&', '&amp;').replace('<', '&lt;')
                          .replace('>', '&gt;'))
-        parts: List[str] = ["""<!DOCTYPE html>
+        parts: List[str] = [f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>Cross-Dataset Morphology Comparison</title>
+{plotly_header_tag()}
 <style>
-body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:24px;color:#1d1d1f;background:#fafafa}
-h1{font-size:1.5rem} h2{font-size:1.15rem;margin-top:1.6rem}
-.card{background:#fff;border:1px solid #e3e3e6;border-radius:10px;padding:16px 20px;margin:14px 0}
-table{border-collapse:collapse;margin:8px 0;font-size:.9rem}
-th,td{border:1px solid #d9d9de;padding:4px 10px;text-align:right}
-th:first-child,td:first-child{text-align:left}
-.warn{background:#fff7e0;border:1px solid #f0c36d;border-radius:8px;padding:10px 14px;margin:10px 0}
-.note{color:#666;font-size:.85rem}
-a{color:#0b66d0}
-</style></head><body>""",
+body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:24px;color:#1d1d1f;background:#fafafa}}
+h1{{font-size:1.5rem}} h2{{font-size:1.15rem;margin-top:1.6rem}}
+.card{{background:#fff;border:1px solid #e3e3e6;border-radius:10px;padding:16px 20px;margin:14px 0}}
+table{{border-collapse:collapse;margin:8px 0;font-size:.9rem}}
+th,td{{border:1px solid #d9d9de;padding:4px 10px;text-align:right}}
+th:first-child,td:first-child{{text-align:left}}
+.warn{{background:#fff7e0;border:1px solid #f0c36d;border-radius:8px;padding:10px 14px;margin:10px 0}}
+.note{{color:#666;font-size:.85rem}}
+a{{color:#0b66d0}}
+.scroll{{overflow-x:auto}}
+#plotly-cdn-missing{{display:none;background:#fff7e0;border:1px solid #f0c36d;border-radius:8px;padding:10px 14px;color:#92400e;font-size:.85rem;margin:10px 0}}
+</style></head><body>
+<div id="plotly-cdn-missing">⚠️ Plotly failed to load (CDN unreachable) — the interactive matrices need an internet connection; the CSV exports still work offline.</div>""",
                            '<h1>Cross-Dataset Morphology Comparison</h1>',
                            f'<p class="note">Generated '
                            f'{datetime.now():%Y-%m-%d %H:%M:%S} · queries: '
@@ -1814,9 +1894,14 @@ a{color:#0b66d0}
                     'floor.</p>')
             matrix = info.get('type_matrix')
             if matrix is not None and not matrix.empty:
-                parts.append('<p><b>Type × type mean vector_v2</b></p>')
-                parts.append(matrix.to_html(na_rep='—', border=0,
-                                            float_format=lambda v: f'{v:.3f}'))
+                slug = f"{_dataset_abbrev(a)}_{_dataset_abbrev(b)}"
+                links = (f'<a href="{esc(slug)}">bodyid_scores.csv</a>'
+                         f' · <a href="{esc(slug)}">type_matrix.csv</a>')
+                parts.append(similarity_matrix_card(
+                    f"matrix_{slug}",
+                    f'Type × type mean vector_v2 ({abbrev})',
+                    [str(c) for c in matrix.columns], matrix,
+                    links_html=links))
             rows = info.get('rows')
             if rows is not None and not rows.empty:
                 n_above = int(rows['above_baseline'].fillna(False).sum())

@@ -138,6 +138,18 @@ def _read_matrix(path: Path) -> pd.DataFrame:
     return df
 
 
+def _lbl(bid, type_name=None):
+    """bodyId matrix axis label under the fake maps.
+
+    male-cns (NeuPrint-style) resolves '{bid}_inst{bid}' from the fake
+    instance map; FlyWire (local release) resolves '{bid}_{type}' from the
+    fake type map (the fixtures carry no side information).
+    """
+    if type_name is None:
+        return f"{bid}_inst{bid}"
+    return f"{bid}_{type_name}"
+
+
 @pytest.fixture
 def vector_setup(monkeypatch, tmp_path):
     """Three types with deterministic vector rows:
@@ -209,11 +221,11 @@ def test_type_level_is_mean_of_cross_member_pairs(vector_setup):
     body_df = _read_matrix(
         out / "bodyid_level" / "bodyid_similarity_vector_v2.csv")
 
-    cross = body_df.loc[["1", "2"], ["3", "4"]].values
+    cross = body_df.loc[[_lbl("1"), _lbl("2")], [_lbl("3"), _lbl("4")]].values
     assert type_df.loc["aMe12", "aMe10"] == pytest.approx(cross.mean())
     # Diagonal cohesion = mean over the off-diagonal member pairs.
     assert type_df.loc["aMe10", "aMe10"] == pytest.approx(
-        body_df.loc["3", "4"])
+        body_df.loc[_lbl("3"), _lbl("4")])
 
 
 def test_bodyid_query_resolves_to_its_type(vector_setup):
@@ -261,8 +273,8 @@ def test_missing_vector_neuron_is_reported_not_scored(
     body_df = _read_matrix(
         Path(result["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_vector_v2.csv")
-    assert body_df.loc["1", "2"] == pytest.approx(1.0)
-    assert pd.isna(body_df.loc["5", "1"])
+    assert body_df.loc[_lbl("1"), _lbl("2")] == pytest.approx(1.0)
+    assert pd.isna(body_df.loc[_lbl("5"), _lbl("1")])
 
 
 def test_fetch_online_pulls_missing_neurons(vector_setup, monkeypatch):
@@ -303,7 +315,7 @@ def test_fetch_online_pulls_missing_neurons(vector_setup, monkeypatch):
     body_df = _read_matrix(
         Path(result["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_vector_v2.csv")
-    assert body_df.loc["5", "1"] == pytest.approx(1.0)
+    assert body_df.loc[_lbl("5"), _lbl("1")] == pytest.approx(1.0)
     assert result["neurons_compared"] == 5
 
 
@@ -369,7 +381,7 @@ def test_flywire_fetch_uses_bundle_loader(monkeypatch, tmp_path):
     body_df = _read_matrix(
         Path(result["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_vector_v2.csv")
-    assert pd.notna(body_df.loc["4", "1"])
+    assert pd.notna(body_df.loc[_lbl("4", "aMe13"), _lbl("1", "aMe12")])
 
 
 def test_vector_whitening_applied(monkeypatch, tmp_path):
@@ -401,8 +413,8 @@ def test_vector_whitening_applied(monkeypatch, tmp_path):
         Path(result["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_vector_v2.csv")
     # Whitening rescales every row identically -> cosine scores unchanged.
-    assert body_df.loc["1", "2"] == pytest.approx(1.0)
-    assert body_df.loc["1", "3"] == pytest.approx(0.0)
+    assert body_df.loc[_lbl("1"), _lbl("2")] == pytest.approx(1.0)
+    assert body_df.loc[_lbl("1"), _lbl("3")] == pytest.approx(0.0)
 
 
 def test_no_vectors_raises(monkeypatch, tmp_path):
@@ -440,7 +452,7 @@ def test_nblast_matrix_symmetric_and_capped(monkeypatch, tmp_path):
     assert np.allclose(body_df.values, body_df.values.T)
     assert body_df.iloc[0, 0] == pytest.approx(1.0)
     # score = 1 - |a - b| / 10
-    assert body_df.loc["1", "3"] == pytest.approx(0.8)
+    assert body_df.loc[_lbl("1"), _lbl("3")] == pytest.approx(0.8)
     # Type entry = mean over the 2x2 cross-member block:
     # (1,3)=0.8, (1,4)=0.7, (2,3)=0.9, (2,4)=0.8.
     type_df = _read_matrix(
@@ -503,7 +515,7 @@ def test_nblast_contra_pairs_excluded_from_type_means(monkeypatch, tmp_path):
     body_df = _read_matrix(
         Path(result["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_nblast.csv")
-    assert body_df.loc["1", "3"] == pytest.approx(0.8)
+    assert body_df.loc[_lbl("1"), _lbl("3")] == pytest.approx(0.8)
 
 
 # ------------------------------------------------------------ guards/input
@@ -626,3 +638,166 @@ def test_banc_missing_vectors_route_to_public_swc_chain(monkeypatch):
     assert fetched == 2
     assert calls["batch"] == ("banc_v888", [1001, 1002])
     assert calls["rows"] == 2
+
+
+# -------------------------------------------------------------- 3d scene
+class _FakeVisualizer:
+    """VisualizeSkeleton stand-in that records kwargs and writes a scene."""
+
+    instances: list = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _FakeVisualizer.instances.append(self)
+
+    def plot_neurons(self):
+        out_dir = Path(self.kwargs["output_dir"])
+        folder = out_dir / f"plot-3d_{self.kwargs['saveas']}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{self.kwargs['saveas']}.html").write_text(
+            "<html>scene</html>", encoding="utf-8")
+
+
+def test_visualize_members_renders_one_layer_per_type(
+        monkeypatch, vector_setup):
+    _FakeVisualizer.instances = []
+    monkeypatch.setattr(mc, "_import_visualizer", lambda: _FakeVisualizer)
+    comparer = _comparer(vector_setup, visualize=True)
+    result = comparer.run()
+
+    assert len(_FakeVisualizer.instances) == 1
+    kwargs = _FakeVisualizer.instances[0].kwargs
+    assert kwargs["neuron_layers"] == [[1, 2], [3, 4], [5]]
+    assert kwargs["custom_layer_names"] == [
+        "t1_aMe12_x2", "t2_aMe10_x2", "t3_PPL1_x1"]
+    # the exported comparison scenes use the interactive tree legend
+    assert kwargs["legend_mode"] == "tree"
+    assert kwargs["skip_synapse"] is True
+    assert kwargs["include_timestamp"] is False
+    assert kwargs["export_views"] is False
+    assert kwargs["show_fig"] is False
+    assert kwargs["output_dir"] == result["output_folder"]
+
+    # The rendered scene is discovered and linked from the report.
+    out = Path(result["output_folder"])
+    assert (out / "plot-3d_male-cns_v1_0" / "male-cns_v1_0.html").exists()
+    report = (out / "report.html").read_text(encoding="utf-8")
+    assert "plot-3d_male-cns_v1_0/male-cns_v1_0.html" in report
+
+
+def test_visualize_disabled_by_default(monkeypatch, vector_setup):
+    _FakeVisualizer.instances = []
+    monkeypatch.setattr(mc, "_import_visualizer", lambda: _FakeVisualizer)
+    _comparer(vector_setup).run()
+    assert _FakeVisualizer.instances == []
+
+
+def test_visualization_failure_does_not_fail_run(monkeypatch, vector_setup):
+    def _boom():
+        raise RuntimeError("renderer unavailable")
+
+    monkeypatch.setattr(mc, "_import_visualizer", _boom)
+    result = _comparer(vector_setup, visualize=True).run()
+    assert result["neurons_compared"] == 5
+    out = Path(result["output_folder"])
+    assert (out / "report.html").exists()
+    assert "3D skeleton visualization" not in (
+        out / "report.html").read_text(encoding="utf-8")
+
+
+def test_visualize_members_capped_per_type(monkeypatch, tmp_path):
+    """Type layers sample at most TYPE_RENDER_MEMBER_CAP members."""
+    _FakeVisualizer.instances = []
+    monkeypatch.setattr(mc, "_import_visualizer", lambda: _FakeVisualizer)
+    ids = list(range(1, 31))
+    eye = np.eye(DIM)
+    X = np.zeros((31, DIM))
+    for i in range(31):
+        X[i] = eye[i % DIM]
+    type_map = {i: "Big" for i in ids}
+    type_map[31] = "Tiny"
+    _install_vector_cache(monkeypatch, ids + [31], X)
+    _install_type_map(monkeypatch, type_map)
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["Big", "Tiny"],
+        max_members_per_type=50,
+        output_dir=str(tmp_path), generate_heatmaps=False, verbose=False,
+        visualize=True)
+    result = comparer.run()
+
+    kwargs = _FakeVisualizer.instances[0].kwargs
+    assert len(kwargs["neuron_layers"]) == 2
+    layer = kwargs["neuron_layers"][0]
+    assert len(layer) == mc.TYPE_RENDER_MEMBER_CAP
+    notes = kwargs["layer_sample_notes"]
+    assert notes and "30" in notes[0]
+    assert result["neurons_compared"] == 31
+
+
+# ---------------------------------------------------------------------------
+# offline 3D-scene filter (fetch_online=False unifies with the cross mode)
+# ---------------------------------------------------------------------------
+
+class TestOfflineRenderFilter:
+    def _comparer(self, tmp_path, fetch_online):
+        return mc.MorphologyProfileComparer(
+            dataset="male-cns:v1.0", query=["aMe12", "aMe10"],
+            fetch_online=fetch_online, output_dir=str(tmp_path),
+            generate_heatmaps=False, verbose=False, visualize=True,
+            project_root=str(tmp_path))
+
+    def _write_raw(self, tmp_path, body_id):
+        import pickle
+
+        import navis
+
+        nodes = pd.DataFrame({
+            "node_id": [0, 1, 2],
+            "parent_id": [-1, 0, 0],
+            "x": [0.0, 1.0, 2.0],
+            "y": [0.0, 0.0, 0.0],
+            "z": [0.0, 0.0, 0.0],
+            "radius": [1.0, 1.0, 1.0],
+        })
+        folder = (tmp_path / "cache" / "male-cns_v1_0" / "skeletons"
+                  / "raw_skeletons")
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / f"{body_id}.pkl", "wb") as fh:
+            pickle.dump(navis.TreeNeuron(nodes), fh)
+
+    def test_online_mode_keeps_everything(self, tmp_path):
+        comparer = self._comparer(tmp_path, fetch_online=True)
+        members = {"aMe12": [1, 2]}
+        filtered, skipped = comparer._offline_render_filter(members)
+        assert filtered == members and skipped == []
+
+    def test_offline_mode_drops_uncached_members(self, tmp_path):
+        self._write_raw(tmp_path, 1)
+        # a legacy simp90-level file is a valid load but not a renderable
+        # source (VisualizeSkeleton refuses to mix simplification levels)
+        import pickle
+
+        import navis
+
+        nodes = pd.DataFrame({
+            "node_id": [0, 1], "parent_id": [-1, 0],
+            "x": [0.0, 1.0], "y": [0.0, 0.0], "z": [0.0, 0.0],
+            "radius": [1.0, 1.0],
+        })
+        stale = navis.TreeNeuron(nodes)
+        stale._drocat_simplification = 90
+        folder = (tmp_path / "cache" / "male-cns_v1_0" / "skeletons"
+                  / "raw_skeletons")
+        with open(folder / "4.pkl", "wb") as fh:
+            pickle.dump(stale, fh)
+        comparer = self._comparer(tmp_path, fetch_online=False)
+        members = {"aMe12": [1, 2], "aMe10": [3, 4]}
+        filtered, skipped = comparer._offline_render_filter(members)
+        assert filtered == {"aMe12": [1]}
+        assert sorted(skipped) == ["aMe10:3", "aMe10:4", "aMe12:2"]
+
+    def test_offline_mode_all_types_dropped(self, tmp_path):
+        comparer = self._comparer(tmp_path, fetch_online=False)
+        filtered, skipped = comparer._offline_render_filter(
+            {"aMe12": [7, 8]})
+        assert filtered == {} and len(skipped) == 2
