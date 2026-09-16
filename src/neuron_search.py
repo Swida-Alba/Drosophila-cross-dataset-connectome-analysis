@@ -14,6 +14,7 @@ legacy dataframe matcher as a correctness fallback.
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
@@ -191,6 +192,35 @@ def filter_candidate_entries(
     return [entry for entry in candidates if str(entry[0]).startswith(query)]
 
 
+# (pools id) -> (pools, bodyId pool is digit-only). Keeping the pools object
+# in the entry pins the id, so the memo can never answer for a newer pool
+# generation; bounded, oldest entries dropped first.
+_BODYID_DIGIT_ONLY_CACHE: "OrderedDict[int, tuple]" = OrderedDict()
+
+
+def _bodyid_digit_only(pools: Dict[str, List[Tuple[str, str]]]) -> bool:
+    """Whether this pool's bodyId column holds only digit strings.
+
+    A non-numeric query can never prefix- or substring-match digit-only
+    values, so such a column is invisible to the staged matcher and scanning
+    it (10^5 entries — by far the largest column in real datasets) is pure
+    per-keystroke overhead. The contract itself stays shape-agnostic: a pool
+    carrying non-numeric bodyId values keeps its current behavior.
+    """
+    entries = pools.get("bodyId")
+    if not entries:
+        return False
+    key = id(pools)
+    hit = _BODYID_DIGIT_ONLY_CACHE.get(key)
+    if hit is not None and hit[0] is pools:
+        return hit[1]
+    digit_only = all(str(value).isdigit() for value, _ in entries)
+    _BODYID_DIGIT_ONLY_CACHE[key] = (pools, digit_only)
+    while len(_BODYID_DIGIT_ONLY_CACHE) > 8:
+        _BODYID_DIGIT_ONLY_CACHE.popitem(last=False)
+    return digit_only
+
+
 def match_search_pools(
     text: Any,
     pools: Dict[str, List[Tuple[str, str]]],
@@ -204,10 +234,18 @@ def match_search_pools(
     This lives in the same module as the dataframe/cache resolver so the
     inline menu and available-neurons viewer cannot acquire different match
     rules by importing separate UI-only implementations.
+
+    A non-numeric query skips a digit-only bodyId pool while staging: the
+    column cannot match (see :func:`_bodyid_digit_only`), and rescanning the
+    largest real-world column on every prefix-miss keystroke dominated the
+    suggestion latency of multi-dataset inputs.
     """
     query = normalize_search_text(text)
     if not query or not pools:
         return []
+    if (not is_numeric_search(query) and "bodyId" in pools
+            and _bodyid_digit_only(pools)):
+        pools = {k: v for k, v in pools.items() if k != "bodyId"}
 
     def collect(columns: Sequence[str], predicate) -> List[Tuple[str, str]]:
         matches: List[Tuple[str, str]] = []

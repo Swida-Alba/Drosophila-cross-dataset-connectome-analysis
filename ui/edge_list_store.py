@@ -3,7 +3,7 @@
 Drafts live in ``local_data/edge_list_drafts/`` (gitignored) as one CSV per
 draft plus a JSON metadata sidecar:
 
-    my_network.csv         header: source,target,weight[,color]
+    my_network.csv         header: source,target,weight[,color][,extended columns]
     my_network.meta.json   {name, slug, created_at, updated_at, dirty, row_count}
 
 Every edit is flushed atomically (temp file + ``os.replace``), so a draft
@@ -11,9 +11,12 @@ survives even if the UI process or its port dies mid-session. The ``dirty``
 flag stays True until the user explicitly exports the edge list, which lets a
 restarted app remind the user about edited-but-not-exported drafts.
 
-The CSV layout matches VisualizePath's edge-list format exactly
-(``source``/``target``/``weight`` + optional ``color``), so a draft file can
-be passed to PlotPath as ``path_file`` without conversion.
+The CSV layout matches VisualizePath's edge-list format exactly:
+``source``/``target``/``weight`` are required; ``color``, ``source_group`` /
+``target_group`` (node groups) and ``edge info`` / ``source info`` /
+``target info`` (hover labels, ``{key:val; ...}`` cells) are written only
+when at least one row uses them. A draft file can be passed to PlotPath as
+``path_file`` without conversion.
 """
 import csv
 import json
@@ -26,11 +29,18 @@ from typing import Dict, List, Optional
 
 from .config import PROJECT_ROOT
 
-# Columns written to the draft CSV, in order. ``color`` is only written
-# when at least one row carries a non-empty value (VisualizePath treats it
-# as an optional per-edge color column).
-EDGE_COLUMNS = ("source", "target", "weight", "color")
+# Columns the editor can hold, in order. ``color``, the group columns and
+# the hover-info columns are only written to the draft/export CSV when at
+# least one row carries a non-empty value (VisualizePath reads them by
+# name and treats them as optional metadata columns).
+EDGE_COLUMNS = (
+    "source", "target", "weight", "color",
+    "source_group", "target_group",
+    "edge info", "source info", "target info",
+)
 REQUIRED_COLUMNS = ("source", "target", "weight")
+# Columns hidden in the editor's Basic column set (shown in Full mode).
+EXTENDED_COLUMNS = EDGE_COLUMNS[4:]
 
 _store_dir = PROJECT_ROOT / "local_data" / "edge_list_drafts"
 _lock = threading.Lock()
@@ -154,6 +164,7 @@ def save_draft(name: str, rows: List[dict], dirty: bool = True) -> Optional[str]
     if not slug:
         return None
     rows = normalize_rows(rows)
+    stored_rows = [row for row in rows if not is_empty_row(row)]
     with _lock:
         existing = _read_meta(slug)
         now = _now_iso()
@@ -163,7 +174,7 @@ def save_draft(name: str, rows: List[dict], dirty: bool = True) -> Optional[str]
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
             "dirty": bool(dirty),
-            "row_count": len(rows),
+            "row_count": len(stored_rows),
         }
         try:
             _atomic_write_text(_csv_path(slug), rows_to_csv(rows))
@@ -179,15 +190,37 @@ def _csv_quote(value: str) -> str:
     return value
 
 
+def is_empty_row(row: dict) -> bool:
+    """True when a normalized row holds no value in any column."""
+    return not any(str(row.get(col, "") or "").strip() for col in EDGE_COLUMNS)
+
+
 def rows_to_csv(rows: List[dict]) -> str:
-    """Serialize rows in the PlotPath edge-list format."""
-    normalized = normalize_rows(rows)
-    has_color = any(row["color"] for row in normalized)
-    columns = list(REQUIRED_COLUMNS) + (["color"] if has_color else [])
+    """Serialize rows in the PlotPath edge-list format.
+
+    Fully-empty rows (editor scaffolding) are dropped, and each optional
+    column is written only when at least one row uses it.
+    """
+    normalized = [row for row in normalize_rows(rows) if not is_empty_row(row)]
+    columns = list(REQUIRED_COLUMNS)
+    for col in EDGE_COLUMNS[len(REQUIRED_COLUMNS):]:
+        if any(row[col] for row in normalized):
+            columns.append(col)
     lines = [",".join(columns)]
     for row in normalized:
         lines.append(",".join(_csv_quote(row[col]) for col in columns))
     return "\n".join(lines) + "\n"
+
+
+def load_rows_from_csv_text(text: str) -> List[dict]:
+    """Parse CSV text (the editor's or the backend's expanded export format)
+    into normalized rows; unknown columns are ignored, missing ones filled."""
+    import io
+    reader = csv.DictReader(io.StringIO(text))
+    return normalize_rows(
+        {col: (record.get(col) or "") for col in EDGE_COLUMNS}
+        for record in reader
+    )
 
 
 def load_draft(name: str) -> Optional[List[dict]]:

@@ -305,6 +305,55 @@ def test_native_matches_preserve_written_case():
     assert apdn3['matched_written'] == 'APDN3'
 
 
+def test_native_expansion_bounds_broad_query_all_lists():
+    """A broad 2-character query keeps a ranked but finite enrichment feed.
+
+    The query 'CB' matched ~23,000 names across the cached datasets and
+    fed every one through the per-item mapper walk — long enough to starve
+    the UI websocket (the CB2438 viewer crash).  Ordinary searches now cap
+    the all-lists while the '+N more' counts stay truthful; whole real
+    families still fit beneath the caps.
+    """
+    from ui.neuron_index import (
+        NATIVE_COVERED_ALL_CAP,
+        NATIVE_LABELS_ALL_CAP,
+        NATIVE_TYPES_ALL_CAP,
+        collect_native_type_matches,
+    )
+
+    native = collect_native_type_matches(MCNS, 'CB')
+    assert native, 'expected broad CB matches in other cached datasets'
+    for entry in native:
+        assert len(entry['types_all']) <= NATIVE_TYPES_ALL_CAP
+        assert len(entry['labels_all']) <= NATIVE_LABELS_ALL_CAP
+        for label in entry['labels_all']:
+            assert len(label['covered_all']) <= NATIVE_COVERED_ALL_CAP
+        # the hidden tail counts stay truthful beyond the display caps
+        assert entry['types_truncated'] >= max(
+            0, len(entry['types_all']) - len(entry['types']))
+        assert entry['labels_truncated'] >= max(
+            0, len(entry['labels_all']) - len(entry['labels']))
+    heavy = _entry(native, 'male-cns:v0.9')
+    if heavy is not None:
+        # v0.9 matches well over a thousand CB types; the cap must
+        # actually engage for this broad query, ranked by coverage
+        assert len(heavy['types_all']) == NATIVE_TYPES_ALL_CAP
+        assert heavy['types_truncated'] > NATIVE_TYPES_ALL_CAP
+
+
+def test_broad_query_uncapped_export_keeps_everything():
+    """Only the explicit uncapped CSV export opts back out of the caps."""
+    from ui.neuron_index import (
+        NATIVE_TYPES_ALL_CAP,
+        collect_native_type_matches,
+    )
+
+    native = collect_native_type_matches(MCNS, 'CB', uncapped=True)
+    heavy = _entry(native, 'male-cns:v0.9')
+    if heavy is not None:
+        assert len(heavy['types_all']) > NATIVE_TYPES_ALL_CAP
+
+
 def test_build_matches_csv_exports_uncapped_entries():
     import csv as csv_module
     import io
@@ -801,3 +850,25 @@ def test_caps_are_display_only():
         texts_u = sorted(format_bridge(c) for f in flows_u
                          for c in f['bridges'])
         assert texts_c == texts_u, query
+
+
+def test_asymmetric_same_name_carries_suggested_check_note():
+    """User directive 2026-09-14: a same-name candidate whose population
+    is an order of magnitude below the same name elsewhere carries the
+    extreme-asymmetry suggested-check note (TmY18: 1367 MCNS vs 1 FAFB);
+    symmetric names carry none."""
+    matches = collect_alias_matches('flywire_FAFB_v783', 'TmY18')
+    notes = []
+    for entry in matches:
+        for cand in entry['candidates']:
+            if cand['kind'] == 'same name':
+                if entry['dataset'] == 'male-cns:v1.0':
+                    assert '1367' in (cand.get('asymmetry_note') or '')
+                    notes.append(cand['asymmetry_note'])
+    assert notes, 'expected the MCNS same-name candidate to carry the note'
+    assert all('suggested check' in n for n in notes)
+    # symmetric control: MDN carries no asymmetry note
+    for entry in collect_alias_matches('banc_v888', 'MDN'):
+        for cand in entry['candidates']:
+            if cand['kind'] == 'same name':
+                assert not cand.get('asymmetry_note')

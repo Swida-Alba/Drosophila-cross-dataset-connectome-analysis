@@ -85,6 +85,11 @@ TOOL_PROGRESS_STEPS: Dict[str, Sequence[str]] = {
         "Aggregate and rank line matches",
         "Download images and save outputs",
     ),
+    "nb_find_lines_expanded": (
+        "Resolve coverage and expand queries",
+        "Run Find Lines per query chip",
+        "Write expansion report",
+    ),
     "nb_find_neuron": (
         "Resolve driver-line queries",
         "Fetch matching EM neuron records",

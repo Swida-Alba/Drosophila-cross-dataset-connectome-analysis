@@ -5844,6 +5844,99 @@ class TestComponents:
         assert menu.value is False
         assert container.get_value() == ("exact", ["APL_clock", "aMe"])
 
+    def test_neuron_list_input_history_click_toggle(self, tmp_path, monkeypatch):
+        """Click-to-toggle the history list on the focused empty editor.
+
+        The click that focuses the field opens the list once; that same
+        click must not immediately hide it again. Every further editor
+        click flips the list: hide, show, hide. Clicks that did not land
+        on the editor surface (chips, remove buttons, borders) never
+        toggle anything.
+        """
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.config as cfg_mod
+        from ui.components.common import neuron_list_input
+
+        monkeypatch.setattr(cfg_mod, "LOCAL_CONFIG_FILE", tmp_path / "local_config.json")
+        import ui.history_store as hs
+        monkeypatch.setattr(hs, "_HISTORY_PATH", tmp_path / "neuron_history.json")
+        hs.record(["aMe12", "aMe10"], now="2026-08-11T10:00:00")
+
+        client = Client(page("/neuron-input-history-click-toggle"))
+        with client:
+            container = neuron_list_input(
+                label="Source Neurons", suggestions=lambda text: [])
+
+        chip = container.chip_input
+        menu = [el for el in client.elements.values() if type(el).__name__ == "Menu"][-1]
+        focus_listener = next(
+            l for l in chip._event_listeners.values() if l.type == "focus")
+        click_listener = next(
+            l for l in chip._event_listeners.values() if l.type == "click")
+
+        # The focusing click opens the history...
+        chip._handle_event({"listener_id": focus_listener.id, "args": None})
+        assert menu.value is True
+        # ...and that same click's toggle is swallowed (focus already opened
+        # the list — the menu must not flash closed on the opening click).
+        chip._handle_event({"listener_id": click_listener.id, "args": True})
+        assert menu.value is True
+        # Next editor click hides; the next shows again; hide again.
+        chip._handle_event({"listener_id": click_listener.id, "args": True})
+        assert menu.value is False
+        chip._handle_event({"listener_id": click_listener.id, "args": True})
+        assert menu.value is True
+        chip._handle_event({"listener_id": click_listener.id, "args": True})
+        assert menu.value is False
+        # A click that did not land on the editor surface never toggles.
+        chip._handle_event({"listener_id": click_listener.id, "args": False})
+        assert menu.value is False
+
+    def test_neuron_list_input_click_toggle_spares_suggestions(
+        self, tmp_path, monkeypatch,
+    ):
+        """While a suggestion list is showing (typed text), editor clicks
+        never hide it — the toggle applies to the history list only."""
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.config as cfg_mod
+        from ui.components.common import neuron_list_input
+
+        monkeypatch.setattr(cfg_mod, "LOCAL_CONFIG_FILE", tmp_path / "local_config.json")
+        import ui.history_store as hs
+        monkeypatch.setattr(hs, "_HISTORY_PATH", tmp_path / "neuron_history.json")
+        hs.record(["aMe12", "aMe10"], now="2026-08-11T10:00:00")
+
+        def fake_suggest(text):
+            if text == "ap":
+                return [("APL", "type")]
+            return []
+
+        client = Client(page("/neuron-input-click-toggle-suggestions"))
+        with client:
+            container = neuron_list_input(label="Source Neurons", suggestions=fake_suggest)
+
+        chip = container.chip_input
+        menu = [el for el in client.elements.values() if type(el).__name__ == "Menu"][-1]
+        focus_listener = next(
+            l for l in chip._event_listeners.values() if l.type == "focus")
+        click_listener = next(
+            l for l in chip._event_listeners.values() if l.type == "click")
+        suggest_input = next(
+            l for l in chip._event_listeners.values() if l.type == "input")
+
+        chip._handle_event({"listener_id": focus_listener.id, "args": None})
+        assert menu.value is True
+        # Typing replaces the history with suggestions.
+        chip._handle_event({"listener_id": suggest_input.id, "args": "ap"})
+        assert menu.value is True
+        # An editor click while suggestions are showing never hides them.
+        chip._handle_event({"listener_id": click_listener.id, "args": True})
+        texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
+        assert "APL" in texts
+        assert menu.value is True
+
     def test_neuron_list_input_suggestions_settings_toggle(self, tmp_path, monkeypatch):
         """The Settings toggle switches the auto-suggest off/on at runtime."""
         from nicegui import Client

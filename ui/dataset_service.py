@@ -573,7 +573,11 @@ class DatasetService:
         Read-only and network-free — server probing happens in
         :meth:`refresh_availability`.  Local readiness is re-derived on every
         call so it never goes stale; the result is mirrored into ``_cache``
-        for selector helpers.
+        for selector helpers.  (A build-time memo was tried and reverted:
+        callers legitimately mutate files between calls and expect the next
+        call to see them. The per-build dedup that matters happens one level
+        up, in the selector-label memo, and the Settings poller runs at a 5s
+        cadence.)
         """
         self._load_persisted_availability()
         info = self._compose(dataset)

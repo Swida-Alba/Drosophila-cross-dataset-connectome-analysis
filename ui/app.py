@@ -576,16 +576,34 @@ html, body {
         flex: 1 1 128px;
     }
 }
+/* The scroll/clip window must live on .q-field__native (the chips' direct
+   parent). The container under .q-field__control carries Quasar's
+   `height: inherit` and flex-shrinks the native to 118px while the chips
+   keep painting past it — an overflow clip on the control alone did not
+   stop that paint (observed as chips rendering below the field border in
+   the collapsed state). Clipping where the chips actually live fixes it. */
 .drocat-chip-input-shell.drocat-chip-list-collapsed
     .drocat-chip-input .q-field__control {
     max-height: 142px;
     overflow-y: auto;
     overflow-x: hidden;
 }
+.drocat-chip-input-shell.drocat-chip-list-collapsed
+    .drocat-chip-input .q-field__native {
+    max-height: 118px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
 .drocat-chip-input-shell.drocat-chip-list-expanded
     .drocat-chip-input .q-field__control {
     max-height: none;
-    overflow-y: visible;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+.drocat-chip-input-shell.drocat-chip-list-expanded
+    .drocat-chip-input .q-field__native {
+    max-height: none;
+    overflow-y: auto;
     overflow-x: hidden;
 }
 .drocat-chip-expand-btn {
@@ -1476,6 +1494,39 @@ html, body {
 .drocat-edge-table .drocat-post-synaptic-color-column {
     width: var(--wc-post_synaptic_color, 280px);
     min-width: 110px;
+}
+/* Net-Viz edge-list editor columns (edge_list_editor._columns_for_mode). */
+.drocat-edge-table .drocat-source-column {
+    width: var(--wc-source, 180px);
+    min-width: 90px;
+}
+.drocat-edge-table .drocat-target-column {
+    width: var(--wc-target, 180px);
+    min-width: 90px;
+}
+.drocat-edge-table .drocat-weight-column {
+    width: var(--wc-weight, 90px);
+    min-width: 64px;
+}
+.drocat-edge-table .drocat-source-group-column {
+    width: var(--wc-source_group, 140px);
+    min-width: 90px;
+}
+.drocat-edge-table .drocat-target-group-column {
+    width: var(--wc-target_group, 140px);
+    min-width: 90px;
+}
+.drocat-edge-table .drocat-edge-info-column {
+    width: var(--wc-edge_info, 230px);
+    min-width: 120px;
+}
+.drocat-edge-table .drocat-source-info-column {
+    width: var(--wc-source_info, 210px);
+    min-width: 120px;
+}
+.drocat-edge-table .drocat-target-info-column {
+    width: var(--wc-target_info, 210px);
+    min-width: 120px;
 }
 /* The selected row must keep its cell text and chips readable (dark themes can
    make navy-on-selected low-contrast). Keep the row light and the text navy. */

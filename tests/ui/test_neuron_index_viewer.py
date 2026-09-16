@@ -585,7 +585,7 @@ class TestNeuronIndexData:
         )
 
         assert result["native"] == []
-        assert calls == [{"prefix_only_search": True}]
+        assert calls == [{"prefix_only_search": True, "should_abort": None}]
 
     def test_cross_dataset_scan_is_single_flight_and_rejects_stale_work(self):
         """Queued mapper scans cannot multiply the worker memory footprint."""
@@ -1643,6 +1643,92 @@ class TestNeuronIndexViewer:
         assert [row["type"] for row in full_table._props["rows"]] == [
             "aMe10", "aMe12"
         ]
+
+    def test_alias_scan_settle_supersedes_intermediate_prefix(
+        self, isolated_index_root, monkeypatch
+    ):
+        """Typing a longer query supersedes the pending scan of the shorter
+        prefix, so only the settled query's cross-dataset scan runs.
+
+        Every keystroke query fires the cross-dataset panel; without the
+        settle gate, each intermediate prefix queued its own single-flight
+        scan behind the cold worker and ran broad queries to completion —
+        the CB2438 connection-loss path.
+        """
+        import asyncio
+        import inspect
+        import time
+
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.components.neuron_index_viewer as viewer
+        from ui.components.neuron_index_viewer import (
+            create_neuron_index_viewer_link,
+        )
+
+        dataset, _, _ = _write_index(isolated_index_root)
+        monkeypatch.setattr(viewer, "PROJECT_ROOT", isolated_index_root)
+        monkeypatch.setattr(viewer, "ALIAS_SCAN_SETTLE_SECONDS", 0.05)
+        # Warm-path dispatch: the predicate keeps the scan in-process where
+        # the counting wrapper below can observe it.
+        monkeypatch.setattr(viewer, "is_type_mapper_loaded", lambda: True)
+
+        calls = []
+
+        def counting(dataset_arg, search, *args, **kwargs):
+            calls.append(search)
+            return {
+                "native": [], "mapped": [],
+                "value_mapped": [], "guidance": [],
+            }
+
+        monkeypatch.setattr(viewer, "collect_zero_hit_matches", counting)
+
+        client = Client(page("/neuron-index-viewer-scan-settle"))
+        with client:
+            link = create_neuron_index_viewer_link(lambda: dataset)
+        self._click(link)
+
+        search_input = next(
+            element for element in client.elements.values()
+            if getattr(element, "_props", {}).get("label")
+            == "Search identities & taxonomy"
+        )
+
+        async def submit(text):
+            setattr(search_input, "___value", text)
+            search_input._props["model-value"] = text
+            event = SimpleNamespace(
+                sender=search_input,
+                client=client,
+                value=text,
+                previous_value="",
+            )
+            change_handler = search_input._change_handlers[0]
+            refresh = change_handler(event)
+            assert inspect.isawaitable(refresh)
+            await refresh
+
+        async def drive():
+            await submit("zz")  # zero-hit: pending cross-dataset scan
+            await asyncio.sleep(0.01)
+            await submit("zzz")  # supersedes it before the settle elapses
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                texts = [
+                    str(getattr(element, "text", "") or "")
+                    for element in client.elements.values()
+                ]
+                if any(
+                    "zzz" in text
+                    and "no cross-dataset counterparts either" in text
+                    for text in texts
+                ):
+                    break
+                await asyncio.sleep(0.05)
+
+        asyncio.run(drive())
+        assert calls == ["zzz"], calls
 
     def test_search_button_forces_one_character_query(
         self, isolated_index_root, monkeypatch

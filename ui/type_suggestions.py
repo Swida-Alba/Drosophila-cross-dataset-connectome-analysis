@@ -12,6 +12,7 @@ bundled datasets whose indexes ship with the repository).
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -430,6 +431,44 @@ def dataset_aware_suggestions(
     return entries
 
 
+# (pools id) -> (pools, columns, per-column sets, bodyId-dict holder). Keeping
+# the pools object itself alive pins the id, so a stale key can never resolve
+# to a newer pool generation. Bounded: the newest few generations win.
+_MEMBERSHIP_LOOKUP_CACHE: "OrderedDict[int, tuple]" = OrderedDict()
+
+
+def _membership_lookup(dataset: str, pools: Dict[str, List[Entry]]) -> tuple:
+    """Per-dataset membership index shared by every history/badge lookup.
+
+    Building the per-column value sets costs tens of milliseconds over a
+    large dataset (10^5-entry columns), and a history render pays it on
+    every chip commit; the sets only change when the pools object itself is
+    rebuilt (the pool cache keys on source-file mtimes), so identity is a
+    safe cache key here. The bodyId->instance map stays lazy (``holder``):
+    name-only lookups never pay for the largest column.
+    """
+    key = id(pools)
+    entry = _MEMBERSHIP_LOOKUP_CACHE.get(key)
+    if entry is None:
+        columns = [
+            column for column in viewer_search_columns(pools.keys())
+            if column != "bodyId"
+        ]
+        entry = (
+            pools,
+            columns,
+            {
+                column: {v for v, _ in pools.get(column, [])}
+                for column in columns
+            },
+            {"built": False, "map": {}},
+        )
+        _MEMBERSHIP_LOOKUP_CACHE[key] = entry
+        while len(_MEMBERSHIP_LOOKUP_CACHE) > 4:
+            _MEMBERSHIP_LOOKUP_CACHE.popitem(last=False)
+    return entry
+
+
 def _membership_pairs(
     values: Sequence[str],
     datasets: Sequence[str],
@@ -460,26 +499,22 @@ def _membership_pairs(
         pools = get_dataset_pools(str(dataset))
         if not pools:
             continue
-        # Per-column membership sets, built once per dataset for the whole
-        # batch of history rows (the pools themselves are already cached).
-        columns = [
-            column for column in viewer_search_columns(pools.keys())
-            if column != "bodyId"
-        ]
-        sets = {
-            column: {v for v, _ in pools.get(column, [])}
-            for column in columns
-        }
-        body_ids: Optional[Dict[str, str]] = None
+        # Per-column membership sets, built once per dataset pool generation
+        # (see :func:`_membership_lookup`) and reused across the whole batch
+        # of history rows. The bodyId map builds lazily on the first numeric
+        # value, so name-only lookups never scan the largest column.
+        _pools, columns, sets, body_ids_holder = _membership_lookup(
+            str(dataset), pools)
         for value in wanted:
             if re.fullmatch(r"\d+(?:\.0+)?", value):
-                if body_ids is None:
-                    body_ids = {
+                if not body_ids_holder["built"]:
+                    body_ids_holder["map"] = {
                         v: hint for v, hint in pools.get("bodyId", [])
                     }
+                    body_ids_holder["built"] = True
                 key = (value.split(".", 1)[0]
                        if re.fullmatch(r"\d+\.0+", value) else value)
-                hint = body_ids.get(key)
+                hint = body_ids_holder["map"].get(key)
                 if hint:
                     pairs.setdefault(value, []).append(
                         (str(hint), str(dataset)))

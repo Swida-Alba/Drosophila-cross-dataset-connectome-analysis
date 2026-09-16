@@ -6,7 +6,7 @@ Covers:
   crash recovery, validation, and PlotPath-ready CSV layout.
 - ui/components/edge_list_editor.py: editor state, add/delete/inline edit
   operations, debounced auto-save flush, and export.
-- ui/tabs/visualization.py: Canvas Source and editor expansion wiring (Net-Viz tab).
+- ui/tabs/visualization.py: Net-Viz source mode buttons and editor expansion wiring.
 """
 import json
 import re
@@ -85,7 +85,10 @@ class TestValidation:
 
     def test_normalize_strips_and_fills(self):
         rows = store.normalize_rows([{"source": " A ", "target": "B"}])
-        assert rows == [{"source": "A", "target": "B", "weight": "", "color": ""}]
+        assert rows[0]["source"] == "A"
+        assert rows[0]["target"] == "B"
+        assert rows[0]["weight"] == ""
+        assert set(rows[0]) == set(store.EDGE_COLUMNS)
 
     def test_complete_rows(self):
         rows = ROWS + [{"source": "X", "target": "", "weight": "5"}]
@@ -173,6 +176,51 @@ class TestCsvLayout:
             {"source", "target", "weight"}, {"from", "to", "weight"}, {"pre", "post", "weight"},
         ]
 
+    def test_extended_columns_only_when_used(self):
+        """Group / hover-info columns are written only when a row uses them."""
+        extended = ROWS + [{
+            "source": "P", "target": "Q", "weight": "1",
+            "source_group": "PAM", "target_group": "MBON",
+            "edge info": "nt:ACH", "source info": "dataset:FAFB",
+            "target info": "dataset:BANC",
+        }]
+        store.save_draft("extended", extended)
+        first_line = Path(store.draft_csv_path("extended")).read_text(
+            encoding="utf-8").splitlines()[0]
+        # `color` stays absent: every optional column is written only when used.
+        assert first_line == (
+            "source,target,weight,source_group,target_group,"
+            "edge info,source info,target info"
+        )
+        store.save_draft("basic", ROWS)
+        header = Path(store.draft_csv_path("basic")).read_text(
+            encoding="utf-8").splitlines()[0]
+        assert header == "source,target,weight"
+
+    def test_empty_scaffolding_rows_dropped_from_csv(self):
+        text = store.rows_to_csv(ROWS + [{}])
+        assert text.splitlines() == [
+            "source,target,weight",
+            "aMe12,aMe10,128",
+            "aMe10,MBON01,47",
+        ]
+        store.save_draft("scaffolded", ROWS + [{}])
+        assert len(store.load_draft("scaffolded")) == 2
+        assert meta("scaffolded")["row_count"] == 2
+
+    def test_load_rows_from_csv_text(self):
+        rows = store.load_rows_from_csv_text(
+            "source,target,weight,color,source_group\nA,B,1,#fff000,PAM\n"
+        )
+        assert rows[0]["source"] == "A"
+        assert rows[0]["color"] == "#fff000"
+        assert rows[0]["source_group"] == "PAM"
+        assert set(rows[0]) == set(store.EDGE_COLUMNS)
+        # Unknown columns are ignored; missing ones are filled empty.
+        rows = store.load_rows_from_csv_text("source,target,weight,junk\nA,B,1,x\n")
+        assert rows[0]["weight"] == "1"
+        assert "junk" not in rows[0]
+
     def test_no_temp_files_left_behind(self):
         store.save_draft("net", ROWS)
         leftovers = list(store._store_dir.glob("*.tmp"))
@@ -245,7 +293,10 @@ class TestCrashRecovery:
         pending = store.pending_drafts()
         assert [m["name"] for m in pending] == ["session draft"]
         rows = store.load_draft("session draft")
-        assert rows == [{"source": "A", "target": "B", "weight": "10", "color": ""}]
+        assert rows[0]["source"] == "A"
+        assert rows[0]["target"] == "B"
+        assert rows[0]["weight"] == "10"
+        assert set(rows[0]) == set(store.EDGE_COLUMNS)
 
     def test_corrupt_meta_ignored(self):
         draft_dir = store._store_dir
@@ -327,58 +378,79 @@ class TestEditorHandle:
             for el in client.elements.values()
         ]
         assert "card-net-viz-edge-editor" in ids
+        assert "card-net-viz-edge-editor-validation" in ids
         assert handle.table is not None and handle.status_label is not None
-        assert set(handle.edit_inputs) == {"source", "target", "weight", "color"}
+        assert handle.validation_panel is not None
+        assert handle.validation_panel.visible is False
+        # The editor seeds 3 empty scaffolding rows for direct in-table typing.
+        assert len(handle.rows) == 3
+        assert all(store.is_empty_row(row) for row in handle.rows)
+        button_texts = [getattr(el, "text", "") for el in client.elements.values()]
+        assert "Add Row" in button_texts
+        assert "Add Edge" not in button_texts
 
-    def test_add_edge_uses_current_editor_values_and_autosaves(self, store_patch_for_component):
+    def test_add_empty_row_and_inline_edit_autosave(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.name_input.value = "my draft"
-        for key, value in {
-            "source": "A",
-            "target": "B",
-            "weight": "12",
-            "color": "#123456",
-        }.items():
-            handle.edit_inputs[key].value = value
-        handle.add_edge()
-        # Debounced timer does not run in unit tests; flush explicitly.
+        handle.add_empty_row()
+        assert handle._selected_ids == [len(handle.rows) - 1]
+        new_id = len(handle.rows) - 1
+        for field, value in (("source", "A"), ("target", "B"), ("weight", "12")):
+            handle.on_inline_commit(
+                SimpleNamespace(args={"id": new_id, "field": field, "value": value})
+            )
+        handle.rows[new_id]["color"] = "#123456"
+        # Debounced timer does not run in unit tests; an explicit flush also
+        # bypasses the filled-rows gate.
         csv_path = handle.flush_autosave()
         assert csv_path and Path(csv_path).exists()
         rows = store.load_draft("my draft")
-        assert rows[0] == {
-            "source": "A",
-            "target": "B",
-            "weight": "12",
-            "color": "#123456",
-        }
+        assert rows == [{
+            "source": "A", "target": "B", "weight": "12", "color": "#123456",
+            "source_group": "", "target_group": "",
+            "edge info": "", "source info": "", "target info": "",
+        }]
         assert meta("my draft")["dirty"] is True
         assert "Auto-saved" in handle.status_label.text
 
-    def test_inline_edit_updates_row_and_editor_inputs(self, store_patch_for_component):
+    def test_inline_edit_updates_row_without_rebuilding_table(self, store_patch_for_component, monkeypatch):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows(ROWS)
-        handle.on_select(SimpleNamespace(selection=[{**ROWS[1], "id": 1}]))
+        rebuilds = []
+        monkeypatch.setattr(handle.table, "update", lambda *a, **k: rebuilds.append(1))
         handle.on_inline_edit(
             SimpleNamespace(args={"id": 1, "field": "target", "value": " MBON02 "})
         )
         assert handle.rows[1]["target"] == "MBON02"
-        assert handle.edit_inputs["target"].value == "MBON02"
+        # Keystroke edits mutate the row model only, never the table.
+        assert rebuilds == []
 
     def test_delete_selected_rows(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
-        handle.name_input.value = "del"
-        handle.set_rows(ROWS + [{"source": "X", "target": "Y", "weight": "9"}])
+        handle.set_rows(ROWS + [
+            {"source": "X", "target": "Y", "weight": "9"},
+            {"source": "Z", "target": "W", "weight": "8"},
+        ])
         handle._selected_ids = [1]
         handle.delete_selected()
-        assert len(handle.rows) == 2
+        assert len(handle.rows) == 3
         assert handle.rows[1]["source"] == "X"
 
-    def test_on_select_syncs_edit_inputs(self, store_patch_for_component):
+    def test_delete_keeps_scaffolding_rows(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows(ROWS)
-        handle.on_select(SimpleNamespace(selection=[{**ROWS[1], "id": 1}]))
-        assert handle.edit_inputs["source"].value == "aMe10"
-        assert handle.edit_inputs["weight"].value == "47"
+        handle._selected_ids = [0]
+        handle.delete_selected()
+        # Deleting below the scaffolding floor restores empty rows.
+        assert len(handle.rows) == 3
+        assert handle.rows[0]["source"] == "aMe10"
+        assert all(store.is_empty_row(row) for row in handle.rows[1:])
+
+    def test_add_empty_row_appends_and_selects(self, store_patch_for_component):
+        client, handle = build_editor(store_patch_for_component)
+        handle.add_empty_row()
+        assert len(handle.rows) == 4
+        assert handle._selected_ids == [3]
 
     def test_refresh_keeps_python_and_table_selection_aligned(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
@@ -413,12 +485,150 @@ class TestEditorHandle:
         assert handle.flush_autosave() is None
         assert store.list_drafts() == []
 
+    def test_autosave_gated_on_min_non_empty_rows(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """Auto-save only arms once the table holds >=5 filled rows.
+
+        A handful of scaffolding rows must not create a throwaway draft: below
+        the threshold schedule_autosave does not arm the debounce timer and
+        surfaces a gate status instead, while the manual export path is
+        unaffected.
+        """
+        from ui.components import edge_list_editor as editor_module
+        from ui.components.edge_list_editor import AUTOSAVE_MIN_NON_EMPTY_ROWS
+
+        client, handle = build_editor(store_patch_for_component)
+
+        # Fresh editor starts with 3 empty scaffolding rows.
+        assert handle._non_empty_row_count() == 0
+        # Grow the table so it can hold up to the threshold.
+        while len(handle.rows) < AUTOSAVE_MIN_NON_EMPTY_ROWS:
+            handle.rows.append(handle._empty_row())
+
+        def _filled(i):
+            row = handle._empty_row()
+            row.update({"source": f"N{i}", "target": f"M{i}", "weight": str(i + 1)})
+            return row
+
+        # 4 filled rows is still below the threshold.
+        for i in range(AUTOSAVE_MIN_NON_EMPTY_ROWS - 1):
+            handle.rows[i] = _filled(i)
+        assert handle._non_empty_row_count() == AUTOSAVE_MIN_NON_EMPTY_ROWS - 1
+
+        armed = []
+
+        class _FakeTimer:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def cancel(self):
+                pass
+
+        def _fake_timer(*a, **k):
+            armed.append(a)
+            return _FakeTimer(*a, **k)
+
+        monkeypatch.setattr(editor_module.ui, "timer", _fake_timer)
+
+        handle.name_input.value = "draft"
+        handle.schedule_autosave()
+        # Below threshold: no debounce timer is armed and the gate status is shown.
+        assert armed == []
+        assert "filled rows" in (handle.status_label.text or "")
+
+        # At exactly the threshold, auto-save arms the debounce timer.
+        handle.rows[AUTOSAVE_MIN_NON_EMPTY_ROWS - 1] = _filled(
+            AUTOSAVE_MIN_NON_EMPTY_ROWS
+        )
+        assert handle._non_empty_row_count() == AUTOSAVE_MIN_NON_EMPTY_ROWS
+        armed.clear()
+        handle.schedule_autosave()
+        assert len(armed) == 1
+
+    def test_column_mode_swap_adds_group_and_info_columns(self, store_patch_for_component):
+        client, handle = build_editor(store_patch_for_component)
+        assert [c["name"] for c in handle.table.columns] == [
+            "source", "target", "weight", "color",
+        ]
+        handle.set_columns_mode("full")
+        assert [c["name"] for c in handle.table.columns] == list(store.EDGE_COLUMNS)
+        handle.set_columns_mode("basic")
+        assert len(handle.table.columns) == 4
+
+    def test_load_csv_text_into_table(self, store_patch_for_component):
+        client, handle = build_editor(store_patch_for_component)
+        text = "source,target,weight,color,source_group\nA,B,1,#fff000,PAM\n"
+        assert handle.load_csv_text(text) is True
+        assert handle.rows[0]["source"] == "A"
+        assert handle.rows[0]["color"] == "#fff000"
+        assert handle.rows[0]["source_group"] == "PAM"
+        assert "Loaded 1 rows from CSV" in handle.status_label.text
+
+    def test_color_cell_picker_opens_popup(self, store_patch_for_component):
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows(ROWS)
+        opened = []
+
+        class _FakePopup:
+            def open(self, initial):
+                opened.append(initial)
+
+        handle._pick_popup = _FakePopup()
+        handle.on_color_pick(SimpleNamespace(args={"id": 0, "field": "color"}))
+        assert opened == ["#145cff"]
+        # Non-color fields never open the popup.
+        handle.on_color_pick(SimpleNamespace(args={"id": 0, "field": "weight"}))
+        assert len(opened) == 1
+
+    def test_enriched_csv_notice_present(self, store_patch_for_component):
+        """The editor carries the in-page notice steering complex enriched
+        graphs (hover labels, custom groups, more columns) to local CSV
+        files, linked to the format docs and the Type Mapping guide."""
+        client, handle = build_editor(store_patch_for_component)
+        notice = next(
+            el for el in client.elements.values()
+            if (getattr(el, "_props", None) or {}).get("id")
+            == "card-net-viz-enriched-notice"
+        )
+        assert notice is not None
+        texts = [
+            getattr(el, "text", "")
+            for el in client.elements.values()
+            if getattr(el, "text", "")
+        ]
+        joined = "\n".join(texts)
+        assert "local CSV file" in joined
+        assert "Auto Type Mapping" in joined
+        assert "Enriched edge-list format" in texts
+        assert "Auto Type Mapping guide" in texts
+
+    def test_apply_picked_color_updates_table_cell(self, store_patch_for_component):
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows(ROWS)
+        handle._pending_pick = {"row_id": 1, "field": "color"}
+        handle._apply_picked_color("#ff0000")
+        assert handle.rows[1]["color"] == "#ff0000"
+        assert [row.get("color") for row in handle.table.rows] == ["", "#ff0000"]
+
     def test_runnable_path_file_requires_complete_edge(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows([{"source": "A", "target": "", "weight": ""}], name="incomplete")
         assert handle.runnable_path_file() is None
         handle.set_rows(ROWS, name="complete")
         assert handle.runnable_path_file() is not None
+
+    def test_runnable_blocks_on_validation_errors(self, store_patch_for_component):
+        """A validation error blocks the run and is surfaced in the panel."""
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows([{"source": "A", "target": "B", "weight": "many"}], name="bad")
+        assert handle.runnable_path_file() is None
+        assert handle.validation_panel.visible is True
+        assert "not a number" in handle.validation_label.text
+        assert "Fix the edge list errors" in handle.status_label.text
+        handle.rows[0]["weight"] = "5"
+        assert handle.runnable_path_file() is not None
+        assert handle.validation_panel.visible is False
 
     def test_runnable_path_file_without_draft_name_uses_transient_csv(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
@@ -498,15 +708,38 @@ class TestNetworkTabIntegration:
             if (getattr(el, "_props", None) or {}).get("label")
         ]
 
-    def test_canvas_source_excludes_empty_canvas_and_includes_editor(self, monkeypatch, tmp_path):
+    def _by_id(self, client, card_id):
+        return next(
+            el for el in client.elements.values()
+            if (getattr(el, "_props", None) or {}).get("id") == card_id
+        )
+
+    def _mode_button(self, client, text):
+        matches = [
+            el for el in client.elements.values()
+            if getattr(el, "text", None) == text
+        ]
+        assert len(matches) == 1, f"button {text!r}: {len(matches)}"
+        return matches[0]
+
+    @staticmethod
+    def _click_button(button):
+        for listener in (getattr(button, "_event_listeners", None) or {}).values():
+            if getattr(listener, "type", None) == "click":
+                listener.handler(SimpleNamespace())
+
+    def test_mode_buttons_replace_canvas_source_select(self, monkeypatch, tmp_path):
+        """The Canvas Source dropdown is replaced by three segmented mode
+        buttons (Edge list editor / Empty canvas / File upload)."""
         self._patch_store(monkeypatch, tmp_path)
         client = self._build_tab(monkeypatch, tmp_path)
         selects = [
             el for el in client.elements.values()
             if (getattr(el, "_props", None) or {}).get("label") == "Canvas Source"
         ]
-        assert len(selects) == 1
-        assert selects[0].options == ["Path file", "Edge list editor"]
+        assert selects == []
+        for name in ("Edge list editor", "Empty canvas", "File upload"):
+            self._mode_button(client, name)
 
     def test_editor_card_present(self, monkeypatch, tmp_path):
         self._patch_store(monkeypatch, tmp_path)
@@ -549,30 +782,30 @@ class TestNetworkTabIntegration:
         assert "card-edge-draft-recovery" not in ids
 
     def test_source_switch_toggles_path_input(self, monkeypatch, tmp_path):
-        """The source selector and editor expansion stay synchronized."""
+        """The mode buttons swap exactly one visible source panel and keep
+        the editor table expanded whenever the editor mode is active."""
         self._patch_store(monkeypatch, tmp_path)
         client = self._build_tab(monkeypatch, tmp_path)
-        source = next(
-            el for el in client.elements.values()
-            if (getattr(el, "_props", None) or {}).get("label") == "Canvas Source"
-        )
-        path_panel = next(
-            el for el in client.elements.values()
-            if (getattr(el, "_props", None) or {}).get("id") == "net-viz-path-input"
-        )
-        editor_card = next(
-            el for el in client.elements.values()
-            if (getattr(el, "_props", None) or {}).get("id") == "card-net-viz-edge-editor"
-        )
-        # Path file (default): upload panel shown, editor collapsed.
-        assert source.value == "Path file"
-        assert path_panel.visible is True
-        assert editor_card.value is False
-        source.set_value("Edge list editor")
+        editor_panel = self._by_id(client, "card-net-viz-editor-panel")
+        empty_panel = self._by_id(client, "card-net-viz-empty-canvas")
+        path_panel = self._by_id(client, "net-viz-path-input")
+        editor_card = self._by_id(client, "card-net-viz-edge-editor")
+        # Default mode is Edge list editor: editor panel visible with the
+        # table expanded; the other two panels hidden.
+        assert editor_panel.visible is True
+        assert empty_panel.visible is False
         assert path_panel.visible is False
         assert editor_card.value is True
-        source.set_value("Path file")
+        self._click_button(self._mode_button(client, "Empty canvas"))
+        assert editor_panel.visible is False
+        assert empty_panel.visible is True
+        assert path_panel.visible is False
+        self._click_button(self._mode_button(client, "File upload"))
+        assert editor_panel.visible is False
+        assert empty_panel.visible is False
         assert path_panel.visible is True
-        assert editor_card.value is False
-        editor_card.set_value(True)
-        assert source.value == "Edge list editor"
+        self._click_button(self._mode_button(client, "Edge list editor"))
+        assert editor_panel.visible is True
+        assert empty_panel.visible is False
+        assert path_panel.visible is False
+        assert editor_card.value is True

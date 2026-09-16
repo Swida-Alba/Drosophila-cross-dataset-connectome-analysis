@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import PROJECT_ROOT
 
@@ -3623,6 +3623,19 @@ NATIVE_TYPE_MATCH_CAP = 16
 NATIVE_LABEL_MATCH_CAP = 8
 NATIVE_LABEL_TYPES_CAP = 8
 
+# Broad ordinary searches (a 2-character query can match thousands of
+# names) previously retained every native match in ``types_all`` /
+# ``covered_all`` and enriched each item through the type mapping walk.
+# The query 'CB' on male-cns v1.0 alone fed ~23,000 items into that walk
+# and held a warm scan for over a minute — long enough to starve the UI
+# websocket.  Keep a ranked but finite tail instead: the "+N more" counts
+# stay truthful, whole real families still fit (the largest real label
+# coverage and the 'DN' type families are well beneath these bounds), and
+# only the explicit uncapped CSV export opts back out.
+NATIVE_TYPES_ALL_CAP = 500
+NATIVE_LABELS_ALL_CAP = 500
+NATIVE_COVERED_ALL_CAP = 96
+
 # Caps for the value-driven mapper fallback: how many matched (column,
 # value) pairs, local types, and displayed foreign types per dataset one
 # lookup may consume.
@@ -3943,12 +3956,15 @@ def _native_label_matches_from_sidecar(
     types_cap: int,
     *,
     prefix_only: bool = False,
+    covered_all_cap: int = 10 ** 9,
 ):
     """Search taxonomy values from the compact distinct-value sidecar.
 
-    The sidecar stores source row ordinals per value.  Only rows belonging to
-    the few displayed labels are looked up in the narrow ``type`` frame, so a
+    The sidecar stores source row ordinals per value.  Only rows belonging
+    to the few displayed labels are looked up in the narrow ``type`` frame, so a
     broad one-character prefix never scans or materializes the wide index.
+    ``covered_all_cap`` bounds each label's hidden covered tail for ordinary
+    searches (bounded prefix mode caps at ``types_cap`` instead).
     """
     import polars as pl
 
@@ -4006,7 +4022,9 @@ def _native_label_matches_from_sidecar(
                 type_groups = (
                     type_groups_frame
                     .sort(["len", "type"], descending=[True, False])
-                    .head(max(0, types_cap) if bounded_prefix else 10 ** 9)
+                    .head(
+                        max(0, types_cap) if bounded_prefix
+                        else max(0, covered_all_cap))
                     .to_dicts()
                 )
                 covered = [
@@ -4021,11 +4039,7 @@ def _native_label_matches_from_sidecar(
                 "matched_written": label,
                 "covered_all": covered,
                 "types": covered[:types_cap],
-                "types_truncated": (
-                    max(0, total_types - len(covered))
-                    if bounded_prefix
-                    else max(0, len(covered) - types_cap)
-                ),
+                "types_truncated": max(0, total_types - types_cap),
             })
     matches.sort(key=lambda item: -item["count"])
     if bounded_prefix:
@@ -4042,12 +4056,15 @@ def _native_label_matches(
     types_cap: int,
     *,
     prefix_only: bool = False,
+    covered_all_cap: int = 10 ** 9,
 ):
     """Taxonomy-label matches in one index with their covered types.
 
     Returns ``(matches, truncated)`` where matches are
     ``{'label', 'column', 'count', 'types': [{'name', 'count'}],
     'types_truncated'}`` sorted by count (descending).
+    ``covered_all_cap`` bounds each label's hidden covered tail for ordinary
+    searches (bounded prefix mode caps at ``types_cap`` instead).
     """
     import polars as pl
 
@@ -4056,7 +4073,8 @@ def _native_label_matches(
             "__neuron_rows", "search_column", "search_value",
             "search_value_folded"}.issubset(set(search_frame.columns)):
         return _native_label_matches_from_sidecar(
-            index, needle, cap, types_cap, prefix_only=prefix_only)
+            index, needle, cap, types_cap, prefix_only=prefix_only,
+            covered_all_cap=covered_all_cap)
 
     folded_needle = needle.casefold()
     matches = []
@@ -4112,7 +4130,9 @@ def _native_label_matches(
                 type_groups = (
                     type_groups_frame
                     .sort(["len", "type"], descending=[True, False])
-                    .head(max(0, types_cap) if bounded_prefix else 10 ** 9)
+                    .head(
+                        max(0, types_cap) if bounded_prefix
+                        else max(0, covered_all_cap))
                     .to_dicts()
                 )
             else:
@@ -4134,11 +4154,7 @@ def _native_label_matches(
                 # to prevent.
                 "covered_all": covered,
                 "types": covered[:types_cap],
-                "types_truncated": (
-                    max(0, total_types - len(covered))
-                    if bounded_prefix
-                    else max(0, len(covered) - types_cap)
-                ),
+                "types_truncated": max(0, total_types - types_cap),
             })
     matches.sort(key=lambda m: -m["count"])
     if bounded_prefix:
@@ -4344,6 +4360,7 @@ def collect_native_type_matches(
     *,
     uncapped: bool = False,
     prefix_only_search: bool = False,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Native type-name expansion for a zero-hit viewer search.
 
@@ -4354,7 +4371,8 @@ def collect_native_type_matches(
     returned; this is the bounded mode used for deliberate one-character
     searches.  Results are name-similar entries, not mapped equivalences, and
     stay strictly informational.  With ``uncapped=True`` every match is
-    returned (used by the CSV export).
+    returned (used by the CSV export).  ``should_abort`` is polled between
+    datasets so a superseded scan abandons the remaining parquet loads.
     """
     search = str(search or "").strip()
     if (
@@ -4376,6 +4394,8 @@ def collect_native_type_matches(
     label_cap = 10 ** 9 if uncapped else NATIVE_LABEL_MATCH_CAP
     types_cap = 10 ** 9 if uncapped else NATIVE_LABEL_TYPES_CAP
     for ds in datasets:
+        if should_abort is not None and should_abort():
+            return matches
         index = _load_cross_match_index(ds)
         if index is None:
             continue
@@ -4386,13 +4406,20 @@ def collect_native_type_matches(
         # at render time.  An explicit uncapped CSV request still opts into
         # the complete prefix result.
         bounded_prefix = bool(prefix_only_search and not uncapped)
-        match_cap = type_cap if bounded_prefix else 10 ** 9
-        label_match_cap = label_cap if bounded_prefix else 10 ** 9
-        # Keep the full covered evidence for ordinary searches, while the
-        # helper still uses ``types_cap`` for the display list and its
-        # truncation flag.  In bounded prefix mode the helper also uses this
-        # finite cap to avoid retaining the hidden evidence tail at all.
-        covered_cap = types_cap
+        if uncapped or bounded_prefix:
+            # Explicit uncapped export keeps every match; a deliberate
+            # bounded one-character search keeps only the display-sized
+            # prefix lists (``type_cap`` etc. are the finite display caps).
+            match_cap = type_cap
+            label_match_cap = label_cap
+            covered_all_cap = types_cap
+        else:
+            # Ordinary searches keep a ranked but finite all-list so a
+            # broad query cannot feed tens of thousands of items into the
+            # per-item mapping enrichment.
+            match_cap = NATIVE_TYPES_ALL_CAP
+            label_match_cap = NATIVE_LABELS_ALL_CAP
+            covered_all_cap = NATIVE_COVERED_ALL_CAP
         types_all, types_truncated = _native_type_matches(
             index, search, match_cap, prefix_only=prefix_only_search
         )
@@ -4400,20 +4427,19 @@ def collect_native_type_matches(
             index,
             search,
             label_match_cap,
-            covered_cap,
+            types_cap,
             prefix_only=prefix_only_search,
+            covered_all_cap=covered_all_cap,
         )
         types = types_all[:type_cap]
         labels = labels_all[:label_cap]
-        if bounded_prefix:
-            # ``_native_*_matches`` already applied the safety cap above;
-            # retain its full truncation count rather than reporting only
-            # the number hidden by the second display slice.
-            types_truncated = int(types_truncated)
-            labels_truncated = int(labels_truncated)
-        else:
-            types_truncated = max(0, len(types_all) - len(types))
-            labels_truncated = max(0, len(labels_all) - len(labels))
+        # The helpers' counts hide everything beyond the all-list cap, and
+        # the display slice hides the tail of the kept list; both are
+        # hidden from the panel, so report their sum.
+        types_truncated = int(types_truncated) + max(
+            0, len(types_all) - len(types))
+        labels_truncated = int(labels_truncated) + max(
+            0, len(labels_all) - len(labels))
         if types or labels:
             matched_written = ""
             for cand in types_all:
@@ -4485,6 +4511,8 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
 def enrich_native_type_matches(
     native_matches: List[Dict[str, Any]],
     selected_dataset: str,
+    *,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> None:
     """Annotate native type matches with their mapped names, in place.
 
@@ -4495,6 +4523,9 @@ def enrich_native_type_matches(
     counterpart keep ``annotation=None`` and stay visible unmapped, so
     the user is still led to inspect them in the other dataset.  Mapper
     failures simply leave everything unannotated.
+
+    ``should_abort`` lets a superseded scan abandon the walk between
+    entries and labels; the caller discards the partial result anyway.
     """
     try:
         from comparison.cross_dataset_type_mapper import get_type_mapper
@@ -4519,6 +4550,8 @@ def enrich_native_type_matches(
             alias_cache=cache, bridge_cache=bridge_cache)
 
     for entry in native_matches:
+        if should_abort is not None and should_abort():
+            return
         foreign_ds = entry.get("dataset", "")
         mapped_names = set()
         # Complete lists for ordinary searches (or the deliberately bounded
@@ -4574,6 +4607,8 @@ def enrich_native_type_matches(
             # Map the FULL covered list (covered_all): the display-capped
             # ``types`` would silently drop tail types (lowercase names
             # sort last) from the mapped-type view.
+            if should_abort is not None and should_abort():
+                return
             for covered in (label.get("covered_all")
                             or label.get("types", [])):
                 covered["mapped"] = _annotation_for(
@@ -4593,6 +4628,30 @@ def enrich_native_type_matches(
         # Current-dataset type names this block's matches map to — the
         # mapped-type view's equivalent search set.
         entry["mapped_type_names"] = sorted(mapped_names)
+
+
+def _same_name_asymmetry_note(mapper, name: str,
+                              datasets: List[str]) -> str:
+    """Population-asymmetry note for same-name candidates (user
+    2026-09-14): when the same type name's populations across the queried
+    datasets that HAVE it differ by an order of magnitude, return the
+    suggested-check text ('' otherwise).  Bookkeeping only — never a
+    mapping decision."""
+    try:
+        counts = {ds: mapper.get_type_population(name, ds)
+                  for ds in datasets}
+    except Exception:
+        return ""
+    present = {ds: n for ds, n in counts.items() if n > 0}
+    if len(present) < 2:
+        return ""
+    hi_ds = max(present, key=present.get)
+    lo_ds = min(present, key=present.get)
+    if present[lo_ds] * 10 > present[hi_ds]:
+        return ""
+    return (f"extreme population asymmetry across datasets "
+            f"({present[lo_ds]} in {lo_ds} vs {present[hi_ds]} in "
+            f"{hi_ds}; suggested check)")
 
 
 def collect_alias_matches(
@@ -4660,6 +4719,18 @@ def collect_alias_matches(
                     "aggregates": cand.get("aggregates"),
                     "count": count_type_in_index(index, cand["name"]),
                 })
+            # Same-name fidelity flag (user 2026-09-14): a same-name
+            # candidate whose population is an order of magnitude below
+            # the same name in another queried dataset is flagged as a
+            # suggested check — carried evidence, never a decision.
+            same = [c for c in entry["candidates"]
+                    if c["kind"] == "same name"]
+            if same:
+                note = _same_name_asymmetry_note(
+                    mapper, search, datasets)
+                if note:
+                    for c in same:
+                        c["asymmetry_note"] = note
         matches.append(entry)
 
     matches.sort(key=lambda entry: not entry["is_selected"])
@@ -4673,6 +4744,7 @@ def collect_zero_hit_matches(
     matched_values: Optional[List[tuple]] = None,
     *,
     prefix_only_search: bool = False,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Expansion tiers for a viewer search's cross-dataset panel.
 
@@ -4700,6 +4772,12 @@ def collect_zero_hit_matches(
     one-character query.  It applies the same starts-with-only guard to the
     native cross-dataset tier so that enabling this panel cannot re-expand a
     bounded local search into a broad substring scan.
+
+    ``should_abort`` is a UI-owned predicate polled between enrichment
+    steps; a superseded scan abandons quickly instead of finishing its
+    full walk.  It must stay un-picklable-safe: the spawned-process
+    entry point (:func:`collect_zero_hit_matches_in_process`) never
+    receives it, and its process isolation already bounds stale work.
     """
     # Keep the entire expansion single-flight.  The native projection is
     # bounded, but mapper enrichment and value-driven fallback can still hold
@@ -4712,6 +4790,7 @@ def collect_zero_hit_matches(
         datasets,
         matched_values,
         prefix_only_search=prefix_only_search,
+        should_abort=should_abort,
     )
 
 
@@ -4745,6 +4824,7 @@ def _collect_zero_hit_matches(
     matched_values: Optional[List[tuple]] = None,
     *,
     prefix_only_search: bool = False,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Implementation for :func:`collect_zero_hit_matches`.
 
@@ -4758,25 +4838,32 @@ def _collect_zero_hit_matches(
         search,
         datasets,
         prefix_only_search=prefix_only_search,
+        should_abort=should_abort,
     )
     try:
-        enrich_native_type_matches(native, dataset)
+        enrich_native_type_matches(
+            native, dataset, should_abort=should_abort)
     except Exception:
         pass
+    if should_abort is not None and should_abort():
+        return {"native": [], "mapped": [], "value_mapped": [],
+                "guidance": []}
     try:
         mapped = collect_alias_matches(dataset, search, datasets)
     except Exception:
         mapped = []
     value_mapped: List[Dict[str, Any]] = []
     guidance: List[Dict[str, Any]] = []
-    if matched_values:
+    if matched_values and not (
+            should_abort is not None and should_abort()):
         try:
             value_mapped, guidance = collect_value_mapped_matches(
                 dataset, matched_values, datasets)
         except Exception:
             value_mapped, guidance = [], []
         try:
-            enrich_native_type_matches(value_mapped, dataset)
+            enrich_native_type_matches(
+                value_mapped, dataset, should_abort=should_abort)
         except Exception:
             pass
     return {

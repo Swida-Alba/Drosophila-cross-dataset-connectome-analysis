@@ -46,6 +46,19 @@ FOCUS_DEDUP_SECONDS = 3.2
 # letter would re-filter the whole index on every keystroke with mostly noise.
 # The explicit Search button can still submit a deliberate one-character query.
 MIN_SEARCH_CHARS = 2
+# Cross-dataset scans settle behind the search text.  Every render supersedes
+# the previous prefix's pending scan, so typing 'CB2438' runs one scan for the
+# final query instead of one per keystroke; each scan holds the process-wide
+# single flight, and a queued scan behind a cold worker would otherwise run
+# every broad intermediate query to completion.
+ALIAS_SCAN_SETTLE_SECONDS = 0.6
+# A query matching this many local rows also maps into tens of thousands of
+# foreign names (the 'CB' prefix on male-cns matched ~37,000 rows and fed
+# ~23,000 items through the mapping walk).  Even with a warm in-process
+# mapper, run those scans in the spawned worker: their CPU-heavy enrichment
+# must never run inside the websocket process, or the client misses its
+# heartbeats and the connection drops (the CB2438 crash).
+BROAD_QUERY_LOCAL_HITS = 10_000
 
 
 def _effective_search_text(raw: str, *, force: bool = False) -> str:
@@ -2016,6 +2029,9 @@ def _render_index(
                                             if cand["kind"] == "same name":
                                                 text += (" (no metadata verification — "
                                                          "please double check)")
+                                            if cand.get("asymmetry_note"):
+                                                text += ("; "
+                                                         + cand["asymmetry_note"])
                                             if cand.get("aggregates"):
                                                 text += (
                                                     "; a match also covers: "
@@ -2023,6 +2039,10 @@ def _render_index(
                                                 )
                                             if cand.get("count") is not None:
                                                 text += f" ({cand['count']:,} neurons)"
+                                            if cand["kind"] == "one of N":
+                                                text += (
+                                                    "; the parent family "
+                                                    "splits by neuron")
                                             with ui.row().classes(
                                                 "items-center gap-2 flex-wrap"
                                             ):
@@ -2071,13 +2091,28 @@ def _render_index(
                 # touched here, back on the loop, after the await.  A cold
                 # mapper is process-isolated because its pandas/Python load
                 # can starve the websocket even from a thread.
+                # Let rapid typing settle first: a newer query re-rendered
+                # the footer and replaced current_key, so a superseded
+                # pending scan exits before it reaches the single-flight
+                # boundary instead of queueing behind a cold worker and
+                # running every broad intermediate query to completion.
+                await asyncio.sleep(ALIAS_SCAN_SETTLE_SECONDS)
+                if alias_scan["current_key"] != cache_key:
+                    if alias_scan["inflight_key"] == cache_key:
+                        alias_scan["inflight_key"] = None
+                    return
                 try:
                     # The generation check belongs inside the process-wide
                     # single-flight boundary: stale workers may be queued
                     # behind a cold R1 scan, and checking only after the call
                     # still lets each stale worker allocate its own mapper /
-                    # Parquet working set.
-                    if not is_type_mapper_loaded():
+                    # Parquet working set.  A broad query is dispatched to
+                    # the worker even with a warm local mapper: its
+                    # enrichment is CPU-heavy enough to starve the
+                    # websocket from a thread.
+                    broad_query = (
+                        last_result_total["value"] > BROAD_QUERY_LOCAL_HITS)
+                    if not is_type_mapper_loaded() or broad_query:
                         matches = await run_cross_dataset_scan_in_process(
                             collect_zero_hit_matches_in_process,
                             dataset,
@@ -2097,6 +2132,11 @@ def _render_index(
                             prefix_only_search=prefix_only_search,
                             is_current=lambda: (
                                 alias_scan["current_key"] == cache_key),
+                            # Polled inside the warm in-process scan so a
+                            # query typed while it runs abandons the stale
+                            # enrichment instead of finishing it.
+                            should_abort=lambda: (
+                                alias_scan["current_key"] != cache_key),
                         )
                 except Exception:
                     matches = None

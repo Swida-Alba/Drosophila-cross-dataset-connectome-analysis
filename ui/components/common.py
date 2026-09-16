@@ -13,7 +13,7 @@ import shutil
 import time
 
 from nicegui import ui
-from typing import List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Callable, Tuple
 from pathlib import Path
 import inspect
 import json
@@ -57,6 +57,36 @@ _OUTPUT_DIR_INPUTS = []
 # focused input through the matching ``drocat-suggest-anchor-<n>`` /
 # ``drocat-suggest-menu-<n>`` class pair.
 _SUGGEST_TOKEN = itertools.count(1)
+
+# Client-side Expand/Collapse toggle for the chip editor. The click flips the
+# shell class (which drives the field's max-height) and the button label in
+# the browser immediately, so a long chip list answers instantly even while
+# the connection is busy; the resulting state is emitted so the server-side
+# mirror (chip_list_expanded) stays authoritative for clear-all and rebuilds.
+# The label edit must write the existing text NODE (firstChild.nodeValue):
+# setting textContent would replace the node Vue renders from the QBtn label
+# prop, and every later server-side text push would patch the orphaned node
+# while the visible label stayed frozen.
+_CHIP_LIST_TOGGLE_JS = (
+    "(function (event) {"
+    "  const t = event.target;"
+    "  const btn = t && t.closest ? t.closest('button') : null;"
+    "  if (!btn) return;"
+    "  const shell = btn.closest('.drocat-chip-input-shell');"
+    "  if (!shell) return;"
+    "  const expanded = !shell.classList.contains('drocat-chip-list-expanded');"
+    "  shell.classList.add(expanded ? 'drocat-chip-list-expanded'"
+    "                              : 'drocat-chip-list-collapsed');"
+    "  shell.classList.remove(expanded ? 'drocat-chip-list-collapsed'"
+    "                                  : 'drocat-chip-list-expanded');"
+    "  const label = btn.querySelector('.q-btn__content .block')"
+    "                || btn.querySelector('.q-btn__content');"
+    "  if (label && label.firstChild && label.firstChild.nodeType === 3) {"
+    "    label.firstChild.nodeValue = expanded ? 'Collapse' : 'Expand';"
+    "  }"
+    "  emit(expanded);"
+    "})"
+)
 
 # Client-side arrow-key navigation for the suggestion/history dropdown.
 # The menu never takes focus (no-focus), so keystrokes land in the QSelect
@@ -355,6 +385,9 @@ def refresh_dataset_selector_statuses(service=None) -> int:
         service = get_dataset_service()
 
     updated = 0
+    # An explicit refresh must re-derive: a pull finishing moments ago has to
+    # flip the tags now, not when the build-time label memo expires.
+    _invalidate_dataset_label_cache()
     for selector in tuple(_DATASET_SELECTORS):
         if getattr(selector, "_drocat_dataset_service", service) is not service:
             continue
@@ -377,6 +410,20 @@ def refresh_dataset_selector_statuses(service=None) -> int:
     return updated
 
 
+# Short-TTL memo behind _dataset_label_parts. Every dataset selector built
+# anywhere in the app resolves per-option status labels (2 fs probes each),
+# and one page build constructs ~300 selector-option rounds × 14 datasets —
+# thousands of synchronous directory scans on the event loop for labels that
+# only need to agree with the 5s status poller.
+_DATASET_LABEL_TTL = 2.0
+_DATASET_LABEL_CACHE: Dict[str, tuple] = {}
+
+
+def _invalidate_dataset_label_cache() -> None:
+    """Drop memoized selector status labels before an explicit refresh."""
+    _DATASET_LABEL_CACHE.clear()
+
+
 def _dataset_label_parts(ds: str, service) -> List[str]:
     """Build the option label parts with source + local status tags."""
     if is_banc_dataset(ds):
@@ -385,6 +432,13 @@ def _dataset_label_parts(ds: str, service) -> List[str]:
         src_tag = "[FAFB]"
     else:
         src_tag = "[NP]"
+    now = time.monotonic()
+    cached = _DATASET_LABEL_CACHE.get(ds)
+    # The memo is only valid for the same service instance: tests (and any
+    # future multi-service setup) swap services, and stale tags from another
+    # instance must never leak.
+    if cached is not None and cached[1] > now and cached[2] is service:
+        return list(cached[0])
     info = service._cache.get(ds)
     # The filesystem is authoritative for local state.  DatasetInfo can be a
     # persisted or server-backed snapshot, so trusting its old local flags
@@ -397,7 +451,9 @@ def _dataset_label_parts(ds: str, service) -> List[str]:
         status_tag = "☁ server"
     else:
         status_tag = ""
-    return [ds, src_tag] + ([status_tag] if status_tag else [])
+    parts = [ds, src_tag] + ([status_tag] if status_tag else [])
+    _DATASET_LABEL_CACHE[ds] = (list(parts), now + _DATASET_LABEL_TTL, service)
+    return parts
 
 
 def _refresh_local_dataset_flags(results, service) -> bool:
@@ -708,6 +764,37 @@ def advanced_neuron_input(
     return container
 
 
+def output_detail_control(
+    hint: str,
+) -> Tuple[Any, Callable[[], Dict[str, bool]]]:
+    """Output detail segmented control for the NeuronBridge tool tabs.
+
+    Full (default) keeps every exported file. Compact drops the bodyId-
+    level source-data tables after their summaries are written and, where
+    applicable, the downloaded images after the integrated PDF/PPTX exists
+    (every removal audited in the run's ``cleanup_audit.json``).
+
+    Returns ``(control, flags_getter)``; ``flags_getter()`` maps the
+    selection onto the ``keep_per_match_csv`` / ``cleanup_source_images``
+    method parameters.
+    """
+    with ui.column().classes("w-full gap-1"):
+        detail = ui.toggle(
+            {"full": "Full", "compact": "Compact"}, value="full",
+        ).props("outline no-caps").classes("drocat-select")
+        ui.label(hint).classes("text-xs opacity-60 w-full").style(
+            "line-height:1.35")
+
+    def _flags() -> Dict[str, bool]:
+        compact = detail.value == "compact"
+        return {
+            "keep_per_match_csv": not compact,
+            "cleanup_source_images": compact,
+        }
+
+    return detail, _flags
+
+
 def neuron_input(
     label: str = "Neurons",
     placeholder: str = "e.g., aMe12, aMe10, DN1p",
@@ -879,7 +966,16 @@ def neuron_list_input(
       mirrored chips can be double-clicked to re-edit a value.
 
     Long chip lists collapse to a scrollable three-row editor; the Expand
-    action opens the full list without changing the query.
+    action shows the full list without changing the query (Collapse restores
+    the compact view). The toggle is applied client-side for an instant
+    response; the expanded/collapsed state clips on the chip container, so
+    chips never render outside the field border while scrolling.
+
+    The Recent/Frequent history list is click-to-toggle on the focused,
+    empty editor: the click that focuses the field opens it, clicking the
+    editor again hides it, and clicking once more shows it again. While
+    typed text shows the suggestion list, clicks never hide it; clicks on
+    chips or their remove buttons never toggle anything.
 
     Returns container with .get_value() -> (filter_mode, neuron_list).
     """
@@ -948,10 +1044,18 @@ def neuron_list_input(
             # Keep the layout control inside the field itself. A history or
             # suggestion menu is anchored below the field and therefore cannot
             # cover this button or turn an Expand click into a history pick.
+            # The click flips the layout client-side (see _CHIP_LIST_TOGGLE_JS)
+            # so a long chip list answers instantly even while the connection
+            # is busy; the emitted state only syncs the server mirror.
             with chip_input.add_slot("append"):
                 expand_button = ui.button(
-                    "Expand", on_click=lambda: toggle_chip_list()
+                    "Expand",
                 ).props("flat dense no-focus").classes("drocat-chip-expand-btn")
+                expand_button.on(
+                    "click",
+                    lambda event: _sync_chip_list_state(event),
+                    js_handler=_CHIP_LIST_TOGGLE_JS,
+                )
                 expand_button.set_visibility(bool(initial_values))
 
             filter_mode = None
@@ -1167,17 +1271,14 @@ def neuron_list_input(
                 # a consumer is torn down during a tab switch.
                 pass
 
-    def toggle_chip_list() -> None:
-        """Toggle the compact three-row view of the chip editor."""
-        # Expanding is a layout action, not a new query interaction. If the
-        # suggestion/history menu is open because the editor still owns focus,
-        # close it before the button takes focus so the Recent list cannot
-        # flash back over the expanded editor.
-        if history_enabled and suggest_menu is not None:
-            _suppress_history_popup["value"] = True
-            _close_suggest()
-        chip_list_expanded["value"] = not chip_list_expanded["value"]
-        if chip_list_expanded["value"]:
+    def _apply_chip_list_state(expanded: bool) -> None:
+        """Push the expanded/collapsed layout state onto the server mirror.
+
+        Idempotent: the browser usually applied the same state already (see
+        _CHIP_LIST_TOGGLE_JS), so the class/text updates are no-ops.
+        """
+        chip_list_expanded["value"] = expanded
+        if expanded:
             chip_input_anchor.classes(
                 add="drocat-chip-list-expanded",
                 remove="drocat-chip-list-collapsed",
@@ -1190,6 +1291,34 @@ def neuron_list_input(
             )
             expand_button.text = "Expand"
         expand_button.update()
+
+    def toggle_chip_list() -> None:
+        """Toggle the compact three-row view of the chip editor.
+
+        Server-driven path (programmatic use). The user-facing button flips
+        the layout in the browser first and adopts the state here afterwards.
+        """
+        # Expanding is a layout action, not a new query interaction. If the
+        # suggestion/history menu is open because the editor still owns focus,
+        # close it before the button takes focus so the Recent list cannot
+        # flash back over the expanded editor.
+        if history_enabled and suggest_menu is not None:
+            _suppress_history_popup["value"] = True
+            _close_suggest()
+        _apply_chip_list_state(not chip_list_expanded["value"])
+
+    def _sync_chip_list_state(event) -> None:
+        """Adopt the state the browser's click handler already applied.
+
+        A click event without an emitted boolean (plain click wiring, tests)
+        falls back to toggling the current server-side state.
+        """
+        args = getattr(event, "args", None)
+        if isinstance(args, bool):
+            expanded = args
+        else:
+            expanded = not chip_list_expanded["value"]
+        _apply_chip_list_state(expanded)
 
     def start_edit_value(value) -> None:
         """Remove one chip and put its exact text back into the editor."""
@@ -1225,13 +1354,7 @@ def neuron_list_input(
         _suppress_history_popup["value"] = True
         chip_input.set_value([])
         if chip_list_expanded["value"]:
-            chip_list_expanded["value"] = False
-            chip_input_anchor.classes(
-                add="drocat-chip-list-collapsed",
-                remove="drocat-chip-list-expanded",
-            )
-            expand_button.text = "Expand"
-            expand_button.update()
+            _apply_chip_list_state(False)
         if upload_label is not None:
             upload_label.text = ""
             upload_label.set_visibility(False)
@@ -1381,6 +1504,15 @@ def neuron_list_input(
         # filter this list locally; a full backend match is needed only after
         # the continuation no longer has candidates.
         _candidate_state = {"text": None, "entries": []}
+        # Whether the open menu currently shows the Recent/Frequent history
+        # (as opposed to type-ahead suggestions). Drives the editor
+        # click-to-toggle: click shows the history, the next click hides it,
+        # the next shows it again — but never dismisses a suggestion list.
+        _menu_showing_history = {"value": False}
+        # Set by the focus handler: the click that caused the focus must not
+        # also toggle the history it just opened. Cleared by the next editor
+        # click and on blur.
+        _skip_next_editor_click = {"value": False}
 
         def _feature_enabled() -> bool:
             """Whether any part of the suggest/history UX is live. Either the
@@ -1447,6 +1579,7 @@ def neuron_list_input(
         def _close_suggest():
             _close_guard["value"] = True
             suggest_menu.close()
+            _menu_showing_history["value"] = False
             _close_guard["value"] = False
 
         def _commit_suggestion(value):
@@ -1503,6 +1636,7 @@ def neuron_list_input(
             # Always discard the previous query before handling the new one.
             # This matters when a narrower query has no candidates: the menu
             # is hidden, but its old rows must not survive into a later reopen.
+            _menu_showing_history["value"] = False
             suggest_menu.clear()
             if not entries:
                 _close_suggest()
@@ -1771,6 +1905,10 @@ def neuron_list_input(
                             _history_datasets(v),
                         )
             _refresh_menu()
+            # After the reopen cycle (refresh closes and reopens the menu),
+            # mark the visible list as history so the editor click-to-toggle
+            # knows a click should hide it.
+            _menu_showing_history["value"] = True
 
         def _history_item(value, is_custom=False, hint=None, remove_handler=None,
                           datasets=None):
@@ -1866,6 +2004,10 @@ def neuron_list_input(
         def _on_suggest_focus(_event):
             _close_other_suggestion_menus()
             _focused["value"] = True
+            # The focus itself was (almost always) caused by the click that
+            # is still being processed; that click must not immediately
+            # toggle the history the focus handler just opened.
+            _skip_next_editor_click["value"] = True
             if not _feature_enabled():
                 return
             # The menu is already showing suggestions (e.g. after a pick) —
@@ -1958,6 +2100,31 @@ def neuron_list_input(
             else:
                 _close_suggest()
 
+        def _toggle_history_on_editor_click(event):
+            """Toggle the Recent/Frequent list from the focused editor.
+
+            Runs only for clicks that landed on the editor surface itself
+            (the js_handler emits a boolean); clicks on chips, remove
+            buttons or the field border are ignored. While the editor holds
+            typed text (suggestion list showing), clicks never toggle — the
+            suggestion rows follow the text, and hiding them mid-typing
+            would read as a glitch. The click that CAUSED the focus is
+            skipped: focus already opened the list.
+            """
+            if _skip_next_editor_click["value"]:
+                _skip_next_editor_click["value"] = False
+                return
+            if not getattr(event, "args", False):
+                return
+            if not _focused["value"] or pending_input["value"]:
+                return
+            if not _history_enabled():
+                return
+            if suggest_menu.value and _menu_showing_history["value"]:
+                _close_suggest()
+            else:
+                _show_history()
+
         registry = getattr(suggest_menu.client, "_drocat_suggestion_menus", [])
         registry.append((suggest_menu, _deactivate_for_focus_change))
         suggest_menu.client._drocat_suggestion_menus = registry
@@ -2036,6 +2203,25 @@ def neuron_list_input(
             "}"
         ),
     )
+    # Click-to-toggle the history list on the focused, empty editor: click
+    # shows it, the next click hides it, the next shows it again — the same
+    # dropdown convention as a plain combobox. Only clicks on the editor
+    # surface (input / empty field area) participate; chips, their remove
+    # buttons and suggestion rows keep their own behavior.
+    if history_enabled:
+        chip_input.on(
+            "click",
+            lambda event: _toggle_history_on_editor_click(event),
+            js_handler=(
+                "(event) => {"
+                "  const t = event.target;"
+                "  const onEditor = !!t && ("
+                "    t.classList.contains('q-field__input') ||"
+                "    t.classList.contains('q-field__native'));"
+                "  emit(onEditor);"
+                "}"
+            ),
+        )
     if clear_button is not None:
         clear_button.on_click(clear_all)
     update_status()
@@ -2994,11 +3180,15 @@ def dataset_status_card() -> ui.card:
             # Keep local status live without issuing another network request.
             # This catches both a pull creating connections.parquet and an
             # external cleanup/removal while the Settings page is open.
+            # Deliberately a 5s cadence (was 1s): the card is built for every
+            # browser session and its timer keeps firing while the user works
+            # in other tabs, so a 1s re-scan of every dataset directory on
+            # the shared event loop multiplied into constant UI lag.
             if not state["running"] and state["results"] is not None:
                 if _refresh_local_dataset_flags(state["results"], service):
                     render_results(state["results"], state.get("updated_at"))
             refresh_dataset_selector_statuses(service)
 
-        ui.timer(1.0, poll_results)
+        ui.timer(5.0, poll_results)
 
     return card
