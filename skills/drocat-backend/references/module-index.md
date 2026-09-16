@@ -33,6 +33,17 @@ All paths are relative to the repo root unless noted.
 - `quick_compare(datasets, source_neurons, target_neurons, ...)`
 - `CrossDatasetTypeMapper`, `LabelMapper`, `DatasetConfig`, `DataLoader`, `ComparisonVisualizer`
 
+## comparison.report_kit (`src/comparison/report_kit.py`)
+
+- Shared tabbed-report machinery extracted from `ConnectivityProfileComparer`
+  and now also driving the cross-dataset morphology comparison:
+  `report_css()`, `report_script()`, `cluster_heatmap_matrix(matrix)`
+  (Ward/VisPath ordering), `plotly_heatmap_fragment(...)`,
+  `append_report_heatmap/_metric_grid/_tab_group(...)`,
+  `generate_standalone_heatmaps(...)` (VisPath render + interactive-heatmap
+  fallback), `MetricStyle` + `metric_style(key)` (positive/diverging scales),
+  and the `REPORT_*_COLORSCALE` constants.
+
 ## comparison.profile_comparator (`src/comparison/profile_comparator.py`)
 
 - `ConnectivityProfileComparer(query, dataset, top_k, top_m, min_synapse_threshold, direction, output_dir, generate_heatmaps, show_figures, skip_bodyId_level, verbose, use_cache, aggregation_level, ensure_cache_complete, custom_mapping_file)` → `run()`
@@ -41,6 +52,36 @@ All paths are relative to the repo root unless noted.
 - `ProfileComparator` (static helpers, no constructor args) → `compare_profiles(...)`, `compare_profiles_simple(...)`
 - `ComparisonResult`, `DEFAULT_SCORE_WEIGHTS`
 
+## comparison.mapping_validation (`src/comparison/mapping_validation.py`)
+
+BodyId-level type-mapping **validate-expand-visualize** orchestrator (CLI
+`scripts/RunMappingValidation.py`). Rev 3.12:
+
+- `MappingValidationConfig(...)` → `effective_mode` / `mode_rank` /
+  `mode_at_least(mode)`; `validation_mode ∈ {restrictive, family,
+  aggressive}` (nested).
+- `MappingValidator(cfg)` → `resolve_type_pairs()`, `validate_pair(...)`,
+  `annotate_invaders(...)`, `run_morphology(...)`,
+  `finalize_categories(per_pair_res, sus, deep, fills, pool_detail)`,
+  `run()`.
+- Category partition (one ordered first-match per branch): tier
+  (`matched`/`verified`/`borderline`/`unmatched`) > `sibling` >
+  `candidates` > `family` > `relative` > `suspicious`; helpers
+  `classify_category(...)`, `candidate_annotation(...)`,
+  `morph_qualified(...)`, `_leaf_token(...)`, `normalize_mode(...)`,
+  `_dedup_rows_by_bid(...)`.
+- Per-bodyId leaf token, ordered: `{T}(out-map)` (type is an in-map type;
+  bodyId-level) > `{T}>{src}` > `{T}(no_source)` > `untyped`.
+- Exports → `validation_results.csv`, `pool_categories.csv`,
+  `suspicious_candidates.csv`, `deep_candidates.csv`,
+  `noise_filtered_candidates.csv`, `gap_fill_proposals.csv`,
+  `gap_fill_dedup.csv`, `family_candidates.csv`, `relatives.csv`,
+  `mapping_export.csv`, `pair_summary.csv`, `set_coverage.json`,
+  `morphology_calibration.json`, `parameters.json`, `README.txt`,
+  `visualization/*.html`.
+- Scene renderer: `comparison.mapping_validation_visualize`
+  (`build_category_buckets` reads the exported `category`).
+
 ## neuronbridge_finder (`src/neuronbridge_finder.py`)
 
 - `NeuronBridgeFinder(verbose=True, separate_splitgal4=False, region=None, max_workers=4)`
@@ -48,6 +89,21 @@ All paths are relative to the repo root unless noted.
   - `find_neurons_batch(line_names, output_dir, match_type, ...)`
   - `analyze_colabeling(lines, output_dir, similarity_methods, ...)`
   - `visualize_colabeling_matrix(...)`, `visualize_expression_matrix(...)`, `visualize_expression_matrix_merged(...)`, `visualize_labeling_distribution(...)`, `visualize_colabeling_distribution(...)`
+
+## neuronbridge_output_policy (`src/neuronbridge_output_policy.py`)
+
+- `prune_find_lines_run(output_path, keep_per_match_csv, cleanup_source_images)` / `prune_find_neurons_run(...)` / `prune_colabel_run(...)`
+- Idempotent Compact prune pass; audit merged into the run's `cleanup_audit.json`
+
+## neuronbridge_coverage (`src/neuronbridge_coverage.py`)
+
+- `refresh(datasets, client=None, force=False, ttl_days=7, nb_version=None)` → advisory `CoverageSnapshot` (exact / aligned / unavailable / unknown per dataset)
+- `load_snapshot()`, `snapshot.covered_datasets(...)`, `snapshot.unavailable_datasets(...)`, `warnings_for(...)`, `sample_body_ids(dataset)`, `probe_coverage(...)`, `classify_records(...)`
+- Snapshot: `cache/neuronbridge/coverage_snapshot.json`; offline never invalidates state
+
+## neuronbridge_query_expansion (`src/neuronbridge_query_expansion.py`)
+
+- `ExpandedLineFinder(verbose, separate_splitgal4, region, max_workers).run(queries, dataset, expand_names, coverage_datasets, ...)` → coverage-routed, name-expanded Find Lines (one `find_lines_batch` per chip; `NB-find-lines-expanded_*` run folder with `expansion_map.csv` / `expansion_summary.json` / `user_warning_notes.txt`)
 
 ## flylight_downloader (`src/flylight_downloader.py`)
 

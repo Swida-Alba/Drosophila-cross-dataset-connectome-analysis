@@ -12,8 +12,11 @@ DROCAT is a Python toolkit for analyzing and visualizing connectome data from **
 > the web UI for you. Installing the project also installs the analysis skills,
 > so the agent already has them afterward (no fetch is needed):
 > [`drocat-usage`](skills/drocat-usage/SKILL.md) for tab-matched script analyses
-> (a recipe for every analysis panel), and [`drocat-backend`](skills/drocat-backend/SKILL.md)
-> for flexible composition of backend modules. New to agents? Start with the
+> (a recipe for every analysis panel), [`drocat-backend`](skills/drocat-backend/SKILL.md)
+> for flexible composition of backend modules, and
+> [`type-mapping-validation`](skills/type-mapping-validation/SKILL.md)
+> for bodyId-level type-mapping validation and gap-fill review. New to
+> agents? Start with the
 > [agent-assisted install section](docs/INSTALLATION.md#5-agent-assisted-install).
 
 ---
@@ -68,9 +71,11 @@ On first run it creates the versioned `drocat-4.5.0` Python 3.11 environment (vi
 
 For script analysis without the UI, the agent uses the checked-in analysis skills
 (with the UI closed): [`drocat-usage`](skills/drocat-usage/SKILL.md) for
-one-tab analyses and [`drocat-backend`](skills/drocat-backend/SKILL.md) for
-flexible backend composition. They are part of the repository, so an installed
-agent has them — no fetch is required.
+one-tab analyses, [`drocat-backend`](skills/drocat-backend/SKILL.md) for
+flexible backend composition, and
+[`type-mapping-validation`](skills/type-mapping-validation/SKILL.md) for
+bodyId-level type-mapping validation. They are part of the repository, so an
+installed agent has them — no fetch is required.
 
 **Manual launch** (after installation) — double-click `mac_DROCAT.command` (macOS / Linux) or `windows_DROCAT.bat` (Windows), or from a terminal:
 

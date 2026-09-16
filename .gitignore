@@ -98,3 +98,12 @@ homolog_param_benchmark/
 
 # Morphology NBLAST vs vector benchmark (local only)
 morphology_benchmark_NBLAST_vector/
+
+# Per-run analysis output folders created by the Inter-Dataset tab in the repo
+# root (effective_thresholds.json + comparison_report_used_data). Local run
+# artifacts, never committed.
+cross-dataset_*/
+
+# Bug artifact: a cleanup pass that received a None path mkdir'd a literal
+# "None/" directory (cleanup_audit.json only). Ignored until removed.
+None/
