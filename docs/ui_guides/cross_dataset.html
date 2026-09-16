@@ -46,7 +46,14 @@
     help while you type: dataset-aware suggestions list matching type /
     instance / bodyId names with a gray hint naming the matched column and
     dataset (<code>type &middot; male-cns:v1.0</code>). With the field empty,
-    the <b>Recent/Frequent</b> history lists your previously run queries.
+    the <b>Recent/Frequent</b> history lists your previously run queries, and
+    the list is click-to-toggle: clicking the focused field again hides it,
+    clicking once more brings it back (clicking a row still commits it, and
+    clicks on chips or their &times; buttons never toggle the list).
+    Long chip lists collapse into a scrollable view; <b>Expand</b> shows every
+    chip and <b>Collapse</b> restores the compact view &mdash; in both states
+    the chips scroll <i>inside</i> the field border and never render outside
+    it.
     Each history row carries one gray tag per <i>selected</i> dataset whose
     local neuron pool actually contains the value &mdash; a male-cns-only
     type such as <code>5thsLNv_LNd6</code> is tagged
@@ -105,9 +112,24 @@
     <code>max(path bottlenecks)</code>, not the stored provenance value),
     and then emits integer aligned rows: vertical rows share one threshold
     across all datasets, horizontal rows share a normalized edge density
-    <code>E(t)/N</code> (N = typed searched nodes, fixed in t). The rows
+    <code>E(t)/N</code> (N = typed searched nodes, fixed in t). Vertical
+    rows are named <code>threshold={N}</code> and horizontal rows
+    <code>aligned_density={level}</code> — these ids are the tab buttons,
+    the report card headers, and the keys inside
+    <code>threshold_combinations.csv</code> and the per-query export
+    filenames (e.g. <code>conserved_network_threshold_19_network.html</code>;
+    two density levels that round to the same name get a <code>_2</code>
+    suffix). The rows
     feed the same combination engine, so the comparison runs end-to-end with
-    no new pathfinder. Outputs: <code>comparison_results/density_curves.csv</code>,
+    no new pathfinder. A dataset without a density capture is <b>excluded</b>
+    from the horizontal rows instead of vetoing them: those rows carry a
+    <code>partial_datasets</code> marker, the run notes log a
+    <code>[density partial]</code> line, and the report labels them.
+    The report's density section embeds the curves as an interactive Plotly
+    chart — grey dashed vertical guides mark the vertical rows' thresholds,
+    grey dotted horizontal guides the horizontal rows' density levels; hover
+    either guide for its row id. Outputs:
+    <code>comparison_results/density_curves.csv</code>,
     <code>density_windows.csv</code>, and
     <code>density_alignment_best_matches.csv</code>; the run guide
     (<code>_UserGuide_please_read_me</code>) mirrors the auto warnings.</p>
@@ -142,6 +164,71 @@
     through; and a derivation whose target-side evidence pools zero rows on
     the reached type is dropped rather than rendered with a
     <code>0 of n</code> coverage.</p>
+
+  <h2>Query-anchored merge granularity</h2>
+  <p>Auto-mapping comparison runs build a per-run <b>merge policy</b> from
+    your query chips, so the report is keyed by the chips' group labels
+    instead of always folding names toward the male-cns namespace. The
+    anchor is chosen from where your chips resolve: when all chips resolve
+    into a common naming, the run anchors on the first chip's home
+    dataset; chips that are the same native name in every selected dataset
+    simply use that name (with the canonical fallback for everything
+    else); mixed chips emit a
+    <code>[type granularity]</code> note in <code>user_warning_notes.txt</code>
+    and keep the minimal inseparable leaf rows, with a shared 1-to-N parent
+    left as its own whole row. A clean reverse rename (e.g. FAFB
+    <code>5th-LNv</code> renaming into MCNS <code>5thsLNv_LNd6</code>)
+    never absorbs the split parent into a leaf row.</p>
+  <p>For a conflicted type such as MCNS <code>5thsLNv_LNd6</code> (which
+    bridges two FAFB types): querying it from MCNS merges <em>all</em> its
+    branches — FAFB <code>5th-LNv</code> and <code>LNd_CRY+_ITP+</code> with
+    the BANC names that follow each — into <b>one</b> row whose target cells
+    color the dataset-specific names (split-branch members share one color
+    across columns) and collapse beyond three names. Querying one of the
+    FAFB leaves instead yields that leaf's own row (with its BANC
+    counterpart), while the MCNS parent stays a separate whole row. A type
+    claimed by two queried parents (a fan-in leaf) merges with <b>neither</b>:
+    it stays its own row, it is pruned from both parents' displayed rows, and
+    a <code>[merge fan-in]</code> note explains why — and when the shared
+    branch belongs to a queried parent, the note explicitly states that
+    the parent's row is <b>partial by design</b> (the co-queried branch is
+    presented separately at its own minimal level). The custom label mapper
+    overrides any of this when you know better.</p>
+  <p>Evidence surfaces for the split groups: the report's Type Mapping
+    section is split into three tables — <b>Sources</b> (the
+    priority-selected <code>dataset: type</code> observation each canonical
+    row was built from: male-cns → FAFB → other neuprint → BANC, with the
+    remaining observations listed beside), <b>Targets</b> (the resolved
+    name in each dataset; the muted ● mark repeats the source dataset's
+    identity), and <b>Intermediates</b> (mid-chain hops of bridge routes).
+    The section also carries a collapsed <b>Resolution topology</b> card
+    (per-group tree with per-branch bridge pool sizes and vote provenance),
+    the run folder gains <code>type_resolution_topology.json</code>, and
+    <code>auto_type_mapping.csv</code> gains additive
+    <code>anchor_group</code> / <code>auto_only</code> columns. Mappings
+    resting on auto-transferred labels only carry a
+    <code>⚠️ auto-only</code> badge on the auto-label <b>source dataset
+    cell</b> of the Targets table (the BANC column in a BANC-anchored run)
+    and are listed under a <code>[BANC auto labels]</code> note — they remain
+    valid; the custom label mapper is the removal path.</p>
+  <p>The section's tables are organized by <b>query role</b>: <b>Queried
+    Sources</b> (one row per queried source type, resolved per dataset with
+    status colors), <b>Queried Targets</b> (same for target types), and
+    <b>Path Intermediates</b> (distinct types that appear inside multi-hop
+    paths, ranked by traversal count, with per-dataset presence and their
+    query roles). The full canonical mapping grid remains as a collapsed
+    appendix. With <code>separate_hemispheres</code> enabled the run header
+    carries a <b>Hemisphere-aware run</b> badge explaining the _L/_R/_U type
+    suffixes.</p>
+  <p>Report tables: every data table renders in a ~20-row scrollable
+    viewport with sticky headers (very large presence matrices are capped
+    at 1,000 rendered rows with a note — the full set is always in the CSV
+    exports). Similarity-trend plots split the comparison axis into two
+    columns — per-threshold (left) and per-density (right, levels
+    descending so thresholds increase left-to-right) — with one metric row
+    each (Jaccard, Edge Rank, Cosine, Spearman). Neuron-count charts and
+    tables show only the types present in their own role (source chart =
+    source-present types only, target chart = target-present only).</p>
 
   <h2>Pathfinding threshold &amp; bottleneck provenance</h2>
   <p>Every pathfinding row records both the threshold the user requested and
@@ -237,12 +324,45 @@
       <code>MTe07</code>): one canonical target everywhere.</li>
     <li><b>Valid split</b> (e.g. MCNS <code>VS</code> &rarr; FAFB
       <code>VS1</code>…<code>VS8</code>): every licensed branch is listed;
-      no arbitrary single target is chosen.</li>
+      no arbitrary single target is chosen. For a queried split parent the
+      panel additionally resolves the split <b>per neuron</b> (see
+      <i>bodyId-level split resolution</i> below).</li>
     <li><b>Conflict</b> (e.g. BANC <code>CB1011</code>): fails closed — no
       automatic target, and the type is never merged by raw same-name in
       path/edge tables or comparison anchors.</li>
     <li><b>Unmapped</b>: keeps its raw name as the counted long-tail
       fallback (surfaced in the saved metadata's <code>raw_fallback_used</code>).</li>
+  </ul>
+
+  <h2 id="type-mapping-validation">Validating a mapping — the TM VEV pipeline (CLI)</h2>
+  <p>The panel preview is <b>informational</b>. To grade a mapping at
+    bodyId level — and estimate how much of the gap its evidence can fill —
+    run the validation pipeline (type-mapping
+    validate-expand-visualize, TM VEV) from the repo root:</p>
+  <pre><code>python3 scripts/RunMappingValidation.py     --source flywire_FAFB_v783 --target male-cns:v1.0     --types circadian_clock --mode family     --scene-selfcheck --output-dir /path/to/data</code></pre>
+  <ul>
+    <li><b>Confidence tiers</b>: <code>matched</code> (asserted) &gt;
+      <code>verified</code> &gt; <code>borderline</code> &gt;
+      <code>unmatched</code> for in-pool targets; <code>sibling</code>,
+      <code>candidates</code>, <code>family</code>, <code>relative</code>,
+      <code>suspicious</code> for the expansion (nested modes:
+      restrictive / family / aggressive).</li>
+    <li><b>Layered gap-fill report</b>
+      (<code>gap_fill_levels.csv</code>): every non-claim bodyId graded
+      <code>high</code> (native floor) / <code>medium</code> (Track-A
+      backup <code>B_b − Δ</code>) / <code>low</code> (null bar) /
+      <code>type_gated</code> (family) / <code>advice</code> (relative);
+      hole-closing candidates annotated.</li>
+    <li><b>Out-map branch</b> per type: the unclaimed source neurons (no
+      branch pool claims) beside their expansion candidates
+      (connectivity-ranked, morph-checked) — the source-side gap next to
+      the fill.</li>
+    <li><b>Scene notes</b>: root groups start expanded one layer;
+      <code>sibling</code> layers start hidden (one eye click restores);
+      the run root folder carries the <code>type-map_</code> prefix.</li>
+    <li>Machine-readable progress lands in
+      <code>pipeline_progress.jsonl</code>; full export contract in
+      <code>docs/OUTPUT_FILES.md</code> §9.</li>
   </ul>
   <ul>
     <li><b>Search</b>: one query per chip (exact / starts with / contains /
@@ -255,10 +375,16 @@
       downloads follow the same rule — the query entry is owned by the
       dataset where the query resolved, attached only to that side's source
       types, with the origin-side population on its hover.</li>
-    <li><b>Summary table</b> (per dataset): Matched types, Neurons, Mapped
-      pairs, Mapped types, <b>Mapped neurons</b> (each target's neurons
-      counted ONCE — no per-flow double counting), Unmapped (orphans stay
-      visible).</li>
+    <li><b>Summary table</b> (per dataset): Matched types, Neurons (the
+      issued side — every matched type is issued into the resolution,
+      flowed or orphaned), <b>Mapped neurons</b> — what the dataset
+      RECEIVES: the branch-claimed bodyIds (union of the branches' resolved
+      pools, each bodyId counted ONCE — the claim set per
+      plan-same-name-fidelity-and-three-level-coverage.md; the received
+      types' full populations are the reference denominator), shown as
+      <code>{N}({m} types)</code> from 2 distinct received types up, plain
+      <code>{N}</code> otherwise — a dataset that only issues the query
+      reads 0 — plus Unmapped (orphans stay visible).</li>
     <li><b>Pair cards</b> (<code>src → tgt · N mapped pairs</code>): Type,
       Mapped to, Neurons (<code>source → foreign</code>), Map used (the
       derivation linkers, e.g. <code>flywireType 'LMTe01' +
@@ -307,7 +433,8 @@
       branches. Cells read <code>x of y (share)</code> with thousands
       separators; a side whose coverage index is unavailable renders
       <code>not measured</code> (never a fake zero), and a row without any
-      pool renders <code>not pooled</code>.</li>
+      pool renders <code>not pooled</code>. The state legend rides on the
+      expansion title's hover.</li>
     <li><b>Same-name pairs</b>: a pair sharing its name derives through its
       metadata bridge when one exists (e.g.
       <code>flywireType 'DN1a'</code> — the male-cns crosswalk cell
@@ -335,6 +462,21 @@
       mapping is never silently dropped — a
       <code>+N more flows</code> notice points at the CSV when the drawn
       cap trims).</li>
+    <li><b>BodyId-level granularity (row-based bridge evidence)</b>:
+      the mapper's granularity mechanism is the bridges' own row-based
+      evidence — each branch's <b>linker-refined bodyId pool</b> (the
+      linker rows tie specific bodyIds) and per-bridge <b>label-vote
+      provenance</b> (curated vs <code>auto:</code>, e.g. the BANC
+      <code>aMe24</code> bridge: 1 auto vote vs <code>s-LNv_a</code>: 2).
+      These pools and votes are what the split rows, coverage cells and
+      exports carry — no connectivity similarity is involved anywhere in
+      the mapper.  When several types are queried, or a
+      chip resolves to many types (a taxonomy label such as
+      <code>circadian_clock</code>), a collapsed <b>Per-type breakdown</b>
+      expansion shows one row per (matched type × target dataset) — the
+      mapped counts are specific to the row's target dataset, never summed
+      across datasets — with the originating query chip and the combined
+      <code>{N}({m} types)</code> Mapped-neurons cell.</li>
     <li><b>Legends</b>: the artifact header carries one chip per entry in
       the <code>CODE: full name (count)</code> format — datasets (with
       node counts) and the bridge linker columns (color-coded:
@@ -355,13 +497,31 @@
   <h2>Output</h2>
   <p>One timestamped folder per run, e.g.
     <code>cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/</code>
-    (male-cns v1.0 + FAFB v783 + BANC v626 + BANC v888):</p>
+    (male-cns v1.0 + FAFB v783 + BANC v626 + BANC v888). The report opens
+    on an <b>Overview</b> page; the rest of the content is organized into
+    tabs — <b>Combos (per query)</b> (one dashboard card per query row:
+    KPIs, involved types, jump buttons), <b>Type Mapping</b>,
+    <b>Plots</b> (per-threshold and density-matched charts as separate
+    sub-tabs), <b>Matrices &amp; Networks</b>, <b>Cross-views</b> and
+    <b>Notes</b>. Deep links: <code>#tab=combos</code> etc.:</p>
   <pre><code>{output_dir}/cross-dataset_{source}_to_{target}_{dataset_codes}_{timestamp}/
-  comparison_report.html, comparison_report.txt   # same full report shell for
-                                                   # Standard and Custom queries
+  comparison_report.html, comparison_report.txt   # single-page report shell
+                                                   # (report_layout='tabbed' opts
+                                                   # into the new page-tabbed
+                                                   # report; 'both' also writes
+                                                   # comparison_report_legacy.html)
   label_map.json, parameters.json
+  run_manifest.json                      # self-describing manifest; includes a
+                                         # dataset_coverage block (ok / no_data
+                                         # per configured dataset)
+  dataset_data/{dataset}/run_log.txt     # per-dataset console trace of every
+                                         # threshold instance (fetch/enumeration
+                                         # failures are diagnosable here)
   dataset_metadata_comparison.csv
   auto_type_mapping.json, auto_type_mapping.csv, auto_type_mapping_conflicts.csv
+                                        # csv: trailing mapping_support column
+                                        # (bridge label votes / pooled
+                                        # same-name identity, evidence only)
   comparison_report_used_data/            # CSVs backing the report
   comparison_results/
     edge_presence_matrix.csv, edge_presence_matrix_minsyn_{N}.csv

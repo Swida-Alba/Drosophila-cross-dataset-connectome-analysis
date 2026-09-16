@@ -28,7 +28,8 @@ class LabelMapper:
     - Centralized mapping logic for cross-dataset consistency
     - Supports CSV format (one file for sources, one for targets, ALL datasets)
     - Supports JSON format with nested group structure
-    - Auto-generates missing labels using {original_id}_etc format
+    - Unknown IDs resolve to themselves (identity fallback), so unmapped
+      types keep their raw names through apply_to_dataframe
     - Exports mapping to parameters.json for reproducibility
     - Provides mapping summary for user verification
     
@@ -396,6 +397,9 @@ class LabelMapper:
             self._load_csv_legacy_format(df, role)
         else:
             raise ValueError(f"CSV must have 'custom_label' or 'std_label' column. Found: {df.columns.tolist()}")
+        # Direct loader calls (post-construction reloads) must keep the
+        # reverse lookups in sync with the forward mappings.
+        self._build_reverse_lookups()
     
     def _load_csv_expanded_format(self, df: pd.DataFrame, role: str) -> None:
         """
@@ -596,6 +600,9 @@ class LabelMapper:
                         mapping[label][dataset].append(neuron_id)
                 else:
                     mapping[label][dataset].append(group)
+        # Direct loader calls (post-construction reloads) must keep the
+        # reverse lookups in sync with the forward mappings.
+        self._build_reverse_lookups()
     
     def _load_source_from_dict(self, mapping_dict: Dict, labels: List[str]) -> None:
         """
@@ -675,6 +682,9 @@ class LabelMapper:
                 mapping[label][dataset]
                 for neuron_id in group:
                     mapping[label][dataset].append(neuron_id)
+        # Direct loader calls (post-construction merges/reloads) must keep
+        # the reverse lookups in sync with the forward mappings.
+        self._build_reverse_lookups()
     
     def _build_reverse_lookups(self) -> None:
         """Build reverse lookup dictionaries for fast std_label retrieval."""
@@ -720,13 +730,13 @@ class LabelMapper:
         """Split hemisphere suffix (_L/_R/_U) from a label.
 
         Returns (base, suffix) where suffix includes leading underscore.
+        Delegates to the shared ``utils.naming_utils`` implementation.
         """
-        if not isinstance(label, str):
-            return label, ''
-        for suffix in ('_L', '_R', '_U'):
-            if label.endswith(suffix):
-                return label[:-2], suffix
-        return label, ''
+        try:
+            from ..utils.naming_utils import split_hemi_suffix
+        except ImportError:  # pragma: no cover - direct package imports
+            from utils.naming_utils import split_hemi_suffix
+        return split_hemi_suffix(label)
     
     def get_std_label(self, dataset: str, original_id: Union[str, int], role: str) -> str:
         """
@@ -746,26 +756,21 @@ class LabelMapper:
             reverse = self._target_reverse
         else:
             reverse = self._intermediate_reverse
-            
+
         str_id = str(original_id)
-        
-        # Try exact match
-        if dataset in reverse and str_id in reverse[dataset]:
-            return reverse[dataset][str_id]
-        
-        # Try sanitized dataset name
-        sanitized = self._sanitize_dataset_name(dataset)
-        if sanitized in reverse and str_id in reverse[sanitized]:
-            return reverse[sanitized][str_id]
+
+        # Try exact match across the dataset-key candidates
+        label, _matched = self._reverse_lookup(reverse, dataset, str_id)
+        if label is not None:
+            return label
 
         # Try base label without hemisphere suffix and re-apply suffix
         base_id, hemi_suffix = self._split_hemi_suffix(str_id)
         if hemi_suffix:
-            if dataset in reverse and base_id in reverse[dataset]:
-                return f"{reverse[dataset][base_id]}{hemi_suffix}"
-            if sanitized in reverse and base_id in reverse[sanitized]:
-                return f"{reverse[sanitized][base_id]}{hemi_suffix}"
-        
+            label, _matched = self._reverse_lookup(reverse, dataset, base_id)
+            if label is not None:
+                return f"{label}{hemi_suffix}"
+
         # Auto-generate label
         return self.auto_generate_label(original_id)
     
@@ -789,22 +794,21 @@ class LabelMapper:
             mapping = self._intermediate_mapping
         
         if std_label in mapping:
-            if dataset in mapping[std_label]:
-                return mapping[std_label][dataset]
-            # Try sanitized name
-            sanitized = self._sanitize_dataset_name(dataset)
-            if sanitized in mapping[std_label]:
-                return mapping[std_label][sanitized]
+            # Dataset-key candidates (raw / sanitized / unsanitized — same
+            # treatment as the reverse lookups).
+            for key in self._dataset_keys(dataset):
+                ds_map = mapping[std_label].get(key)
+                if ds_map:
+                    return ds_map
 
         # Fallback: strip hemisphere suffix and try base label
         base_label, _ = self._split_hemi_suffix(std_label)
         if base_label in mapping:
-            if dataset in mapping[base_label]:
-                return mapping[base_label][dataset]
-            sanitized = self._sanitize_dataset_name(dataset)
-            if sanitized in mapping[base_label]:
-                return mapping[base_label][sanitized]
-        
+            for key in self._dataset_keys(dataset):
+                ds_map = mapping[base_label].get(key)
+                if ds_map:
+                    return ds_map
+
         return []
     
     def get_all_std_labels(self, role: str) -> List[str]:
@@ -953,52 +957,79 @@ class LabelMapper:
             mapping = self._target_mapping
         else:
             mapping = self._intermediate_mapping
-        
         all_neurons = []
         for std_label, dataset_dict in mapping.items():
-            if dataset in dataset_dict:
-                all_neurons.extend(dataset_dict[dataset])
-            else:
-                # Try sanitized name
-                sanitized = self._sanitize_dataset_name(dataset)
-                if sanitized in dataset_dict:
-                    all_neurons.extend(dataset_dict[sanitized])
-        
+            for key in self._dataset_keys(dataset):
+                if key in dataset_dict:
+                    all_neurons.extend(dataset_dict[key])
+                    break
+
         return all_neurons
     
+    def _dataset_keys(self, dataset: str) -> List[str]:
+        """Candidate lookup keys for one dataset (2026-09-15 review fix).
+
+        Mappers loaded from CSV store SANITIZED column names while the
+        dict/JSON lanes store RAW dataset names, so a query may arrive in
+        either form. Returns ``[dataset, sanitized, unsanitized]``
+        (deduplicated, order preserved).
+        """
+        candidates = [dataset]
+        sanitized = self._sanitize_dataset_name(dataset)
+        if sanitized not in candidates:
+            candidates.append(sanitized)
+        unsanitized = self._unsanitize_dataset_name(sanitized)
+        if unsanitized not in candidates:
+            candidates.append(unsanitized)
+        return candidates
+
+    def _reverse_lookup(self, reverse: Dict, dataset: str,
+                        str_id: str) -> Tuple[Optional[str], Optional[str]]:
+        """First reverse-lookup hit for ``str_id`` across the dataset-key
+        candidates. Returns ``(std_label, matched_key)`` or ``(None, None)``."""
+        for key in self._dataset_keys(dataset):
+            table = reverse.get(key)
+            if table and str_id in table:
+                return table[str_id], key
+        return None, None
+
     def get_label(self, dataset: str, original_id: Union[str, int]) -> str:
         """
         Get standardized label for a neuron ID, checking all mappings.
         Priority: Source -> Target -> Intermediate
-        
+
+        Tries the raw dataset name, its sanitized column form, and the
+        best-effort unsanitized form; for IDs carrying a hemisphere suffix
+        (``_L``/``_R``/``_U``) the base ID is looked up and the suffix
+        re-applied, matching ``get_std_label``.
+
         Args:
             dataset: Dataset identifier
             original_id: Original neuron ID
-            
+
         Returns:
-            Standardized label, or auto-generated if not found
+            Standardized label, or the original ID when unmapped
         """
         str_id = str(original_id)
-        sanitized = self._sanitize_dataset_name(dataset)
-        
-        # Check source
-        if dataset in self._source_reverse and str_id in self._source_reverse[dataset]:
-            return self._source_reverse[dataset][str_id]
-        if sanitized in self._source_reverse and str_id in self._source_reverse[sanitized]:
-            return self._source_reverse[sanitized][str_id]
-            
-        # Check target
-        if dataset in self._target_reverse and str_id in self._target_reverse[dataset]:
-            return self._target_reverse[dataset][str_id]
-        if sanitized in self._target_reverse and str_id in self._target_reverse[sanitized]:
-            return self._target_reverse[sanitized][str_id]
 
-        # Check intermediate
-        if dataset in self._intermediate_reverse and str_id in self._intermediate_reverse[dataset]:
-            return self._intermediate_reverse[dataset][str_id]
-        if sanitized in self._intermediate_reverse and str_id in self._intermediate_reverse[sanitized]:
-            return self._intermediate_reverse[sanitized][str_id]
-            
+        # Check source, then target, then intermediate across every
+        # dataset-key candidate.
+        for reverse in (self._source_reverse, self._target_reverse,
+                        self._intermediate_reverse):
+            label, _matched = self._reverse_lookup(reverse, dataset, str_id)
+            if label is not None:
+                return label
+
+        # Try base label without hemisphere suffix and re-apply suffix
+        base_id, hemi_suffix = self._split_hemi_suffix(str_id)
+        if hemi_suffix:
+            for reverse in (self._source_reverse, self._target_reverse,
+                            self._intermediate_reverse):
+                label, _matched = self._reverse_lookup(reverse, dataset,
+                                                       base_id)
+                if label is not None:
+                    return f"{label}{hemi_suffix}"
+
         return self.auto_generate_label(original_id)
 
     def apply_to_dataframe(self, df: pd.DataFrame, dataset: str) -> pd.DataFrame:

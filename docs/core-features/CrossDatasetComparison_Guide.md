@@ -73,6 +73,28 @@ Cross-dataset comparison analyzes the same neural circuit query across multiple 
 | **Conservation** | Presence of an edge/path across multiple datasets                        |
 | **Dead-end**     | An edge that doesn't contribute to any complete source→target path       |
 
+### How query tokens resolve per dataset
+
+Each source/target token is resolved per dataset through the same backend as
+the auto type mapper; the run's `comparison_report_used_data/query_resolution.csv`
+and the report's **Query Resolution** section show the method, status,
+confidence and evidence for every pair.
+
+- **Type tokens**: a token that is a native type name of the target dataset
+  resolves to itself first (`same_name_identity`), annotated by the
+  cross-dataset relation: `confirmed`, `contradicted` (identity kept, the
+  curated counterpart is shown) or `none` (name only). Otherwise the mapper's
+  evidence applies — unique renames are followed, licensed splits query all
+  branches, and a bare name echo is a flagged `same_name_fallback`.
+- **Taxonomy tokens**: a value of a dataset's taxonomy columns (e.g. FAFB
+  `cell_type=circadian_clock`) expands to its member types in the datasets
+  that have it (`taxonomy`), and the other datasets bridge the concept by
+  mapping every member through the auto mapper and querying the union
+  (`taxonomy_mapped`) — so a taxonomy query no longer silently matches
+  nothing outside its home dataset.
+- **bodyIds** stay dataset-scoped; **patterns** pass through to each
+  dataset's identity search.
+
 ### Datasets Supported
 
 - **NeuPrint datasets**: `hemibrain:v1.2.1`, `male-cns:v0.9`, `optic-lobe:v1.0.1`, etc.
@@ -290,7 +312,11 @@ connectivity-profile comparison. The policy per case:
   treated as the same type everywhere — candidates, profiles, and reports.
 - **Valid split** (e.g. MCNS `VS` → FAFB `VS1`…`VS8`): every licensed
   target is kept; profile weights distribute evenly across the branches
-  instead of picking an arbitrary one.
+  instead of picking an arbitrary one. (Separately, the Cross-Dataset
+  tab's Type Mapping panel can resolve a queried split **per neuron** —
+  see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md), "BodyId-level split
+  resolution"; that view is informational and does not change run
+  semantics.)
 - **Bridge-derived targets**: single bridge-derived targets are used and
   keep their derivation provenance in diagnostics.
 - **Conflict** (e.g. BANC `CB1011` → MCNS): fail closed — no automatic
@@ -303,6 +329,43 @@ Saved profile-comparison runs record an `auto_type_mapping_*` block in
 load error, per-status counts on the `unique_type_resolutions` basis, the
 separate occurrence-basis partner metric, and the raw-fallback flag). To bypass automatic
 mapping entirely and compare raw names, pass `use_auto_type_mapping=False`.
+
+### Tabbed report layout (opt-in)
+
+By default the backend renders the original single-page report. The new
+tabbed layout is available via `ComparisonParameters.report_layout =
+'tabbed'` (still under refinement): reports open on an **Overview**
+page and organize the rest
+into page tabs: **Combos (per query)** — one dashboard card per query
+row (KPIs, involved types, jump buttons into the matrices/networks
+pages), **Type Mapping**, **Plots** (per-threshold and density-matched
+analyses as separate sub-tabs), **Matrices & Networks**,
+**Cross-views**, and **Notes**. Deep links use `#tab=<page>`. The
+layout is controlled by `ComparisonParameters.report_layout`
+(`'tabbed'` default, `'legacy'` single-page, `'both'` also writes
+`comparison_report_legacy.html`).
+
+### Query-anchored merge granularity (auto-mode comparison runs)
+
+Comparison runs additionally build a per-run **MergePolicy**
+(`comparison/merge_policy.py`) that keys the aligned frames by the query
+chips' group labels instead of the canonical namespace: the anchor is the
+first chip's home namespace when all chips resolve into a common naming;
+chips native in every selected dataset (true same-name) use the shared
+naming; mixed runs warn (`[type granularity]`) and keep the minimal
+inseparable leaves with the shared parent as its own whole row. A "1"-side
+chip merges all its 1-to-N branches into one row (weak branches warned,
+not dropped); a leaf-anchored chip covers only its own branch — and a
+clean reverse rename never absorbs a split parent into a leaf row; a leaf
+claimed by two queried parents merges with neither (`[merge fan-in]`).
+Per-branch bridge pools and vote
+provenance are exported to `type_resolution_topology.json` and surfaced in
+the report's Type Mapping section; `auto_type_mapping.csv` gains additive
+`anchor_group`/`auto_only` columns (tagged only when every endpoint of a
+row belongs to that same group), and merged neuron-count rows carry their
+raw composition in a `group_members` column. Details:
+[AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md), "The query-anchored merge
+policy".
 
 > **UI:** the web UI manages the same mappings as reusable presets —
 > **Settings tab → Custom Type Mappings** (table-grid editor, saved in
@@ -561,9 +624,11 @@ comparison_results_20251127_155513/
 │
 ├── dataset_data/                   # Per-dataset raw results
 │   ├── hemibrain_v1_2_1/
-│   │   ├── minsyn_1/
-│   │   ├── minsyn_3/
-│   │   └── ...
+│   │   ├── minsyn_3/               # genuine requested run (bare name)
+│   │   ├── minsyn_5_applied_floor/ # collapse floor others alias to
+│   │   ├── minsyn_1_skipped/       # alias marker (README only, no data)
+│   │   ├── APPLIED_THRESHOLDS.md   # requested → applied map + reasons
+│   │   └── threshold_meta.json
 │   ├── male_cns_v0_9/
 │   └── flywire_FAFB_v783/
 │
@@ -579,12 +644,25 @@ Combination-mode similarity exports are written under
 comparison is keyed by the sorted union of raw threshold values.
 
 The combination `comparison_report.html` uses the same full report sections as
-Standard mode: summary charts, applied-threshold/bottleneck provenance,
-similarity tables, query-keyed networks, edge/path matrices, conservation,
-overlap, and statistics. Every section iterates every query row. Ratio and
-traversal-probability filtering is disabled for pathfinding comparisons, so
-those `by_ratio/` and `by_probability/` folders are not emitted for this
-report.
+Standard mode: summary charts, similarity heatmaps (with the pair-metric
+values in the linked CSVs), query-keyed networks, edge/path matrices,
+conservation, overlap, and statistics. Every section iterates every query
+row. The applied-threshold/bottleneck provenance is merged into the Summary
+section: the Key Findings table shows `requested→applied` per dataset, and
+the full provenance table sits in a collapsed
+`🎯 Applied thresholds & bottleneck provenance` block beneath it. Query
+headings print the id and label as one deduplicated title (horizontal
+labels embed the id as their prefix), and the conservation donut cards lay
+out on the same auto-fill grid as the per-threshold cards. The Type
+Mapping section is split into Sources / Targets / Intermediates tables
+(source chosen by the priority male-cns → FAFB → other neuprint → BANC;
+the ⚠️ auto-only badge attaches to the auto-label source dataset cell).
+When a configured dataset produced no data (e.g. a silent fetch failure),
+a red **dataset coverage warning** names it above the analyses, the run
+manifest records `dataset_coverage`, and per-dataset console traces land
+in `dataset_data/<dataset>/run_log.txt`. Ratio and traversal-probability
+filtering is disabled for pathfinding comparisons, so those `by_ratio/`
+and `by_probability/` folders are not emitted for this report.
 
 ### CSV File Descriptions
 
@@ -1060,10 +1138,102 @@ the actual comparison rows:
   `comparison_visualizations/edge_density_threshold_curves.png` — the
   density curves behind the matching (absolute + per-neuron).
 
+### Auto threshold mode (default)
+
+The Cross-Dataset tab's **Core Parameters** threshold editor defaults to
+the **Auto** mode — listed first, it covers both the per-threshold
+comparison and the density-aligned comparison, so **no threshold chips are
+needed** (the bootstrap floor defaults to Min Synapse Count 3). It requires
+at least two selected datasets. The mode:
+
+1. runs one bootstrap pathfinding enumeration per dataset at that floor;
+2. measures each dataset's completeness window `[w_start, w_star_measured]`
+   from the **query's own searched graph** — `w_start = max(3, applied)` and
+   `w_star_measured = max(path bottlenecks)` (the measured retained ceiling,
+   never the possibly hop-unbounded stored provenance value);
+3. emits integer aligned rows — **vertical** rows share one threshold across
+   all datasets, **horizontal** rows share a normalized density
+   `E(t)/N` (N = typed nodes in the searched graph, fixed in `t`);
+4. runs those rows through the existing combination engine, so no new
+   pathfinder or enumeration is introduced.
+
+Outputs: `comparison_results/density_curves.csv` (per-dataset curve),
+`density_windows.csv` (window + stored-vs-measured mismatch check), and
+`density_alignment_best_matches.csv` (the runnable aligned rows); the
+comparison report embeds the two-panel figure as an interactive Plotly
+chart (top: normalized edge density with the aligned density levels as
+dotted guides; bottom: enumerated path count, diagnostic only), and
+`comparison_visualizations/density_alignment_threshold_curves.png` remains
+the static export of the same figure. The run guide
+(`_UserGuide_please_read_me`) mirrors every
+`[auto threshold]` / `[density]` warning appended to
+`user_warning_notes.txt`.
+
+### Density curves in every mode
+
+The curves are not exclusive to auto mode: **every pathfinding comparison**
+(standard, custom combination, and auto) exports
+`comparison_results/density_curves.csv` and `density_windows.csv` for every
+queried dataset, one curve per dataset spanning its own
+`[w_start, w_star_measured]` window — from the minimal available
+(applied) threshold to the measured `max(path bottlenecks)` — computed on
+the cone (the query's searched graph at its lowest executed threshold).
+In these modes the files are run diagnostics; only auto mode additionally
+emits the runnable aligned rows
+(`density_alignment_best_matches.csv`).
+
+**Hemisphere-suffix awareness:** with `separate_hemispheres=True`, cached
+frames can carry suffixed types (`aMe26_L`/`aMe26_R`). The alignment strips
+the suffix for the merge-key lookup and re-applies it to the canonical key,
+so L and R stay DISTINCT rows that still merge across datasets (non-hemispheric
+runs are byte-identical to the previous behavior). The LabelMapper lanes apply
+the same suffix handling.
+
+**Reading the aligned rows:** vertical rows share one identical threshold
+for every dataset — the like-for-like spine. Horizontal rows equalize the
+normalized density E(t)/N with per-dataset thresholds — the
+density-matched envelope, meaningful even where no shared complete
+threshold exists (e.g. when BANC's window sits below the others). When a
+run emits both, interpret the verticals as the like-for-like comparison and
+the horizontals as the density-matched comparison; they answer different
+questions and neither replaces the other. The comparison report mirrors
+this separation: horizontal labels carry their explicit per-dataset
+thresholds, and the report renders the two analyses as separate sections —
+same-threshold (vertical) queries mirror the per-threshold analysis,
+density-matched (horizontal) queries mirror the combination analysis — each
+with its own tabs, banners, and summary grouping.
+
+The edge basis follows the run's **Drop Untyped Neurons** setting, computed
+from per-edge endpoint classes recorded at capture time:
+
+- `bodyId_edges_typed` — Drop Untyped on (default): only edges whose both
+  endpoints carry real type names; `N` = typed searched nodes.
+- `bodyId_edges_all_but_debris` — Drop Untyped off: untyped edges are
+  included, `N` = typed + untyped searched nodes.
+- Segmentation **debris** (ids absent from the curated neuron table — a
+  BANC-release property) is excluded from every universe, always.
+
+In `density_windows.csv`, `n_edges` is the all-class cone count at the
+applied threshold (a capture-level fact), while `n_edges_active_basis`
+re-counts it under the active basis — the same number
+`density_curves.csv` reports at `w_start`.
+
+> Density alignment is computed on the query's **bodyId** searched graph;
+> the compared matrices are **type-level** projections of the same search.
+> A threshold here is a per-connection synapse count (Min Synapse Count).
+
+There is no silent dataset dropping: a dataset with zero edges/paths in the
+aligned window is flagged, and the core subset can be chosen explicitly.
+
 ### Threshold query modes
 
-The Cross-Dataset tab's **Core Parameters** threshold editor has two modes:
+The Cross-Dataset tab's **Core Parameters** threshold editor has three
+modes; **Auto** is the default:
 
+- **Auto** (default, no threshold chips needed): one bootstrap run per
+  dataset measures the density windows and emits BOTH the per-threshold
+  (vertical) and the density-matched (horizontal) aligned rows — see
+  *Auto threshold mode* above.
 - **Standard**: enter `3, 5, 10`. Each chip becomes one
   comparison query and the same requested threshold is applied to every
   selected dataset.

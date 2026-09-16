@@ -33,6 +33,19 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+# Console encoding guard (Defect B): status output prints ⚠/✓/→, which
+# aborts with UnicodeEncodeError on legacy Windows code pages (GBK/cp1252)
+# when stdout is redirected.  Must run before any print can happen.
+try:
+    from .utils.console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
+
 try:
     from .utils.naming_utils import dataset_abbrev
 except ImportError:
@@ -295,9 +308,46 @@ _FNC_CACHE = {}
 # ============================================================================
 # Module-level tracking for datasets operating in cache-only mode
 # Used to avoid repeated "fallback" warnings when the same dataset is used multiple times
-# Structure: {dataset: {'cache_only': bool, 'reason': str, 'warned': bool}}
+# Structure: {dataset: {'cache_only': bool, 'reason': str, 'warned': bool,
+#             'allow_incomplete': bool}}
 # ============================================================================
 _CACHE_ONLY_DATASETS = {}
+
+# Memoized cache-coverage integrity results, keyed by dataset folder:
+# {dataset_safe: (signature, (mismatches, complete_flagged) | None)}
+# The signature covers every connection file and the neuron index, so a
+# completed fetch invalidates the stored verdict automatically.
+_CACHE_COVERAGE_CACHE = {}
+
+
+def cache_coverage_mismatches(neuron_index_rows, cached_row_counts):
+    """Pure cache-integrity comparison used by the cache-only gates.
+
+    ``neuron_index_rows``: iterable of (bodyId, downstream_complete,
+    connection_count) as recorded in the neuron index.
+    ``cached_row_counts``: mapping bodyId -> number of connection rows
+    cached with that neuron as source (``bodyId_pre``).
+
+    Returns (mismatches, complete_flagged) where ``mismatches`` lists
+    (bodyId, recorded, cached) tuples for neurons flagged
+    ``downstream_complete`` whose cached rows are fewer than the recorded
+    ``connection_count`` — the signature of a truncated/incomplete cache.
+    A complete cache yields zero mismatches.
+    """
+    mismatches = []
+    complete_flagged = 0
+    for body_id, complete, recorded in neuron_index_rows:
+        if not complete:
+            continue
+        complete_flagged += 1
+        recorded = int(recorded or 0)
+        # Counts may be keyed by raw bodyId (Int64) or its string form;
+        # accept either so pandas/polars callers need no pre-normalization.
+        cached = int(cached_row_counts.get(
+            str(body_id), cached_row_counts.get(body_id, 0)))
+        if cached < recorded:
+            mismatches.append((str(body_id), recorded, cached))
+    return mismatches, complete_flagged
 
 
 def cache_only_skips_local_fetch(dataset: str, cache_only: bool) -> bool:
@@ -736,8 +786,10 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                     f'{stats["rows_before"]:,} {label} discovery edges cannot lie '
                     f'on any source->target path within {bound} edges{passes_txt} '
                     f'and were removed before pathfinding. No admissible path was '
-                    f'lost; the strongest retained path bottleneck is '
-                    f'{stats["strongest_retained"]:g} synapses — the top paths and '
+                    f'lost; the strongest retained path bottleneck is at most '
+                    f'{stats["strongest_retained"]:g} synapses (hop-bounded upper '
+                    f'bound; the exact measured value is reported after '
+                    f'enumeration) — the top paths and '
                     f'their order are unchanged.'
                 )
         else:
@@ -756,6 +808,65 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                     f'lost.'
                 )
     return current, stats
+
+
+# Density-capture endpoint classes (auto threshold-density alignment):
+# every cone node is classified against the dataset's curated neuron table
+# with the shared untyped predicate. 'debris' ids are absent from the table
+# (segmentation fragments — never counted), 'untyped' are in-table ids
+# whose type label is empty/Unknown/digit-fallback, 'typed' are the rest.
+DENSITY_CLS_TYPED, DENSITY_CLS_UNTYPED, DENSITY_CLS_DEBRIS = 0, 1, 2
+
+
+def _density_table_sets(neuron_df_cache):
+    """Curated-id / typed-id sets from loaded neuron tables.
+
+    ``neuron_df_cache`` is the instance's mtime-keyed
+    ``_local_neuron_df_cache``. Returns ``(table_ids, typed_ids, known)``;
+    ``known=False`` when no table has been loaded, in which case callers
+    must not classify (they cannot distinguish debris from typed).
+    """
+    table_ids, typed_ids = set(), set()
+    known = False
+    for entry in (neuron_df_cache or {}).values():
+        df = entry[1] if isinstance(entry, tuple) else entry
+        try:
+            if df is None or 'bodyId' not in getattr(df, 'columns', ()):
+                continue
+            ids = df['bodyId'].astype(str)
+            table_ids.update(ids.tolist())
+            if 'type' in df.columns:
+                untyp = df['type'].map(is_untyped_type_label)
+                typed_ids.update(ids[~untyp.astype(bool)].tolist())
+            else:
+                typed_ids.update(ids.tolist())
+            known = True
+        except Exception:
+            continue
+    return table_ids, typed_ids, known
+
+
+def classify_cone_edges(pre_ids, post_ids, table_ids, typed_ids):
+    """Per-edge endpoint class for the density capture (vectorized-ish).
+
+    Returns an int8 array aligned with ``pre_ids``/``post_ids``:
+    ``DENSITY_CLS_TYPED`` when both endpoints are typed, else
+    ``DENSITY_CLS_UNTYPED`` when both are in the curated table, else
+    ``DENSITY_CLS_DEBRIS`` (some endpoint absent from the table).
+    """
+    import numpy as np
+
+    cls = np.empty(len(pre_ids), dtype=np.int8)
+    table_ids = table_ids if table_ids is not None else set()
+    typed_ids = typed_ids if typed_ids is not None else set()
+    for i, (u, v) in enumerate(zip(pre_ids, post_ids)):
+        if u in typed_ids and v in typed_ids:
+            cls[i] = DENSITY_CLS_TYPED
+        elif u in table_ids and v in table_ids:
+            cls[i] = DENSITY_CLS_UNTYPED
+        else:
+            cls[i] = DENSITY_CLS_DEBRIS
+    return cls
 
 
 def _hop_budget_pass_once(conn_layers, sources, targets, bound,
@@ -1591,6 +1702,18 @@ class FindNeuronConnection:
                     print(msg, end=end, flush=flush)
             else:
                 print(msg, end=end, flush=flush)
+
+        # Persist every non-transient message into the dataset-level run
+        # log so silent failures are diagnosable from the run folder alone
+        # (plan A2, 2026-09-15: a hemibrain fetch failed with no surviving
+        # trace outside the console).
+        log_path = getattr(self, '_run_log_path', None)
+        if log_path and message and level != 'progress':
+            try:
+                with open(log_path, 'a', encoding='utf-8') as log_fh:
+                    log_fh.write(message + (end if end.endswith('\n') else '\n'))
+            except OSError:
+                pass
         
         if self.verbose_mode == 'silent':
             if level == 'always':
@@ -3015,6 +3138,28 @@ class FindNeuronConnection:
     all_attributes.json for provenance.
     '''
 
+    capture_density: bool = False
+    '''
+    Threshold-density capture (plan §4.1): when True and the run is
+    FindAllPath ('all' mode), persist the query-scoped density arrays for
+    this (dataset, query) into ``dataset_data/{dataset}/_density/`` —
+
+      - ``density_edges.npz`` (int32 cone weights at the floor threshold +
+        int8 endpoint classes: typed / untyped / debris, classified against
+        the curated neuron table with ``is_untyped_type_label``),
+      - ``density_edge_weights.npy`` (int32, all-class weights — same order
+        as the npz),
+      - ``density_path_bottlenecks.npy`` (float64, one entry per enumerated
+        bodyId path: its min edge weight),
+      - ``density_meta.json`` (applied / window / node-class counts / units;
+        ``density_source`` pointer copies land in each ``minsyn_*`` folder).
+
+    The cone written is the LOWEST-threshold (maximal) one: a later run
+    whose cone is smaller never overwrites a larger existing capture. Off by
+    default for direct API callers; the comparison driver sets it True for
+    every delegated run so density curves exist in all threshold modes.
+    '''
+
     graph_edge_limit_groups: int = 5000
     '''
     Pan-graph edge limit for the type-level graph in FindPath (legacy: its
@@ -3197,7 +3342,21 @@ class FindNeuronConnection:
     If False (default), attempts server connection first, falls back to cache-only if connection fails
     AND cache appears sufficient.\n
     '''
-    
+
+    allow_incomplete_cache: bool = False
+    '''
+    Explicit opt-in to partial results from an incomplete local cache.\n
+    When False (default), cache-only runs verify cache coverage before and
+    during the run (recorded per-neuron connection counts vs actually cached
+    rows; presence of every neuron discovery visits) and refuse with an
+    actionable error when the cache is missing data, so a partial analysis is
+    never silently presented as complete.\n
+    When True, an incomplete cache only produces warnings and the run's
+    output folders are stamped with an INCOMPLETE_CACHE.txt marker.\n
+    Only meaningful together with cache_only=True (or the automatic
+    cache-only fallback when the server is unavailable).\n
+    '''
+
     cache_folder: str = ''
     '''folder to store cached data, automatically set based on dataset'''
     
@@ -3410,11 +3569,14 @@ class FindNeuronConnection:
             if self.cache_only:
                 # User explicitly requested cache-only mode - no warning needed
                 if cache_status['is_usable']:
+                    # Refuse a partially-populated cache before any analysis
+                    # runs on it (unless explicitly opted in).
+                    self._enforce_cache_coverage('user_requested')
                     # Only show message once per dataset
                     if self.dataset not in _CACHE_ONLY_DATASETS or not _CACHE_ONLY_DATASETS[self.dataset].get('warned', False):
                         self._vprint(f"🔌 Cache-only mode: Using local cache for {self.dataset}", level='always')
                         self._vprint(f"   📊 Cache contains {cache_status['neuron_count']:,} neurons, {cache_status['connection_count']:,} connections", level='always')
-                        _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'user_requested', 'warned': True}
+                        _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'user_requested', 'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
                     # Don't connect to server - will use cache only
                 else:
                     raise RuntimeError(
@@ -3476,13 +3638,16 @@ class FindNeuronConnection:
                         # Server connection failed - check if we can use cache instead
                         error_msg = str(e)
                         if cache_status['is_usable']:
+                            # Refuse an auto-downgrade onto a partially-populated
+                            # cache: that would silently return partial results.
+                            self._enforce_cache_coverage('server_unavailable')
                             # Show warning only once per dataset
                             self._vprint(f"⚠️  Server connection failed: {error_msg}", level='always')
                             self._vprint(f"🔌 Falling back to cache-only mode for {self.dataset}", level='always')
                             self._vprint(f"   📊 Cache contains {cache_status['neuron_count']:,} neurons, {cache_status['connection_count']:,} connections", level='always')
                             # Enable cache-only mode automatically and track it
                             self.cache_only = True
-                            _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'server_unavailable', 'warned': True}
+                            _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'server_unavailable', 'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
                         else:
                             # No usable cache - must raise the original error
                             raise RuntimeError(
@@ -3600,9 +3765,15 @@ class FindNeuronConnection:
                 raise
             cache_status = self._check_cache_exists()
             if cache_status['is_usable']:
+                # Same coverage gate as the __post_init__ downgrade: never
+                # silently continue on a partially-populated cache.
+                self._enforce_cache_coverage('server_unavailable')
                 self._vprint(f"⚠️  Server connection failed: {e}", level='always')
                 self._vprint(f"🔌 Falling back to cache-only mode for {self.dataset}", level='always')
                 self.cache_only = True
+                _CACHE_ONLY_DATASETS[self.dataset] = {
+                    'cache_only': True, 'reason': 'server_unavailable',
+                    'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
             else:
                 raise
     
@@ -3725,8 +3896,10 @@ class FindNeuronConnection:
         has_neuron_index = os.path.exists(index_path)
         has_dataset = any(path.exists() for path in neuron_tables)
         
-        # Cache is usable if we have connection data and neuron index
-        is_usable = has_connections and has_neuron_index
+        # Cache is usable if we have connection data, the neuron index, and
+        # the dataset neuron table: without the table, cache-only runs pass
+        # this gate and then crash later in type resolution / dataset pulls.
+        is_usable = has_connections and has_neuron_index and has_dataset
         
         # Get counts if files exist
         connection_count = 0
@@ -3759,6 +3932,155 @@ class FindNeuronConnection:
             'connection_count': connection_count,
             'neuron_count': neuron_count,
         }
+
+    def _check_cache_coverage(self):
+        '''Integrity-check the local cache against the neuron index.
+
+        Counts the connection rows actually cached per source neuron
+        (``bodyId_pre`` across connections.parquet and any resumable batch
+        files) and compares them with the ``connection_count`` recorded in
+        the neuron index for neurons flagged ``downstream_complete``.  A
+        cache whose rows were truncated or whose fetches never finished
+        shows up as cached < recorded, even though every file is present.
+
+        Returns (mismatches, complete_flagged) — see
+        :func:`cache_coverage_mismatches` — or None when there is nothing
+        to compare (no connection files / no index).  The verdict is
+        memoized per dataset until a file changes on disk.
+        '''
+        dataset_safe = getattr(self, '_dataset_safe', None) or dataset_folder(self.dataset)
+        cache_folder = os.path.join(self.script_path, 'cache', dataset_safe)
+        index_path = os.path.join(
+            self.script_path, 'neuron_indexes', dataset_safe, 'neuron_index.parquet')
+
+        conn_path = os.path.join(cache_folder, 'connections.parquet')
+        batch_dir = os.path.join(cache_folder, '_batch_files')
+        batch_files = []
+        if os.path.isdir(batch_dir):
+            batch_files = sorted(
+                os.path.join(batch_dir, name)
+                for name in os.listdir(batch_dir)
+                if name.startswith('batch_') and name.endswith('.parquet')
+            )
+        connection_files = ([conn_path] if os.path.exists(conn_path) else []) + batch_files
+        if not connection_files or not os.path.exists(index_path):
+            return None
+
+        def _signature():
+            entries = []
+            for file_path in connection_files + [index_path]:
+                stat = os.stat(file_path)
+                entries.append((file_path, stat.st_mtime, stat.st_size))
+            return tuple(entries)
+
+        global _CACHE_COVERAGE_CACHE
+        signature = _signature()
+        cached_entry = _CACHE_COVERAGE_CACHE.get(dataset_safe)
+        if cached_entry is not None and cached_entry[0] == signature:
+            return cached_entry[1]
+
+        try:
+            import polars as pl
+            counts = (
+                pl.scan_parquet(connection_files)
+                .group_by('bodyId_pre')
+                .len()
+                .collect()
+            )
+            # The neuron index dict keys off str(bodyId); normalize both
+            # sides so Int64 and Utf8 caches compare the same way.
+            cached_row_counts = {
+                str(body_id): int(count)
+                for body_id, count in zip(
+                    counts['bodyId_pre'].to_list(), counts['len'].to_list())
+            }
+            index_rows = (
+                pl.scan_parquet(index_path)
+                .select(['bodyId', 'downstream_complete', 'connection_count'])
+                .collect()
+            )
+            rows = list(zip(
+                index_rows['bodyId'].to_list(),
+                index_rows['downstream_complete'].to_list(),
+                index_rows['connection_count'].to_list(),
+            ))
+        except Exception as e:
+            raise RuntimeError(
+                f"Cache integrity check failed for dataset '{self.dataset}': {e}"
+            ) from e
+
+        result = cache_coverage_mismatches(rows, cached_row_counts)
+        _CACHE_COVERAGE_CACHE[dataset_safe] = (signature, result)
+        return result
+
+    def _enforce_cache_coverage(self, context):
+        '''Refuse cache-only runs whose local cache is incompletely populated.
+
+        Called wherever cache-only mode engages (user request or automatic
+        server-unavailable fallback).  Raises with an actionable message
+        when complete-flagged neurons have fewer cached rows than recorded,
+        unless ``allow_incomplete_cache`` opted in — partial runs are then
+        stamped downstream (INCOMPLETE_CACHE.txt / warning notes).
+        '''
+        coverage = self._check_cache_coverage()
+        if coverage is None:
+            return
+        mismatches, complete_flagged = coverage
+        if not mismatches:
+            return
+        sample_text = ', '.join(
+            f'bodyId {bid}: {recorded} recorded / {cached} cached'
+            for bid, recorded, cached in mismatches[:3])
+        detail = (
+            f'{len(mismatches):,} of {complete_flagged:,} neurons flagged '
+            f'complete in the neuron index have fewer cached connection rows '
+            f'than recorded ({sample_text}).')
+        # Honor a decision already made for this dataset in this process
+        # (an earlier instance with the opt-in), like already_cache_only.
+        allowed = bool(getattr(self, 'allow_incomplete_cache', False)) or (
+            self.dataset in _CACHE_ONLY_DATASETS
+            and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False))
+        if allowed:
+            self._vprint(f'⚠️  Incomplete cache: {detail}', level='always')
+            self._vprint(
+                '   Continuing with allow_incomplete_cache=True — '
+                'results will be partial and outputs are stamped '
+                'INCOMPLETE_CACHE.txt.', level='always')
+            return
+        prefix = (
+            'Cache-only mode requested but the local connection cache is incomplete'
+            if context == 'user_requested' else
+            'Server connection failed and the local connection cache is incomplete')
+        raise RuntimeError(
+            f"{prefix} for dataset '{self.dataset}'.\n"
+            f"   {detail}\n"
+            f"   Run once with cache_only=False to complete the cache, or pass\n"
+            f"   allow_incomplete_cache=True to accept partial results.")
+
+    def _handle_cache_only_miss(self, uncached_upstream, has_cached):
+        '''Cache-only discovery reached neurons absent from the cache.
+
+        Refuses the run — continuing would silently omit every connection of
+        these neurons while the analysis presents itself as complete —
+        unless ``allow_incomplete_cache`` opted in, which keeps the
+        historical warning and proceeds with cached data only.
+        '''
+        allowed = bool(getattr(self, 'allow_incomplete_cache', False)) or (
+            self.dataset in _CACHE_ONLY_DATASETS
+            and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False))
+        if not allowed:
+            sample = ', '.join(str(b) for b in list(uncached_upstream)[:5])
+            raise RuntimeError(
+                f"Cache-only run needs {len(uncached_upstream)} neuron(s) that are "
+                f"not in the local cache for '{self.dataset}' (e.g. {sample}).\n"
+                f"   Continuing would silently omit all of their connections "
+                f"from the results.\n"
+                f"   Run with cache_only=False to fetch them, or pass "
+                f"allow_incomplete_cache=True to accept partial results.")
+        self._vprint(f'  ⚠️  {len(uncached_upstream)} neurons not in cache (cache-only mode - skipping API fetch)', level='full')
+        self._vprint(f'     Using only cached data. Results may be incomplete.', level='full')
+        if not has_cached:
+            self._vprint(f'     No cached connections found for these neurons.', level='full')
 
     # ============================================================================
     # Core Database Access
@@ -5333,6 +5655,71 @@ class FindNeuronConnection:
     # Query Resolution Logic
     # ============================================================================
     
+    def _revalidate_zero_outdegree_markers(self, suspect_zero):
+        """Server-check zero-outdegree index markers before trusting them.
+
+        One batched ``count(DISTINCT m.bodyId)`` query per process decides:
+        verified zeros keep the marker (and are remembered so later
+        layer-fetches in this run do not re-query), mismatches are sent to
+        refetch and their stale flag is cleared in the in-memory index (the
+        post-fetch marking path then persists the corrected row).
+        Non-neuprint datasets have no connectivity API to ask and offline /
+        cache-only runs keep the previous trust behavior, so the fetch
+        pipeline never blocks on the revalidation.
+        """
+        verified_zero = getattr(self, '_zero_outdegree_verified', None)
+        if verified_zero is None:
+            verified_zero = {}
+            self._zero_outdegree_verified = verified_zero
+        trusted, refetch, to_check = [], [], []
+        for bodyId in suspect_zero:
+            state = verified_zero.get(bodyId)
+            if state is True:
+                trusted.append(bodyId)
+            elif state is False:
+                refetch.append(bodyId)
+            else:
+                to_check.append(bodyId)
+        if to_check and self.client_type == 'neuprint' and not self.cache_only:
+            try:
+                self._ensure_neuprint_client()
+                partner_counts = {}
+                for start in range(0, len(to_check), 1000):
+                    chunk = [int(b) for b in to_check[start:start + 1000]]
+                    counts_df = self.client_hemibrain.fetch_custom(
+                        'MATCH (n:Neuron)-[e:ConnectsTo]->(m:Neuron) '
+                        f'WHERE n.bodyId IN {chunk} '
+                        'RETURN n.bodyId AS id, '
+                        'count(DISTINCT m.bodyId) AS partners')
+                    for record in counts_df.to_dict('records'):
+                        partner_counts[str(record['id'])] = int(
+                            record['partners'])
+                for bodyId in to_check:
+                    partners = partner_counts.get(bodyId, 0)
+                    verified_zero[bodyId] = partners == 0
+                    if partners == 0:
+                        trusted.append(bodyId)
+                    else:
+                        refetch.append(bodyId)
+                        neuron_data = self._neuron_index_dict.get(bodyId)
+                        if neuron_data is not None:
+                            neuron_data['downstream_complete'] = False
+                        self._vprint(
+                            f'  ⚠️  Index repair: {bodyId} was marked '
+                            f'0-connection complete but the server reports '
+                            f'{partners:,} downstream partners — refetching.',
+                            level='always')
+            except Exception as e:
+                # Offline or server trouble: keep the previous trust
+                # behavior rather than blocking the fetch pipeline.
+                self._vprint(
+                    f'  ⚠️  Zero-marker revalidation unavailable ({e}); '
+                    'trusting existing markers.', level='full')
+                trusted.extend(to_check)
+        elif to_check:
+            trusted.extend(to_check)
+        return trusted, refetch
+
     def _query_connection_db(self, upstream_bodyIds, downstream_bodyIds=None):
         '''
         Query unified connection database for specific connections using O(1) dict lookups.
@@ -5372,13 +5759,14 @@ class FindNeuronConnection:
         cached_upstream = []
         uncached_upstream = []
         partially_cached = []
-        
+        suspect_zero = []
+
         for bodyId in upstream_bodyIds:
             bodyId = str(bodyId)
-            
+
             # O(1) dict lookup instead of O(n) DataFrame scan
             neuron_data = self._neuron_index_dict.get(bodyId)
-            
+
             if neuron_data is not None:
                 is_complete = neuron_data.get('downstream_complete', False)
                 conn_count = neuron_data.get('connection_count', -1)
@@ -5392,12 +5780,27 @@ class FindNeuronConnection:
                 # only the zero-outdegree marker for neurons with no rows
                 # (connection_count == 0).  A flag with a positive historical
                 # count and no current rows is stale and must be refetched.
-                if has_connections or (is_complete and conn_count == 0):
+                if has_connections:
                     cached_upstream.append(bodyId)
+                elif is_complete and conn_count == 0:
+                    # A zero marker can be POISONED: one failed historical
+                    # fetch marked well-connected neurons complete with 0
+                    # rows, and trusting it returned an empty network for
+                    # every later run (real-data finding 2026-09-15:
+                    # hemibrain aMe26/aMe24/aMe9 were marked 0 while the
+                    # server reports 1.5k-2k outgoing edges).  Verify
+                    # against the server once per process before trusting.
+                    suspect_zero.append(bodyId)
                 else:
                     uncached_upstream.append(bodyId)
             else:
                 uncached_upstream.append(bodyId)
+
+        if suspect_zero:
+            verified, refetch = self._revalidate_zero_outdegree_markers(
+                suspect_zero)
+            cached_upstream.extend(verified)
+            uncached_upstream.extend(refetch)
         
         # Retrieve cached connections using O(1) dict index
         all_cached = cached_upstream + partially_cached  # partially_cached will be empty (no recovery)
@@ -5527,9 +5930,17 @@ class FindNeuronConnection:
         if not self.use_cache:
             return
 
-        # If connections is empty, all neurons have 0 connections - that's valid, mark them all
+        # An EMPTY enriched frame is indistinguishable from a failed or
+        # transient fetch — trusting it marked the whole hemibrain index
+        # as verified 0-outdegree (360k stale markers, plan R3-a /
+        # F-C). Never mark from an empty pull: genuinely isolated neurons
+        # are confirmed instead by the zero-marker revalidation (batched
+        # server count query) and served as trusted zeros after that.
         if connections.empty:
-            self._update_neuron_index_after_fetch(connections, upstream_bodyIds, downstream_bodyIds)
+            self._vprint(
+                f'  ⚠️  Empty connection frame for {len(upstream_bodyIds):,} '
+                'neurons — NOT marking them complete (an empty pull is not '
+                'proof of zero outdegree).', level='always')
             return
         
         # Validate that connections are properly enriched before marking
@@ -8292,11 +8703,8 @@ class FindNeuronConnection:
             # local-table fetch instead of silently returning an empty
             # network.
             if cache_only_skips_local_fetch(self.dataset, self.cache_only):
-                self._vprint(f'  ⚠️  {len(uncached_upstream)} neurons not in cache (cache-only mode - skipping API fetch)', level='full')
-                self._vprint(f'     Using only cached data. Results may be incomplete.', level='full')
-                # Return only cached connections
-                if self._is_empty_df(cached_conn):
-                    self._vprint(f'     No cached connections found for these neurons.', level='full')
+                self._handle_cache_only_miss(
+                    uncached_upstream, not self._is_empty_df(cached_conn))
                 # Continue without API fetch - api_conn stays empty
             else:
                 fetched = self._fetch_api_connections(
@@ -8339,15 +8747,31 @@ class FindNeuronConnection:
             self._vprint(f'  ⏳ Preparing to mark {len(neurons_to_mark):,} neurons as cached...', level='full')
             # Get the connections for these neurons from the combined dataframe
             neurons_conn = combined[combined['bodyId_pre'].isin(neurons_to_mark)]
-            
+
             # Debug: Check if some neurons have no connections
             neurons_with_conns = set(neurons_conn['bodyId_pre'].unique())
             neurons_without_conns = set(neurons_to_mark) - neurons_with_conns
-            if neurons_without_conns:
-                self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
-            
-            self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
-            self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
+            # Guard against the poisoning vector (plan R3-a, 2026-09-15):
+            # a fetch that returned ZERO rows for every neuron in a large
+            # batch is the signature of a failed/transient pull — marking
+            # the batch complete would stamp every neuron as a verified
+            # 0-outdegree neuron (the hemibrain index spent months in that
+            # state; 360k stale markers). Skip the marking; the zero-marker
+            # revalidation re-checks these neurons on the next encounter.
+            if len(neurons_without_conns) == len(neurons_to_mark) \
+                    and len(neurons_to_mark) >= 50:
+                self._vprint(
+                    f'  ⚠️  {len(neurons_to_mark):,} fetched neurons returned '
+                    '0 connections EACH — NOT marking them complete '
+                    '(suspect empty pull). Genuinely isolated neurons are '
+                    're-verified by the zero-marker revalidation; see '
+                    'dataset_data/<dataset>/run_log.txt.', level='always')
+            else:
+                if neurons_without_conns:
+                    self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
+
+                self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
+                self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
         
         # Apply label mapping if available (AFTER caching, so cache keeps original types)
         if self.label_mapper and not combined.empty:
@@ -8448,10 +8872,8 @@ class FindNeuronConnection:
             # Cache-only skip does not apply to BANC: its connectivity IS
             # the local merged table (see the pandas twin above).
             if cache_only_skips_local_fetch(self.dataset, self.cache_only):
-                self._vprint(f'  ⚠️  {len(uncached_upstream)} neurons not in cache (cache-only mode - skipping API fetch)', level='full')
-                self._vprint(f'     Using only cached data. Results may be incomplete.', level='full')
-                if cached_conn.is_empty():
-                    self._vprint(f'     No cached connections found for these neurons.', level='full')
+                self._handle_cache_only_miss(
+                    uncached_upstream, not cached_conn.is_empty())
             else:
                 fetched = self._fetch_api_connections(
                     uncached_upstream, downstream_bodyIds
@@ -8498,10 +8920,20 @@ class FindNeuronConnection:
             ).to_pandas()
             neurons_with_conns = set(neurons_conn['bodyId_pre'].unique())
             neurons_without_conns = set(str(b) for b in neurons_to_mark) - neurons_with_conns
-            if neurons_without_conns:
-                self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
-            self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
-            self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
+            # Same all-empty poisoning guard as the pandas path (plan R3-a).
+            if len(neurons_without_conns) == len(neurons_to_mark) \
+                    and len(neurons_to_mark) >= 50:
+                self._vprint(
+                    f'  ⚠️  {len(neurons_to_mark):,} fetched neurons returned '
+                    '0 connections EACH — NOT marking them complete '
+                    '(suspect empty pull). Genuinely isolated neurons are '
+                    're-verified by the zero-marker revalidation; see '
+                    'dataset_data/<dataset>/run_log.txt.', level='always')
+            else:
+                if neurons_without_conns:
+                    self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
+                self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
+                self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
 
         # Label mapping has no Polars port; fall back to a guarded pandas
         # round trip on this optional configuration.
@@ -11099,6 +11531,15 @@ class FindNeuronConnection:
             self.save_folder = os.path.join(self.output_dir, self.save_folder)
         if save_folder_explicit:
             os.makedirs(self.save_folder, exist_ok=True)
+        # Dataset-level run log: every threshold instance of one comparison
+        # run appends to the same file (plan A2). Level-filtered console
+        # output still applies; the log keeps the full trace.
+        try:
+            dataset_dir = os.path.dirname(os.path.abspath(self.save_folder))
+            if os.path.isdir(dataset_dir):
+                self._run_log_path = os.path.join(dataset_dir, 'run_log.txt')
+        except (TypeError, ValueError, OSError):
+            self._run_log_path = None
         self._vprint(f'data will be saved in: {self.save_folder}\n', level='simple')
         
         # Prepare parameter dictionary (will be saved in method-specific subfolders)
@@ -11912,6 +12353,20 @@ class FindNeuronConnection:
         conn_df['bodyId_pre'] = conn_df['bodyId_pre'].astype(str)
         conn_df['bodyId_post'] = conn_df['bodyId_post'].astype(str)
         self._vprint(f'Found {len(conn_df)} direct connections within the queried set', level='full')
+        # Shared untyped-label filter (same default/predicate as Complete
+        # Paths, Shortest Paths and Cross-Dataset Comparison). Applied
+        # BEFORE enrichment so untyped edges never enter the type/group
+        # aggregation or visualizations.
+        self._reset_untyped_drop_tracking()
+        conn_df = self._filter_untyped_pandas(conn_df, 'network')
+        if conn_df.empty:
+            self._vprint(
+                '\033[33mAll queried direct connections touch untyped '
+                'neurons (drop_untyped=True); nothing to visualize.\033[0m',
+                level='always')
+            self._write_user_warning_notes(network_folder)
+            self._export_untyped_drop_records(network_folder)
+            return
         self._progress(3, 5, 'Enriching and filtering network edges')
 
         # --- Enrich (FindAllPath-style: global incoming denominators) ---
@@ -11974,6 +12429,7 @@ class FindNeuronConnection:
         if conn_group is not None and len(conn_group) > 0:
             self._save_df_to_csv_polars(conn_group, os.path.join(details_folder, 'connection_custom_groups.csv'))
         self._write_user_warning_notes(network_folder)
+        self._export_untyped_drop_records(network_folder)
 
         # --- Visualization: network + heatmap only (NO Sankey) ---
         self._progress(5, 5, 'Building network visualizations')
@@ -12856,11 +13312,24 @@ class FindNeuronConnection:
                 f'top {self.pathN_to_show} paths (by discovery order) were '
                 f'visualized/saved.'
             )
+        _cache_only_partial = False
         if getattr(self, 'cache_only', False):
-            notes.append(
-                '- [data] cache_only=True: results depend entirely on the local '
-                'cache; missing neurons are absent from the outputs.'
-            )
+            _cache_only_partial = bool(getattr(self, 'allow_incomplete_cache', False) or (
+                self.dataset in _CACHE_ONLY_DATASETS
+                and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False)))
+            if _cache_only_partial:
+                notes.append(
+                    '- [data] cache_only=True with allow_incomplete_cache=True: the '
+                    'local cache was incomplete and missing neurons/connections are '
+                    'absent from the outputs. This run is PARTIAL — it was stamped '
+                    'INCOMPLETE_CACHE.txt and should not be compared with complete '
+                    'runs as if equivalent.'
+                )
+            else:
+                notes.append(
+                    '- [data] cache_only=True: results depend entirely on the local '
+                    'cache; missing neurons are absent from the outputs.'
+                )
 
         if not notes:
             return
@@ -12880,6 +13349,22 @@ class FindNeuronConnection:
                          f'user_warning_notes.txt in the run folder', level='always')
         except OSError as e:
             self._vprint(f'  Warning: could not write user_warning_notes.txt: {e}', level='full')
+
+        if _cache_only_partial:
+            # Unmistakable sidecar so a partial cache-only run can never pass
+            # for a complete analysis when folders are shared or archived.
+            try:
+                with open(os.path.join(folder, 'INCOMPLETE_CACHE.txt'), 'w',
+                          encoding='utf-8') as f:
+                    f.write('PARTIAL RESULTS: this run executed in cache-only mode '
+                            'with allow_incomplete_cache=True while the local '
+                            'connection cache was incomplete.\n'
+                            'Neurons and connections missing from the cache are '
+                            'absent from every output file in this folder.\n'
+                            'Run once with cache_only=False to complete the cache, '
+                            'then re-run for complete results.\n')
+            except OSError as e:
+                self._vprint(f'  Warning: could not write INCOMPLETE_CACHE.txt: {e}', level='full')
 
     def _save_path_neuron_enrollment(self, folder):
         """Save resolved source/target enrollment metadata at run root.
@@ -14176,15 +14661,214 @@ class FindNeuronConnection:
             f.write(f'replayed_from:{" " * 17}{base_threshold}\n')
             f.write('\n')
 
-    def _replay_slice_tau(self, sorted_bn, start, threshold, t0_tau, t0_bitten):
-        """Per-threshold tau semantics for a replay slice (§9.7)."""
+    def _replay_slice_tau(self, sorted_bn, start, threshold, t0_tau, t0_bitten,
+                          strongest_dropped=None):
+        """Per-threshold tau semantics for a replay slice (§9.7).
+
+        A slice at ``threshold`` is complete when every path the t0 budget
+        DROPPED has bottleneck below it. Dropped paths have bottleneck at
+        most ``strongest_dropped`` (w2), so ``threshold > w2`` means the
+        slice equals a complete run at ``threshold`` (tau = the weakest
+        emitted bottleneck). Only ``threshold <= w2`` is genuinely the
+        tau0-bounded set.
+        """
         total = len(sorted_bn)
         if start >= total:
             return None, True  # empty set: trivially complete at t
         if t0_bitten and threshold < (t0_tau if t0_tau is not None else 0):
+            if strongest_dropped is not None and threshold > strongest_dropped:
+                # No dropped path is needed at this threshold -> complete.
+                return float(sorted_bn[start]), True
             # slice is still the tau0-bounded set
             return float(t0_tau), False
         return float(sorted_bn[start]), True
+
+    def _density_dir(self):
+        """Dataset-level home for the shared density arrays (plan §4.1).
+
+        Written once per (dataset, query) at
+        ``dataset_data/{safe}/_density/`` — one level ABOVE the ``minsyn_*``
+        folders — because tau-collapse deletes the t0 folder (F5 folder
+        discipline) while every slice folder references this single copy
+        through its ``density_meta.json`` ``density_source`` pointer.
+        """
+        base = self.allpath_folder or self.save_folder
+        if not base:
+            return None
+        return os.path.join(os.path.dirname(base), '_density')
+
+    def _persist_density_artifacts(self, path_bottlenecks):
+        """Persist the query-scoped density arrays + meta (plan §4.1).
+
+        Writes the shared arrays once into the dataset-level ``_density/``
+        directory and a per-folder ``density_meta.json`` into the current
+        threshold folder. No-op unless ``capture_density`` is on and the run
+        is 'all' mode.
+        """
+        if not getattr(self, 'capture_density', False):
+            return
+        if path_bottlenecks is None or not self.allpath_folder:
+            return
+        import json as _json
+        import math as _math
+        import numpy as np
+
+        try:
+            density_dir = self._density_dir()
+            if not density_dir:
+                return
+            # One capture per (dataset, query): the cone of the LOWEST
+            # executed threshold is the maximal searched universe (higher
+            # thresholds are filters over it). When a later run's cone is
+            # smaller (e.g. a replay enumeration at a higher threshold, or
+            # the Edge-Budget floor landing higher), keep the bigger cone.
+            existing_path = os.path.join(density_dir, 'density_meta.json')
+            if os.path.exists(existing_path):
+                try:
+                    with open(existing_path, encoding='utf-8') as f:
+                        _existing = _json.load(f)
+                    _existing_cone = _existing.get('n_cone_edges')
+                    _ew = getattr(self, '_density_edge_weights', None)
+                    _this_cone = 0 if _ew is None else int(len(_ew))
+                    if _existing_cone is not None \
+                            and _this_cone < int(_existing_cone):
+                        self._vprint(
+                            f'  Density capture kept: the existing cone '
+                            f'({_existing_cone:,} edges) is larger than this '
+                            f'run\'s ({_this_cone:,}) — skipping the write.',
+                            level='full')
+                        return
+                except Exception:
+                    pass
+            os.makedirs(density_dir, exist_ok=True)
+            bns = np.asarray(path_bottlenecks, dtype=np.float64)
+            ew = getattr(self, '_density_edge_weights', None)
+            ew = (np.asarray([], dtype=np.int32) if ew is None
+                  else np.asarray(ew, dtype=np.int32))
+            cls = getattr(self, '_density_edge_cls', None)
+            np.save(os.path.join(density_dir,
+                                 'density_path_bottlenecks.npy'), bns)
+            np.save(os.path.join(density_dir,
+                                 'density_edge_weights.npy'), ew)
+            if cls is not None:
+                np.savez_compressed(
+                    os.path.join(density_dir, 'density_edges.npz'),
+                    weight=ew.astype(np.int32), cls=cls.astype(np.int8))
+
+            prov = getattr(self, '_last_provenance', None) or {}
+            applied = prov.get('applied_threshold')
+            try:
+                applied = int(applied) if applied is not None else None
+            except (TypeError, ValueError):
+                applied = None
+            w_start = max(3, applied) if applied is not None else 3
+            w_star_measured = float(bns.max()) if bns.size else None
+            stored = prov.get('strongest_retained_bottleneck')
+            mismatch = False
+            if stored is not None:
+                mismatch = (w_star_measured is None
+                            or not _math.isclose(
+                                float(stored), float(w_star_measured),
+                                rel_tol=0.0, abs_tol=1e-9))
+            tau_canon = prov.get('tau_canonical')
+            path_complete_from = w_start
+            if tau_canon is not None:
+                path_complete_from = max(
+                    w_start, int(round(float(tau_canon))))
+            n_nodes = getattr(self, '_density_n_nodes', None)
+            # Node classes against the curated table (debris ids are absent
+            # from it and are NEVER counted in any denominator).
+            annotated_known = bool(getattr(
+                self, '_density_annotation_known', False))
+            node_ids = getattr(self, '_density_node_ids', None) or set()
+            typed_ids = getattr(self, '_density_typed_ids', None) or set()
+            table_ids = getattr(self, '_density_table_ids', None) or set()
+            if annotated_known:
+                n_typed = len(node_ids & typed_ids)
+                n_untyped = len((node_ids & table_ids) - typed_ids)
+                n_debris = len(node_ids - table_ids)
+            else:
+                n_typed, n_untyped, n_debris = n_nodes, 0, 0
+            # The array is the cone at the edge floor (a superset of the
+            # applied threshold); report the applied-threshold count as
+            # n_edges and keep the array size as n_cone_edges.
+            n_edges_applied = int((ew >= w_start).sum()) if ew.size else 0
+            meta = {
+                'applied': applied,
+                'w_start': w_start,
+                'w_star_measured': w_star_measured,
+                'strongest_retained_bottleneck': stored,
+                'w_star_mismatch': bool(mismatch),
+                'tau_canonical': (
+                    int(round(float(tau_canon)))
+                    if tau_canon is not None else None),
+                'edge_weight_floor': prov.get('edge_weight_floor'),
+                'budget_bitten': bool(prov.get('strongest_first_budget_bitten')),
+                'paths_complete': bool(prov.get('paths_complete')),
+                'path_complete_from': path_complete_from,
+                'n_paths': int(bns.size),
+                'n_edges': n_edges_applied,
+                'n_cone_edges': int(ew.size),
+                'n_nodes': n_nodes,
+                'n_nodes_typed': n_typed,
+                'n_nodes_untyped': n_untyped,
+                'n_nodes_debris': n_debris,
+                'n_annotated_nodes': n_typed,
+                'annotated_known': annotated_known,
+                'denominator': (
+                    'typed_nodes_in_searched_graph' if annotated_known
+                    else 'searched_graph_nodes'),
+                'weight_axis': 'per_connection',
+                'requested_threshold': prov.get('requested_threshold'),
+                'max_interlayer': getattr(self, 'max_interlayer', None),
+                'graph_edge_limit_bodyid': getattr(
+                    self, 'graph_edge_limit_bodyid', None),
+                'max_paths_bodyid': getattr(self, 'max_paths_bodyid', None),
+                'density_source': '.',
+            }
+            with open(os.path.join(density_dir, 'density_meta.json'), 'w',
+                      encoding='utf-8') as f:
+                _json.dump(meta, f, indent=2, default=str)
+            # Per-folder pointer so the threshold folder is self-describing.
+            self._persist_slice_density_meta(
+                applied if applied is not None else self.min_synapse_num,
+                w_star_measured, int(bns.size))
+        except Exception as exc:
+            self._vprint(f'⚠️  Density capture skipped: {exc}', level='always')
+
+    def _persist_slice_density_meta(self, t, w_star_measured, n_paths):
+        """Write the current threshold folder's ``density_meta.json``.
+
+        The arrays live once in the dataset-level ``_density/`` folder; this
+        lightweight meta points at it (``density_source = '../_density'``)
+        and records the slice's own applied threshold / measured ceiling.
+        """
+        if not getattr(self, 'capture_density', False) or not self.allpath_folder:
+            return
+        try:
+            import json as _json
+            applied = int(t) if t is not None else None
+            base_applied = max(3, applied) if applied is not None else None
+            meta = {
+                'applied': applied,
+                'w_start': base_applied,
+                'w_star_measured': (
+                    float(w_star_measured)
+                    if w_star_measured is not None else None),
+                'strongest_retained_bottleneck': (
+                    float(w_star_measured)
+                    if w_star_measured is not None else None),
+                'w_star_mismatch': False,
+                'path_complete_from': base_applied,
+                'n_paths': int(n_paths),
+                'weight_axis': 'per_connection',
+                'density_source': os.path.join('..', '_density'),
+            }
+            with open(os.path.join(self.allpath_folder, 'density_meta.json'),
+                      'w', encoding='utf-8') as f:
+                _json.dump(meta, f, indent=2, default=str)
+        except Exception:
+            pass
 
     def _finalize_threshold_provenance(self, path_mode='all'):
         """Compute and record the canonical threshold/bottleneck provenance.
@@ -14417,6 +15101,16 @@ class FindNeuronConnection:
             start = int(np.searchsorted(sorted_bn, t, side='left'))
             surviving = order[start:]
             all_paths = self._replay_decode_paths(capture, surviving)
+            # P1 (per replay slice): the slice's measured retained ceiling
+            # is the strongest SURVIVING path's bottleneck — None when the
+            # slice is empty (e.g. BANC at t=30). Without this the folder
+            # would report the t0 value and claim paths at a threshold where
+            # the slice has none. sorted_bn is ascending, so the last
+            # surviving entry is the max.
+            slice_wstar = (float(sorted_bn[-1])
+                           if start < len(sorted_bn) else None)
+            self.strongest_retained_bottleneck = slice_wstar
+            capture['strongest_retained_bottleneck'] = slice_wstar
 
             neurons_in_paths = set()
             edges_in_paths = set()
@@ -14425,7 +15119,9 @@ class FindNeuronConnection:
                 edges_in_paths.update(zip(path, path[1:]))
 
             tau, paths_complete = self._replay_slice_tau(
-                sorted_bn, start, t, t0_tau, t0_bitten)
+                sorted_bn, start, t, t0_tau, t0_bitten,
+                strongest_dropped=capture.get(
+                    'strongest_dropped_bottleneck'))
             # Reflect THIS slice's state in the folder metadata (the t0
             # run's values would be stale here).
             self.strongest_first_cutoff = tau
@@ -14495,6 +15191,7 @@ class FindNeuronConnection:
                 find_reciprocal=find_reciprocal,
                 forward_only=forward_only,
             )
+            self._persist_slice_density_meta(t, slice_wstar, len(all_paths))
             return {
                 'tau': tau,
                 'budget_bitten': not paths_complete and t0_bitten,
@@ -14511,9 +15208,15 @@ class FindNeuronConnection:
                 'tau_canonical': self.tau_canonical,
                 'strongest_dropped_bottleneck': self.strongest_dropped_bottleneck,
                 'edge_budget': capture.get('edge_budget'),
-                'edge_budget_applied': bool(capture.get(
-                    'edge_budget_applied', False)),
-                'edge_budget_landing': capture.get('edge_budget_landing'),
+                # Per-slice binding: the t0 graph floor only changes THIS
+                # slice's output when w0 > t. Below the floor (W4) the
+                # analyzer re-enumerates; at/above it the floor is inert.
+                'edge_budget_applied': bool(
+                    floor_w0 is not None and int(floor_w0) > int(t)),
+                'edge_budget_landing': (
+                    capture.get('edge_budget_landing')
+                    if (floor_w0 is not None and int(floor_w0) > int(t))
+                    else None),
                 'edge_weight_floor': capture.get('edge_weight_floor'),
                 'strongest_retained_bottleneck': capture.get(
                     'strongest_retained_bottleneck'),
@@ -14542,9 +15245,7 @@ class FindNeuronConnection:
                     # W4: this asked threshold sits BELOW the Edge-Budget
                     # floor — the floored slice destroyed exactly the
                     # paths in [t, w0) that its own complete run needs,
-                    # so the slice cannot serve it (neither collapse nor
-                    # materialize). Flag it for individual
-                    # re-enumeration by the analyzer batch.
+                    # so the slice cannot serve it. Re-enumerate.
                     results[t] = {
                         'replayed': False,
                         '_reenumerate': True,
@@ -14554,7 +15255,18 @@ class FindNeuronConnection:
                         'edge_weight_floor': None,
                     }
                     continue
-                # Collapsed onto the canonical set — no folder, no work.
+                if canon_int is not None and t > canon_int:
+                    # MID GAP (canon < t <= tau): no path bottleneck lies in
+                    # (w2, tau], so the slice at t IS the complete run at t.
+                    # Materialize its own folder so the applied value is t
+                    # rather than the weaker canonical (which would show
+                    # applied < requested).
+                    results[t] = _materialize_threshold(t)
+                    continue
+                # WEAK GAP (t < canon = w2+1) or t == canon: the canonical
+                # folder's set is a valid complete run at canon, and canon >
+                # t, so the applied value is >= the request. Alias to it —
+                # no folder of its own, no re-enumeration.
                 results[t] = {
                     'tau': eff_tau,
                     'tau_canonical': canon_int,
@@ -14571,9 +15283,14 @@ class FindNeuronConnection:
                     'strongest_dropped_bottleneck': capture.get(
                         'strongest_dropped_bottleneck'),
                     'edge_budget': capture.get('edge_budget'),
-                    'edge_budget_applied': bool(capture.get(
-                        'edge_budget_applied', False)),
-                    'edge_budget_landing': capture.get('edge_budget_landing'),
+                    # Per-slice: t >= w0 here (the W4 branch handled t < w0),
+                    # so the floor is inert for this slice.
+                    'edge_budget_applied': bool(
+                        floor_w0 is not None and int(floor_w0) > int(t)),
+                    'edge_budget_landing': (
+                        capture.get('edge_budget_landing')
+                        if (floor_w0 is not None and int(floor_w0) > int(t))
+                        else None),
                     'edge_weight_floor': capture.get('edge_weight_floor'),
                     'strongest_retained_bottleneck': capture.get(
                         'strongest_retained_bottleneck'),
@@ -14603,9 +15320,13 @@ class FindNeuronConnection:
                 'strongest_dropped_bottleneck': capture.get(
                     'strongest_dropped_bottleneck'),
                 'edge_budget': capture.get('edge_budget'),
-                'edge_budget_applied': bool(capture.get(
-                    'edge_budget_applied', False)),
-                'edge_budget_landing': capture.get('edge_budget_landing'),
+                # Per-slice binding for the collapsed t0 request.
+                'edge_budget_applied': bool(
+                    floor_w0 is not None and int(floor_w0) > int(t0)),
+                'edge_budget_landing': (
+                    capture.get('edge_budget_landing')
+                    if (floor_w0 is not None and int(floor_w0) > int(t0))
+                    else None),
                 'edge_weight_floor': capture.get('edge_weight_floor'),
                 'strongest_retained_bottleneck': capture.get(
                     'strongest_retained_bottleneck'),
@@ -14661,6 +15382,21 @@ class FindNeuronConnection:
         # natural tau otherwise); strongest_dropped_bottleneck is w2.
         self.tau_canonical = None
         self.strongest_dropped_bottleneck = None
+        # W* measured ceiling: reset per run so an early-return path never
+        # leaves a prior run's value readable (the pre-enumeration walk
+        # stat set by _graph_edge_frames is overwritten post-enumeration
+        # from the actual path bottlenecks).
+        self.strongest_retained_bottleneck = None
+        # Auto threshold-density alignment (plan §4.1): query-scoped arrays
+        # captured during graph build, persisted after enumeration when
+        # capture_density is on.
+        self._density_edge_weights = None
+        self._density_n_nodes = None
+        self._density_node_ids = None
+        self._density_edge_cls = None
+        self._density_annotation_known = False
+        self._density_table_ids = None
+        self._density_typed_ids = None
         # Untyped-neuron drop accumulators (drop_untyped) reset per run so
         # sequential calls never mix records across runs.
         self._reset_untyped_drop_tracking()
@@ -15343,6 +16079,51 @@ class FindNeuronConnection:
             all_connections_filtered, list(source_ID), list(targets_found),
             path_mode=path_mode,
         )
+        # Threshold-density alignment (plan §4.1): the edge-density curve's
+        # universe is the query-scoped, losslessly-pruned searched cone at
+        # the floor threshold — one classified edge array per dataset/query
+        # suffices (higher t is a filter). Captured here, while the frames
+        # exist, only when the flag is on. Endpoints are classified against
+        # the curated neuron table (typed / untyped / debris) so the curve
+        # can apply the run's drop_untyped policy and always ignore debris.
+        if getattr(self, 'capture_density', False) and path_mode == 'all':
+            import numpy as _np
+            _w_parts = []
+            _cls_parts = []
+            _node_ids = set()
+            _table_ids, _typed_ids, _annot_known = _density_table_sets(
+                getattr(self, '_local_neuron_df_cache', None))
+            for _frame in graph_frames:
+                if _frame is None or (
+                        _frame.is_empty() if hasattr(_frame, 'is_empty')
+                        else len(_frame) == 0):
+                    continue
+                _pre = [str(_v) for _v in _frame['bodyId_pre'].to_list()]
+                _post = [str(_v) for _v in _frame['bodyId_post'].to_list()]
+                _w_parts.append(_np.asarray(
+                    _frame['weight'].to_numpy(), dtype=_np.int32))
+                if _annot_known:
+                    _cls_parts.append(classify_cone_edges(
+                        _pre, _post, _table_ids, _typed_ids))
+                # N (density denominator) = the bodyId nodes of THIS pruned
+                # searched cone — not the pre-prune discovery frontier
+                # (which still carries BANC segmentation debris; §4.3b).
+                _node_ids.update(_pre)
+                _node_ids.update(_post)
+            self._density_edge_weights = (
+                _np.concatenate(_w_parts) if _w_parts
+                else _np.asarray([], dtype=_np.int32))
+            # Without a loaded curated table, classification is impossible:
+            # leave the class array None (the curve builder then treats all
+            # edges as typed) and record it in the meta.
+            self._density_edge_cls = (
+                _np.concatenate(_cls_parts) if _cls_parts
+                else _np.asarray([], dtype=_np.int8)) if _annot_known else None
+            self._density_annotation_known = _annot_known
+            self._density_table_ids = _table_ids
+            self._density_typed_ids = _typed_ids
+            self._density_node_ids = _node_ids
+            self._density_n_nodes = len(_node_ids)
         for _frame in graph_frames:
             G.build_from_dataframe(_frame, 'bodyId_pre', 'bodyId_post', 'weight',
                                    store_edge_attrs=False)
@@ -15401,21 +16182,12 @@ class FindNeuronConnection:
                 # subgraph() already returns a standalone new graph; the
                 # extra .copy() duplicated every edge a second time.
                 G = G.subgraph(nodes_that_can_reach_targets)
-                # §6b: state that the lossless node prune keeps the top
-                # paths — report the strongest retained path bottleneck.
-                try:
-                    _w = self._widest_path_backward(
-                        set(targets_found), self.max_interlayer + 1)
-                    _vals = [_w[-1].get(s) for s in source_ID
-                             if _w[-1].get(s) not in (None, float('inf'))]
-                    _wstar = max(_vals) if _vals else None
-                    if _wstar is not None:
-                        self._vprint(
-                            f'— strongest retained path bottleneck: '
-                            f'{_wstar:g} synapses; top paths unchanged '
-                            f'(pruning is lossless).', level='full')
-                except Exception:
-                    pass
+                # P3: the former §6b "strongest retained path bottleneck"
+                # recompute here called self._widest_path_backward(...), a
+                # method that exists only on FastGraph, not on this class —
+                # the AttributeError was swallowed and only a local was
+                # assigned. It is deleted; the definitive measured value is
+                # set from the enumerated paths after pathfinding (P1).
                 self._vprint(f'Done! ({original_node_count} -> {G.number_of_nodes()} nodes)', level='full')
             else:
                 self._vprint('Warning: No targets found in graph (should have been caught earlier).', level='full')
@@ -15665,6 +16437,17 @@ class FindNeuronConnection:
                         edges_in_paths_with_layer.add((i, p[i], p[i+1]))
             
             pairs_with_paths = len(pairs_with_paths_dict)
+
+            # P1: the MEASURED retained ceiling is the strongest enumerated
+            # path's bottleneck. The enumerated paths are exactly the
+            # admissible simple paths under max_interlayer, so their max
+            # bottleneck IS the retained ceiling — this replaces the
+            # hop-unbounded widest-WALK stat recorded pre-enumeration by
+            # _graph_edge_frames (which can exceed it; see §3.3 of the
+            # auto-threshold plan). None when no path was materialized.
+            if path_mode == 'all':
+                self.strongest_retained_bottleneck = (
+                    max(path_bottlenecks) if path_bottlenecks else None)
             
             elapsed = time.time() - start_time
             if self.verbose_mode == 'simple':
@@ -15860,6 +16643,12 @@ class FindNeuronConnection:
         # its pre-enumeration snapshot (tau/floor still None) and never
         # received the provenance block.
         self._write_run_metadata(path_mode)
+
+        # Auto threshold-density alignment (plan §4.1): persist the
+        # query-scoped arrays + meta for this (dataset, query) once the
+        # applied-threshold provenance is final.
+        if path_mode == 'all':
+            self._persist_density_artifacts(path_bottlenecks)
 
     def _materialize_paths(
         self,

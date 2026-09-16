@@ -655,3 +655,14 @@ See `examples/` directory for complete workflows:
 - `example_pathfinding.py`: Basic path finding
 - `example_cache_setup.py`: Cache configuration
 - `example_filtering.py`: Various filter combinations
+
+
+### [Type-Mapping Validate-Expand-Visualize Guide](./TypeMappingValidateExpandVisualize_Guide.md)
+User guide for the type-mapping validate-expand-visualize pipeline: validate an
+automatic cross-dataset type mapping at the single-neuron level,
+review disagreements in 3D scenes, and collect gap-fill/candidate
+proposals (evidence only — the mapping is never rewritten). Categories
+form a partition per branch (`matched`/`verified`/`borderline`/`unmatched`,
+`sibling`, `candidates`, and — in the wider modes — `family`, `relative`,
+`suspicious`), and the three modes nest
+(`restrictive ⊆ family ⊆ aggressive`).

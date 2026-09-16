@@ -3050,3 +3050,268 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
         ]
         writer.writerow(extended_row if extended else legacy_row)
     return buffer.getvalue()
+
+# ---------------------------------------------------------------------------
+# Per-bridge type-level mapping (plan plan-type-mapper-fine-granularity-… §3)
+# ---------------------------------------------------------------------------
+
+PER_BRIDGE_HEADER = [
+    "source_dataset", "source_entry", "matched_column", "source_type",
+    "target_dataset", "target_type", "relationship",
+    "source_neurons", "target_neurons",
+    "selected_bridge", "bridge", "bridge_columns", "mapping_origin",
+    "mapping_status", "selected_bridge_rank", "valid_bridge_count",
+    "selected_linker_values", "selected_linker_canonical_values",
+    "unsupported_attempts",
+    "source_pool", "source_total", "target_pool", "target_total",
+    "source_body_ids", "target_body_ids",
+    "pool_coverage", "coverage_basis",
+    "bridge_index", "is_selected", "chain_rank", "bridge_linkers",
+    "annotation", "branch_index", "branch_of", "branches_disjoint",
+    "parent_relationship", "parent_status",
+    "parent_source_body_ids", "parent_target_body_ids",
+]
+
+
+def default_branch_pool_fn():
+    """Lazy ``ui.neuron_index.pool_bridge_body_ids`` binding.
+
+    The comparison layer never imports the UI package at module level;
+    callers that need bridge-refined bodyId pools get this deferred
+    binding (pass ``pool_fn=None`` through for structure-only exports).
+    """
+    from ui.neuron_index import pool_bridge_body_ids
+
+    def _pool(source_dataset, target_dataset, linkers, source_type,
+              foreign_type):
+        return pool_bridge_body_ids(
+            source_dataset, target_dataset, linkers, source_type,
+            foreign_type)
+
+    return _pool
+
+
+def annotate_branch_records(records: List[Dict[str, Any]]) -> None:
+    """Attach per-bridge relationship annotations IN PLACE (§2 vocabulary).
+
+    Evidence-based terms only — body counts never decide a mapping:
+
+    - ``bifurcation`` / ``convergence`` / ``bifurcated_convergence`` —
+      the parent fan-out shape measured WITHIN the record set (same scope
+      as the panel's ``relationship`` cells: one source type reaching
+      several targets, one target type receiving several source types,
+      or both).
+    - ``resolved_by_linkers`` — a multi-target parent whose selected
+      branches each carry linker evidence and whose source sub-pools are
+      pairwise disjoint; ``unresolved_fanout`` otherwise (linker-less or
+      overlapping branches stay genuinely ambiguous).
+    - ``branches_disjoint`` / ``branches_overlap`` — measured property of
+      the selected branches' ``source_body_ids`` across siblings.
+
+    Also fills ``branch_index`` (1-based within the record set, ordered by
+    chain rank) and ``branch_of`` (the parent source type).
+    """
+    if not records:
+        return
+    src_type = records[0].get('source_type', '')
+    selected = [r for r in records if r.get('is_selected')]
+    targets = sorted({r['target_type'] for r in records})
+    sources_by_target: Dict[str, set] = {}
+    # Convergence within this record set is measured across the selected
+    # branch of every sibling record group that shares a target type; the
+    # caller may pass sibling groups via 'incoming_sources' (optional).
+    for r in selected:
+        sources_by_target.setdefault(r['target_type'], set()).add(
+            r.get('source_type'))
+
+    disjoint = None
+    if len(targets) > 1 and selected:
+        pool_sets = [set(map(int, r.get('source_body_ids') or []))
+                     for r in selected
+                     if r.get('source_body_ids') is not None]
+        if len(pool_sets) == len(selected) and pool_sets:
+            flat = [i for s in pool_sets for i in s]
+            disjoint = len(set(flat)) == len(flat)
+
+    all_linkered = bool(selected) and all(
+        (r.get('source_basis') == 'linker rows'
+         or (r.get('linkers') and r.get('source_body_ids')))
+        for r in selected)
+    resolved = (len(targets) > 1 and disjoint is True and all_linkered)
+
+    by_rank = sorted(records, key=lambda r: r.get('chain_rank', 0))
+    for idx, r in enumerate(by_rank, start=1):
+        terms = []
+        n_targets = len(targets)
+        n_incoming = max((len(s) for s in sources_by_target.values()), default=1)
+        if n_targets > 1 and n_incoming > 1:
+            terms.append('bifurcated_convergence')
+        elif n_targets > 1:
+            terms.append('bifurcation')
+        elif n_incoming > 1:
+            terms.append('convergence')
+        if n_targets > 1:
+            terms.append('resolved_by_linkers' if resolved
+                         else 'unresolved_fanout')
+        if disjoint is not None:
+            terms.append('branches_disjoint' if disjoint
+                         else 'branches_overlap')
+        r['annotation'] = ';'.join(terms)
+        r['branch_index'] = idx
+        r['branch_of'] = src_type
+        r['branches_disjoint'] = disjoint
+
+
+def branches_to_per_bridge_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per-bridge CSV rows (§3): one row per (type pair, bridge chain).
+
+    ``source_body_ids`` / ``target_body_ids`` hold the bridge-refined
+    sub-pools in the current ``{a, b, c}`` grouping; the full type
+    populations move to ``parent_source_body_ids`` /
+    ``parent_target_body_ids``.  Callers without pool_fn records get
+    empty ``{}`` cells rather than misleading full populations.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    def _cell(ids):
+        if ids is None:
+            return ''
+        return '{' + ', '.join(str(b) for b in ids) + '}'
+
+    selected_count: Dict[Tuple[str, str], int] = {}
+    for r in records:
+        key = (r.get('source_type', ''), r.get('target_type', ''))
+        selected_count[key] = selected_count.get(key, 0) + (
+            1 if r.get('supported') is not False else 0)
+    unsupported = [
+        f"#{r.get('chain_rank')}: {r.get('reason') or r.get('status')}"
+        for r in records if r.get('status') in ('unsupported', 'error')]
+
+    by_rank = sorted(records, key=lambda r: r.get('chain_rank', 0))
+    for r in by_rank:
+        linkers = r.get('linkers') or []
+        linker_cols = '; '.join(str(l['column']) for l in linkers)
+        linker_vals = '; '.join(str(l.get('raw_value',
+                                          l.get('value', '')))
+                                for l in linkers)
+        linker_canon = '; '.join(str(l.get('canonical_value',
+                                           l.get('value', '')))
+                                 for l in linkers)
+        src_ids = r.get('source_body_ids')
+        tgt_ids = r.get('target_body_ids')
+        src_size = r.get('source_pool_size')
+        tgt_size = r.get('target_pool_size')
+        if src_ids is not None:
+            src_size = len(src_ids)
+        if tgt_ids is not None:
+            tgt_size = len(tgt_ids)
+        rows.append({
+            'source_dataset': r.get('source_dataset', ''),
+            'source_entry': r.get('source_type', ''),
+            'matched_column': 'type',
+            'source_type': r.get('source_type', ''),
+            'target_dataset': r.get('target_dataset', ''),
+            'target_type': r.get('target_type', ''),
+            'relationship': r.get('parent_relationship') or '',
+            'source_neurons': src_size if src_size is not None else '',
+            'target_neurons': tgt_size if tgt_size is not None else '',
+            'selected_bridge': ' -> '.join(
+                f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+                for h in (r.get('chain') or [])) if r.get('chain') else '',
+            'bridge': ' -> '.join(
+                f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+                for h in (r.get('chain') or [])) if r.get('chain') else '',
+            'bridge_columns': linker_cols,
+            'mapping_origin': ('same name' if not linkers and
+                               r.get('chain') == [] else
+                               ('mapped' if linkers else 'same name')),
+            'mapping_status': r.get('parent_status') or '',
+            'selected_bridge_rank': (r.get('chain_rank')
+                                     if r.get('is_selected') else ''),
+            'valid_bridge_count': selected_count.get(
+                (r.get('source_type', ''), r.get('target_type', '')), ''),
+            'selected_linker_values': linker_vals,
+            'selected_linker_canonical_values': linker_canon,
+            'unsupported_attempts': '; '.join(unsupported),
+            'source_pool': src_size if src_size is not None else '',
+            'source_total': r.get('source_type_total') or '',
+            'target_pool': tgt_size if tgt_size is not None else '',
+            'target_total': r.get('target_type_total') or '',
+            'source_body_ids': _cell(src_ids),
+            'target_body_ids': _cell(tgt_ids),
+            'pool_coverage': '',
+            'coverage_basis': (
+                f"{r.get('source_basis', '')} / {r.get('target_basis', '')}"
+                if (r.get('source_basis') or r.get('target_basis'))
+                else ''),
+            'bridge_index': '',
+            'is_selected': bool(r.get('is_selected')),
+            'chain_rank': r.get('chain_rank', ''),
+            'bridge_linkers': (
+                f"{linker_cols} = {linker_vals}" if linkers else ''),
+            'annotation': r.get('annotation', ''),
+            'branch_index': r.get('branch_index', ''),
+            'branch_of': r.get('branch_of', ''),
+            'branches_disjoint': ('' if r.get('branches_disjoint') is None
+                                  else bool(r['branches_disjoint'])),
+            'parent_relationship': r.get('parent_relationship') or '',
+            'parent_status': r.get('parent_status') or '',
+            'parent_source_body_ids': '',
+            'parent_target_body_ids': '',
+        })
+    return rows
+
+
+def build_fine_mapping_csv(branches: List[Dict[str, Any]]) -> str:
+    """Optional per-bodyId drill-down (§5): one row per (bodyId, bridge).
+
+    Derived from the same branch records as
+    :func:`branches_to_per_bridge_rows`, so the two presentations can
+    never disagree.
+    """
+    import csv as _csv
+    import io
+
+    header = [
+        'source_dataset', 'source_type', 'source_bodyId',
+        'linker_columns', 'linker_values', 'linker_canonical_values',
+        'chain_rank', 'is_selected',
+        'target_dataset', 'target_type', 'target_bodyId_pool',
+        'target_pool_size', 'target_type_total',
+        'annotation', 'parent_relationship', 'parent_status',
+        'branch_index', 'branches_disjoint',
+    ]
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, quoting=_csv.QUOTE_MINIMAL)
+    writer.writerow(header)
+    for r in sorted(branches, key=lambda r: r.get('chain_rank', 0)):
+        linkers = r.get('linkers') or []
+        for bid in (r.get('source_body_ids') or []):
+            writer.writerow([
+                r.get('source_dataset', ''),
+                r.get('source_type', ''),
+                bid,
+                '; '.join(str(l['column']) for l in linkers),
+                '; '.join(str(l.get('raw_value', l.get('value', '')))
+                          for l in linkers),
+                '; '.join(str(l.get('canonical_value', l.get('value', '')))
+                          for l in linkers),
+                r.get('chain_rank', ''),
+                bool(r.get('is_selected')),
+                r.get('target_dataset', ''),
+                r.get('target_type', ''),
+                '{' + ', '.join(str(b) for b in
+                                (r.get('target_body_ids') or [])) + '}',
+                r.get('target_pool_size') if r.get('target_pool_size')
+                is not None else (len(r.get('target_body_ids') or [])
+                                  if r.get('target_body_ids') is not None
+                                  else ''),
+                r.get('target_type_total') or '',
+                r.get('annotation', ''),
+                r.get('parent_relationship') or '',
+                r.get('parent_status') or '',
+                r.get('branch_index', ''),
+                ('' if r.get('branches_disjoint') is None
+                 else bool(r['branches_disjoint'])),
+            ])
+    return buffer.getvalue()

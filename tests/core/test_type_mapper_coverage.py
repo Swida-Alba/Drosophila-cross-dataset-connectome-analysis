@@ -784,7 +784,8 @@ def test_export_mapping(tmp_path, mapper):
     # Additive provenance column: dataset columns keep their positions,
     # mapping_origin records how each row was derived (crosswalk vs the
     # same-name / annotation-bridge overlay).
-    assert list(df3.columns) == [MCNS, FW, 'mapping_origin']
+    assert list(df3.columns) == [MCNS, FW, 'mapping_origin',
+                                'mapping_support']
 
     out4 = tmp_path / 'all.csv'
     mapper.export_mapping(str(out4), only_different=False)

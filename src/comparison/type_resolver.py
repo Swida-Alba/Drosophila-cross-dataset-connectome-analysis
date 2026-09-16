@@ -57,7 +57,7 @@ from .cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
 __all__ = [
     'STATUS_MAPPED', 'STATUS_BRIDGED', 'STATUS_VALID_SPLIT',
     'STATUS_EVIDENCE_ONLY', 'STATUS_CONFLICT', 'STATUS_UNMAPPED',
-    'STATUS_MAPPER_UNAVAILABLE',
+    'STATUS_MAPPER_UNAVAILABLE', 'STATUS_CLAIMED',
     'MAPPING_POLICY_VERSION',
     'MapperSnapshot', 'TypeResolution', 'ProfileExpansion', 'MergeKey',
     'get_mapper_snapshot', 'resolve_valid_targets', 'expand_profile_types',
@@ -74,6 +74,11 @@ STATUS_EVIDENCE_ONLY = 'evidence_only'
 STATUS_CONFLICT = 'conflict'
 STATUS_UNMAPPED = 'unmapped'
 STATUS_MAPPER_UNAVAILABLE = 'mapper_unavailable'
+#: The curated relation names a target the target dataset does not actually
+#: carry (§stale claims 2026-09-12): the claim stays visible as evidence on
+#: the resolution, but no equivalence is licensed and expansion follows it
+#: nowhere.
+STATUS_CLAIMED = 'claimed'
 
 #: Version of the equivalence/expansion policy implemented here.  Recorded
 #: in result metadata so saved analyses can be audited against the policy
@@ -236,6 +241,11 @@ class TypeResolution:
     mapper_loaded: bool = False
     fallback_used: bool = False
     reason: str = ''
+    secondary_targets: Tuple[str, ...] = ()
+    # True when the unique answer comes from the curated decision itself
+    # (Phase 1b): a tabular/label relation confirms this exact pairing, so
+    # consumers must not treat it as a tier-6 name echo.
+    curated_identity: bool = False
 
     @property
     def direction(self) -> str:
@@ -266,6 +276,8 @@ def expansion_targets(resolution: TypeResolution) -> Tuple[str, ...]:
 
     * mapped/bridged/valid splits: all their targets.
     * evidence_only: none (display/diagnostics only by default).
+    * claimed: none — a crosswalk claim the target namespace cannot
+      fulfil must not seed candidate/profile expansion (§stale claims).
     * conflict / mapper unavailable: none — fail closed.
     * unmapped: the raw name itself, the explicitly-counted long-tail
       fallback (no evidence says the raw names disagree).
@@ -275,6 +287,8 @@ def expansion_targets(resolution: TypeResolution) -> Tuple[str, ...]:
     if resolution.status == STATUS_CONFLICT:
         return ()
     if resolution.status == STATUS_EVIDENCE_ONLY:
+        return ()
+    if resolution.status == STATUS_CLAIMED:
         return ()
     if resolution.status == STATUS_UNMAPPED:
         return (resolution.source_type,)
@@ -379,6 +393,73 @@ def resolve_valid_targets(
             reason='unresolved mapping conflict; no automatic target',
             **base)
 
+    # 1b) A unique curated relation IS the equivalence answer (Phase 1b of
+    #     plan-cross-dataset-query-resolution-samename-taxonomy).  The noisy
+    #     derivation union (alt-column bridge ends) may widen the DISPLAY
+    #     via ``secondary_targets`` but never replaces a unique curated
+    #     answer, and a same-name alias candidate never overrides a curated
+    #     rename.  Before this branch, FAFB ``additional_type(s)`` bridge
+    #     ends demoted a clean 1-to-1 (MCNS ``L2`` -> FAFB ``L2``) to a
+    #     9-candidate ``one of N`` and a same-name alias confirmed ``Dm8a``
+    #     over the curated rename to ``yDm8``.
+    d_target = decision.get('target_type')
+    if (decision['status'] == STATUS_MAPPED and d_target
+            and len(decision.get('target_types') or ()) == 1):
+        d_target = str(d_target)
+        bridge_key = (raw, str(source_dataset), str(target_dataset))
+        if bridge_cache is not None and bridge_key in bridge_cache:
+            chains = bridge_cache[bridge_key]
+        else:
+            try:
+                chains = mapper.get_type_bridges(
+                    raw, source_dataset, target_dataset, max_bridges=8)
+            except Exception:
+                chains = []
+            if bridge_cache is not None:
+                bridge_cache[bridge_key] = chains
+        chains = chains or []
+        evidence = tuple(
+            tuple(dict(step) for step in chain) for chain in chains)
+        ends = {str(c[-1]['value']) for c in chains if c and c[-1].get('value')}
+        kind = 'same name' if d_target == raw else 'renamed'
+        # §stale claims: a unique curated answer naming a type the target
+        # dataset does not carry is evidence, not an equivalence.  When the
+        # raw name is native in the target namespace the realized same-name
+        # equivalence wins (query tier §2.1) and the unfulfilled claim is
+        # kept as the reason; otherwise the claim is reported without
+        # licensing expansion into an empty namespace.
+        if _is_stale_claim(mapper, raw, source_dataset, target_dataset,
+                           d_target):
+            if (d_target != raw
+                    and _target_has_native(mapper, target_dataset, raw)):
+                return TypeResolution(
+                    status=STATUS_MAPPED, kind='same name',
+                    target_types=(raw,),
+                    equivalence_key=raw,
+                    secondary_targets=tuple(sorted(ends - {raw})),
+                    evidence=evidence,
+                    curated_identity=True,
+                    reason=(f'curated claim {d_target!r} is absent from the '
+                            'target dataset; native same-name realized'),
+                    **base)
+            return TypeResolution(
+                status=STATUS_CLAIMED, kind=kind,
+                target_types=(d_target,),
+                secondary_targets=tuple(sorted(ends - {d_target})),
+                evidence=evidence,
+                curated_identity=True,
+                reason='crosswalk claim; target dataset carries no such type',
+                **base)
+        return TypeResolution(
+            status=STATUS_MAPPED, kind=kind,
+            target_types=(d_target,),
+            equivalence_key=d_target,
+            secondary_targets=tuple(sorted(ends - {d_target})),
+            evidence=evidence,
+            curated_identity=True,
+            reason=decision.get('relationship') or 'curated unique relation',
+            **base)
+
     # 2) Alias/candidates half (kind + split/evidence statuses).
     alias_key = (raw, str(source_dataset), str(target_dataset))
     if alias_cache is not None and alias_key in alias_cache:
@@ -417,6 +498,13 @@ def resolve_valid_targets(
             eq = targets[0] if (
                 status in _UNIQUE_EQUIVALENCE_STATUSES
                 and len(targets) == 1) else None
+            # §stale claims: a single alias candidate whose name the target
+            # dataset does not carry is reported as a claim, not a mapping.
+            if (status == STATUS_MAPPED and len(targets) == 1
+                    and _is_stale_claim(mapper, raw, source_dataset,
+                                        target_dataset, targets[0])):
+                status = STATUS_CLAIMED
+                eq = None
             return TypeResolution(
                 status=status, kind=kind, target_types=targets,
                 equivalence_key=eq, reason='alias/curated resolution',
@@ -467,6 +555,43 @@ def resolve_valid_targets(
         else None,
         evidence=evidence,
         reason='bridge-derived resolution', **base)
+
+
+def _is_stale_claim(mapper: Optional[CrossDatasetTypeMapper],
+                    source_type: str, source_dataset: str,
+                    target_dataset: str, target_type: str) -> bool:
+    """Whether the curated claim's target is absent from the target dataset.
+
+    §stale claims (2026-09-12): consults the mapper's stale-claim registry
+    (crosswalk names that passed through resolution unchanged and do not
+    exist in the target namespace).  Mappers without the registry — older
+    snapshots, custom fakes — fail open to ``False``.
+    """
+    checker = getattr(mapper, 'is_stale_claim', None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(source_type, source_dataset, target_dataset,
+                            target_type))
+    except Exception:
+        return False
+
+
+def _target_has_native(mapper: Optional[CrossDatasetTypeMapper],
+                       dataset: str, name: str) -> bool:
+    """True only when the mapper's namespace ground truth confirms ``name``.
+
+    An unknown namespace (``type_exists`` returning ``None``) does not
+    license the native same-name fallback — without ground truth a stale
+    claim must not be quietly re-pointed at an unverified identity.
+    """
+    checker = getattr(mapper, 'type_exists', None)
+    if not callable(checker):
+        return False
+    try:
+        return checker(dataset, name) is True
+    except Exception:
+        return False
 
 
 def _alias_annotation(mapper: CrossDatasetTypeMapper, raw: str,

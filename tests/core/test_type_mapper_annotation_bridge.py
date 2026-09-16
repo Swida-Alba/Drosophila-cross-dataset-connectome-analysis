@@ -355,7 +355,8 @@ def test_export_mapping_bridge_rows_and_origin_column(tmp_path):
     out = tmp_path / 'mapping.csv'
     m.export_mapping(str(out), datasets=[FAFB_RELEASE, BANC_RELEASE])
     df = pd.read_csv(out)
-    assert list(df.columns) == [FAFB_RELEASE, BANC_RELEASE, 'mapping_origin']
+    assert list(df.columns) == [FAFB_RELEASE, BANC_RELEASE,
+                                'mapping_origin', 'mapping_support']
     row = df[(df[FAFB_RELEASE] == 'T1') & (df[BANC_RELEASE] == 'P1')]
     assert len(row) == 1
     assert 'annotation bridge' in row['mapping_origin'].iloc[0]

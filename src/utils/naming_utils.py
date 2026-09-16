@@ -189,3 +189,22 @@ def normalize_brain_mesh_choice(value) -> str:
     """Normalize a stored/entered brain-mesh choice to a current option."""
     v = str(value or "").strip().lower()
     return _BRAIN_MESH_LEGACY.get(v, v)
+
+
+_HEMI_SUFFIXES = ('_L', '_R', '_U')
+
+
+def split_hemi_suffix(label) -> tuple:
+    """Split a hemisphere suffix (_L/_R/_U) from a label.
+
+    Returns ``(base, suffix)`` where suffix includes the leading
+    underscore; non-string inputs return ``(label, '')``. Mirrors
+    ``comparison.label_mapper.LabelMapper._split_hemi_suffix`` — the
+    canonical shared version (plan R1-a).
+    """
+    if not isinstance(label, str):
+        return label, ''
+    for suffix in _HEMI_SUFFIXES:
+        if label.endswith(suffix):
+            return label[:-len(suffix)], suffix
+    return label, ''

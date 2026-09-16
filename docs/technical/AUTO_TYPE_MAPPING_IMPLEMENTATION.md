@@ -536,11 +536,81 @@ eight distinct source neurons.
   raw/canonical selected linker values, unsupported attempts,
   selected/all-valid pool totals and IDs, coverage overlap, and scope. The
   default 20-column form remains available for existing programmatic callers.
+- **Bridge-support pass-through** (mapper boundary, user 2026-09-14):
+  the row-based bodyId-level evidence each bridge resolves — BANC label
+  votes per source type with curated vs `auto:`-stripped provenance,
+  linker value, release root-id pairs — is retained in
+  `_bridge_provenance` and now **passed** via
+  `get_mapping_support(source_type, source_dataset, target_type,
+  target_dataset)`, a `support` key on `get_mapping_decision` (per
+  branch for splits), a trailing **`mapping_support`** column in the
+  compact `auto_type_mapping.csv` (e.g. `cross-dataset cell type:
+  5thsLNv_LNd6=1 (auto 1)` vs `…=2 (auto 2)`), and `support_votes` /
+  `support_verified` / `support_auto` / `support_linker_value` columns
+  on `auto_type_mapping_per_bridge.csv`.  Broad-vote records (some BANC
+  types carry votes from dozens of candidate source types) list the top
+  3 candidates by count then `+N more candidates` in the compact
+  column; the per-bridge columns keep the full counts.  **Direct
+  same-name pairs**
+  return an identity record instead — `same name (all bodyIds pooled)`:
+  the nomenclature identity is the pair's bodyId-level handling (full
+  populations, fully in-map).  **Exception**: a same-name type inside a
+  1-to-N/N-to-1 structure (e.g. MCNS `CB2572` → FAFB {`CB2572`,
+  `CB2572a`, `CB2572b`}) carries no identity marker — the evidence
+  bridge resolves the bodyId-level resolution per branch.  Same-name
+  records whose populations differ by ≥10× (ratio < 0.1, from the lazy
+  per-dataset `type`-column counts in `_type_population_counts`) carry a
+  `population_asymmetry` block — surfaced in `mapping_support` and the
+  viewer's same-name candidates as a suggested check for the user
+  (full-dataset audit: `local_data/same-name-fidelity-audit.csv`; 118
+  flagged pairs of 18,797 — plan-same-name-fidelity-and-three-level-
+  coverage.md §7).  The mapper
+  never consumes this
+  evidence to gate, rank, or verify a mapping — verification is the
+  validate-expand-visualize pipeline's role; a tight-mapping filter is
+  consumer-side over these surfaces.  Implementation hazard recorded:
+  the per-row support is written into the row dicts BEFORE
+  `pd.DataFrame`/`sort_values` — assigning a list after sorting would
+  scramble supports across reordered rows.
+- **~~bodyId-level split columns + companion export~~ REMOVED**
+  (added 2026-09-14 per bodyId-plan §3b.1; **removed the same day** by
+  the final mapper boundary — connectivity split resolution left the
+  type mapper entirely, so `build_bridges_csv` no longer accepts
+  `splits` and the `split_*` columns / `mapping_bodyid_assignments_*.csv`
+  companion export are gone; the legacy AND extended column orders are
+  back to the pre-split contracts).  The panel's bodyId-level export is
+  now **row-based**: the pair card's **Export branch bodyIds** button
+  downloads `mapping_branch_bodyids_*.csv` — one row per mapped pair
+  branch with the bridge-resolved pools (per-side basis
+  `linker rows` / `full population`, sizes, and the full
+  `source_body_ids` / `target_body_ids` populations).  This covers every
+  multi-branch group, including `evidence_only` N-to-1 pairs (e.g. FAFB
+  `s-CPDN3D` → 6 MCNS branches) that the connectivity-based export
+  could never serve.
+- **One integrated backend** (Revision 3 of the same plan; RE-SCOPED
+  2026-09-14): all
+  bodyId-level scoring/primitives moved verbatim to
+  `comparison/body_id_resolver.py` (`expanded_vector`,
+  `score_one_candidate_fast`, `_SideStats`, `scan_source`,
+  `build_target_vectors`, `prep_target_stats`, quality gate,
+  caliber/hemisphere loaders); `mapping_validation` imports them back
+  (single implementation, no parallel path) and `MappingValidator` runs
+  on a `BodyIdResolver` with its benchmark profiler injected.  The
+  pool-scoped connectivity API (`mapper.body_id_resolver.assign_bodyids`,
+  `derive_split_groups`, `resolve_members_across_datasets`) builds
+  on-demand per-neuron profiles ONLY for resolved pool members — no bulk
+  dataset profiling, no global scans.  **Boundary: this backend is TM VEV
+  verification machinery** — it backs the validation pipeline and the
+  panel's informational split view, and is never consumed by the mapper's
+  mapping decisions; the mapper's granularity surfaces are row-based
+  (bridge pools, `get_mapping_support`, `mapping_support`).
 
 ## 8. Testing matrix
 
 | suite | pins |
 |---|---|
+| `tests/core/test_body_id_resolver.py` | the bodyId-level backend: moved-primitive parity + shim identity, clean 1-to-N split, tie → `low_confidence`, float64-range bodyIds, missing/empty profile flags, explicit pools, `ProfilesUnavailable`, side `require/prefer/off` + `side_unknown`/`side_fallback`, lazy mapper property, `derive_split_groups` (real MCNS→FAFB / MCNS→BANC conflicts), bridge-support accessor (aMe24 1 auto vote vs s-LNv_a 2), decision `support` per branch, `mapping_support` export column, same-name pooled-identity record + the 1-to-N exception (CB2572) |
+| `tests/ui/test_type_mapping_panel.py` (row-based) | per-type breakdown gating (single- vs multi-type previews), orphans/renames in the summary, entrance + history behavior in the matrix row below |
 | `tests/core/test_type_mapper_source_map.py` | declarative licensing vs the tables, per-pair sweeps |
 | `tests/core/test_type_mapper_bridge_rules.py` | the algebra: reverse crosswalk legs, connector licenses, BANC ban, no-flip order, untyped exclusion, label-hop terminality + primary-valued-alt refusal (the `l-LNv → BM_*` regression), the designed `aT`→`ACT` standard, real-data acceptance |
 | `tests/core/test_type_mapper_annotation_bridge.py` | overlay precedence, exports, release-name resolution |

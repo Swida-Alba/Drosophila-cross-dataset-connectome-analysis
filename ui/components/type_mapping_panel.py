@@ -6,6 +6,17 @@ selected datasets (the global search) and renders one composed
 N-dataset type-level graph plus per-pair cards and CSV exports.
 Strictly informational — nothing leaks into the analysis selection
 (spec: _plan/plan-type-mapping-round2-entrance-composed-view.md).
+
+The panel's bodyId-level data is ROW-BASED BRIDGE EVIDENCE only —
+per-branch linker-refined bodyId pools and label-vote provenance
+(``mapping_support`` / ``support_*`` export columns; ``Export branch
+bodyIds`` download).  Connectivity similarity is NOT part of the type
+mapper: per-neuron split verification lives in the
+validate-expand-visualize pipeline (``comparison.mapping_validation``).
+A collapsed per-type breakdown expansion appears for multi-type
+previews — one row per (matched type × target dataset) so the mapped
+counts are dataset-specific, never summed across datasets, with query
+chip provenance (user 2026-09-14).
 """
 
 from __future__ import annotations
@@ -13,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Tuple
 
 from nicegui import ui
 
@@ -61,6 +72,14 @@ def _col(name: str, label: str, field: str, *,
     return column
 
 
+def _format_mapped_neurons(neurons: int, types: int) -> str:
+    """The combined mapped cell: '{N}({m} types)' from 2 mapped types
+    up; a single (or zero) mapped type renders as just '{N}'."""
+    if types >= 2:
+        return f"{neurons}({types} types)"
+    return str(neurons)
+
+
 def _pool_mapping_pair(flows, src, tgt, indexes, pools) -> None:
     """Pool bodyIds for one type-mapping pair.
 
@@ -105,6 +124,18 @@ def _pool_mapping_pair(flows, src, tgt, indexes, pools) -> None:
         if result.get("resolution_status") != "supported":
             continue
         pools[key] = result
+
+
+def _describe_orphan(entry: Dict[str, Any], target: str) -> str:
+    """One orphan summary line: the type, its neuron count, and any
+    crosswalk claim the target dataset cannot fulfil."""
+    text = f"{entry['type']} ({entry['count']})"
+    claimed = [c for c in (entry.get("claimed") or []) if c]
+    if claimed:
+        quoted = ", ".join(f"'{c}'" for c in claimed)
+        text += (f" — auto-mapping claims {quoted} but {target} "
+                 f"has no such neurons")
+    return text
 
 
 def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
@@ -228,6 +259,32 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     # One canonical entry per unordered pair (§12 mirror dedupe).
     pair_flows = dedupe_mirrored_pairs(pair_flows, origins.keys())
 
+    # Ratified claim-set accounting (plan-same-name-fidelity-and-three-
+    # level-coverage.md): the mapping's bodyId-level claim is the union of
+    # the branches' resolved target pools — NOT the full populations of the
+    # received types (those are the reference denominator; the population
+    # overhang is TM-EVE family material).
+    from comparison.mapping_visualization import mapping_pool_key
+    claimed_by_ds: Dict[str, set] = {}
+    # Per (source dataset, source type, TARGET dataset): the per-type
+    # breakdown reports dataset-specific claim sets — never a sum across
+    # the target datasets (user 2026-09-14).
+    claimed_by_type: Dict[Tuple[str, str, str], set] = {}
+    for (src, tgt), flows in pair_flows.items():
+        for f in flows:
+            key = mapping_pool_key(src, tgt, f.get("source_type"),
+                                   f.get("foreign_type"))
+            pool = pools.get(key)
+            tb = (pool or {}).get("target_body_ids") or []
+            if not tb:
+                continue
+            claimed_by_ds.setdefault(tgt, set()).update(
+                int(b) for b in tb)
+            claimed_by_type.setdefault(
+                (src, f.get("source_type"), tgt), set()).update(
+                int(b) for b in tb)
+
+
     # §12.3: dataset-wide incoming context for the backward coverage
     # table — only for receiving types already present in the result,
     # bounded, and cached per pair.  Explanatory evidence only; it never
@@ -253,8 +310,10 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     src, tgt, exc_info=True)
 
     # W3 orphans: queried/expanded types with NO mapped counterpart in a
-    # specific target dataset stay visible.
+    # specific target dataset stay visible.  ``claimed`` is filled in below
+    # when the resolver names a counterpart the target dataset does not have.
     orphans: Dict[tuple, List[Dict[str, Any]]] = {}
+    orphan_by_key: Dict[tuple, Dict[str, Any]] = {}
     for origin in sorted(origins):
         o_types = origins[origin]
         flowed_sources = {
@@ -269,25 +328,47 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
             if not missing:
                 continue
             counts = count_types_in_index(indexes[origin], missing)
-            orphans[(origin, target)] = [
-                {"dataset": origin, "type": t,
-                 "count": counts.get(t, 0), "target": target}
-                for t in missing]
+            orphans[(origin, target)] = []
+            for t in missing:
+                entry = {"dataset": origin, "type": t,
+                         "count": counts.get(t, 0), "target": target,
+                         "claimed": []}
+                orphans[(origin, target)].append(entry)
+                orphan_by_key[(origin, target, t)] = entry
 
     # Per-dataset summary strip.  Mapped neurons count each target type once;
-    # the old per-flow sum double-counted shared targets.
+    # the old per-flow sum double-counted shared targets.  A resolver target
+    # only counts as mapped when the target dataset actually has neurons of
+    # that type — a crosswalk claim naming an absent type is reported on the
+    # orphan entry instead of inflating the target's mapped counts.
     recv_types_by_ds: Dict[str, set] = {ds: set() for ds in datasets}
     if mapper is not None and getattr(mapper, "_loaded", False):
+        # One cache pair per compute: the resolver memoizes alias
+        # candidates and bridge chains per (type, source, target), so a
+        # broad query reuses evidence instead of re-walking the bridge
+        # graph for every chip match.
+        alias_cache: Dict[Any, Optional[Dict[str, Any]]] = {}
+        bridge_cache: Dict[Any, List] = {}
         for origin in sorted(origins):
             for target in datasets:
                 if target == origin:
                     continue
                 for otype in origins[origin]:
                     ann = mapped_type_targets(
-                        mapper, otype, origin, target)
-                    if ann:
-                        recv_types_by_ds[target].update(
-                            ann.get("targets") or [])
+                        mapper, otype, origin, target,
+                        alias_cache=alias_cache, bridge_cache=bridge_cache)
+                    targets = [t for t in ((ann or {}).get("targets") or [])
+                               if t]
+                    if not targets:
+                        continue
+                    t_counts = count_types_in_index(indexes[target], targets)
+                    present = [t for t in targets if t_counts.get(t, 0)]
+                    recv_types_by_ds[target].update(present)
+                    absent = [t for t in targets if not t_counts.get(t, 0)]
+                    if absent:
+                        orphan_by_key.setdefault(
+                            (origin, target, otype),
+                            {"claimed": []})["claimed"].extend(absent)
     # The flow ends are the bridge half of the same resolution.
     for (s, t), fl in pair_flows.items():
         recv_types_by_ds.setdefault(t, set()).update(
@@ -299,31 +380,76 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
         matched = origins.get(ds, [])
         neurons = (sum(count_types_in_index(
             indexes[ds], matched).values()) if matched else 0)
-        pairs = sum(len(fl) for (s, t), fl in pair_flows.items()
-                    if s == ds or t == ds)
         recv_types = recv_types_by_ds.get(ds, set())
-        recv_neurons = (sum(count_types_in_index(
-            indexes[ds], sorted(recv_types)).values())
-                        if recv_types else 0)
-        issued_sources = {f.get("source_type") or ""
-                          for (s, _t), fl in pair_flows.items()
-                          if s == ds for f in fl
-                          if f.get("source_type")}
-        issued_neurons = (sum(count_types_in_index(
-            indexes[ds], sorted(issued_sources)).values())
-                          if issued_sources else 0)
-        unmapped = sum(len(v) for (s, _t), v in orphans.items()
-                       if s == ds)
+        recv_counts = (count_types_in_index(indexes[ds], sorted(recv_types))
+                       if recv_types else {})
+        # Flow ends are bridge-validated, but only names with neurons count
+        # as mapped here (parity with the resolver-validated half above).
+        recv_present = {t for t, c in recv_counts.items() if c}
+        # mapped_neurons = the CLAIM SET (union of branch-resolved target
+        # pools received into this dataset), per the ratified 242→204
+        # convention — not the received types' full populations.  The
+        # mapped counts are what this dataset RECEIVES; a dataset that
+        # only issues the query reads 0 here and shows its issued side
+        # through Matched types / Neurons (user 2026-09-14).
+        recv_neurons = len(claimed_by_ds.get(ds, set()))
+        unmapped = len({e["type"] for (s, _t), v in orphans.items()
+                        if s == ds for e in v})
         summary.append({
             "dataset": ds,
             "types": len(matched),
             "neurons": neurons,
-            "pairs": pairs,
-            "mapped_types": len(recv_types | issued_sources),
+            "mapped_types": len(recv_present),
             "mapped_neurons": recv_neurons,
-            "issued_neurons": issued_neurons,
+            "mapped": _format_mapped_neurons(recv_neurons,
+                                             len(recv_present)),
             "unmapped": unmapped,
         })
+
+    # R5: the same metrics per (matched type, TARGET dataset) for the
+    # collapsed per-type breakdown — the mapped counts are specific to
+    # the row's target dataset, never summed across datasets (user
+    # 2026-09-14).  Derived from the structures above — no new mapper
+    # walks, no profiling.  ``query`` carries the chip provenance when
+    # the resolver recorded the match (multi-type expansions).
+    chip_of: Dict[tuple, str] = {}
+    for ds_m, type_matches in (origin_matches or {}).items():
+        for t_name, matches in (type_matches or {}).items():
+            for m in (matches or [])[:1]:
+                v = str((m or {}).get("value") or "").strip("'")
+                if v:
+                    chip_of[(ds_m, t_name)] = v
+    summary_per_type: List[Dict[str, Any]] = []
+    for ds in datasets:
+        matched = origins.get(ds, [])
+        ds_counts = (count_types_in_index(indexes[ds], matched)
+                     if matched else {})
+        for t in sorted(matched):
+            for tgt in datasets:
+                if tgt == ds:
+                    continue
+                tgt_flows = [f for f in pair_flows.get((ds, tgt), [])
+                             if f.get("source_type") == t]
+                ftypes = sorted({f.get("foreign_type") for f in tgt_flows
+                                 if f.get("foreign_type")})
+                tgt_counts = (count_types_in_index(indexes[tgt], ftypes)
+                              if ftypes else {})
+                present_types = [tt for tt in ftypes if tgt_counts.get(tt)]
+                claimed = claimed_by_type.get((ds, t, tgt), set())
+                orphaned = sum(1 for e in orphans.get((ds, tgt), [])
+                               if e.get("type") == t)
+                summary_per_type.append({
+                    "dataset": ds,
+                    "type": t,
+                    "query": chip_of.get((ds, t), ""),
+                    "neurons": ds_counts.get(t, 0),
+                    "target": tgt,
+                    "mapped_types": len(present_types),
+                    "mapped_neurons": len(claimed),
+                    "mapped": _format_mapped_neurons(
+                        len(claimed), len(present_types)),
+                    "unmapped": orphaned,
+                })
 
     html, meta = render_composed_mapping_html(
         pair_flows, pools=pools, node_cap=COMPOSED_NODE_CAP)
@@ -331,7 +457,9 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     meta["notes"] = notes + list(meta.get("notes", []))
     return {"pair_flows": pair_flows, "pools": pools, "meta": meta,
             "composed": html, "datasets": datasets,
-            "summary": summary, "orphans": orphans,
+            "summary": summary, "summary_per_type": summary_per_type,
+            "queries": [str(q) for q in (queries or [])],
+            "orphans": orphans,
             "reverse_contexts": reverse_contexts}
 
 
@@ -485,6 +613,63 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             f"{name} — check your browser's default downloads folder. "
             "Informational only, please double check.")
 
+    def _deliver_branch_bodyids(src: str, tgt: str, flows, pools,
+                                stamp: str) -> None:
+        """Row-based bodyId-level export: per-branch bridge-resolved
+        pools (linker rows / full population) + vote provenance — the
+        mapper's bodyId-level data for this pair.  Evidence only."""
+        import csv as _csv
+        import io
+
+        from comparison.mapping_visualization import (
+            get_mapping_pool,
+            mapping_pool_key,
+        )
+
+        rows: List[list] = []
+        seen = set()
+        for flow in flows:
+            key = mapping_pool_key(src, tgt, flow.get("source_type"),
+                                   flow.get("foreign_type"))
+            if key in seen:
+                continue
+            seen.add(key)
+            pool = get_mapping_pool(pools, flow)
+            if not pool:
+                continue
+            rows.append([
+                src, tgt,
+                flow.get("source_type"), flow.get("foreign_type"),
+                pool.get("source_basis") or "",
+                pool.get("target_basis") or "",
+                pool.get("source_pool_size", ""),
+                pool.get("target_pool_size", ""),
+                "{" + ", ".join(str(b) for b in
+                                (pool.get("source_body_ids") or [])) + "}"
+                if pool.get("source_body_ids") is not None else "",
+                "{" + ", ".join(str(b) for b in
+                                (pool.get("target_body_ids") or [])) + "}"
+                if pool.get("target_body_ids") is not None else "",
+            ])
+        if not rows:
+            ui.notify("No bridge-resolved bodyId pools to export.",
+                      type="info")
+            return
+        buffer = io.StringIO()
+        writer = _csv.writer(buffer, quoting=_csv.QUOTE_MINIMAL)
+        writer.writerow(["source_dataset", "target_dataset",
+                         "source_type", "target_type",
+                         "source_basis", "target_basis",
+                         "source_pool_size", "target_pool_size",
+                         "source_body_ids", "target_body_ids"])
+        writer.writerows(rows)
+        name = (f"mapping_branch_bodyids_{src.replace(':', '_')}"
+                f"_{tgt.replace(':', '_')}_{stamp}.csv")
+        ui.download.content(buffer.getvalue(), name, "text/csv")
+        push_banner(
+            f"{name} — check your browser's default downloads folder. "
+            "Informational only, please double check.")
+
     def _pair_card(src: str, tgt: str, flows, pools: dict) -> None:
         from comparison.cross_dataset_type_mapper import bridge_linker_text
         from comparison.mapping_visualization import (
@@ -537,11 +722,8 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 map_used = selected_text or (" + ".join(parts)
                                              if parts else (info["text"] or "—"))
             if flow.get("mapping_status") == "valid_split_evidence":
-                map_used = (
-                    "valid 1-to-N evidence (branch counts are non-exclusive) "
-                    "— no single canonical target; "
-                    f"{map_used}"
-                )
+                map_used = ("valid 1-to-N — branches non-exclusive, no "
+                            f"single target; {map_used}")
             elif flow.get("mapping_status") == "conflict":
                 map_used = "unresolved conflict — no automatic target; " \
                            f"{map_used}"
@@ -598,6 +780,9 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             ui.button("Export mapping",
                       on_click=lambda: _deliver_pair_csv(
                           src, tgt, flows, pools, stamp))
+            ui.button("Export branch bodyIds",
+                      on_click=lambda: _deliver_branch_bodyids(
+                          src, tgt, flows, pools, stamp))
 
     def _coverage_panel(src: str, tgt: str, flows, pools: dict,
                         contexts: dict) -> None:
@@ -626,14 +811,10 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         tgt_code = dataset_abbrev(tgt) or tgt
 
         # §12.4 scope wording — shared by the four header tooltips
-        _SELECTED_TIP = ("First supported bridge chain after deterministic "
-                         "evidence ordering; the primary chain behind edge "
-                         "weights and hovers. Not a biological adjudication.")
-        _ALL_VALID_TIP = ("Deduplicated union of bodyIds from every "
-                          "independently supported candidate bridge kept "
-                          "within the alternative budget; completeness of "
-                          "supported evidence, branches are not mutually "
-                          "exclusive.")
+        _SELECTED_TIP = ("Primary supported bridge chain (deterministic "
+                         "evidence order) — not a biological adjudication.")
+        _ALL_VALID_TIP = ("Union of bodyIds from every supported candidate "
+                          "chain; branches are not mutually exclusive.")
 
         # Coverage columns are named by the FULL dataset key (user
         # 2026-09-09): 'source/target side' read as flipped in the
@@ -653,24 +834,21 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         backward = coverage.get("reverse") or []
         if not (forward or backward):
             return
+        _legend = (
+            "Forward: per queried type - neurons, mapped targets, and "
+            "per-side bodyId coverage.\n"
+            "Backward: per receiving type - the source types mapping onto "
+            "it (several sources = 1-to-N); rows marked 'dataset-wide "
+            "incoming' list every incoming source type (context, not "
+            "canonical acceptance).\n"
+            "Coverage: selected = primary bridge chain; all valid = union "
+            "of every supported chain.  States: not pooled / not measured "
+            "/ measured zero.  No bodyId-to-bodyId pairing is inferred.")
         with ui.expansion(
                 f"Type coverage — {src} → {tgt} "
                 f"(bidirectional, 1-to-N fan-out)",
-                icon="swap_vert").classes("w-full"):
-            ui.label(
-                "Forward — each queried type: its neurons, the "
-                "targets it maps to, and how many of its bodyIds "
-                "carry the type-level evidence. Coverage columns: "
-                "selected = primary bridge chain; all-valid = union of "
-                "every independently supported alternative (pool of "
-                "total, with the share in parentheses; a 1-to-N row's "
-                "target total is the summed population of all mapped "
-                "target types).  States: "
-                "'not pooled' = no coverage pool at all, 'not measured' = "
-                "the side's coverage index is unavailable, '0 of n "
-                "(0.0%)' = measured zero.  No bodyId-to-bodyId pairing "
-                "is inferred."
-            ).classes("text-caption drocat-muted")
+                icon="swap_vert").classes("w-full") \
+                .tooltip(_legend):
             ui.table(
                 columns=[
                     _col("type", "Queried type", "type", max_w=170),
@@ -702,22 +880,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             ).classes("w-full").add_slot("header-cell",
                                          _HEADER_TOOLTIP_SLOT)
             ui.label(
-                "Backward — each receiving type and the sources that map "
-                "onto it, read from the receiving type back to its source "
-                "types: several sources make the fan-out 1-to-N.  Rows "
-                "marked 'dataset-wide incoming' list every source type in "
-                "the source dataset that maps onto the receiving type "
-                "(the active query marked) — the context that explains why "
-                "one queried type's few neurons fan out to a large target "
-                "population; it is explanatory evidence, not a canonical "
-                "acceptance of every incoming source.  Coverage columns: "
-                "selected = primary bridge chain; all-valid = union of "
-                "every independently supported alternative (pool of "
-                "total, percent in parentheses; a dataset-wide row's "
-                "source denominator is the union population of ALL "
-                "incoming source types).  The same three states apply, no "
-                "bodyId pairing is inferred, and split branches plus "
-                "overlapping bodyId evidence are non-exclusive."
+                "Backward — per receiving type: the source types mapping "
+                "onto it (several sources = 1-to-N).  Rows marked "
+                "`dataset-wide incoming` list every incoming source type "
+                "(the active query marked) — context, not canonical "
+                "acceptance.  Same coverage states as forward; split "
+                "branches are non-exclusive; no bodyId pairing."
             ).classes("text-caption drocat-muted")
             ui.table(
                 columns=[
@@ -777,40 +945,97 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 ui.table(
                     columns=[
                         {"name": "dataset", "label": "Dataset",
-                         "field": "dataset", "align": "left"},
+                         "field": "dataset", "align": "left",
+                         "tooltip": "One row per selected dataset."},
                         {"name": "types", "label": "Matched types",
-                         "field": "types", "align": "left"},
+                         "field": "types", "align": "left",
+                         "tooltip": "Search terms that matched type names "
+                                    "in this dataset."},
                         {"name": "neurons", "label": "Neurons",
-                         "field": "neurons", "align": "left"},
-                        {"name": "pairs", "label": "Mapped pairs",
-                         "field": "pairs", "align": "left"},
-                        {"name": "mapped_types", "label": "Mapped types",
-                         "field": "mapped_types", "align": "left"},
-                        {"name": "mapped_neurons",
-                         "label": "Mapped neurons (received)",
-                         "field": "mapped_neurons", "align": "left"},
-                        {"name": "issued_neurons",
-                         "label": "Queried neurons (issued)",
-                         "field": "issued_neurons", "align": "left"},
+                         "field": "neurons", "align": "left",
+                         "tooltip": "Neurons of the matched types in this "
+                                    "dataset."},
+                        {"name": "mapped", "label": "Mapped neurons",
+                         "field": "mapped", "align": "left",
+                         "tooltip": "Branch-claimed bodyIds received INTO "
+                                    "this dataset (union of the branches' "
+                                    "resolved pools — the claim set), with "
+                                    "'(k types)' from 2 distinct received "
+                                    "types up. The received types' full "
+                                    "populations are the reference "
+                                    "denominator. A claimed type that has "
+                                    "no neurons here does not count — it "
+                                    "is listed under orphans. A dataset "
+                                    "that only issues the query receives "
+                                    "0 — its issued side is Matched "
+                                    "types / Neurons."},
                         {"name": "unmapped", "label": "Unmapped (orphans)",
-                         "field": "unmapped", "align": "left"},
+                         "field": "unmapped", "align": "left",
+                         "tooltip": "Matched types here with no realized "
+                                    "counterpart in another selected "
+                                    "dataset."},
                     ],
                     rows=summary,
-                ).classes("w-full")
+                ).classes("w-full").add_slot("header-cell",
+                                             _HEADER_TOOLTIP_SLOT)
             else:
                 ui.label("No mappings found for the search across the "
                          "selected datasets.").classes(
                     "text-caption drocat-muted")
+            # R5: the per-type breakdown — collapsed, and only for
+            # multi-type previews (a single-type exact preview looks
+            # exactly like before)
+            per_type = state.get("summary_per_type") or []
+            multi_type = (len(state.get("queries") or []) > 1
+                          or any((r.get("types") or 0) > 1
+                                 for r in (summary or [])))
+            if per_type and multi_type:
+                with ui.expansion(
+                        f"Per-type breakdown — {len(per_type)} rows "
+                        f"(matched type × target dataset)",
+                        icon="format_list_bulleted").classes("w-full"):
+                    ui.table(
+                        columns=[
+                            _col("dataset", "Dataset", "dataset",
+                                 max_w=180),
+                            _col("type", "Matched type", "type",
+                                 max_w=170),
+                            _col("query", "Query chip", "query",
+                                 max_w=140),
+                            _col("neurons", "Neurons", "neurons",
+                                 min_w=90),
+                            _col("target", "Mapped into", "target",
+                                 max_w=180,
+                                 tooltip="The target dataset this row's "
+                                         "mapping lands in — its mapped "
+                                         "counts are specific to THAT "
+                                         "dataset, never summed across "
+                                         "datasets."),
+                            _col("mapped", "Mapped neurons", "mapped",
+                                 min_w=120,
+                                 tooltip="Branch-claimed bodyIds received "
+                                         "into this row's target dataset "
+                                         "(the claim set), with '(k "
+                                         "types)' from 2 distinct "
+                                         "received types up."),
+                            _col("unmapped", "Unmapped (orphans)",
+                                 "unmapped", min_w=100),
+                        ],
+                        rows=per_type,
+                    ).classes("w-full").add_slot("header-cell",
+                                                 _HEADER_TOOLTIP_SLOT)
             orphan_all = state.get("orphans") or {}
             if orphan_all:
+                orphan_count = len({
+                    (e["dataset"], e["type"])
+                    for v in orphan_all.values() for e in v})
                 with ui.expansion(
                         f"Orphan types — no mapped counterpart "
-                        f"({sum(len(v) for v in orphan_all.values())})",
+                        f"({orphan_count})",
                         icon="link_off").classes("w-full"):
                     for (src, tgt), entries in sorted(orphan_all.items()):
                         names = ", ".join(
-                            f"{e['type']} ({e['count']})"
-                            for e in entries)
+                            _describe_orphan(e, tgt) for e in entries)
                         ui.label(
                             f"{src} → {tgt}: {names}").classes(
                             "text-caption drocat-muted")
@@ -838,7 +1063,6 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         # One fixed column set for every pair, so the all-pairs file is a
         # plain header + rows concatenation (the old per-pair pivoted
         # bridge-<column> fields needed a union-of-columns hack to keep
-        # uniform field counts).
         parts: List[str] = []
         for (src, tgt), flows in sorted(pair_flows.items()):
             text = build_bridges_csv(flows, pools=pools, extended=True)

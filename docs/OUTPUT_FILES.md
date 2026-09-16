@@ -257,7 +257,7 @@ Example: `homologs_MCNS_to_FAFB_aMe12_20260815_143540/`
 
 #### Results (`results/`)
 *   **`homolog_results.csv`**: Full results with all similarity columns, sorted by the chosen metric. Columns: `source_bodyId`, `source_type`, `source_instance`, `target_bodyId`, `target_type`, `target_instance`, `target_dataset`, `adjacency_score`, `shared_type_count`, `union_type_count`, `rank_union`, `jaccard`, `weighted_jaccard`, `cosine`, `is_same_type`, `is_same_dataset`, `source_status`, `target_status`, `weak_source`, `weak_target`, `source_partner_count`, `target_partner_count` (`rank_corr` is retained internally for sorting but deliberately not exported; metric definitions in the Appendix). The `*_instance` columns resolve from each row's dataset neuron table (empty when the neuron is unknown to it).
-*   **`bodyid_results.csv`**: BodyId-level results (sorted by source, then metric). Same score columns — including `source_instance`/`target_instance` — one row per source×target bodyId pair, without `target_dataset`/`weighted_jaccard`. Targets that never resolved to a real cell type carry an empty `target_type`. **Morph qualification** (cross-dataset option, off by default) appends `morph_v2`, `morph_null_p95`, `morph_z`, `morph_qualified` — filled only on the rows the visualization rendered (the visualized top-N scored against the transformed query with vector_v2; the bar is the per-query p95 of 200 seeded random target neurons). Failing candidates stay in the table with `morph_qualified = False` but are excluded from the rendered scenes.
+*   **`bodyid_results.csv`**: BodyId-level results (sorted by source, then metric). Same score columns — including `source_instance`/`target_instance` — one row per source×target bodyId pair, without `target_dataset`/`weighted_jaccard`. Targets that never resolved to a real cell type carry an empty `target_type`. **Morph qualification** (optional, off by default; cross- or intra-dataset) appends `morph_v2`, `morph_null_p95`, `morph_z`, `morph_bar_kind`, `morph_bar`, `morph_null_level`, `morph_qualified` — filled only on the rows the visualization rendered (the visualized top-N scored against the transformed query with vector_v2; for same-dataset runs the query bodyIds are excluded from the null sample). The bar is the per-query null percentile (`morph_null_level`, default p95) of 200 seeded random target neurons plus the offset — or, in `mapping_ref` mode, the mapper-referenced pool floor (`morph_bar_kind` records which family gated each row: `null_bar`, `native`, `track_a`). Failing candidates stay in the table with `morph_qualified = False` but are excluded from the rendered scenes.
 *   **`type_summary.csv`**: Type-mean aggregated FROM the bodyId-level results (a bodyId-level aggregation view, not a type-level profile comparison). Columns: `query`, `source_dataset`, `target_dataset`, `source_type`, `target_type`, `n_bodyid_comparisons`, `avg_jaccard`, `avg_rank_union`, `avg_cosine`, `avg_adjacency_score`, `avg_shared_type_count`, `avg_union_type_count`, `n_complete_sources`, `n_incomplete_sources`; when scenes were rendered, also `visualized` (the type appears in a rendered scene) and the one-based `visualization_rank` (its order across the rendered scenes — type-level scene first, then the bodyId-level scene). Rows whose target never resolved to a real cell type are excluded.
 *   **`type_level_results.csv`**: True type-level homolog ranking — pooled all-adjacency type profiles (every connection of each type's neurons, no top-k truncation) scored against every typed target type. One row per source×target type: `source_type`, `target_type`, `target_type_members` (candidate type's member count in the target dataset — very large counts indicate coarse/hemilineage-scale annotations, e.g. Mi15), `is_same_type`, `target_dataset`, `jaccard`, `weighted_jaccard`, `cosine`, `rank_union`, `rank` (1 = best under the run's metric).
 *   **Folder layout**: multi-type runs group per-type output under `by_type/<query_type>/` next to the combined `results/`. A run that resolves to a **single query type** skips the `by_type/` nesting — `results/`, `profiles/`, `overlaps/` and `visualization/` sit directly in the run folder. Cross-dataset runs render the query source inside the target brain as the `query_transformed_*` overlay layer of the `bodyId_level/` + `type_level/` scenes; `visualization/source_neurons/` is only a fallback scene in the source dataset's own template, drawn when the transform is unavailable.
@@ -336,8 +336,8 @@ Intra-dataset N×N morphology comparison (Morphology tab → Comparison
 sub-tab with exactly one selected dataset): 2+ queried neurons (types,
 bodyIds, or patterns) produce a bodyId-level similarity matrix and a
 type-level aggregation. With two or more datasets the same sub-tab
-dispatches to the cross-dataset comparison (`morph_cross_*` folders,
-Section 6d-style layout under `local_data/morph_cross_dataset/`). The type-level entry is the
+dispatches to the cross-dataset comparison — see Section 6d
+(`morph_cross_*` folders under `local_data/morph_cross_dataset/`). The type-level entry is the
 mean over the cross-member bodyId pairs; the diagonal is the type's
 intra-type cohesion. `vector_v2` scores the per-dataset whitened vector
 cache (missing skeletons are fetched online by default and persist into
@@ -367,8 +367,80 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
 *   **`plot-3d_{dataset_folder}/`**: Optional 3D skeleton scene (Comparison
     panel → "3D Skeleton Visualization" checkbox) — one skeleton layer per
     compared type, line rendering by default; linked from `report.html`.
-*   **`report.html` / `parameters.json` / `README.txt`**: Summary report,
-    parameters, and layout description.
+*   **`report.html` / `parameters.json` / `README.txt`**: Tabbed report on
+    the shared `report_kit` (hero header, Type-level / BodyId-level tabs,
+    Ward-clustered heatmap cards with CSV + VisPath editor links,
+    compared-neuron and parameter details, scene link; Plotly embedded so
+    it renders offline), parameters, and the layout description.
+    vector_v2 renders on the diverging [-1, 1] scale; NBLAST on the
+    positive [0, 1] scale.
+
+---
+
+## 6d. Cross-Dataset Morphology Comparison (CrossDatasetMorphComparer)
+
+UI location: **Morphology tab → Comparison sub-tab with two or more
+selected datasets** (FAFB / male-cns / BANC only; anything else raises a
+banner error). The export uses the same tabbed-report machinery as the
+connectivity comparison (shared `src/comparison/report_kit.py`).
+
+### Folder Structure
+
+`morph_cross_{DS_ABBREVS}_{queries}_{ts}/`
+
+Example: `morph_cross_MCNS_FAFB_aMe12_aMe26_l-LNv_20260916_023121/`
+
+### Key Output Files
+
+#### Overview
+*   **`report.html`**: Tabbed report — one tab per ordered dataset pair,
+    each with Type-level and BodyId-level heatmap cards (Ward-clustered,
+    hover for exact values, CSV + VisPath editor links), per-pair null
+    baselines, compared-member and resolution-notes details, and overlay
+    scene links. Plotly.js is embedded, so the report renders offline.
+    vector_v2 renders on a diverging blue–white–red scale (the whitened
+    cosine can be negative).
+*   **`parameters.json` / `README.txt`**: Run config (queries, datasets,
+    member caps, `null_k`, `generate_heatmaps`, reference template,
+    warnings) and the layout description.
+*   **`overview.csv`**: Queried type × dataset pair: the best target-type
+    mean score, the winning target type, and the pair's baseline p95.
+*   **`members_summary.csv`**: Number of compared members per queried
+    type and dataset.
+
+#### Per Dataset Pair (`<SRC>_to_<TGT>/`)
+*   **`results/morph_type_matrix.csv`**: Type × type mean vector_v2
+    (mean over the cross-member bodyId pairs).
+*   **`results/morph_bodyid_matrix.csv`**: BodyId × bodyId raw vector_v2
+    scores. Rows are source members, columns target members; unscoreable
+    pairs stay NaN. Axes read `{bodyId}_{instance}` (NeuPrint-style
+    datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC) — the tree-legend
+    labels — ordered by type then bodyId.
+*   **`results/morph_bodyid_scores.csv`**: The same scores in long form
+    (one row per source × target pair) with the per-source `null_p95` and
+    the `above_baseline` flag.
+*   **`results/null_baseline.json`**: Seeded random-target null reference
+    for the pair (`null_k`, per-source-bodyId p95/median/mean/std/n).
+*   **`visualization/heatmap_morph_<SRC>_to_<TGT>_{type,bodyid}.html`**:
+    Interactive VisPath heatmaps (interactive-heatmap fallback when
+    VisPath is unavailable), diverging scale matching the report.
+
+#### Overlay Scenes (`plot-3d_crossmorph_*/`)
+*   One 3D overlay scene per run: a layer per (queried type, dataset),
+    members bridged into the reference template's render space. Scores
+    are computed per pair in the target frame — different from the scene
+    frame (disclosed in the report). KNOWN WIP ISSUE (marked in code,
+    fix deferred): the scene render intermittently fails inside the
+    visualize_skeleton pipeline — consistently for cross runs with
+    bridged FAFB layers, flakily elsewhere (one native-only intra scene
+    failure observed); the run fails soft and keeps the comparison.
+
+Offline behavior: with `fetch_online=False`, FAFB sources still resolve
+network-free from the local release sources (repair caches, raw cache,
+healed zip — CAVE extrusion pass skipped); BANC's public-release stage
+fetches online and stays gated, so strict-offline BANC sources fall back
+to the raw cache.
+
 
 ---
 
@@ -391,9 +463,11 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`comparison_report.txt`**: Plain text summary
 *   **`parameters.json`**: JSON dump of all `ComparisonParameters` (metadata, datasets, resolved source/target groups, thresholds, algorithm and feature flags), plus the pathfinding provenance field list, definitions of `tau` and `applied_threshold`, and the `auto_type_mapping_*` block (mapper requested/active, source, version, load error, per-status resolution counts on the `unique_type_resolutions` basis, the partner-occurrence metric, and `raw_fallback_used`)
 *   **`effective_thresholds.json`**: Run-root notice consumed by the UI and exported UserGuide. Standard mode contains same-threshold query rows; combination mode also contains a `queries`/`combinations` block whose rows preserve `query_id`, the requested threshold map, and one applied-threshold provenance row per dataset. The provenance includes canonical `applied_threshold`, source, StrongestFirst budget/tau, Edge Budget `w0`/`w1`, path bottlenecks `w2`/`W*`, and `paths_complete`.
+*   **`run_manifest.json`**: Self-describing manifest shared by the report/UI/scripts — datasets, nicknames, full parameters, applied thresholds, threshold views, comparability, **`dataset_coverage`** (`ok`/`no_data` per configured dataset with threshold/row counts), untyped-drop stats, alignment suggestions, and code version.
 *   **`label_map.json`**: Label mappings for source/target neurons across datasets (includes `metadata.auto_type_mapping`)
 *   **`dataset_metadata_comparison.csv`**: Per-dataset metadata comparison (also present under `comparison_results/`). Columns: `dataset`, `total_neurons`, `typed_neurons`, `untyped_neurons`, `type_coverage_pct`, `total_presynaptic`, `total_postsynaptic`, `total_synapses`, `roi_count`, `coverage_notes`
-*   **`auto_type_mapping.csv`** / **`auto_type_mapping_conflicts.csv`**: Cross-dataset type mapping tables and their conflicts (see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md))
+*   **`auto_type_mapping.csv`** / **`auto_type_mapping_conflicts.csv`**: Cross-dataset type mapping tables and their conflicts. The table carries a trailing **`mapping_support`** column — the row-based bodyId-level bridge evidence (label votes per source type with curated vs `auto` provenance; broad votes list the top 3 candidates + `+N more candidates`; `same name (all bodyIds pooled)` for direct same-name pairs, empty when the pair carries none). Evidence only: never consumed to gate or verify a mapping (see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md))
+*   **`auto_type_mapping_per_bridge.csv`**: One row per (source type, target type, bridge chain) with the selected chain, linker values, bridge-refined bodyId pools and branch annotations, plus trailing **`support_votes` / `support_verified` / `support_auto` / `support_linker_value`** columns carrying the full per-source-type vote counts behind the bridge
 *   **`auto_type_mapping.json`**: Auto-type-mapping provenance for the run (mapper requested/active, source table and version, load error, per-status resolution counts and basis, raw-fallback flag); also written for homolog runs (run root) and cross-dataset profile comparisons
 
 #### Report Data (`comparison_report_used_data/`)
@@ -434,8 +508,10 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 #### Query-Scoped Density Curves (`comparison_results/`, every pathfinding mode)
 *   **`density_curves.csv`**: per queried dataset, one row per integer Min Synapse Count over its own window `[w_start, w_star_measured]` (minimal available threshold → measured `max(path bottlenecks)`), computed on the cone (the searched graph at the lowest executed threshold). `density = edge_count / N` with a t-independent `N`; `basis` records the edge universe (`bodyId_edges_typed` with Drop Untyped on, `bodyId_edges_all_but_debris` when off — debris ids absent from the curated table are always excluded). Rendered as `comparison_visualizations/density_alignment_threshold_curves.png` (edge density primary; path count diagnostic).
 *   **`density_windows.csv`**: per-dataset window plus node classes (`n_nodes_typed`, `n_nodes_untyped`, `n_nodes_debris`) and the stored-vs-measured `w_star` mismatch flag. `n_edges` is the all-class cone count at the applied threshold (a capture-level fact); `n_edges_active_basis` re-counts it under the active basis, so it equals `density_curves.csv` `edge_count` at `w_start`.
-*   **`density_alignment_best_matches.csv`** (auto mode only): the vertical (same-threshold) and horizontal (same-density) aligned integer rows, runnable as a combination query. When both modes coexist, read the vertical rows as the like-for-like spine (one identical threshold for every dataset) and the horizontal rows as the density-matched envelope (per-dataset thresholds equalizing E(t)/N, meaningful even where no shared complete threshold exists).
+*   **`density_alignment_best_matches.csv`** (auto mode only): the vertical (same-threshold) and horizontal (same-density) aligned integer rows, runnable as a combination query. When both modes coexist, read the vertical rows as the like-for-like spine (one identical threshold for every dataset) and the horizontal rows as the density-matched envelope (per-dataset thresholds equalizing E(t)/N, meaningful even where no shared complete threshold exists). A dataset without a density capture is excluded from the horizontal rows instead of vetoing them: such rows carry a `partial_datasets` marker, and the run notes log a `[density partial]` line.
 *   **`dataset_data/{dataset}/_density/`**: the persisted capture — `density_edges.npz` (cone weights + endpoint classes), `density_path_bottlenecks.npy`, `density_meta.json` (window, node-class counts, drop/budget provenance). Each `minsyn_*` folder carries a pointer `density_meta.json`.
+*   **`dataset_data/{dataset}/run_log.txt`**: the per-dataset console trace of every threshold instance in the run (append across thresholds), so fetch/enumeration failures are diagnosable from the run folder alone.
+*   **Zero-outdegree markers**: a neuron index row marked complete with 0 connections is revalidated against the server before it is trusted (one batched count query per process); markers poisoned by an earlier failed fetch are un-flagged and refetched automatically. *   **`scripts/maintenance/repair_neuron_index.py`**: one-time repair of a poisoned index — recomputes the effective index (base + progress sidecar), flips every `downstream_complete=True & connection_count=0` marker to incomplete (dry-run default, `--apply` writes), and prints before/after counts. Genuinely isolated neurons are re-verified once by the runtime revalidation and re-marked automatically. An EMPTY connection pull is never trusted as proof of zero outdegree (large all-empty batches are refused at marking time with an `[always]` warning).
 
 #### Conserved Reciprocal Graph (`conserved_reciprocal_graph/`)
 *   **`conserved_reciprocal_t{N}_network.html`**: Network graph of hemisphere-conserved reciprocal connections, one file per threshold (only when both hemisphere-conservation and reciprocal options are enabled)
@@ -493,7 +569,169 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 
 ---
 
-## 9. NeuronBridge (EM↔LM Mapping and Co-Labeling)
+## 9. Type-Mapping Validate-Expand-Visualize (MappingValidator)
+
+The `MappingValidator` (in `src/comparison/mapping_validation.py`, CLI
+`scripts/RunMappingValidation.py`) validates an automatic cross-dataset
+type mapping at bodyId granularity, expands the highly suspected neurons
+the mapping missed, and renders one 3D review scene per parent type.
+
+> 📖 **See Also**: [TypeMappingValidateExpandVisualize_Guide](core-features/TypeMappingValidateExpandVisualize_Guide.md) (user guide) and [TYPE_MAPPING_VALIDATE_EXPAND_VISUALIZE_PIPELINE](technical/TYPE_MAPPING_VALIDATE_EXPAND_VISUALIZE_PIPELINE.md) (technical report; §4 is the normative category model).
+
+### Folder Structure
+
+```
+mapping_validation/type-map_{src}_to_{tgt}_{label}_{ts}/
+    README.txt
+    parameters.json
+    validation_results.csv
+    pair_summary.csv
+    pool_categories.csv
+    suspicious_candidates.csv
+    deep_candidates.csv
+    noise_filtered_candidates.csv
+    gap_fill_proposals.csv
+    gap_fill_dedup.csv
+    gap_fill_levels.csv
+    out_map_expansion.csv
+    pipeline_progress.jsonl
+    family_candidates.csv
+    relatives.csv
+    mapping_export.csv
+    set_coverage.json
+    morphology_calibration.json
+    visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/
+```
+
+### Category model (Revision 3.12)
+
+One **ordered first-match partition** assigns every in-scope target
+exactly one `category`; the rule is mode-independent, and the three modes
+NEST (`restrictive ⊆ family ⊆ aggressive`) — switching mode only admits
+more neurons, never relabels one:
+
+1. `matched` / `verified` / `borderline` / `unmatched` — the validated
+   in-map targets of THIS branch (`unmatched` is the else; there is no
+   target-side `skipped`).
+2. `sibling` — an in-map target of the query in ANOTHER branch that
+   appears here (connectivity- and morph-qualified). Never a fill.
+3. `candidates` — an out-of-map suspect that is connectivity-qualified
+   (invader or gap fire) AND morph-qualified — the restrictive fill.
+4. `family` — out-map bodyIds whose type is THIS branch's target type
+   (family/aggressive modes; type-gated, not morph-gated).
+5. `relative` — type-mates of candidate types outside the map
+   (family/aggressive modes).
+6. `suspicious` — the aggressive-only deep window.
+
+Every expansion leaf (all four of `candidates` / `family` / `relative` /
+`suspicious`) carries **one ordered token**:
+`{T}(out-map)` — the type is one of the mapping's in-map types, so this is
+an unmapped bodyId of a type already in the map (the fill material; every
+`family` member); a **bodyId-level** statement that takes precedence.
+Else `{T}>{src}` — a foreign type that backward-maps to a real source home.
+Else `{T}(no_source)` — a foreign type with no usable backward route
+(hollow/absent; e.g. CB4091). Else `untyped`. The last two are
+**type-level**. `(dup)` is a standalone trailing tag.
+
+`paired_in_pool` is the category of a fill row that pairs an unpaired
+neuron with an accepted pool member (either direction). A
+connectivity-qualified suspect that FAILS the morph rule is **out of
+scope**: exported with `in_scope=False` / `morph_failed=True` and never
+rendered (this is the connectivity-only homolog-finding result, kept for
+reconciliation).
+
+### Key Output Files
+
+*   **`validation_results.csv`**: per source bodyId — `verdict`
+    (`verified_strong` / `verified` / `borderline` / `unmatched` /
+    `skipped`), global ranks + scores, connectivity flags, `source_size`.
+*   **`pair_summary.csv`**: per branch — pools, matched `M`, `gap`
+    (informational), verdict/noise counters, `pool_best_size`.
+*   **`pool_categories.csv`**: per in-map target — the tier category
+    (`matched` / `verified` / `borderline` / `unmatched`) with its
+    best-evidence metrics and `size`.
+*   **`suspicious_candidates.csv`**: every expansion row with
+    `category`, `in_scope`, `morph_failed`, `candidate_annotation`,
+    `counts_toward_restrictive_fill` / `counts_toward_family_fill`, the
+    caliber columns, the legacy `invader_class`/`invader_label`, and both
+    morph tracks.
+*   **`deep_candidates.csv`**: deep-window rows (aggressive mode only),
+    `candidate_source='deep_window'`.
+*   **`noise_filtered_candidates.csv`**: gate-dropped rows with
+    `noise_reason` (`spatial_caliber`, `negative_rank_union`,
+    `jaccard_below_pool`, `tie_margin`).
+*   **`gap_fill_proposals.csv`**: proposals with `fill_class`
+    (`in_pool` / `out_of_pool`), `category`, `candidate_annotation`, and
+    the two fill-count columns.
+*   **`gap_fill_levels.csv`**: the layered gap-fill report — one row per
+    non-tier bodyId with its confidence `level` (`high` = native m+v
+    floor, `medium` = Track-A backup `B_b − Δ`, `low` = run null bar,
+    `type_gated` = family, `advice` = relative), the evidence, the judged
+    bar value, and a `hole closer` note for candidates that close a
+    mapped-type hole. `set_coverage.json` mirrors `gap_fill_by_level`.
+*   **`out_map_expansion.csv`**: connectivity-ranked candidate targets
+    for every **unclaimed source neuron** (outside every branch pool —
+    the scene's `out-map query` branch expansion). Top `out_map_top_k` (default 10) typed
+    targets per source outside the in-map claims (untyped/orphan
+    neurons filtered); connectivity-ranked, then
+    morph-checked against the run null bar (`morph_v2_similarity` /
+    `morph_qualified`); failing rows stay in the file, the scene renders
+    morph-passing targets only; exploratory — never fills.
+*   **`pipeline_progress.jsonl`**: machine-readable run progress (stage
+    and profile-pre-flight events) — the backend log a future UI tails.
+*   **`gap_fill_dedup.csv`**: query-level, one row per target bodyId —
+    `dedup_category` (precedence `matched > verified > borderline >
+    unmatched > sibling > candidates > family > relative > suspicious`),
+    `n_branches`, and `dup` (True only for non-sibling cross-branch
+    repeats). This is the deduplicated fill, reflecting the real gap.
+*   **`family_candidates.csv`** / **`relatives.csv`**: the whole `family`
+    and `relative` bins (family/aggressive modes) — the enumerated members
+    unioned with any evidence row classified into those bins, deduplicated
+    per branch+bodyId.
+*   **`mapping_export.csv`**: per-bridge mapping record (refined pools +
+    linkers).
+*   **`set_coverage.json`**: set-level coverage — FAFB
+    assigned/fill-proposed/unpaired rollup, MCNS in-pool/candidates/holes
+    per type. A hole is a mapped-set neuron claimed by no branch pool, no
+    counted proposal, and no morph-qualified `candidates` row. Also
+    lists `family_material`: in-map-type bodyIds no branch pool claims
+    (the population overhang of the claim set — TM VEV family/candidate
+    material, never a mapper failure). Out-map candidates are enumerated
+    in TWO files (`suspicious_candidates.csv` + proposal rows in
+    `gap_fill_proposals.csv`); `gap_fill_dedup.csv` is the per-bodyId
+    rollup.
+*   **`morphology_calibration.json`**: per-branch qualification bars —
+    `branch_bars` (candidate kind `native` / `track_a_backup` / `null`
+    with the native floor, the Track-A backup floor `B_b − Δ`, and the
+    suspicious floor) and `bar_params` (`morph_track_a_offset`,
+    `morph_suspicious_level`, native margin) — plus the reference tiers
+    (`pool_ref_tier`), the legacy floors/thresholds (deprecated), the
+    null bars (`track_a_null_bar` p95 / `track_a_null_bar_lo` p50), the
+    scoring frames, and the AUC gate record. Every evidence row carries
+    its own `bar_kind`.
+*   **`parameters.json`**: every knob incl. `validation_mode` /
+    `mode_rank` and the cutoffs.
+*   **`README.txt`**: glossary (verdicts, categories, noise gates, morph
+    frames, pool-ref tiers, mapper-gap report) + the full run log.
+*   **`visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/*.html`**: one
+    3D review scene per parent type. The collapsible legend tree is
+    branch → category → bodyId; the four expansion categories
+    (`candidates` / `suspicious` / `family` / `relative`) are one root
+    each, with the qualified type (`{T}>{src}` / `{T}(no_source)` /
+    `untyped`) and a standalone `(dup)` tag on the bodyId leaves, sorted
+    by `type + suffix`. The panel is content-width, capped at 420px.
+    Scene notes: root groups start **expanded one layer**; `sibling`
+    layers start **hidden** (legend row present, traces off — one click
+    restores); per parent type an **`out-map query · {type}`** branch
+    renders the FAFB sources of the type that NO branch pool claims
+    (outside every refined pool — the source-side gap) plus its
+    **`out-map candidates · {type}`** expansion layer
+    (connectivity-ranked, light blue), for comparison against
+    `candidates`.
+
+---
+
+## 10. NeuronBridge (EM↔LM Mapping and Co-Labeling)
 
 The `NeuronBridgeFinder` class (in `src/neuronbridge_finder.py`) provides EM↔LM mapping via the NeuronBridge API and co-labeling analysis of driver lines.
 
@@ -506,19 +744,48 @@ The `NeuronBridgeFinder` class (in `src/neuronbridge_finder.py`) provides EM↔L
 
 EM→LM mapping (driver lines matching EM neurons). Example: `NB-find-lines_MCNS_aMe12_20260815_145107/`
 
-*   **`{query}_lines.csv`**: All matched driver lines with scores (one file per query; NeuronBridge result columns `line`, `score`, `match_type`, `library`, ... plus `source_query` / `source_bodyId`)
+*   **`{query}_lines.csv`**: All matched driver lines with scores (one file per query; NeuronBridge result columns `line`, `score`, `match_type`, `library`, ... plus `source_query` / `source_bodyId`). BodyId-level source data — **Compact** output detail removes it once `line_summary.csv` exists (audited in `cleanup_audit.json`)
 *   **`line_summary.csv`**: Summary statistics per line
 *   **`gal4_lexa_summary.csv`** / **`split_gal4_summary.csv`**: Per-library summaries (written when `separate_splitgal4=True`; the class default is False, the UI default True)
-*   **`images/`**: Downloaded CDM/FlyLight images (only when image download is enabled)
-*   **`parameters.json`**: Analysis parameters
+*   **`images/`**: Downloaded CDM/FlyLight images (only when image download is enabled; **Compact** removes them after the PDF/PPTX contact sheet is generated)
+*   **`cleanup_audit.json`**: Output-detail cleanup audit (Compact runs) — removed paths and reclaimed bytes
+*   **`parameters.json`**: Analysis parameters (records `use_cache` — the NeuronBridge match cache is off by default and adjustable in Settings)
+
+**Output detail** (all NeuronBridge tools): **Full** (default) keeps every file; **Compact** drops the bodyId-level source-data tables and images after summarization. The exported run guide documents which files are source-data-only for the run's mode.
+
+### 9a-bis. Expanded FindLines Mode (`NB-find-lines-expanded_{ABBREV}_{query}_{ts}/`)
+
+Coverage-routed, name-expanded FindLines (Find Driver Lines tab with
+**Expand query names across datasets** on; orchestrator
+`src/neuronbridge_query_expansion.py`). Everything lands in ONE per-run
+folder — flat for single-chip runs, one **`chip_{query}/`** subfolder per
+query chip for multi-chip runs — plus the orchestration reports at the root:
+
+*   **`expansion_map.csv`**: Per chip — columns `source_query`, `expanded_name`, `nb_dataset` (hosted release queried), `mapping_status`, `mapping_kind`. Conflict/evidence-only chips appear with an empty `expanded_name` and `mapping_status=conflict`; unmapped chips keep the raw name (`status=unmapped`, the counted long-tail fallback)
+*   **`expansion_summary.json`**: Self-describing run record — `queries`, `selected_datasets` (the user's original selection), `scope_datasets`, `covered_datasets` (selected → hosted release, e.g. `male-cns:v1.0 → male-cns:v0.9`), `unavailable_datasets`, `warnings`, `expansion`, `output_detail`, `cleanup`
+*   **`user_warning_notes.txt`**: Run notes; coverage warnings for datasets the snapshot classifies as not hosted carry a `coverage:` prefix (runs proceed; nothing blocks)
+*   **Per-chip folders (`chip_{query}/`)** or top-level chip files (single-chip runs): the Section 9a outputs for that chip, with every result row carrying the original chip as `source_query` and `parameters.json` recording the hosted releases
+*   **`cleanup_audit.json`**: Output-detail cleanup audit (Compact runs)
+
+**Compact retention window**: Compact keeps the newest N expanded Find
+Lines runs' bodyId-level match tables (default N=1 — the latest query
+stays inspectable) and prunes older Compact runs' tables; each swept run
+records the removal in its own `cleanup_audit.json`. Full runs are never
+swept. N is set by "Compact: Keep Last N Runs' Match Tables" on the tab
+(0 deletes immediately).
+
+Coverage snapshot (not a run output): `cache/neuronbridge/coverage_snapshot.json`
+classifies every selectable dataset as `exact` / `aligned` / `unavailable` /
+`unknown` against the current NeuronBridge version; it refreshes
+automatically when NeuronBridge's data version changes (or after 7 days).
 
 ### 9b. FindNeuron Mode (`NB-find-neurons_{line}_{ts}/`)
 
 LM→EM mapping (EM neurons matching a driver line). Example: `NB-find-neurons_SS01015_20260815_143937/`
 
-*   **`all_neurons.csv`**: Combined matched neurons across all datasets — columns `bodyId`, `dataset`, `instance`, `type`, `status`, `score`, `image_id`, `lm_sample`, `match_type`, `library`, `source_line`
+*   **`all_neurons.csv`**: Combined matched neurons across all datasets — columns `bodyId`, `dataset`, `instance`, `type`, `status`, `score`, `image_id`, `lm_sample`, `match_type`, `library`, `source_line` (bodyId-level source data; **Compact** removes it)
 *   **`{line}_neurons.csv`**: Matched neurons for the line (combined; same columns minus `source_line`)
-*   **`{line}_{dataset_folder}_neurons.csv`** / **`{line}_{dataset_folder}_types.csv`**: Per-dataset matches and type aggregates. Type-aggregate columns: `type`, `labeled_N`, `max_score`, `median_score`, `Q3_score`, `Q1_score`, `avg_score`, `typed_N_in_dataset`
+*   **`by_dataset/{line}_{dataset_folder}_neurons.csv`** / **`by_dataset/{line}_{dataset_folder}_types.csv`**: Per-dataset matches and type aggregates (the `_neurons.csv` files are bodyId-level source data — **Compact** output detail removes them once the type summaries exist). Type-aggregate columns: `type`, `labeled_N`, `max_score`, `median_score`, `Q3_score`, `Q1_score`, `avg_score`, `typed_N_in_dataset`
 *   **`{line}_type_mapped.csv`**: Cross-dataset type mapping summary — columns `canonical_type`, `best_max_score`, per-dataset `{dataset}_type` / `{dataset}_max_score` / `{dataset}_N` columns, `total_labeled_N`
 *   **`labeling_distribution.html`**: Score distribution visualization
 *   **`parameters.json`**: Analysis parameters
@@ -546,12 +813,12 @@ full requested top-N, including matches below the cutoff; see
 
 #### Labeling Distribution
 *   **`labeling_distribution_by_type.html`** / **`labeling_distribution_by_neuron.html`** / **`labeling_distribution_stacked.html`**: Distribution visualizations
-*   **`distribution_data_by_type.csv`** / **`distribution_data_by_neuron.csv`**: Raw distribution data (by type: `type`, `score`, `source_line`, `dataset`; by neuron: `bodyId`, `dataset`, `instance`, `type`, `status`, `score`, `image_id`, `lm_sample`, `match_type`, `library`, `_passes_min_score`, `source_line`)
+*   **`distribution_data_by_type.csv`** / **`distribution_data_by_neuron.csv`**: Raw distribution data (by type: `type`, `score`, `source_line`, `dataset`; by neuron: `bodyId`, `dataset`, `instance`, `type`, `status`, `score`, `image_id`, `lm_sample`, `match_type`, `library`, `_passes_min_score`, `source_line`) The by-neuron table is row-level source data; **Compact** output detail removes it.
 
 #### Supporting Data
 *   **`labeling_info.csv`**: Case-sensitive type × Line matrix with dataset column — columns `type`, `dataset`, one boolean column per line
 *   **`line_summary.csv`**: Summary statistics per line — columns `line`, `n_neurons`, `n_types`, `mean_score`, `max_score`, `n_neurons_HMS`, `n_types_HMS`, `n_neurons_MS`, `n_types_MS`, `Qf`, `colabel_sparsity`
-*   **`line_labeled_neurons/`**: Per-line neuron details (`{line}_neurons.csv`, `{line}_{dataset_folder}_neurons.csv`, `{line}_{dataset_folder}_types.csv`, `{line}_type_mapped.csv`)
+*   **`line_labeled_neurons/`**: Per-line neuron details (`{line}_neurons.csv`, `{line}_{dataset_folder}_neurons.csv`, `{line}_{dataset_folder}_types.csv`, `{line}_type_mapped.csv`) — row-level source data; **Compact** output detail removes the folder after the matrices/report are written
 *   **`parameters.json`**: Analysis parameters
 *   **`user_warning_notes.txt`**: Notes describing score-cutoff filtering and retained top-N records
 *   **`colabeling_report.html`**: Comprehensive HTML report

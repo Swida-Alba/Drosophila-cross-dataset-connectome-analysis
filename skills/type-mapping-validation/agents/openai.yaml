@@ -1,0 +1,4 @@
+interface:
+  display_name: "DROCAT Type-Mapping Validation"
+  short_description: "Run and interpret bodyId-level type-mapping validation"
+  default_prompt: "Run the DROCAT type-mapping validation pipeline for the requested source types, inspect the exported CSVs and review scenes, and report the category partition, gap-fill evidence, and any warnings."

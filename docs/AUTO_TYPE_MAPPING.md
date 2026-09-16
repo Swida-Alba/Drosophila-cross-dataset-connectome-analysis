@@ -321,6 +321,89 @@ only to that side's source types, and its hover counts the origin-side
 population (unique source types and their neurons) — never the target-side
 received neurons.
 
+#### BodyId-level granularity (row-based bridge evidence only)
+
+The type mapper's bodyId-level granularity comes **exclusively from
+row-based bridge evidence** — never from connectivity similarity:
+
+- **Branch pools**: for a 1-to-N parent (e.g. male-cns `5thsLNv_LNd6` →
+  FlyWire {`5th-LNv`, `LNd_CRY+_ITP+`}), each branch carries the
+  bodyIds its bridge **linker rows** tie to it
+  (`resolve_prioritized_bridge_pool`, basis "linker rows").  Where no
+  linker rows exist, the pair keeps its full populations (basis "full
+  population").
+- **Vote provenance**: every label bridge records how many bodyIds back
+  it and with what provenance (`get_mapping_support` / decision
+  `support` / the `mapping_support` + `support_*` export columns —
+  e.g. `s-LNv_a`: 2 votes vs `aMe24`: 1 auto vote).
+- **Direct same-name pairs** — the name must match **exactly** — pool
+  all bodyIds of the type across both datasets (`same name (all bodyIds
+  pooled)`), except a same-name type inside a 1-to-N — there the
+  bridge's linker rows/votes resolve the bodyId-level resolution per
+  branch.  A same-name pair whose populations differ by an order of
+  magnitude (ratio < 0.1 — e.g. `TmY18`: 1,367 neurons in male-cns vs 1
+  in FlyWire) carries an `extreme population asymmetry … suggested
+  check` flag on the support surfaces and in the viewer's same-name
+  candidates: a suggested check for the user (the full-dataset audit
+  found such pairs are predominantly annotation-coverage asymmetries,
+  not naming errors — 118 flagged of 18,797 pairs; see
+  `local_data/same-name-fidelity-audit-flagged.csv`).
+
+**The mapper never uses connectivity similarity.**  Per-neuron
+connectivity verification of splits — profiling, matching, correlation
+gates — is the validate-expand-visualize pipeline's role
+(`mapping_validation`; see
+`docs/technical/TYPE_MAPPING_VALIDATE_EXPAND_VISUALIZE_PIPELINE.md`),
+which owns that machinery end-to-end including any UI for it.
+
+When several types are queried — or one chip resolves to many types (a
+taxonomy query such as `circadian_clock`) — the panel's overview gains a
+collapsed **Per-type breakdown** expansion: one row per `(matched type ×
+target dataset)`, so the mapped counts are specific to the row's target
+dataset and never summed across datasets, plus the originating query
+chip.  Its **Mapped neurons** cell combines count and type breadth:
+`{N}({m} types)` from 2 mapped types up, plain `{N}` for a single mapped
+type.  Single-type previews look exactly as before, and the breakdown is
+view-only.
+
+#### The type mapper's boundary (row-based evidence is carried, not consumed)
+
+The mapper's role ends at the mapping **plus its row-based bodyId-level
+evidence**: every bridge carries the bodyIds that back it (BANC label
+votes per source type with curated vs `auto:`-transferred provenance —
+e.g. `s-LNv_a`: 2 votes, `aMe24`: 1 auto vote; FAFB `additional_type(s)`
+linker rows; release root-id pairs) in `_bridge_provenance`.  That
+evidence is **passed through, never consumed**:
+
+- `get_mapping_support(source_type, source_dataset, target_type,
+  target_dataset)` returns the pair's retained bridge support record;
+  `get_mapping_decision` carries it per branch under `support`.
+  **Direct same-name pairs** carry their own bodyId-level handling: all
+  bodyIds of the type pooled across both datasets (full populations,
+  fully in-map — nothing refined, nothing gated), surfaced as
+  `same name (all bodyIds pooled)` in the support surfaces.  **One
+  exception**: a same-name type that participates in a 1-to-N/N-to-1
+  structure (e.g. MCNS `CB2572` → FAFB {`CB2572`, `CB2572a`,
+  `CB2572b`}) is resolved by the evidence bridge instead — pooled
+  identity would wrongly absorb the other branches' bodyIds, so such a
+  pair carries no identity marker; the bridge's linker rows/votes and
+  the split structure resolve the bodyId-level resolution.  The compact
+  `auto_type_mapping.csv` gains a trailing
+  **`mapping_support`** column (e.g. `cross-dataset cell type:
+  5thsLNv_LNd6=1 (auto 1)` vs `…=2 (auto 2)` — the exact data that
+  distinguishes the `aMe24` weak-vote bridge from `s-LNv_a`), and
+  `auto_type_mapping_per_bridge.csv` gains `support_votes`,
+  `support_verified`, `support_auto`, `support_linker_value`.
+- What the mapper never does with this evidence: gate, rank, or verify
+  a mapping with it.  Verification is the validate-expand-visualize
+  pipeline's role (bodyId-level connectivity scoring, morphology) — the
+  panel's connectivity split view is an informational display of that
+  style of evidence, not a mapper decision input.  A downstream
+  "tight" mapping policy (only verified/evidence-backed mappings
+  treated as valid) is a **consumer-side** filter over these surfaces:
+  the bridge support columns for label-vote gating, the validation
+  pipeline for full verification.
+
 #### Bidirectional type coverage (the panel's tables)
 
 The panel's per-pair **Type coverage** expansion shows two tables over the
@@ -348,6 +431,46 @@ deduplicated union of bodyIds from every independently supported candidate
 bridge (completeness of supported evidence; branches are not mutually
 exclusive). Neither column is a bodyId-to-bodyId correspondence.
 
+#### Reading the per-dataset summary table (the preview)
+
+The preview's summary strip has one row per selected dataset (hover any
+header for the same explanation):
+
+| Column | Meaning |
+| --- | --- |
+| Matched types | Search terms that matched type names in this dataset. |
+| Neurons | Neurons of the matched types in this dataset — also the issued side: every matched type is issued into the resolution, flowed or orphaned. |
+| Mapped neurons | What this dataset RECEIVES: branch-claimed bodyIds (union of the branches' resolved pools — the claim set), shown as `{N}({m} types)` from 2 distinct received types up, plain `{N}` otherwise. A dataset that only issues the query reads 0. |
+| Unmapped (orphans) | Matched types here with no realized counterpart in another selected dataset. |
+
+**Claimed versus realized (2026-09-12).** A crosswalk cell can name a
+counterpart the target dataset does not actually have (e.g. male-cns
+`CB4091` carries `flywireType CB4091`, but FAFB v783 has no such neurons —
+863 of the crosswalk's FAFB names are like this, plus hundreds more
+toward hemibrain/MANC). Such names are registered as **stale claims** at
+mapper build time (`_stale_type_claims`) and are kept out of the target
+dataset's namespace (`_dataset_types`), so they can never resurface as
+identity aliases or bridge endpoints. `mapper.type_exists(dataset, name)`
+answers namespace ground truth post-load; `mapper.is_stale_claim(...)`
+reports the registered claims.
+
+The resolver reports a stale claim with the dedicated `claimed` status
+instead of `mapped`: the claim stays visible as evidence (its target name
+is retained, `get_mapped_type` still returns it), but no equivalence is
+licensed and profile expansion follows it nowhere. When the queried name
+is itself native in the target namespace, the realized same-name
+equivalence wins and the unfulfilled claim is kept in the resolution
+reason (e.g. male-cns `Dm8a`, whose crosswalk names the FAFB-nonexistent
+`yDm8`, resolves to FAFB's native `Dm8a`).
+
+In the preview, a stale claim therefore never counts toward the target's
+*Mapped neurons* — only a target type with ≥1
+neuron in that dataset does. The originating dataset's orphan entry
+reports the unfulfilled claim, e.g. `male-cns:v1.0 → flywire_FAFB_v783:
+CB4091 (20) — auto-mapping claims 'CB4091' but flywire_FAFB_v783 has no
+such neurons`. A row with zeros everywhere therefore means "nothing
+realized here", consistently with the "No mapping graph" header.
+
 ## The two label lanes (explicit vs automatic)
 
 DROCAT standardizes neuron type names through TWO independent lanes. They
@@ -370,6 +493,60 @@ is THE untyped-neuron predicate (pathfinding and comparison must agree on
 what counts as untyped), and the auto lane's conflict/split/fallback policy
 is the one documented in this guide (fail closed on conflicts; raw long-tail
 fallback is counted, never silent).
+
+### The query-anchored merge policy (auto-mode comparison runs)
+
+Comparison runs with auto type mapping additionally build a per-run
+**MergePolicy** (`comparison/merge_policy.py`) that makes the merge
+granularity *query-anchored*: the merge keys of the aligned frames become
+the query chips' group labels instead of the canonical male-cns namespace.
+
+- **Anchor selection (B3)** — the anchor is the first chip's home
+  namespace when all chips resolve into a common naming (resolution-based,
+  not origin-based); a run whose chips are native in every selected
+  dataset (true same-name) uses the shared naming with the canonical
+  fallback for everything else; mixed runs emit the
+  `[type granularity]` warning and resolve conflicted groups to their
+  minimal inseparable leaves (the parent keeps its own whole row).
+- **1-to-N granularity (B1)** — a chip on the "1" side merges ALL its
+  branches into one row (no vote threshold; weak branches are warned per
+  the BANC auto-label block below); a leaf-anchored chip covers only its
+  own branch. Auto-only branch seeds are chain-terminal: a branch
+  licensed only by auto-transferred labels stays confined to its own
+  dataset and never recruits same-named cell types from other datasets
+  through downstream identities (the FAFB aMe24 case). A clean target that is itself the "1"-side of a 1-to-N
+  toward the chip's namespace is excluded even when the reverse direction
+  is a clean rename (e.g. FAFB `5th-LNv` → MCNS `5thsLNv_LNd6`) — the
+  parent keeps its own whole row.
+- **Fan-in** — a type claimed by two queried parents merges with NEITHER
+  (`[merge fan-in]` warning); the custom label mapper overrides. When a
+  queried parent chip is one of the claimants, the warning explicitly
+  states that the parent's row is PARTIAL by design (it excludes the
+  co-queried shared branch, which is presented separately at its own
+  minimal level); querying the parent alone merges it.
+- **Aggregation rides lane-1 plumbing (Decision 8)** — the policy's
+  raw→group-label map is materialized as a *policy-synthesized*
+  `LabelMapper` applied through the same
+  `apply_to_dataframe` → `std_label_*` lane at alignment time. It is
+  separate from the user's mapper, and because it is keyed on raw names
+  (which user-governed types no longer carry at that point), user
+  mappings win without any precedence code.
+- **Evidence surfaces** — the run exports
+  `type_resolution_topology.json` (per-group tree with per-branch
+  linker-refined pool sizes and vote support), and
+  `auto_type_mapping.csv` gains additive trailing `anchor_group` /
+  `auto_only` columns (`anchor_group` is tagged only when EVERY
+  non-empty endpoint of the row belongs to that same group — a row that
+  merely touches a group through one endpoint stays blank). `[merge
+  policy]` and `[BANC auto labels]` blocks
+  are appended to `user_warning_notes.txt` (the auto-label block opens
+  with a per-direction count summary); mappings flagged auto-only
+  stay VALID — the custom label mapper is the removal path. Neuron
+  counts (`neuron_counts_by_type.csv` and the report's Neuron Counts by
+  Type table) are keyed by group labels too, so counts, presence,
+  similarity, and networks all agree on group membership; merged rows
+  carry their per-dataset raw composition in the `group_members` column
+  / table sub-line.
 
 ### 3. User Warnings and Double-Check Recommendation
 
@@ -418,7 +595,11 @@ exported to `auto_type_mapping.csv` (and conflicts to
      (exact matches first, then by count; capped per dataset). This tier
      works even when the auto type mapping knows nothing about the query.
    - **Auto type mapping** (the tier described above): renamed types,
-     splits, and N-to-1 groups for the query name.
+     splits, and N-to-1 groups for the query name.  A `splits into`
+     candidate additionally carries the branch pools' vote provenance
+     and — when the split-verification view has run — a per-neuron
+     verification summary; a `one of N` candidate notes that its parent
+     family splits by neuron.
 
    Every matched foreign type is additionally annotated with what it is
    called in the selected dataset (unique rename, same name, or the members
@@ -490,6 +671,36 @@ comparer = ConnectivityProfileComparer(
 # Generates N×M similarity matrix comparing types across datasets
 results = comparer.run()
 ```
+
+## Same-name policy & query resolution (2026-09 rev 2)
+
+The mapper distinguishes two same-name cases, and the two consumers apply
+them differently:
+
+- **Same name + evidence** — a cross-dataset relation (crosswalk cell,
+  label column, release alias) resolves the source type back to that very
+  target name. This is the strongest pairing: it ranks first, survives the
+  derivation union intact, and is labelled `same name+evidence` in the
+  per-bridge mapping export (`mapping_origin`).
+- **Bare same-name echo** — the name exists in both releases but no
+  relation connects it. It stays the LAST choice for merging and keeps the
+  plain `same name` label.
+
+For **type-merging surfaces** (presence matrices, canonical rows), a unique
+relation that names a *different* counterpart wins over the name identity
+(e.g. male-cns `Dm8a` merges with FAFB `yDm8`, not with FAFB's unrelated
+`Dm8a` type). For **input-query resolution** the priority flips: a query
+token that is a native type of the target dataset resolves to itself
+(`same_name_identity`), and the relation only annotates it — `confirmed`,
+`contradicted` (identity kept, counter-evidence shown) or `none`. A mapper
+`conflict` refuses in both surfaces.
+
+Taxonomy-column values (e.g. FAFB `cell_type=circadian_clock`, a value no
+other dataset shares) resolve per dataset by expanding to their member
+types, and datasets without the value bridge the concept through member
+mapping: each member type is resolved through the auto mapper and the
+union is queried (`taxonomy_mapped` records in
+`comparison_report_used_data/query_resolution.csv`).
 
 ## API Reference
 

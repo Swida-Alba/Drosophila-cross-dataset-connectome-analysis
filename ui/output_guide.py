@@ -43,10 +43,13 @@ COLUMN_GLOSSARY = {
     # --- Identifiers ---------------------------------------------------------
     "bodyId": ("Unique numeric neuron identifier.", "integer"),
     "queried_type": ("Neuron type as entered in the comparison query (one row per queried type).", "text"),
-    "morph_v2": ("Production cross-dataset vector_v2 similarity (block-weighted whitened cosine; no NBLAST cross-dataset).", "number 0-1"),
+    "morph_v2": ("Production vector_v2 similarity (block-weighted whitened cosine; no NBLAST), cross- or intra-dataset.", "number 0-1"),
     "morph_null_p95": ("Per-query null bar: the p95 of this query's vector_v2 scores against ~200 seeded random target neurons.", "number"),
     "morph_z": ("morph_v2 expressed in null-distribution standard deviations above the null median.", "number"),
-    "morph_qualified": ("Whether the visualized candidate passed the morph bar (morph_v2 >= null p95). Failing candidates are excluded from the rendered scenes but keep their result rows.", "boolean"),
+    "morph_bar_kind": ("Which bar family gated this row: 'null_bar' (null percentile + offset), 'native' (mapping-referenced pool floor), or 'track_a' (pool baseline B_b minus Δ).", "text"),
+    "morph_bar": ("The bar this row's morph_v2 was compared against, per morph_bar_kind.", "number"),
+    "morph_null_level": ("The null percentile the bar sits at when morph_bar_kind is 'null_bar' (default 95).", "integer"),
+    "morph_qualified": ("Whether the visualized candidate passed the morph bar (morph_v2 >= morph_bar). Failing candidates are excluded from the rendered scenes but keep their result rows.", "boolean"),
     "layer": ("One-based visualization layer assignment used by the reusable layer map.", "integer or text"),
     "neuron": ("Neuron identifier resolved by the Skeleton layer-map parser.", "text or integer"),
     "color": ("Effective neuron display color.", "CSS color"),
@@ -1097,6 +1100,12 @@ _HOMOLOG_FILES = [
                     "partners are shared vs unique).",
      "columns": ["partner_type", "in_a", "in_b", "weight_a", "weight_b",
                  "rank_a", "rank_b", "status", "direction"]},
+    {"pattern": "results/morph_qualification.json",
+     "description": "Morph-qualification provenance (only with the morph "
+                    "option on): mode (null bar / mapping-referenced "
+                    "floor), null level percentile (default 95), bar "
+                    "offset, per-source bars and scored pairs with their "
+                    "qualified flags."},
     {"pattern": "README.txt",
      "description": "Analysis parameters, summary, and column descriptions."},
 ]
@@ -1276,8 +1285,10 @@ TOOL_GUIDE_SPECS = {
                    "with a seeded null baseline and overlay scenes.",
         "files": [
             {"pattern": "report.html",
-             "description": "Summary report: queries, datasets, per-pair "
-                            "null baselines, type matrices, warnings, and "
+             "description": "Tabbed report (same generator as the "
+                            "connectivity-profiling report): per-pair tabs "
+                            "with Type/BodyId level heatmaps, CSV and "
+                            "VisPath editor links, null baselines, and "
                             "overlay-scene links."},
             {"pattern": "parameters.json",
              "description": "All analysis parameters (queries, datasets, "
@@ -1292,19 +1303,28 @@ TOOL_GUIDE_SPECS = {
              "preview": True,
              "preview_title": "Overview",
              "columns": ["queried_type"]},
-            {"pattern": "*_to_*/bodyid_scores.csv",
+            {"pattern": "members_summary.csv",
+             "description": "Number of compared members per queried type "
+                            "and dataset."},
+            {"pattern": "*_to_*/results/morph_bodyid_scores.csv",
              "description": "Member-level scores for one dataset pair: "
                             "vector_v2 per source x target bodyId with the "
                             "null p95 and the above_baseline flag.",
              "preview": True,
              "preview_title": "BodyId scores",
              "columns": ["source_bodyId", "target_bodyId", "morph_v2"]},
-            {"pattern": "*_to_*/type_matrix.csv",
+            {"pattern": "*_to_*/results/morph_bodyid_matrix.csv",
+             "description": "BodyId x bodyId vector_v2 matrix for one "
+                            "dataset pair (tree-legend axis labels)."},
+            {"pattern": "*_to_*/results/morph_type_matrix.csv",
              "description": "Type x type mean vector_v2 matrix for one "
                             "dataset pair (mean over cross-member pairs)."},
-            {"pattern": "*_to_*/null_baseline.json",
+            {"pattern": "*_to_*/results/null_baseline.json",
              "description": "Seeded random-target null reference for one "
                             "dataset pair (p95/median/std/n per query)."},
+            {"pattern": "*_to_*/visualization/heatmap_morph_*.html",
+             "description": "Interactive VisPath heatmaps (type and "
+                            "bodyId level) for one dataset pair."},
             {"pattern": "plot-3d_*/**",
              "description": "3D overlay scenes: each dataset's members "
                             "bridged into the reference template."},
@@ -1395,7 +1415,15 @@ TOOL_GUIDE_SPECS = {
                             "mapping_origin column states how each row "
                             "was derived: crosswalk, same name, or the "
                             "annotation bridge (additional_type(s) / "
-                            "Alternative Cell Type(s)) with its tokens."},
+                            "Alternative Cell Type(s)) with its tokens. "
+                            "The trailing mapping_support column carries "
+                            "the row-based bodyId-level bridge evidence: "
+                            "label votes per source type with curated vs "
+                            "auto provenance (e.g. "
+                            "'cross-dataset cell type: X=2 (auto 2)'), "
+                            "'same name (all bodyIds pooled)' for direct "
+                            "same-name pairs, or empty when the pair "
+                            "carries none."},
             {"pattern": "auto_type_mapping_conflicts.csv",
              "description": "Conflicting cross-dataset type mappings "
                             "(N-to-1 / 1-to-N, never guessed). The origin "
@@ -1695,7 +1723,10 @@ TOOL_GUIDE_SPECS = {
                    "neurons.",
         "files": [
             {"pattern": "*_lines.csv",
-             "description": "All matched driver lines with scores.",
+             "description": "All matched driver lines with scores "
+                            "(bodyId-level source data; Compact output "
+                            "detail removes it after the summary is "
+                            "written).",
              "preview": True,
              "preview_title": "Matched driver lines",
              "columns": ["line", "score", "match_type", "library"]},
@@ -1713,12 +1744,62 @@ TOOL_GUIDE_SPECS = {
                             "Split-GAL4 is on)."},
             {"pattern": "images/**",
              "description": "Downloaded CDM/FlyLight images (only when "
-                            "image download is enabled)."},
+                            "image download is enabled; Compact output "
+                            "detail removes them after the PDF/PPTX is "
+                            "generated)."},
             {"pattern": "parameters.json",
              "description": "Analysis parameters."},
             {"pattern": WARNING_FILENAME,
              "description": "Notes collected during the run (rendered in "
                             "the Warnings section above)."},
+        ],
+    },
+    "nb_find_lines_expanded": {
+        "title": "NeuronBridge — Find Driver Lines (cross-dataset expansion)",
+        "summary": "Coverage-routed, name-expanded EM→LM mapping: every "
+                   "query chip expands into all NeuronBridge-hosted "
+                   "releases before searching.",
+        "files": [
+            {"pattern": "expansion_map.csv",
+             "description": "Per chip: expanded name → hosted release → "
+                            "mapping status/kind.",
+             "preview": True,
+             "preview_title": "Expansion map",
+             "columns": ["source_query", "expanded_name", "nb_dataset",
+                         "mapping_status", "mapping_kind"]},
+            {"pattern": "expansion_summary.json",
+             "description": "Original selection, coverage routing "
+                            "(selected vs covered vs unavailable "
+                            "datasets), output detail, and cleanup audit."},
+            {"pattern": "chip_*/**",
+             "description": "Per-query-chip Find Lines outputs (one folder "
+                            "per chip; single-chip runs are flat in the "
+                            "run root)."},
+            {"pattern": "images/**",
+             "description": "Downloaded CDM/FlyLight images (only when "
+                            "image download is enabled; Compact output "
+                            "detail removes them after the PDF/PPTX is "
+                            "generated)."},
+            {"pattern": "images_summary.pdf",
+             "description": "PDF contact sheet of the top ranked lines "
+                            "(when a PDF summary is requested)."},
+            {"pattern": "line_summary.csv",
+             "description": "Summary statistics per line (single-chip "
+                            "flat runs)."},
+            {"pattern": "*_summary.csv",
+             "description": "GAL4/LexA and Split-GAL4 library summaries "
+                            "(single-chip flat runs)."},
+            {"pattern": "*_lines.csv",
+             "description": "BodyId-level match tables (source data; "
+                            "Compact output detail removes them)."},
+            {"pattern": "cleanup_audit.json",
+             "description": "Output-detail cleanup audit (Compact runs): "
+                            "removed paths and reclaimed bytes."},
+            {"pattern": WARNING_FILENAME,
+             "description": "Run notes; coverage warnings carry a "
+                            "`coverage:` prefix."},
+            {"pattern": "parameters.json",
+             "description": "Analysis parameters (per chip)."},
         ],
     },
     "nb_find_neuron": {
@@ -1734,9 +1815,15 @@ TOOL_GUIDE_SPECS = {
                          "library", "source_line"]},
             {"pattern": "*_neurons.csv",
              "description": "Matched neurons for the line (combined and "
-                            "per-dataset).",
+                            "per-dataset; bodyId-level source data — "
+                            "Compact output detail removes them after the "
+                            "type summaries are written).",
              "columns": ["bodyId", "dataset", "instance", "type", "status",
                          "score"]},
+            {"pattern": "by_dataset/*_neurons.csv",
+             "description": "Per-dataset matched neurons (bodyId-level "
+                            "source data; Compact output detail removes "
+                            "them after the type summaries are written)."},
             {"pattern": "*_types.csv",
              "description": "Per-dataset type aggregates of the matches.",
              "preview": True,
@@ -1802,7 +1889,9 @@ TOOL_GUIDE_SPECS = {
              "description": "Raw distribution data per type.",
              "columns": ["type", "score", "source_line", "dataset"]},
             {"pattern": "distribution_data_by_neuron.csv",
-             "description": "Raw distribution data per neuron.",
+             "description": "Raw distribution data per neuron (row-level "
+                            "source data; Compact output detail removes "
+                            "it).",
              "columns": ["bodyId", "dataset", "instance", "type", "status",
                          "score", "image_id", "lm_sample", "match_type",
                          "library", "_passes_min_score", "source_line"]},
@@ -1820,7 +1909,10 @@ TOOL_GUIDE_SPECS = {
                          "colabel_sparsity"]},
             {"pattern": "line_labeled_neurons/**",
              "description": "Per-line neuron details (neurons, per-dataset "
-                            "neurons/types, type mapping)."},
+                            "neurons/types, type mapping; row-level source "
+                            "data — Compact output detail removes the "
+                            "folder after the matrices/report are "
+                            "written)."},
             {"pattern": "parameters.json",
              "description": "Analysis parameters."},
             {"pattern": WARNING_FILENAME,
@@ -2027,6 +2119,11 @@ def assemble_run_content(run_folder: Path, tool_name: str,
 
     warnings = _read_warnings(run_folder)
 
+    explanation = list(spec.get("explanation") or [])
+    output_detail = _output_detail_section(tool_name, params)
+    if output_detail:
+        explanation.append(output_detail)
+
     return {
         "tool_name": tool_name,
         "title": spec["title"],
@@ -2034,7 +2131,7 @@ def assemble_run_content(run_folder: Path, tool_name: str,
         "folder": run_folder.name,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "params": params,
-        "explanation": spec.get("explanation"),
+        "explanation": explanation,
         "applied": _read_applied_state(run_folder),
         "applied_by_dataset": _read_applied_thresholds_by_dataset(run_folder),
         "threshold_queries": _read_threshold_query_manifest(run_folder),
@@ -2043,6 +2140,64 @@ def assemble_run_content(run_folder: Path, tool_name: str,
         "leftovers": leftovers,
         "warnings": warnings,
     }
+
+
+def _output_detail_section(tool_name: str, params: Optional[dict]) -> Optional[dict]:
+    """Tool-aware "Output detail" explanation section for the NeuronBridge
+    tools (plan `_plan/plan-nb-find-lines-output-modes.md` D5b).
+
+    Full runs learn which files are source-data-only and that the app's
+    Output detail control (Compact) drops them; Compact runs learn what was
+    pruned and how to regenerate it.  Non-NB tools return None.
+    """
+    source_data = {
+        "nb_find_lines": (
+            "the per-query match tables (`{query}_lines.csv`) and the "
+            "downloaded images (`images/`, once the PDF/PPTX contact sheet "
+            "is generated)"
+        ),
+        "nb_find_lines_expanded": (
+            "the per-chip match tables (`*_lines.csv`) and the downloaded "
+            "images (`images/`, once the PDF/PPTX contact sheet is "
+            "generated)"
+        ),
+        "nb_find_neuron": (
+            "`all_neurons.csv`, the per-line `{line}_neurons.csv` tables, "
+            "and `by_dataset/*_neurons.csv` (type summaries, the "
+            "type-mapped table, and 3D renders always stay)"
+        ),
+        "nb_colabel": (
+            "`line_labeled_neurons/` and `distribution_data_by_neuron.csv` "
+            "(matrices, expression data, by-type distributions, and the "
+            "HTML report always stay)"
+        ),
+    }.get(tool_name)
+    if not source_data:
+        return None
+
+    compact = params.get("keep_per_match_csv") is False
+    if compact:
+        paragraphs = [
+            "This run used COMPACT output detail: the source-data-only "
+            f"files ({source_data}) were removed after the summaries/report "
+            "were written. Every removal is listed in the run's "
+            "`cleanup_audit.json`.",
+            "To regenerate them, re-run the same query — the NeuronBridge "
+            "match cache is off by default, so this refetches from the "
+            "NeuronBridge API. Enable Settings → NeuronBridge Match Cache "
+            "to keep match tables across runs.",
+        ]
+    else:
+        paragraphs = [
+            "This run used FULL output detail: every file is kept, "
+            f"including the source-data-only files ({source_data}).",
+            "These files are intermediate inputs for the summaries and "
+            "reports above — if you do not need them, switch the **Output "
+            "detail** control to **Compact** on the tool tab and Compact "
+            "will remove them automatically after summarization (audited "
+            "in `cleanup_audit.json`).",
+        ]
+    return {"heading": "Output detail", "paragraphs": paragraphs}
 
 
 def _read_warnings(run_folder: Path) -> Optional[str]:

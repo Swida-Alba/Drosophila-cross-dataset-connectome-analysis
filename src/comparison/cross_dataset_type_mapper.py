@@ -116,7 +116,8 @@ DATASET_TO_TYPE_COL = {
 # (§version control, user 2026-09-06).
 FLYWIRE_MAPPING_KEYS = ('flywire_FAFB_v783', 'banc_v626', 'banc_v888')
 BANC_RELEASE_KEYS = frozenset({'banc_v626', 'banc_v888'})
-_UNTYPED_SENTINELS = frozenset({'unknown', 'nan', 'none'})
+_UNTYPED_SENTINELS = frozenset({'unknown', 'nan', 'none', 'null',
+                                '<na>', '<null>'})
 
 
 def canonical_linker_token(value: Any) -> str:
@@ -852,6 +853,12 @@ class CrossDatasetTypeMapper:
         # while ``_loaded`` is False — but the reason must stay visible so
         # a transient data problem cannot masquerade as a healthy mapper.
         self.last_load_error: Optional[str] = None
+        # Lazy {conflicted (dataset_key, base_type, dataset_key)} index for
+        # O(1) same-name conflict guards (built once after load).
+        self._conflicted_links_index = None
+        # Lazy per-dataset {base_type: neuron count} for the same-name
+        # population-asymmetry flag (pruned table read, cached).
+        self._type_population_counts_cache = {}
 
         # Type mappings: {source_dataset: {source_type: {target_dataset: target_type}}}
         self._type_mappings: Dict[str, Dict[str, Dict[str, str]]] = {}
@@ -1616,6 +1623,17 @@ class CrossDatasetTypeMapper:
             self._verify_source_map()
 
             # These tables/maps are construction-time evidence only.  The
+            # §stale claims (2026-09-12): capture each dataset's type-name
+            # namespace from its own table BEFORE the heavy bodyId→type
+            # dicts are dropped below.  The sets are tiny (a few thousand
+            # names) and ground ``type_exists`` after load.
+            self._type_namespaces = {}
+            for key, body_to_type in self._body_id_to_primary.items():
+                if body_to_type:
+                    self._type_namespaces[key] = set(body_to_type.values())
+            for key, primaries in self._flywire_primaries.items():
+                if primaries:
+                    self._type_namespaces[key] = primaries
             # public mapper answers type-level questions from
             # ``_type_mappings``, bridge edges, and the name indexes; bodyId
             # pools are computed separately by the coverage layer.  Retaining
@@ -1655,7 +1673,9 @@ class CrossDatasetTypeMapper:
     # datasets/ and neuron_indexes/ trees and on edits to this module
     # file, so stale state can never survive an unnoticed bump.
     # ------------------------------------------------------------------
-    MAPPER_SNAPSHOT_VERSION = 1
+    # v2 (2026-09-12): §stale claims — added ``_type_namespaces`` and
+    # ``_stale_type_claims`` to the derived state.
+    MAPPER_SNAPSHOT_VERSION = 2
     _SNAPSHOT_EXCLUDED_ATTRS = frozenset({
         'last_load_error',      # runtime diagnostics, rebuilt per load
         '_unsupported_dataset_warnings',  # runtime log-once bookkeeping
@@ -1915,6 +1935,8 @@ class CrossDatasetTypeMapper:
         self._conflict_keys = set()
         self._n_to_1_types = defaultdict(set)
         self._bridge_provenance = {}
+        self._conflicted_links_index = None
+        self._type_population_counts_cache = {}
         self._banc_label_edges = defaultdict(list)
         self._banc_release_edges = defaultdict(list)
         self._banc_label_votes = {}
@@ -1996,28 +2018,59 @@ class CrossDatasetTypeMapper:
 
         # Crosswalk cells may carry several names separated by ','; resolve
         # them only against the FAFB namespace. In particular, never copy
-        # MCNS flywireType into either BANC release.
+        # MCNS flywireType into either BANC release.  A resolved name that
+        # FAFB v783 does not actually carry (stale crosswalk annotation,
+        # §stale claims 2026-09-12) stays a resolvable curated claim but
+        # never enters the FAFB namespace.
+        # §stale claims: curated crosswalk claims whose target name does not
+        # exist in the target dataset's own table, per (source, target).
+        # Registered by the crosswalk loops below; must exist before them.
+        self._stale_type_claims = {}
+        fw_namespace = self._flywire_primaries.get('flywire_FAFB_v783')
         for mcns_type, fw_names in grouped_crosswalk_values('flywireType'):
             for fw_type in self._resolve_flywire_names(
                     list(fw_names), 'flywire_FAFB_v783'):
                 mcns_to_flywire['flywire_FAFB_v783'][mcns_type].add(fw_type)
                 flywire_to_mcns['flywire_FAFB_v783'][fw_type].add(mcns_type)
-                self._dataset_types['flywire_FAFB_v783'].add(fw_type)
+                if fw_namespace is not None and fw_type not in fw_namespace:
+                    self._stale_type_claims.setdefault(
+                        ('male-cns:v1.0', 'flywire_FAFB_v783'), {}
+                    ).setdefault(mcns_type, set()).add(fw_type)
+                else:
+                    self._dataset_types['flywire_FAFB_v783'].add(fw_type)
 
+        hb_namespace = (
+            set(self._body_id_to_primary.get(
+                'hemibrain:v1.2.1', {}).values()) or None)
         for mcns_type, names in grouped_crosswalk_values('hemibrainType'):
             for hemibrain_type in names:
                 hemibrain_types.add(hemibrain_type)
                 mcns_to_hemibrain[mcns_type].add(hemibrain_type)
                 hemibrain_to_mcns[hemibrain_type].add(mcns_type)
-                self._dataset_types['hemibrain:v1.2.1'].add(hemibrain_type)
+                if (hb_namespace is not None
+                        and hemibrain_type not in hb_namespace):
+                    self._stale_type_claims.setdefault(
+                        ('male-cns:v1.0', 'hemibrain:v1.2.1'), {}
+                    ).setdefault(mcns_type, set()).add(hemibrain_type)
+                else:
+                    self._dataset_types['hemibrain:v1.2.1'].add(hemibrain_type)
 
+        manc_namespaces = {
+            key: set(self._body_id_to_primary.get(key, {}).values()) or None
+            for key in ('manc:v1.0', 'manc:v1.2.1')}
         for mcns_type, names in grouped_crosswalk_values('mancType'):
             for manc_name in names:
                 manc_types.add(manc_name)
                 mcns_to_manc[mcns_type].add(manc_name)
                 manc_to_mcns[manc_name].add(mcns_type)
-                self._dataset_types['manc:v1.0'].add(manc_name)
-                self._dataset_types['manc:v1.2.1'].add(manc_name)
+                for key in ('manc:v1.0', 'manc:v1.2.1'):
+                    namespace = manc_namespaces[key]
+                    if namespace is not None and manc_name not in namespace:
+                        self._stale_type_claims.setdefault(
+                            ('male-cns:v1.0', key), {}
+                        ).setdefault(mcns_type, set()).add(manc_name)
+                    else:
+                        self._dataset_types[key].add(manc_name)
         
         # Build final mappings (only 1-to-1 or 1-to-N that we can handle)
         self._type_mappings = {
@@ -2036,9 +2089,15 @@ class CrossDatasetTypeMapper:
 
         # BANC primary names are native to their selected release.  Their
         # body-ID pools are populated by the coverage layer, not from MCNS.
+        # FAFB primary names are equally native to the FAFB release — the
+        # crosswalk loop above only indexes the FAFB names some MCNS cell
+        # mentions, which misses e.g. FAFB ``Dm8a`` when the crosswalk maps
+        # MCNS ``Dm8a`` to the renamed ``yDm8``.
         for banc_key in ('banc_v626', 'banc_v888'):
             for primary in self._flywire_primaries.get(banc_key, ()):
                 self._dataset_types[banc_key].add(primary)
+        for primary in self._flywire_primaries.get('flywire_FAFB_v783', ()):
+            self._dataset_types['flywire_FAFB_v783'].add(primary)
 
         # When release-local MCNS fallback labels name a target type that is
         # absent from the v1.0 crosswalk, local HEMI/MANC tables still provide
@@ -2363,11 +2422,12 @@ class CrossDatasetTypeMapper:
                 pl.col("__token").str.to_lowercase().alias("__token_lower"))
             .filter(
                 (pl.col("__banc_type") != "")
-                & ~type_lower.is_in(["unknown", "nan", "none"])
+                & ~type_lower.is_in(
+                    ["unknown", "nan", "none", "null", "<na>", "<null>"])
                 & ~type_lower.str.contains(r"^[0-9]+$", literal=False)
                 & (pl.col("__token") != "")
                 & ~pl.col("__token_lower").is_in(
-                    ["unknown", "nan", "none"])
+                    ["unknown", "nan", "none", "null", "<na>", "<null>"])
                 & ~pl.col("__token_lower").str.contains(
                     r"^[0-9]+$", literal=False)
             )
@@ -3047,9 +3107,10 @@ class CrossDatasetTypeMapper:
     @staticmethod
     def _is_untyped_value(value) -> bool:
         """True for labels that mean 'untyped': empty, an explicit
-        Unknown/none sentinel, or a bare number.  Mirrors the analyzer's
-        drop_untyped semantics — such labels must never become bridge
-        targets or annotation-bridge candidates."""
+        Unknown/none/null sentinel, or a bare number.  Mirrors the
+        analyzer's drop_untyped semantics (``utils.label_utils``) — such
+        labels must never become bridge targets or annotation-bridge
+        candidates."""
         # Polars and the mapper's in-place cleanup already provide trimmed
         # strings for the hot paths.  Keep the general conversion below for
         # injected/test values and mixed-case or whitespace-padded sentinels,
@@ -3057,10 +3118,11 @@ class CrossDatasetTypeMapper:
         if isinstance(value, str) and value:
             if value in _UNTYPED_SENTINELS:
                 return True
-            # Mixed-case sentinels are uncommon; restrict the case-folding
-            # fallback to their possible initial letters.
-            if (value[0] in 'uUnN'
-                    and value.lower() in _UNTYPED_SENTINELS):
+            # Mixed-case sentinels (Unknown, NONE, <NA>, …) are uncommon;
+            # the casefolded check settles them.  This must run BEFORE the
+            # early return below — a sentinel like '<NA>' starts with '<'
+            # and would otherwise be classified as a typed label.
+            if value.lower() in _UNTYPED_SENTINELS:
                 return True
             # Most labels start with a letter.  Check the first character
             # before asking Python to scan the entire string for digits; this
@@ -3266,10 +3328,84 @@ class CrossDatasetTypeMapper:
         """Public namespace detection for one type name."""
         return self._detect_type_source(type_name)
 
-    def get_type_neuron_count(self, type_name: str, dataset: str) -> int:
-        """Neuron count for one type in a dataset (0 when unknown)."""
+    def has_native_type(self, type_name: str, dataset: str) -> bool:
+        """True when ``type_name`` is a primary type name of ``dataset``.
+
+        Checks the per-release PRIMARY name sets where they exist (FAFB /
+        BANC, ``_flywire_primaries``) so additional-only names are not
+        reported as native, and falls back to the per-dataset type-name
+        sets (``_dataset_types``) elsewhere.  A name is native only where
+        the release actually annotates it (e.g. BANC annotates
+        ``s-LNv_a``/``s-LNv_b`` but not a bare ``s-LNv``).
+        """
+        if not self._loaded and not self.load():
+            return False
+        names = str(type_name or '').strip()
+        if not names:
+            return False
         key = self._get_type_mapping_key(dataset)
-        return len(self._dataset_types.get(key, {}).get(type_name, set()) or set())
+        primaries = self._flywire_primaries.get(key)
+        if primaries:
+            return names in primaries
+        return names in self._dataset_types.get(key, set())
+
+    def get_type_neuron_count(self, type_name: str, dataset: str) -> int:
+        """Presence-backed count for one type in a dataset (0 when absent).
+
+        The per-dataset index tracks type NAMES only, so this reports 1 for
+        a native type name and 0 otherwise; use :meth:`has_native_type` for
+        the readable form of the same check.
+        """
+        return 1 if self.has_native_type(type_name, dataset) else 0
+
+    def type_exists(self, dataset: str, name: str) -> Optional[bool]:
+        """Whether the dataset's own table carries ``name`` as a type.
+
+        Ground truth is the namespace set captured from each dataset's
+        table at load time (``_type_namespaces``) — never the crosswalk
+        registrations, which may name types a release does not actually
+        carry.  Returns ``None`` when the namespace set is unavailable
+        (e.g. a loader without the target table), so callers can fail
+        open instead of filtering on unknown ground truth.
+        """
+        if not self._loaded:
+            if not self.load():
+                return None
+        names = getattr(self, '_type_namespaces', None) or {}
+        namespace = names.get(self._get_type_mapping_key(dataset))
+        if namespace is None:
+            return None
+        return str(name or '').strip() in namespace
+
+    def is_stale_claim(self, source_type: str, source_dataset: str,
+                       target_dataset: str,
+                       target_type: Optional[str] = None) -> bool:
+        """True for a curated crosswalk claim the target cannot fulfil.
+
+        A stale claim is a crosswalk name that resolved through the target
+        namespace unchanged (neither a primary nor an additional-only
+        name) and does not exist in the target dataset's table.  The
+        curated mapping keeps the claim resolvable (``get_mapped_type``
+        still returns it) so evidence surfaces can show it, but the
+        resolver reports it as ``claimed`` rather than ``mapped``.
+        With ``target_type`` given, only that exact target is checked;
+        without it, any registered claim for the source type counts.
+        """
+        if not self._loaded:
+            if not self.load():
+                return False
+        registry = getattr(self, '_stale_type_claims', None) or {}
+        by_type = registry.get(
+            (self._get_type_mapping_key(source_dataset),
+             self._get_type_mapping_key(target_dataset)))
+        if not by_type:
+            return False
+        claimed = by_type.get(str(source_type or '').strip())
+        if not claimed:
+            return False
+        if target_type is None:
+            return True
+        return str(target_type).strip() in claimed
 
     def get_mapped_type(
         self, 
@@ -3917,6 +4053,9 @@ class CrossDatasetTypeMapper:
             'status': 'unmapped',
             'relationship': None,
             'conflicts': [],
+            # row-based bodyId-level bridge support (evidence only —
+            # never part of the acceptance decision itself)
+            'support': None,
         }
         if not raw_type:
             return result
@@ -3963,6 +4102,12 @@ class CrossDatasetTypeMapper:
                 result['status'] = 'evidence_only'
             else:
                 result['status'] = 'conflict'
+            # per-branch bodyId-level bridge support for the split branches
+            result['support'] = {
+                t: self._bridge_support_for_pair(
+                    raw_type, source_dataset, t, target_dataset)
+                for t in result['target_types']
+            }
             return result
 
         mapped = self.get_mapped_type(
@@ -3979,6 +4124,8 @@ class CrossDatasetTypeMapper:
                 if len(self._mapped_sources_for_target(
                     source_dataset, target_dataset, mapped)) > 1
                 else '1-to-1')
+            result['support'] = self._bridge_support_for_pair(
+                raw_type, source_dataset, mapped, target_dataset)
             return result
 
         # Some sanctioned overlays (notably a direct BANC label bridge in
@@ -4015,6 +4162,12 @@ class CrossDatasetTypeMapper:
                             bridge_targets[0])) > 1
                         else '1-to-1')
                     result['status'] = 'bridged'
+        if result['target_types'] and result['support'] is None:
+            result['support'] = {
+                t: self._bridge_support_for_pair(
+                    raw_type, source_dataset, t, target_dataset)
+                for t in result['target_types']
+            }
         return result
     
     def _scoped_conflicts_for_type(
@@ -4279,23 +4432,31 @@ class CrossDatasetTypeMapper:
         # row (both endpoint names on one row) is not duplicated.
         # ``mapping_origin`` states how every row was derived; ambiguous
         # (1-to-N) bridges live in the conflicts export only.
-        existing_pairs = [
-            {lookup_keys.get(ds, ds): row[ds]
-             for ds in output_datasets if row.get(ds)}
-            for row in rows
-        ]
+        # Representation is indexed per endpoint — the old
+        # any(all(...)) scan over every row per provenance entry was
+        # O(provenance × rows) and dominated the full-table export.
+        endpoint_rows: Dict[Tuple[str, str], set] = {}
+
+        def _index_row(row) -> None:
+            for ds in output_datasets:
+                if row.get(ds):
+                    endpoint_rows.setdefault(
+                        (lookup_keys.get(ds, ds), row[ds]), set()).add(
+                            id(row))
+
+        for row in rows:
+            _index_row(row)
         bridge_rows = []
         for (src_key, src_type, dst_key), prov in getattr(
                 self, '_bridge_provenance', {}).items():
             target = prov.get('target')
             if not target:
                 continue
-            pair = {src_key: src_type, dst_key: target}
-            if any(all(existing.get(k) == n for k, n in pair.items())
-                   for existing in existing_pairs):
+            if (endpoint_rows.get((src_key, src_type)) or set()) & \
+                    (endpoint_rows.get((dst_key, target)) or set()):
                 continue
             row = {ds: '' for ds in output_datasets}
-            for key, name in pair.items():
+            for key, name in ((src_key, src_type), (dst_key, target)):
                 for ds in output_datasets:
                     if lookup_keys.get(ds, ds) == key:
                         row[ds] = name
@@ -4314,15 +4475,33 @@ class CrossDatasetTypeMapper:
             # The reverse-direction provenance entry describes the same
             # row from the other side — record the coverage so it is
             # skipped too.
-            existing_pairs.append({
-                lookup_keys.get(ds, ds): row[ds]
-                for ds in output_datasets if row.get(ds)
-            })
+            _index_row(row)
         for row in rows:
             row['mapping_origin'] = 'crosswalk'
         rows.extend(bridge_rows)
 
-        df = pd.DataFrame(rows, columns=output_datasets + ['mapping_origin'])
+        # Row-based bodyId-level bridge support, passed through as an
+        # additive trailing column (evidence only — the mapping decision
+        # never consumed it).  Computed into the ROW DICTS *before* the
+        # DataFrame is built: assigning a list after sort_values would
+        # scramble supports across reordered rows.
+        for row in rows:
+            entries = [(ds, row[ds]) for ds in output_datasets
+                       if row.get(ds)]
+            texts: List[str] = []
+            for da, ta in entries:
+                for db, tb in entries:
+                    if da == db:
+                        continue
+                    txt = self._format_bridge_support(
+                        self._bridge_support_for_pair(
+                            ta, da, tb, db))
+                    if txt and txt not in texts:
+                        texts.append(txt)
+            row['mapping_support'] = '; '.join(texts)
+
+        df = pd.DataFrame(rows, columns=output_datasets
+                          + ['mapping_origin', 'mapping_support'])
         if not df.empty:
             # Sort by first column
             df = df.sort_values(output_datasets[0])
@@ -4402,6 +4581,305 @@ class CrossDatasetTypeMapper:
         
         filter_msg = f" (filtered to result types)" if filter_types else " (complete)"
         self._log(f"Exported {len(rows)} conflicts to {output_path}{filter_msg}")
+
+    def get_mapping_branches(
+        self,
+        source_type: str,
+        source_dataset: str,
+        target_dataset: str,
+        *,
+        max_chains: int = 8,
+        pool_fn=None,
+    ) -> List[Dict[str, Any]]:
+        """Per-bridge mapping records for one type-level edge.
+
+        One record per prioritized bridge chain (plan
+        ``_plan/plan-type-mapper-fine-granularity-export.md``): the
+        annotation-level granularity beneath the type-level mapping.
+        Records carry the chain, its standardized linkers, the target type
+        it ends at, prioritization context, and — when a ``pool_fn`` is
+        supplied — the bridge-refined bodyId pools and their coverage
+        basis.  ``pool_fn(source_dataset, target_dataset, linkers,
+        source_type, target_type) -> pool dict`` is expected to be
+        ``ui.neuron_index.pool_bridge_body_ids`` (passed in by callers so
+        this comparison-layer module never imports the UI package); with
+        ``pool_fn=None`` the pool fields stay ``None`` and ``supported``
+        is ``None`` (structure only).
+
+        The parent decision (``get_mapping_decision``) is attached as
+        context on every record; unmapped/conflict edges return ``[]``.
+        A mapped edge with no derivation chain (same-name passes) yields
+        exactly one chain-less branch whose pools are the full endpoint
+        populations.
+        """
+        raw_type = str(source_type or '').strip()
+        if not raw_type:
+            return []
+        decision = self.get_mapping_decision(
+            raw_type, source_dataset, target_dataset)
+        if decision.get('status') in ('unmapped', 'conflict'):
+            return []
+
+        chains = self.get_type_bridges(
+            raw_type, source_dataset, target_dataset, max_bridges=0)
+        ordered = prioritized_bridge_chains(
+            chains, source_dataset, target_dataset) if chains else []
+        if max_chains and max_chains > 0:
+            ordered = ordered[:max_chains]
+
+        records: List[Dict[str, Any]] = []
+        selected_seen = set()
+        for rank, chain in enumerate(ordered, start=1):
+            target_type = str(chain[-1].get('value', '')) if chain else ''
+            if not target_type:
+                continue
+            linkers = standardize_bridge(
+                chain, source_dataset, target_dataset)
+            linker_nodes = [
+                {
+                    'column': lnk.get('column', ''),
+                    'raw_value': lnk.get('raw_value',
+                                         lnk.get('value', '')),
+                    'canonical_value': lnk.get('canonical_value',
+                                               lnk.get('value', '')),
+                    'home': lnk.get('home', ''),
+                }
+                for lnk in linkers if lnk.get('kind') == 'linker'
+            ]
+            record = {
+                'source_dataset': source_dataset,
+                'source_type': raw_type,
+                'target_dataset': target_dataset,
+                'target_type': target_type,
+                'chain_rank': rank,
+                'is_selected': False,
+                'chain': [dict(hop) for hop in chain],
+                'linkers': linker_nodes,
+                'parent_relationship': decision.get('relationship'),
+                'parent_status': decision.get('status'),
+                # pool fields (None without a pool_fn)
+                'source_body_ids': None,
+                'target_body_ids': None,
+                'source_basis': None,
+                'target_basis': None,
+                'source_pool_size': None,
+                'source_type_total': None,
+                'target_pool_size': None,
+                'target_type_total': None,
+                'supported': None,
+                'status': 'unpooled' if pool_fn is None else None,
+                'reason': '',
+            }
+            if pool_fn is not None:
+                try:
+                    # UI-layer import deferred to call time (comparison
+                    # never imports ui at module level).
+                    from ui.neuron_index import chain_is_supported
+                    pool = pool_fn(
+                        source_dataset, target_dataset, linkers,
+                        raw_type, target_type)
+                    supported = chain_is_supported(
+                        pool, target_dataset, source_dataset=source_dataset)
+                    record.update({
+                        'source_body_ids': list(
+                            pool.get('source_body_ids') or []),
+                        'target_body_ids': list(
+                            pool.get('target_body_ids') or []),
+                        'source_basis': pool.get('source_basis'),
+                        'target_basis': pool.get('target_basis'),
+                        'source_pool_size': pool.get('source_pool_size'),
+                        'source_type_total': pool.get('source_type_total'),
+                        'target_pool_size': pool.get('target_pool_size'),
+                        'target_type_total': pool.get('target_type_total'),
+                        'supported': bool(supported),
+                        'status': ('supported' if supported
+                                   else 'unsupported'),
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    record['supported'] = False
+                    record['status'] = 'error'
+                    record['reason'] = str(exc)
+            if record['supported'] is not False \
+                    and target_type not in selected_seen:
+                record['is_selected'] = True
+                selected_seen.add(target_type)
+            records.append(record)
+
+        if not ordered and decision.get('status') == 'mapped' \
+                and decision.get('target_types'):
+            # Same-name / no-derivation pair: one chain-less branch whose
+            # pools are the full endpoint populations.
+            for target_type in decision['target_types']:
+                record = {
+                    'source_dataset': source_dataset,
+                    'source_type': raw_type,
+                    'target_dataset': target_dataset,
+                    'target_type': target_type,
+                    'chain_rank': 1,
+                    'is_selected': True,
+                    'chain': [],
+                    'linkers': [],
+                    'parent_relationship': decision.get('relationship'),
+                    'parent_status': decision.get('status'),
+                    'source_body_ids': None,
+                    'target_body_ids': None,
+                    'source_basis': 'full population',
+                    'target_basis': 'full population',
+                    'source_pool_size': None,
+                    'source_type_total': None,
+                    'target_pool_size': None,
+                    'target_type_total': None,
+                    'supported': True,
+                    'status': 'supported',
+                    'reason': '',
+                }
+                if pool_fn is not None:
+                    try:
+                        pool = pool_fn(
+                            source_dataset, target_dataset, [],
+                            raw_type, target_type)
+                        record.update({
+                            'source_body_ids': list(
+                                pool.get('source_body_ids')
+                                or pool.get('source_type_body_ids') or []),
+                            'target_body_ids': list(
+                                pool.get('target_body_ids')
+                                or pool.get('target_type_body_ids') or []),
+                            'source_basis': pool.get('source_basis',
+                                                     'full population'),
+                            'target_basis': pool.get('target_basis',
+                                                     'full population'),
+                            'source_pool_size': pool.get('source_pool_size'),
+                            'source_type_total': pool.get(
+                                'source_type_total'),
+                            'target_pool_size': pool.get('target_pool_size'),
+                            'target_type_total': pool.get(
+                                'target_type_total'),
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        record['reason'] = str(exc)
+                records.append(record)
+        return records
+
+    def export_mapping_per_bridge(
+        self,
+        output_path: str,
+        source_types: Optional[List[str]] = None,
+        source_dataset: Optional[str] = None,
+        target_datasets: Optional[List[str]] = None,
+        *,
+        max_chains: int = 8,
+        pool_fn=None,
+    ) -> int:
+        """Write the per-bridge type-level mapping table (plan
+        ``plan-type-mapper-fine-granularity-export.md`` §3/§4).
+
+        One row per (source type, target type, bridge chain) with
+        per-bridge annotations and the bridge-refined ``{a, b, c}`` bodyId
+        pools; full populations move to the ``parent_*_body_ids``
+        columns.  Additive: the compact ``auto_type_mapping.csv`` matrix
+        is unchanged.  ``source_dataset=None`` resolves each type's home
+        dataset via :meth:`detect_type_source`; ``target_datasets=None``
+        means every other known dataset.  ``pool_fn`` defaults to a lazy
+        ``ui.neuron_index.pool_bridge_body_ids`` binding (UI-layer import
+        deferred to call time; pass an explicit ``None``-returning
+        callable to export structure without pools).  Returns the number
+        of rows written.
+        """
+        from comparison.mapping_visualization import (
+            PER_BRIDGE_HEADER,
+            annotate_branch_records,
+            branches_to_per_bridge_rows,
+            default_branch_pool_fn,
+        )
+        types = [t for t in (source_types or []) if str(t or '').strip()]
+        if pool_fn is None:
+            pool_fn = default_branch_pool_fn()
+        if not types:
+            return 0
+        rows: List[Dict[str, Any]] = []
+        for source_type in types:
+            src_ds = source_dataset or self.detect_type_source(
+                str(source_type))
+            if not src_ds:
+                continue
+            targets = [d for d in (target_datasets or DATASET_PRIORITY)
+                       if d != src_ds]
+            for target_dataset in targets:
+                try:
+                    records = self.get_mapping_branches(
+                        str(source_type), src_ds, target_dataset,
+                        max_chains=max_chains, pool_fn=pool_fn)
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"branch resolution failed for "
+                              f"{source_type!r} -> {target_dataset}: {exc}")
+                    continue
+                annotate_branch_records(records)
+                rows.extend(branches_to_per_bridge_rows(records))
+        rows = self._refine_same_name_origins(rows)
+        df = pd.DataFrame(rows, columns=PER_BRIDGE_HEADER)
+        # Row-based bodyId-level bridge support, passed through as
+        # additive trailing columns (evidence only).
+        support_votes, support_verified, support_auto = [], [], []
+        support_linker = []
+        for row in rows:
+            prov = self._bridge_support_for_pair(
+                row.get('source_type'), row.get('source_dataset'),
+                row.get('target_type'), row.get('target_dataset'))
+            votes = (prov or {}).get('votes') or {}
+            verified = (prov or {}).get('verified_votes') or {}
+            auto = (prov or {}).get('auto_stripped_votes') or {}
+            fmt = lambda ctr: '; '.join(
+                f"{k}={ctr[k]}" for k in sorted(ctr)) if ctr else ''
+            support_votes.append(fmt(votes))
+            support_verified.append(fmt(verified))
+            support_auto.append(fmt(auto))
+            support_linker.append(str((prov or {}).get('linker_value') or ''))
+        for col, vals in (('support_votes', support_votes),
+                          ('support_verified', support_verified),
+                          ('support_auto', support_auto),
+                          ('support_linker_value', support_linker)):
+            df[col] = vals
+        df.to_csv(output_path, index=False)
+        self._log(f"Exported {len(rows)} per-bridge mapping rows to "
+                  f"{output_path}")
+        return len(rows)
+
+    def _refine_same_name_origins(
+            self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Phase 1c (plan-cross-dataset-query-resolution-samename-taxonomy
+        §2.1c): split the ``same name`` mapping origin into an
+        evidence-confirmed class and a bare echo.
+
+        A ``same name`` row whose scoped relation (the mapper's policy
+        decision) resolves the source type back to this very target name
+        becomes ``same name+evidence`` — a bare name echo never survives
+        that scoping, so the label only ever marks tabular/label evidence.
+        The bare-echo label is unchanged.  Additive: no existing label
+        value is renamed, so downstream consumers of ``mapping_origin``
+        keep working.
+        """
+        cache: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for row in rows:
+            if row.get('mapping_origin') != 'same name':
+                continue
+            src = str(row.get('source_type') or '')
+            src_ds = str(row.get('source_dataset') or '')
+            dst_ds = str(row.get('target_dataset') or '')
+            tgt = str(row.get('target_type') or '')
+            if not (src and src_ds and dst_ds):
+                continue
+            key = (src, src_ds, dst_ds)
+            if key not in cache:
+                try:
+                    cache[key] = self.get_mapping_decision(src, src_ds, dst_ds)
+                except Exception:
+                    cache[key] = {}
+            dec = cache[key]
+            if (dec.get('status') in ('mapped', 'bridged')
+                    and str(dec.get('target_type') or '') == tgt):
+                row['mapping_origin'] = 'same name+evidence'
+        return rows
     
     def to_label_mapper(
         self,
@@ -5792,6 +6270,213 @@ class CrossDatasetTypeMapper:
         
         return merge_map
     
+    # ------------------------------------------------------------------
+    # Row-based bodyId-level bridge support (the mapper's boundary:
+    # the mapping carries this evidence — built from the bridge linker
+    # rows / label votes at load time — but NEVER gates a mapping on
+    # connectivity; verification is the validate-expand-visualize
+    # pipeline's job).
+    # ------------------------------------------------------------------
+
+    def _type_population_counts(self, dataset: str) -> Dict[str, int]:
+        """{base_type: neuron count} for one dataset, from the dataset's
+        own neuron table (pruned column read, cached per load).  Used ONLY
+        for the same-name population-asymmetry flag — evidence carried for
+        the user's suggested check, never a mapping decision input."""
+        cached = self._type_population_counts_cache.get(dataset)
+        if cached is not None:
+            return cached
+        from collections import Counter
+        counts: Dict[str, int] = {}
+        try:
+            import os
+            folder = str(dataset).replace(':', '_').replace('.', '_')
+            base_path = os.path.join(
+                self._workspace_path or '.', 'datasets', folder,
+                f'{folder}_allneurons_neuron_df')
+            import pandas as pd
+            frame = None
+            if os.path.exists(base_path + '.parquet'):
+                frame = pd.read_parquet(base_path + '.parquet',
+                                        columns=['type'])
+            elif os.path.exists(base_path + '.csv'):
+                frame = pd.read_csv(base_path + '.csv', usecols=['type'],
+                                    low_memory=False)
+            if frame is not None:
+                for name in frame['type'].dropna():
+                    base, _ = self._split_hemi_suffix(str(name).strip())
+                    if base:
+                        counts[base] = counts.get(base, 0) + 1
+        except Exception:
+            counts = {}
+        self._type_population_counts_cache[dataset] = counts
+        return counts
+
+    def _conflicted_links(self) -> set:
+        """Lazy index of conflicted (dataset_key, base_type, dataset_key)
+        links in BOTH orientations — O(1) guard for the same-name pooled
+        identity (full scans per pair made the full-table export take
+        minutes)."""
+        idx = getattr(self, '_conflicted_links_index', None)
+        if idx is None:
+            idx = set()
+            for conflict in self._conflicts:
+                sk = self._get_type_mapping_key(conflict.source_dataset)
+                tk = self._get_type_mapping_key(conflict.target_dataset)
+                idx.add((sk, conflict.source_type, tk))
+                for tt in conflict.target_types:
+                    idx.add((tk, tt, sk))
+            self._conflicted_links_index = idx
+        return idx
+
+    def _bridge_support_for_pair(self, source_type, source_dataset,
+                                 target_type=None, target_dataset=None):
+        """BodyId-level bridge support for one mapping pair.
+
+        Provenance orientation varies by bridge kind (BANC label votes key
+        (banc_key, banc_type, target_key) with ``target`` naming the
+        foreign type; annotation/release overlays key
+        (src_key, src_type, dst_key)), so both orientations are probed —
+        with a ``target_type`` given, the per-target vote record takes
+        precedence over the ambiguous-reverse aggregate that shares the
+        direct slot.  Returns a plain JSON-safe dict of the retained
+        record — votes per source type, curated vs auto-stripped splits,
+        linker value, raw values; the **direct same-name identity record**
+        (all bodyIds pooled) when the names match and no bridge evidence
+        or conflict structure exists; or ``None`` when the pair carries
+        no bodyId-level evidence at all."""
+        if not self._loaded:
+            if not self.load():
+                return None
+        src_base, _ = self._split_hemi_suffix(str(source_type or ''))
+        src_key = self._get_type_mapping_key(source_dataset)
+        tgt_key = self._get_type_mapping_key(target_dataset) \
+            if target_dataset else None
+        prov = None
+        if tgt_key:
+            if target_type is not None:
+                # Per-target vote records live in the BANC-label forward
+                # orientation (banc_key, banc_type, target_key) — prefer
+                # them over the ambiguous-reverse aggregate that shares
+                # the (src_key, src_type, dst_key) slot with
+                # target=None/conflict=True.
+                tgt_base, _ = self._split_hemi_suffix(str(target_type))
+                candidate = self._bridge_provenance.get(
+                    (tgt_key, tgt_base, src_key))
+                if candidate and str(
+                        candidate.get('target') or '') == src_base:
+                    prov = candidate
+                else:
+                    prov = self._bridge_provenance.get(
+                        (src_key, src_base, tgt_key))
+                if prov is None and tgt_base == src_base:
+                    # Direct same-name pair: the nomenclature identity IS
+                    # the mapping's bodyId-level handling — all bodyIds of
+                    # the type pooled across both datasets (full
+                    # populations, fully in-map; nothing refined, nothing
+                    # gated).  EXCEPTION: a same-name type that
+                    # participates in a 1-to-N/N-to-1 structure — there
+                    # the evidence bridge resolves the bodyId-level
+                    # resolution (linker rows / votes per branch), and a
+                    # pooled marker would wrongly absorb the other
+                    # branches' bodyIds.  Guarded by the O(1) conflict
+                    # index (both orientations).
+                    links = self._conflicted_links()
+                    pair_conflicted = (
+                        (src_key, src_base, tgt_key) in links
+                        or (tgt_key, tgt_base, src_key) in links)
+                    if not pair_conflicted:
+                        record = {'kind': 'same name', 'identity': True,
+                                  'scope': 'all bodyIds pooled'}
+                        # population-asymmetry flag (user 2026-09-14): a
+                        # same-name pair whose populations differ by an
+                        # order of magnitude is carried WITH a suggested-
+                        # check flag — evidence for the user to review,
+                        # never a gate.
+                        na = self._type_population_counts(
+                            source_dataset).get(src_base, 0)
+                        nb = self._type_population_counts(
+                            target_dataset).get(tgt_base, 0)
+                        if na and nb:
+                            ratio = min(na, nb) / max(na, nb)
+                            record['population_asymmetry'] = {
+                                'n_source': na, 'n_target': nb,
+                                'ratio': round(ratio, 4),
+                                'flag': 'extreme population asymmetry'
+                                        if ratio < 0.1 else 'none'}
+                        return record
+            else:
+                prov = self._bridge_provenance.get(
+                    (src_key, src_base, tgt_key))
+        return dict(prov) if prov else None
+
+    def get_mapping_support(self, source_type, source_dataset,
+                            target_type=None, target_dataset=None):
+        """Public read-only view of one pair's bodyId-level handling.
+
+        Bridge-backed pairs return the row-based evidence the bridge
+        resolved (label votes, linker value, curated/auto provenance).
+        Direct same-name pairs return the identity record — all bodyIds
+        of the type pooled across both datasets.  This is the mapping's
+        carried evidence, never used to create, choose, or verify a
+        mapping; verification is the validate-expand-visualize pipeline's
+        role.  Returns ``None`` when the pair carries neither (no
+        evidence)."""
+        return self._bridge_support_for_pair(
+            source_type, source_dataset, target_type, target_dataset)
+
+    def get_type_population(self, type_name: str, dataset: str) -> int:
+        """Neuron count of one type (base name) in a dataset, from the
+        dataset's own neuron table.  Bookkeeping for the same-name
+        population-asymmetry flag and consumer audits — never a mapping
+        decision input."""
+        if not self._loaded:
+            if not self.load():
+                return 0
+        base, _ = self._split_hemi_suffix(str(type_name or '').strip())
+        return self._type_population_counts(dataset).get(base, 0)
+
+    def _format_bridge_support(self, prov) -> str:
+        """Compact deterministic support summary for exports, e.g.
+        ``cross-dataset cell type: 5thsLNv_LNd6=2 (curated 2)`` or
+        ``...: 5thsLNv_LNd6=1 (auto 1)``; broad-vote records list the
+        top 3 candidates by count then ``+N more candidates``; an
+        annotation bridge carries its ``via`` tokens; a direct same-name
+        pair reads ``same name (all bodyIds pooled)``."""
+        if not prov:
+            return ''
+        kind = str(prov.get('kind') or '')
+        votes = prov.get('votes') or {}
+        if votes:
+            verified = prov.get('verified_votes') or {}
+            auto = prov.get('auto_stripped_votes') or {}
+            ordered = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+            shown = ordered[:3]
+            parts = []
+            for name, cnt in shown:
+                v = int(verified.get(name, 0))
+                a = int(auto.get(name, 0))
+                tag = f" (curated {v})" if v else (f" (auto {a or cnt})" if a
+                                                   else "")
+                parts.append(f"{name}={cnt}{tag}")
+            if len(ordered) > len(shown):
+                parts.append(f"+{len(ordered) - len(shown)} more candidates")
+            return f"{kind}: " + "; ".join(parts)
+        via = prov.get('via')
+        if via:
+            via_txt = '; '.join(str(v) for v in via)
+            return f"{kind} via {via_txt}" if via_txt else kind
+        scope = prov.get('scope')
+        if scope:
+            text = f"{kind} ({scope})"
+            asym = prov.get('population_asymmetry') or {}
+            if str(asym.get('flag') or '') == 'extreme population asymmetry':
+                text += (f" — extreme population asymmetry "
+                         f"({asym.get('n_source')} vs {asym.get('n_target')};"
+                         " suggested check)")
+            return text
+        return kind
+
     def standardize_partner_types(
         self,
         partner_types: Dict[str, float],

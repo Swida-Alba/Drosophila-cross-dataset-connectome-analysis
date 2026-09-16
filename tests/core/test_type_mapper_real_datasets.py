@@ -31,6 +31,11 @@ from comparison.cross_dataset_type_mapper import (
     standardize_bridge,
 )
 from comparison.mapping_visualization import build_type_coverage
+from comparison.type_resolver import (
+    STATUS_CLAIMED,
+    STATUS_MAPPED,
+    resolve_valid_targets,
+)
 from ui.neuron_index import (
     collect_native_type_matches,
     enrich_native_type_matches,
@@ -418,6 +423,64 @@ def test_no_banc_target_is_a_stale_name(mapper, banc_names):
     _, additional_only = banc_names
     stale = {v for v in _iter_forward_targets(mapper, BANC) if v in additional_only}
     assert not stale
+
+
+# ---------------------------------------------------------------------------
+# §stale claims (2026-09-12): crosswalk names the target dataset does not
+# actually carry (e.g. male-cns CB4091 flywireType CB4091, absent from FAFB
+# v783) stay resolvable curated claims but never enter the target namespace
+# nor license a mapped equivalence.
+# ---------------------------------------------------------------------------
+
+def test_stale_fafb_claims_are_registered_not_injected(mapper):
+    claims = mapper._stale_type_claims.get((MCNS, FW), {})
+    # the observed case, plus scale (hundreds of stale crosswalk names)
+    assert claims.get('CB4091') == {'CB4091'}
+    assert len(claims) >= 100
+    # stale names never pollute the target namespace
+    assert 'CB4091' not in mapper._dataset_types[FW]
+    assert 'CB4091' not in mapper._flywire_primaries[FW]
+    claimed_names = {name for names in claims.values() for name in names}
+    assert not claimed_names & mapper._dataset_types[FW]
+    # namespace ground truth answers existence post-load
+    assert mapper.type_exists(FW, 'APDN3') is True
+    assert mapper.type_exists(FW, 'CB4091') is False
+
+
+def test_stale_claim_stays_resolvable_for_evidence_surfaces(mapper):
+    # the curated claim keeps its get_mapped_type answer so the alias
+    # viewer can show the crosswalk evidence — it is the resolver that
+    # refuses to promote it to a mapping
+    assert mapper.get_mapped_type('CB4091', MCNS, FW) == 'CB4091'
+
+
+def test_stale_claim_resolves_as_claimed_not_mapped(mapper):
+    res = resolve_valid_targets(mapper, 'CB4091', MCNS, FW)
+    assert res.status == STATUS_CLAIMED
+    assert res.target_types == ('CB4091',)
+    assert res.equivalence_key is None
+    # the UI adapter forwards the status so panels can render the claim
+    ann = mapped_type_targets(mapper, 'CB4091', MCNS, FW)
+    assert ann is not None
+    assert ann.get('status') == STATUS_CLAIMED
+    assert ann.get('targets') == ['CB4091']
+
+
+def test_real_rename_still_resolves_as_mapped(mapper):
+    # positive control: SLP249 -> APDN3 is a fulfilled curated rename
+    res = resolve_valid_targets(mapper, 'SLP249', MCNS, FW)
+    assert res.status == STATUS_MAPPED
+    assert res.target_types == ('APDN3',)
+    assert res.equivalence_key == 'APDN3'
+    assert mapper.type_exists(FW, 'APDN3') is True
+
+
+def test_every_fafb_target_is_primary_or_registered_claim(mapper, fafb_names):
+    primaries, _ = fafb_names
+    claims = mapper._stale_type_claims.get((MCNS, FW), {})
+    claimed_names = {name for names in claims.values() for name in names}
+    for value in _iter_forward_targets(mapper, FW):
+        assert value in primaries or value in claimed_names
 
 
 def test_rename_scale(mapper, fafb_names):
@@ -1825,3 +1888,101 @@ def test_auto_mapping_metadata_basis_fields():
     assert disabled['mapping_resolution_counts_by_status'] == {}
     assert disabled['mapping_partner_type_resolutions_by_status'] == {}
 
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — curated unique relations survive the derivation union
+# (plan-cross-dataset-query-resolution-samename-taxonomy §2.1b)
+# ---------------------------------------------------------------------------
+
+def test_curated_same_name_one_to_one_survives_bridge_union(mapper):
+    """male-cns ``L2`` -> FAFB is a curated same-name 1-to-1, but FAFB's
+    per-neuron ``additional_type(s)`` cells (``Mi13`` carries ``L2`` etc.)
+    used to widen the union into a 9-candidate ``one of N`` with no unique
+    answer.  The curated relation must be the equivalence result, with the
+    alt-column ends demoted to display-only secondary targets."""
+    from comparison.type_resolver import resolve_valid_targets
+
+    res = resolve_valid_targets(mapper, 'L2', MCNS, FW)
+    assert res.status == 'mapped'
+    assert res.kind == 'same name'
+    assert res.equivalence_key == 'L2'
+    assert res.target_types == ('L2',)
+    # the noisy alt-column ends stay visible as secondary display targets
+    assert res.secondary_targets
+    assert 'L2' not in res.secondary_targets
+
+
+def test_stale_rename_defers_to_native_same_name(mapper):
+    """§stale claims (2026-09-12), superseding the old
+    ``test_curated_rename_wins_over_same_name_alias``: male-cns ``Dm8a``'s
+    crosswalk names the FAFB counterpart ``yDm8``, but FAFB v783 carries
+    neither a primary nor an additional ``yDm8`` — the curated claim is
+    stale.  The realized native same-name wins the equivalence (query tier
+    §2.1) and the unfulfilled claim is kept in the reason; a curated
+    rename to a name the target actually carries still wins over the
+    alias, as before."""
+    from comparison.type_resolver import resolve_valid_targets
+
+    res = resolve_valid_targets(mapper, 'Dm8a', MCNS, FW)
+    assert res.status == 'mapped'
+    assert res.kind == 'same name'
+    assert res.equivalence_key == 'Dm8a'
+    assert res.target_types == ('Dm8a',)
+    assert 'yDm8' in (res.reason or '')
+    assert mapper.type_exists(FW, 'yDm8') is False
+
+
+def test_panel_adapter_sees_clean_same_name_for_l2(mapper):
+    """The Type Mapping panel adapter reshapes the resolution; for L2 it now
+    reports a plain same-name match instead of the one-of-N noise."""
+    from ui.neuron_index import mapped_type_targets
+
+    out = mapped_type_targets(mapper, 'L2', MCNS, FW)
+    assert out == {'kind': 'same name', 'targets': ['L2']}
+
+
+def test_same_name_origin_split_confirmed_vs_echo(mapper, tmp_path):
+    """Phase 1c (§2.1c): the per-bridge export labels an evidence-confirmed
+    same-name pairing ``same name+evidence`` while a bare echo keeps
+    ``same name``.  Additive split — no existing label value is renamed."""
+    out = tmp_path / 'per_bridge.csv'
+    mapper.export_mapping_per_bridge(
+        str(out), source_types=['L2', 'Dm8a'], source_dataset=MCNS,
+        target_datasets=[FW, BANC], pool_fn=lambda *a, **k: None)
+    df = pd.read_csv(out)
+    origins = {(r.source_type, r.target_dataset, r.target_type): r.mapping_origin
+               for r in df.itertuples()}
+    # BANC's own malecns_cell_type label confirms MCNS L2 = BANC L2
+    assert ('L2', BANC, 'L2') in origins
+    assert origins[('L2', BANC, 'L2')] == 'same name+evidence'
+    # FAFB renames Dm8a to yDm8, so the FAFB Dm8a pairing stays a bare echo
+    assert ('Dm8a', FW, 'Dm8a') in origins
+    assert origins[('Dm8a', FW, 'Dm8a')] == 'same name'
+
+
+def test_target_taxonomy_query_bridges_across_datasets(mapper):
+    """Phase 2/3 worked example (plan §2.2/§2.3): the target token
+    ``circadian_clock`` queries the 21 FAFB members natively and the mapped
+    unions in MCNS/BANC — previously those two legs matched nothing and the
+    comparison was silently empty there.  Non-taxonomy sources keep their
+    identity names verbatim."""
+    from comparison.comparison_parameters import ComparisonParameters
+
+    p = ComparisonParameters(
+        datasets=[MCNS, FW, BANC],
+        source_neurons=['L2'], target_neurons=['circadian_clock'],
+        auto_type_mapping=True)
+    p._auto_type_mapper = mapper
+
+    tgt_fafb = p.get_target_neurons_for_dataset(FW)
+    assert len(tgt_fafb) == 21
+    assert 'DN1a' in tgt_fafb and 'l-LNv' in tgt_fafb
+    tgt_mcns = p.get_target_neurons_for_dataset(MCNS)
+    assert 'DN1a' in tgt_mcns and 'LNd_b' in tgt_mcns and '5thsLNv_LNd6' in tgt_mcns
+    tgt_banc = p.get_target_neurons_for_dataset(BANC)
+    assert 's-LNv_b' in tgt_banc and 'aMe13' in tgt_banc
+
+    # sources: identity names everywhere (query content unchanged)
+    for ds in (MCNS, FW, BANC):
+        assert p.get_source_neurons_for_dataset(ds) == ['L2']

@@ -82,6 +82,61 @@ python skills/drocat-usage/scripts/run_direct.py \
 - Per-dataset comparison tables (CSV/XLSX), threshold summaries, report, and
   conserved-path HTML views.
 
+## Report layout
+
+The backend default renders the original single-page report. The new
+tabbed layout (opt-in via `report_layout='tabbed'`, still under
+refinement) opens on **Overview** and organizes the rest into page tabs —
+**Combos (per query)** (per-row dashboards with jump buttons),
+**Type Mapping**, **Plots** (per-threshold and density-matched charts as
+separate sub-tabs), **Matrices & Networks**, **Cross-views**, **Notes**.
+`report_layout='legacy'` restores the single-page report; `'both'`
+writes both files.
+
+## Query rows and merge granularity (auto mode)
+
+- Auto-mode query rows are named `threshold={N}` (vertical, one threshold
+  everywhere) and `aligned_density={level}` (horizontal, density-matched;
+  the explicit per-dataset thresholds stay in the label). Those ids are the
+  report tab buttons, the CSV `query_id` values, and the per-query export
+  filenames (e.g. `conserved_network_threshold_19_network.html`).
+- With auto type mapping, the run builds a **merge policy** from the query
+  chips: the report's rows are keyed by the chips' group labels instead of
+  always folding toward male-cns names. All chips resolving into one
+  dataset's naming anchor on that dataset; all-same-name chips use the
+  shared name; mixed chips emit a `[type granularity]` note and keep the
+  minimal inseparable leaves. A 1-to-N parent queried from its own side
+  merges all branches into ONE row (weak auto-vote branches stay valid but
+  are listed under `[BANC auto labels]`); a leaf-anchored chip covers only
+  its own branch and the shared parent stays a separate whole row; a leaf
+  claimed by two queried parents merges with neither (`[merge fan-in]` —
+  with an explicit note that the queried parent's row is PARTIAL by
+  design).
+- Evidence surfaces: the report's Type Mapping section is split into
+  THREE tables — **Sources** (the priority-selected `(dataset: type)`
+  observation per canonical row: male-cns → FAFB → other neuprint → BANC,
+  with remaining observations listed beside), **Targets** (per-dataset
+  resolved names; names differing from the canonical are colored —
+  split-branch members share one color — and lists beyond three names
+  collapse; the muted ● mark repeats the source dataset's identity; the
+  ⚠️ auto-only badge attaches to the auto-label SOURCE dataset cell) —
+  and **Intermediates** (mid-chain hops of bridge routes). A fan-in key
+  (claimed by two parents) is pruned from both parents' rows. The
+  **Resolution topology** card stays collapsed by default; the
+  run folder gains `type_resolution_topology.json`; `auto_type_mapping.csv`
+  gains additive `anchor_group`/`auto_only` columns (`anchor_group` only
+  when every endpoint of the row belongs to that same group); merged
+  neuron-count rows carry their raw composition in `group_members`. All
+  warning blocks mirror into
+  `user_warning_notes.txt`; the custom label mapper (LabelMapper /
+  `overall_mapping_json`) overrides any merge decision. Round-4 note: the
+  section leads with role tables (Queried Sources / Queried Targets / Path
+  Intermediates ranked by traversal count) and the run header carries a
+  "🧠 Hemisphere-aware run" badge whenever `separate_hemispheres` is on;
+  `ComparisonParameters.for_run_folder(run_dir)` + `skip_existing` resumes
+  a run folder in place WITHOUT losing the hemisphere/symmetry/reciprocity
+  flags (the from_dict round-trip drop was fixed 2026-09-16).
+
 ## Notes
 
 - `comparison_mode="path"` uses the pathfinding engine (FindAllPath/FindShortestPath);
@@ -155,8 +210,19 @@ python skills/drocat-usage/scripts/run_direct.py \
   `bodyId_edges_all_but_debris` when off (N = typed + untyped); segmentation
   debris (ids absent from the curated table) is always excluded. The raw
   capture lives in `dataset_data/{dataset}/_density/` (`density_edges.npz`,
-  `density_path_bottlenecks.npy`, `density_meta.json`); the two-panel figure
-  is `comparison_visualizations/density_alignment_threshold_curves.png`. In
+  `density_path_bottlenecks.npy`, `density_meta.json`); the comparison
+  report embeds the two-panel figure as an interactive Plotly chart whose
+  grey dashed vertical guides mark the vertical (per-threshold) rows'
+  thresholds and whose grey dotted horizontal guides mark the horizontal
+  (density-matched) rows' levels — hover a guide for its row id.
+  `comparison_visualizations/density_alignment_threshold_curves.png` stays
+  the static export of the same figure. A dataset without a density
+  capture is EXCLUDED from the horizontal rows instead of vetoing them:
+  those rows carry a `partial_datasets` marker, the run notes say
+  `[density partial]`, and the report labels them. Every threshold
+  instance also appends its console trace to
+  `dataset_data/{dataset}/run_log.txt`, so a silent fetch failure is
+  diagnosable from the run folder alone. In
   auto mode, `comparison_results/density_alignment_best_matches.csv`
   additionally holds the measured vertical/horizontal aligned rows, and
   `[auto threshold]` / `[density]` warnings mirror into the run guide. When
@@ -174,5 +240,15 @@ python skills/drocat-usage/scripts/run_direct.py \
   resolver: licensed renames merge under the canonical key, valid splits expand,
   and conflicts stay dataset-scoped (never merged by raw same-name). The run's
   `auto_type_mapping.json` records per-status counts and `raw_fallback_used`.
+- The Cross-Dataset tab's **Type Mapping** panel carries the row-based
+  bodyId-level evidence of every 1-to-N split: per-branch linker-refined
+  bodyId pools and label-vote provenance (curated vs `auto:` — e.g. the
+  BANC `aMe24` bridge: 1 auto vote vs `s-LNv_a`: 2), a collapsed
+  "Per-type breakdown" expansion for multi-type previews, and
+  `mapping_support` / `support_*` columns in the mapping exports. A
+  separate informational split-verification view (from the
+  validate-expand-visualize verification machinery) may summarize a
+  per-neuron partition. Strictly informational — none of it changes the
+  analysis selection or run exports.
 - Use `parallel=True` with a bounded `max_workers` for many datasets; start with
   `skip_bodyId=True` and `max_interlayer=2`.

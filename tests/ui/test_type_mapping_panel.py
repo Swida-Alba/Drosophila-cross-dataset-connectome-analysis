@@ -194,7 +194,7 @@ def test_global_search_composes_the_selection(panel_client):
                 'MCNS · selected', 'MCNS · all valid'} <= set(by_label)
         assert 'flywire_FAFB_v783 side (bodyIds)' in (
             by_label['FAFB · selected'].get('tooltip', ''))
-        assert 'Not a biological adjudication' in (
+        assert 'not a biological adjudication' in (
             by_label['FAFB · selected'].get('tooltip', ''))
         assert 'male-cns:v1.0 side (bodyIds)' in (
             by_label['MCNS · all valid'].get('tooltip', ''))
@@ -262,3 +262,148 @@ def test_empty_search_produces_no_results(panel_client):
     assert not any('Mapping graph (HTML)' in str(getattr(b, 'text', ''))
                    for b in _buttons(client))
     assert not any('mapped pairs' in label for label in _labels(client))
+
+
+def _summary_by_dataset(outcome):
+    return {row['dataset']: row for row in outcome['summary']}
+
+
+def test_cb4091_stale_crosswalk_claim_is_not_counted_as_mapped(panel_client):
+    """2026-09-12: male-cns CB4091 carries a flywireType crosswalk claim
+    (CB4091) that flywire_FAFB_v783 cannot fulfil — no such neurons exist
+    there.  The claim must not inflate FAFB's mapped counts: only target
+    types with actual neurons count as mapped, and the unfulfilled claim
+    is reported on the orphan entry instead."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    outcome = _compute_type_mapping(['CB4091'], [MCNS, FAFB], 'exact')
+    rows = _summary_by_dataset(outcome)
+    mcns, fafb = rows[MCNS], rows[FAFB]
+    # the type lives (20 neurons) in male-cns only — its issued side is
+    # the Matched types / Neurons pair (the old issued column was always
+    # equal to Neurons and is gone)
+    assert mcns['types'] == 1 and mcns['neurons'] == 20
+    # nothing is realized: no flows, no received counterpart types
+    assert not outcome['pair_flows']
+    assert mcns['mapped_types'] == 0 and mcns['mapped_neurons'] == 0
+    assert mcns['mapped'] == '0'
+    assert fafb == {'dataset': FAFB, 'types': 0, 'neurons': 0,
+                    'mapped_types': 0, 'mapped_neurons': 0, 'mapped': '0',
+                    'unmapped': 0}
+    # the orphan explains WHY: the claim names a type FAFB does not have
+    entries = outcome['orphans'].get((MCNS, FAFB)) or []
+    assert [e['type'] for e in entries] == ['CB4091']
+    assert entries[0]['count'] == 20
+    assert 'CB4091' in entries[0]['claimed']
+
+
+def test_slp249_rename_still_counts_as_mapped(panel_client):
+    """Positive control for the realized-vs-claimed split: male-cns SLP249
+    resolves to FAFB APDN3 (a real primary with neurons), so FAFB keeps a
+    nonzero mapped count and no orphan is recorded."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    outcome = _compute_type_mapping(['SLP249'], [MCNS, FAFB], 'exact')
+    rows = _summary_by_dataset(outcome)
+    mcns, fafb = rows[MCNS], rows[FAFB]
+    assert mcns['types'] == 1 and mcns['neurons'] > 0
+    assert fafb['mapped_types'] == 1 and fafb['mapped_neurons'] > 0
+    # 1 received type → the combined cell is the plain neuron count
+    assert fafb['mapped'] == str(fafb['mapped_neurons'])
+    assert outcome['pair_flows']
+    assert not outcome['orphans']
+
+
+def test_orphan_claim_is_explained_in_the_expander(panel_client):
+    """The rendered orphan line names the unfulfilled crosswalk claim, and
+    the summary headers carry tooltips so the columns are self-explanatory."""
+    client, button, _selection = panel_client
+    search = button.search_container
+    search.add_values(['CB4091'])
+    assert _click_button(client, 'Search mappings')
+    labels = _labels(client)
+    assert any("auto-mapping claims 'CB4091' but flywire_FAFB_v783 "
+               "has no such neurons" in label for label in labels)
+    assert any(label.startswith(
+        'Orphan types — no mapped counterpart (1)') for label in labels)
+    summary_tables = [
+        e for e in client.elements.values()
+        if type(e).__name__ == 'Table'
+        and any(c.get('label') == 'Mapped neurons'
+                for c in e._props.get('columns', []))]
+    assert summary_tables, 'per-dataset summary table missing'
+    by_label = {c['label']: c
+                for c in summary_tables[0]._props['columns']}
+    assert 'no neurons here does not count' in by_label['Mapped neurons'][
+        'tooltip']
+    assert 'no realized counterpart' in by_label['Unmapped (orphans)'][
+        'tooltip']
+
+
+# ---------------------------------------------------------------------------
+# R4/R5: bodyId-level split resolution + per-type breakdown
+# (plan-bodyid-level-granularity-in-type-mapper.md §3b.1/§3b.3)
+# ---------------------------------------------------------------------------
+
+def test_single_type_preview_has_no_per_type_expansion(panel_client):
+    client, button, _selection = panel_client
+    button.search_container.add_values(['SLP249'])
+    assert _click_button(client, 'Search mappings')
+    expansions = [e for e in client.elements.values()
+                  if type(e).__name__ == 'Expansion']
+    assert not any('Per-type breakdown' in str(getattr(e, 'text', ''))
+                   for e in expansions)
+
+
+def test_multi_type_preview_shows_collapsed_per_type_expansion(panel_client):
+    client, button, _selection = panel_client
+    button.search_container.add_values(['5thsLNv_LNd6', 'SLP249'])
+    assert _click_button(client, 'Search mappings')
+    expansions = [e for e in client.elements.values()
+                  if type(e).__name__ == 'Expansion']
+    assert any('Per-type breakdown' in str(getattr(e, 'text', ''))
+               for e in expansions)
+
+
+def test_per_type_breakdown_rows_are_dataset_specific(panel_client):
+    """2026-09-14: every breakdown row is one (matched type, target
+    dataset) pair and its mapped counts are THAT target dataset's own
+    claim set — never a sum across the target datasets.  The combined
+    'mapped' cell reads '{N}({m} types)' from 2 mapped types up and the
+    plain '{N}' for a single mapped type."""
+    from ui.components.type_mapping_panel import (
+        _compute_type_mapping,
+        _format_mapped_neurons,
+    )
+
+    outcome = _compute_type_mapping(['SLP249'], [MCNS, FAFB], 'exact')
+    rows = [r for r in outcome['summary_per_type']
+            if r['type'] == 'SLP249']
+    assert [(r['dataset'], r['target']) for r in rows] == [(MCNS, FAFB)]
+    row = rows[0]
+    assert row['mapped_neurons'] > 0
+    assert row['mapped'] == str(row['mapped_neurons'])
+
+    # CB2572 resolves both ways after the mirror dedupe (the split
+    # MCNS→FAFB derivation direction, plus FAFB CB2572 → MCNS SMP352) —
+    # the two rows must each carry their OWN target dataset's claim set
+    outcome = _compute_type_mapping(['CB2572'], [MCNS, FAFB], 'exact')
+    rows = outcome['summary_per_type']
+    assert {(r['dataset'], r['target']) for r in rows} == {
+        (MCNS, FAFB), (FAFB, MCNS)}
+    by_target = {(r['dataset'], r['target']): r for r in rows}
+    assert by_target[(MCNS, FAFB)]['mapped_neurons'] > 0
+    # per-row format invariant: '{N}({m} types)' from 2 types up
+    for r in rows:
+        assert r['mapped'] == _format_mapped_neurons(
+            r['mapped_neurons'], r['mapped_types'])
+
+
+def test_format_mapped_neurons_combined_cell():
+    """The combined mapped cell: type breadth shows from 2 types up."""
+    from ui.components.type_mapping_panel import _format_mapped_neurons
+
+    assert _format_mapped_neurons(204, 40) == '204(40 types)'
+    assert _format_mapped_neurons(6, 2) == '6(2 types)'
+    assert _format_mapped_neurons(9, 1) == '9'
+    assert _format_mapped_neurons(0, 0) == '0'
