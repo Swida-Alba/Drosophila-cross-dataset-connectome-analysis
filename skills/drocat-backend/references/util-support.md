@@ -40,14 +40,12 @@ Detects whether local FAFB files or standalone BANC release files exist and whet
 available. FAFB needs converted local files; BANC uses its public release bucket and local prepared tables; a missing local file and
 a missing token are different failures.
 
-## cache_manager (`src/core/cache_manager.py`)
+## Cache locations (no manager module)
 
-```python
-from src.core.cache_manager import ...   # cache path helpers, availability
-```
-
-`cache/` holds downloaded data and is safe to clear; `neuron_indexes/` is a
-persistent "system files" directory never cleared by `cache/`-cleanup.
+There is no cache-manager helper to import; caches are plain paths under the
+project root. `cache/` holds downloaded data and is safe to clear (the app
+refetches); `neuron_indexes/` is a persistent "system files" directory never
+cleared by `cache/`-cleanup.
 
 ## roi_screening (`src/roi_screening.py`)
 

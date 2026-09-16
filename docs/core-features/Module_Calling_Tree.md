@@ -67,10 +67,6 @@ src/
 ├── BANC_file_converter.py      # BANC dataset converter
 │   └── provides: Conversion utilities for BANC parquet files
 │
-├── core/
-│   └── cache_manager.py        # Cache management CLI
-│       └── imports: coana.FindNeuronConnection
-│
 ├── comparison/                 # Cross-dataset comparison module
 │   ├── connectivity_profiler.py     # 1-hop/2-hop hybrid profiler (CORE)
 │   ├── profile_comparator.py        # Profile comparison + HomologFinder

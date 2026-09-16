@@ -61,7 +61,7 @@ approval; otherwise continue until the task is complete.
 | [flylight](modules/flylight.md) | `FlyLightDownloader` | FlyLight image/metadata download |
 | [visualize-skeleton](modules/visualize-skeleton.md) | `VisualizeSkeleton` | 3D morphology, ROI meshes, exports |
 | [vispath](modules/vispath.md) | `VisualizePath` | interactive network/Sankey/heatmap, empty editable canvas |
-| [util-support](references/util-support.md) | `token_manager`, `neuron_filter`, `flywire_readiness`, `cache_manager`, `roi_screening` | data prep, token/readiness helpers |
+| [util-support](references/util-support.md) | `token_manager`, `neuron_filter`, `flywire_readiness`, `roi_screening` | data prep, token/readiness helpers |
 
 ## Verify a signature before composing
 
