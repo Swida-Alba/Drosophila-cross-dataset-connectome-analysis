@@ -107,10 +107,15 @@ def test_inter_dataset_threshold_editor_uses_query_rows_in_core_parameters():
     """The cross-dataset editor exposes complete query rows, not schedules."""
     source = open("ui/tabs/inter_dataset.py", encoding="utf-8").read()
     assert 'section_header("Threshold Mode", "tune")' in source
+    # Auto is the default, first-listed mode (no threshold chips needed);
+    # Standard and Custom combination follow.
+    assert 'threshold_mode_value = {"value": "auto"}' in source
+    assert '("auto", "Auto")' in source
     assert '("standard", "Standard")' in source
     assert '("combinations", "Custom combination")' in source
     assert '"outline no-caps"' in source
-    assert '"min-height: 3rem; font-size: 1.05rem; font-weight: 700;"' in source
+    assert 'return mode, sorted(set(values)) or [3], None' in source
+    assert '"min-height: 3rem; font-size: 1.0rem; font-weight: 700;"' in source
     assert 'icon="delete_outline"' in source
     assert "Custom combination requires at least two selected" in source
     assert '"threshold_mode": threshold_mode' in source

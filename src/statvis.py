@@ -16,6 +16,19 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+# Console encoding guard (Defect B): progress/status output prints ⚠/✓,
+# which aborts with UnicodeEncodeError on legacy Windows code pages when
+# stdout is redirected.
+try:
+    from .utils.console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
+
 # Suppress FutureWarning from neuprint about Series.__getitem__
 warnings.filterwarnings("ignore", category=FutureWarning, module="neuprint")
 
@@ -570,7 +583,6 @@ def _ensure_local_dataset_files(dataset: str, client=None, verbose: bool = True)
         if verbose:
             print(f'\033[33mcsv files of dataset "{dataset}" not found, downloading...\033[0m')
 
-        os.makedirs(dataset_dir, exist_ok=True)
         dataset_path_body = os.path.join(dataset_dir, f"{dataset_normalized}_allneurons")
         neuron_csv = dataset_path_body + '_neuron_df.csv'
 
@@ -1599,14 +1611,10 @@ def pull_dataset(dataset, save_path=None, omitNoneType=False, client=None, batch
         dataset_normalized = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
         project_root = os.path.dirname(os.path.dirname(__file__))
         dataset_dir = os.path.join(project_root, "datasets", dataset_normalized)
-        
-        # Use new structure if directory exists, otherwise fallback (or create new structure)
-        if os.path.exists(dataset_dir):
-            save_path = os.path.join(dataset_dir, f"{dataset_normalized}_allneurons")
-        else:
-            # Create new structure by default
-            os.makedirs(dataset_dir, exist_ok=True)
-            save_path = os.path.join(dataset_dir, f"{dataset_normalized}_allneurons")
+        save_path = os.path.join(dataset_dir, f"{dataset_normalized}_allneurons")
+        # The directory is created only right before the tables are written
+        # (below), so a failed or cancelled download leaves no empty
+        # datasets/<dataset>/ folder behind.
 
     from neuprint import NeuronCriteria as NC
     from neuprint import default_client
@@ -1653,7 +1661,20 @@ def pull_dataset(dataset, save_path=None, omitNoneType=False, client=None, batch
             raise last_exc or Exception("Unknown error")
 
     if client is None:
-        client = default_client()
+        try:
+            client = default_client()
+        except RuntimeError as e:
+            # No client configured (cache-only context / no token): the
+            # neuprint RuntimeError is opaque to users — say what is missing
+            # and how to fix it.
+            raise RuntimeError(
+                f"Dataset '{dataset}' is not available locally and no NeuPrint "
+                f"connection exists.\n"
+                f"   ({e})\n"
+                f"   Set a NEUPRINT token (UI Settings tab or config.json) so the "
+                f"dataset tables can be downloaded, or place the prepared tables "
+                f"in the datasets/ folder."
+            ) from e
     else:
         # NeuronCriteria construction itself requires the neuprint DEFAULT
         # client (the criteria factory is client-bound in this neuprint
@@ -1828,6 +1849,9 @@ def pull_dataset(dataset, save_path=None, omitNoneType=False, client=None, batch
         neuron_df = neuron_df[neuron_df['type'].notna()]
     _tqdm_print(f'Pulled {len(neuron_df)} neurons from {dataset}')
     _tqdm_print('Writing to', save_path, end='...')
+    # First disk side effect of the pull: create the destination folder only
+    # once the data is in hand (see the save_path resolution above).
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     # write neuron table as csv; the ROI-count table is numeric long-form
     # (bodyId/roi/count columns), so a zstd parquet is ~5x smaller than the
     # equivalent CSV and loads without schema inference

@@ -229,6 +229,128 @@ def test_floor_guard_against_degenerate_canonical():
 
 
 # ---------------------------------------------------------------------------
+# Contract 2026-09-11 (rev 2): applied = the canonical equivalent threshold.
+# NO max(canonical, requested) clamp. The pipeline order (filter by requested
+# -> edge budget -> graph -> StrongestFirst) makes a per-slice run's canonical
+# structurally >= its own requested threshold; a canonical below the request
+# means the slice inherited a lower threshold's provenance (fixed in the
+# replay, not by clamping the label).
+# ---------------------------------------------------------------------------
+
+def test_applied_is_canonical_not_clamped():
+    """A canonical below the request is reported as-is: it is the minimal
+    equivalent threshold for the emitted set (the replay must not hand a
+    higher slice a lower threshold's canonical)."""
+    prov = applied_threshold_provenance(
+        requested_threshold=30,
+        strongest_first_tau=None,
+        strongest_first_budget_bitten=True,
+        strongest_dropped_bottleneck=3,
+        tau_canonical=4,
+        edge_weight_floor=4,
+        edge_budget=1000000,
+    )
+    assert prov['applied_threshold'] == 4
+    assert prov['applied_threshold_source'] == 'strongest_first_budget'
+    assert prov['tau_canonical'] == 4
+
+
+def test_floor_below_requested_is_inactive():
+    """w0 <= requested: the floored graph reproduces the unfiltered
+    output at this threshold, so the run is untouched and complete."""
+    prov = applied_threshold_provenance(
+        requested_threshold=30,
+        strongest_first_tau=30,
+        strongest_first_budget_bitten=False,
+        tau_canonical=30,
+        edge_weight_floor=9,
+        edge_budget_landing=8,
+        edge_budget=1000000,
+    )
+    assert prov['applied_threshold'] == 30
+    assert prov['applied_threshold_source'] == 'requested'
+    assert prov['edge_budget_applied'] is False
+    assert prov['edge_floor_binding'] is False
+    assert prov['paths_complete'] is True
+
+
+def test_floor_equal_requested_is_inactive():
+    prov = applied_threshold_provenance(
+        requested_threshold=9,
+        strongest_first_tau=9,
+        strongest_first_budget_bitten=False,
+        tau_canonical=9,
+        edge_weight_floor=9,
+        edge_budget=1000000,
+    )
+    assert prov['applied_threshold'] == 9
+    assert prov['applied_threshold_source'] == 'requested'
+    assert prov['edge_budget_applied'] is False
+    assert prov['paths_complete'] is True
+
+
+def test_floor_above_requested_is_binding():
+    """w0 > requested: the floor removed material the threshold needs, so
+    the run is exactly a complete run at w0."""
+    prov = applied_threshold_provenance(
+        requested_threshold=3,
+        strongest_first_tau=9,
+        strongest_first_budget_bitten=False,
+        tau_canonical=9,
+        edge_weight_floor=9,
+        edge_budget_landing=8,
+        edge_budget=1000000,
+    )
+    assert prov['applied_threshold'] == 9
+    assert prov['applied_threshold_source'] == 'edge_budget'
+    assert prov['edge_budget_applied'] is True
+    assert prov['edge_floor_binding'] is True
+    assert prov['paths_complete'] is False
+
+
+def test_analyzer_banc_30_complete_slice_reports_requested():
+    """The reported BANC-30 case: a COMPLETE slice (paths_complete=True, no
+    SF bite) with a graph floor below the request must report applied = 30,
+    not the inherited floor. This is the correct per-slice provenance, not a
+    clamp: no SF bite and floor inactive => untouched run."""
+    analyzer = _analyzer_with_meta({
+        "requested_threshold": 30,
+        "tau": 30.0,
+        "tau_canonical": 30,
+        "strongest_dropped_bottleneck": None,
+        "budget_bitten": False, "paths_complete": True,
+        "skipped": False, "duplicate_of": None,
+        "applied_folder": 30, "edge_weight_floor": 4.0,
+        "edge_budget": 1000000, "edge_budget_landing": 3.0,
+    }, key_threshold=30)
+    applied, pruned, floor, source = analyzer._applied_state_for(
+        "banc_v888", 30)
+    assert applied == 30
+    assert pruned is False
+    assert floor == 4.0
+    assert source == "requested"
+
+
+def test_complete_slice_reports_requested_with_natural_tau():
+    """A complete slice reports the requested threshold; its natural tau is
+    the minimal equivalent, reported separately (not applied)."""
+    prov = applied_threshold_provenance(
+        requested_threshold=30,
+        strongest_first_tau=45,
+        strongest_first_budget_bitten=False,
+        tau_canonical=45,
+        edge_weight_floor=4,
+        edge_budget=1000000,
+    )
+    assert prov['applied_threshold'] == 30
+    assert prov['strongest_first_tau'] == 45
+    assert prov['paths_complete'] is True
+    assert prov['edge_budget_applied'] is False
+
+
+
+
+# ---------------------------------------------------------------------------
 # Instance-level finalization
 # ---------------------------------------------------------------------------
 

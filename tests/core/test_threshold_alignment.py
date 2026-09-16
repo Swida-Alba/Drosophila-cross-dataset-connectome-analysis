@@ -332,3 +332,57 @@ def test_run_loops_honor_per_dataset_lists(tmp_path, monkeypatch):
 
     assert sorted(calls) == [("banc:v626", 3), ("banc:v626", 5),
                              ("flywire_FAFB_v783", 7)]
+
+
+# ---------------------------------------------------------------------------
+# Alignment-derived combinations (plan §7C)
+# ---------------------------------------------------------------------------
+
+def test_suggest_combination_rows_builds_aligned_query_rows():
+    from comparison.threshold_alignment import suggest_combination_rows
+
+    best = pd.DataFrame([
+        {'reference_dataset': 'mcns', 'anchor_threshold': 19,
+         'target_dataset': 'banc', 'best_t': 6, 'count_distance': 0.02,
+         'match_kind': 'anchor'},
+        {'reference_dataset': 'mcns', 'anchor_threshold': 19,
+         'target_dataset': 'fafb', 'best_t': 17, 'count_distance': 0.03,
+         'match_kind': 'anchor'},
+        {'reference_dataset': 'mcns', 'anchor_threshold': 30,
+         'target_dataset': 'banc', 'best_t': 10, 'count_distance': 0.05,
+         'match_kind': 'anchor'},
+        {'reference_dataset': 'mcns', 'anchor_threshold': 30,
+         'target_dataset': 'fafb', 'best_t': 30, 'count_distance': 0.01,
+         'match_kind': 'anchor'},
+    ])
+    rows = suggest_combination_rows(best, 'mcns', ['mcns', 'banc', 'fafb'])
+    assert len(rows) == 2
+    assert rows[0]['thresholds'] == {'mcns': 19, 'banc': 6, 'fafb': 17}
+    assert rows[1]['thresholds'] == {'mcns': 30, 'banc': 10, 'fafb': 30}
+    assert all(r['aligned_within_tolerance'] for r in rows)
+
+
+def test_suggest_combination_rows_skips_incomplete():
+    from comparison.threshold_alignment import suggest_combination_rows
+
+    best = pd.DataFrame([
+        {'reference_dataset': 'mcns', 'anchor_threshold': 19,
+         'target_dataset': 'banc', 'best_t': 6, 'count_distance': 0.02,
+         'match_kind': 'anchor'},
+        # No fafb row -> incomplete, dropped.
+    ])
+    rows = suggest_combination_rows(best, 'mcns', ['mcns', 'banc', 'fafb'])
+    assert rows == []
+
+
+def test_suggest_combination_rows_flags_out_of_tolerance():
+    from comparison.threshold_alignment import suggest_combination_rows
+
+    best = pd.DataFrame([
+        {'reference_dataset': 'mcns', 'anchor_threshold': 19,
+         'target_dataset': 'banc', 'best_t': 6, 'count_distance': 0.8,
+         'match_kind': 'anchor'},
+    ])
+    rows = suggest_combination_rows(best, 'mcns', ['mcns', 'banc'])
+    assert len(rows) == 1
+    assert rows[0]['aligned_within_tolerance'] is False

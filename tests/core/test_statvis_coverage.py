@@ -1092,6 +1092,9 @@ class TestEnsureLocalDatasetFiles:
 
         def fake_pull(dataset, save_path=None, omitNoneType=False, client=None,
                       **kwargs):
+            # Mirror the real pull_dataset contract: it creates the
+            # destination folder itself right before writing.
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             pd.DataFrame({"bodyId": [1]}).to_csv(
                 save_path + "_neuron_df.csv", index=False)
             pd.DataFrame({"roi": ["R"]}).to_parquet(

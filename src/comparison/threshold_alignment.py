@@ -110,18 +110,49 @@ class EdgeDensityProber:
         """Per-pair max weights for pairs present at threshold t."""
         return {pair: w for pair, w in self.pair_weights.items() if w >= t}
 
+    def match_interval(self, target_count: int, cap: int = 30) -> Tuple[int, int]:
+        """Threshold interval [lo, hi] whose count equals ``target_count``.
+
+        On a plateau many thresholds share one count; returning the whole
+        interval is more informative than an arbitrary single point. When
+        no t achieves the count exactly, returns the single best t as a
+        degenerate interval.
+        """
+        if self.total_pairs == 0:
+            return (0, 0)
+        cap = max(int(cap), 1)
+        best_t, best_count = None, None
+        for t in range(1, cap + 1):
+            c = self.count(t)
+            if best_count is None or abs(c - target_count) < abs(
+                    best_count - target_count):
+                best_t, best_count = t, c
+        lo = hi = best_t if best_t is not None else 0
+        if best_count == target_count:
+            while lo > 1 and self.count(lo - 1) == target_count:
+                lo -= 1
+            while hi < cap and self.count(hi + 1) == target_count:
+                hi += 1
+        return (lo, hi)
+
     def best_match(self, anchor_count: int, cap: int = 30,
                    neighbor_radius: int = 2) -> Dict:
         """Find the extended-grid threshold whose pair count is closest to
         ``anchor_count`` (bisection + ±``neighbor_radius`` neighbors, §6.2).
 
-        Returns {'best_t', 'count_at_best_t', 'count_distance'} — best_t
-        is None when the extract is empty (no grid point has any edges).
+        Returns a dict with ``best_t`` (None when the target is empty OR
+        its density is entirely below the anchor's range, so no threshold
+        can match), ``best_t_range`` (the plateau achieving the best count),
+        ``count_at_best_t``, ``count_distance`` and a ``match_status`` in
+        {exact, within_tolerance, outside_tolerance,
+         target_density_below_range}.
         """
         result = {
             'best_t': None,
+            'best_t_range': None,
             'count_at_best_t': 0,
             'count_distance': float(anchor_count) if anchor_count else 0.0,
+            'match_status': 'target_density_below_range',
         }
         if self.total_pairs == 0:
             return result
@@ -148,14 +179,91 @@ class EdgeDensityProber:
             d = abs(c - anchor_count)
             if best_dist is None or d < best_dist:
                 best_t, best_dist, best_count = t, d, c
+        max_count = self.count(1)
+        # No threshold in range can reach the anchor's density: report the
+        # shortfall honestly instead of fabricating best_t=1.
+        if anchor_count > max_count:
+            result.update({
+                'best_t': None,
+                'best_t_range': None,
+                'count_at_best_t': int(max_count),
+                'count_distance': edge_count_distance(anchor_count, max_count),
+                'match_status': 'target_density_below_range',
+            })
+            return result
         if best_t is None:
             return result
+        lo, hi = self.match_interval(best_count, cap=cap)
+        status = ('exact' if best_dist == 0 else
+                  'within_tolerance'
+                  if edge_count_distance(anchor_count, best_count)
+                  <= ALIGNMENT_TOLERANCE else 'outside_tolerance')
         result.update({
             'best_t': best_t,
+            'best_t_range': (lo, hi),
             'count_at_best_t': int(best_count),
             'count_distance': edge_count_distance(anchor_count, best_count),
+            'match_status': status,
         })
         return result
+
+
+def suggest_combination_rows(
+    best_matches_df,
+    reference_dataset: str,
+    dataset_order: List[str],
+    tolerance: float = ALIGNMENT_TOLERANCE,
+) -> List[Dict]:
+    """Turn an alignment best-match frame into threshold-combination rows.
+
+    Plan §7C: each reference-dataset anchor (applied threshold) becomes one
+    query row ``{ref: anchor_t, target: best_t, ...}`` when every target is
+    within ``tolerance`` (or the row is flagged). Output rows use the
+    ``threshold_combinations`` shape consumed by ``ComparisonParameters``.
+    """
+    if best_matches_df is None or getattr(best_matches_df, 'empty', True):
+        return []
+    df = best_matches_df
+    if 'match_kind' in df.columns:
+        df = df[df['match_kind'] == 'anchor']
+    rows: List[Dict] = []
+    seen_signatures = set()
+    anchors = sorted({
+        (int(r['anchor_threshold']))
+        for _, r in df.iterrows()
+        if r.get('reference_dataset') == reference_dataset
+        and r.get('best_t') is not None
+    })
+    index = 1
+    for anchor in anchors:
+        sub = df[(df['reference_dataset'] == reference_dataset)
+                 & (df['anchor_threshold'] == anchor)
+                 & (df['best_t'].notna())]
+        cell = {reference_dataset: int(anchor)}
+        distances = []
+        for _, r in sub.iterrows():
+            target = r.get('target_dataset')
+            if target in dataset_order and target not in cell:
+                cell[target] = int(r['best_t'])
+                if r.get('count_distance') is not None:
+                    distances.append(float(r['count_distance']))
+        if set(cell.keys()) != set(dataset_order):
+            continue  # incomplete: no best match for some target
+        signature = tuple(sorted(cell.items()))
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        rows.append({
+            'id': f'combo_{index:03d}',
+            'label': (f'Aligned @{reference_dataset}={anchor}'
+                      + ('' if not distances else
+                         f" (max d={max(distances):.2f})")),
+            'thresholds': cell,
+            'aligned_within_tolerance': (
+                bool(distances) and max(distances) <= tolerance),
+        })
+        index += 1
+    return rows
 
 
 def build_alignment_matrix(
