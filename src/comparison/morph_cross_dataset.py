@@ -1697,15 +1697,10 @@ class CrossDatasetMorphComparer:
                 scenes = self._render_scenes(run_path, datasets, members)
                 files.extend(scenes)
             except Exception as exc:  # noqa: BLE001
-                # KNOWN ISSUE (marked 2026-09-16, intentionally not fixed):
-                # the scene render intermittently dies inside the
-                # visualize_skeleton pipeline ("list index out of range").
-                # Observed on cross-dataset runs with bridged FAFB layers
-                # (consistently) and once on a native-only intra scene
-                # (flaky); transient NeuPrint fetch failures surface here
-                # too. Pre-existing user-WIP regression — reproduces with
-                # this module's changes stashed. Revisit when that WIP
-                # lands.
+                # Kept fail-soft: a scene problem must never lose the
+                # comparison itself. (The 2026-09-16 bridged-layer crash —
+                # overlay neurons re-fetched through NeuPrint, then a
+                # legend-index overrun — is fixed in visualize_skeleton.)
                 self._log(f'3D visualization failed (comparison kept): {exc}')
         files = self._write_report(run_path, tokens, datasets, members,
                                    pairs, overview, notes, scenes,
@@ -2118,7 +2113,13 @@ class CrossDatasetMorphComparer:
                     continue
                 for n in neurons:
                     try:
-                        n.name = f'{_safe_name(type_name, 20)}_{abbrev}'
+                        # Unique per-member name: navis uniquifies duplicate
+                        # names inside a NeuronList, which defeats the
+                        # plotly trace-identity resolution (legend leaves
+                        # collapse and indices can slip past the neuron
+                        # count, crashing the layer loop).
+                        n.name = (f'{_safe_name(type_name, 20)}_{abbrev}'
+                                  f'_{int(b)}')
                         n._drocat_source_dataset = ds
                     except Exception:  # noqa: BLE001
                         pass

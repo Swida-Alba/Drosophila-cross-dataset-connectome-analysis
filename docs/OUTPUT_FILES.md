@@ -429,11 +429,10 @@ Example: `morph_cross_MCNS_FAFB_aMe12_aMe26_l-LNv_20260916_023121/`
 *   One 3D overlay scene per run: a layer per (queried type, dataset),
     members bridged into the reference template's render space. Scores
     are computed per pair in the target frame — different from the scene
-    frame (disclosed in the report). KNOWN WIP ISSUE (marked in code,
-    fix deferred): the scene render intermittently fails inside the
-    visualize_skeleton pipeline — consistently for cross runs with
-    bridged FAFB layers, flakily elsewhere (one native-only intra scene
-    failure observed); the run fails soft and keeps the comparison.
+    frame (disclosed in the report). Bridged FAFB layers render
+    as-is (overlay neurons are pre-transformed and are excluded from the
+    target dataset's fetch/preparation phases), with one tree-legend leaf
+    per member. Any scene failure fails soft and keeps the comparison.
 
 Offline behavior: with `fetch_online=False`, FAFB sources still resolve
 network-free from the local release sources (repair caches, raw cache,

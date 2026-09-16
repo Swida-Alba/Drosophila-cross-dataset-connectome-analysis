@@ -8868,10 +8868,20 @@ class VisualizeSkeleton:
         return all_fetch_ids
 
     def _aggregate_neuprint_body_ids(self):
-        """Return ordered, unique body IDs across every visualization layer."""
+        """Return ordered, unique body IDs across every visualization layer.
+
+        Overlay (``custom_neurons``) layers are excluded: their neurons are
+        injected pre-transformed as full objects and must never be fetched
+        or prepared through the NeuPrint pipeline (a FAFB overlay on a
+        NeuPrint-target scene cannot resolve there).
+        """
+        # _inject_custom_neurons inserts overlay layers at the front, so
+        # they occupy neuron_dfs[:len(_custom_neurons_by_layer)].
+        custom_count = len(getattr(self, '_custom_neurons_by_layer', None)
+                           or {})
         body_ids = []
         seen = set()
-        for df in self.neuron_dfs:
+        for df in self.neuron_dfs[custom_count:]:
             if df is None or 'bodyId' not in df.columns:
                 continue
             for body_id in df['bodyId'].tolist():
@@ -11256,9 +11266,13 @@ class VisualizeSkeleton:
         # scoped to one visualization run.
         local_render_mesh_cache = {}  # canonical bodyId -> MeshNeuron
         if is_local_release:
-            # Collect all body IDs first
+            # Collect all body IDs first — overlay (custom_neurons) layers
+            # excluded: their neurons are injected pre-transformed and must
+            # not enter the local-release resolution either.
+            custom_count = len(getattr(self, '_custom_neurons_by_layer',
+                                       None) or {})
             all_local_body_ids = []
-            for df in self.neuron_dfs:
+            for df in self.neuron_dfs[custom_count:]:
                 if df is not None and 'bodyId' in df.columns:
                     all_local_body_ids.extend(
                         normalize_flywire_body_ids(df['bodyId'].tolist())
@@ -12179,9 +12193,15 @@ class VisualizeSkeleton:
                         trace.legendrank = legend_rank
                         # Plan I §4: layers stamped default-off (TM VEV
                         # sibling groups) start hidden; the legend row stays
-                        # and one eye click restores the traces.
-                        if getattr(neuron_vols[source_index],
-                                   '_drocat_legend_default_off', False):
+                        # and one eye click restores the traces. Guard the
+                        # index: unmatched trace names resolve to their raw
+                        # trace position (see
+                        # _resolve_plotly_trace_identities), which can sit
+                        # past the neuron count once soma companions are
+                        # interleaved.
+                        if source_index < len(neuron_vols) and getattr(
+                                neuron_vols[source_index],
+                                '_drocat_legend_default_off', False):
                             trace.visible = False
                         should_show = legend_group not in shown_legend_groups
                         trace.showlegend = should_show

@@ -87,10 +87,11 @@ Semantics:
   network-free from the local release sources (repair caches, raw cache,
   healed zip — the CAVE extrusion pass is skipped), so strict-offline
   FAFB→X and X→FAFB directions score fully; BANC's public-release stage
-  fetches online and stays gated (raw-cache fallback only). A KNOWN WIP
-  ISSUE (marked at the `_render_scenes` call site, fix deferred): scene
-  rendering with bridged FAFB layers currently fails and the run keeps
-  the comparison.
+  fetches online and stays gated (raw-cache fallback only). Bridged FAFB
+  overlay layers render as-is: their neurons are injected pre-transformed
+  and excluded from the target dataset's fetch/preparation phases (with
+  one tree-legend leaf per member). Any scene failure fails soft and
+  keeps the comparison.
 - Scores are comparable within a dataset pair (one render frame), not
   across pairs; the report states each pair's frame.
 
