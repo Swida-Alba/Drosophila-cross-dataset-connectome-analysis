@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import os
+import zlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -446,6 +447,8 @@ class ExpandedLineFinder:
         chip_dirs: List[str] = []
         self._progress(2, 3, "Run Find Lines per query chip")
 
+        seen_chip_dirs: Dict[str, str] = {}
+
         def _chip_dir_for(chip: Any) -> Optional[str]:
             if not run_root:
                 return None
@@ -453,6 +456,15 @@ class ExpandedLineFinder:
                 c if c.isalnum() or c in "-_" else "_" for c in str(chip)
             ) or "chip"
             chip_dir = os.path.join(run_root, f"chip_{sanitized}")
+            if chip_dir in seen_chip_dirs:
+                if seen_chip_dirs[chip_dir] != str(chip):
+                    # Distinct chips can sanitize to the same folder name
+                    # ("A/B" vs "A:B"); a suffix hash keeps their payloads
+                    # from overwriting each other (review 2026-09-16).
+                    tag = f"{zlib.crc32(str(chip).encode('utf-8')) & 0xffff:04x}"
+                    chip_dir = os.path.join(
+                        run_root, f"chip_{sanitized}_{tag}")
+            seen_chip_dirs.setdefault(chip_dir, str(chip))
             os.makedirs(chip_dir, exist_ok=True)
             chip_dirs.append(chip_dir)
             return chip_dir

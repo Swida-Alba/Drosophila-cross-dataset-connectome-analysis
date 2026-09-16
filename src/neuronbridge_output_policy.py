@@ -66,10 +66,14 @@ def _file_size(path: Path) -> int:
 
 
 def _merge_audit(output_path: str, removed: List[Dict[str, Any]],
-                 bytes_reclaimed: int) -> Dict[str, Any]:
+                 bytes_reclaimed: int,
+                 force_write: bool = False) -> Dict[str, Any]:
     """Merge this pass into the run's cleanup audit file and return the
     combined audit.  ``removed`` in the RETURN is this pass's removals only;
-    the persisted file accumulates across passes."""
+    the persisted file accumulates across passes.  Compact passes force a
+    write even when nothing was removed: the audit is the marker later
+    retention sweeps use to classify the run — without it, an imageless
+    Compact run would be "unknown mode" and never reclaimed."""
     path = Path(output_path) / AUDIT_FILENAME
     existing: Dict[str, Any] = {}
     if path.exists():
@@ -83,7 +87,8 @@ def _merge_audit(output_path: str, removed: List[Dict[str, Any]],
     prior_bytes = int(existing.get("bytes_reclaimed") or 0)
     # A Full pass (nothing removed, no prior audit) leaves no file behind —
     # an empty audit on a keep-everything run would just be noise.
-    if not removed and not prior_removed and not path.exists():
+    if not removed and not prior_removed and not force_write \
+            and not path.exists():
         return {
             "removed": [],
             "bytes_reclaimed_this_pass": 0,
@@ -176,7 +181,8 @@ def _apply(
                         removed.append(entry)
 
     bytes_reclaimed = sum(int(entry["bytes"]) for entry in removed)
-    return _merge_audit(output_path, removed, bytes_reclaimed)
+    return _merge_audit(output_path, removed, bytes_reclaimed,
+                        force_write=not keep_per_match_csv)
 
 
 def prune_find_lines_run(
@@ -221,7 +227,8 @@ def prune_find_lines_run(
                     removed.append(entry)
 
     bytes_reclaimed = sum(int(entry["bytes"]) for entry in removed)
-    return _merge_audit(output_path, removed, bytes_reclaimed)
+    return _merge_audit(output_path, removed, bytes_reclaimed,
+                        force_write=not keep_per_match_csv)
 
 
 def prune_find_neurons_run(
@@ -293,7 +300,8 @@ def prune_colabel_run(
                 removed.append(entry)
 
     bytes_reclaimed = sum(int(entry["bytes"]) for entry in removed)
-    return _merge_audit(output_path, removed, bytes_reclaimed)
+    return _merge_audit(output_path, removed, bytes_reclaimed,
+                        force_write=not keep_per_match_csv)
 
 
 def _run_sort_key(folder: Path) -> str:

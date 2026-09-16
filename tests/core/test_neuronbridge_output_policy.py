@@ -37,6 +37,19 @@ def _make_lines_run(root: Path, *, with_summary=True, with_images=True,
     return root
 
 
+def test_compact_run_without_payloads_still_records_audit(tmp_path):
+    """An imageless, summary-less Compact run removes nothing on the day —
+    but the audit must still be written, or later retention sweeps classify
+    the run as unknown mode and never reclaim its match tables
+    (review 2026-09-16)."""
+    run = _make_lines_run(tmp_path / "run_x", with_summary=False,
+                          with_images=False)
+    policy.prune_find_lines_run(str(run), keep_per_match_csv=False,
+                                cleanup_source_images=True)
+    assert (run / policy.AUDIT_FILENAME).exists()
+    assert policy._run_was_compact(run) is True
+
+
 class TestPruneFindLinesRun:
     def test_full_keeps_everything(self, tmp_path):
         root = _make_lines_run(tmp_path / "run")

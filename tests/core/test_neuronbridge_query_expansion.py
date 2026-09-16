@@ -457,3 +457,34 @@ class TestRun:
         )
         assert len(fake_finder.calls) == 1
         assert fake_finder.calls[0]["dataset"] == ["male-cns:v1.0"]
+
+
+def test_chip_dirs_disambiguate_sanitization_collisions(
+    monkeypatch, fake_finder, tmp_path
+):
+    """Chips differing only in punctuation ("A/B" vs "A:B") sanitize to the
+    same folder name; each chip must keep its own folder instead of the
+    second overwriting the first's summaries (review 2026-09-16)."""
+    _install_mapper(monkeypatch, lambda chip, ds: _resolution(
+        "mapped", targets=("DNp01",)))
+    _fake_snapshot(monkeypatch, {
+        "male-cns:v1.0": {
+            "status": "aligned",
+            "hosted_version": "male-cns:v0.9",
+            "checked_at": "2026-09-15T00:00:00+00:00",
+        },
+    })
+    finder = _make_finder()
+    finder.run(
+        queries=["A/B", "A:B"],
+        dataset=["male-cns:v1.0"],
+        expand_names=True,
+        coverage_datasets=["male-cns:v1.0"],
+        match_type="cds",
+        output_dir=str(tmp_path),
+    )
+    dirs = [c["output_dir"] for c in fake_finder.calls]
+    assert len(dirs) == 2
+    assert dirs[0] and dirs[1]
+    assert dirs[0] != dirs[1], "distinct chips collapsed into one folder"
+    assert Path(dirs[0]).parent == Path(dirs[1]).parent

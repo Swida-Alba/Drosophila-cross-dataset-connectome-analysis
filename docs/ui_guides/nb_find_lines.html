@@ -70,7 +70,7 @@
     <tr><td>Region</td><td>Brain</td><td>Brain, VNC, or All (image downloads)</td></tr>
     <tr><td>Max Workers</td><td>8</td><td>Parallel API workers; lower if rate-limited</td></tr>
     <tr><td>Sort By</td><td>max</td><td>max score or completeness (coverage)</td></tr>
-    <tr><td>Output detail</td><td>Full</td><td>Compact keeps the newest N runs' match tables (default 1), prunes older Compact runs' tables, and removes the downloaded images after the PDF/PPTX is generated (audited in <code>cleanup_audit.json</code>)</td></tr>
+    <tr><td>Output detail</td><td>Full</td><td>Expanded Compact runs keep the newest N runs' match tables (default 1), prune older Compact runs' tables, and remove the downloaded images after the PDF/PPTX is generated (audited in <code>cleanup_audit.json</code>); a plain (non-expanded) Compact run deletes its match tables immediately once the summaries are written</td></tr>
     <tr><td>Compact: Keep Last N Runs' Match Tables</td><td>1</td><td>Rolling window for Compact: the newest N expanded runs keep their bodyId-level match tables; older Compact runs are pruned. 0 deletes immediately. Full ignores this.</td></tr>
   </table>
 

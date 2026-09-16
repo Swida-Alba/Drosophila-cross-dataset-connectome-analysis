@@ -254,10 +254,12 @@ def create_nb_find_lines_tab():
                 ),
             ).props('id="checkbox-nb-expand-names"')
             _, detail_flags = output_detail_control(
-                "Full keeps every exported file. Compact keeps the newest "
-                "N runs' match tables (belt-and-braces: the latest query "
-                "stays inspectable) and prunes older Compact runs' tables; "
-                "downloaded images always go once the PDF/PPTX is "
+                "Full keeps every exported file. Expanded runs keep the "
+                "newest N runs' match tables (belt-and-braces: the latest "
+                "query stays inspectable) and prune older Compact runs' "
+                "tables; a plain (non-expanded) Compact run deletes its "
+                "match tables immediately once the summaries are written. "
+                "Downloaded images always go once the PDF/PPTX is "
                 "generated — every removal is audited in the runs' "
                 "cleanup_audit.json. The NeuronBridge match cache is off "
                 "by default (Settings → NeuronBridge Match Cache), so a "
@@ -440,7 +442,6 @@ def create_nb_find_lines_tab():
             method_params["compact_keep_last_n"] = int(compact_keep_last_n.value)
         else:
             method_params.update(detail_flags())
-        method_params["compact_keep_last_n"] = int(compact_keep_last_n.value)
 
         result = await output_panel.run(runner, tool_name, constructor_params, "find_lines",
                                         method_params=method_params,
