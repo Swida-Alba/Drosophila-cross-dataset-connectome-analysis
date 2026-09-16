@@ -30,6 +30,7 @@ for entry in (str(PROJECT / 'src'), str(PROJECT)):
         sys.path.insert(0, entry)
 
 import pandas as pd  # noqa: E402
+from utils.parquet_utils import atomic_replace  # noqa: E402
 
 NEURON_INDEXES = PROJECT / 'neuron_indexes'
 CACHE = PROJECT / 'cache'
@@ -124,7 +125,7 @@ def main():
     # to the repaired rows (the sidecar remains the live progress store).
     tmp = base_path + '.repair_tmp'
     flipped.to_parquet(tmp, index=False)
-    os.replace(tmp, base_path)
+    atomic_replace(tmp, base_path)
     if os.path.exists(sidecar_path):
         keep = flipped[flipped['bodyId'].astype(str).isin(
             pd.read_parquet(sidecar_path)['bodyId'].astype(str))][
@@ -132,7 +133,7 @@ def main():
              'connection_count']]
         tmp2 = sidecar_path + '.repair_tmp'
         keep.to_parquet(tmp2, index=False)
-        os.replace(tmp2, sidecar_path)
+        atomic_replace(tmp2, sidecar_path)
     print(f'Wrote repaired index to {base_path}'
           + (f' and reset sidecar {sidecar_path}' if os.path.exists(sidecar_path)
              else ''))

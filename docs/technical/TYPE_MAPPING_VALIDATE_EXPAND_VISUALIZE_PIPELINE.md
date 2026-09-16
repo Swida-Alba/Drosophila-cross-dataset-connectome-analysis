@@ -337,7 +337,9 @@ target-vector build time.
   saturated types) —
   connectivity-only evidence (no morph bars), exploratory, never fills.
   The kept pairs are then **morph-checked** (Track-A vs the run null
-  bar — `morph_v2_similarity` / `morph_qualified` columns): failing rows
+  bar — `morph_v2_similarity` / `morph_qualified` columns; present only
+  when the run null bar was calibrated — with `--no-morphology` or a
+  thin null sample the columns are absent): failing rows
   (photoreceptor/orphan captures) stay in the CSV; the scene renders
   morph-passing targets beside their source neurons as
   `out-map candidates · {type}`.
@@ -361,7 +363,8 @@ target-vector build time.
   future UI tails.  `--skip-profile-build` restores the historical
   cache-only, fail-closed behavior.
 - **Layered gap-fill report**: `gap_fill_levels.csv` — one row per
-  non-tier bodyId with its confidence `level`: `high` (native m+v floor) /
+  non-tier, non-sibling bodyId (siblings are claims, not fill proposals,
+  so they are excluded from the report) with its confidence `level`: `high` (native m+v floor) /
   `medium` (Track-A backup `B_b − Δ`) / `low` (run null bar) for
   candidates, `type_gated` (family), `advice` (relative); hole-closing
   candidates are annotated. `set_coverage.json` mirrors the levels in
@@ -534,7 +537,7 @@ columns retained for compatibility.
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size` |
-| `parameters.json` | every knob incl. `validation_mode`, cutoffs |
+| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
 | `README.txt` | glossary (verdicts, categories, noise gates, morph frames, pool-ref tiers) + full run log |
 | `visualization/*.html` | tree-legend scenes per parent group |
