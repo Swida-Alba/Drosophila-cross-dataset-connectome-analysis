@@ -224,8 +224,14 @@ def atomic_replace(temp, final):
     then best-effort flush the directory entry so the rename survives too
     (directory fsync is a no-op/unsupported on some platforms).
     """
-    with open(temp, "rb") as handle:
-        os.fsync(handle.fileno())
+    # The flush handle must be writable: os.fsync on a read-only
+    # descriptor raises [Errno 9] on Windows.  A failed flush is
+    # non-fatal -- os.replace below is what makes the swap atomic.
+    try:
+        with open(temp, "r+b") as handle:
+            os.fsync(handle.fileno())
+    except OSError:
+        pass
     os.replace(temp, final)
     try:
         dir_fd = os.open(os.path.dirname(os.path.abspath(final)), os.O_RDONLY)

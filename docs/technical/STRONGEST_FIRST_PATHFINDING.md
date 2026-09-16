@@ -222,27 +222,43 @@ finalized by `_finalize_threshold_provenance` +
 | field | meaning |
 |---|---|
 | `requested_threshold` | the user-entered Min Synapse Count before any budget effect |
-| `applied_threshold` | the canonical minimal threshold reproducing the materialized set when a lossy budget bit; the requested threshold otherwise |
+| `applied_threshold` | the **canonical equivalent threshold** that reproduces the materialized set: the requested threshold for a complete/unbounded run (natural τ reported separately), or `tau_canonical` (`w2+1` / landing τ) when a lossy budget affected the output. **No `max(canonical, requested)` clamp** — the pipeline order makes it structurally ≥ the request (rev 2, 2026-09-11) |
 | `applied_threshold_source` | `requested` \| `strongest_first_budget` \| `edge_budget` \| `strongest_first_budget+edge_budget` |
 | `strongest_first_budget` | the effective path budget (0/auto → 1,000,000) |
 | `strongest_first_budget_bitten` | whether the budget actually bit |
 | `strongest_first_tau` | the landing τ (collapse bound); for a complete run, the natural weakest emitted-path bottleneck |
-| `tau_canonical` | the minimal equivalent threshold: `w2+1` when the bite leaves a gap `[w2+1, τ]`, else the landing/natural τ |
+| `tau_canonical` | the minimal equivalent threshold: `w2+1` when the bite leaves a gap `[w2+1, τ]`, else the landing/natural τ. This IS `applied_threshold` on a budgeted slice |
 | `strongest_dropped_bottleneck` | w2 — the strongest path NOT emitted after a bite |
-| `edge_budget` / `edge_budget_applied` | the cap and whether the floor fired |
+| `edge_budget` / `edge_budget_applied` | the cap and whether the floor is **binding for this threshold** (`w0 > requested`); a floor at or below the request leaves the output untouched |
 | `edge_budget_landing` (w1) / `edge_weight_floor` (w0) | the tier that determined the floor and the floor itself |
 | `strongest_retained_bottleneck` | W\* — the widest-path ceiling after lossless pruning (§4b) |
-| `paths_complete` | true exactly when no lossy budget affected the output |
+| `paths_complete` | true exactly when no lossy budget actually affected THIS threshold's output |
 
-**Semantics.** τ (`strongest_first_tau`) is a **landing/collapse**
-bound; `tau_canonical` / `applied_threshold` is the **minimal
-equivalent threshold** when a gap exists below it. For a
-complete/unbounded run `applied_threshold` is simply the requested
-threshold (the natural τ is reported separately) and
-`paths_complete = true`; when a lossy budget affects the output,
-`applied_threshold` is the minimal threshold reproducing the
-materialized set and `applied_threshold_source` names the contributing
-mechanism(s). The bottleneck is the minimum edge weight along a path,
+**Semantics (rev 2).** τ (`strongest_first_tau`) is a **landing/collapse**
+bound; `tau_canonical` is the **minimal equivalent threshold** when a gap
+exists below it. `applied_threshold` **is** that canonical equivalent (or
+the requested threshold for a complete run) — there is deliberately no
+clamp. The pipeline order — filter edges by the requested threshold, then
+the edge budget, then build the graph, then StrongestFirst — guarantees a
+per-threshold run's canonical is at or above its own request: a bitten
+slice drops only paths with bottleneck ≥ requested (so `w2+1 > requested`),
+a binding floor has `w0 > requested`, and a complete slice's natural τ is
+`≥ requested`. A canonical **below** the request therefore means the record
+inherited a *lower* threshold's provenance; fix that at the source (the
+multi-threshold replay's per-slice metadata), never by clamping the label.
+
+The Edge Budget floor is **per-threshold**: `edge_budget_applied` (alias
+`edge_floor_binding`) is true only when `w0 > requested_threshold`. When
+the floor sits at or below the request the floored graph reproduces the
+unfiltered graph's output at that threshold, so the run is untouched
+(`paths_complete = true`). The graph-level floor (`edge_weight_floor` /
+`edge_budget_landing`) and its pruning record remain recorded as
+diagnostics regardless. A replayed slice is labeled from its own slice
+state: a slice at/above the t0 floor is a complete run at that value
+(floor inert, `paths_complete = true`); a slice below the landing τ0
+derives its own dropped bottleneck/canonical.
+
+The bottleneck is the minimum edge weight along a path,
 so a budgeted output is a **strength-bounded path set** — never an
 arbitrary first-N truncation. `parameters.txt` keeps the
 backward-compatible alias lines `applied_tau (min path bottleneck)` and

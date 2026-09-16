@@ -1382,6 +1382,10 @@ class ConnectivityProfiler:
         # Type normalization cache: dataset -> {original_type -> normalized_type}
         # Pre-computed at connection cache load time for vectorized lookups
         self._type_normalization_cache: Dict[str, Dict[str, str]] = {}
+        # Lazily-loaded per-dataset bodyId(str) -> type maps, used to backfill
+        # neuron_type on bodyId-queried profiles (the profile builders leave
+        # it None). API misses memoize into the same map.
+        self._bodyid_type_maps: Dict[str, Dict[str, str]] = {}
         
         # Type -> row-position index for type-based connection queries
         # dataset_safe -> {'conn_id': int, 'pre': {type -> [rows]}, 'post': {...}}
@@ -2252,8 +2256,9 @@ class ConnectivityProfiler:
                 
                 try:
                     row = cache_df.iloc[row_idx]
-                    profile = self._row_to_profile(row)
-                    
+                    profile = self._fill_neuron_type(
+                        self._row_to_profile(row), dataset)
+
                     # Check min_top_k requirement
                     if min_top_k is not None and profile.top_k_bodyid_used < min_top_k:
                         skipped_k += 1
@@ -2274,10 +2279,11 @@ class ConnectivityProfiler:
             for idx, row in cache_df.iterrows():
                 try:
                     neuron_id = row['neuron_id']
-                    
+
                     # Convert row to profile
-                    profile = self._row_to_profile(row)
-                    
+                    profile = self._fill_neuron_type(
+                        self._row_to_profile(row), dataset)
+
                     # Check min_top_k requirement
                     if min_top_k is not None:
                         if profile.top_k_bodyid_used < min_top_k:
@@ -3654,6 +3660,96 @@ class ConnectivityProfiler:
             typed_bodyids_dict,    # Round 7: typed bodyId → weight
         )
     
+    def _bodyid_type_map(self, dataset: str) -> Dict[str, str]:
+        """bodyId(str) -> type name for one dataset, loaded once per instance.
+
+        Feeds the neuron_type backfill for bodyId-queried profiles (the
+        profile builders leave it None). Reads the dataset's neuron table,
+        then the neuron index — the same local sources the type lookups
+        use; an empty map means no local table (NeuPrint-API-only dataset),
+        where misses fall back to per-id `get_types_for_bodyids` calls
+        memoized into this map.
+        """
+        cached = self._bodyid_type_maps.get(dataset)
+        if cached is not None:
+            return cached
+        from pathlib import Path
+        safe_name = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
+        project_root = Path(__file__).parent.parent.parent
+        candidates = [
+            project_root / 'datasets' / safe_name
+            / f'{safe_name}_allneurons_neuron_df.parquet',
+            project_root / 'datasets' / safe_name
+            / f'{safe_name}_allneurons_neuron_df.csv',
+            project_root / 'neuron_indexes' / safe_name / 'neuron_index.parquet',
+        ]
+        lookup: Dict[str, str] = {}
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                if path.suffix.lower() == '.parquet':
+                    columns = None
+                    try:
+                        import pyarrow.parquet as _pq
+                        available = set(_pq.read_schema(path).names)
+                        columns = [c for c in ('bodyId', 'type', 'cellType',
+                                               'cell_type') if c in available]
+                        if not {'type', 'cellType', 'cell_type'} & set(columns):
+                            continue
+                    except Exception:
+                        columns = None
+                    df = pd.read_parquet(path, columns=columns)
+                else:
+                    df = pd.read_csv(path, low_memory=False)
+            except Exception:
+                continue
+            if 'bodyId' not in df.columns:
+                continue
+            type_col = next((c for c in ('type', 'cellType', 'cell_type')
+                             if c in df.columns), None)
+            if type_col is None:
+                continue
+            lookup = dict(zip(df['bodyId'].astype(str),
+                              df[type_col].fillna('').astype(str)))
+            break
+        self._bodyid_type_maps[dataset] = lookup
+        return lookup
+
+    def _fill_neuron_type(self, profile: ConnectivityProfile,
+                          dataset: str) -> ConnectivityProfile:
+        """Backfill ``neuron_type`` on bodyId-queried profiles in place.
+
+        BodyId profiles are built with neuron_type=None (the builders only
+        set it for type-name queries); every consumer previously had to
+        re-resolve the name itself. The fill runs after cache retrieval and
+        after building, so freshly built profiles persist the name into the
+        profile disk cache too. Returns *profile* unchanged on any miss.
+        """
+        if profile is None or profile.neuron_type:
+            return profile
+        bid = getattr(profile, 'neuron_id', None)
+        if bid is None or isinstance(bid, (list, tuple, dict)):
+            return profile
+        text = str(bid).strip()
+        if not text.isdigit():
+            return profile
+        type_map = self._bodyid_type_map(dataset)
+        ntype = type_map.get(text)
+        if not ntype:
+            try:
+                resolved = self.get_types_for_bodyids([int(text)], dataset) or {}
+                ntype = resolved.get(int(text))
+                if ntype:
+                    # Memoize the (possibly API-backed) resolution so the
+                    # same bodyId never resolves twice per process.
+                    type_map[text] = str(ntype)
+            except Exception:
+                ntype = None
+        if ntype:
+            profile.neuron_type = str(ntype)
+        return profile
+
     def get_profile(
         self,
         neuron: Union[str, int, List],
@@ -3686,7 +3782,7 @@ class ConnectivityProfiler:
             cached = self._load_from_cache(neuron, dataset)
             if cached is not None:
                 self._log(f"Loaded from cache: {neuron} in {dataset}", level='debug')
-                return cached
+                return self._fill_neuron_type(cached, dataset)
         
         self._log(f"Extracting profile for {neuron} in {dataset}", level='debug')
         
@@ -3797,6 +3893,10 @@ class ConnectivityProfiler:
             typed_downstream_bodyids=down_typed_bodyids if down_typed_bodyids else None,
         )
         
+        # Fill the type name for bodyId queries, then persist (the name
+        # rides along into the profile disk cache).
+        profile = self._fill_neuron_type(profile, dataset)
+
         # Save to cache
         self._save_to_cache(profile)
         
@@ -3931,8 +4031,8 @@ class ConnectivityProfiler:
             typed_upstream_bodyids=up_typed_bodyids if up_typed_bodyids else None,
             typed_downstream_bodyids=down_typed_bodyids if down_typed_bodyids else None,
         )
-        
-        return profile
+
+        return self._fill_neuron_type(profile, dataset)
 
     def get_profiles_for_type_across_datasets(
         self,
@@ -3965,6 +4065,24 @@ class ConnectivityProfiler:
         
         return results
     
+    def _has_local_table(self, dataset: str) -> bool:
+        """Whether a repo-local neuron table exists for *dataset*.
+
+        Used by the offline-first type lookups: a NeuPrint release that
+        also ships a local table (e.g. male-cns) resolves locally instead
+        of requiring the API.
+        """
+        safe_name = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
+        project_root = Path(__file__).parent.parent.parent
+        dataset_path = project_root / 'datasets' / safe_name
+        for name in (f'{safe_name}_allneurons_neuron_df.parquet',
+                     f'{safe_name}_allneurons_neuron_df.csv',
+                     f'{safe_name}_neurons.parquet',
+                     f'{safe_name}_neurons.csv'):
+            if (dataset_path / name).exists():
+                return True
+        return False
+
     def get_bodyids_for_type(
         self,
         neuron_type: str,
@@ -3972,21 +4090,34 @@ class ConnectivityProfiler:
     ) -> List[int]:
         """
         Get all bodyIds for a neuron type in a dataset.
-        
+
+        Offline-first: a repo-local neuron table wins when the dataset has
+        one (FAFB/BANC always; male-cns and other NeuPrint releases ship
+        one too), so type lookups keep working when the NeuPrint API is
+        unreachable. The API path is used only for datasets with no local
+        table.
+
         Args:
             neuron_type: Type name
             dataset: Dataset identifier
-        
+
         Returns:
             List of bodyIds
         """
-        if is_local_connectome_dataset(dataset):
+        # Offline-first resolution: prefer a repo-local neuron table when
+        # the dataset has one (FAFB/BANC always; male-cns and other
+        # NeuPrint releases ship one too).  This keeps type lookups working
+        # when the NeuPrint API is unreachable, and the API path below is
+        # kept only for datasets with no local table.
+        local_df = self._load_local_neuron_frame(dataset)
+        has_local_table = local_df is not None and not local_df.empty
+        if is_local_connectome_dataset(dataset) or has_local_table:
             # Local dataset - resolve the query with the shared prioritized
             # column search used by the connection tabs (bodyId -> type ->
             # instance -> other *Type fields such as cell_type -> taxonomy).
             # The first column with a hit owns the query, so a name stored
             # only in cell_type (e.g. FAFB's circadian_clock) still resolves.
-            df = self._load_local_neuron_frame(dataset)
+            df = local_df
             if df is None or df.empty:
                 return []
 
@@ -4275,6 +4406,11 @@ class ConnectivityProfiler:
         This is much more efficient than calling get_type_for_bodyid multiple times
         as it performs a single query/file read for all bodyIds.
         
+        Offline-first: a repo-local neuron table wins when the dataset has
+        one (FAFB/BANC always; male-cns and other NeuPrint releases ship
+        one too), so type labels stay available when the NeuPrint API is
+        unreachable.
+        
         Args:
             bodyids: List of bodyIds to look up
             dataset: Dataset identifier
@@ -4286,7 +4422,12 @@ class ConnectivityProfiler:
             return {}
         
         result_map = {}
-        if is_local_connectome_dataset(dataset):
+        # Offline-first: prefer a repo-local neuron table when the dataset
+        # has one (FAFB/BANC always; male-cns and other NeuPrint releases
+        # ship one too).  Keeps type labels available when the NeuPrint API
+        # is unreachable; the API path below is for datasets with no table.
+        if is_local_connectome_dataset(dataset) or self._has_local_table(
+                dataset):
             # Local dataset - load neurons file once
             src_dir = Path(__file__).parent.parent
             project_root = src_dir.parent

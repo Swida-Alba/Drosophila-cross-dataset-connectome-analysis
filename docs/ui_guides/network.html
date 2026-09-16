@@ -31,20 +31,25 @@
 
   <h2>Quick start - edge list editor</h2>
   <ol>
-    <li>In the <b>Edge List Editor</b> card (always visible below the source
-      card), enter a <b>Draft Name</b>, click <b>Add Edge</b>, fill
-      source / target / weight in the edit row and click
-      <b>Apply to Selected</b>.</li>
-    <li>Set <b>Canvas Source</b> to <b>Edge list editor</b> (opening the
-      editor also selects it) and click <b>Generate Network</b> - the draft
-      is auto-saved and used directly as the network input.</li>
+    <li>Select the <b>Edge list editor</b> button at the top of the
+      <b>Net-Viz Source</b> card (it is the default mode; opening the editor
+      also selects it). The editor table appears below the three source
+      buttons.</li>
+    <li>Type straight into the table cells (the editor starts with three
+      empty rows), or click <b>Add Row</b> for more. Enter a <b>Draft
+      Name</b> to turn on auto-save, or leave it empty to run without a
+      draft.</li>
+    <li>Click <b>Generate Network</b> - a named draft is auto-saved and used
+      directly as the network input; an unnamed table runs from a temporary
+      CSV.</li>
   </ol>
 
   <h2>Quick start - empty drawing canvas</h2>
   <ol>
-    <li>Click the standalone <b>Create Empty Canvas</b> button in the
-      <b>Net-Viz Source</b> card; no path file and no Canvas Source change
-      is required. It generates the HTML and opens it in a new browser tab
+    <li>Select the <b>Empty canvas</b> button in the <b>Net-Viz Source</b>
+      card and click <b>Create Empty Canvas</b> (pressing
+      <b>Generate Network</b> in this mode does the same); no path file is
+      required. It generates the HTML and opens it in a new browser tab
       automatically.</li>
     <li>Enable <b>Edit Mode</b>, add nodes, and connect them directly on the
       canvas.</li>
@@ -164,7 +169,15 @@ aMe12-&gt;PPL101-&gt;MBON01,"[63, 22]"</code></pre>
     <tr><td><code>source_group</code> / <code>target_group</code></td>
       <td>Restores the source / intermediate / target classification of each
         endpoint node. Without them a plain edge list would classify every
-        node as <i>source</i>.</td></tr>
+        node as <i>source</i>. Any other value turns that endpoint into a
+        <b>custom group</b>: it gets a legend chip, a quick-select button and
+        an entry in the group dropdown, and keeps its structural role
+        (source / intermediate / target) as a subtitle.</td></tr>
+    <tr><td><code>edge info</code> / <code>source info</code> /
+        <code>target info</code></td>
+      <td>Hover labels as <code>{key:val; ...}</code> cells: per-edge custom
+        labels and a per-node union of the source/target info. Shown in the
+        network tooltips.</td></tr>
     <tr><td><code>ratio</code> / <code>probability</code></td>
       <td>Mapped back to the standard connection-ratio and
         traversal-probability metric columns.</td></tr>
@@ -186,6 +199,51 @@ aMe12,PPL101,63</code></pre>
     <pre><code>source,target,weight,color,nt_type,nt_group,source_group,target_group,custom_groups,ratio,probability
 aMe12,aMe10,128,#F39C12,acetylcholine,excitatory,source,intermediate,,0.42,0.91
 aMe10,MBON01,47,#27AE60,gaba,inhibitory,intermediate,target,,0.18,0.35</code></pre>
+  </div>
+
+  <h3 id="enriched-edge-list">Enriched edge lists - authoring complex graphs</h3>
+  <p>The edge list grows far beyond <code>source, target, weight</code>: every
+    optional column above adds renderer features &mdash; per-edge colors,
+    <b>custom node groups</b> (<code>source_group</code> /
+    <code>target_group</code>, any name you like), <b>hover-label info</b>
+    (<code>edge info</code> / <code>source info</code> /
+    <code>target info</code> as <code>{key:val; ...}</code> cells),
+    neurotransmitter annotations (<code>nt_type</code>, shown on edge hover)
+    and extra numeric metrics such as <code>ratio</code> /
+    <code>probability</code> (toggleable on the edges in the network).</p>
+  <div class="callout info">
+    <b>Edit complex enriched graphs in a local CSV file</b>
+    Typing this metadata into the in-page table does not scale. For graphs
+    with hover-label info, custom groups or more columns, author the edge
+    list in a local CSV file (any spreadsheet/CSV editor), then either import
+    it into the edge list editor with its upload button to keep editing, or
+    run it directly through the <b>File upload</b> source. The Auto Type
+    Mapping network views showcase these features &mdash; dataset legend
+    chips, per-node hover annotations, per-edge <i>maps via</i> hover labels
+    and custom node groups (see the
+    <a href="cross_dataset.html#type-mapping-panel">Type Mapping panel
+    guide</a>).
+  </div>
+  <div class="example">
+    <div class="example-title">Full-information edge-list CSV (every supported column)</div>
+    <pre><code>source,target,weight,color,nt_type,nt_group,source_group,target_group,custom_groups,ratio,probability,edge info,source info,target info
+aMe12,aMe10,128,#F39C12,acetylcholine,excitatory,source,intermediate,,0.42,0.91,{path evidence:direct; checked:yes},{M:aMe12 · MCNS (412 neurons)},{F:aMe10 · FAFB (95 neurons)}
+aMe10,MBON01,47,#27AE60,gaba,inhibitory,intermediate,target,,0.18,0.35,{path evidence:direct},{M:aMe10 · MCNS (51 neurons)},{F:MBON01 · FAFB (9 neurons)}
+MBON01,PPL101,63,,dopamine,modulatory,intermediate,salient,salient,0.09,0.55,,{M:MBON01 · MCNS (9 neurons)},{F:PPL101 · FAFB (210 neurons)}</code></pre>
+    <p>Every optional column may be left empty per row (see
+      <code>color</code> and <code>edge info</code> in row 3,
+      <code>custom_groups</code> in row 2). <code>source_group</code> /
+      <code>target_group</code> accept the structural roles
+      (<code>source</code>, <code>intermediate</code>, <code>target</code>)
+      or any free-form <b>custom group</b> name &mdash; row 3 tags
+      <code>PPL101</code> with a <code>salient</code> group, which renders a
+      legend chip and quick-select button while keeping its structural role
+      in the hover. <code>nt_type</code>/<code>nt_group</code> annotate the
+      neurotransmitter (hover text; NT edge coloring is used by the
+      pathfinding pipelines); <code>custom_groups</code> preserves in-HTML
+      group names on round-trip; and the <code>info</code> cells are
+      <code>{key:val; ...}</code> hover labels whose values must not contain
+      semicolons.</p>
   </div>
 
   <h3>Format 3 - Connection matrix</h3>
@@ -222,38 +280,55 @@ PPL101,0,0,22</code></pre>
   </div>
 
   <h2 id="edge-list-editor">Edge list editor - auto-save &amp; recovery</h2>
-  <p>The editor builds a Format-2 edge list interactively and persists every
-    change automatically:</p>
+  <p>The editor builds a Format-2 edge list interactively (the same
+    inline-editing model as the Skeleton tab's Advanced Layer Editor) and
+    persists changes automatically:</p>
   <ul>
-    <li><b>Auto-save</b>: about half a second after the last edit the draft is
-      flushed atomically to <code>local_data/edge_list_drafts/</code>
-      (<code>{name}.csv</code> + a metadata sidecar). If the UI or its port
-      shuts down accidentally, nothing is lost.</li>
-    <li><b>Unsaved reminder</b>: a draft stays marked as <i>pending
-      export</i> until you click <b>Export CSV</b>. On the next start, the
-      Network tab shows a recovery banner listing every draft with pending
-      edits; each has a <b>Recover</b> button that loads it back into the
-      editor.</li>
-    <li><b>Editing</b>: select table rows to load them into the edit row,
-      apply changes, add or delete edges. Renaming a draft moves it (the old
-      draft is removed). <b>Delete Draft</b> removes it from disk.</li>
-    <li><b>Running</b>: with Canvas Source = Edge list editor,
-      <b>Generate Network</b> flushes the draft and feeds its CSV straight to
-      PlotPath, so the draft must contain at least one complete edge
-      (source, target, weight).</li>
+    <li><b>Inline editing</b>: type straight into the table cells; every cell
+      commits on blur, Enter or Tab. <b>Add Row</b> appends an empty row and
+      <b>Delete Selected</b> removes the checked rows (three empty rows are
+      always kept as scaffolding). A <b>Columns</b> switch exposes the
+      extended group / hover-info columns
+      (<code>source_group</code>, <code>target_group</code>,
+      <code>edge info</code>, <code>source info</code>,
+      <code>target info</code>), and the color cells have a swatch that opens
+      a color picker. Column widths can be drag-resized from the header.
+      For large or metadata-heavy edge lists, prefer authoring a local CSV
+      file &mdash; see
+      <a href="#enriched-edge-list">Enriched edge lists</a>.</li>
+    <li><b>CSV import</b>: the upload button next to <b>Export CSV</b> loads
+      an edge-list CSV into the table for continued editing (the editor's own
+      export or the expanded in-HTML export both work).</li>
+    <li><b>Auto-save</b>: once the table holds at least five filled rows,
+      edits are flushed atomically about half a second after the last commit
+      to <code>local_data/edge_list_drafts/</code> (<code>{name}.csv</code> +
+      a metadata sidecar) — but only when a <b>Draft Name</b> is entered. A
+      handful of half-typed rows is deliberately not persisted; running or
+      exporting always flushes explicitly. Renaming a draft moves it (the old
+      draft is removed).</li>
+    <li><b>Validation</b>: errors (missing source/target, non-numeric or
+      negative weight) are listed in a panel inside the editor when you run
+      or export. Exporting still downloads the CSV with a warning;
+      <b>Generate Network</b> is blocked until the errors are fixed.</li>
+    <li><b>Running</b>: in the <b>Edge list editor</b> mode,
+      <b>Generate Network</b> flushes the named draft (or writes a temporary
+      CSV when unnamed) and feeds it straight to PlotPath, so the table must
+      contain at least one complete edge (source, target, weight).</li>
     <li><b>Export CSV</b> downloads the draft as
       <code>{name}_edge_list_{timestamp}.csv</code> through the browser;
       when a Path Output Directory is set, a local copy with the same
-      timestamped name is saved there too. The pending-export marker is
+      timestamped name is saved there too. Optional columns are written only
+      when at least one row uses them. The pending-export marker is
       cleared.</li>
   </ul>
 
   <h2>Rendering options</h2>
   <ul>
-    <li><b>Canvas Source</b>: <b>Path file</b> (load Find All Paths output or
-      any format above) or <b>Edge list editor</b> (build/edit an auto-saved
-      edge list). The empty drawing canvas is created with the standalone
-      <b>Create Empty Canvas</b> button next to the selector.</li>
+    <li><b>Source buttons</b>: <b>Edge list editor</b> (build/edit an
+      auto-saved edge list; default), <b>Empty canvas</b> (create an empty
+      drawing canvas with the <b>Create Empty Canvas</b> button or the main
+      run button), or <b>File upload</b> (load Find All Paths output or any
+      format above).</li>
     <li><b>Path Output Directory</b>: every run creates its own
       <code>plot-network_{name}_{timestamp}/</code> subfolder inside it.</li>
     <li><b>Network Layout</b>: hierarchical (default), spring, circular,

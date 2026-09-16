@@ -8,6 +8,7 @@ Optimized with polars for high-performance operations on large datasets.
 """
 
 import numpy as np
+from utils.naming_utils import split_hemi_suffix
 import pandas as pd
 import polars as pl
 from typing import Dict, List, Tuple, Optional, Any, Set
@@ -370,7 +371,9 @@ class ComparisonMetrics:
         show_progress: bool = True,
         path_data_func: Optional[callable] = None,
         type_mapper: Optional[Any] = None,
-        max_edges_for_metrics: Optional[int] = None
+        max_edges_for_metrics: Optional[int] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> pd.DataFrame:
         """
         Calculate similarity metrics across all thresholds.
@@ -410,7 +413,10 @@ class ComparisonMetrics:
                 threshold_iter.set_postfix({"t": threshold})
             
             # Align data at this threshold
-            aligned = self._align_results_at_threshold(results, datasets, threshold, label_mapper, type_mapper)
+            aligned = self._align_results_at_threshold(
+                results, datasets, threshold, label_mapper, type_mapper,
+                merge_policy=merge_policy,
+                hemi_aware=hemi_aware)
             
             if aligned.empty:
                 continue
@@ -449,6 +455,8 @@ class ComparisonMetrics:
         path_data_func: Optional[callable] = None,
         type_mapper: Optional[Any] = None,
         max_edges_for_metrics: Optional[int] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> pd.DataFrame:
         """Calculate pairwise similarities for explicit threshold queries.
 
@@ -476,6 +484,8 @@ class ComparisonMetrics:
                 threshold_map,
                 label_mapper=label_mapper,
                 type_mapper=type_mapper,
+                merge_policy=merge_policy,
+            hemi_aware=hemi_aware,
             )
             if aligned.empty or (
                 max_edges_for_metrics and len(aligned) > max_edges_for_metrics
@@ -512,6 +522,8 @@ class ComparisonMetrics:
         type_mapper: Optional[Any] = None,
         show_progress: bool = True,
         max_edges_for_metrics: Optional[int] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> Dict[str, Any]:
         """Generate a compact comparison summary for explicit query rows."""
         summary: Dict[str, Any] = {
@@ -539,6 +551,8 @@ class ComparisonMetrics:
                 threshold_map,
                 label_mapper=label_mapper,
                 type_mapper=type_mapper,
+                merge_policy=merge_policy,
+            hemi_aware=hemi_aware,
             )
             query_summary = {
                 'query_id': query_id,
@@ -610,21 +624,25 @@ class ComparisonMetrics:
         threshold: int,
         label_mapper: Optional[Any] = None,
         type_mapper: Optional[Any] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> pd.DataFrame:
         """
         Align results from different datasets at a specific threshold.
-        
+
         When type_mapper is provided, edges are merged using canonical (male-cns)
         type names so that equivalent types across datasets (e.g., MeVPaMe1 in
         male-cns and MTe46 in flywire) are correctly aligned.
-        
+
         Args:
             results: Nested dict {dataset: {threshold: DataFrame}}
             datasets: List of dataset identifiers
             threshold: Threshold to align at
             label_mapper: Optional LabelMapper for custom labels
             type_mapper: Optional CrossDatasetTypeMapper for type unification
-            
+            merge_policy: Optional query-anchored MergePolicy — its group
+                labels replace the canonical namespace as merge keys
+
         Returns:
             Aligned DataFrame with edge index and weight columns per dataset
         """
@@ -634,6 +652,8 @@ class ComparisonMetrics:
             {dataset: threshold for dataset in datasets},
             label_mapper=label_mapper,
             type_mapper=type_mapper,
+            merge_policy=merge_policy,
+            hemi_aware=hemi_aware,
         )
 
     def _align_results_for_threshold_map(
@@ -643,6 +663,8 @@ class ComparisonMetrics:
         threshold_map: Dict[str, int],
         label_mapper: Optional[Any] = None,
         type_mapper: Optional[Any] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> pd.DataFrame:
         """Align each dataset at its own requested threshold.
 
@@ -705,13 +727,44 @@ class ComparisonMetrics:
                 # renames map to their canonical target, while a CONFLICTED
                 # type keeps a dataset-scoped key (``dataset:raw``) so two
                 # datasets' same-named conflicted rows can never merge.
+                # With a query-anchored MergePolicy (plan:
+                # plan-query-anchored-cross-dataset-analysis.md) the policy's
+                # group labels take precedence; types it does not govern
+                # fall back to canonical_merge_key toward the policy's
+                # anchor namespace (B3), which is byte-identical to the
+                # historical male-cns default when no policy exists.
                 from .type_resolver import canonical_merge_key
                 merge_cache: dict = {}
-                canonical_map = {
-                    t: canonical_merge_key(
-                        type_mapper, t, dataset, cache=merge_cache).key
-                    for t in all_unique_types
-                }
+                fallback_target = (
+                    merge_policy.anchor_ds
+                    if merge_policy is not None else None)
+                canonical_map = {}
+                # Hemisphere-suffix awareness (plan R1-b): with
+                # separate_hemispheres, frame types can carry _L/_R/_U
+                # suffixes while key_map/mapper relations key base names.
+                # Strip the suffix for the lookup and re-apply it to the
+                # canonical key so L and R stay DISTINCT rows that still
+                # merge across datasets.
+                for t in all_unique_types:
+                    key = (
+                        merge_policy.key_for(dataset, t)
+                        if merge_policy is not None else None
+                    )
+                    suffix = ''
+                    lookup_t = t
+                    if hemi_aware and key is None:
+                        lookup_t, suffix = split_hemi_suffix(t)
+                        if suffix:
+                            key = (
+                                merge_policy.key_for(dataset, lookup_t)
+                                if merge_policy is not None else None
+                            )
+                    if key is None:
+                        resolved_key = canonical_merge_key(
+                            type_mapper, lookup_t, dataset, fallback_target,
+                            cache=merge_cache).key
+                        key = f'{resolved_key}{suffix}' if suffix else resolved_key
+                    canonical_map[t] = key
                 
                 # Apply mapping vectorized
                 agg_df['canonical_pre'] = original_pre_series.map(canonical_map)
@@ -746,9 +799,17 @@ class ComparisonMetrics:
         if type_mapper is not None and edge_display_names and len(aligned) <= 10000:
             # Pre-compute display name mappings for all unique types (vectorized)
             # Use type_mapper.get_display_name() for consistent format: "MeVPLo2(MTe07)"
+            # Merge-policy group labels are ALREADY the final display identity
+            # (B6): re-running get_display_name over them would reintroduce the
+            # scoped cosmetic form the policy exists to remove.
             type_display_map = {}
             for canonical in edge_display_names.keys():
-                type_display_map[canonical] = type_mapper.get_display_name(canonical, datasets)
+                if merge_policy is not None and merge_policy.is_group_label(
+                        canonical):
+                    type_display_map[canonical] = canonical
+                else:
+                    type_display_map[canonical] = type_mapper.get_display_name(
+                        canonical, datasets)
             
             # Vectorized: split index, map, and rebuild
             def build_display_name(edge_key):
@@ -978,7 +1039,9 @@ class ComparisonMetrics:
         label_mapper: Optional[Any] = None,
         type_mapper: Optional[Any] = None,
         show_progress: bool = True,
-        max_edges_for_metrics: Optional[int] = None
+        max_edges_for_metrics: Optional[int] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate comprehensive comparison summary.
@@ -1004,7 +1067,9 @@ class ComparisonMetrics:
         
         # Calculate metrics at the middle threshold for backward compatibility
         mid_threshold = thresholds[len(thresholds) // 2]
-        aligned = self._align_results_at_threshold(results, datasets, mid_threshold, label_mapper, type_mapper)
+        aligned = self._align_results_at_threshold(
+            results, datasets, mid_threshold, label_mapper, type_mapper,
+            merge_policy=merge_policy)
         
         if aligned.empty:
             summary['key_findings'].append("No data available for comparison")
@@ -1052,7 +1117,10 @@ class ComparisonMetrics:
                 'conservation_rate': 0.0
             }
             
-            aligned_t = self._align_results_at_threshold(results, datasets, threshold, label_mapper, type_mapper)
+            aligned_t = self._align_results_at_threshold(
+                results, datasets, threshold, label_mapper, type_mapper,
+                merge_policy=merge_policy,
+                hemi_aware=hemi_aware)
             
             if aligned_t.empty:
                 summary['key_findings_per_threshold'][threshold] = threshold_findings

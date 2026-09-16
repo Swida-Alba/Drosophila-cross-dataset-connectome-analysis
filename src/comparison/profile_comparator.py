@@ -109,6 +109,11 @@ except ImportError:  # pragma: no cover - direct src/ execution
     except ImportError:  # last resort: bare '{bodyId}_{type}' labels
         build_body_id_label = None
 
+try:
+    from . import report_kit
+except ImportError:  # pragma: no cover - direct src/ execution
+    import report_kit
+
 if TYPE_CHECKING:
     from .connectivity_profiler import ConnectivityStatus
 
@@ -4186,7 +4191,8 @@ class HomologFinder:
         shuffle_seed: Optional[int] = None,
         visualize_skeleton: Optional[bool] = None,
         visualize_top_n: Optional[int] = None,
-        vector_prune_fraction: Optional[float] = None
+        vector_prune_fraction: Optional[float] = None,
+        extra_readme_params: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """
         Comprehensive homolog discovery - searches the ENTIRE target dataset.
@@ -4485,7 +4491,8 @@ class HomologFinder:
                     'min_score': min_score,
                     'method': 'find_homologs (comprehensive)',
                     'run_shuffle_test': run_shuffle_test,
-                    'n_shuffles': n_shuffles if run_shuffle_test else None
+                    'n_shuffles': n_shuffles if run_shuffle_test else None,
+                    **(extra_readme_params or {}),
                 },
                 shuffle_stats=shuffle_stats,
                 visualize_skeleton=visualize_skeleton,
@@ -4514,7 +4521,8 @@ class HomologFinder:
                     'min_score': min_score,
                     'method': 'find_homologs (comprehensive)',
                     'run_shuffle_test': run_shuffle_test,
-                    'n_shuffles': n_shuffles if run_shuffle_test else None
+                    'n_shuffles': n_shuffles if run_shuffle_test else None,
+                    **(extra_readme_params or {}),
                 },
                 shuffle_stats=shuffle_stats,
                 visualize_skeleton=visualize_skeleton,
@@ -5712,7 +5720,8 @@ class HomologFinder:
         shuffle_seed: Optional[int] = None,
         visualize_skeleton: Optional[bool] = None,
         visualize_top_n: Optional[int] = None,
-        similarity_metric: Optional[str] = None
+        similarity_metric: Optional[str] = None,
+        extra_readme_params: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """
         Fast homolog discovery via adjacency expansion.
@@ -6513,7 +6522,8 @@ class HomologFinder:
                     'method': 'find_homologs_fast',
                     'source_bodyids_count': len(source_bodyids),
                     'profile_method': '1-hop/2-hop hybrid via ConnectivityProfiler',
-                    'type_level': 'pooled all-adjacency type profiles'
+                    'type_level': 'pooled all-adjacency type profiles',
+                    **(extra_readme_params or {}),
                 },
                 visualize_skeleton=visualize_skeleton,
                 visualize_top_n=visualize_top_n,
@@ -6884,7 +6894,8 @@ class HomologFinder:
                 'min_weight': min_weight,
                 'method': 'find_homologs_fast',
                 'source_bodyids_count': len(source_bodyids),
-                'profile_method': '1-hop/2-hop hybrid via ConnectivityProfiler'
+                'profile_method': '1-hop/2-hop hybrid via ConnectivityProfiler',
+                **(extra_readme_params or {}),
             },
             shuffle_stats=shuffle_stats,
             visualize_skeleton=visualize_skeleton,
@@ -6923,6 +6934,8 @@ class HomologFinder:
         morph_qualify: bool = False,
         morph_null_k: int = 200,
         morph_bar_offset: float = 0.0,
+        morph_mode: str = 'null',
+        morph_level: int = 95,
     ) -> pd.DataFrame:
         """Run homolog discovery for several types / higher-category labels and
         aggregate all results into one combined output folder grouped by query
@@ -6946,10 +6959,10 @@ class HomologFinder:
         per-type output (results/, profiles/, overlaps/, visualization/) is
         written directly into <combined_name>/.
 
-        Morph qualification (``morph_qualify=True``, cross-dataset only,
-        requires visualization): after the connectivity ranking, the
-        visualized top-N candidates are scored against the transformed
-        query with the production vector_v2 scorer (no NBLAST
+        Morph qualification (``morph_qualify=True``, cross- or
+        intra-dataset, requires visualization): after the connectivity
+        ranking, the visualized top-N candidates are scored against the
+        transformed query with the production vector_v2 scorer (no NBLAST
         cross-dataset) and gated by a per-query null bar — the p95 of
         ``morph_null_k`` seeded random target neurons plus
         ``morph_bar_offset``. Candidates below the bar are excluded from
@@ -7071,6 +7084,9 @@ class HomologFinder:
                     visualize_skeleton=False,  # deferred to phase 2
                     visualize_top_n=visualize_top_n,
                     similarity_metric=similarity_metric,
+                    extra_readme_params=self._morph_readme_params(
+                        morph_qualify, morph_mode, morph_level,
+                        morph_bar_offset, morph_null_k),
                 )
             else:
                 unit_df = self.find_homologs(
@@ -7092,6 +7108,9 @@ class HomologFinder:
                     visualize_skeleton=False,  # deferred to phase 2
                     visualize_top_n=visualize_top_n,
                     vector_prune_fraction=vector_prune_fraction,
+                    extra_readme_params=self._morph_readme_params(
+                        morph_qualify, morph_mode, morph_level,
+                        morph_bar_offset, morph_null_k),
                 )
             if unit_df is not None and not unit_df.empty:
                 fetched.append((idx, query_type, real_type, per_source, per_type_output_path, unit_df))
@@ -7115,19 +7134,19 @@ class HomologFinder:
         # byte-identical.
         morph_state = None
         if morph_qualify and visualize_skeleton and fetched:
-            if source_dataset == target_dataset:
-                self._log("Morph qualification needs a cross-dataset target; "
-                          "skipping.")
-            else:
-                try:
-                    morph_state = self._run_morph_qualification(
-                        fetched, source_dataset, target_dataset,
-                        visualize_top_n=visualize_top_n,
-                        null_k=morph_null_k,
-                        bar_offset=morph_bar_offset)
-                except Exception as exc:
-                    self._log(f"Morph qualification failed "
-                              f"(continuing without it): {exc}")
+            # Works cross-dataset (bridging transform) and same-dataset
+            # (identity chain); target-scope refusals surface through the
+            # exception path below as a logged "continuing without it".
+            try:
+                morph_state = self._run_morph_qualification(
+                fetched, source_dataset, target_dataset,
+                visualize_top_n=visualize_top_n,
+                null_k=morph_null_k,
+                bar_offset=morph_bar_offset,
+                mode=morph_mode, level=morph_level)
+            except Exception as exc:
+                self._log(f"Morph qualification failed "
+                          f"(continuing without it): {exc}")
             if morph_state is not None:
                 self._write_morph_qualification_summary(
                     combined_path / 'results' / 'morph_qualification.json',
@@ -7155,7 +7174,7 @@ class HomologFinder:
                         type_level_df = pd.read_csv(tl_path)
                     except Exception:
                         type_level_df = None
-                self._visualize_homolog_candidates(
+                rendered_types = self._visualize_homolog_candidates(
                     results_df=unit_df,
                     query=per_source,
                     source_dataset=source_dataset,
@@ -7166,7 +7185,28 @@ class HomologFinder:
                     type_summary=type_summary,
                     type_level_df=type_level_df,
                     morph_qualification=morph_state,
-                )
+                ) or []
+                # The phase-1 save predates the scenes; mirror the inline
+                # path and fold the rendered-type flags into the CSV so
+                # `visualized` / `visualization_rank` exist in multi runs.
+                if type_summary is not None and rendered_types:
+                    ts_col = ('target_type'
+                              if 'target_type' in type_summary.columns else
+                              'target'
+                              if 'target' in type_summary.columns else None)
+                    if ts_col:
+                        rendered_text = [str(t) for t in rendered_types]
+                        rank_map = {t: i + 1 for i, t
+                                    in enumerate(rendered_text)}
+                        type_summary['visualized'] = (
+                            type_summary[ts_col].astype(str)
+                            .isin(rendered_text))
+                        type_summary['visualization_rank'] = (
+                            type_summary[ts_col].astype(str).map(rank_map))
+                        _drop_rank_cols(type_summary).to_csv(
+                            summary_path, index=False)
+                        self._log("Updated: results/type_summary.csv "
+                                  "(visualized flags)")
 
         combined_df = pd.concat(all_dfs, ignore_index=True)
 
@@ -7219,9 +7259,22 @@ class HomologFinder:
             import morph_cross_dataset
         return morph_cross_dataset
 
+    @staticmethod
+    def _morph_readme_params(morph_qualify, morph_mode, morph_level,
+                             morph_bar_offset, morph_null_k):
+        """Morph-qualification parameters for the per-type README record."""
+        return {
+            'morph_qualify': bool(morph_qualify),
+            'morph_mode': morph_mode,
+            'morph_level': morph_level,
+            'morph_bar_offset': morph_bar_offset,
+            'morph_null_k': morph_null_k,
+        }
+
     def _run_morph_qualification(self, fetched, source_dataset,
                                  target_dataset, visualize_top_n,
-                                 null_k, bar_offset):
+                                 null_k, bar_offset,
+                                 mode='null', level=95):
         """Pooled morph-qualification pass over the visualized top-N.
 
         Scores exactly the pairs the visualization would render (same
@@ -7231,9 +7284,35 @@ class HomologFinder:
         """
         mcd = self._import_morph_cross_dataset()
         pairs = []
+        source_types = {}
+        # Same-dataset scene rule: rows whose target is a query neuron are
+        # rendered as the query layer, never as candidates — the pair
+        # selection must exclude them exactly like the scene does.
+        same_dataset = str(source_dataset) == str(target_dataset)
         for (_idx, _qtype, _real, _per_source, _path, unit_df) in fetched:
-            pairs.extend(mcd.select_visualized_pairs(unit_df,
-                                                     visualize_top_n))
+            exclude = None
+            if (same_dataset and unit_df is not None
+                    and 'source_bodyId' in getattr(unit_df, 'columns', [])):
+                exclude = set()
+                for value in unit_df['source_bodyId'].dropna().unique():
+                    try:
+                        if not pd.isna(value):
+                            exclude.add(int(value))
+                    except (TypeError, ValueError):
+                        continue
+                exclude = exclude or None
+            pairs.extend(mcd.select_visualized_pairs(
+                unit_df, visualize_top_n, exclude_targets=exclude))
+            if mode == 'mapping_ref' and unit_df is not None \
+                    and 'source_type' in getattr(unit_df, 'columns', []):
+                for _idx, row in unit_df.iterrows():
+                    try:
+                        src = int(row['source_bodyId'])
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                    stype = row.get('source_type')
+                    if src and stype and pd.notna(stype):
+                        source_types.setdefault(src, str(stype))
         if not pairs:
             self._log("Morph qualification: no visualized pairs found")
             return None
@@ -7242,7 +7321,8 @@ class HomologFinder:
                   f"NBLAST)...")
         state = mcd.qualify_visualized_pairs(
             source_dataset, target_dataset, pairs, null_k=null_k,
-            bar_offset=bar_offset, log=self._log)
+            bar_offset=bar_offset, mode=mode, level=level,
+            source_types=source_types, log=self._log)
         for warning in state.warnings:
             self._log(f"[morph-qualify] {warning}")
         if not state.active:
@@ -7287,7 +7367,14 @@ class HomologFinder:
                 'target_dataset': target_dataset,
                 'null_k': morph_state.null_k,
                 'bar_offset': morph_state.bar_offset,
-                'bar_definition': 'morph_v2 >= null_p95 + bar_offset',
+                'mode': morph_state.mode,
+                'level': morph_state.level,
+                'bar_definition': (
+                    f'morph_v2 >= null_p{morph_state.level} + bar_offset'
+                    if morph_state.mode == 'null' else
+                    f'mapping_ref floors v3: native pool floor (>=2 refs) '
+                    f'binding, else Track-A B_b - Δ, else '
+                    f'null_p{morph_state.level} + bar_offset'),
                 'scorer': 'vector_v2 (production block-weighted whitened '
                           'cosine; no NBLAST cross-dataset)',
                 'per_source': {
@@ -10093,30 +10180,18 @@ class ConnectivityProfileComparer:
 
     # Use explicit report scales so zero is always white. Positive-only
     # similarity metrics run from white to red; signed rank metrics run from
-    # blue through white to red.
-    _REPORT_POSITIVE_COLORSCALE = (
-        (0.0, '#ffffff'),
-        (0.1, '#fff5f0'),
-        (0.25, '#fee0d2'),
-        (0.4, '#fcbba1'),
-        (0.55, '#fc9272'),
-        (0.7, '#fb6a4a'),
-        (0.85, '#de2d26'),
-        (1.0, '#a50f15'),
-    )
-    _REPORT_DIVERGING_COLORSCALE = (
-        (0.0, '#053061'),
-        (0.1, '#2166ac'),
-        (0.2, '#4393c3'),
-        (0.3, '#92c5de'),
-        (0.4, '#d1e5f0'),
-        (0.5, '#ffffff'),
-        (0.6, '#fddbc7'),
-        (0.7, '#f4a582'),
-        (0.8, '#d6604d'),
-        (0.9, '#b2182b'),
-        (1.0, '#67001f'),
-    )
+    # blue through white to red. Both live in report_kit so the morphology
+    # comparison renders with the same conventions.
+    _REPORT_POSITIVE_COLORSCALE = report_kit.REPORT_POSITIVE_COLORSCALE
+    _REPORT_DIVERGING_COLORSCALE = report_kit.REPORT_DIVERGING_COLORSCALE
+
+    def _report_metric_styles(self) -> Dict[str, 'report_kit.MetricStyle']:
+        """Per-metric report presentation, in _REPORT_METRICS card order."""
+        return {
+            metric: report_kit.metric_style(
+                metric, self._metric_display_name(metric))
+            for metric in self._REPORT_METRICS
+        }
 
     def __init__(
         self,
@@ -12533,199 +12608,17 @@ class ConnectivityProfileComparer:
     @staticmethod
     def _report_css() -> str:
         """Return the self-contained report stylesheet."""
-        return """<style>
-:root {
-  --ink: #152238;
-  --muted: #637188;
-  --line: #d9e2ee;
-  --canvas: #f4f7fb;
-  --surface: #ffffff;
-  --surface-soft: #f8fafc;
-  --accent: #2563eb;
-  --accent-soft: #e8f0ff;
-  --accent-dark: #1746a2;
-  --success: #16756a;
-  --shadow: 0 12px 30px rgba(27, 52, 84, 0.08);
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--canvas);
-  color: var(--ink);
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-  line-height: 1.45;
-}
-a { color: var(--accent-dark); text-decoration: none; }
-a:hover { text-decoration: underline; }
-.report-shell { max-width: 1480px; margin: 0 auto; padding: 34px 30px 56px; }
-.report-hero {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  box-shadow: var(--shadow);
-  padding: 28px 30px 24px;
-  margin-bottom: 22px;
-}
-.report-kicker {
-  color: var(--accent-dark);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-}
-.report-title { margin: 7px 0 5px; font-size: clamp(28px, 4vw, 42px); line-height: 1.08; }
-.report-subtitle { color: var(--muted); margin: 0; max-width: 920px; font-size: 15px; }
-.report-meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 21px; }
-.meta-chip {
-  display: flex; gap: 7px; align-items: baseline; flex-wrap: wrap;
-  background: var(--surface-soft); border: 1px solid var(--line);
-  border-radius: 999px; padding: 7px 12px; font-size: 12px;
-}
-.meta-chip span { color: var(--muted); font-weight: 700; }
-.meta-chip strong { font-weight: 700; }
-.report-note {
-  color: var(--muted); font-size: 12px; margin: 18px 0 0;
-  padding-top: 15px; border-top: 1px solid var(--line);
-}
-.tab-list {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-  margin: 0 0 18px; padding: 5px;
-  background: #e9eef6; border: 1px solid var(--line); border-radius: 12px;
-}
-.tab-button {
-  appearance: none; border: 1px solid transparent; border-radius: 9px;
-  background: transparent; color: var(--muted); cursor: pointer;
-  font: inherit; font-size: 13px; font-weight: 750; padding: 10px 15px;
-  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
-}
-.tab-button:hover { color: var(--ink); background: rgba(255,255,255,.72); }
-.tab-button.active {
-  color: var(--accent-dark); background: var(--surface);
-  border-color: #cbd9f2; box-shadow: 0 3px 9px rgba(44, 74, 120, .10);
-}
-.tab-panel { display: none; }
-.tab-panel.active { display: block; }
-.section-card {
-  background: var(--surface); border: 1px solid var(--line);
-  border-radius: 16px; box-shadow: 0 5px 16px rgba(27, 52, 84, .04);
-  padding: 22px; margin-bottom: 20px;
-}
-.section-heading { margin: 0 0 4px; font-size: 21px; }
-.section-summary { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
-.direction-intro { margin: 2px 0 16px; }
-.direction-title { margin: 0; font-size: 18px; }
-.direction-note { color: var(--muted); font-size: 12px; margin-top: 3px; }
-.level-block { margin: 24px 0 28px; }
-.level-block:first-child { margin-top: 0; }
-.level-heading { display: flex; align-items: baseline; gap: 9px; margin-bottom: 10px; }
-.level-heading h3 { margin: 0; font-size: 15px; }
-.level-heading span { color: var(--muted); font-size: 12px; }
-.metric-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 15px; align-items: stretch;
-}
-.heatmap-card {
-  min-width: 0; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 13px; box-shadow: 0 5px 15px rgba(27, 52, 84, .05);
-  overflow: hidden;
-}
-.heatmap-card-head { padding: 13px 14px 9px; min-height: 76px; }
-.heatmap-card-title { margin: 0; font-size: 14px; line-height: 1.25; }
-.heatmap-card-subtitle { color: var(--muted); font-size: 11px; margin-top: 4px; }
-.heatmap-links { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; font-size: 11px; font-weight: 700; }
-.heatmap-links a { white-space: nowrap; }
-.heatmap-status {
-  display: inline-block; color: var(--success); background: #e7f6f2;
-  border-radius: 999px; padding: 2px 7px; font-size: 10px; font-weight: 800;
-}
-.heatmap-stage { border-top: 1px solid #edf1f6; padding: 2px 3px 0; min-height: 335px; }
-.heatmap-stage .plotly-graph-div { width: 100% !important; }
-.heatmap-empty { color: var(--muted); font-size: 12px; padding: 40px 16px; text-align: center; }
-.detail-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
-.detail-block summary { cursor: pointer; color: var(--accent-dark); font-size: 13px; font-weight: 750; }
-.detail-list { columns: 2; margin: 10px 0 0; padding-left: 20px; font-size: 12px; }
-.mapping-table { border-collapse: collapse; font-size: 12px; margin-top: 12px; width: 100%; }
-.mapping-table th, .mapping-table td { border: 1px solid var(--line); padding: 7px 9px; text-align: left; }
-.mapping-table th { background: var(--surface-soft); color: var(--muted); font-weight: 750; }
-.muted { color: var(--muted); font-size: 12px; }
-@media (max-width: 700px) {
-  .report-shell { padding: 17px 12px 34px; }
-  .report-hero, .section-card { padding: 17px; border-radius: 14px; }
-  .metric-grid { grid-template-columns: 1fr; }
-  .detail-list { columns: 1; }
-  .tab-button { flex: 1 1 auto; }
-}
-</style>"""
+        return report_kit.report_css()
 
     @staticmethod
     def _report_script() -> str:
         """Return the small tab/resize controller used by report.html."""
-        return """<script>
-(function () {
-  function resizePlots(panel) {
-    if (!panel || !window.Plotly) return;
-    panel.querySelectorAll('.js-plotly-plot').forEach(function (plot) {
-      try { window.Plotly.Plots.resize(plot); } catch (error) { /* no-op */ }
-    });
-  }
-
-  document.querySelectorAll('[data-tab-button]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var group = button.getAttribute('data-tab-group');
-      var target = button.getAttribute('data-tab-target');
-      document.querySelectorAll('[data-tab-button][data-tab-group="' + group + '"]')
-        .forEach(function (peer) {
-          var active = peer === button;
-          peer.classList.toggle('active', active);
-          peer.setAttribute('aria-selected', active ? 'true' : 'false');
-        });
-      document.querySelectorAll('[data-tab-panel-group="' + group + '"]')
-        .forEach(function (panel) {
-          panel.classList.toggle('active', panel.id === target);
-        });
-      requestAnimationFrame(function () { resizePlots(document.getElementById(target)); });
-    });
-  });
-
-  window.addEventListener('load', function () {
-    document.querySelectorAll('.tab-panel.active').forEach(resizePlots);
-  });
-}());
-</script>"""
+        return report_kit.report_script()
 
     @staticmethod
     def _cluster_heatmap_matrix(matrix: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
-        """Apply the same Ward/Euclidean ordering used by VisPath.
-
-        VisPath clusters a finite copy of the matrix, replacing missing values
-        with zero before calculating row and column Euclidean distances.  The
-        report follows that ordering while retaining missing cells as blanks
-        in the displayed Plotly heatmap.
-        """
-        numeric = matrix.apply(pd.to_numeric, errors='coerce')
-        numeric = numeric.replace([np.inf, -np.inf], np.nan)
-        if numeric.empty:
-            return numeric, False
-
-        try:
-            from scipy.cluster.hierarchy import leaves_list, linkage
-            from scipy.spatial.distance import pdist
-
-            finite = numeric.fillna(0.0).to_numpy(dtype=float)
-            row_order = list(range(numeric.shape[0]))
-            col_order = list(range(numeric.shape[1]))
-            if finite.shape[0] > 1:
-                row_order = leaves_list(
-                    linkage(pdist(finite, metric='euclidean'), method='ward')
-                ).tolist()
-            if finite.shape[1] > 1:
-                col_order = leaves_list(
-                    linkage(pdist(finite.T, metric='euclidean'), method='ward')
-                ).tolist()
-            return numeric.iloc[row_order, col_order], True
-        except (ImportError, ValueError, TypeError, FloatingPointError):
-            return numeric, False
+        """Apply the same Ward/Euclidean ordering used by VisPath."""
+        return report_kit.cluster_heatmap_matrix(matrix)
 
     @classmethod
     def _plotly_heatmap_fragment(
@@ -12743,119 +12636,16 @@ a:hover { text-decoration: underline; }
         ``square_cells`` is used for intra-dataset similarity matrices, where
         the row and column dimensions represent the same set of items.
         """
-        if matrix is None or matrix.empty:
-            return None, False
-
-        try:
-            import plotly.graph_objects as go
-        except ImportError:
-            return None, False
-
-        ordered, clustered = cls._cluster_heatmap_matrix(matrix)
-        z = [
-            [None if pd.isna(value) else float(value) for value in row]
-            for row in ordered.itertuples(index=False, name=None)
-        ]
-        x_labels = [str(value) for value in ordered.columns]
-        y_labels = [str(value) for value in ordered.index]
-
-        is_diverging = metric in {'rank_corr', 'rank_corr_union'}
-        colorscale = (
-            cls._REPORT_DIVERGING_COLORSCALE
-            if is_diverging else cls._REPORT_POSITIVE_COLORSCALE
+        style = report_kit.metric_style(metric, cls._metric_display_name(metric))
+        return report_kit.plotly_heatmap_fragment(
+            matrix=matrix,
+            title=title,
+            style=style,
+            x_title=x_title,
+            y_title=y_title,
+            include_plotlyjs=include_plotlyjs,
+            square_cells=square_cells,
         )
-        zmin, zmax = (-1.0, 1.0) if is_diverging else (0.0, 1.0)
-        heatmap_kwargs = {
-            'z': z,
-            'x': x_labels,
-            'y': y_labels,
-            'type': 'heatmap',
-            'colorscale': colorscale,
-            'zmin': zmin,
-            'zmax': zmax,
-            'hoverongaps': False,
-            'connectgaps': False,
-            'colorbar': {
-                'title': {'text': cls._metric_display_name(metric)},
-                'thickness': 12,
-                'len': 0.86,
-            },
-            'hovertemplate': (
-                '<b>%{y}</b><br>%{x}<br>'
-                f'{cls._metric_display_name(metric)}: %{{z:.3f}}'
-                '<extra></extra>'
-            ),
-        }
-
-        fig = go.Figure(data=[go.Heatmap(**heatmap_kwargs)])
-        max_label_length = max((len(label) for label in y_labels), default=12)
-        left_margin = min(235, max(90, max_label_length * 5 + 22))
-        matrix_dimension = max(len(y_labels), len(x_labels))
-        row_height = 18 if len(y_labels) > 60 else 23
-        if square_cells:
-            # Two-column cards are wider than the previous three-column
-            # layout. Give square intra-dataset matrices enough vertical
-            # room before Plotly applies the equal-axis constraint.
-            row_height = 18 if matrix_dimension > 60 else 27
-        height = max(335, min(880, 185 + len(y_labels) * row_height))
-        if square_cells:
-            height = max(390, height)
-        xaxis = {
-            'title': {'text': x_title, 'font': {'size': 10}},
-            'tickangle': -42,
-            'automargin': True,
-            'showgrid': False,
-            'zeroline': False,
-            'showline': False,
-        }
-        yaxis = {
-            'title': {'text': y_title, 'font': {'size': 10}},
-            'autorange': 'reversed',
-            'automargin': True,
-            'showgrid': False,
-            'zeroline': False,
-            'showline': False,
-        }
-        if square_cells:
-            # Equal axis scaling makes each matrix cell a true square even
-            # when the responsive report card is resized.
-            yaxis.update({
-                'scaleanchor': 'x',
-                'scaleratio': 1,
-                'constrain': 'domain',
-            })
-        fig.update_layout(
-            template='plotly_white',
-            title={
-                'text': title,
-                'x': 0.01,
-                'xanchor': 'left',
-                'font': {'size': 13, 'color': '#152238'},
-            },
-            height=height,
-            margin={
-                'l': left_margin,
-                'r': 12,
-                't': 58,
-                'b': 110 if len(x_labels) > 1 else 68,
-            },
-            font={'family': 'Inter, Arial, sans-serif', 'size': 10, 'color': '#152238'},
-            paper_bgcolor='white',
-            plot_bgcolor='white',
-            xaxis=xaxis,
-            yaxis=yaxis,
-        )
-
-        return fig.to_html(
-            full_html=False,
-            include_plotlyjs='inline' if include_plotlyjs else False,
-            config={
-                'responsive': True,
-                'displaylogo': False,
-                'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
-            },
-            default_width='100%',
-        ), clustered
 
     def _append_report_tab_group(
         self,
@@ -12866,33 +12656,8 @@ a:hover { text-decoration: underline; }
         panel_class: str = 'tab-panel',
     ) -> None:
         """Append a reusable button/panel tab group to the report."""
-        from html import escape
-
-        if not tabs:
-            return
-        lines.append(f"<div class='tab-list' role='tablist' data-tab-list='{group_id}'>")
-        panel_ids = []
-        for index, (key, label) in enumerate(tabs):
-            panel_id = f'{group_id}-panel-{index}'
-            panel_ids.append((key, panel_id))
-            active = ' active' if index == 0 else ''
-            selected = 'true' if index == 0 else 'false'
-            lines.append(
-                f"<button type='button' class='tab-button{active}' "
-                f"data-tab-button data-tab-group='{group_id}' "
-                f"data-tab-target='{panel_id}' aria-selected='{selected}' "
-                f"role='tab'>{escape(str(label))}</button>"
-            )
-        lines.append('</div>')
-        for index, (key, panel_id) in enumerate(panel_ids):
-            active = ' active' if index == 0 else ''
-            lines.append(
-                f"<section id='{panel_id}' class='{panel_class}{active}' "
-                f"data-tab-panel-group='{group_id}' data-tab-key='{escape(str(key), quote=True)}' "
-                "role='tabpanel'>"
-            )
-            render_panel(key, panel_id)
-            lines.append('</section>')
+        report_kit.append_report_tab_group(
+            lines, group_id, tabs, render_panel, panel_class=panel_class)
 
     def _append_report_heatmap(
         self,
@@ -12910,58 +12675,22 @@ a:hover { text-decoration: underline; }
         square_cells: bool = False,
     ) -> None:
         """Append one report card with a Plotly heatmap and source links."""
-        from html import escape
-
-        links = []
-        if csv_rel:
-            links.append(f"<a href='{escape(csv_rel, quote=True)}'>CSV</a>")
-        if vispath_rel and (output_path / vispath_rel).exists():
-            links.append(
-                f"<a href='{escape(vispath_rel, quote=True)}' target='_blank' "
-                "rel='noopener'>Open VisPath heatmap for editing</a>"
-            )
-        links_html = ' <span aria-hidden="true">·</span> '.join(links)
-
-        lines.append("<article class='heatmap-card'>")
-        lines.append("<header class='heatmap-card-head'>")
-        lines.append(f"<h4 class='heatmap-card-title'>{escape(heading)}</h4>")
-        if links_html:
-            lines.append(f"<div class='heatmap-links'>{links_html}</div>")
-
-        if matrix is None or matrix.empty:
-            lines.append("<div class='heatmap-card-subtitle'>Not computed for this run</div>")
-            lines.append('</header><div class="heatmap-empty">No matrix available.</div></article>')
-            return
-
-        fragment, clustered = self._plotly_heatmap_fragment(
+        style = report_kit.metric_style(
+            metric, self._metric_display_name(metric))
+        report_kit.append_report_heatmap(
+            lines=lines,
+            output_path=output_path,
             matrix=matrix,
+            heading=heading,
             title=title,
-            metric=metric,
+            style=style,
             x_title=x_title,
             y_title=y_title,
-            include_plotlyjs=plotly_state.get('include_plotlyjs', True),
+            csv_rel=csv_rel,
+            vispath_rel=vispath_rel,
+            plotly_state=plotly_state,
             square_cells=square_cells,
         )
-        status_text = 'Ward clustered' if clustered else 'Original order'
-        lines.append(
-            "<div class='heatmap-card-subtitle'><span class='heatmap-status'>"
-            f"{status_text}</span> · hover cells for exact values</div>"
-        )
-        lines.append('</header><div class="heatmap-stage">')
-        if fragment:
-            plotly_state['include_plotlyjs'] = False
-            if not clustered:
-                lines.append(
-                    "<div class='heatmap-card-subtitle muted'>"
-                    "Ward ordering unavailable; original order shown.</div>"
-                )
-            lines.append(fragment)
-        else:
-            lines.append(
-                "<div class='heatmap-empty'>Plotly is unavailable; use the CSV or "
-                "VisPath editor link above.</div>"
-            )
-        lines.append('</div></article>')
 
     def _append_report_metric_grid(
         self,
@@ -12977,25 +12706,12 @@ a:hover { text-decoration: underline; }
         square_cells: bool = False,
     ) -> None:
         """Append six metric cards in a responsive two-column grid."""
-        metric_matrices = metric_matrices or {}
-        lines.append("<div class='metric-grid'>")
-        for metric in self._REPORT_METRICS:
-            display = self._metric_display_name(metric)
-            self._append_report_heatmap(
-                lines=lines,
-                output_path=output_path,
-                matrix=metric_matrices.get(metric),
-                heading=display,
-                title=f"{title_prefix} · {display}",
-                metric=metric,
-                x_title=x_title,
-                y_title=y_title,
-                csv_rel=csv_paths.get(metric),
-                vispath_rel=vispath_paths.get(metric),
-                plotly_state=plotly_state,
-                square_cells=square_cells,
-            )
-        lines.append('</div>')
+        report_kit.append_report_metric_grid(
+            lines, output_path, metric_matrices, title_prefix,
+            csv_paths, vispath_paths, x_title, y_title, plotly_state,
+            styles=self._report_metric_styles(),
+            square_cells=square_cells,
+        )
 
     def _generate_single_dataset_report(
         self,
@@ -13124,132 +12840,48 @@ a:hover { text-decoration: underline; }
     ):
         """
         Generate heatmaps using VisualizePath with native clustering support.
-        
-        Creates one heatmap per (direction × metric) combination for ALL metrics:
-        - jaccard: Set-based overlap
-        - cosine: Weight vector similarity  
-        - rank_corr: Spearman correlation
-        - rank_corr_union: Normalized rank correlation
-        
-        Args:
-            matrices: Nested dict {direction: {metric: DataFrame}}
-            viz_dir: Directory to save heatmaps
-            saved_files: Dict to append saved file paths to
-            prefix: Prefix for filenames (e.g., 'type', 'bodyid', 'type_avg')
+
+        Creates one heatmap per (direction x metric) combination, matching
+        the report.html color conventions via the shared report_kit.
         """
-        # Cross-dataset similarities can legitimately contain NaN when a
-        # profile has no comparable partners.  Keep those values in the CSV
-        # analysis output, but pass finite copies to renderers that format
-        # every cell as an integer/float for hover text.
-        render_matrices: Dict[str, Dict[str, pd.DataFrame]] = {}
-        replaced_nonfinite = 0
-        for direction, metric_matrices in matrices.items():
-            render_matrices[direction] = {}
-            for metric, matrix in metric_matrices.items():
-                if matrix is None:
-                    render_matrices[direction][metric] = matrix
-                    continue
-                numeric = matrix.apply(pd.to_numeric, errors='coerce')
-                values = numeric.to_numpy(dtype=float, copy=False)
-                nonfinite = ~np.isfinite(values)
-                replaced_nonfinite += int(nonfinite.sum())
-                if nonfinite.any():
-                    numeric = numeric.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-                render_matrices[direction][metric] = numeric
-        if replaced_nonfinite:
+        styles = self._report_metric_styles()
+        prefix_display = {
+            'type': 'Type-Level',
+            'bodyid': 'BodyId-Level',
+            'type_avg': 'Type-Avg-BodyId',
+        }.get(prefix, prefix.title() if prefix else '')
+        replaced = report_kit.generate_standalone_heatmaps(
+            matrices, viz_dir, styles,
+            filename_builder=(
+                lambda direction, metric_key:
+                f'heatmap_{prefix}_{direction}_{metric_key}.html' if prefix
+                else f'heatmap_{direction}_{metric_key}.html'),
+            group_display=self._direction_display_name,
+            vispath_title=(
+                lambda direction, metric_key, gd:
+                f"{prefix_display} {styles[metric_key].display_name} - {gd}"
+                if prefix_display
+                else f"{styles[metric_key].display_name} - {gd}"),
+            fallback_title=(
+                lambda direction, metric_key, gd:
+                f"Connectivity Profile Similarity - "
+                f"{prefix.replace('_', ' ').title()} {gd} - "
+                f"{metric_key.replace('_', ' ').title()}"
+                if prefix else
+                f"Connectivity Profile Similarity - {gd} - "
+                f"{metric_key.replace('_', ' ').title()}"),
+            tqdm_desc=f"Generating {prefix_display} heatmaps",
+            show_figures=self.show_figures,
+            verbose=self.verbose,
+            saved_files=saved_files,
+            log=self._log,
+        )
+        if replaced:
             self._log(
-                f"Heatmap visualization: replaced {replaced_nonfinite} non-finite "
+                f"Heatmap visualization: replaced {replaced} non-finite "
                 "similarity values with 0; CSV matrices retain the original values."
             )
 
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            # Import VisualizePath's heatmap function
-            import sys
-            vispath_path = Path(__file__).parent.parent.parent / 'vispath-subproject' / 'src'
-            if str(vispath_path) not in sys.path:
-                sys.path.insert(0, str(vispath_path))
-            
-            from vispath_pkg.vispath import VisConnMatInteractive
-            
-            # Metric display names for titles
-            metric_names = {
-                'jaccard': 'Jaccard Similarity',
-                'weighted_jaccard': 'Weighted Jaccard Similarity',
-                'cosine': 'Cosine Similarity',
-                'rank_corr': 'Rank Correlation',
-                'rank_corr_union': 'Rank Correlation (Union)',
-                'combined': 'Combined Score',
-            }
-            
-            prefix_display = {
-                'type': 'Type-Level',
-                'bodyid': 'BodyId-Level',
-                'type_avg': 'Type-Avg-BodyId',
-            }.get(prefix, prefix.title() if prefix else '')
-            
-            # Count total heatmaps to generate
-            total_heatmaps = sum(
-                1 for direction, metric_matrices in render_matrices.items()
-                for metric_key, matrix in metric_matrices.items()
-                if matrix is not None
-            )
-            
-            # Generate heatmap for each direction × metric combination
-            pbar = tqdm(total=total_heatmaps, desc=f"Generating {prefix_display} heatmaps", disable=progress_bars_disabled(True, self.verbose))
-            for direction, metric_matrices in render_matrices.items():
-                for metric_key, matrix in metric_matrices.items():
-                    if matrix is None:
-                        continue
-                    
-                    # File naming: heatmap_{prefix}_{direction}_{metric}.html
-                    filename = f'heatmap_{prefix}_{direction}_{metric_key}.html' if prefix else f'heatmap_{direction}_{metric_key}.html'
-                    html_path = viz_dir / filename
-                    
-                    metric_display = metric_names.get(metric_key, metric_key)
-                    direction_display = self._direction_display_name(direction)
-                    title = (
-                        f"{prefix_display} {metric_display} - {direction_display}"
-                        if prefix_display else f"{metric_display} - {direction_display}"
-                    )
-                    
-                    # Match the report.html convention: diverging blue-white-red
-                    # for signed rank metrics, positive white-red otherwise, with
-                    # a fixed color range so the same value maps to the same
-                    # color in the report and in the VisPath editor.
-                    is_diverging = metric_key in {'rank_corr', 'rank_corr_union'}
-                    colorscale = (
-                        self._REPORT_DIVERGING_COLORSCALE if is_diverging
-                        else self._REPORT_POSITIVE_COLORSCALE
-                    )
-                    zmin, zmax = (-1.0, 1.0) if is_diverging else (0.0, 1.0)
-                    
-                    VisConnMatInteractive(
-                        cmat=matrix,
-                        filename=str(html_path),
-                        title=title,
-                        matrices_dict=None,
-                        showfig=self.show_figures,
-                        verbose=False,  # Suppress individual clustering messages
-                        init_clustered=True,
-                        color_scale=colorscale,
-                        zmin=zmin,
-                        zmax=zmax,
-                        metric_name=metric_display,
-                    )
-                    
-                    saved_files['heatmaps_generated'].append(str(html_path))
-                    pbar.update(1)
-            
-            pbar.close()
-                
-        except ImportError as e:
-            self._log(f"Warning: Could not import VisualizePath for heatmaps: {e}")
-            self._generate_heatmaps_fallback(render_matrices, viz_dir, saved_files, prefix)
-        except Exception as e:
-            self._log(f"Warning: VisualizePath heatmap generation failed: {e}")
-            self._generate_heatmaps_fallback(render_matrices, viz_dir, saved_files, prefix)
-    
     def _generate_heatmaps_fallback(
         self,
         matrices: Dict[str, Dict[str, pd.DataFrame]],
@@ -13258,41 +12890,27 @@ a:hover { text-decoration: underline; }
         prefix: str = ''
     ):
         """Fallback heatmap generation using interactive_heatmap module."""
-        try:
-            from .interactive_heatmap import generate_interactive_heatmap
-            viz_dir.mkdir(parents=True, exist_ok=True)
+        report_kit.generate_heatmaps_fallback(
+            matrices, viz_dir, self._report_metric_styles(),
+            filename_builder=(
+                lambda direction, metric_key:
+                f'heatmap_{prefix}_{direction}_{metric_key}.html' if prefix
+                else f'heatmap_{direction}_{metric_key}.html'),
+            group_display=self._direction_display_name,
+            fallback_title=(
+                lambda direction, metric_key, gd:
+                f"Connectivity Profile Similarity - "
+                f"{prefix.replace('_', ' ').title()} {gd} - "
+                f"{metric_key.replace('_', ' ').title()}"
+                if prefix else
+                f"Connectivity Profile Similarity - {gd} - "
+                f"{metric_key.replace('_', ' ').title()}"),
+            show_figures=self.show_figures,
+            verbose=self.verbose,
+            saved_files=saved_files,
+            log=self._log,
+        )
 
-            for direction, metric_matrices in matrices.items():
-                for metric, matrix in metric_matrices.items():
-                    if matrix is None:
-                        continue
-                    filename = (
-                        f'heatmap_{prefix}_{direction}_{metric}.html'
-                        if prefix else f'heatmap_{direction}_{metric}.html'
-                    )
-                    html_path = viz_dir / filename
-                    direction_display = self._direction_display_name(direction)
-                    title = (
-                        f"Connectivity Profile Similarity - "
-                        f"{prefix.replace('_', ' ').title()} {direction_display} - "
-                        f"{metric.replace('_', ' ').title()}"
-                        if prefix else
-                        f"Connectivity Profile Similarity - {direction_display} - "
-                        f"{metric.replace('_', ' ').title()}"
-                    )
-
-                    generate_interactive_heatmap(
-                        matrices_dict={metric: matrix},
-                        filename=str(html_path),
-                        title=title,
-                        showfig=self.show_figures,
-                        verbose=self.verbose
-                    )
-                    saved_files['heatmaps_generated'].append(str(html_path))
-                    self._log(f"Generated heatmap (fallback): {html_path}")
-        except Exception as e:
-            self._log(f"Error generating heatmaps: {e}")
-    
     def run(self) -> Dict[str, Any]:
         """
         Run the connectivity profile comparison analysis.

@@ -158,6 +158,43 @@ class TestAtomicWrite:
         assert not src.exists()
         assert pd.read_parquet(dst)["v"].tolist() == [7]
 
+    def test_fsync_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        """A failing flush must not abort the write: os.replace is the
+        atomicity guarantee (Windows raises [Errno 9] on read-only fds)."""
+        def boom(fd):
+            raise OSError(9, "Bad file descriptor")
+
+        monkeypatch.setattr(os, "fsync", boom)
+        target = tmp_path / "out.parquet"
+
+        write_parquet_atomic(
+            str(target),
+            lambda temp: pq.write_table(pa.table({"v": [1, 2, 3]}), temp))
+
+        assert pd.read_parquet(target)["v"].tolist() == [1, 2, 3]
+        assert not list(tmp_path.glob(".*.tmp"))
+
+    def test_atomic_replace_flushes_through_writable_handle(self, tmp_path, monkeypatch):
+        """os.fsync on a read-only descriptor raises [Errno 9] on Windows,
+        so the flush handle must be opened writable."""
+        import builtins
+        modes = []
+        real_open = builtins.open
+
+        def tracking_open(file, mode="r", *args, **kwargs):
+            modes.append(mode)
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", tracking_open)
+        src = tmp_path / ".out.parquet.build.1.tmp"
+        dst = tmp_path / "out.parquet"
+        pq.write_table(pa.table({"v": [7]}), src)
+
+        atomic_replace(str(src), str(dst))
+
+        assert modes and all(set(mode) & {"+", "w", "a"} for mode in modes)
+        assert pd.read_parquet(dst)["v"].tolist() == [7]
+
 
 class TestParquetReadable:
     def test_rejects_truncated_and_empty(self, tmp_path):

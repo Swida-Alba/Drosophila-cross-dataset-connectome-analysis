@@ -4,6 +4,7 @@ Hermetic: a FakeAnalyzer supplies tiny synthetic DataFrames; all file output
 goes to pytest tmp_path. No network, no kaleido, no multiprocessing.
 """
 
+import json
 import os
 import re
 
@@ -523,7 +524,9 @@ def test_network_tabs_escape_string_keys_and_use_dom_keys(analyzer):
     assert 'showNetworkTab(&quot;query two&quot;, this)' in html
     assert 'id="network_tab_query_one"' in html
     assert 'id="network_tab_query_two"' in html
-    assert 'id="network_dataset_tab_D_1"' in html
+    # round-4: dataset tab ids are section-scoped (dom key carries the
+    # section prefix)
+    assert 'id="network_dataset_tab_networks__D_1"' in html
     assert 'event.target' not in html
 
 
@@ -782,10 +785,23 @@ def test_type_mapping_report_canonicalizes_by_source_dataset():
             }
 
     report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    # Round-4 restructure: role tables (Queried Sources/Targets/Path
+    # Intermediates) + the canonical grid in a collapsed appendix. The
+    # canonical grid carries each row once.
     assert report.count("<strong>MeVPLo2</strong>") == 1
     assert "<strong>MTe07</strong>" not in report
-    assert "MeVPLo2</strong></td><td>MeVPLo2</td><td>MTe07</td><td>MTe07</td>" in report
-    assert "CB2399</strong></td><td>—</td><td>CB2399</td><td>CB2399</td>" in report
+    assert '<th>Source (priority)</th>' in report
+    assert '<td>banc: MTe07, fafb: MTe07, mcns: MeVPLo2</td>' in report
+    assert '<td>banc: CB2399</td>' in report
+    # The Targets table colors names differing from the canonical; the
+    # renamed FAFB/BANC targets share one color and the canonical MCNS
+    # name plus the CB2399 fallback row stay plain.
+    colored = ('color:#1d4ed8; font-weight:600; white-space:nowrap;" '
+               'title="differs from the canonical name">MTe07</span>')
+    assert report.count(colored) == 2
+    assert '<span style="white-space:nowrap;">MeVPLo2</span>' in report
+    assert report.count(
+        '<span style="white-space:nowrap;">CB2399</span>') == 2
 
 
 def test_generate_html_report_empty_data(empty_analyzer):
@@ -1335,3 +1351,295 @@ def test_stats_table_no_datasets_and_low_overlap(tmp_path):
     html2 = hrg._generate_stats_table(
         _StatsTableAnalyzer(tmp_path, "sparse"), DATASETS, 1, NICKNAME_MAP)
     assert "0.000" in html2  # rank corr falls back to 0 with <2 shared edges
+
+
+# ---------------------------------------------------------------------------
+# Type mapping: cross-dataset same-name leak + appearance ordering (plan §7B)
+# ---------------------------------------------------------------------------
+
+def test_type_mapping_does_not_leak_same_name_across_datasets():
+    """BANC `aMe24` canonicalizes to MCNS `5thsLNv_LNd6` and resolves to
+    FAFB `aMe24` by bare same-NAME identity (mapper tier 6). That echo must
+    not appear in the FAFB cell of the canonical row."""
+    from types import SimpleNamespace
+
+    datasets = ["male-cns:v1.0", "banc_v888", "flywire_FAFB_v783"]
+    fafb = "flywire_FAFB_v783"
+    banc = "banc_v888"
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            # aMe24 (BANC) -> MCNS canonical 5thsLNv_LNd6; to FAFB it is a
+            # same-name identity.
+            if source_type == 'aMe24' and target_dataset == 'male-cns:v1.0':
+                return {'status': 'mapped', 'source_type': source_type,
+                        'target_type': '5thsLNv_LNd6',
+                        'target_types': ['5thsLNv_LNd6'],
+                        'relationship': 'renamed', 'conflicts': []}
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+        def get_alias_candidates(self, raw, targets, source_dataset=None):
+            out = {}
+            for t in targets:
+                if raw == 'aMe24' and t == 'male-cns:v1.0':
+                    out[t] = {'outcome': 'matched',
+                              'candidates': [{'kind': 'renamed',
+                                              'name': '5thsLNv_LNd6'}]}
+                elif raw == 'aMe24' and t == fafb:
+                    # Same-name leaf as a bare candidate (tier-6 echo).
+                    out[t] = {'outcome': 'matched',
+                              'candidates': [{'kind': 'same name',
+                                              'name': 'aMe24'}],
+                              'same_namespace': False}
+                else:
+                    out[t] = {'outcome': 'none', 'candidates': []}
+            return out
+
+        def get_type_bridges(self, *a, **k):
+            return []
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True, _auto_type_mapper=Mapper())
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {banc: {'aMe24'}, 'male-cns:v1.0': {'5thsLNv_LNd6'}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    # The canonical row is keyed on the MCNS target and FAFB must not gain
+    # aMe24 — check the appendix grid (the Sources side legitimately lists
+    # the banc aMe24 observation).
+    assert '5thsLNv_LNd6' in report
+    row_start = report.find('5thsLNv_LNd6</strong>')
+    assert row_start != -1
+    row = report[row_start:row_start + 400]
+    cells = re.findall(r'<td>(.*?)</td>', row)
+    # cells[0] is the canonical name; the FAFB cell is the last dataset cell.
+    assert cells, row
+    assert 'aMe24' not in cells[-1], cells
+
+
+def test_type_mapping_appearance_order_sorts_by_presence_matrix():
+    """Rows follow first-appearance in the path-presence matrix, not alpha."""
+    from types import SimpleNamespace
+
+    datasets = ["a", "b"]
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def _get_type_mapping_key(self, d):
+            return d
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+        def get_alias_candidates(self, raw, targets, source_dataset=None):
+            return {t: {'outcome': 'none', 'candidates': []} for t in targets}
+
+        def get_type_bridges(self, *a, **k):
+            return []
+
+    # `zzz` is most conserved (appears in both datasets); `aaa` only in one.
+    path_data = pd.DataFrame(
+        {'a': [5.0, 1.0], 'b': [5.0, 0.0]},
+        index=['zzz -> qqq', 'aaa -> qqq'])
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True, _auto_type_mapper=Mapper())
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {'a': {'zzz', 'aaa'}, 'b': {'zzz', 'aaa'}}
+
+        @staticmethod
+        def _analysis_thresholds():
+            return [1]
+
+        @staticmethod
+        def _get_path_data_for_threshold(t):
+            return path_data
+
+        @staticmethod
+        def get_aligned_data(t):
+            return pd.DataFrame()
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    # `zzz` (conserved) must appear before `aaa` (rare) despite alpha order.
+    assert report.find('zzz') < report.find('aaa')
+
+
+def test_canonical_source_rank_priority():
+    """Plan F1: male-cns -> FAFB -> other neuprint -> BANC, unknowns in the
+    other-neuprint tier."""
+    from comparison.comparison_parameters import canonical_source_rank
+    assert canonical_source_rank('male-cns:v1.0') == 0
+    assert canonical_source_rank('MCNS') == 0
+    assert canonical_source_rank('flywire_FAFB_v783') == 1
+    assert canonical_source_rank('fafb') == 1
+    assert canonical_source_rank('hemibrain:v1.2.1') == 2
+    assert canonical_source_rank('manc:v1.2.3') == 2
+    assert canonical_source_rank('optic-lobe:v1.1') == 2
+    assert canonical_source_rank('banc:v888') == 3
+    assert canonical_source_rank('banc_v888') == 3
+    assert canonical_source_rank('') == 2
+
+
+def test_dataset_coverage_callout_renders_only_for_missing_data():
+    """Plan B2: a configured dataset with no data must surface a loud
+    coverage callout; an all-ok run renders none."""
+    from types import SimpleNamespace
+
+    an = SimpleNamespace(dataset_coverage=lambda: {
+        'male-cns:v1.0': {'status': 'ok', 'thresholds_with_data': 3,
+                          'total_rows': 100},
+        'hemibrain:v1.2.1': {'status': 'no_data', 'thresholds_with_data': 0,
+                             'total_rows': 0},
+    })
+    out = hrg._generate_dataset_coverage_callout(
+        an, ['male-cns:v1.0', 'hemibrain:v1.2.1'],
+        {'male-cns:v1.0': 'MCNS', 'hemibrain:v1.2.1': 'HEMI'})
+    assert 'Dataset coverage warning' in out
+    assert 'HEMI' in out and 'hemibrain:v1.2.1' in out
+
+    ok_an = SimpleNamespace(dataset_coverage=lambda: {
+        'male-cns:v1.0': {'status': 'ok', 'thresholds_with_data': 3,
+                          'total_rows': 100}})
+    assert hrg._generate_dataset_coverage_callout(
+        ok_an, ['male-cns:v1.0'], {'male-cns:v1.0': 'MCNS'}) == ''
+
+
+def test_density_curve_card_has_vh_guides():
+    """Plan D: vertical guides mark the per-threshold rows, horizontal
+    guides the density-matched rows; both carry the owning row id."""
+    curves = pd.DataFrame([
+        {'dataset': 'd1', 'threshold': t, 'path_count': 100 // t,
+         'edge_count': 200 // t, 'density': round(0.9 - t / 100, 6),
+         'is_materialized': t == 5}
+        for t in (1, 2, 5, 10)])
+    aligned = pd.DataFrame([
+        {'id': 'threshold=15', 'label': 'threshold=15', 'mode': 'vertical',
+         'level_continuous': 15.0, 'level_normalized': None},
+        {'id': 'aligned_density=0.5',
+         'label': 'aligned_density=0.5 (d1 2)', 'mode': 'horizontal',
+         'level_continuous': None, 'level_normalized': 0.5},
+    ])
+    html = hrg._density_curves_plotly_card(curves, aligned, None, {'d1': 'D1'})
+    assert 'threshold=15' in html
+    assert 'vertical (per-threshold) row' in html
+    assert 'horizontal (density-matched) row' in html
+    assert 'vguides' in html and 'hguides' in html
+
+
+def test_neuron_counts_per_role_axes_and_shared_legend():
+    """Plan G: independent per-role x categories and one shared dataset
+    chip legend with per-chart legends disabled."""
+    type_df = pd.DataFrame([
+        {'type': 'SrcOnly', 'role': 'source', 'group_members': '',
+         'd1_source': 40, 'd1_target': 0, 'd2_source': 30, 'd2_target': 0},
+        {'type': 'TgtOnly', 'role': 'target', 'group_members': '',
+         'd1_source': 0, 'd1_target': 25, 'd2_source': 0, 'd2_target': 20},
+        {'type': 'Both', 'role': 'both', 'group_members': '',
+         'd1_source': 5, 'd1_target': 4, 'd2_source': 3, 'd2_target': 2},
+    ])
+
+    class Analyzer:
+        _neuron_counts_summary = pd.DataFrame()
+        _neuron_type_counts = type_df
+        _neuron_group_counts = pd.DataFrame()
+
+        def _merge_policy_or_none(self):
+            raise RuntimeError('no policy')
+
+    html = hrg._generate_neuron_counts_section(
+        Analyzer(), ['d1', 'd2'], {'d1': 'D1', 'd2': 'D2'})
+    assert 'showlegend: false' in html
+    assert 'Dataset (shared legend)' in html
+    marker = 'const payload = '
+    start = html.find(marker) + len(marker)
+    payload = json.loads(html[start:html.find(';\n', start)])
+    src_x = payload['source'][0]['x']
+    tgt_x = payload['target'][0]['x']
+    # The target chart leads with the target-dominant type and the source
+    # chart with the source-dominant one (independent categories).
+    assert tgt_x[0] == 'TgtOnly', tgt_x
+    assert src_x[0] == 'SrcOnly', src_x
+
+    # Plan round-4 F-1 (second notice): zero-total-for-role types must be
+    # EXCLUDED from the other role's categories entirely — not appended
+    # with zero bars.
+    assert 'PPL' not in str(src_x) or all(
+        'ppl' not in x.lower() for x in src_x)
+    assert 'TgtOnly' not in src_x, src_x
+    assert 'SrcOnly' not in tgt_x, tgt_x
+
+
+def test_type_mapping_auto_only_badge_on_source_cell():
+    """Plan F3: the auto-only badge attaches to the auto-label SOURCE
+    dataset cell (BANC in a BANC-anchored run), not to the canonical
+    label."""
+    from types import SimpleNamespace
+
+    datasets = ['mcns', 'banc']
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def _get_type_mapping_key(self, d):
+            return d
+
+        def get_canonical_type(self, t, source_dataset=None):
+            return t
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            if (source_type == 'PPL102' and source_dataset == 'banc'
+                    and target_dataset == 'mcns'):
+                return {'status': 'mapped', 'source_type': source_type,
+                        'target_type': 'PPL102',
+                        'target_types': ['PPL102'],
+                        'relationship': '1-to-1', 'conflicts': [],
+                        'support': {'votes': {'v1': {}},
+                                    'verified_votes': {},
+                                    'winner_derived_from_auto': True}}
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    class Analyzer:
+        parameters = SimpleNamespace(auto_type_mapping=True,
+                                     _auto_type_mapper=Mapper())
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {'banc': {'PPL102'}, 'mcns': {'PPL102'}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert 'auto-only' in report
+    # The badge attaches to the auto-label SOURCE dataset cell (banc) in
+    # the appendix grid; the canonical label cell carries none.
+    row_start = report.find('<strong>PPL102</strong>')
+    row_end = report.find('</tr>', row_start)
+    row = report[row_start:row_end]
+    assert 'auto-only' in row
+    mcns_start = row.find('<td>')
+    mcns_end = row.find('</td>', mcns_start)
+    banc_start = row.find('<td>', mcns_end)
+    assert 'auto-only' not in row[mcns_start:mcns_end]
+    assert 'auto-only' in row[banc_start:]

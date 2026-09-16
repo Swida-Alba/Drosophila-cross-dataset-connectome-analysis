@@ -453,7 +453,12 @@ def test_create_output_directories(tmp_path):
     assert os.path.isdir(p.full_output_path)
     assert os.path.isdir(p.comparison_results_path)
     assert os.path.isdir(p.visualizations_path)
-    assert os.path.isdir(p.get_dataset_output_path(DS1, 1))
+    # Per-dataset ROOT only: requested `minsyn_N` folders are created by the
+    # pathfinding run under the applied grammar, never pre-created here
+    # (pre-creation left empty mislabeled folders after a collapse).
+    assert os.path.isdir(
+        os.path.join(p.dataset_data_path, p._sanitize_name(DS1)))
+    assert not os.path.isdir(p.get_dataset_output_path(DS1, 1))
 
 
 def test_resolve_token(monkeypatch):
@@ -732,12 +737,14 @@ def test_from_dict_migrates_equal_length_legacy_threshold_lists():
             "label": "Combination 1",
             "thresholds": {DS1: 3, DS2: 7},
             "dataset_order": [DS1, DS2],
+            "row_mode": None,
         },
         {
             "id": "combo_002",
             "label": "Combination 2",
             "thresholds": {DS1: 5, DS2: 9},
             "dataset_order": [DS1, DS2],
+            "row_mode": None,
         },
     ]
 
@@ -767,3 +774,65 @@ def test_from_dict_rejects_unequal_legacy_threshold_lists():
         ComparisonParameters.from_dict(legacy)
 
 # --- PARAMS-APPEND-DONE ---
+
+
+def test_for_run_folder_pins_full_output_path(tmp_path):
+    """Plan R4: for_run_folder reads a run's parameters.json and pins
+    full_output_path to the EXISTING folder (from_dict alone re-timestamps
+    the folder name, so re-export scripts would silently start a new
+    run)."""
+    import json
+
+    p = ComparisonParameters(
+        datasets=['hemibrain:v1.2.1', 'male-cns:v1.0'],
+        source_neurons=['aMe1'],
+        target_neurons=['KCg-d'],
+        threshold_mode='combinations',
+        threshold_combinations=[
+            {'id': 'threshold=3', 'label': 'threshold=3',
+             'thresholds': {'hemibrain:v1.2.1': 3, 'male-cns:v1.0': 3}},
+            {'id': 'threshold=10', 'label': 'threshold=10',
+             'thresholds': {'hemibrain:v1.2.1': 10, 'male-cns:v1.0': 10}},
+        ],
+    )
+    run_dir = tmp_path / "cross-dataset_aMe1_to_KCg_H_20260101_000000"
+    run_dir.mkdir()
+    (run_dir / "parameters.json").write_text(json.dumps(p.to_dict()))
+
+    pinned = ComparisonParameters.for_run_folder(str(run_dir))
+    assert pinned.full_output_path == str(run_dir)
+    assert pinned.output_folder == str(tmp_path)
+    assert pinned.saveas == run_dir.name
+    # the saved query set survives the round trip
+    assert pinned.threshold_mode == 'combinations'
+    assert [q['id'] for q in (pinned.threshold_combinations or [])] == \
+        [q['id'] for q in (p.threshold_combinations or [])]
+
+
+def test_for_run_folder_missing_parameters_json(tmp_path):
+    import pytest
+
+    empty = tmp_path / "not_a_run"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError):
+        ComparisonParameters.for_run_folder(str(empty))
+
+
+def test_from_dict_round_trip_preserves_flags():
+    """Plan round-4 fix: from_dict silently dropped five flags (skip_bodyId,
+    find_reciprocal, separate_hemispheres, symmetry_analysis,
+    keep_only_hemisphere_conserved_connections) — a pinned resume/re-export
+    downgraded a hemispheric run to non-hemispheric."""
+    p = ComparisonParameters(
+        datasets=['d1', 'd2'], source_neurons=['a'], target_neurons=['b'],
+        separate_hemispheres=True, symmetry_analysis=True,
+        keep_only_hemisphere_conserved_connections=True,
+        find_reciprocal=True, skip_bodyId=False,
+    )
+    d = p.to_dict()
+    p2 = ComparisonParameters.from_dict(d)
+    assert p2.separate_hemispheres is True
+    assert p2.symmetry_analysis is True
+    assert p2.keep_only_hemisphere_conserved_connections is True
+    assert p2.find_reciprocal is True
+    assert p2.skip_bodyId is False

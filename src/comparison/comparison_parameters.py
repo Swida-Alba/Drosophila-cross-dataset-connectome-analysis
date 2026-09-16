@@ -14,6 +14,7 @@ Workflow:
 from dataclasses import dataclass, field
 from typing import List, Union, Optional, Any, Dict, Tuple, TYPE_CHECKING
 from datetime import datetime
+import json
 import os
 import warnings
 
@@ -189,13 +190,19 @@ class ComparisonParameters:
     """
 
     threshold_mode: str = 'standard'
-    """Threshold query mode: ``'standard'`` or ``'combinations'``.
+    """Threshold query mode: ``'standard'``, ``'combinations'`` or ``'auto'``.
 
     Standard mode expands each scalar in ``thresholds`` to one query shared by
     all selected datasets.  Combination mode uses one complete row in
     ``threshold_combinations`` per query, with one requested threshold per
-    selected dataset.
+    selected dataset.  Auto mode (plan §4.8) measures the density windows
+    from one bootstrap run and installs density-aligned combination rows.
     """
+
+    threshold_auto: bool = False
+    """True once ``threshold_mode='auto'`` has measured and installed its
+    aligned rows (the mode then reads ``'combinations'``; this flag keeps
+    the auto origin available for labeling and warnings)."""
 
     threshold_combinations: Optional[List[Dict[str, Any]]] = None
     """Explicit cross-dataset threshold query rows.
@@ -269,6 +276,23 @@ class ComparisonParameters:
     GLOBAL so the expanded points stay shared across datasets. Default
     off; the effective-threshold banner suggests it on collapse."""
 
+    capture_density: bool = False
+    """Threshold-density capture (plan §4.1): persist each dataset's
+    query-scoped, classified cone arrays (path bottlenecks + edge weights
+    with typed/untyped/debris endpoint classes) and ``density_meta.json``
+    into ``dataset_data/{dataset}/_density/``. The comparison driver turns
+    this on for every delegated pathfinding run in every threshold mode
+    (curves are exported in standard, combinations, and auto); the flag is
+    an opt-out for direct API callers. Capture only runs in FindAllPath
+    ('all' mode)."""
+
+    density_normalizer: str = 'per_node'
+    """Normalizer for the auto-mode density y-axis (plan §4.3): the primary
+    ``'per_node'`` = E(t)/N with a t-independent N (annotated searched
+    nodes, falling back to searched nodes). Diagnostic-only alternatives:
+    ``'raw'`` (bare E(t)), ``'per_source'`` (E(t)/n_source_neurons),
+    ``'cone'`` (E(t)/relevant-cone edges at applied)."""
+
     drop_untyped: bool = True
     """Drop edges touching untyped neurons from the cross-dataset
     results (default on). A neuron is untyped when its resolved type
@@ -276,6 +300,16 @@ class ComparisonParameters:
     such edges can never match across datasets. The dropped rows are
     exported to comparison_results/untyped_dropped_records.csv and the
     per-run counts appended to user_warning_notes.txt."""
+
+    report_layout: str = 'legacy'
+    """HTML report layout: ``'legacy'`` (default) renders the historical
+    single-page report unchanged; ``'tabbed'`` opts in to the new
+    page-tabbed report (per-combo pages, split per-threshold /
+    per-density plots — ``comparison/report_tabbed.py`` wrapping the
+    legacy generator's output; still under refinement); ``'both'``
+    writes the tabbed report as ``comparison_report.html`` AND the
+    legacy single-page report as ``comparison_report_legacy.html`` for
+    side-by-side comparison."""
 
     edgeN_limit: int = 500
     """Visualization Edge Limit passed to the FindAllPath visualizations.
@@ -774,7 +808,10 @@ class ComparisonParameters:
                     "At least one threshold combination row is required "
                     "when threshold_mode='combinations'"
                 )
-        elif not self.thresholds:
+        elif not self.thresholds and self.threshold_mode != 'auto':
+            # Auto mode synthesizes its schedule from the measured density
+            # windows; an empty threshold list is valid (bootstrap floor
+            # defaults to Min Synapse Count 3).
             raise ValueError("At least one threshold is required")
         
         # Handle None and empty list for source/target neurons (similar to coana.py FindNeuronConnection)
@@ -894,7 +931,7 @@ class ComparisonParameters:
         old lists have no reliable pairing semantics.  New configuration is
         always represented by complete query rows.
         """
-        valid_modes = {'standard', 'combinations'}
+        valid_modes = {'standard', 'combinations', 'auto'}
         mode = str(self.threshold_mode or 'standard').strip().lower()
         if self.threshold_combinations is not None and mode == 'standard':
             mode = 'combinations'
@@ -920,6 +957,10 @@ class ComparisonParameters:
             raise ValueError(
                 "threshold_mode='combinations' requires at least two "
                 "selected datasets"
+            )
+        if mode == 'auto' and len(dataset_order) < 2:
+            raise ValueError(
+                "threshold_mode='auto' requires at least two selected datasets"
             )
 
         # The old field is kept as an explicit compatibility mode.  It is
@@ -966,6 +1007,20 @@ class ComparisonParameters:
                     "threshold_mode='combinations'"
                 )
             self.threshold_combinations = None
+            return
+
+        if mode == 'auto':
+            # Auto mode's rows are MEASURED from a bootstrap run and
+            # installed later by the driver (thresholds/combinations are
+            # synthesized once the per-dataset density windows exist).
+            if self.threshold_combinations:
+                raise ValueError(
+                    "threshold_combinations is only valid with "
+                    "threshold_mode='combinations'"
+                )
+            self.threshold_combinations = None
+            self.thresholds = self._clean_threshold_list(
+                self.thresholds, 'thresholds')
             return
 
         rows = self.threshold_combinations or []
@@ -1023,10 +1078,12 @@ class ComparisonParameters:
             seen_ids.add(row_id)
             seen_maps.add(signature)
             union.update(values.values())
+            row_mode = str(raw_row.get('row_mode') or '').strip().lower()
             normalized_rows.append({
                 'id': row_id,
                 'label': str(raw_row.get('label') or f'Combination {index}'),
                 'thresholds': values,
+                'row_mode': row_mode or None,
             })
         self.threshold_combinations = normalized_rows
         self.thresholds = sorted(union)
@@ -1042,6 +1099,18 @@ class ComparisonParameters:
         available through :meth:`get_thresholds_for_dataset`.
         """
         order = list(self.threshold_dataset_order or self.get_dataset_names())
+        if self.threshold_mode == 'auto' and self.threshold_combinations:
+            # Auto mode: rows were measured and installed by the driver.
+            return [
+                {
+                    'id': row['id'],
+                    'label': row.get('label', row['id']),
+                    'thresholds': {ds: int(row['thresholds'][ds]) for ds in order},
+                    'dataset_order': list(order),
+                    'row_mode': row.get('row_mode'),
+                }
+                for row in (self.threshold_combinations or [])
+            ]
         if self.threshold_mode == 'combinations':
             return [
                 {
@@ -1049,6 +1118,7 @@ class ComparisonParameters:
                     'label': row.get('label', row['id']),
                     'thresholds': {ds: int(row['thresholds'][ds]) for ds in order},
                     'dataset_order': list(order),
+                    'row_mode': row.get('row_mode'),
                 }
                 for row in (self.threshold_combinations or [])
             ]
@@ -1084,6 +1154,66 @@ class ComparisonParameters:
             item[1],
         ))
 
+    def install_auto_combinations(self, rows: List[Dict[str, Any]]) -> None:
+        """Install measured auto-mode alignment rows (plan §4.8).
+
+        The auto driver measures the per-dataset density windows, builds the
+        vertical/horizontal rows, and hands them here. They are stored as
+        ordinary ``threshold_combinations`` rows and the mode switches to
+        ``'combinations'`` so the rest of the pipeline (query-keyed
+        summaries, exports, report) reuses the already-supported engine with
+        no special casing. ``threshold_auto`` stays True so auto-specific
+        labeling/warnings remain available. Each row's origin is recorded as
+        ``row_mode`` ('vertical' | 'horizontal', inferred from the B7 id
+        prefixes ``threshold=`` / ``aligned_density=`` and, for legacy
+        runs, ``aligned_v_*`` / ``aligned_h_*``) so the report can
+        separate the two analyses.
+        """
+        if not rows:
+            raise ValueError(
+                "install_auto_combinations requires at least one row")
+        installed = []
+        for i, r in enumerate(rows, start=1):
+            row_id = str(r.get('id') or f"auto_{i:03d}")
+            row_mode = str(r.get('row_mode') or '').strip().lower()
+            if not row_mode:
+                # B7 ids first (`threshold={N}` / `aligned_density={level}`),
+                # then the legacy `aligned_v_*` / `aligned_h_*` prefixes.
+                if row_id.startswith('threshold='):
+                    row_mode = 'vertical'
+                elif row_id.startswith('aligned_density='):
+                    row_mode = 'horizontal'
+                elif row_id.startswith('aligned_v'):
+                    row_mode = 'vertical'
+                elif row_id.startswith('aligned_h'):
+                    row_mode = 'horizontal'
+            installed.append({
+                'id': row_id,
+                'label': str(r.get('label') or r.get('id') or f"auto_{i:03d}"),
+                'thresholds': dict(r['thresholds']),
+                'row_mode': row_mode or None,
+            })
+        # Display/manifest order (plan round-4 F-5): verticals first with
+        # ascending thresholds, then horizontal rows by density level
+        # DESCENDING so the query axis follows thresholds increasing
+        # (density falls as the Min Synapse Count rises).
+        def _level(row):
+            try:
+                return float(str(row['id']).split('=', 1)[1])
+            except (ValueError, IndexError):
+                return float('-inf')
+        verticals = [r for r in installed if r.get('row_mode') == 'vertical']
+        horizontals = sorted(
+            (r for r in installed if r.get('row_mode') == 'horizontal'),
+            key=_level, reverse=True)
+        others = [r for r in installed
+                  if r.get('row_mode') not in ('vertical', 'horizontal')]
+        installed = verticals + horizontals + others
+        self.threshold_combinations = installed
+        self.threshold_mode = 'combinations'
+        self.threshold_auto = True
+        self._normalize_threshold_configuration()
+
     def get_thresholds_for_dataset(self, dataset: str) -> List[int]:
         """Return the derived raw-run schedule for one dataset.
 
@@ -1092,12 +1222,13 @@ class ComparisonParameters:
         not the comparison semantic.  The legacy vertical behavior is kept
         only when ``dataset_thresholds`` was supplied by an older caller.
         """
-        if self.threshold_mode == 'combinations':
+        if self.threshold_mode in ('combinations', 'auto'):
             return sorted({
                 int(row['thresholds'][dataset])
                 for row in (self.threshold_combinations or [])
                 if dataset in row.get('thresholds', {})
-            })
+            }) or (list(self.thresholds)
+                   if self.threshold_mode == 'auto' else [])
         if self.dataset_thresholds:
             override = self.dataset_thresholds.get(dataset)
             if override:
@@ -1433,18 +1564,96 @@ class ComparisonParameters:
         # release-aware when the selection contains the same family twice.
         return make_unique_dataset_labels(dataset_names, base_nicknames)
     
+    def _resolved_query_types(self, tokens: List[Any], dataset: str,
+                              role: str,
+                              drop_unresolved: bool = False
+                              ) -> Optional[List[Any]]:
+        """Dataset query list from the structured resolver records, or None
+        when the resolver cannot handle them (no auto mapping / mapper).
+
+        Phase 3 of plan-cross-dataset-query-resolution-samename-taxonomy:
+        plain type tokens resolve to the union of the dataset's record
+        targets — taxonomy expansions, taxonomy member-mapping unions,
+        same-name identity names, unique renames and licensed split
+        branches — while bodyIds, patterns and every non-taxonomy case
+        keep the legacy pass-through verbatim.  With ``drop_unresolved``
+        (the filtered getters) records without licensed targets — echoes,
+        conflicts, evidence-only relations, unmatched tokens — are dropped
+        instead of passing through.
+        """
+        if not self.auto_type_mapping or not self._auto_type_mapper:
+            return None
+        if tokens is None or (isinstance(tokens, list) and not tokens):
+            return tokens
+        type_tokens: List[str] = []
+        passthrough: List[Any] = []
+        for tok in tokens:
+            if (isinstance(tok, str) and tok.strip()
+                    and '*' not in tok and not tok.strip().isdigit()):
+                # Normalize whitespace so a stray 'L2 ' resolves (and
+                # dedupes) as 'L2' rather than dropping out of the list.
+                normalized = tok.strip()
+                if normalized not in type_tokens:
+                    type_tokens.append(normalized)
+            else:
+                passthrough.append(tok)
+        try:
+            from .query_resolver import (
+                DatasetTaxonomyResolver, resolve_query_tokens,
+            )
+        except ImportError:  # pragma: no cover
+            from query_resolver import (
+                DatasetTaxonomyResolver, resolve_query_tokens,
+            )
+
+        cache = getattr(self, '_query_type_resolution_cache', None)
+        if cache is None:
+            cache = self._query_type_resolution_cache = {}
+        key = (role, tuple(type_tokens))
+        if key not in cache:
+            # One shared taxonomy resolver per parameters: the reduced
+            # dataset frames load once and are reused across tokens/roles.
+            taxonomy_resolver = getattr(self, '_taxonomy_resolver', None)
+            if taxonomy_resolver is None:
+                taxonomy_resolver = DatasetTaxonomyResolver(
+                    self._auto_type_mapper).resolve
+                self._taxonomy_resolver = taxonomy_resolver
+            cache[key] = resolve_query_tokens(
+                type_tokens, self.get_dataset_names(),
+                self._auto_type_mapper, role=role,
+                source_dataset=self.source_dataset,
+                taxonomy_resolver=taxonomy_resolver)
+        records = cache[key]
+        drop_statuses = {'same_name_fallback', 'conflict', 'unmatched',
+                         'evidence_only'} if drop_unresolved else set()
+        resolved: List[str] = []
+        for rec in records:
+            if rec.get('dataset') != dataset:
+                continue
+            if rec.get('status') in drop_statuses:
+                continue
+            resolved.extend(str(t) for t in rec.get('target_types') or [])
+        seen: set = set()
+        out: List[Any] = []
+        for item in list(passthrough) + resolved:
+            if item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        return out
+
     def get_source_neurons_for_dataset(self, dataset: str) -> List[Union[str, int]]:
         """
         Get source neurons for a specific dataset.
-        
+
         Resolution priority:
         1. LabelMapper (explicit mappings)
         2. Auto type mapping (from male-cns neuron_df)
         3. Shared source_neurons list (same names across all datasets)
-        
+
         Args:
             dataset: Dataset identifier
-            
+
         Returns:
             List of source neuron types/patterns/bodyIds
         """
@@ -1452,14 +1661,15 @@ class ComparisonParameters:
         if self._source_mapper is not None:
             # Get neurons from LabelMapper for this dataset
             return self._source_mapper.get_all_neurons_for_dataset(dataset, 'source')
-        
+
         # Priority 2: Auto type mapping
         if self.auto_type_mapping and self._auto_type_mapper:
-            return self._resolve_neurons_with_auto_mapping(
-                self._ensure_flat_list(self.source_neurons), 
-                dataset
-            )
-        
+            tokens = self._ensure_flat_list(self.source_neurons)
+            resolved = self._resolved_query_types(tokens, dataset, 'source')
+            if resolved is not None:
+                return resolved
+            return self._resolve_neurons_with_auto_mapping(tokens, dataset)
+
         # Priority 3: Shared list
         return self._ensure_flat_list(self.source_neurons)
     
@@ -1481,14 +1691,15 @@ class ComparisonParameters:
         # Priority 1: LabelMapper
         if self._target_mapper is not None:
             return self._target_mapper.get_all_neurons_for_dataset(dataset, 'target')
-        
+
         # Priority 2: Auto type mapping
         if self.auto_type_mapping and self._auto_type_mapper:
-            return self._resolve_neurons_with_auto_mapping(
-                self._ensure_flat_list(self.target_neurons),
-                dataset
-            )
-        
+            tokens = self._ensure_flat_list(self.target_neurons)
+            resolved = self._resolved_query_types(tokens, dataset, 'target')
+            if resolved is not None:
+                return resolved
+            return self._resolve_neurons_with_auto_mapping(tokens, dataset)
+
         # Priority 3: Shared list
         return self._ensure_flat_list(self.target_neurons)
     
@@ -1554,6 +1765,13 @@ class ComparisonParameters:
     def get_dataset_output_path(self, dataset: str, threshold: int) -> str:
         """
         Get output path for a specific dataset and threshold.
+
+        Honors the applied-folder naming grammar once a run has populated
+        ``_applied_folder_lookup`` (populated by the analyzer's reconcile
+        step): a requested threshold that was pruned/aliased resolves to the
+        folder that actually holds its data, and an applied value resolves
+        to its grammar name (e.g. ``minsyn_19_applied_floor``). Before any
+        run meta exists it is the plain ``minsyn_{threshold}`` builder.
         
         Args:
             dataset: Dataset identifier
@@ -1563,7 +1781,66 @@ class ComparisonParameters:
             Path to dataset/threshold output folder
         """
         safe_name = self._sanitize_name(dataset)
+        lookup = getattr(self, '_applied_folder_lookup', None) or {}
+        folder_name = lookup.get((dataset, int(threshold)))
+        if folder_name:
+            return os.path.join(self.dataset_data_path, safe_name, folder_name)
         return os.path.join(self.dataset_data_path, safe_name, f'minsyn_{threshold}')
+
+    def set_applied_folder_lookup(self, dataset: str, threshold: int,
+                                  folder_name: str) -> None:
+        """Register the on-disk folder name for one (dataset, threshold)."""
+        if not hasattr(self, '_applied_folder_lookup') \
+                or self._applied_folder_lookup is None:
+            self._applied_folder_lookup = {}
+        self._applied_folder_lookup[(dataset, int(threshold))] = folder_name
+
+    def applied_folder_name(self, applied: int, requested_thresholds=None,
+                            is_floor: bool = False) -> str:
+        """Physical folder name for a materialized threshold.
+
+        Grammar:
+        - **collapse floor** (``is_floor=True``): a level one or more other
+          requested thresholds alias to. Always
+          ``minsyn_{applied}_applied_floor`` — including when the floor value
+          coincides with a requested level (that requested level is served by
+          this folder, so no ``_equal_...`` variant and no marker).
+        - **genuine requested run** (``is_floor=False``): the bare
+          ``minsyn_{applied}``.
+
+        ``applied_folder_name_candidates`` lists both forms for disk lookup.
+        """
+        applied = int(applied)
+        if is_floor:
+            return f'minsyn_{applied}_applied_floor'
+        return f'minsyn_{applied}'
+
+    def applied_folder_name_candidates(self, value: int) -> list:
+        """Legacy/current folder names that may hold an applied threshold."""
+        value = int(value)
+        return [
+            f'minsyn_{value}',
+            f'minsyn_{value}_applied_floor',
+            f'minsyn_{value}_equal_applied_floor',
+        ]
+
+    def skipped_folder_name(self, requested: int) -> str:
+        """Marker folder name for a requested threshold with no materialized
+        output of its own."""
+        return f'minsyn_{int(requested)}_skipped'
+
+    def get_applied_output_path(self, dataset: str, applied: int,
+                                requested_thresholds) -> str:
+        safe_name = self._sanitize_name(dataset)
+        return os.path.join(
+            self.dataset_data_path, safe_name,
+            self.applied_folder_name(applied, requested_thresholds))
+
+    def get_skipped_output_path(self, dataset: str, requested: int) -> str:
+        safe_name = self._sanitize_name(dataset)
+        return os.path.join(
+            self.dataset_data_path, safe_name,
+            self.skipped_folder_name(requested))
     
     def _sanitize_name(self, name: str) -> str:
         """Convert name to filesystem-safe format.
@@ -1581,12 +1858,15 @@ class ComparisonParameters:
         # Main output folder
         os.makedirs(self.full_output_path, exist_ok=True)
 
-        # Dataset data folder and subfolders.  In combination mode these are
-        # the deduplicated raw-run cell values required by the query rows;
-        # they are not independent comparison schedules.
+        # Dataset data root only.  Per-threshold folders are created by the
+        # pathfinding run under the applied-threshold grammar; pre-creating
+        # requested-named folders here would leave empty mislabeled
+        # directories behind after a collapse.
         for dataset in self.get_dataset_names():
-            for threshold in self.get_thresholds_for_dataset(dataset):
-                os.makedirs(self.get_dataset_output_path(dataset, threshold), exist_ok=True)
+            os.makedirs(
+                os.path.join(self.dataset_data_path,
+                             self._sanitize_name(dataset)),
+                exist_ok=True)
         
         # Comparison results folder
         os.makedirs(self.comparison_results_path, exist_ok=True)
@@ -1664,7 +1944,11 @@ class ComparisonParameters:
             # F7: auto-extend collapsed thresholds (k x tau_ref, capped at
             # 2x the max asked threshold) after the run reveals a collapse.
             'auto_extend_thresholds': self.auto_extend_thresholds,
+            'capture_density': self.capture_density,
+            'density_normalizer': self.density_normalizer,
+            'threshold_auto': bool(getattr(self, 'threshold_auto', False)),
             'drop_untyped': self.drop_untyped,
+            'report_layout': self.report_layout,
             'edgeN_limit': self.edgeN_limit,
             'comparison_mode': self.comparison_mode,
             'path_mode': self.path_mode,
@@ -1738,15 +2022,20 @@ class ComparisonParameters:
         
         # Priority 2: Auto type mapping (with unmapped filtering)
         if self.auto_type_mapping and self._auto_type_mapper:
+            tokens = self._ensure_flat_list(self.source_neurons)
+            resolved = self._resolved_query_types(
+                tokens, dataset, 'source', drop_unresolved=True)
+            if resolved is not None:
+                return resolved
             return self._resolve_neurons_with_auto_mapping(
-                self._ensure_flat_list(self.source_neurons), 
+                tokens,
                 dataset,
                 remove_unmapped=True
             )
-        
+
         # Priority 3: Shared list
         return self._ensure_flat_list(self.source_neurons)
-    
+
     def get_target_neurons_for_dataset_filtered(self, dataset: str) -> List[Union[str, int]]:
         """
         Get target neurons for export with unmapped types removed.
@@ -1766,12 +2055,17 @@ class ComparisonParameters:
         
         # Priority 2: Auto type mapping (with unmapped filtering)
         if self.auto_type_mapping and self._auto_type_mapper:
+            tokens = self._ensure_flat_list(self.target_neurons)
+            resolved = self._resolved_query_types(
+                tokens, dataset, 'target', drop_unresolved=True)
+            if resolved is not None:
+                return resolved
             return self._resolve_neurons_with_auto_mapping(
-                self._ensure_flat_list(self.target_neurons),
+                tokens,
                 dataset,
                 remove_unmapped=True
             )
-        
+
         # Priority 3: Shared list
         return self._ensure_flat_list(self.target_neurons)
     
@@ -1923,6 +2217,9 @@ class ComparisonParameters:
             max_paths_bodyid=data.get('max_paths_bodyid', None),
             replay_paths=data.get('replay_paths', True),
             auto_extend_thresholds=data.get('auto_extend_thresholds', False),
+            capture_density=data.get('capture_density', False),
+            density_normalizer=data.get('density_normalizer', 'per_node'),
+            threshold_auto=data.get('threshold_auto', False),
             drop_untyped=data.get('drop_untyped', True),
             edgeN_limit=data.get('edgeN_limit', 500),
             comparison_mode=data.get('comparison_mode', 'path'),
@@ -1944,11 +2241,53 @@ class ComparisonParameters:
             parallel=performance.get('parallel', True),
             max_workers=performance.get('max_workers'),
             
+            # Hemisphere / reciprocity flags (plan round-4 fix: from_dict
+            # silently dropped these, so a pinned resume/re-export downgraded
+            # a hemispheric run to non-hemispheric).
+            separate_hemispheres=data.get('separate_hemispheres', False),
+            symmetry_analysis=data.get('symmetry_analysis', False),
+            keep_only_hemisphere_conserved_connections=data.get(
+                'keep_only_hemisphere_conserved_connections', False),
+            find_reciprocal=data.get('find_reciprocal', False),
+            skip_bodyId=data.get('skip_bodyId', True),
+
             # Output configuration
             output_folder=data.get('output_folder', '.'),
             saveas=data.get('saveas'),
             token=data.get('token', ''),
         )
+
+    @classmethod
+    def for_run_folder(cls, run_dir: str) -> 'ComparisonParameters':
+        """Build parameters pinned to an EXISTING run folder (plan R4).
+
+        ``ComparisonParameters.from_dict`` re-derives a fresh timestamped
+        output folder, so re-exporting or resuming an old run via a script
+        silently creates a new folder. This classmethod reads the run's
+        ``parameters.json`` and pins ``full_output_path`` to ``run_dir``
+        (via ``output_folder`` = parent + ``saveas`` = folder name), so a
+        follow-up ``run_comparison(skip_existing=True)`` +
+        ``export_results()`` resumes/re-exports IN PLACE.
+
+        Args:
+            run_dir: Path to the existing run folder (must contain
+                ``parameters.json``).
+
+        Returns:
+            ComparisonParameters instance whose ``full_output_path`` is
+            exactly ``run_dir``.
+        """
+        run_dir = os.path.abspath(run_dir)
+        params_path = os.path.join(run_dir, 'parameters.json')
+        if not os.path.exists(params_path):
+            raise FileNotFoundError(
+                f"Not a run folder (missing parameters.json): {run_dir}")
+        with open(params_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        params = cls.from_dict(data)
+        params.output_folder = os.path.dirname(run_dir)
+        params.saveas = os.path.basename(run_dir)
+        return params
     
     def _initialize_auto_type_mapping(self) -> None:
         """
@@ -2054,13 +2393,23 @@ class ComparisonParameters:
                 or self._auto_type_mapper.detect_type_source(neuron)
             )
             if source_ds:
-                from .type_resolver import resolve_one_target
-                mapped = resolve_one_target(
+                from .type_resolver import (
+                    STATUS_VALID_SPLIT, resolve_valid_targets,
+                )
+                res = resolve_valid_targets(
                     self._auto_type_mapper, neuron, source_ds, dataset)
-                if mapped:
-                    resolved.append(mapped)
+                if res.status == STATUS_VALID_SPLIT and res.target_types:
+                    # A valid split has real per-branch evidence: query all
+                    # licensed branches instead of silently keeping the raw
+                    # name (which would match nothing in this dataset).
+                    resolved.extend(str(t) for t in res.target_types)
+                elif res.equivalence_key:
+                    resolved.append(res.equivalence_key)
                 elif not remove_unmapped:
-                    # No mapping found, use original (might be missing in target dataset)
+                    # No mapping found, use original (might be missing in
+                    # target dataset). This is the low-confidence same-name
+                    # fallback surfaced by the report's Query Resolution
+                    # section and user_warning_notes.
                     resolved.append(neuron)
                 # If remove_unmapped=True and no mapping found, skip the type
             elif not remove_unmapped:
@@ -2185,3 +2534,23 @@ class ComparisonParameters:
                 f"max_interlayer={self.max_interlayer}, "
                 f"path_mode={self.path_mode}, "
                 f"thresholds={self.thresholds})")
+
+
+def canonical_source_rank(dataset: str) -> int:
+    """Canonical-row source priority (plan F, 2026-09-15).
+
+    When a canonical type row is observed in several datasets, the report's
+    Sources table picks the observation from the highest-priority dataset:
+    ``male-cns`` first, then FAFB/FlyWire, then the other NeuPrint
+    datasets (hemibrain, manc, optic-lobe, ...), and BANC last (its type
+    annotations are the auto-transferred ones). Unknown datasets rank with
+    the other-neuprint tier.
+    """
+    ds = str(dataset or '').lower()
+    if 'male-cns' in ds or 'malecns' in ds or 'mcns' in ds:
+        return 0
+    if 'fafb' in ds or 'flywire' in ds:
+        return 1
+    if 'banc' in ds:
+        return 3
+    return 2

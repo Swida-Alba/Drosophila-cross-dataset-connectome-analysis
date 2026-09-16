@@ -919,6 +919,86 @@ class ComparisonVisualizer:
         plt.tight_layout()
         return fig
     
+    # =========================================================================
+    # Auto threshold-density alignment (plan §5 Phase E)
+    # =========================================================================
+
+    def plot_density_alignment_curves(
+        self,
+        density_curves: pd.DataFrame,
+        windows: Optional[pd.DataFrame] = None,
+        aligned: Optional[pd.DataFrame] = None,
+        nickname_map: Optional[Dict[str, str]] = None,
+        normalizer_label: str = 'edges per searched node',
+        figsize: Optional[Tuple[int, int]] = None,
+        title: str = "Query-scoped density vs Min Synapse Count",
+    ) -> plt.Figure:
+        """Two stacked panels vs threshold (plan §4.5b).
+
+        Top: normalized edge density ``E(t)/N`` (primary, the alignment
+        reference) with horizontal guides at the aligned density levels.
+        Bottom: enumerated path count (diagnostic only — hub-inflated).
+        Each dataset is drawn over its OWN domain ``[w_start, w_star]``
+        (never truncated to the intersection) and its endpoints marked.
+        """
+        figsize = figsize or (11, 8)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+
+        def _label(ds: str) -> str:
+            return (nickname_map or {}).get(ds, ds)
+
+        if density_curves is None or density_curves.empty:
+            for ax in (ax1, ax2):
+                ax.text(0.5, 0.5, "No density data", ha='center',
+                        va='center')
+            return fig
+
+        for ds, group in density_curves.groupby('dataset'):
+            group = group.sort_values('threshold')
+            ax1.plot(group['threshold'], group['density'], 'o-',
+                     label=_label(ds), markersize=3)
+            ax2.plot(group['threshold'], group['path_count'], 'o--',
+                     label=_label(ds), markersize=3, alpha=0.8)
+
+        # Aligned density-level guides (horizontal) on the primary panel.
+        if aligned is not None and not aligned.empty:
+            levels = aligned[
+                aligned.get('mode', pd.Series(dtype=str)).astype(str)
+                .str.contains('horizontal', na=False)]
+            for _, row in levels.iterrows():
+                lvl = row.get('level_normalized')
+                if lvl is not None and np.isfinite(float(lvl)):
+                    ax1.axhline(float(lvl), color='grey', ls=':',
+                                alpha=0.35, lw=1.0, zorder=0)
+
+        # Window endpoints per dataset (own domain, §4.5b item 3).
+        if windows is not None and not windows.empty:
+            for _, row in windows.iterrows():
+                for edge, style in (('w_start', '|'), ('w_star_measured', '|')):
+                    val = row.get(edge)
+                    if val is None or (isinstance(val, float) and
+                                       not np.isfinite(val)):
+                        continue
+                    for ax in (ax1, ax2):
+                        ax.axvline(float(val), color='grey', ls='-',
+                                   alpha=0.20, lw=0.8, zorder=0)
+
+        ax1.set_ylabel(f"Edge density ({normalizer_label})")
+        ax1.set_title('Primary: normalized edge density (E(t)/N, fixed N)')
+        ax2.set_ylabel('Enumerated paths (diagnostic)')
+        ax2.set_xlabel('Min Synapse Count (per-connection weight)')
+        ax2.set_title('Diagnostic: enumerated path count (hub-inflated)')
+        for ax in (ax1, ax2):
+            ax.grid(False)
+        handles, labels = ax1.get_legend_handles_labels()
+        if labels:
+            fig.legend(handles, labels, loc='upper center',
+                       ncol=min(len(labels), 6), frameon=False,
+                       bbox_to_anchor=(0.5, 1.02))
+        fig.suptitle(title, y=1.06 if labels else 1.0)
+        plt.tight_layout()
+        return fig
+
     def plot_edge_density_curves(
         self,
         density_df: pd.DataFrame,
@@ -1021,7 +1101,8 @@ class ComparisonVisualizer:
         results: Dict[str, Dict[int, pd.DataFrame]],
         thresholds: List[int],
         figsize: Optional[Tuple[int, int]] = None,
-        title: str = "Comparison Across Threshold Levels"
+        title: str = "Comparison Across Threshold Levels",
+        threshold_mode: str = 'standard',
     ) -> plt.Figure:
         """
         Create merged subplot visualization showing comparison at different thresholds.
@@ -1036,6 +1117,8 @@ class ComparisonVisualizer:
             thresholds: List of thresholds to visualize
             figsize: Figure size tuple
             title: Overall figure title
+            threshold_mode: 'combinations' relabels the per-column titles as
+                query points (the keys are query ids, not numeric thresholds).
             
         Returns:
             matplotlib Figure with subplots
@@ -1069,7 +1152,13 @@ class ComparisonVisualizer:
                 edge_counts.append(count)
             
             bars = ax1.bar(range(n_datasets), edge_counts, color=colors)
-            ax1.set_title(f'Threshold = {threshold}', fontsize=10)
+            if threshold_mode == 'combinations':
+                # The keys are query ids (e.g. combo_001), not numeric
+                # thresholds — never phrase them as "Threshold = ...".
+                col_title = f'Query = {threshold}'
+            else:
+                col_title = f'Threshold = {threshold}'
+            ax1.set_title(col_title, fontsize=10)
             ax1.set_xticks(range(n_datasets))
             ax1.set_xticklabels([d[:15] for d in datasets], rotation=45, ha='right', fontsize=7)
             ax1.set_ylabel('Edge Count')
@@ -2298,7 +2387,8 @@ class ComparisonVisualizer:
         
         # Merged threshold comparison subplots
         if len(thresholds) > 1:
-            fig = self.plot_threshold_comparison_subplots(results, thresholds)
+            fig = self.plot_threshold_comparison_subplots(
+                results, thresholds, threshold_mode=threshold_mode)
             self.save_figure(fig, os.path.join(output_dir, "threshold_comparison.png"))
             plt.close(fig)
             
@@ -3543,8 +3633,8 @@ class ComparisonVisualizer:
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=("<b>Edge Counts</b> (Linear)", "<b>Path Counts</b> (Linear)", 
-                           "<b>Edge Delta Rate</b> ((N<sub>t-1</sub> - N<sub>t</sub>) / N<sub>t-1</sub>)", "<b>Path Delta Rate</b> ((N<sub>t-1</sub> - N<sub>t</sub>) / N<sub>t-1</sub>)"),
-            vertical_spacing=0.15,
+                           "<b>Edge Delta Rate</b><br>((N<sub>t-1</sub> - N<sub>t</sub>) / N<sub>t-1</sub>)", "<b>Path Delta Rate</b><br>((N<sub>t-1</sub> - N<sub>t</sub>) / N<sub>t-1</sub>)"),
+            vertical_spacing=0.18,
             horizontal_spacing=0.1,
             shared_xaxes=True
         )

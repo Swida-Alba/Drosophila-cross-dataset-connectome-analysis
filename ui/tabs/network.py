@@ -183,6 +183,15 @@ def create_network_tab():
                         hint="Use only local cache and never contact the server. "
                              "Requires the cache to be pre-built.",
                     )
+                drop_untyped = checkbox_input(
+                    "Drop Untyped Neurons", get_user_default("drop_untyped"),
+                    hint="Neuron-label filter (shared with Complete Paths, "
+                         "Shortest Paths and Cross-Dataset Comparison): remove "
+                         "edges touching untyped neurons (empty / Unknown / "
+                         "bodyId-fallback type labels). Dropped rows: "
+                         "data_details/untyped_dropped_records.csv; counts in "
+                         "user_warning_notes.txt.",
+                )
 
     with results_col:
         output_panel.create(run_label="Find Network", run_icon="schema")
@@ -221,6 +230,7 @@ def create_network_tab():
             "edgeN_limit": get_user_default("edgeN_limit"),
             "output_format": output_format.value,
             "skip_bodyId": skip_bodyid.value,
+            "drop_untyped": drop_untyped.value,
             "custom_source_name": custom_group_name.value or '',
             "cache_only": cache_only.value,
             "saveas": saveas.value.strip() or "",

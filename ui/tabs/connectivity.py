@@ -199,28 +199,58 @@ def create_connectivity_tab():
                 #     qualification-find-homolog.md). Off by default; applies
                 #     to the visualized top-N only. ---
                 morph_qualify = checkbox_input(
-                    "Morph Qualification (cross-dataset)", False,
+                    "Morph Qualification", False,
                     hint="Score the visualized top-N candidates against the "
                          "transformed query (production vector_v2, no NBLAST) "
                          "and gate them by a per-query null bar — the p95 of "
                          "200 seeded random target neurons. Candidates below "
                          "the bar are excluded from the 3D scene; the results "
                          "tables keep every row and gain morph columns. "
-                         "Requires Visualize Candidates on and a "
-                         "cross-dataset target (FAFB / male-cns / BANC).",
+                         "Requires Visualize Candidates on and a supported "
+                         "target (FAFB / male-cns / BANC); works for "
+                         "cross-dataset and same-dataset (intra) runs alike.",
                 )
                 with ui.row().classes("w-full items-center gap-4"):
-                    ui.label("Qualification bar offset above the null p95") \
+                    ui.label("Qualification mode") \
+                        .classes("text-caption drocat-muted")
+                    morph_mode = ui.select(
+                        {'null': 'Null bar (per-query null p95 + offset)',
+                         'mapping_ref':
+                             'Mapping-referenced floor (floors v3)'},
+                        value='null', with_input=False,
+                    ).classes("w-72").tooltip(
+                        "Mapping-referenced floors need a cross-dataset "
+                        "pair (mapper branch pools); disabled when "
+                        "Target = Source — the null bar applies.")
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Null percentile level") \
+                        .classes("text-caption drocat-muted")
+                    morph_level = ui.select(
+                        {95: 'p95 (default)', 90: 'p90', 75: 'p75',
+                         99: 'p99'}, value=95, with_input=False,
+                    ).classes("w-40")
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Qualification bar offset above the null bar") \
                         .classes("text-caption drocat-muted")
                     morph_bar_offset = ui.slider(
                         min=0.0, max=0.2, step=0.01, value=0.0
                     ).props("label-always").classes("w-48")
                     morph_bar_offset_value = ui.label("0.00 (bar = null p95)")
-                    morph_bar_offset.on_value_change(
-                        lambda e: morph_bar_offset_value.set_value(
-                            f"{float(e.value or 0):.2f}"
-                            + (" (bar = null p95)" if not e.value else ""))
-                    )
+
+                    def _sync_offset_label(_e=None):
+                        off = float(morph_bar_offset.value or 0)
+                        if str(morph_mode.value or 'null') == 'mapping_ref':
+                            morph_bar_offset_value.set_text(
+                                f"{off:.2f} (bar = pool baseline - offset)")
+                        else:
+                            lvl = int(morph_level.value or 95)
+                            morph_bar_offset_value.set_text(
+                                f"{off:.2f} (bar = null p{lvl})")
+
+                    morph_bar_offset.on_value_change(_sync_offset_label)
+                    morph_level.on_value_change(_sync_offset_label)
+                    morph_mode.on_value_change(_sync_offset_label)
+                    _sync_offset_label()
                 morph_scope_warning = ui.label("").classes(
                     "text-caption text-amber-8").set_visibility(False)
 
@@ -230,23 +260,23 @@ def create_connectivity_tab():
                     allowed = any(k in tgt.lower() for k in (
                         "fafb", "flywire", "banc", "male-cns", "malecns"))
                     cross = bool(src) and bool(tgt) and src != tgt
-                    ok = cross and allowed
-                    morph_qualify.set_enabled(ok)
-                    if not ok:
-                        if not cross:
-                            morph_scope_warning.set_text(
-                                "Morph qualification needs a cross-dataset "
-                                "target (set Target ≠ Source).")
-                        else:
-                            morph_scope_warning.set_text(
-                                "Morph qualification supports FAFB, "
-                                "male-cns and BANC targets only.")
+                    # Same-dataset (intra) runs qualify too — the identity
+                    # chain; only the target family is restricted.
+                    # mapping_ref needs a cross-dataset pair (mapper branch
+                    # pools), so it greys out when Target = Source.
+                    morph_qualify.set_enabled(allowed)
+                    morph_mode.set_enabled(allowed and cross)
+                    if tgt and not allowed:
+                        morph_scope_warning.set_text(
+                            "Morph qualification supports FAFB, "
+                            "male-cns and BANC targets only.")
                         morph_scope_warning.set_visibility(True)
                     else:
                         morph_scope_warning.set_visibility(False)
 
                 source_dataset.on_value_change(_morph_option_guard)
                 target_dataset.on_value_change(_morph_option_guard)
+                _morph_option_guard()
 
         # ================= Comparison panel (profile comparison) =================
         with ui.column().classes("w-full gap-1") as comparison_panel:
@@ -457,6 +487,8 @@ def create_connectivity_tab():
             "use_fast": use_fast.value,
             "morph_qualify": morph_qualify_on,
             "morph_bar_offset": float(morph_bar_offset.value or 0.0),
+            "morph_mode": str(morph_mode.value or "null"),
+            "morph_level": int(morph_level.value or 95),
         }
 
         try:

@@ -642,6 +642,7 @@ class VisualizePath:
         self.custom_node_colors = None  # Will be populated in _load_custom_colors()
         self.custom_edge_colors = None  # Will be populated if edge-list has color column
         self.custom_node_groups = None  # Will be populated if edge-list has source/target_group columns
+        self._csv_group_labels = {}  # safe custom group name -> raw edge-list label
         
         self.network_layout = network_layout
         self.showfig = showfig
@@ -2264,7 +2265,33 @@ class VisualizePath:
             ordered.extend(sorted(available_set))
         
         return ordered
-    
+
+    # Palette cycled when free-form edge-list group names are auto-declared
+    # (kept distinct from each other and from the default node-type colors).
+    _CSV_GROUP_PALETTE = (
+        '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b',
+        '#3b82f6', '#ef4444', '#10b981', '#a855f7',
+    )
+
+    def _register_csv_custom_groups(self, group_nodes: dict) -> None:
+        """Declare free-form edge-list group names as first-class groups.
+
+        Registered names flow through the same machinery as the
+        ``node_groups`` kwarg (legend chips, quick-select buttons, assign
+        dropdown, add-node dialog), so registration is idempotent by name
+        and a re-declared group keeps its original color.
+        """
+        existing = {str(g.get('name') or '') for g in (self.node_groups or [])}
+        for offset, name in enumerate(sorted(group_nodes)):
+            if name in existing:
+                continue
+            self.node_groups.append({
+                'name': name,
+                'label': self._csv_group_labels.get(name, name),
+                'color': self._CSV_GROUP_PALETTE[len(existing) % len(self._CSV_GROUP_PALETTE)],
+            })
+            existing.add(name)
+
     def build_network(self):
         """
         Build NetworkX graph and connection DataFrame from pathway data.
@@ -2486,15 +2513,36 @@ class VisualizePath:
         # Edge lists carrying endpoint-group columns (the expanded Edge List
         # CSV export) override the position-based classification: every edge
         # is a two-node path, so without them ALL nodes would read "source".
+        # Values naming a structural role keep that role; any other name
+        # becomes a declared custom group (legend chip, quick-select button,
+        # assign dropdown) carried by the node's 'group' attribute.
         if getattr(self, 'custom_node_groups', None):
             valid_groups = {'source', 'intermediate', 'target'}
             overridden = 0
+            custom_group_nodes = {}
             for node, group in self.custom_node_groups.items():
-                if group in valid_groups and node in all_nodes:
+                if node not in all_nodes:
+                    continue
+                if group in valid_groups:
                     G.nodes[node]['node_type'] = group
                     overridden += 1
+                else:
+                    safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', str(group)).strip('_')
+                    if safe_name:
+                        custom_group_nodes.setdefault(safe_name, set()).add(node)
+                        raw_label = str(group).strip()
+                        self._csv_group_labels[safe_name] = raw_label
             if overridden:
                 self._vprint(f"Applied endpoint groups from edge list to {overridden} nodes")
+            if custom_group_nodes:
+                self._register_csv_custom_groups(custom_group_nodes)
+                for group, nodes in custom_group_nodes.items():
+                    for node in nodes:
+                        G.nodes[node]['group'] = group
+                self._vprint(
+                    f"Registered {len(custom_group_nodes)} custom group(s) "
+                    f"from the edge list: {', '.join(sorted(custom_group_nodes))}"
+                )
         
         # Count from the FINAL node attributes so endpoint-group overrides
         # (expanded edge-list export) are reflected in the summary.

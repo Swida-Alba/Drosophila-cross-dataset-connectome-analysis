@@ -122,6 +122,15 @@
   profiles/{dataset_folder}/
     aggregated/{type}_profile.json
     individual/{bodyId}_{type}_profile.json</code></pre>
+  <p>BodyId-level rows and axes carry the tree-legend suffixes:
+    <code>{bodyId}_{instance}</code> (NeuPrint-style datasets) or
+    <code>{bodyId}_{type}_L/_R</code> (FAFB/BANC), falling back to the
+    resolved comparison type when the neuron table has no metadata — no
+    bodyId-level export reads as a bare numeric id. Queried bodyIds in the
+    cross-dataset matrices carry their resolved type in the row/column
+    labels. Individual profile JSONs include the neuron's
+    <code>instance</code> alongside <code>bodyId</code>, <code>type</code>,
+    and <code>dataset</code>.</p>
 
   <div class="callout warn">
     <b>First run on a new dataset</b> - profile extraction needs connection

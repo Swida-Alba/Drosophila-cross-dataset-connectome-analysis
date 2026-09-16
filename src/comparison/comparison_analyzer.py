@@ -23,6 +23,7 @@ Example:
 
 import os
 import json
+from pathlib import Path
 from datetime import datetime
 from itertools import combinations
 from typing import Dict, List, Optional, Any, Union, Tuple, Set
@@ -186,6 +187,11 @@ class ComparisonAnalyzer:
         self._merge_key_cache: Dict = {}
         self._mapping_status_counts: Dict[str, int] = {}
         self._conflicted_merge_types: Dict[str, str] = {}
+        # Query-anchored MergePolicy (plan:
+        # plan-query-anchored-cross-dataset-analysis.md) — built lazily
+        # once per run; False = build attempted and not applicable/failed
+        # (every path then stays on the canonical merge fallback).
+        self._merge_policy = None
         # Fix A: StrongestFirst effective cutoff (τ) per (dataset, threshold).
         # None = complete enumeration; a number = τ-bounded (budget bit).
         self._path_taus: Dict[tuple, Optional[float]] = {}
@@ -411,6 +417,19 @@ class ComparisonAnalyzer:
             prov['paths_complete'] = bool(state.get(
                 'paths_complete',
                 prov['applied_threshold_source'] == 'requested'))
+        # A skipped/collapsed row's authoritative applied point is the
+        # folder it aliases. The orchestrator only aliases a requested
+        # threshold to a canonical folder >= it (weaker aliases are
+        # materialized instead), so this is >= requested structurally.
+        if state.get('skipped') and state.get('applied_folder') is not None:
+            folder = int(state['applied_folder'])
+            prov['applied_threshold'] = folder
+            if not prov.get('tau_canonical'):
+                prov['tau_canonical'] = folder
+            if prov.get('applied_threshold_source') in (None, 'requested'):
+                prov['applied_threshold_source'] = 'strongest_first_budget'
+            if state.get('paths_complete') is None:
+                prov['paths_complete'] = False
         prov['strongest_first_budget'] = budget
         return prov
 
@@ -513,6 +532,19 @@ class ComparisonAnalyzer:
         meta = self._path_run_meta.get((dataset_name, threshold), {}) or {}
         parameters = getattr(self, 'parameters', None)
         prov = self._path_provenance_from_state(threshold, meta)
+        stats = getattr(self, '_untyped_drop_stats', {}).get(
+            (dataset_name, threshold)) or {}
+        if not stats:
+            # Aliased rows: the drop happened while materializing the
+            # applied threshold, so fall back to that key.
+            try:
+                applied, _, _, _ = self._applied_state_for(
+                    dataset_name, threshold)
+            except Exception:
+                applied = None
+            if applied is not None and int(applied) != int(threshold):
+                stats = getattr(self, '_untyped_drop_stats', {}).get(
+                    (dataset_name, int(applied))) or {}
         return {
             'dataset': dataset_name,
             'threshold': threshold,
@@ -550,6 +582,9 @@ class ComparisonAnalyzer:
                 getattr(parameters, 'comparison_mode', 'path')),
             'drop_untyped': bool(getattr(parameters, 'drop_untyped',
                                         True)),
+            'untyped_dropped_rows': stats.get('rows'),
+            'untyped_dropped_neurons': stats.get('neurons'),
+            'untyped_dropped_fraction': stats.get('fraction'),
         }
 
     @staticmethod
@@ -687,12 +722,8 @@ class ComparisonAnalyzer:
 
             threshold_summaries: Dict[str, Dict] = {}
             for dataset in dataset_names:
-                safe_name = self.parameters._sanitize_name(dataset)
                 summary_path = os.path.join(
-                    self.parameters.full_output_path,
-                    'dataset_data',
-                    safe_name,
-                    f'minsyn_{threshold}',
+                    self._resolve_dataset_output_path(dataset, threshold),
                     'hemisphere_symmetry',
                     'symmetry_summary.json'
                 )
@@ -723,12 +754,8 @@ class ComparisonAnalyzer:
         thresholds = query.get('thresholds') or {}
         summaries: Dict[str, Dict] = {}
         for dataset, threshold in thresholds.items():
-            safe_name = self.parameters._sanitize_name(dataset)
             summary_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{int(threshold)}',
+                self._resolve_dataset_output_path(dataset, int(threshold)),
                 'hemisphere_symmetry',
                 'symmetry_summary.json'
             )
@@ -913,6 +940,44 @@ class ComparisonAnalyzer:
                 f"{', '.join(sorted(self._conflicted_merge_types)[:5])}"
                 + (" …" if len(self._conflicted_merge_types) > 5 else ""))
 
+    def _append_user_warning_notes(self, out_dir: str, blocks: List[str]) -> None:
+        """Append pre-formatted blocks to ``user_warning_notes.txt``.
+
+        Several writers append to this file (threshold comparability,
+        untyped drops, query resolution, auto-mapping caveats) and the
+        order depends on the run, so the title header is written by
+        whichever call creates the file (plan rev-3 item 4).  A file that
+        predates the header discipline is healed in place: the title is
+        prepended instead of leaving the notes untitled forever.
+        """
+        if not blocks:
+            return
+        note_path = os.path.join(out_dir, 'user_warning_notes.txt')
+        header = 'User warning notes\n==================\n\n'
+        try:
+            existing = ''
+            if os.path.exists(note_path):
+                try:
+                    with open(note_path, encoding='utf-8') as f:
+                        existing = f.read()
+                except OSError:
+                    existing = ''
+            if not existing.strip():
+                with open(note_path, 'w', encoding='utf-8') as f:
+                    f.write(header)
+                    f.write('\n'.join(blocks) + '\n')
+            elif existing.startswith('User warning notes'):
+                with open(note_path, 'a', encoding='utf-8') as f:
+                    f.write('\n' + '\n'.join(blocks) + '\n')
+            else:
+                # Heal a headerless legacy file.
+                with open(note_path, 'w', encoding='utf-8') as f:
+                    f.write(header)
+                    f.write(existing.rstrip('\n') + '\n')
+                    f.write('\n' + '\n'.join(blocks) + '\n')
+        except Exception as e:
+            self._log(f"Warning: could not append user warning notes: {e}")
+
     def _write_user_warning_notes_for_mapping(self, mapper, type_names, dataset_names):
         """Write auto-type-mapping caveats to user_warning_notes.txt.
 
@@ -929,14 +994,13 @@ class ComparisonAnalyzer:
             return None
         try:
             os.makedirs(self.parameters.full_output_path, exist_ok=True)
-            notes_path = os.path.join(self.parameters.full_output_path, 'user_warning_notes.txt')
-            with open(notes_path, 'w', encoding='utf-8') as f:
-                f.write('User warning notes\n')
-                f.write('==================\n\n')
-                f.write('Auto type mapping changed how some neuron type names '
-                        'were matched across datasets:\n\n')
-                for note in notes:
-                    f.write(f'- {note}\n')
+            body = ('Auto type mapping changed how some neuron type names '
+                    'were matched across datasets:\n\n'
+                    + ''.join(f'- {note}\n' for note in notes))
+            self._append_user_warning_notes(
+                self.parameters.full_output_path, [body])
+            notes_path = os.path.join(
+                self.parameters.full_output_path, 'user_warning_notes.txt')
             self._log(f"  ⚠️ Wrote {notes_path} - please double check the automatic mappings")
             return notes_path
         except Exception as e:
@@ -1069,6 +1133,9 @@ class ComparisonAnalyzer:
             # drop_untyped fires post label-mapping in the analyzer, so the
             # delegated per-dataset run keeps every row.
             drop_untyped=False,
+            # Density curves are a first-class output of every mode: capture
+            # the query-scoped classified cone for all delegated runs.
+            capture_density=True,
         )
 
         # Initialize and run analysis
@@ -1519,6 +1586,18 @@ class ComparisonAnalyzer:
         self._log(f"Starting analysis across all datasets and thresholds (mode={mode})")
         
         dataset_names = self.parameters.get_dataset_names()
+
+        # Auto threshold-density alignment (plan §5 Phase D): measure the
+        # per-dataset windows with ONE bootstrap enumeration per dataset at
+        # the requested floor, then install the density-aligned combination
+        # rows so the rest of the pipeline runs through the combination
+        # engine unchanged.
+        if (mode != 'edge'
+                and getattr(self.parameters, 'threshold_mode', '') == 'auto'
+                and self.parameters.path_mode == 'all'):
+            if not self._bootstrap_auto_mode():
+                self._log("Auto threshold mode: bootstrap unavailable — "
+                          "running the requested thresholds as-is.")
         
         if mode == 'edge':
             return self._run_all_edge_analyses(skip_existing)
@@ -1732,8 +1811,9 @@ class ComparisonAnalyzer:
             self.raw_results,
             dataset_names,
             threshold_map,
-            label_mapper=None,
+            label_mapper=self._policy_label_mapper(),
             type_mapper=type_mapper,
+            merge_policy=self._merge_policy_or_none(),
         )
         if self.parameters.keep_only_hemisphere_conserved_connections:
             aligned = self._filter_hemisphere_unconserved(
@@ -1794,7 +1874,7 @@ class ComparisonAnalyzer:
             # Collapsed row with missing canonical bookkeeping: the
             # applied folder IS the materialized equivalent threshold —
             # never fall back to the bare landing tau here.
-            return (applied_folder, floor is not None, floor,
+            return (int(applied_folder), floor is not None, floor,
                     'strongest_first_budget')
 
         applied = prov['applied_threshold']
@@ -1804,6 +1884,801 @@ class ComparisonAnalyzer:
             applied = threshold
         return applied, prov['edge_budget_applied'], floor, \
             prov['applied_threshold_source']
+
+    # ------------------------------------------------------------------
+    # Threshold view-model: one resolved requested→applied view shared by
+    # the exporter, report and used-data writers (plan §2).
+    # ------------------------------------------------------------------
+
+    def _dataset_folder_index(self, dataset: str) -> Dict[int, str]:
+        """Map ``requested_threshold -> folder name`` for a dataset on disk.
+
+        Built by reading each data folder's own ``all_attributes.json``
+        ``requested_threshold``. This lets a LATER analysis (fresh process,
+        no in-memory meta) resolve the new grammar folder names
+        (``..._equal_applied_floor`` / ``..._applied_floor``) as well as
+        historical ``minsyn_{N}`` folders. Cached per dataset.
+        """
+        cache = getattr(self, '_dataset_folder_index_cache', None)
+        if cache is None:
+            cache = {}
+            self._dataset_folder_index_cache = cache
+        if dataset in cache:
+            return cache[dataset]
+        index: Dict[int, str] = {}
+        safe = self.parameters._sanitize_name(dataset)
+        base = os.path.join(self.parameters.dataset_data_path, safe)
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                folder = os.path.join(base, name)
+                if not os.path.isdir(folder) or not name.startswith('minsyn_'):
+                    continue
+                if name.endswith('_skipped'):
+                    continue
+                req = self._folder_requested_threshold(folder)
+                if req is not None and req not in index:
+                    index[int(req)] = name
+        cache[dataset] = index
+        return index
+
+    def _resolve_dataset_output_path(self, dataset: str,
+                                     threshold: int) -> str:
+        """On-disk path for a (dataset, threshold) cell, honoring the
+        applied-folder naming grammar — disk-aware, so later analysis can
+        find the folder without an in-memory lookup.
+
+        Resolution order: registered lookup -> the run-meta applied folder's
+        grammar name -> the dataset's on-disk requested->folder index ->
+        plain ``minsyn_{threshold}``. Always returns an existing directory
+        when one exists.
+        """
+        safe = self.parameters._sanitize_name(dataset)
+        base = os.path.join(self.parameters.dataset_data_path, safe)
+        requested = self.parameters.get_thresholds_for_dataset(dataset)
+
+        def _existing(name):
+            if not name:
+                return None
+            path = os.path.join(base, name)
+            return path if os.path.isdir(path) else None
+
+        # 1. Registered lookup (this process's reconcile/run).
+        lookup = getattr(self.parameters, '_applied_folder_lookup', None) or {}
+        name = lookup.get((dataset, int(threshold)))
+        found = _existing(name)
+        if found:
+            return found
+        # 2. In-memory meta -> applied folder grammar name.
+        meta = self._path_run_meta.get((dataset, int(threshold)))
+        if meta:
+            applied = self.get_applied_folder(dataset, int(threshold))
+            if applied is not None:
+                name = self._applied_folder_name(dataset, applied)
+                found = _existing(name)
+                if found:
+                    return found
+        # 3. Disk index by the folder's own requested_threshold.
+        name = self._dataset_folder_index(dataset).get(int(threshold))
+        found = _existing(name)
+        if found:
+            return found
+        # 4. Try grammar candidates for the threshold value itself.
+        for candidate in self.parameters.applied_folder_name_candidates(
+                int(threshold)):
+            found = _existing(candidate)
+            if found:
+                return found
+        # 5. Nothing on disk: return the grammar path a writer would use.
+        applied = None
+        if meta:
+            applied = self.get_applied_folder(dataset, int(threshold))
+        if applied is not None:
+            return os.path.join(
+                base, self._applied_folder_name(dataset, applied))
+        return self.parameters.get_dataset_output_path(dataset, threshold)
+
+    def _reconcile_applied_folders(self) -> None:
+        """Rename materialized folders to the applied grammar, create
+        ``_skipped`` markers for pruned thresholds, and write the
+        per-dataset APPLIED_THRESHOLDS.md note.
+
+        Non-destructive: data is only ever renamed (never deleted); the
+        source of truth is each folder's own all_attributes.json
+        ``applied_threshold``, not its name. Skipped requested thresholds
+        get a marker folder containing a README that explains the applied
+        target and reason.
+        """
+        out_root = getattr(self.parameters, 'full_output_path', None)
+        if not out_root:
+            return
+        import shutil as _shutil
+        manifest = {}
+        for dataset in self.parameters.get_dataset_names():
+            requested = list(
+                self.parameters.get_thresholds_for_dataset(dataset))
+            if not requested:
+                continue
+            safe = self.parameters._sanitize_name(dataset)
+            base = os.path.join(
+                getattr(self.parameters, 'dataset_data_path',
+                        os.path.join(out_root, 'dataset_data')), safe)
+            if not os.path.isdir(base):
+                continue
+            actions = []
+            # requested threshold -> canonical (applied) threshold, from the
+            # provenance row (never the raw folder id).
+            applied_by_requested: Dict[int, Optional[int]] = {}
+            for t in requested:
+                row = self._path_provenance_row(dataset, int(t))
+                value = row.get('applied_threshold')
+                applied_by_requested[int(t)] = (
+                    int(value) if value is not None else None)
+
+            # A level is a "collapse floor" when at least one requested
+            # threshold OTHER than the level itself aliases to it. Such a
+            # level is stored as `minsyn_{L}_applied_floor`; a level that
+            # only its own requested run occupies keeps the bare
+            # `minsyn_{L}`. (A requested level that coincides with a floor it
+            # aliases to is served by that floor folder — no separate marker.)
+            floor_values = {
+                applied_by_requested[int(t)]
+                for t in requested
+                if applied_by_requested.get(int(t)) is not None
+                and applied_by_requested[int(t)] != int(t)
+            }
+
+            def _grammar(applied):
+                return self.parameters.applied_folder_name(
+                    applied, requested, is_floor=int(applied) in floor_values)
+
+            # On-disk data folders (skip markers) grouped by their own
+            # recorded applied value; each folder also carries its run's
+            # requested threshold (min_synapse_num).
+            existing = {}
+            for name in os.listdir(base):
+                folder = os.path.join(base, name)
+                if not os.path.isdir(folder) or name.endswith('_skipped'):
+                    continue
+                if not name.startswith('minsyn_'):
+                    continue
+                applied = self._folder_applied_threshold(folder)
+                if applied is None:
+                    continue
+                run_requested = self._folder_requested_threshold(folder)
+                existing.setdefault(int(applied), []).append(
+                    (name, folder, run_requested))
+
+            # Distinct applied values = every requested threshold's applied
+            # plus any folder's recorded applied (legacy/resume).
+            applied_values = sorted(
+                {a for a in applied_by_requested.values() if a is not None}
+                | set(existing))
+
+            for applied in applied_values:
+                target_name = _grammar(applied)
+                target_path = os.path.join(base, target_name)
+                group = existing.get(applied, [])
+                # Keep the folder whose OWN run requested this applied value
+                # (the exact run); else the first. Never prefer a folder
+                # merely because its name already matches the grammar.
+                keep = None
+                for entry in group:
+                    if entry[2] == applied:
+                        keep = entry
+                        break
+                if keep is None and group:
+                    keep = group[0]
+
+                if keep is not None and os.path.abspath(
+                        keep[1]) != os.path.abspath(target_path):
+                    # Clear the target slot if a redundant folder occupies
+                    # it (its requested threshold gets a marker below), then
+                    # move the correct run into the grammar name.
+                    if os.path.isdir(target_path):
+                        for entry in group:
+                            if os.path.abspath(entry[1]) == \
+                                    os.path.abspath(target_path) and \
+                                    entry is not keep:
+                                rq = entry[2] if entry[2] is not None \
+                                    else applied
+                                self._replace_with_marker(
+                                    dataset, int(rq), applied, entry[1],
+                                    _shutil)
+                                actions.append(
+                                    (entry[0],
+                                     f'minsyn_{rq}_skipped', 'marker'))
+                                break
+                    try:
+                        os.rename(keep[1], target_path)
+                        actions.append((keep[0], target_name, 'renamed'))
+                        keep = (target_name, target_path, keep[2])
+                    except OSError as e:
+                        self._log(
+                            f"  Warning: could not rename {keep[0]} → "
+                            f"{target_name}: {e}")
+
+                # Any remaining data folder for this applied value holds the
+                # same set — replace it with a marker for its requested
+                # threshold.
+                for entry in group:
+                    if keep is not None and os.path.abspath(entry[1]) == \
+                            os.path.abspath(keep[1]):
+                        continue
+                    if not os.path.isdir(entry[1]):
+                        continue  # already consumed above
+                    run_requested = entry[2]
+                    if run_requested is None:
+                        run_requested = applied
+                    self._replace_with_marker(
+                        dataset, int(run_requested), applied, entry[1],
+                        _shutil)
+                    actions.append(
+                        (entry[0], f'minsyn_{run_requested}_skipped',
+                         'marker'))
+                # Register the lookup for the applied value and every
+                # requested threshold that resolves to it.
+                self.parameters.set_applied_folder_lookup(
+                    dataset, applied, target_name)
+                for t in requested:
+                    if applied_by_requested.get(int(t)) == applied:
+                        self.parameters.set_applied_folder_lookup(
+                            dataset, int(t), target_name)
+
+            # Normalize each requested row's meta to its TRUE on-disk state:
+            # the folder that holds its data is the applied value's folder.
+            # A requested threshold whose applied value differs aliases to it
+            # and gets a marker. A requested threshold that COINCIDES with
+            # its applied floor (served by `minsyn_{L}_applied_floor`) is
+            # skipped SILENTLY — no marker, since the floor folder already
+            # represents it explicitly.
+            for t in requested:
+                applied = applied_by_requested.get(int(t))
+                meta = self._path_run_meta.get((dataset, int(t)))
+                if applied is None:
+                    continue
+                coincident = int(applied) == int(t)
+                aliased = not coincident
+                if meta is not None:
+                    meta['applied_folder'] = applied
+                    meta['skipped'] = bool(aliased)
+                    meta['duplicate_of'] = applied if aliased else None
+                if aliased:
+                    self._write_skipped_marker(
+                        dataset, t, applied_by_requested)
+            # APPLIED_THRESHOLDS.md note.
+            self._write_applied_thresholds_note(dataset, requested)
+            manifest[dataset] = actions
+        self._log(
+            "Applied-folder reconcile complete "
+            f"({sum(len(v) for v in manifest.values())} action(s); "
+            "one data folder per applied value; markers refreshed)")
+
+    def _folder_requested_threshold(self, folder: str) -> Optional[int]:
+        """The requested threshold a run's folder was enumerated at."""
+        attrs_path = os.path.join(folder, 'all_attributes.json')
+        if os.path.exists(attrs_path):
+            try:
+                with open(attrs_path, encoding='utf-8') as f:
+                    attrs = json.load(f)
+                value = attrs.get('requested_threshold')
+                if value is None:
+                    value = attrs.get('min_synapse_num')
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+        return None
+
+    def _replace_with_marker(self, dataset: str, requested: int,
+                             applied: Optional[int], folder: str,
+                             shutil_mod) -> None:
+        """Replace a redundant data folder (same applied set as the kept
+        one) with its ``_skipped`` marker."""
+        self._write_skipped_marker(
+            dataset, requested, {requested: applied})
+        try:
+            shutil_mod.rmtree(folder, ignore_errors=True)
+        except Exception:
+            pass
+
+
+    def _folder_applied_threshold(self, folder: str) -> Optional[int]:
+        attrs_path = os.path.join(folder, 'all_attributes.json')
+        if os.path.exists(attrs_path):
+            try:
+                with open(attrs_path, encoding='utf-8') as f:
+                    attrs = json.load(f)
+                value = attrs.get('applied_threshold')
+                if value is None:
+                    value = attrs.get('min_synapse_num')
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+        name = os.path.basename(folder)
+        suffix = name[len('minsyn_'):].split('_')[0]
+        return int(suffix) if suffix.isdigit() else None
+
+    def _write_skipped_marker(self, dataset: str, requested: int,
+                              applied_by_requested: Dict) -> None:
+        marker = self.parameters.get_skipped_output_path(dataset, requested)
+        try:
+            os.makedirs(marker, exist_ok=True)
+        except OSError:
+            return
+        applied = applied_by_requested.get(int(requested))
+        meta = self._path_run_meta.get((dataset, int(requested)), {}) or {}
+        row = self._path_provenance_row(dataset, int(requested))
+        reason = self._skip_reason(meta, row)
+        target = (self._applied_folder_name(dataset, applied)
+                  if applied is not None else '—')
+        text = (
+            f"Skipped threshold: requested Min Synapse Count = {requested}\n"
+            f"Applied threshold for this dataset: "
+            f"{row.get('applied_threshold')}   "
+            f"(data folder: {target})\n"
+            f"Reason: {reason}\n"
+            f"Applied-threshold source: "
+            f"{row.get('applied_threshold_source')}\n"
+            f"Paths complete: {row.get('paths_complete')}\n"
+            f"See also: ../APPLIED_THRESHOLDS.md\n")
+        try:
+            with open(os.path.join(marker, 'README.txt'), 'w',
+                      encoding='utf-8') as f:
+                f.write(text)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _skip_reason(meta: Dict, row: Dict) -> str:
+        tau = row.get('strongest_first_tau')
+        if meta.get('duplicate_of') is not None and tau is not None:
+            return (f"StrongestFirst path budget bit at tau={tau}; all intact "
+                    f"paths with bottleneck >= {tau} were retained. The "
+                    f"requested threshold is <= tau, so it reproduces the "
+                    f"identical materialized path set and needs no separate "
+                    f"run or data.")
+        if row.get('edge_budget_applied'):
+            return (f"The Edge Budget floor ({row.get('edge_weight_floor')}) "
+                    "removed edges this threshold requires; the materialized "
+                    "set is the floored run and this threshold has no "
+                    "distinct output.")
+        return ("This requested threshold was pruned/aliased to the applied "
+                "threshold; its data is the applied folder.")
+
+    def _write_applied_thresholds_note(self, dataset: str,
+                                       requested: List[int]) -> None:
+        base = os.path.join(
+            self.parameters.dataset_data_path,
+            self.parameters._sanitize_name(dataset))
+        lines = [f"# Applied thresholds — {dataset}", ""]
+        data_folders = []
+        markers = []
+        for t in requested:
+            row = self._path_provenance_row(dataset, int(t))
+            applied = row.get('applied_threshold')
+            applied_int = int(applied) if applied is not None else int(t)
+            folder = self._applied_folder_name(dataset, applied_int)
+            data_folders.append(folder)
+            meta = self._path_run_meta.get((dataset, int(t)), {}) or {}
+            skipped = bool(meta.get('skipped'))
+            if skipped:
+                marker = self.parameters.skipped_folder_name(t)
+                markers.append(marker)
+                lines.append(
+                    f"requested {t:<3} -> applied {applied_int:<3} "
+                    f"({row.get('applied_threshold_source')}; aliased to "
+                    f"{folder}; marker: {marker})")
+            else:
+                lines.append(
+                    f"requested {t:<3} -> applied {applied_int:<3} "
+                    f"({row.get('applied_threshold_source')}; data: "
+                    f"{folder})")
+        # List the actual on-disk data folders so the note can never point
+        # at a folder that does not exist.
+        disk = sorted(
+            n for n in os.listdir(base)
+            if n.startswith('minsyn_') and not n.endswith('_skipped')
+            and os.path.isdir(os.path.join(base, n)))
+        lines.append("")
+        lines.append("data folders on disk:  " + (', '.join(disk) or '—'))
+        lines.append("referenced data folders:  " + (
+            ', '.join(sorted(set(data_folders))) or '—'))
+        lines.append("skipped markers: " + (
+            ', '.join(sorted(set(markers))) or '—'))
+        lines.append("")
+        try:
+            path = os.path.join(base, 'APPLIED_THRESHOLDS.md')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            self._log(f"Saved: dataset_data/"
+                      f"{self.parameters._sanitize_name(dataset)}/"
+                      f"APPLIED_THRESHOLDS.md")
+        except OSError as e:
+            self._log(f"Warning: could not write APPLIED_THRESHOLDS.md: {e}")
+
+    def get_applied_threshold_map(self) -> Dict[str, Any]:
+        """Requested threshold -> {dataset: applied threshold} for labels.
+
+        The report/UI render this alongside the requested value so a section
+        titled ``t=5`` can state that it actually compared applied
+        19/6/17, and a fully-aliased request can be marked as such.
+        """
+        datasets = self.parameters.get_dataset_names()
+        out: Dict[str, Any] = {}
+        for t in getattr(self.parameters, 'thresholds', None) or []:
+            row = {}
+            for ds in datasets:
+                if t not in self.parameters.get_thresholds_for_dataset(ds):
+                    continue
+                view = self.get_threshold_view(ds, int(t))
+                row[ds] = {
+                    'applied': view['applied_threshold'],
+                    'status': view['status'],
+                }
+            out[str(t)] = row
+        return out
+
+    def _applied_folder_is_floor(self, dataset: str, applied: int) -> bool:
+        """True when ``applied`` is a collapse floor: some requested
+        threshold resolves to it at a DIFFERENT value (aliases to it), so the
+        folder name carries the ``_applied_floor`` suffix."""
+        for t in self.parameters.get_thresholds_for_dataset(dataset):
+            row = self._path_provenance_row(dataset, int(t))
+            value = row.get('applied_threshold')
+            if value is not None and int(value) == int(applied) \
+                    and int(t) != int(applied):
+                return True
+        return False
+
+    def _applied_folder_name(self, dataset: str, applied: int) -> str:
+        """Resolved on-disk folder name for an applied value."""
+        requested = self.parameters.get_thresholds_for_dataset(dataset)
+        return self.parameters.applied_folder_name(
+            applied, requested,
+            is_floor=self._applied_folder_is_floor(dataset, applied))
+
+    def resolve_query_inputs(self) -> List[Dict[str, Any]]:
+        """Structured per-token/per-dataset resolution of the query inputs.
+
+        Uses the standalone ``query_resolver`` (same backend as the auto
+        type mapper) so the report can show the method/status/confidence of
+        every source/target token — including an explicit low-confidence
+        same-name fallback — instead of an invisible pass-through.  With
+        auto mapping active, taxonomy-column values (e.g. FAFB
+        ``cell_type=circadian_clock``) expand per dataset and bridge into
+        the other datasets through member mapping (Route A).
+        """
+        try:
+            from .query_resolver import (
+                DatasetTaxonomyResolver, resolve_query_tokens,
+            )
+        except ImportError:  # pragma: no cover
+            from query_resolver import (
+                DatasetTaxonomyResolver, resolve_query_tokens,
+            )
+
+        mapper = getattr(self.parameters, '_auto_type_mapper', None)
+        if not getattr(self.parameters, 'auto_type_mapping', False):
+            mapper = None
+        datasets = self.parameters.get_dataset_names()
+        taxonomy_resolver = None
+        if mapper is not None:
+            taxonomy_resolver = DatasetTaxonomyResolver(mapper).resolve
+        records: List[Dict[str, Any]] = []
+        records.extend(resolve_query_tokens(
+            list(self.parameters.source_neurons or []), datasets, mapper,
+            role='source', source_dataset=self.parameters.source_dataset,
+            taxonomy_resolver=taxonomy_resolver))
+        records.extend(resolve_query_tokens(
+            list(self.parameters.target_neurons or []), datasets, mapper,
+            role='target', source_dataset=self.parameters.source_dataset,
+            taxonomy_resolver=taxonomy_resolver))
+        self._query_resolution_records = records
+        return records
+
+    # ------------------------------------------------------------------
+    # Query-anchored merge policy (plan:
+    # plan-query-anchored-cross-dataset-analysis.md)
+    # ------------------------------------------------------------------
+    def _merge_policy_or_none(self):
+        """Lazily built, cached per-run MergePolicy — ``None`` when auto
+        mapping is off, the run has nothing policy-governed, or the build
+        failed; every alignment path then stays byte-identical to the
+        canonical merge fallback."""
+        if not (
+                getattr(self.parameters, 'auto_type_mapping', False)
+                and getattr(self.parameters, '_auto_type_mapper', None)
+                is not None):
+            return None
+        cached = getattr(self, '_merge_policy', None)
+        if cached is not None:
+            return cached if cached is not False else None
+        try:
+            from .merge_policy import build_merge_policy
+            policy = build_merge_policy(
+                self.parameters._auto_type_mapper,
+                source_tokens=self.parameters.source_neurons,
+                target_tokens=self.parameters.target_neurons,
+                datasets=self.parameters.get_dataset_names(),
+                source_dataset=self.parameters.source_dataset,
+                log=self._log,
+            )
+        except Exception as exc:  # noqa: BLE001 — fallback, never fatal
+            self._log(f"Merge policy build failed ({exc}); using the "
+                      "canonical merge fallback")
+            policy = False
+        if policy is None:
+            policy = False  # nothing to govern — don't rebuild
+        self._merge_policy = policy
+        return policy if policy is not False else None
+
+    def _policy_label_mapper(self):
+        """Synthesized raw→group-label mapper for the alignment lane
+        (Decision 8) — deliberately SEPARATE from the user's
+        ``self.label_mapper`` (user mappings win by construction)."""
+        policy = self._merge_policy_or_none()
+        if policy is None:
+            return None
+        try:
+            return policy.synthesized_label_mapper()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Merge policy label synthesis failed ({exc})")
+            return None
+
+    def _annotate_auto_type_mapping_csv(self, map_path: str, policy) -> None:
+        """Additive trailing ``anchor_group``/``auto_only`` columns on the
+        run's auto_type_mapping.csv (historical prefix stays stable)."""
+        if not os.path.exists(map_path):
+            return
+        from .merge_policy import row_anchor_group as _row_anchor_group
+        frame = self._read_csv(map_path)
+        if frame.empty:
+            return
+        meta_columns = {'mapping_origin', 'mapping_support', 'anchor_group',
+                        'auto_only'}
+        auto_only_pairs = set()
+        try:
+            from .merge_policy import auto_only_edges
+            names = set()
+            for column in frame.columns:
+                if column in meta_columns:
+                    continue
+                names.update(
+                    str(value).strip()
+                    for value in frame[column].dropna()
+                    if str(value).strip())
+            for row in auto_only_edges(
+                    self.parameters._auto_type_mapper, names,
+                    self.parameters.get_dataset_names()):
+                auto_only_pairs.add((
+                    row['source_dataset'], row['source_type'],
+                    row['target_dataset'], row['target_type']))
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"auto_only column scan skipped: {exc}")
+        dataset_columns = [c for c in frame.columns if c not in meta_columns]
+        anchor_groups: List[str] = []
+        auto_only_flags: List[str] = []
+        for _, row in frame.iterrows():
+            # NaN-safe: an empty CSV cell must read as '', never as the
+            # string 'nan' (str(float('nan')) is truthy).
+            values = {
+                ds: ('' if pd.isna(row.get(ds)) else str(row.get(ds)).strip())
+                for ds in dataset_columns
+            }
+            # UNAMBIGUOUS RULE: tag only rows where every non-empty
+            # endpoint resolves to the SAME group (a row that merely
+            # touches a group through one endpoint stays blank).
+            anchor_groups.append(_row_anchor_group(policy, values))
+            flagged = ''
+            if auto_only_pairs:
+                named = [(ds, name) for ds, name in values.items() if name]
+                if any(
+                    (da, ta, db, tb) in auto_only_pairs
+                    for da, ta in named for db, tb in named if da != db
+                ):
+                    flagged = 'auto_only'
+            auto_only_flags.append(flagged)
+        frame['anchor_group'] = anchor_groups
+        frame['auto_only'] = auto_only_flags
+        frame.to_csv(map_path, index=False)
+
+    def _write_merge_policy_warnings(self, policy, result_types,
+                                     dataset_names) -> None:
+        """Route the policy warnings (B3/B1 fan-in) and the B4 auto-only
+        BANC block into user_warning_notes.txt (mirrored by the run
+        guide); mappings stay VALID — the custom label mapper is the
+        removal path."""
+        blocks: List[str] = []
+        if policy.warnings:
+            blocks.append(
+                '[merge policy] ' + policy.summary_line() + '\n'
+                + '\n'.join(f'- {warning}' for warning in policy.warnings))
+        rows: List[Dict[str, Any]] = []
+        try:
+            from .merge_policy import auto_only_edges
+            rows = auto_only_edges(
+                self.parameters._auto_type_mapper,
+                result_types or [], dataset_names or [])
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"BANC auto-label scan skipped: {exc}")
+        if rows:
+            by_direction: Dict[Tuple[str, str], int] = {}
+            for row in rows:
+                direction = (row['source_dataset'], row['target_dataset'])
+                by_direction[direction] = by_direction.get(direction, 0) + 1
+            direction_txt = '; '.join(
+                f'{src} -> {tgt}: {count}'
+                for (src, tgt), count in sorted(by_direction.items(),
+                                                key=lambda item: -item[1]))
+            listed = '\n'.join(
+                f"- {row['source_dataset']} {row['source_type']} -> "
+                f"{row['target_dataset']} {row['target_type']} "
+                f"({row['total_votes']} auto vote(s))"
+                for row in rows[:20])
+            more = (f"\n... and {len(rows) - 20} more"
+                    if len(rows) > 20 else '')
+            blocks.append(
+                '[BANC auto labels] '
+                f"{len(rows)} mapping(s) rest on auto-transferred labels "
+                f"only (no curated vote) — by direction: {direction_txt}.\n"
+                f"{listed}{more}\n"
+                "These remain valid; to exclude or override them use the "
+                "custom label mapper (LabelMapper / overall_mapping_json).")
+        if blocks:
+            os.makedirs(self.parameters.full_output_path, exist_ok=True)
+            self._append_user_warning_notes(
+                self.parameters.full_output_path, blocks)
+            self._log("  ⚠️ Merge-policy notes appended to "
+                      "user_warning_notes.txt")
+
+    def get_applied_folder(self, dataset: str, requested: int) -> int:
+        """Physical applied-threshold folder for one (dataset, requested) cell.
+
+        Prefers the orchestrator's ``applied_folder``; falls back to the
+        canonical applied threshold so callers never build a path from a
+        requested threshold that was collapsed away.
+        """
+        meta = self._path_run_meta.get((dataset, requested), {}) or {}
+        folder = meta.get('applied_folder')
+        if folder is None:
+            folder = self._applied_state_for(dataset, requested)[0]
+        if folder is None:
+            folder = requested
+        return int(folder)
+
+    def get_applied_thresholds(self, dataset: str) -> List[int]:
+        """Distinct materialized (applied) thresholds for one dataset."""
+        applied = []
+        for t in self.parameters.get_thresholds_for_dataset(dataset):
+            value = self.get_applied_folder(dataset, t)
+            if value is not None:
+                applied.append(int(value))
+        return sorted(set(applied))
+
+    def get_threshold_view(self, dataset: str, requested: int) -> Dict[str, Any]:
+        """Resolved view for one (dataset, requested) cell."""
+        meta = self._path_run_meta.get((dataset, requested), {}) or {}
+        applied, pruned, floor, source = self._applied_state_for(
+            dataset, requested)
+        applied_folder = self.get_applied_folder(dataset, requested)
+        skipped = bool(meta.get('skipped', False))
+        # An aliased row's data IS the applied folder; report that folder's
+        # threshold (the canonical equivalent it aliases). The orchestrator
+        # never aliases to a weaker folder, so no clamp is applied.
+        if skipped and applied_folder is not None:
+            applied = int(applied_folder)
+        return {
+            'dataset': dataset,
+            'requested_threshold': int(requested),
+            'applied_threshold': int(applied) if applied is not None else None,
+            'applied_threshold_source': source,
+            'applied_folder': applied_folder,
+            'status': 'aliased' if skipped else 'applied',
+            'is_exact': (not skipped and applied is not None
+                         and int(applied) == int(requested)),
+            'duplicate_of': meta.get('duplicate_of'),
+            'skipped': skipped,
+            'edge_weight_floor': floor,
+            'paths_complete': bool(meta.get('paths_complete',
+                                            not pruned)),
+        }
+
+    def get_threshold_queries_view(self) -> List[Dict[str, Any]]:
+        """Per-query requested→applied view (standard and combinations)."""
+        datasets = self.parameters.get_dataset_names()
+        views = []
+        for query in self.get_threshold_queries():
+            query_id = query.get('id') or query.get('query_id')
+            thresholds = dict(query.get('thresholds') or {})
+            applied_map = {}
+            status_map = {}
+            for ds in datasets:
+                if ds not in thresholds:
+                    continue
+                cell = self.get_threshold_view(ds, int(thresholds[ds]))
+                applied_map[ds] = cell['applied_threshold']
+                status_map[ds] = cell['status']
+            fully_aliased = bool(status_map) and all(
+                s == 'aliased' for s in status_map.values())
+            applied_txt = '/'.join(
+                str(applied_map[d]) for d in datasets if d in applied_map)
+            views.append({
+                'id': query_id,
+                'label': query.get('label', query_id),
+                'requested_thresholds': thresholds,
+                'applied_thresholds': applied_map,
+                'status': status_map,
+                'is_fully_aliased': fully_aliased,
+                'display_label': (f"{query.get('label', query_id)} "
+                                  f"(applied {applied_txt})"
+                                  if applied_txt else
+                                  str(query.get('label', query_id))),
+            })
+        return views
+
+    def comparability_report(self) -> Dict[str, Any]:
+        """How comparable the materialized thresholds are across datasets.
+
+        ``common`` is the set of thresholds every dataset materialized at
+        the SAME applied value (the only like-for-like comparison points).
+        Emits advisory warnings when that set is empty or a single value,
+        or when most requested thresholds were pruned/aliased.
+        """
+        datasets = self.parameters.get_dataset_names()
+        materialized = {
+            ds: self.get_applied_thresholds(ds) for ds in datasets}
+        non_empty = [set(v) for v in materialized.values() if v]
+        common = sorted(set.intersection(*non_empty)) if non_empty else []
+        pairwise_common = {}
+        for i, a in enumerate(datasets):
+            for b in datasets[i + 1:]:
+                shared = set(materialized.get(a, [])) & set(
+                    materialized.get(b, []))
+                pairwise_common[f'{a}|{b}'] = sorted(shared)
+        requested = list(getattr(self.parameters, 'thresholds', None) or [])
+        skipped_all = [
+            t for t in requested
+            if datasets and all(
+                self._is_duplicate_threshold(ds, t) for ds in datasets)
+        ]
+        skipped_fraction = (
+            len(skipped_all) / len(requested) if requested else 0.0)
+
+        warnings = []
+        level = 'none'
+        if requested and not common:
+            level = 'critical'
+            warnings.append(
+                'No threshold is comparable across all datasets after '
+                'budget pruning. Cross-dataset tables at every requested '
+                'threshold mix different applied thresholds; adjust the '
+                'threshold list or query and rerun, or use the '
+                'density-aligned comparison.')
+        elif requested and len(common) < 2:
+            level = 'warning'
+            warnings.append(
+                f"Only threshold {common[0]} is comparable across all "
+                'datasets after budget pruning; lower requested thresholds '
+                'compare different applied cutoffs and should not be read '
+                'as like-for-like.')
+        if requested and skipped_fraction >= 0.5:
+            level = level if level != 'none' else 'warning'
+            warnings.append(
+                f'{len(skipped_all)} of {len(requested)} requested '
+                'thresholds were pruned/aliased; consider a shorter, '
+                'better-spaced threshold list.')
+        return {
+            'datasets': datasets,
+            'requested_thresholds': requested,
+            'materialized_thresholds': materialized,
+            'common_materialized': common,
+            'pairwise_common': pairwise_common,
+            'skipped_thresholds': skipped_all,
+            'skipped_fraction': round(skipped_fraction, 4),
+            'warning_level': level,
+            'warnings': warnings,
+        }
 
     def _threshold_query_manifest_rows(self) -> List[Dict[str, Any]]:
         """Build the query/dataset provenance join for comparison exports."""
@@ -1964,6 +2839,8 @@ class ComparisonAnalyzer:
         else:
             prefix = 'Pathfinding provenance: '
             suffix = ' — see comparison_results/pathfinding_provenance.csv.'
+        comparability = self.comparability_report()
+        threshold_views = self.get_threshold_queries_view()
         payload = {
             'banner': prefix + '; '.join(banner_parts) + suffix,
             'datasets': datasets_out,
@@ -1972,6 +2849,8 @@ class ComparisonAnalyzer:
             'threshold_dataset_order': dataset_names,
             'combinations': query_out,
             'queries': query_out,
+            'threshold_views': threshold_views,
+            'comparability': comparability,
             'path_mode': getattr(self.parameters, 'path_mode', 'all'),
             'comparison_mode': getattr(self.parameters, 'comparison_mode',
                                        'path'),
@@ -1985,6 +2864,35 @@ class ComparisonAnalyzer:
             self._log("Saved: effective_thresholds.json")
         except Exception as e:
             self._log(f"Warning: could not write effective_thresholds.json: {e}")
+        self._write_threshold_view_and_notes(payload, comparability)
+
+    def _write_threshold_view_and_notes(self, payload: Dict[str, Any],
+                                        comparability: Dict[str, Any]) -> None:
+        """Persist the shared threshold view and surface comparability
+        warnings in the log and the run's user_warning_notes.txt."""
+        out_dir = self.parameters.full_output_path
+        if out_dir:
+            view_dir = os.path.join(out_dir, 'comparison_report_used_data')
+            try:
+                os.makedirs(view_dir, exist_ok=True)
+                view_path = os.path.join(view_dir, 'threshold_view.json')
+                with open(view_path, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, indent=2, default=str)
+                self._log("Saved: comparison_report_used_data/threshold_view.json")
+            except Exception as e:
+                self._log(f"Warning: could not write threshold_view.json: {e}")
+
+        warnings = list(comparability.get('warnings') or [])
+        level = comparability.get('warning_level', 'none')
+        if level == 'critical':
+            self._log('THRESHOLD COMPARABILITY: ' + warnings[0])
+        elif level == 'warning':
+            self._log('Threshold comparability warning: ' + warnings[0])
+        if warnings and out_dir:
+            self._append_user_warning_notes(
+                out_dir,
+                [f"- [threshold comparability] {warning}"
+                 for warning in warnings])
 
     def _is_untyped_type_value(self, value) -> bool:
         """True when a type label means 'untyped': empty, an explicit
@@ -1997,7 +2905,8 @@ class ComparisonAnalyzer:
         if is_untyped_type_label is not None:
             return is_untyped_type_label(value)
         s = str(value).strip()
-        if not s or s.lower() in {"unknown", "nan", "none"}:
+        if not s or s.lower() in {"unknown", "nan", "none",
+                                  "null", "<na>", "<null>"}:
             return True
         return s.isdigit()
 
@@ -2050,14 +2959,24 @@ class ComparisonAnalyzer:
             dropped.insert(0, "dataset", dataset_name)
         self._untyped_dropped_records.append(dropped)
         neurons = set()
+        has_body_ids = False
         for col in ("bodyId_pre", "bodyId_post"):
             if col in dropped.columns:
+                has_body_ids = True
                 neurons |= set(dropped[col].astype(str))
         self._untyped_drop_stats[(dataset_name, threshold)] = {
             "rows": len(dropped),
-            "neurons": len(neurons),
+            # None (not 0) when the frame carries no bodyId columns: the
+            # distinct-neuron count is unavailable there and must not be
+            # reported as a literal zero.
+            "neurons": len(neurons) if has_body_ids else None,
             "untyped_pre": int(untyped_pre[drop_mask].sum()),
             "untyped_post": int(untyped_post[drop_mask].sum()),
+            # Denominator for the dropped fraction (issue #10). Without it
+            # the counts cannot be normalized across datasets with very
+            # different annotation completeness.
+            "total_rows": int(len(df)),
+            "fraction": round(len(dropped) / len(df), 6) if len(df) else 0.0,
         }
         return df[~drop_mask].copy()
 
@@ -2095,19 +3014,19 @@ class ComparisonAnalyzer:
             refs = query_refs.get((ds, int(t)), [])
             query_text = (
                 f"; query_id={','.join(refs)}" if refs else "")
+            # 'n/a' when the frame carries no bodyId columns — a literal 0
+            # would read as "no untyped neurons were involved", which is
+            # unknowable there.
+            neuron_text = ('n/a' if s.get("neurons") is None
+                           else str(s["neurons"]))
             lines.append(
                 f"- [untyped dropped] {ds} @ t={t}: {s['rows']} edges / "
-                f"{s['neurons']} distinct untyped neurons dropped "
+                f"{neuron_text} distinct untyped neurons dropped "
                 f"(drop_untyped=True; pre-side {s['untyped_pre']}, "
                 f"post-side {s['untyped_post']}; requested_threshold={t}; "
                 f"applied_threshold={provenance.get('applied_threshold')}"
                 f"{query_text})")
-        note_path = os.path.join(out_dir, "user_warning_notes.txt")
-        try:
-            with open(note_path, "a", encoding="utf-8") as f:
-                f.write("\n" + "\n".join(lines) + "\n")
-        except Exception as e:
-            self._log(f"Warning: could not append untyped-drop notes: {e}")
+        self._append_user_warning_notes(out_dir, lines)
         self._log(f"Untyped neurons dropped by default: {total_rows} edges "
                   f"across {len(self._untyped_drop_stats)} dataset-threshold "
                   f"runs (records: comparison_results/"
@@ -2381,6 +3300,7 @@ class ComparisonAnalyzer:
         # Replay, legacy, and cache paths all pass through one final
         # normalization before aggregate exports are written.
         self._complete_path_run_meta()
+        self._reconcile_applied_folders()
         self._export_untyped_drop_records()
         self._export_effective_threshold_banner()
         self._log(f"Completed path analysis for {len(dataset_names)} datasets")
@@ -2524,7 +3444,11 @@ class ComparisonAnalyzer:
                     'tau': raw.get('tau'),
                     'strongest_first_tau': raw.get(
                         'strongest_first_tau', raw.get('tau')),
-                    'tau_canonical': raw.get('tau_canonical') or applied,
+                    # The canonical minimal equivalent. Never fabricate it
+                    # from a weaker applied folder: if the orchestrator did
+                    # not supply one, leave None so the shared formula
+                    # recomputes it from the mechanism state.
+                    'tau_canonical': raw.get('tau_canonical'),
                     'strongest_dropped_bottleneck': raw.get(
                         'strongest_dropped_bottleneck'),
                     'budget_bitten': bool(raw.get('budget_bitten')),
@@ -2673,6 +3597,8 @@ class ComparisonAnalyzer:
             # standardized cross-dataset labels are resolved (post
             # label-mapping), which is the later, authoritative timing.
             drop_untyped=False,
+            # Density curves for every mode (see run_path_analysis).
+            capture_density=True,
         )
 
         fnc.InitializeNeuronInfo()
@@ -2882,13 +3808,8 @@ class ComparisonAnalyzer:
         """
         # Check for cached bodyId data
         if self.parameters.output_folder:
-            safe_name = self.parameters._sanitize_name(dataset_name)
-            cache_dir = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{threshold}'
-            )
+            cache_dir = self._resolve_dataset_output_path(
+                dataset_name, threshold)
             bodyid_file = os.path.join(cache_dir, 'data_details', 'connection_info_bodyId.csv')
             
             if skip_existing and os.path.exists(bodyid_file):
@@ -2910,13 +3831,8 @@ class ComparisonAnalyzer:
             
             # Try to load the bodyId file that was generated
             if self.parameters.output_folder:
-                safe_name = self.parameters._sanitize_name(dataset_name)
-                cache_dir = os.path.join(
-                    self.parameters.full_output_path,
-                    'dataset_data',
-                    safe_name,
-                    f'minsyn_{threshold}'
-                )
+                cache_dir = self._resolve_dataset_output_path(
+                    dataset_name, threshold)
                 bodyid_file = os.path.join(cache_dir, 'data_details', 'connection_info_bodyId.csv')
                 
                 if os.path.exists(bodyid_file):
@@ -3590,6 +4506,14 @@ class ComparisonAnalyzer:
         self._log("  Step 1/2: Generating comparison summary...")
 
         dataset_names = self.parameters.get_dataset_names()
+        coverage = self.dataset_coverage()
+        no_data = [ds for ds, info in coverage.items()
+                   if info.get('status') != 'ok']
+        if no_data:
+            self._log(
+                "⚠️ Dataset coverage warning: " + ", ".join(no_data)
+                + " produced no data — analyses run on the remaining "
+                "datasets only. Check dataset_data/<dataset>/run_log.txt.")
 
         # Get type mapper for auto type mapping (if enabled)
         type_mapper = self.parameters._auto_type_mapper if self.parameters.auto_type_mapping else None
@@ -3601,34 +4525,44 @@ class ComparisonAnalyzer:
 
         if self.parameters.threshold_mode == 'combinations':
             queries = self.get_threshold_queries()
+            merge_policy = self._merge_policy_or_none()
+            policy_label_mapper = self._policy_label_mapper()
             summary = self.metrics.generate_comparison_summary_for_queries(
                 results=self.raw_results,
                 datasets=dataset_names,
                 queries=queries,
-                label_mapper=None,
+                label_mapper=policy_label_mapper,
                 type_mapper=type_mapper,
                 max_edges_for_metrics=self.parameters.max_edges_for_metrics,
+                merge_policy=merge_policy,
+                hemi_aware=self.parameters.separate_hemispheres,
             )
             self._log("  Step 2/2: Calculating query similarities...")
             similarities = self.metrics.calculate_similarity_across_queries(
                 results=self.raw_results,
                 datasets=dataset_names,
                 queries=queries,
-                label_mapper=None,
+                label_mapper=policy_label_mapper,
                 path_data_func=self._get_path_data_for_query,
                 type_mapper=type_mapper,
                 max_edges_for_metrics=self.parameters.max_edges_for_metrics,
+                merge_policy=merge_policy,
+                hemi_aware=self.parameters.separate_hemispheres,
             )
         else:
             # Generate comprehensive summary. Pass label_mapper=None because
             # raw_results are already mapped.
+            merge_policy = self._merge_policy_or_none()
+            policy_label_mapper = self._policy_label_mapper()
             summary = self.metrics.generate_comparison_summary(
                 results=self.raw_results,
                 datasets=dataset_names,
                 thresholds=self.parameters.thresholds,
-                label_mapper=None,
+                label_mapper=policy_label_mapper,
                 type_mapper=type_mapper,
-                max_edges_for_metrics=self.parameters.max_edges_for_metrics
+                max_edges_for_metrics=self.parameters.max_edges_for_metrics,
+                merge_policy=merge_policy,
+                hemi_aware=self.parameters.separate_hemispheres
             )
 
             self._log("  Step 2/2: Calculating cross-threshold similarities...")
@@ -3642,10 +4576,12 @@ class ComparisonAnalyzer:
                 results=self.raw_results,
                 datasets=dataset_names,
                 thresholds=similarity_thresholds,
-                label_mapper=None,
+                label_mapper=policy_label_mapper,
                 path_data_func=self._get_path_data_for_threshold,
                 type_mapper=type_mapper,
-                max_edges_for_metrics=self.parameters.max_edges_for_metrics
+                max_edges_for_metrics=self.parameters.max_edges_for_metrics,
+                merge_policy=merge_policy,
+                hemi_aware=self.parameters.separate_hemispheres
             )
         summary['threshold_similarities'] = similarities
 
@@ -3707,8 +4643,12 @@ class ComparisonAnalyzer:
         """
         Get aligned edge data at a specific threshold.
         
+        In combination mode the argument is a query id/label; passing a bare
+        scalar integer raises unless it uniquely identifies a uniform query
+        row, because the union threshold is not a comparison point.
+        
         Args:
-            threshold: Weight threshold
+            threshold: Weight threshold (standard) or query id (combinations)
             
         Returns:
             DataFrame with edges aligned across datasets
@@ -3733,8 +4673,9 @@ class ComparisonAnalyzer:
             self.raw_results,
             dataset_names,
             threshold,
-            label_mapper=None,
-            type_mapper=type_mapper
+            label_mapper=self._policy_label_mapper(),
+            type_mapper=type_mapper,
+            merge_policy=self._merge_policy_or_none()
         )
 
         # Optionally filter edges to only hemisphere-conserved pairs
@@ -3777,10 +4718,7 @@ class ComparisonAnalyzer:
                 if query else threshold
             )
             reciprocal_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}',
+                self._resolve_dataset_output_path(dataset, dataset_threshold),
                 'find_reciprocal',
                 'reciprocal_connection_type.csv'
             )
@@ -3805,16 +4743,18 @@ class ComparisonAnalyzer:
                 reciprocal_results,
                 dataset_names,
                 threshold_map,
-                label_mapper=None,
+                label_mapper=self._policy_label_mapper(),
                 type_mapper=type_mapper,
+                merge_policy=self._merge_policy_or_none(),
             )
             if query else
             self.metrics._align_results_at_threshold(
                 reciprocal_results,
                 dataset_names,
                 threshold,
-                label_mapper=None,
-                type_mapper=type_mapper
+                label_mapper=self._policy_label_mapper(),
+                type_mapper=type_mapper,
+                merge_policy=self._merge_policy_or_none()
             )
         )
 
@@ -3989,9 +4929,17 @@ class ComparisonAnalyzer:
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "=" * 70,
             "",
+        ]
+        # Hemisphere-aware notice (plan round-4 F-3) — combination text
+        # report variant.
+        if getattr(self.parameters, 'separate_hemispheres', False):
+            lines.append("🧠 HEMISPHERE-AWARE RUN: neuron type names carry "
+                         "_L/_R/_U hemisphere suffixes.")
+            lines.append("")
+        lines.extend([
             "DATASETS:",
             "-" * 40,
-        ]
+        ])
         lines.extend(f"  • {dataset}" for dataset in dataset_names)
         lines.extend([
             "",
@@ -4217,6 +5165,13 @@ class ComparisonAnalyzer:
         lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append("=" * 70)
         lines.append("")
+        
+        # Hemisphere-aware notice (plan round-4 F-3): make the _L/_R/_U
+        # type split visible in the text report too.
+        if getattr(self.parameters, 'separate_hemispheres', False):
+            lines.append("🧠 HEMISPHERE-AWARE RUN: neuron type names carry "
+                         "_L/_R/_U hemisphere suffixes.")
+            lines.append("")
         
         # Datasets
         lines.append("DATASETS:")
@@ -4594,6 +5549,25 @@ class ComparisonAnalyzer:
                 )
                 self._log_file(auto_map_path, "Auto type mapping")
 
+                # Per-bridge type-level mapping table (plan
+                # plan-type-mapper-fine-granularity-export.md §4):
+                # additive companion to the compact matrix above — one row
+                # per (type pair, bridge chain) with per-bridge
+                # annotations and bridge-refined {…} bodyId pools.
+                try:
+                    per_bridge_path = os.path.join(
+                        out_dir, "auto_type_mapping_per_bridge.csv")
+                    self.parameters._auto_type_mapper.export_mapping_per_bridge(
+                        per_bridge_path,
+                        source_types=result_types if result_types else None,
+                        target_datasets=dataset_names or None,
+                    )
+                    self._log_file(per_bridge_path,
+                                   "Auto type mapping (per-bridge)")
+                except Exception as exc:
+                    self._log(f"Warning: could not write per-bridge type "
+                              f"mapping export: {exc}")
+
                 # Standard auto-type-mapping metadata block (plan
                 # unify-mapper-backends Workstream C): requested vs active
                 # mapper, source table, version, load error, and this run's
@@ -4616,6 +5590,39 @@ class ComparisonAnalyzer:
                     self._log_file(mapping_path, "Auto type mapping metadata")
                 except Exception as exc:
                     self._log(f"Warning: could not write auto type mapping metadata: {exc}")
+
+                # Query-anchored merge policy (plan:
+                # plan-query-anchored-cross-dataset-analysis.md): export
+                # the resolution topology, annotate the mapping CSV with
+                # additive anchor_group/auto_only columns, and route the
+                # policy + BANC auto-label warnings into the run notes.
+                policy = self._merge_policy_or_none()
+                if policy is not None:
+                    try:
+                        topology_path = os.path.join(
+                            out_dir, "type_resolution_topology.json")
+                        with open(topology_path, 'w', encoding='utf-8') as tf:
+                            import json as _json
+                            _json.dump(policy.topology_dict(), tf,
+                                       indent=2, default=str)
+                        self._log_file(topology_path,
+                                       "Type resolution topology")
+                    except Exception as exc:
+                        self._log(f"Warning: could not write type "
+                                  f"resolution topology: {exc}")
+                    try:
+                        self._annotate_auto_type_mapping_csv(
+                            os.path.join(out_dir, "auto_type_mapping.csv"),
+                            policy)
+                    except Exception as exc:
+                        self._log(f"Warning: could not annotate "
+                                  f"auto_type_mapping.csv: {exc}")
+                    try:
+                        self._write_merge_policy_warnings(
+                            policy, result_types or [], dataset_names)
+                    except Exception as exc:
+                        self._log(f"Warning: could not write merge-policy "
+                                  f"warnings: {exc}")
 
                 # Also export conflicts if any (filtered to result types)
                 if self.parameters._auto_type_mapper.has_conflicts():
@@ -4706,6 +5713,20 @@ class ComparisonAnalyzer:
         except Exception as e:
             self._log(f"Warning: threshold alignment export failed: {e}")
 
+        # === Density curves for every queried dataset (all pathfinding
+        # modes; cone-scoped, debris-free). Aligned rows are auto-only and
+        # gated inside. ===
+        try:
+            self._export_density_alignment(comparison_results_dir)
+        except Exception as e:
+            self._log(f"Warning: density alignment export failed: {e}")
+
+        # === Reciprocal connectivity as an independent comparison artifact ===
+        try:
+            self._export_reciprocal_comparisons(comparison_results_dir)
+        except Exception as e:
+            self._log(f"Warning: reciprocal comparison export failed: {e}")
+
         self._log("  Step 3: Generating visualizations...")
         self._progress(5, 5, "Generating comparison visualizations and HTML report")
         
@@ -4730,9 +5751,177 @@ class ComparisonAnalyzer:
             self.generate_html_report(html_report_path)
         except Exception as e:
             self._log(f"Warning: Failed to generate HTML report: {e}")
-        
+
+        # The report computes the type appearance order; persist it into the
+        # mapping exports so CSV/report/UI agree (plan §7B.4).
+        try:
+            self._augment_type_mapping_with_appearance(out_dir)
+        except Exception as e:
+            self._log(f"Warning: could not persist type appearance order: {e}")
+        # Structured input-query resolution + low-confidence warnings (§7E).
+        try:
+            self._export_query_resolution_records(out_dir)
+        except Exception as e:
+            self._log(f"Warning: could not persist query resolution: {e}")
+        # Self-describing run manifest (plan §12 item 13).
+        try:
+            self._write_run_manifest(out_dir)
+        except Exception as e:
+            self._log(f"Warning: could not write run_manifest.json: {e}")
+
         self._log(f"All results exported to: {out_dir}")
         self._log(f"Note: Run connectivity_profile_comparison() separately for profile verification.")
+
+    def dataset_coverage(self) -> Dict[str, Dict[str, Any]]:
+        """Per configured dataset: did it produce any data? (plan B, 2026-09-15)
+
+        A configured dataset whose runs all came back empty (e.g. a
+        silent fetch failure) must be visible instead of quietly dropping
+        out of every analysis: ``status`` is ``ok`` when at least one
+        threshold returned rows, ``no_data`` otherwise. ``failed`` is
+        reserved for runners that record an explicit exception.
+        """
+        coverage: Dict[str, Dict[str, Any]] = {}
+        for ds in self.parameters.get_dataset_names():
+            thresholds = getattr(self, 'raw_results', {}).get(ds, {}) or {}
+            thresholds_with_data = 0
+            total_rows = 0
+            for _t, df in thresholds.items():
+                try:
+                    if df is not None and not df.empty:
+                        thresholds_with_data += 1
+                        total_rows += int(len(df))
+                except Exception:
+                    continue
+            coverage[ds] = {
+                'status': 'ok' if thresholds_with_data else 'no_data',
+                'thresholds_with_data': thresholds_with_data,
+                'total_rows': total_rows,
+            }
+        return coverage
+
+    def _write_run_manifest(self, out_dir: str) -> None:
+        """Emit one self-describing manifest the report/UI/scripts share."""
+        try:
+            params = self.parameters.to_dict()
+        except Exception:
+            params = {}
+        manifest = {
+            'created_at': __import__('datetime').datetime.now().isoformat(),
+            'datasets': self.parameters.get_dataset_names(),
+            'nicknames': self.parameters.get_dataset_nicknames(),
+            'parameters': params,
+            'applied_thresholds': {
+                ds: self.get_applied_thresholds(ds)
+                for ds in self.parameters.get_dataset_names()},
+            'threshold_views': self.get_threshold_queries_view(),
+            'comparability': self.comparability_report(),
+            'dataset_coverage': self.dataset_coverage(),
+            'untyped_drop': {
+                f'{ds}@{t}': stats for (ds, t), stats in
+                (getattr(self, '_untyped_drop_stats', {}) or {}).items()},
+            'alignment': {
+                'reference': (self.parameters.get_dataset_names() or [None])[0],
+                'suggested_combinations': getattr(
+                    self, '_suggested_combinations', None) or [],
+            },
+            'provenance_file': 'comparison_results/pathfinding_provenance.csv',
+            'code_version': getattr(self, '_code_version', None),
+        }
+        with open(os.path.join(out_dir, 'run_manifest.json'), 'w',
+                  encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, default=str)
+        self._log("Saved: run_manifest.json")
+
+    def _augment_type_mapping_with_appearance(self, out_dir: str) -> None:
+        """Add ``appearance_rank`` (+ counts) to auto_type_mapping.csv.
+
+        Ranks come from the report's presence-matrix first-appearance order
+        (``analyzer._type_appearance_ranks``); also emits a standalone
+        ``comparison_report_used_data/type_appearance_order.csv``.
+        """
+        ranks = getattr(self, '_type_appearance_ranks', None)
+        if not ranks:
+            return
+        map_path = os.path.join(out_dir, 'auto_type_mapping.csv')
+        if os.path.exists(map_path):
+            df = pd.read_csv(map_path)
+            if not df.empty and len(df.columns):
+                first_col = df.columns[0]
+                df['appearance_rank'] = df[first_col].map(
+                    lambda name: ranks.get(str(name)))
+                df = df.sort_values(
+                    'appearance_rank', na_position='last', kind='stable')
+                df.to_csv(map_path, index=False)
+        used_dir = os.path.join(out_dir, 'comparison_report_used_data')
+        os.makedirs(used_dir, exist_ok=True)
+        order_df = pd.DataFrame(
+            [{'canonical_type': k, 'appearance_rank': v}
+             for k, v in sorted(ranks.items(), key=lambda kv: kv[1])])
+        order_df.to_csv(
+            os.path.join(used_dir, 'type_appearance_order.csv'), index=False)
+
+    def _export_query_resolution_records(self, out_dir: str) -> None:
+        """Persist the structured query resolution and warn on the
+        low-confidence classes (plan §7E, rev 2)."""
+        try:
+            records = self.resolve_query_inputs()
+        except Exception:
+            return
+        if not records:
+            return
+        used_dir = os.path.join(out_dir, 'comparison_report_used_data')
+        os.makedirs(used_dir, exist_ok=True)
+        pd.DataFrame(records).to_csv(
+            os.path.join(used_dir, 'query_resolution.csv'), index=False)
+        same_name = sorted({r['token'] for r in records
+                            if r.get('status') == 'same_name_fallback'})
+        conflicts = sorted({r['token'] for r in records
+                            if r.get('status') == 'conflict'})
+        contradicted = sorted({
+            (r['token'], r.get('dataset'), str(r.get('evidence_chain') or ''))
+            for r in records
+            if r.get('status') == 'same_name_identity'
+            and r.get('evidence') == 'contradicted'})
+        tax_mapped = sorted({r['token'] for r in records
+                             if r.get('status') == 'taxonomy_mapped'
+                             and 'no counterpart' in (r.get('note') or '')})
+        lines = []
+        if same_name:
+            lines.append(
+                "- [query resolution] Low-confidence same-name matches: "
+                + ', '.join(same_name)
+                + ". These tokens are not native type names in that dataset "
+                  "and have no mapped evidence; verify they are genuine "
+                  "cross-dataset equivalents (see comparison_report_used_data/"
+                  "query_resolution.csv and the report's Query Resolution "
+                  "section).")
+        if contradicted:
+            parts = [f"{tok} ({ds}: {str(chain).replace('curated counterpart: ', '')})"
+                     for tok, ds, chain in contradicted]
+            lines.append(
+                "- [query resolution] Same-name identities with "
+                "counter-evidence: " + '; '.join(parts)
+                + " — the query keeps the native name, but the cross-dataset "
+                  "relation names another counterpart; check whether it "
+                  "matters for your interpretation.")
+        if tax_mapped:
+            lines.append(
+                "- [query resolution] Taxonomy member mapping had gaps for: "
+                + ', '.join(tax_mapped)
+                + " — some member types have no counterpart in a dataset "
+                  "(details in query_resolution.csv notes).")
+        if conflicts:
+            lines.append(
+                "- [query resolution] Unresolved mapping conflicts: "
+                + ', '.join(conflicts)
+                + " — no automatic target; these tokens may match nothing.")
+        if lines:
+            self._append_user_warning_notes(out_dir, lines)
+        self._log(
+            "Saved: comparison_report_used_data/query_resolution.csv"
+            + (f" ({len(same_name)} same-name fallback token(s))"
+               if same_name else ""))
     
     def _export_label_map(self, filepath: str):
         """
@@ -5521,6 +6710,22 @@ class ComparisonAnalyzer:
             return bodyid_df
         return None
 
+    def _read_applied_folder_provenance(self, dataset: str,
+                                        applied: int) -> Dict:
+        """Read the authoritative provenance of the folder that holds an
+        applied threshold (its own all_attributes.json, if present)."""
+        try:
+            folder = self._resolve_dataset_output_path(dataset, applied)
+            attrs_path = os.path.join(folder, 'all_attributes.json')
+            if os.path.exists(attrs_path):
+                with open(attrs_path, encoding='utf-8') as f:
+                    attrs = json.load(f)
+                if isinstance(attrs, dict):
+                    return attrs
+        except Exception:
+            pass
+        return {}
+
     def _export_threshold_alignment(self, comparison_results_dir: str):
         """Export the alignment outputs (spec §6.4) and log the summary.
 
@@ -5564,15 +6769,53 @@ class ComparisonAnalyzer:
             probers[ds] = EdgeDensityProber(extract)
             extract_sizes[ds] = 0 if extract is None else len(extract)
 
-        typed_map = {ds: self.parameters.get_thresholds_for_dataset(ds)
-                     for ds in dataset_names}
-        max_typed = max((max(ts) for ts in typed_map.values() if ts), default=10)
-        cap = max(3 * int(max_typed), 30)
-        extended_grid = list(range(1, cap + 1))
+        # Anchors are the MATERIALIZED (applied) thresholds, not the
+        # requested list: under tau-collapse several requested thresholds
+        # share one applied frame, which previously emitted duplicate anchor
+        # rows. Each anchor carries the requested thresholds that alias to it.
+        anchor_map = {ds: self.get_applied_thresholds(ds)
+                      for ds in dataset_names}
+        aliased_map: Dict[str, Dict[int, List[int]]] = {}
+        for ds in dataset_names:
+            per_applied: Dict[int, List[int]] = {}
+            for req in self.parameters.get_thresholds_for_dataset(ds):
+                applied = self.get_applied_folder(ds, int(req))
+                if applied is not None and int(applied) != int(req) \
+                        and self._is_duplicate_threshold(ds, int(req)):
+                    per_applied.setdefault(int(applied), []).append(int(req))
+            aliased_map[ds] = per_applied
+        max_anchor = max(
+            (max(ts) for ts in anchor_map.values() if ts), default=10)
+        cap = max(2 * int(max_anchor), 30)
+        # §3.5: no reason to share ONE grid — each dataset gets its own
+        # cap from its own anchors, so a dataset is never truncated to
+        # another dataset's request parameter.
+        dataset_caps = {
+            ds: max(2 * int(max(anchor_map[ds])), 30)
+            if anchor_map[ds] else max(2, min(cap, 30))
+            for ds in dataset_names
+        }
 
         # --- Edge density per threshold (typed + extended grid)
         density_rows = []
         neuron_totals = {}
+        # §3.4/§4.3: the pairing numerator is query-scoped, so the
+        # denominator must be too. Use the searched-graph node count from
+        # the density capture when present; otherwise fall back to the
+        # whole-dataset neuron total and label the scope honestly.
+        searched_nodes: Dict[str, Optional[int]] = {}
+        try:
+            for _ds in dataset_names:
+                _meta, _bns, _ew, _cls = self._load_density_artifacts(_ds)
+                if _meta:
+                    searched_nodes[_ds] = int(
+                        _meta.get('n_nodes_typed')
+                        or _meta.get('n_annotated_nodes')
+                        or _meta.get('n_nodes') or 0) or None
+                else:
+                    searched_nodes[_ds] = None
+        except Exception:
+            searched_nodes = {ds: None for ds in dataset_names}
         try:
             if not getattr(self, '_dataset_metadata', None):
                 self.collect_dataset_metadata(force_refresh=False)
@@ -5584,16 +6827,22 @@ class ComparisonAnalyzer:
         except Exception:
             pass
 
-        typed_set = {t: set(ts) for t, ts in typed_map.items()}
+        typed_set = {t: set(ts) for t, ts in anchor_map.items()}
         for ds in dataset_names:
-            for t in extended_grid:
+            denom_scope = ('searched_graph'
+                           if searched_nodes.get(ds) else 'whole_dataset')
+            denom = (searched_nodes.get(ds) if denom_scope == 'searched_graph'
+                     else neuron_totals.get(ds))
+            for t in range(1, dataset_caps[ds] + 1):
                 count = probers[ds].count(t)
                 density_rows.append({
                     'dataset': ds,
                     'threshold': t,
                     'pair_count': count,
-                    'pairs_per_neuron': round(count / neuron_totals[ds], 4)
-                        if neuron_totals.get(ds) else None,
+                    'pairs_per_neuron': round(count / denom, 4)
+                        if denom else None,
+                    'basis': 'type_pairs',
+                    'denominator_scope': denom_scope,
                     'is_typed_threshold': t in typed_set[ds],
                 })
         density_df = pd.DataFrame(density_rows)
@@ -5610,7 +6859,7 @@ class ComparisonAnalyzer:
         self._log("Saved: edge_density_per_threshold.csv")
         self._alignment_density_df = density_df
         self._alignment_grid_points = [
-            (ds, t) for ds in dataset_names for t in typed_map[ds]]
+            (ds, t) for ds in dataset_names for t in anchor_map[ds]]
         self._alignment_anchor_map = {}
 
         # --- Typed-threshold-only alignment matrix (§6.3)
@@ -5630,48 +6879,79 @@ class ComparisonAnalyzer:
 
         # --- Best matches via the prober (bisection, extended range)
         best_rows = []
-        refs = [ds for ds in dataset_names if typed_map[ds]]
+        refs = [ds for ds in dataset_names if anchor_map[ds]]
         for ref_ds in refs:
-            ref_taus = typed_map[ref_ds]
+            ref_taus = anchor_map[ref_ds]
             for anchor_t in ref_taus:
                 n_a = probers[ref_ds].count(anchor_t)
-                anchor_meta = self._path_run_meta.get((ref_ds, anchor_t), {})
+                # Provenance of the applied anchor. Prefer the folder that
+                # actually holds this applied value (authoritative), then a
+                # non-skipped requester, then any requester.
+                applied_meta = self._read_applied_folder_provenance(
+                    ref_ds, anchor_t)
+                if not applied_meta:
+                    fallback = {}
+                    for req in self.parameters.get_thresholds_for_dataset(
+                            ref_ds):
+                        if self.get_applied_folder(ref_ds, int(req)) != anchor_t:
+                            continue
+                        candidate = self._path_run_meta.get(
+                            (ref_ds, int(req)), {}) or {}
+                        if not candidate.get('skipped'):
+                            fallback = candidate
+                            break
+                        fallback = fallback or candidate
+                    applied_meta = fallback
                 for other_ds in dataset_names:
                     if other_ds == ref_ds:
                         continue
                     if probers[other_ds].total_pairs == 0:
                         continue
-                    match = probers[other_ds].best_match(n_a, cap=cap)
-                    if match['best_t'] is None:
-                        continue
-                    best_t = match['best_t']
+                    match = probers[other_ds].best_match(
+                        n_a, cap=dataset_caps.get(other_ds, cap))
+                    best_t = match.get('best_t')
+                    inter = match.get('best_t_range')
+                    if best_t is None:
+                        # Out-of-range: still report the shortfall honestly.
+                        if match.get('match_status') != \
+                                'target_density_below_range':
+                            continue
                     jac = rank = None
-                    if mapped_names:
+                    if mapped_names and best_t is not None:
                         set_a = probers[ref_ds].edge_set(anchor_t)
                         set_b = probers[other_ds].edge_set(best_t)
                         jac = jaccard(set_a, set_b)
                         rank = rank_similarity(
                             probers[ref_ds].edge_weights(anchor_t),
                             probers[other_ds].edge_weights(best_t))
+                    aliases = aliased_map.get(ref_ds, {}).get(int(anchor_t), [])
                     best_rows.append({
                         'reference_dataset': ref_ds,
                         'anchor_threshold': anchor_t,
+                        'anchor_aliased_from': ','.join(
+                            str(a) for a in aliases) if aliases else '',
                         'target_dataset': other_ds,
                         'anchor_pair_count': n_a,
                         'best_t': best_t,
+                        'best_t_range': (f'{inter[0]}-{inter[1]}'
+                                         if inter else None),
                         'count_at_best_t': match['count_at_best_t'],
                         'count_distance': round(match['count_distance'], 4),
+                        'match_status': match.get(
+                            'match_status', 'outside_tolerance'),
                         'within_tolerance': match['count_distance'] <= ALIGNMENT_TOLERANCE,
                         'jaccard_at_best': round(jac, 4) if jac is not None else None,
                         'rank_similarity_at_best': round(rank, 4) if rank is not None else None,
-                        'anchor_tau': anchor_meta.get('tau'),
-                        'anchor_paths_complete': anchor_meta.get(
-                            'paths_complete', anchor_meta.get('tau') is None),
-                        'anchor_skipped': bool(anchor_meta.get('skipped')),
+                        'anchor_tau': applied_meta.get('tau'),
+                        'anchor_paths_complete': applied_meta.get(
+                            'paths_complete', applied_meta.get('tau') is None),
+                        'anchor_skipped': bool(applied_meta.get('skipped')),
                         'match_kind': 'anchor',
                     })
-                    key = (ref_ds, anchor_t)
-                    self._alignment_anchor_map.setdefault(key, {})[other_ds] = best_t
+                    if best_t is not None:
+                        key = (ref_ds, anchor_t)
+                        self._alignment_anchor_map.setdefault(
+                            key, {})[other_ds] = best_t
 
         # Global best row: the (reference anchor, target) pair with the
         # minimal edge-count distance overall.
@@ -5704,7 +6984,7 @@ class ComparisonAnalyzer:
             first_ds = refs[0]
             anchor_rows = [r for r in best_rows if r['match_kind'] == 'anchor']
             parts = []
-            for anchor_t in typed_map[first_ds][:3]:
+            for anchor_t in anchor_map[first_ds][:3]:
                 segs = []
                 for r in anchor_rows:
                     if r['reference_dataset'] == first_ds \
@@ -5716,12 +6996,738 @@ class ComparisonAnalyzer:
                                  + ", ".join(segs))
             if parts:
                 self._log("Alignment: " + "; ".join(parts))
+            # Alignment-derived threshold combinations (plan §7C): suggest
+            # density-equivalent query rows consumable by the advanced
+            # combination mode.
+            try:
+                self._suggest_and_export_combinations(
+                    best_df, dataset_order=dataset_names,
+                    comparison_results_dir=comparison_results_dir)
+            except Exception as e:
+                self._log(f"Warning: could not suggest combinations: {e}")
         if self.parameters.threshold_mode == 'combinations':
             self._log(
                 "Threshold alignment files are raw-run schedule diagnostics "
                 "in combination mode; query comparisons are keyed by "
                 "threshold_combinations.csv."
             )
+
+    # ------------------------------------------------------------------
+    # Auto threshold-density alignment (plan §5 Phases B/C/D/E/F/G)
+    # ------------------------------------------------------------------
+
+    def _dataset_density_dir(self, dataset_name: str):
+        """Dataset-level ``_density/`` folder holding the shared arrays."""
+        base = getattr(self.parameters, 'dataset_data_path', None)
+        if not base:
+            return None
+        return os.path.join(base, self.parameters._sanitize_name(dataset_name),
+                            '_density')
+
+    def _load_density_artifacts(self, dataset_name: str):
+        """Load ``(meta, path_bottlenecks, edge_weights, edge_classes)``.
+
+        Prefers the dataset-level ``_density/`` folder; falls back to any
+        ``minsyn_*`` folder carrying a ``density_meta.json`` whose
+        ``density_source`` resolves to its array directory. Edge classes
+        (typed/untyped/debris) come from ``density_edges.npz``; legacy
+        captures without it return ``classes=None`` (all-edges basis).
+        Returns ``(None, None, None, None)`` when no capture exists.
+        """
+        import numpy as np
+        ddir = self._dataset_density_dir(dataset_name)
+        candidates = []
+        if ddir and os.path.exists(os.path.join(ddir, 'density_meta.json')):
+            candidates.append(ddir)
+        safe = self.parameters._sanitize_name(dataset_name)
+        ds_root = os.path.join(
+            getattr(self.parameters, 'dataset_data_path', ''), safe)
+        if os.path.isdir(ds_root):
+            try:
+                for entry in sorted(os.listdir(ds_root)):
+                    p = os.path.join(ds_root, entry, 'density_meta.json')
+                    if entry != '_density' and os.path.exists(p):
+                        candidates.append(os.path.join(ds_root, entry))
+            except OSError:
+                pass
+        for folder in candidates:
+            try:
+                with open(os.path.join(folder, 'density_meta.json'),
+                          encoding='utf-8') as f:
+                    meta = json.load(f)
+            except Exception:
+                continue
+            src = meta.get('density_source') or '.'
+            arr_dir = os.path.normpath(os.path.join(folder, src))
+            bns_path = os.path.join(arr_dir, 'density_path_bottlenecks.npy')
+            ew_path = os.path.join(arr_dir, 'density_edge_weights.npy')
+            npz_path = os.path.join(arr_dir, 'density_edges.npz')
+            try:
+                bns = (np.load(bns_path) if os.path.exists(bns_path)
+                       else np.array([], dtype=np.float64))
+                cls = None
+                if os.path.exists(npz_path):
+                    # The classified npz is the authoritative capture.
+                    with np.load(npz_path) as z:
+                        ew = np.asarray(z['weight'], dtype=np.int32)
+                        cls = z['cls']
+                else:
+                    ew = (np.load(ew_path) if os.path.exists(ew_path)
+                          else np.array([], dtype=np.int32))
+            except Exception:
+                continue
+            return meta, bns, ew, cls
+        return None, None, None, None
+
+    def _build_density_curves(self):
+        """Assemble per-dataset curves, windows and metas from artifacts.
+
+        Returns ``(curves, windows, metas)`` where ``curves[ds]`` is
+        ``{'thresholds', 'path_count', 'edge_count', 'density', 'basis'}``
+        over the dataset's own integer domain, ``windows[ds] =
+        (w_start, w_star)`` and ``metas[ds]`` is the persisted meta.
+        Datasets without a capture are omitted (caller warns).
+
+        The edge basis follows the run's ``drop_untyped`` policy over the
+        classified cone (typed / untyped / debris): with the drop on, only
+        edges between typed neurons count and ``N`` is the typed-node count;
+        with the drop off, untyped edges are included but debris edges are
+        still excluded (debris is never counted in any universe). Legacy
+        captures without classes fall back to the all-edges basis.
+        """
+        import numpy as np
+        from .threshold_density import (
+            density_curve, dataset_window, normalized_edge_density,
+        )
+        # Mirror of coana.DENSITY_CLS_TYPED / _DEBRIS (kept local to avoid a
+        # coana import from the comparison layer).
+        _CLS_TYPED, _CLS_DEBRIS = 0, 2
+        normalizer = getattr(
+            self.parameters, 'density_normalizer', 'per_node') or 'per_node'
+        drop_untyped = bool(getattr(self.parameters, 'drop_untyped', True))
+        curves, windows, metas = {}, {}, {}
+        for ds in self.parameters.get_dataset_names():
+            meta, bns, ew, cls = self._load_density_artifacts(ds)
+            if meta is None:
+                continue
+            lo, hi = dataset_window(meta)
+            windows[ds] = (lo, hi)
+            if cls is not None and len(cls) == len(ew):
+                if drop_untyped:
+                    ew_used = ew[cls == _CLS_TYPED]
+                    basis = 'bodyId_edges_typed'
+                    n_denom = meta.get('n_nodes_typed')
+                else:
+                    ew_used = ew[cls != _CLS_DEBRIS]
+                    basis = 'bodyId_edges_all_but_debris'
+                    n_denom = (meta.get('n_nodes_typed') or 0) + \
+                        (meta.get('n_nodes_untyped') or 0) or None
+            else:
+                ew_used = ew
+                basis = 'bodyId_edges'
+                n_denom = meta.get('n_annotated_nodes') or meta.get('n_nodes')
+            meta = dict(meta)
+            meta['curve_n'] = n_denom
+            meta['basis'] = basis
+            if hi is None or hi < lo:
+                t_grid = [int(lo)]
+            else:
+                t_grid = list(range(int(lo), int(hi) + 1))
+            curve = density_curve(bns, ew_used, t_grid)
+            dens = normalized_edge_density(
+                curve['edge_count'], meta, normalizer)
+            # Active-basis edge count at w_start — the number the curves
+            # CSV's first row reports, directly comparable against the
+            # capture-level (all-class) meta n_edges.
+            meta['n_edges_active_basis'] = int(curve['edge_count'][0])
+            metas[ds] = meta
+            curves[ds] = {
+                'thresholds': [int(t) for t in curve['t_grid']],
+                'path_count': [int(c) for c in curve['path_count']],
+                'edge_count': [int(c) for c in curve['edge_count']],
+                'density': [float(d) for d in dens],
+                'basis': basis,
+            }
+        return curves, windows, metas
+
+    def _density_aligned_rows(self, curves, windows, metas):
+        """Build the vertical + horizontal aligned rows (plan §4.4/§4.5).
+
+        Datasets without a density capture are EXCLUDED from the horizontal
+        (density-matched) rows instead of vetoing them entirely (plan C,
+        2026-09-15: one missing capture used to drop every horizontal row).
+        Rows covering only the captured datasets are tagged
+        ``partial_datasets`` so the export and the report can label them;
+        vertical rows keep the full shared integer spine.
+        """
+        from .threshold_density import (
+            align_horizontal, align_vertical, vertical_rows,
+        )
+        order = list(self.parameters.get_dataset_names())
+        captured = [ds for ds in order if curves.get(ds)]
+        partial = [ds for ds in order if ds not in captured]
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+
+        def _add(row):
+            thresholds = row.get('thresholds') or {}
+            # Horizontal rows cover the CAPTURED datasets; vertical rows
+            # keep the full shared spine. Anything else is malformed.
+            expected = order if row.get('mode') == 'vertical' else captured
+            if sorted(str(ds) for ds in thresholds) != \
+                    sorted(str(ds) for ds in expected):
+                return
+            key = tuple(sorted(
+                (ds, int(v)) for ds, v in thresholds.items()))
+            if key in seen:
+                # Identical to an earlier row (e.g. a horizontal level that
+                # rounds onto a vertical point): emit once, tag both ( §4.6).
+                for existing in rows:
+                    if tuple(sorted(
+                            (ds, int(v)) for ds, v in
+                            existing['thresholds'].items())) == key:
+                        origins = set(
+                            (existing.get('mode') or '').split('+'))
+                        origins.add(row['mode'])
+                        existing['mode'] = '+'.join(sorted(
+                            o for o in origins if o))
+                        if partial and existing.get('mode') != 'vertical':
+                            existing['partial_datasets'] = list(partial)
+                        break
+                return
+            seen.add(key)
+            if partial and row.get('mode') != 'vertical':
+                row['partial_datasets'] = list(partial)
+            rows.append(row)
+
+        for r in vertical_rows(align_vertical(windows, K=5), order):
+            _add(r)
+        for r in align_horizontal(
+                {ds: curves[ds] for ds in captured}, levels=4):
+            _add(r)
+        return rows
+
+    def _export_density_alignment(self, comparison_results_dir: str) -> None:
+        """Export density curves + windows for EVERY pathfinding mode.
+
+        The per-dataset curves span ``[w_start, w_star_measured]`` over the
+        dataset's searched cone (its lowest executed threshold), with the
+        edge basis following the run's ``drop_untyped`` policy and debris
+        always excluded. The aligned same-threshold/same-density rows and
+        the ``[auto threshold]`` warnings are auto-mode products and are
+        written only when this run measured them. Datasets without a
+        capture are excluded from the horizontal rows (rows carry
+        ``partial_datasets``; a ``[density partial]`` note is appended)
+        instead of vetoing them. No-op with an explicit note when no
+        dataset carries a capture.
+        """
+        curves, windows, metas = self._build_density_curves()
+        if not curves:
+            self._log("Density curves: no density capture found — skipping "
+                      "density exports.")
+            return
+        is_auto = bool(getattr(self.parameters, 'threshold_auto', False))
+        order = list(self.parameters.get_dataset_names())
+        normalizer = getattr(
+            self.parameters, 'density_normalizer', 'per_node') or 'per_node'
+        caption = ("Density curves are computed on the query's bodyId "
+                   "searched graph; the compared matrices are type-level "
+                   "projections of the same search. A threshold here is a "
+                   "per-connection synapse count (Min Synapse Count).")
+
+        # --- density_curves.csv (Phase B) ---
+        rows = []
+        for ds in order:
+            curve = curves.get(ds)
+            if not curve:
+                continue
+            meta = metas.get(ds, {})
+            lo, hi = windows.get(ds, (None, None))
+            materialized = set(int(t) for t in self.get_applied_thresholds(ds))
+            for i, t in enumerate(curve['thresholds']):
+                rows.append({
+                    'dataset': ds,
+                    'threshold': int(t),
+                    'path_count': curve['path_count'][i],
+                    'edge_count': curve['edge_count'][i],
+                    'density': (round(curve['density'][i], 6)
+                                if curve['density'][i] is not None else None),
+                    'normalized_edge_density': (
+                        round(curve['density'][i], 6)
+                        if curve['density'][i] is not None else None),
+                    'normalizer': normalizer,
+                    'basis': curve['basis'],
+                    'w_start': lo,
+                    'w_star_measured': hi,
+                    'path_complete_from': meta.get('path_complete_from'),
+                    'is_materialized': bool(int(t) in materialized),
+                })
+        if rows:
+            density_curves_df = pd.DataFrame(rows)
+            self._save_csv(density_curves_df,
+                           os.path.join(comparison_results_dir,
+                                        'density_curves.csv'))
+            self._log("Saved: density_curves.csv")
+            self._density_curves_df = density_curves_df
+            self._log("  [density] " + caption)
+
+        # --- density_windows.csv (Phase B) ---
+        win_rows = []
+        for ds in order:
+            meta = metas.get(ds)
+            if meta is None:
+                continue
+            lo, hi = windows.get(ds, (None, None))
+            win_rows.append({
+                'dataset': ds,
+                'applied': meta.get('applied'),
+                'w_start': lo,
+                'w_star_stored': meta.get('strongest_retained_bottleneck'),
+                'w_star_measured': hi,
+                'w_star_mismatch': bool(meta.get('w_star_mismatch')),
+                'budget_bitten': bool(meta.get('budget_bitten')),
+                'paths_complete': bool(meta.get('paths_complete')),
+                'path_complete_from': meta.get('path_complete_from'),
+                'n_paths': meta.get('n_paths'),
+                'n_edges': meta.get('n_edges'),
+                'n_edges_active_basis': meta.get('n_edges_active_basis'),
+                'n_nodes': meta.get('n_nodes'),
+                'n_nodes_typed': meta.get('n_nodes_typed'),
+                'n_nodes_untyped': meta.get('n_nodes_untyped'),
+                'n_nodes_debris': meta.get('n_nodes_debris'),
+                'n_annotated_nodes': meta.get('n_annotated_nodes'),
+                'denominator': meta.get('denominator'),
+            })
+        if win_rows:
+            windows_df = pd.DataFrame(win_rows)
+            self._save_csv(windows_df, os.path.join(
+                comparison_results_dir, 'density_windows.csv'))
+            self._log("Saved: density_windows.csv")
+            self._density_windows_df = windows_df
+
+        if not is_auto:
+            # Aligned rows are the auto mode's measured product; other modes
+            # get the curves/windows diagnostics only.
+            return
+
+        # --- aligned rows (Phase F) ---
+        aligned = self._density_aligned_rows(curves, windows, metas)
+        if aligned:
+            # Id/label consistency: the bootstrap already installed the
+            # aligned rows and the whole run (folders, provenance,
+            # similarity cache) is keyed by THOSE ids. Re-installing here
+            # with freshly generated ids would break every per-query join,
+            # so reuse the installed id/label whenever the threshold cell
+            # matches, and never re-install during export.
+            installed = {}
+            if getattr(self.parameters, 'threshold_auto', False):
+                for q in (self.parameters.threshold_combinations or []):
+                    installed[tuple(sorted(
+                        (ds, int(v))
+                        for ds, v in (q.get('thresholds') or {}).items()))] = (
+                        str(q.get('id')), str(q.get('label')))
+            # B7 fallback ids for not-installed rows (same scheme as the
+            # installer, with the same `.4g` de-duplication).
+            fallback_ids: Dict[str, int] = {}
+
+            def _fallback_id(base: str) -> str:
+                count = fallback_ids.get(base, 0)
+                fallback_ids[base] = count + 1
+                return base if count == 0 else f"{base}_{count + 1}"
+
+            best_rows = []
+            for i, r in enumerate(aligned, start=1):
+                lvl_c = r['level_continuous']
+                lvl_n = r['level_normalized']
+                cell_key = tuple(sorted(
+                    (ds, int(v)) for ds, v in r['thresholds'].items()))
+                if cell_key in installed:
+                    row_id, row_label = installed[cell_key]
+                else:
+                    if r.get('mode') == 'vertical':
+                        base = (f"threshold={int(lvl_c)}"
+                                if lvl_c is not None
+                                else f"vertical_{i:03d}")
+                    else:
+                        base = f"aligned_density={lvl_n:.4g}"
+                    row_id, row_label = _fallback_id(base), None
+                if row_label is None:
+                    _ds_txt = ', '.join(
+                        f"{ds} {int(r['thresholds'][ds])}"
+                        for ds in order if ds in r['thresholds'])
+                    row_label = (
+                        (f"threshold={int(lvl_c)}"
+                         if lvl_c is not None else r['mode'])
+                        if r['mode'] == 'vertical'
+                        else f"aligned_density={lvl_n:.4g} ({_ds_txt})")
+                row = {
+                    'id': row_id,
+                    'label': row_label,
+                    'mode': r['mode'],
+                    'level_continuous': (
+                        round(float(lvl_c), 6) if lvl_c is not None else None),
+                    'level_normalized': (
+                        round(float(lvl_n), 6) if lvl_n is not None else None),
+                    'degenerate': bool(r.get('degenerate')),
+                    'clamped': bool(r.get('clamped')),
+                    'w_star_mismatch': bool(any(
+                        (metas.get(ds) or {}).get('w_star_mismatch')
+                        for ds in order)),
+                }
+                if r.get('partial_datasets'):
+                    row['partial_datasets'] = ', '.join(
+                        r['partial_datasets'])
+                for ds in order:
+                    row[ds] = (int(r['thresholds'][ds])
+                               if ds in r['thresholds'] else None)
+                # Achieved per-dataset density at the chosen integer
+                # threshold: a level maps to a plateau, and coarse curves
+                # (e.g. BANC) can overshoot the level on quantization —
+                # surface the realized value instead of hiding it (§4.5b
+                # item 4).
+                if r['mode'] != 'vertical' and lvl_n is not None:
+                    achieved = {}
+                    for ds, ds_t in r['thresholds'].items():
+                        curve = curves.get(ds) or {}
+                        dens = dict(zip(curve.get('thresholds') or [],
+                                        curve.get('density') or []))
+                        achieved[ds] = dens.get(int(ds_t))
+                    if achieved and all(
+                            v is not None for v in achieved.values()):
+                        for ds, dens_v in achieved.items():
+                            row[f'density_at_{ds}'] = round(float(dens_v), 6)
+                        row['max_abs_deviation'] = round(max(
+                            abs(v - float(lvl_n))
+                            for v in achieved.values()), 6)
+                best_rows.append(row)
+            aligned_df = pd.DataFrame(best_rows)
+            self._save_csv(aligned_df, os.path.join(
+                comparison_results_dir,
+                'density_alignment_best_matches.csv'))
+            self._log("Saved: density_alignment_best_matches.csv")
+            self._density_alignment_df = aligned_df
+            self._density_aligned_rows_cache = aligned
+            # NOTE: installation of these rows as the run's combination
+            # schedule is owned by the bootstrap (_bootstrap_auto_mode),
+            # which runs BEFORE any (dataset, threshold) execution. Do NOT
+            # re-install here: the run's provenance, folders and similarity
+            # cache are keyed by the installed ids, and a re-install with
+            # regenerated ids would break every per-query join.
+
+        self._append_density_warnings(
+            curves, windows, metas, aligned, normalizer, comparison_results_dir)
+
+    def _append_density_warnings(self, curves, windows, metas, aligned,
+                                 normalizer, comparison_results_dir) -> None:
+        """Append the auto-mode ``[auto threshold]`` / ``[density]`` notes."""
+        order = list(self.parameters.get_dataset_names())
+        blocks = []
+        # Per-run summary + window table.
+        lines = ['- [auto threshold] density-aligned mode: measured per-dataset '
+                 'windows (Min Synapse Count) and the aligned rows:']
+        for ds in order:
+            meta = metas.get(ds)
+            if meta is None:
+                lines.append(f'  • {ds}: no density capture (excluded).')
+                continue
+            lo, hi = windows.get(ds, (None, None))
+            n_typed = (meta.get('n_nodes_typed')
+                       or meta.get('n_annotated_nodes')
+                       or meta.get('n_nodes'))
+            lines.append(
+                f'  • {ds}: applied={meta.get("applied")}, '
+                f'w_start={lo}, w_star_measured={hi}, '
+                f'n_paths={meta.get("n_paths")}, n_edges={meta.get("n_edges")}, '
+                f'N={n_typed} ({meta.get("denominator")}); untyped nodes='
+                f'{meta.get("n_nodes_untyped")}, debris nodes='
+                f'{meta.get("n_nodes_debris")}.')
+        vert = [r for r in aligned if 'vertical' in (r.get('mode') or '')]
+        horiz = [r for r in aligned if 'horizontal' in (r.get('mode') or '')]
+        lines.append(f'  • vertical (same-threshold) rows: '
+                     f'{len(vert)}; horizontal (same-density) rows: {len(horiz)}.')
+        missing = [ds for ds in order if metas.get(ds) is None]
+        if missing and horiz:
+            lines.append(
+                '  • [density partial] horizontal rows exclude '
+                + ', '.join(missing)
+                + ' (no density capture); they are computed over the '
+                'captured datasets only.')
+        if not vert:
+            lines.append(
+                '  • NOTE: no vertical row exists — the datasets\' measured '
+                'windows do not all intersect (max w_start > min '
+                'w_star_measured), so no threshold is complete for every '
+                'dataset. Horizontal (same-density) rows carry the aligned '
+                'comparison.')
+        blocks.append('\n'.join(lines))
+
+        for ds in order:
+            meta = metas.get(ds)
+            if meta is None:
+                continue
+            lo, hi = windows.get(ds, (None, None))
+            if hi is not None and lo is not None and hi <= lo:
+                blocks.append(
+                    f'- [auto threshold] dataset {ds} has a single admissible '
+                    f'threshold (w_star_measured == w_start == {lo}); its '
+                    'aligned comparison degenerates to one point.')
+            if meta.get('w_star_mismatch'):
+                blocks.append(
+                    f'- [auto threshold] stored strongest_retained_bottleneck='
+                    f'{meta.get("strongest_retained_bottleneck")} differs from '
+                    f'the measured retained ceiling {hi} for dataset {ds} — '
+                    'provenance corrected/diagnostic (auto mode uses the '
+                    'measured value).')
+            if not meta.get('n_paths'):
+                blocks.append(
+                    f'- [auto threshold] dataset {ds} has 0 paths in the '
+                    'aligned window (empty path curve; edge curve may still '
+                    'be non-empty); consider the core subset of datasets.')
+        blocks.append(
+            f'- [density] y-axis is E(t)/N with a t-independent N '
+            f'({normalizer} normalizer; N = typed nodes in the searched '
+            'graph with Drop Untyped on, typed+untyped with it off; debris '
+            'ids absent from the curated table are always excluded). x is '
+            'the per-connection Min Synapse Count over the query\'s '
+            'searched graph.')
+        blocks.append('- [density] ' + (
+            "Density alignment is computed on the query's bodyId searched "
+            "graph; the compared matrices are type-level projections of the "
+            "same search. A threshold here is a per-connection synapse count "
+            "(Min Synapse Count)."))
+        try:
+            self._append_user_warning_notes(
+                self.parameters.full_output_path, blocks)
+        except Exception as e:
+            self._log(f"Warning: could not append density notes: {e}")
+
+    def _bootstrap_auto_mode(self) -> bool:
+        """Measure per-dataset density, then install aligned combinations.
+
+        Plan §5 Phase D. Runs ONE enumeration per dataset at the requested
+        floor (``min(thresholds)``, defaulting to 3 when no threshold chips
+        were given — auto mode never requires them) with density capture on,
+        builds the
+        curves/windows from the persisted artifacts, and installs the
+        aligned rows as the run's combination schedule. Returns True when
+        the bootstrap succeeded; False leaves the caller to fall back.
+        """
+        from .threshold_density import align_horizontal, align_vertical
+        datasets = self.parameters.get_dataset_names()
+        base = [int(t) for t in (self.parameters.thresholds or [])] or [3]
+        boot_t = max(1, min(base))
+        self._log(f"Auto threshold mode: bootstrap enumeration at t={boot_t} "
+                  f"for {len(datasets)} dataset(s)")
+        saved_thresholds = list(self.parameters.thresholds)
+        self.parameters.thresholds = [boot_t]
+        try:
+            for ds in datasets:
+                if boot_t in self.raw_results.get(ds, {}):
+                    continue
+                if self.parameters.output_folder:
+                    cached = self._try_load_cached(ds, boot_t)
+                    if cached is not None:
+                        self.raw_results.setdefault(ds, {})[boot_t] = \
+                            self._finalize_loaded_result(ds, boot_t, cached)
+                        continue
+                df = self.run_path_analysis(ds, boot_t, verbose_mode='simple')
+                self.raw_results.setdefault(ds, {})[boot_t] = df
+                if self.parameters.output_folder:
+                    self._save_result(ds, boot_t, df)
+        except Exception as e:
+            self._log(f"Auto threshold bootstrap failed: {e}")
+            # Without the measured rows the run still needs a schedule;
+            # default to the physical-minimum floor when no chips were set.
+            self.parameters.thresholds = saved_thresholds or [3]
+            return False
+        finally:
+            self.parameters.thresholds = saved_thresholds
+
+        curves, windows, metas = self._build_density_curves()
+        if not curves:
+            self._log("Auto threshold mode: no density capture produced — "
+                      "falling back to the requested thresholds.")
+            return False
+        order = list(datasets)
+        nick_by_ds = {}
+        try:
+            _nicks = self.parameters.get_dataset_nicknames()
+            nick_by_ds = {ds: _nicks[i] for i, ds in enumerate(order)}
+        except Exception:
+            nick_by_ds = {ds: ds for ds in order}
+
+        def _ds_txt(thresholds):
+            return ', '.join(
+                f"{nick_by_ds.get(ds, ds)} {int(thresholds[ds])}"
+                for ds in order)
+
+        rows = []
+        # B7 query id/label scheme: verticals read exactly like the
+        # per-threshold analysis they mirror (id+label `threshold={N}`);
+        # horizontals self-identify as density-matched
+        # (`aligned_density={level:.4g} (...)` with the explicit
+        # per-dataset thresholds).  `.4g` collision guard: two distinct
+        # levels could round to the same `.4g` string — ids are
+        # de-duplicated deterministically (append `_2`, `_3`, ...).
+        used_ids: Dict[str, int] = {}
+
+        def _unique_id(base: str) -> str:
+            count = used_ids.get(base, 0)
+            used_ids[base] = count + 1
+            return base if count == 0 else f"{base}_{count + 1}"
+
+        for r in align_vertical(windows, K=5):
+            v_id = _unique_id(f'threshold={r}')
+            rows.append({'id': v_id, 'label': v_id,
+                         'row_mode': 'vertical',
+                         'thresholds': {ds: int(r) for ds in order}})
+        for i, r in enumerate(align_horizontal(curves, levels=4), start=1):
+            if len(r.get('thresholds', {})) != len(order):
+                continue
+            # Horizontal rows are per-dataset by construction: carry the
+            # explicit per-dataset thresholds in the label itself.
+            h_id = _unique_id(f"aligned_density={r['level_normalized']:.4g}")
+            rows.append({
+                'id': h_id,
+                'label': (f'{h_id} '
+                          f"({_ds_txt(r['thresholds'])})"),
+                'row_mode': 'horizontal',
+                'thresholds': r['thresholds']})
+        # De-duplicate identical threshold rows, keeping the vertical label.
+        seen, unique = set(), []
+        for r in rows:
+            key = tuple((ds, int(r['thresholds'][ds])) for ds in order)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(r)
+        if not unique:
+            self._log("Auto threshold mode: no aligned rows in range — "
+                      "falling back to the requested thresholds.")
+            return False
+        try:
+            self.parameters.install_auto_combinations(unique)
+        except Exception as e:
+            self._log(f"Auto threshold mode: could not install rows: {e}")
+            return False
+        self._auto_alignment_rows = unique
+        self._log(f"Auto threshold mode: installed {len(unique)} aligned "
+                  f"query row(s) across {len(order)} dataset(s)")
+        return True
+
+    def suggest_threshold_combinations(self, reference_dataset=None,
+                                       tolerance=None) -> List[Dict[str, Any]]:
+        """Density-equivalent combination rows from the last alignment run.
+
+        Consumes ``_alignment_best_df`` (or the exported CSV when the run
+        has been reloaded) and returns ``threshold_combinations``-shaped
+        rows. ``reference_dataset`` defaults to the first dataset.
+        """
+        try:
+            from .threshold_alignment import (
+                ALIGNMENT_TOLERANCE, suggest_combination_rows,
+            )
+        except ImportError:  # pragma: no cover
+            from threshold_alignment import (
+                ALIGNMENT_TOLERANCE, suggest_combination_rows,
+            )
+        df = getattr(self, '_alignment_best_df', None)
+        if df is None:
+            path = os.path.join(self.parameters.full_output_path,
+                                'comparison_results',
+                                'threshold_alignment_best_matches.csv')
+            if os.path.exists(path):
+                try:
+                    df = pd.read_csv(path)
+                except Exception:
+                    df = None
+        if df is None:
+            return []
+        datasets = self.parameters.get_dataset_names()
+        reference = reference_dataset or (datasets[0] if datasets else None)
+        if reference is None:
+            return []
+        return suggest_combination_rows(
+            df, reference, datasets,
+            tolerance=(ALIGNMENT_TOLERANCE if tolerance is None
+                       else float(tolerance)))
+
+    def _suggest_and_export_combinations(self, best_df, dataset_order,
+                                         comparison_results_dir) -> None:
+        try:
+            from .threshold_alignment import (
+                ALIGNMENT_TOLERANCE, suggest_combination_rows,
+            )
+        except ImportError:  # pragma: no cover
+            from threshold_alignment import (
+                ALIGNMENT_TOLERANCE, suggest_combination_rows,
+            )
+        datasets = [d for d in self.parameters.get_dataset_names()]
+        reference = datasets[0] if datasets else None
+        if reference is None:
+            return
+        rows = suggest_combination_rows(
+            best_df, reference, datasets, tolerance=ALIGNMENT_TOLERANCE)
+        if not rows:
+            return
+        self._suggested_combinations = rows
+        try:
+            import json as _json
+            out_path = os.path.join(comparison_results_dir,
+                                    'suggested_threshold_combinations.json')
+            with open(out_path, 'w', encoding='utf-8') as f:
+                _json.dump({
+                    'reference_dataset': reference,
+                    'tolerance': ALIGNMENT_TOLERANCE,
+                    'combinations': rows,
+                }, f, indent=2, default=str)
+            self._log(
+                f"Saved: suggested_threshold_combinations.json "
+                f"({len(rows)} aligned query row(s))")
+        except Exception as e:
+            self._log(f"Warning: could not write suggested combinations: {e}")
+
+    def _export_reciprocal_comparisons(self, comparison_results_dir: str) -> None:
+        """Export reciprocal connectivity as its own comparison artifact.
+
+        Mirrors the single-dataset pathfinding treatment (plan §9 / §12 item
+        11): the reciprocal aligned matrix, its cross-dataset conservation,
+        and (when available) the directed-vs-reciprocal motif counts are
+        written under ``comparison_results/reciprocal/`` rather than being a
+        transient network-only frame.
+        """
+        if not getattr(self.parameters, 'find_reciprocal', False):
+            return
+        dataset_names = self.parameters.get_dataset_names()
+        out_dir = os.path.join(comparison_results_dir, 'reciprocal')
+        os.makedirs(out_dir, exist_ok=True)
+
+        thresholds = self._analysis_thresholds()
+        wrote_any = False
+        for t in thresholds:
+            try:
+                aligned = self.get_aligned_data_for_network(t)
+            except Exception as e:
+                self._log(f"  Warning: reciprocal alignment t={t} failed: {e}")
+                continue
+            if aligned is None or aligned.empty:
+                continue
+            safe_t = self._safe_query_filename_id(t)
+            self._save_csv(
+                aligned, os.path.join(out_dir, f'reciprocal_aligned_t{safe_t}.csv'))
+            # Conservation = present at positive weight in every dataset.
+            available = [d for d in dataset_names if d in aligned.columns]
+            if available:
+                mask_all = (aligned[available] > 0).all(axis=1)
+                conserved = aligned[mask_all].copy()
+                if not conserved.empty:
+                    conserved.to_csv(
+                        os.path.join(
+                            out_dir, f'reciprocal_conserved_t{safe_t}.csv'))
+            wrote_any = True
+        if wrote_any:
+            self._log("Saved: comparison_results/reciprocal/ "
+                      "(reciprocal aligned matrices + conserved edges)")
 
     def _export_threshold_alignment_heatmap(self, vis_dir: str):
         """Render the typed-grid alignment distance heatmap (§6.4)."""
@@ -6234,19 +8240,84 @@ class ComparisonAnalyzer:
                 self._save_csv(merged_df, os.path.join(comparison_results_dir, f"unique_to_{safe_name}.csv"))
                 self._log(f"Saved: unique_to_{safe_name}.csv ({len(merged_df)} unique edges)")
 
+    def _find_any_applied_output_folder(self, dataset: str) -> Optional[str]:
+        """Smallest applied ``minsyn_*`` folder for a dataset, from disk.
+
+        Fallback for neuron-count export when the resolved applied folder
+        is missing (legacy runs, renamed folders). Reads each folder's own
+        ``all_attributes.json`` ``applied_threshold`` — never the folder
+        name — and returns the folder with the smallest applied value.
+        """
+        base = os.path.join(
+            self.parameters.full_output_path, 'dataset_data',
+            self.parameters._sanitize_name(dataset))
+        if not os.path.isdir(base):
+            return None
+        candidates = []
+        for name in os.listdir(base):
+            if not name.startswith('minsyn_'):
+                continue
+            folder = os.path.join(base, name)
+            if not os.path.isdir(folder):
+                continue
+            applied = None
+            attrs_path = os.path.join(folder, 'all_attributes.json')
+            if os.path.exists(attrs_path):
+                try:
+                    with open(attrs_path, encoding='utf-8') as f:
+                        attrs = json.load(f)
+                    applied = attrs.get('applied_threshold')
+                    if applied is None:
+                        applied = attrs.get('min_synapse_num')
+                except Exception:
+                    applied = None
+            if applied is None:
+                # Last resort: the folder's numeric suffix.
+                suffix = name[len('minsyn_'):].split('_')[0]
+                applied = int(suffix) if suffix.isdigit() else None
+            if applied is not None:
+                candidates.append((int(applied), folder))
+        if not candidates:
+            return None
+        return min(candidates)[1]
+
     def _export_neuron_counts_comparison(self, comparison_results_dir: str):
         """
         Export source/target neuron counts comparison across datasets.
-        
+
         Creates:
         1. neuron_counts_summary.csv - Total counts per dataset (source/target)
         2. neuron_counts_by_type.csv - Count per neuron type per dataset
+           (keyed by merge-policy group label when a query-anchored merge
+           policy governs the run, so counts agree with the merged
+           presence/similarity frames)
         3. neuron_counts_by_group.csv - Count per custom group per dataset (if custom groups exist)
-        
+
         Data is loaded from source_neurons.csv and target_neurons.csv saved by FindAllPath.
         """
         dataset_names = self.parameters.get_dataset_names()
-        
+        merge_policy = self._merge_policy_or_none()
+
+        def _count_key(dataset: str, type_val) -> str:
+            """Group label for a raw type when the merge policy governs it,
+            so neuron counts agree with the merged presence/similarity
+            frames (plan acceptance: counts agree on group membership)."""
+            raw = str(type_val)
+            if merge_policy is not None:
+                label = merge_policy.key_for(dataset, raw)
+                if label:
+                    return label
+            return raw
+
+        def _track_member(type_counts: Dict, count_key: str, dataset: str,
+                          type_val, count: int) -> None:
+            """Remember the per-(dataset, raw type) composition behind a
+            merged group row, exported as the ``group_members`` column."""
+            members = type_counts[count_key].setdefault('_members', {})
+            per_dataset = members.setdefault(str(dataset), {})
+            name = str(type_val)
+            per_dataset[name] = per_dataset.get(name, 0) + int(count)
+
         # Collect neuron data from each dataset
         all_source_data = []
         all_target_data = []
@@ -6292,19 +8363,32 @@ class ComparisonAnalyzer:
                 get_dataset_thresholds(dataset)
                 if callable(get_dataset_thresholds) else [])
             if dataset_thresholds:
-                lowest_threshold = min(dataset_thresholds)
+                requested_min = min(dataset_thresholds)
             elif self.parameters.thresholds:
-                # Compatibility fallback for older parameter objects that do
-                # not expose a per-dataset schedule.
-                lowest_threshold = min(self.parameters.thresholds)
+                # Compatibility fallback for older parameter objects that
+                # do not expose a per-dataset schedule.
+                requested_min = min(self.parameters.thresholds)
             else:
-                lowest_threshold = None
+                requested_min = None
+
+            # Resolve the MATERIALIZED applied folder, not the requested
+            # minimum: Feature-G tau-collapse means the lowest requested
+            # threshold usually has no folder of its own (its data lives in
+            # the applied folder), which silently produced all-zero counts.
+            applied_threshold = None
+            if requested_min is not None:
+                applied_threshold = self.get_applied_folder(
+                    dataset, requested_min)
+            if applied_threshold is None:
+                applied_list = self.get_applied_thresholds(dataset)
+                applied_threshold = applied_list[0] if applied_list else None
 
             # N1: FNC writes source/target_neurons.csv at the minsyn folder
             # ROOT; older runs had them under data_details/ — try both.
+            # Resolve disk-aware so the new grammar folder names are found.
             dataset_output_path = (
-                self.parameters.get_dataset_output_path(dataset, lowest_threshold)
-                if lowest_threshold is not None else ''
+                self._resolve_dataset_output_path(dataset, requested_min)
+                if requested_min is not None else ''
             )
             source_candidates = [
                 os.path.join(dataset_output_path, 'source_neurons.csv'),
@@ -6316,6 +8400,23 @@ class ComparisonAnalyzer:
             ]
             source_file = next((p for p in source_candidates if os.path.exists(p)), source_candidates[0])
             target_file = next((p for p in target_candidates if os.path.exists(p)), target_candidates[0])
+            if not os.path.exists(source_file) and not os.path.exists(
+                    target_file):
+                # Fallback scan: any existing applied folder (smallest
+                # applied provenance) rather than defaulting to zero.
+                fallback = self._find_any_applied_output_folder(dataset)
+                if fallback:
+                    dataset_output_path = fallback
+                    source_file = os.path.join(fallback, 'source_neurons.csv')
+                    target_file = os.path.join(fallback, 'target_neurons.csv')
+                    self._log(
+                        f"  Neuron counts: resolved {dataset} via fallback "
+                        f"folder {os.path.basename(fallback)}")
+                else:
+                    self._log(
+                        f"  Warning: no source/target neuron files found for "
+                        f"{dataset} (requested_min={requested_min}, "
+                        f"applied={applied_threshold}); counts will be 0.")
             
             source_count = 0
             target_count = 0
@@ -6335,9 +8436,16 @@ class ComparisonAnalyzer:
                     if 'type' in source_df.columns:
                         for type_val in source_df['type'].dropna().unique():
                             type_cnt = len(source_df[source_df['type'] == type_val])
-                            if type_val not in type_counts:
-                                type_counts[type_val] = {'role': 'source'}
-                            type_counts[type_val][f'{safe_name}_source'] = type_cnt
+                            count_key = _count_key(dataset, type_val)
+                            if count_key not in type_counts:
+                                type_counts[count_key] = {'role': 'source'}
+                            count_col = f'{safe_name}_source'
+                            type_counts[count_key][count_col] = (
+                                type_counts[count_key].get(count_col, 0)
+                                + type_cnt)
+                            if merge_policy is not None:
+                                _track_member(type_counts, count_key,
+                                              dataset, type_val, type_cnt)
                     
                     # Count by custom group
                     if 'custom_group' in source_df.columns:
@@ -6361,9 +8469,16 @@ class ComparisonAnalyzer:
                     if 'type' in target_df.columns:
                         for type_val in target_df['type'].dropna().unique():
                             type_cnt = len(target_df[target_df['type'] == type_val])
-                            if type_val not in type_counts:
-                                type_counts[type_val] = {'role': 'target'}
-                            type_counts[type_val][f'{safe_name}_target'] = type_cnt
+                            count_key = _count_key(dataset, type_val)
+                            if count_key not in type_counts:
+                                type_counts[count_key] = {'role': 'target'}
+                            count_col = f'{safe_name}_target'
+                            type_counts[count_key][count_col] = (
+                                type_counts[count_key].get(count_col, 0)
+                                + type_cnt)
+                            if merge_policy is not None:
+                                _track_member(type_counts, count_key,
+                                              dataset, type_val, type_cnt)
                     
                     # Count by custom group  
                     if 'custom_group' in target_df.columns:
@@ -6405,11 +8520,34 @@ class ComparisonAnalyzer:
         if type_counts:
             type_rows = []
             for type_val, counts in type_counts.items():
+                counts = dict(counts)
+                members = counts.pop('_members', None)
                 row = {'type': type_val}
                 row.update(counts)
+                if members:
+                    # Only MERGED groups carry a composition note — a group
+                    # whose every dataset shows the same single raw name is
+                    # not merged, and the breakdown would be noise.
+                    distinct_names = {
+                        name
+                        for per_dataset in members.values()
+                        for name in per_dataset
+                    }
+                    if len(distinct_names) > 1:
+                        row['group_members'] = '; '.join(
+                            f"{ds}: " + ', '.join(
+                                f'{member_name}({cnt})'
+                                for member_name, cnt in sorted(per_ds.items()))
+                            for ds, per_ds in sorted(members.items()))
                 type_rows.append(row)
             
             type_df = pd.DataFrame(type_rows)
+            if 'group_members' in type_df.columns:
+                # Keep the composition note as the LAST column, after the
+                # per-dataset count columns.
+                type_df = type_df[[c for c in type_df.columns
+                                   if c != 'group_members']
+                                  + ['group_members']]
             # Sort by type name
             type_df = type_df.sort_values('type')
             self._save_csv(type_df, os.path.join(comparison_results_dir, "neuron_counts_by_type.csv"))
@@ -7521,6 +9659,36 @@ class ComparisonAnalyzer:
             except Exception as e:
                 self._log(f"Warning: edge density curve plot failed: {e}")
 
+        # Auto threshold-density alignment: two-panel query-scoped density
+        # curves (plan §5 Phase E).
+        auto_curves = getattr(self, '_density_curves_df', None)
+        if auto_curves is not None and not auto_curves.empty:
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                from .visualizations import ComparisonVisualizer as _CV
+                fig = _CV(verbose=self.verbose).plot_density_alignment_curves(
+                    auto_curves,
+                    windows=getattr(self, '_density_windows_df', None),
+                    aligned=getattr(self, '_density_alignment_df', None),
+                    nickname_map=nickname_map,
+                    normalizer_label=(
+                        'edges per searched node (E(t)/N)'
+                        if getattr(self.parameters, 'density_normalizer',
+                                   'per_node') == 'per_node'
+                        else getattr(self.parameters, 'density_normalizer',
+                                     'per_node')),
+                )
+                out_path = os.path.join(
+                    vis_dir, "density_alignment_threshold_curves.png")
+                fig.savefig(out_path, dpi=200, bbox_inches='tight')
+                plt.close(fig)
+                self._log_file(
+                    out_path, "Density alignment vs threshold curves")
+            except Exception as e:
+                self._log(f"Warning: density alignment plot failed: {e}")
+
         # Feature C: typed-grid alignment distance heatmap.
         try:
             self._export_threshold_alignment_heatmap(vis_dir)
@@ -7572,13 +9740,8 @@ class ComparisonAnalyzer:
             )
             if dataset_threshold is None:
                 continue
-            safe_name = self.parameters._sanitize_name(dataset_name)
-            dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}'
-            )
+            dataset_output_path = self._resolve_dataset_output_path(
+                dataset_name, dataset_threshold)
             
             # Try multiple path file patterns
             path_files_to_try = [
@@ -7733,12 +9896,8 @@ class ComparisonAnalyzer:
             if dataset_threshold is None:
                 continue
             safe_name = self.parameters._sanitize_name(dataset_name)
-            dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}'
-            )
+            dataset_output_path = self._resolve_dataset_output_path(
+                dataset_name, dataset_threshold)
 
             path_files_to_try = [
                 os.path.join(
@@ -7826,13 +9985,8 @@ class ComparisonAnalyzer:
         all_ratio_data = {}
         
         for dataset_name in dataset_names:
-            safe_name = self.parameters._sanitize_name(dataset_name)
-            dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{threshold}'
-            )
+            dataset_output_path = self._resolve_dataset_output_path(
+                dataset_name, threshold)
             
             # Try multiple path file patterns
             path_files_to_try = [
@@ -7914,13 +10068,8 @@ class ComparisonAnalyzer:
         all_prob_data = {}
         
         for dataset_name in dataset_names:
-            safe_name = self.parameters._sanitize_name(dataset_name)
-            dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{threshold}'
-            )
+            dataset_output_path = self._resolve_dataset_output_path(
+                dataset_name, threshold)
             
             # Try multiple path file patterns
             path_files_to_try = [
@@ -8009,13 +10158,8 @@ class ComparisonAnalyzer:
                 threshold, dataset_name)
             if dataset_threshold is None:
                 continue
-            safe_name = self.parameters._sanitize_name(dataset_name)
-            dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}'
-            )
+            dataset_output_path = self._resolve_dataset_output_path(
+                dataset_name, dataset_threshold)
             
             df = None
             
@@ -8125,10 +10269,8 @@ class ComparisonAnalyzer:
             # Try reciprocal first, then standard
             # We want the most specific NT info available
             dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}',
+                self._resolve_dataset_output_path(
+                    dataset_name, dataset_threshold),
                 'find_reciprocal'
             )
             conn_file = os.path.join(dataset_output_path, 'reciprocal_connection_type.csv')
@@ -8142,12 +10284,8 @@ class ComparisonAnalyzer:
 
             # Fallback to standard connections
             if df is None or df.empty:
-                dataset_output_path = os.path.join(
-                    self.parameters.full_output_path,
-                    'dataset_data',
-                    safe_name,
-                    f'minsyn_{dataset_threshold}'
-                )
+                dataset_output_path = self._resolve_dataset_output_path(
+                    dataset_name, dataset_threshold)
                 conn_file = os.path.join(dataset_output_path, 'connections_edge.csv')
                 if os.path.exists(conn_file) and os.path.getsize(conn_file) > 0:
                     try:
@@ -8157,12 +10295,8 @@ class ComparisonAnalyzer:
 
             if (df is None or df.empty):
                 # Fallback to data_details
-                dataset_output_path = os.path.join(
-                    self.parameters.full_output_path,
-                    'dataset_data',
-                    safe_name,
-                    f'minsyn_{dataset_threshold}'
-                )
+                dataset_output_path = self._resolve_dataset_output_path(
+                    dataset_name, dataset_threshold)
                 fallback = os.path.join(dataset_output_path, 'data_details', 'connection_type.csv')
                 if os.path.exists(fallback) and os.path.getsize(fallback) > 0:
                     try:
@@ -8237,10 +10371,8 @@ class ComparisonAnalyzer:
                 continue
             safe_name = self.parameters._sanitize_name(dataset_name)
             dataset_output_path = os.path.join(
-                self.parameters.full_output_path,
-                'dataset_data',
-                safe_name,
-                f'minsyn_{dataset_threshold}',
+                self._resolve_dataset_output_path(
+                    dataset_name, dataset_threshold),
                 'find_reciprocal'
             )
 
@@ -9478,8 +11610,14 @@ class ComparisonAnalyzer:
             self._safe_query_filename_id(display_threshold)
             if query else display_threshold
         )
-        base_filename = f"conserved_network_t{filename_threshold}"
-        
+        # B7: query-id files drop the legacy literal `t` prefix (a query
+        # slug already self-identifies); standard numeric thresholds keep
+        # the historical `t19` form.
+        base_filename = (
+            f"conserved_network_{filename_threshold}"
+            if query else f"conserved_network_t{filename_threshold}"
+        )
+
         self._log(f"  Creating VisualizePath visualization with {len(edges_df)} edges...")
         
         # Create VisualizePath with conserved edges
@@ -9795,7 +11933,10 @@ class ComparisonAnalyzer:
             self._safe_query_filename_id(display_threshold)
             if query else display_threshold
         )
-        base_filename = f"conserved_reciprocal_t{filename_threshold}"
+        base_filename = (
+            f"conserved_reciprocal_{filename_threshold}"
+            if query else f"conserved_reciprocal_t{filename_threshold}"
+        )
 
         vp = VisualizePath(
             path_file=edges_df,
@@ -9941,7 +12082,21 @@ class ComparisonAnalyzer:
             self._log("Warning: Plotly not installed. Generating basic HTML report.")
         
         html_content = self._generate_html_content(has_plotly)
-        
+
+        if getattr(self.parameters, 'report_layout', 'tabbed') == 'both':
+            # Side-by-side comparison mode: also write the legacy
+            # single-page report next to the tabbed one.
+            try:
+                legacy_content = self._generate_legacy_html_content(has_plotly)
+                legacy_path = str(
+                    Path(output_path).with_name(
+                        'comparison_report_legacy.html'))
+                with open(legacy_path, 'w', encoding='utf-8') as f:
+                    f.write(legacy_content)
+                self._log(f"Legacy HTML report saved to: {legacy_path}")
+            except Exception as exc:  # noqa: BLE001 — comparison extra only
+                self._log(f"Warning: could not write the legacy report: {exc}")
+
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
@@ -9949,13 +12104,23 @@ class ComparisonAnalyzer:
         return output_path
     
     def _generate_html_content(self, has_plotly: bool = True) -> str:
-        """Generate the HTML content for the report - static version showing all thresholds."""
+        """Generate the HTML content for the report — the tabbed layout by
+        default (``report_layout='tabbed'``, wrapping the legacy
+        generator's output via ``comparison/report_tabbed.py``); the
+        historical single-page report with ``report_layout='legacy'``."""
+        legacy = self._generate_legacy_html_content(has_plotly)
+        return self._apply_report_layout(legacy)
+
+    def _generate_legacy_html_content(self, has_plotly: bool = True) -> str:
+        """Generate the legacy single-page report content (the reference
+        implementation, unchanged).  The tabbed layout wraps this via
+        :meth:`_generate_html_content`."""
         from .html_report_generator import generate_html_report
 
         if self.parameters.threshold_mode == 'combinations':
             # Custom combinations use the same full report shell as Standard
             # comparisons, but all sections consume explicit query points.
-            return generate_html_report(
+            legacy = generate_html_report(
                 analyzer=self,
                 dataset_names=self.parameters.get_dataset_names(),
                 thresholds=[],
@@ -9964,23 +12129,24 @@ class ComparisonAnalyzer:
                 key_findings_per_threshold={},
                 comparison_points=self.get_comparison_points(),
             )
+            return legacy
+        else:
+            dataset_names = self.parameters.get_dataset_names()
+            # Feature G: per-threshold report sections render the effective
+            # thresholds only — τ-collapse duplicates are marked in the
+            # sensitivity export instead of rendered twice.
+            thresholds = self._analysis_thresholds()
 
-        dataset_names = self.parameters.get_dataset_names()
-        # Feature G: per-threshold report sections render the effective
-        # thresholds only — τ-collapse duplicates are marked in the
-        # sensitivity export instead of rendered twice.
-        thresholds = self._analysis_thresholds()
-        
-        # Generate mode-specific note
-        mode_specific_note = self._generate_mode_specific_note()
-        
-        # Collect path count data for charts
-        path_count_data = []
-        for dataset in dataset_names:
-            for threshold in thresholds:
-                df = self.raw_results.get(dataset, {}).get(threshold, pd.DataFrame())
-                count = len(df) if not df.empty else 0
-                path_count_data.append({
+            # Generate mode-specific note
+            mode_specific_note = self._generate_mode_specific_note()
+
+            # Collect path count data for charts
+            path_count_data = []
+            for dataset in dataset_names:
+                for threshold in thresholds:
+                    df = self.raw_results.get(dataset, {}).get(threshold, pd.DataFrame())
+                    count = len(df) if not df.empty else 0
+                    path_count_data.append({
                     'dataset': self.parameters._sanitize_name(dataset),
                     'threshold': threshold,
                     'count': count
@@ -10040,7 +12206,7 @@ class ComparisonAnalyzer:
                         key_findings_per_threshold[threshold]['path_conservation_rate'] = common_paths / total_paths
         
         # Generate HTML using the new generator
-        return generate_html_report(
+        legacy = generate_html_report(
             analyzer=self,
             dataset_names=dataset_names,
             thresholds=thresholds,
@@ -10048,6 +12214,22 @@ class ComparisonAnalyzer:
             path_count_data=path_count_data,
             key_findings_per_threshold=key_findings_per_threshold
         )
+        return legacy
+
+    def _apply_report_layout(self, legacy: str) -> str:
+        """Apply the ``report_layout`` setting: transform the legacy
+        single-page HTML into the tabbed layout ('tabbed', the default)
+        or pass it through ('legacy')."""
+        layout = getattr(self.parameters, 'report_layout', 'tabbed')
+        if layout == 'legacy':
+            return legacy
+        try:
+            from .report_tabbed import build_tabbed_report
+            return build_tabbed_report(self, legacy)
+        except Exception as exc:  # noqa: BLE001 — layout is cosmetic
+            self._log(f"Warning: tabbed report layout failed ({exc}); "
+                      "falling back to the legacy single-page report")
+            return legacy
 
     def _generate_combination_html_content(self) -> str:
         """Backward-compatible entry point for the full query report.

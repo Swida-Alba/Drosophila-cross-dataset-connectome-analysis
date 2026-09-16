@@ -342,23 +342,27 @@ def test_combination_toc_is_complete(tmp_path):
 
 
 def test_combination_similarity_html_rows_match_used_data_csv(tmp_path):
-    """Phase G item 3 / F-RPT-002: the HTML pair table must show exactly the
-    rows written to comparison_report_used_data/similarity_by_query.csv."""
+    """F-RPT-002 (rev 2026-09-15): the pair-metrics table was dropped from
+    the Similarity section — the annotated heatmaps plus the data links
+    remain, and the used-data CSV stays the machine-readable source of the
+    same metric values."""
     report = _build_query_report(tmp_path)
 
     used_csv = tmp_path / "comparison_report_used_data" / "similarity_by_query.csv"
     assert used_csv.exists()
     used = pd.read_csv(used_csv)
     assert set(used["query_id"]) == {"combo_001"}
-    combo_001_row = used[used["query_id"] == "combo_001"].iloc[0]
-    # The rendered pair table for combo_001 shows the same metric values.
+    # The HTML pair table is gone.
+    assert 'Pair metrics' not in report
+    # The heatmap card carries the same jaccard value inside its JSON embed
+    # (d1-d2 pair = 0.5 on a 3-dataset diagonal matrix).
     assert 'id="jaccard_combo_001"' in report
-    assert "<td>0.5</td>" in report
-    assert "<td>0.4</td>" in report
-    assert "<td>0.3</td>" in report
-    # No "no similarity rows" placeholder for the query that has data.
-    assert 'No similarity rows available.' not in report.split('combo_002')[1]
-    # And the HTML row count per query equals the CSV row count per query.
+    assert ('const jaccard = [[1.0, 0.5, null], [0.5, 1.0, null], '
+            '[null, null, 1.0]]') in report
+    # The data links survive: used-data export + per-query export.
+    assert 'similarity_by_query.csv' in report
+    assert 'similarity_query_combo_001.csv' in report
+    # And the CSV row count per query is unchanged.
     assert len(used[used["query_id"] == "combo_001"]) == 1
 
 

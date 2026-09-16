@@ -240,3 +240,99 @@ def test_single_threshold_replay_runs_normally(monkeypatch, tmp_path):
     assert "_fallback" not in results
     assert results[4]["replayed"] is False
     assert _type_paths(str(tmp_path / "minsyn_4"))
+
+
+# ---------------------------------------------------------------------------
+# Per-slice provenance: the t0 graph floor must not be reported as binding
+# for a higher slice it does not affect.
+# ---------------------------------------------------------------------------
+
+def test_replay_slice_above_t0_floor_reports_it_inactive(monkeypatch, tmp_path):
+    """A t0 edge-budget floor sits below a higher requested threshold; the
+    higher slice's own run is unaffected, so edge_budget_applied must be
+    False for it (and the floor-w0 stays a t0-graph diagnostic)."""
+    # Enough edges that the budget forces a floor at t0, with heavier edges
+    # surviving at the higher threshold.
+    edges = [
+        ("S", "A", 5), ("A", "T", 6),
+        ("S", "B", 2), ("B", "T", 2),
+        ("S", "C", 3), ("C", "T", 3),
+        ("S", "D", 4), ("D", "T", 4),
+    ]
+    fc, _c, _l = _fixture(
+        monkeypatch, tmp_path, edges=edges, max_interlayer=2)
+    fc.graph_edge_limit_bodyid = 4  # forces a floor on the t0=1 cone
+    fc.saveas = str(tmp_path / "minsyn_1")
+    fc.save_folder = str(tmp_path / "minsyn_1")
+    results = fc.FindAllPathMultiThreshold([1, 5])
+
+    floor = fc.edge_weight_floor
+    assert floor is not None, "fixture did not exercise the edge floor"
+    # The higher slice (5) is unaffected by a floor at/below it: it must not
+    # be flagged as binding and must carry no landing tier, while still
+    # recording the floor as a t0-graph diagnostic.
+    if floor <= 5:
+        assert results[5]["edge_budget_applied"] is False
+        assert results[5]["edge_budget_landing"] is None
+        assert results[5]["edge_weight_floor"] == floor
+
+
+def test_replay_weak_gap_threshold_aliases_to_canonical(monkeypatch, tmp_path):
+    """A requested threshold BELOW the canonical (t < w2+1) has paths the
+    t0 budget dropped; the canonical folder is a valid complete run at
+    canon > t, so it ALIASES there (applied=canon >= request) rather than
+    re-enumerating."""
+    # Paths S->T with bottlenecks 12, 5, 4, 2, 1. Budget 3 keeps 12,5,4
+    # (tau=4), drops 2 and 1 => w2=2, canon=w2+1=3.
+    edges = [
+        ("S", "T", 12),
+        ("S", "A", 5), ("A", "T", 6),
+        ("S", "B", 4), ("B", "T", 9),
+        ("S", "C", 2), ("C", "T", 9),
+        ("S", "D", 1), ("D", "T", 9),
+    ]
+    fc, _c, _l = _fixture(monkeypatch, tmp_path, edges=edges,
+                          max_interlayer=2, pathfinding="StrongestFirst",
+                          max_paths_bodyid=3)
+    fc.saveas = str(tmp_path / "minsyn_1")
+    fc.save_folder = str(tmp_path / "minsyn_1")
+    results = fc.FindAllPathMultiThreshold([1, 2, 3])
+
+    assert results[1]["budget_bitten"] is True
+    assert results[1]["tau"] == 4
+    assert results[1]["tau_canonical"] == 3
+    # t=2 (< canon): aliased to the canonical folder (applied 3 > request).
+    assert results[2].get("skipped") is True
+    assert results[2].get("applied_folder") == 3
+    # t=3 == canon: aliased to the canonical folder.
+    assert results[3].get("applied_folder") == 3
+
+
+def test_replay_mid_gap_threshold_materializes_under_request(monkeypatch, tmp_path):
+    """A requested threshold in the mid gap (canon < t <= tau) is exactly a
+    complete run at t; it materializes its own folder so applied == t, not
+    the weaker canonical."""
+    # bottlenecks 30,20,8,5 ; budget 2 keeps 30,20 (tau=20), drops 8,5 =>
+    # w2=8, canon=9. Requested 12 is in (9,20] -> mid gap.
+    edges = [
+        ("S", "T", 30),
+        ("S", "A", 20), ("A", "T", 25),
+        ("S", "B", 8), ("B", "T", 9),
+        ("S", "C", 5), ("C", "T", 9),
+    ]
+    fc, _c, _l = _fixture(monkeypatch, tmp_path, edges=edges,
+                          max_interlayer=2, pathfinding="StrongestFirst",
+                          max_paths_bodyid=2)
+    fc.saveas = str(tmp_path / "minsyn_1")
+    fc.save_folder = str(tmp_path / "minsyn_1")
+    results = fc.FindAllPathMultiThreshold([1, 12, 30])
+
+    assert results[1]["tau"] == 20
+    assert results[1]["tau_canonical"] == 9
+    # t=12 in (9,20]: own folder, applied=12, not aliased to 9.
+    assert results[12].get("skipped") is not True
+    assert results[12]["applied_folder"] == 12
+    assert os.path.isdir(str(tmp_path / "minsyn_12"))
+    # t=30 > tau: materialized complete run at 30.
+    assert results[30]["paths_complete"] is True
+    assert os.path.isdir(str(tmp_path / "minsyn_30"))
