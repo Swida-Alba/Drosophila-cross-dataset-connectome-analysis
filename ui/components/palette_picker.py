@@ -983,7 +983,7 @@ def color_swatch_picker(
                 ).tooltip(display)
                 with swatch:
                     ui.element("div").style(
-                        f"background:{option_value if option_value != 'auto' else '#e5e7eb'};"
+                        f"background:{option_value if option_value != 'auto' else '#74A8D6'};"
                         "width:22px; height:22px; border-radius:50%;"
                         "border:2px solid rgba(11,31,58,.15);"
                     )
@@ -996,7 +996,7 @@ def color_swatch_picker(
             format_input = ui.input(
                 label="Color format",
                 value="#3b82f6",
-                placeholder="rgba(200, 230, 240, 0.05)",
+                placeholder="rgba(116, 168, 214, 0.04)",
             ).props("dense outlined").classes("flex-grow").tooltip(
                 COLOR_FORMAT_HINT
             )

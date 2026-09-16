@@ -246,7 +246,7 @@ VNC_MESH_LEGEND_RANK = 200_000_001
 # Default mesh opacities. ROI meshes provide local anatomical context,
 # while the brain/VNC envelopes are intentionally lighter scene scaffolding.
 DEFAULT_ROI_MESH_ALPHA = 0.1
-DEFAULT_BRAIN_VNC_MESH_ALPHA = 0.05
+DEFAULT_BRAIN_VNC_MESH_ALPHA = 0.04
 
 # Legend modes. 'tree' renders exactly like 'type' (same native legend,
 # used by static exports) and additionally tags traces so the exported
@@ -2165,6 +2165,10 @@ class VisualizeSkeleton:
     saveas: str = None
     '''filename to save the plot, if an absolute path is given, ignore data_folder'''
 
+    folder_prefix: str = 'plot-3d'
+    '''first token of the output folder name (``<prefix>_<dataset abbrev>_...``).
+    The type-mapping validation pipeline passes ``type-map``.'''
+
     export_views: bool | list = True
     '''
     Which views to export as PNG.
@@ -2910,25 +2914,23 @@ class VisualizeSkeleton:
     Supported Formats
     -----------------
     - **'auto'** (default): Automatically selects optimal color based on background_color:
-        • White background: 'rgba(200, 230, 240, 0.05)' (light blue, 5% opacity)
-        • Black background: 'rgba(60, 60, 70, 0.05)' (dark gray, 5% opacity)
+        • Any background: 'rgba(116, 168, 214, 0.04)' (#74A8D6, 4% opacity)
     - **Named colors**: 'lightblue', 'gray', etc.
     - **Hex colors**: '#RGB', '#RGBA', '#RRGGBB', '#RRGGBBAA'
     - **RGB(A) tuples/lists**: 0-255 integers or normalized 0-1 floats
     - **CSS rgb/rgba and hsl/hsla strings**, including percentage alpha
 
-    An explicit alpha overrides the mesh default (0.05); a color without alpha
+    An explicit alpha overrides the mesh default (0.04); a color without alpha
     uses that default.
     
     Recommendations
     ---------------
-    - White background: Light blue/gray with 2-10% opacity
-    - Black background: Dark gray with 2-10% opacity to avoid mesh fragment highlights
+    - Any background: light blue #74A8D6 with 2-10% opacity
     
     Examples
     --------
     >>> brain_mesh_color = 'auto'  # Adaptive (default)
-    >>> brain_mesh_color = 'rgba(200, 230, 240, 0.05)'  # Light blue, 5% opacity
+    >>> brain_mesh_color = 'rgba(116, 168, 214, 0.04)'  # #74A8D6, 4% opacity
     >>> brain_mesh_color = (60, 60, 70, 0.05)  # Dark gray tuple
     >>> brain_mesh_color = 'rgba(40, 40, 50, 0.05)'  # Very subtle for dark backgrounds
     '''
@@ -2954,17 +2956,16 @@ class VisualizeSkeleton:
     Supported Formats
     -----------------
     - **'auto'** (default): Automatically selects optimal color based on background_color:
-        • White background: 'rgba(200, 230, 240, 0.05)' (light green, 5% opacity)
-        • Black background: 'rgba(60, 60, 70, 0.05)' (dark green-gray, 5% opacity)
+        • Any background: 'rgba(116, 168, 214, 0.04)' (#74A8D6, 4% opacity)
     - **Named colors**: 'lightgreen', 'gray', etc.
     - **Hex colors**: '#RGB', '#RGBA', '#RRGGBB', '#RRGGBBAA'
     - **RGB(A) tuples/lists**: 0-255 integers or normalized 0-1 floats
     - **CSS rgb/rgba and hsl/hsla strings**, including percentage alpha
 
-    An explicit alpha overrides the mesh default (0.05); a color without alpha
+    An explicit alpha overrides the mesh default (0.04); a color without alpha
     uses that default.
     
-    Note: Default 'auto' uses slightly different hue from brain_mesh_color to distinguish.
+    Note: Default 'auto' matches brain_mesh_color exactly (#74A8D6, 4% opacity).
     '''
 
     progress_total: int | None = None
@@ -2985,11 +2986,11 @@ class VisualizeSkeleton:
         """
         return {
             'light': (
-                f'rgba(200, 230, 240, {DEFAULT_BRAIN_VNC_MESH_ALPHA})'
-            ),  # Light blue, 5% opacity
+                f'rgba(116, 168, 214, {DEFAULT_BRAIN_VNC_MESH_ALPHA})'
+            ),  # #74A8D6, 4% opacity
             'dark': (
-                f'rgba(60, 60, 70, {DEFAULT_BRAIN_VNC_MESH_ALPHA})'
-            ),  # Subtle dark gray, 5% opacity
+                f'rgba(116, 168, 214, {DEFAULT_BRAIN_VNC_MESH_ALPHA})'
+            ),  # #74A8D6, 4% opacity
         }
 
     def _get_effective_mesh_color(self, mesh_type='brain'):
@@ -3694,7 +3695,8 @@ class VisualizeSkeleton:
         )
         return button_html + style_html + script_html
 
-    def _tree_neuron_label(self, neuron_id, source_row, source_dataset=None):
+    def _tree_neuron_label(self, neuron_id, source_row, source_dataset=None,
+                           type_override=None, tag=None):
         """BodyId leaf label for the tree legend panel.
 
         NeuPrint datasets: ``'{bodyId}_{instance}'`` (e.g. ``11309_aMe4_L``).
@@ -3708,6 +3710,11 @@ class VisualizeSkeleton:
         over its mapped ``flywireType``. The latter is useful for ordinary
         FAFB/BANC rows, but is not the source neuron's native label (for
         example, MCNS ``SMP227`` can map to a ``CB*`` flywireType).
+
+        ``type_override`` replaces the type token with a category-qualified
+        one (e.g. ``CB4091(no_source)``, ``SMP223>s-CPDN3D``) for the
+        mapping-validation expansion bins, keeping the hemisphere suffix.
+        ``tag`` is appended as a standalone trailing token (e.g. ``(dup)``).
         """
         base = str(neuron_id)
         suffix = None
@@ -3746,9 +3753,21 @@ class VisualizeSkeleton:
                 inst = source_row.get('instance')
                 if inst is not None and pd.notna(inst) and str(inst).strip():
                     suffix = str(inst).strip()
+        if type_override:
+            # Category-qualified type token (validation expansion bins):
+            # replace the type, keep the hemisphere when it is known.
+            side = None
+            if source_row is not None:
+                side = self._neuron_hemisphere_code(source_row)
+            suffix = str(type_override)
+            if side in ('L', 'R'):
+                suffix = f'{suffix}_{side}'
         if suffix is None:
             suffix = legacy_name
-        return base if not suffix else f'{base}_{suffix}'
+        label = base if not suffix else f'{base}_{suffix}'
+        if tag:
+            label = f'{label} {tag}'
+        return label
 
     @staticmethod
     def _neuron_hemisphere_code(source_row):
@@ -3877,12 +3896,14 @@ class VisualizeSkeleton:
             'brainMeshRank': BRAIN_MESH_LEGEND_RANK,
             'vncMeshRank': VNC_MESH_LEGEND_RANK,
             'doubleClickMs': TREE_DOUBLE_CLICK_INTERVAL_MS,
+            'expandRoots': bool(getattr(self, '_drocat_expand_roots', False)),
         }
         panel_html = '<div id="drocat-legend-tree" style="display:none"></div>'
         style_html = (
             '<style>'
             '#drocat-legend-tree{position:fixed;right:10px;top:60px;'
-            'z-index:9999;width:280px;max-width:calc(100vw - 20px);'
+            'z-index:9999;width:fit-content;min-width:180px;'
+            'max-width:min(420px,calc(100vw - 20px));'
             'max-height:65vh;overflow:auto;box-sizing:border-box;'
             'font:12px/1.6 -apple-system,BlinkMacSystemFont,'
             'Segoe UI,sans-serif;border-radius:8px;padding:6px 8px;'
@@ -4020,13 +4041,22 @@ class VisualizeSkeleton:
         if (lg.type) {
           /* Custom-group hierarchy: group > type > bodyId. */
           if (!g.types[lg.type]) {
-            g.types[lg.type] = {items: {}, itemOrder: [], indices: []};
+            g.types[lg.type] = {items: {}, itemOrder: [], indices: [],
+                                sortKeys: {}, forceRoot: false};
             g.typeOrder.push(lg.type);
           }
           g.types[lg.type].indices.push(i);
+          if (lg.forceRoot) { g.types[lg.type].forceRoot = true; }
           if (!g.types[lg.type].items[lg.item]) {
             g.types[lg.type].items[lg.item] = [];
             g.types[lg.type].itemOrder.push(lg.item);
+          }
+          /* Leaf ordering: only types whose caller supplies an explicit
+             sortKey (validation expansion bins: category-qualified type +
+             suffix) are re-ordered; every other custom-group scene keeps
+             its trace insertion order. bodyId ties break deterministically. */
+          if (lg.sortKey) {
+            g.types[lg.type].sortKeys[lg.item] = lg.sortKey;
           }
           g.types[lg.type].items[lg.item].push(i);
         } else {
@@ -4062,6 +4092,21 @@ class VisualizeSkeleton:
     });
     groupOrder.sort(function(a, b) { return groups[a].rank - groups[b].rank; });
     meshOrder.sort(function(a, b) { return meshes[a].rank - meshes[b].rank; });
+    /* Sort only the leaf rows that carry an explicit caller sortKey
+       (validation expansion bins). Types with no sortKey keep insertion
+       order, so other custom-group scenes are unaffected. */
+    groupOrder.forEach(function(name) {
+      groups[name].typeOrder.forEach(function(t) {
+        var tt = groups[name].types[t];
+        if (!tt.sortKeys || !Object.keys(tt.sortKeys).length) { return; }
+        tt.itemOrder.sort(function(a, b) {
+          var ka = String(tt.sortKeys[a] != null ? tt.sortKeys[a] : a);
+          var kb = String(tt.sortKeys[b] != null ? tt.sortKeys[b] : b);
+          if (ka !== kb) { return ka < kb ? -1 : 1; }
+          return a < b ? -1 : (a > b ? 1 : 0);
+        });
+      });
+    });
     return {groups: groups, groupOrder: groupOrder, meshes: meshes,
             meshOrder: meshOrder, synapses: synapses, synOrder: synOrder};
   }
@@ -4111,8 +4156,14 @@ class VisualizeSkeleton:
     if (!gd) { return; }
     records.forEach(function(rec) {
       var on = rec.indices.every(function(i) { return isVisible(gd.data[i]); });
-      rec.eye.textContent = on ? '\\u25CF' : '\\u25CB';
-      rec.row.classList.toggle('drocat-lt-off', !on);
+      rec.eye.textContent = on ? '\u25CF' : '\u25CB';
+      /* Refinement: a GROUP row goes grey only when ALL of its leaves are
+         hidden; any visible leaf keeps the row solid.  Flat rows (mesh,
+         leaf) keep the exact every() semantics. */
+      var off = rec.group ? !rec.indices.some(function(i) {
+        return isVisible(gd.data[i]);
+      }) : !on;
+      rec.row.classList.toggle('drocat-lt-off', off);
     });
     if (masterEyeEl) {
       var anyOn = managedIndices().some(function(i) {
@@ -4212,10 +4263,16 @@ class VisualizeSkeleton:
     row.setAttribute('aria-expanded', 'false');
     groupEl.appendChild(row);
     var itemsEl = makeEl('div', 'drocat-lt-items');
-    itemsEl.style.display = 'none';
+    var startOpen = !!(opts && opts.expanded);
+    itemsEl.style.display = startOpen ? 'block' : 'none';
+    if (startOpen) {
+      groupEl.classList.add('drocat-lt-expanded');
+      caret.textContent = '\u25BC';
+      row.setAttribute('aria-expanded', 'true');
+    }
     groupEl.appendChild(itemsEl);
     parent.appendChild(groupEl);
-    records.push({row: row, eye: eye, indices: eyeIndices});
+    records.push({row: row, eye: eye, indices: eyeIndices, group: true});
     eye.addEventListener('click', function(e) {
       e.stopPropagation();
       var gd = graphDiv();
@@ -4357,7 +4414,8 @@ class VisualizeSkeleton:
       });
       var noSwatch = leafColors.length > 1;
       var itemsEl = attachExpandable(panel, name, color, neuronCount,
-                                     g.indices, {noSwatch: noSwatch});
+                                     g.indices, {noSwatch: noSwatch,
+                                                 expanded: CONFIG.expandRoots === true});
       var sitesByType = {};
       g.sites.forEach(function(s) {
         (sitesByType[s.type] = sitesByType[s.type] || []).push(s.index);
@@ -4383,7 +4441,12 @@ class VisualizeSkeleton:
           var tt = g.types[t];
           var typeNeuronCount = tt.itemOrder.length;
           var tColor = itemColor(data, tt.indices, color);
-          var prefixed = String(t).indexOf(' · ') >= 0;
+          /* A category-prefixed label ('query · X', 'matched · Y · verified',
+             'candidates', …) always stays a collapsed root even for a single
+             neuron, so the category never degenerates into a bare bodyId
+             row. `forceRoot` carries the same intent for bare-category
+             labels that no longer contain ' · '. */
+          var prefixed = String(t).indexOf(' · ') >= 0 || tt.forceRoot;
           if (typeNeuronCount < 2 && !prefixed) {
             /* Singleton plain type: no sub-row, show its bodyId directly. */
             tt.itemOrder.forEach(function(itemName) {
@@ -4416,7 +4479,8 @@ class VisualizeSkeleton:
         if (g.typeOrder.length) {
           var t0 = g.typeOrder[0];
           var tColor0 = itemColor(data, g.types[t0].indices, color);
-          var prefixed0 = String(t0).indexOf(' · ') >= 0;
+          var prefixed0 = String(t0).indexOf(' · ') >= 0
+            || g.types[t0].forceRoot;
           if (prefixed0) {
             var subEl0 = attachExpandable(itemsEl, t0, tColor0,
                                           g.types[t0].itemOrder.length,
@@ -7334,7 +7398,7 @@ class VisualizeSkeleton:
             '-',
             str(self.saveas).split('.')[0],
         ).strip('._-') or 'skeleton'
-        base_folder_name = f'plot-3d_{dataset_abbrev}_{folder_stem}'
+        base_folder_name = f'{self.folder_prefix}_{dataset_abbrev}_{folder_stem}'
         if self.include_timestamp:
             self.save_folder = os.path.join(self.output_dir, base_folder_name + '_' + timestamp)
         else:
@@ -12113,6 +12177,12 @@ class VisualizeSkeleton:
                         trace.name = legend_group
                         trace.legendgroup = legend_group  # Same type shares legend group
                         trace.legendrank = legend_rank
+                        # Plan I §4: layers stamped default-off (TM VEV
+                        # sibling groups) start hidden; the legend row stays
+                        # and one eye click restores the traces.
+                        if getattr(neuron_vols[source_index],
+                                   '_drocat_legend_default_off', False):
+                            trace.visible = False
                         should_show = legend_group not in shown_legend_groups
                         trace.showlegend = should_show
                         if should_show:
@@ -12146,8 +12216,62 @@ class VisualizeSkeleton:
                                         '_drocat_source_dataset', None)
                                 except (IndexError, TypeError):
                                     pass
+                            # Revision 3.12: per-leaf category detail from
+                            # the mapping-validation caller — the qualified
+                            # type token (e.g. CB4091(no_source),
+                            # SMP223>s-CPDN3D) replaces the raw type, and a
+                            # standalone tag (e.g. (dup)) appends.  The
+                            # resulting leaf string is also the sortKey so
+                            # leaves order by type+suffix.
+                            leaf_type_override = None
+                            leaf_tag = ''
+                            leaf_sort_key = ''
+                            tag_map = getattr(
+                                self, '_drocat_legend_tag_overrides',
+                                None) or {}
+                            sort_map = getattr(
+                                self, '_drocat_legend_sort_overrides',
+                                None) or {}
+                            leaf_type_map = getattr(
+                                self, '_drocat_legend_leaf_type_overrides',
+                                None) or {}
+
+                            def _lookup(mp, nid):
+                                if not mp:
+                                    return None
+                                if nid in mp:
+                                    return mp[nid]
+                                try:
+                                    return mp.get(int(nid))
+                                except (TypeError, ValueError):
+                                    return None
+
+                            leaf_tag = _lookup(tag_map, neuron_id) or ''
+                            leaf_sort_key = _lookup(sort_map, neuron_id) or ''
+                            obj = None
+                            if source_index < len(neuron_vols):
+                                obj = neuron_vols[source_index]
+                            if obj is not None:
+                                leaf_type_override = getattr(
+                                    obj, '_drocat_legend_type_override', None)
+                                if not leaf_tag:
+                                    leaf_tag = getattr(
+                                        obj, '_drocat_legend_leaf_tag', '') or ''
+                                if not leaf_sort_key:
+                                    leaf_sort_key = getattr(
+                                        obj, '_drocat_legend_sort_key', '') or ''
+                            if not leaf_type_override:
+                                # Fallback to the LEAF-only map (never the
+                                # root-level `type_overrides`, which holds
+                                # the root label for every layer and would
+                                # leak the category root into query/tier
+                                # leaves).
+                                leaf_type_override = _lookup(leaf_type_map,
+                                                             neuron_id)
                             tree_label = self._tree_neuron_label(
-                                neuron_id, source_row, overlay_source_dataset)
+                                neuron_id, source_row, overlay_source_dataset,
+                                type_override=leaf_type_override,
+                                tag=leaf_tag)
                             try:
                                 display_color = self._get_opaque_color(
                                     neuron_color)
@@ -12185,6 +12309,10 @@ class VisualizeSkeleton:
                                     'item': tree_label,
                                     'color': display_color,
                                     'customGroup': True,
+                                    'sortKey': leaf_sort_key or None,
+                                    'forceRoot': (neuron_type or '') in getattr(
+                                        self, '_drocat_legend_force_roots',
+                                        set()),
                                 }
                             else:
                                 # The interactive hover reads like the

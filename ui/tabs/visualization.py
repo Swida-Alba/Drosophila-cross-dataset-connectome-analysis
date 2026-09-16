@@ -21,6 +21,7 @@ from ..config import (
     SYNAPSE_VIEW_MODES,
     PRE_POST_SHAPES,
     LAYER_EDITOR_MODES,
+    NET_VIZ_SOURCE_MODES,
     get_user_default,
     has_user_default,
     is_valid_synapse_size,
@@ -503,20 +504,20 @@ def create_skeleton_tab():
                         hint="Show the ventral nerve cord mesh (male-cns / manc datasets).",
                     )
                     brain_mesh_color = ui.color_input(
-                        "Brain Mesh Color", value="#94a3b8",
+                        "Brain Mesh Color", value="#74A8D6",
                     ).props("dense").classes("drocat-input").style("width: 11rem")
                     brain_mesh_color_opacity = number_input(
-                        "Opacity", 0.05, 0, 1, 0.01,
+                        "Opacity", 0.04, 0, 1, 0.01,
                         hint=(
                             "Outline opacity for the picked color. Defaults "
-                            "to 0.05 (5%); only used when Auto is off."
+                            "to 0.04 (4%); only used when Auto is off."
                         ),
                     ).props("dense").classes("drocat-input").style("width: 7rem")
                     brain_mesh_color_auto = checkbox_input(
                         "Auto", True,
                         hint=(
-                            "Adaptive outline color: light tone on a white "
-                            "background, dark tone on black. Uncheck to use "
+                            "Adaptive outline color: light blue #74A8D6 at "
+                            "4% opacity on any background. Uncheck to use "
                             "the picked color and opacity for the brain "
                             "outline mesh."
                         ),
@@ -530,7 +531,7 @@ def create_skeleton_tab():
                         opacity baked in as rgba()."""
                         if brain_mesh_color_auto.value:
                             return "auto"
-                        hex_color = str(brain_mesh_color.value or "#94a3b8").strip()
+                        hex_color = str(brain_mesh_color.value or "#74A8D6").strip()
                         opacity = float(brain_mesh_color_opacity.value or 1.0)
                         if opacity >= 1.0:
                             return hex_color
@@ -1347,23 +1348,22 @@ def create_net_viz_tab():
 
         with ui.card().classes("w-full drocat-card").props('id="card-net-viz-source"'):
             section_header("Net-Viz Source", "source")
-            with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-                with ui.element("div").classes("grow min-w-[240px]"):
-                    net_viz_source = select_input(
-                        "Canvas Source",
-                        ["Path file", "Edge list editor"],
-                        "Path file",
-                        hint=(
-                            "Path file: load Complete Paths output. Edge list editor: "
-                            "build or edit an edge list with auto-save."
-                        ),
+            # The three canvas sources are mutually exclusive and are chosen
+            # with segmented buttons (mirroring the Skeleton tab).
+            net_viz_mode = {"value": "Edge list editor"}
+            with ui.row().classes(
+                "w-full items-center justify-between gap-4 px-2 flex-nowrap"
+            ):
+                mode_buttons = {}
+                for _mode in NET_VIZ_SOURCE_MODES:
+                    _btn = ui.button(_mode).props("outline no-caps").classes("w-1/3")
+                    _btn.style(
+                        "min-height: 3rem; font-size: 1.05rem; font-weight: 700;"
                     )
-                empty_canvas_button = ui.button(
-                    "Create Empty Canvas",
-                    icon="open_in_new",
-                ).props("color=secondary outline").classes("drocat-empty-canvas-btn")
+                    mode_buttons[_mode] = _btn
             ui.label(
-                "Path file mode accepts CSV or Excel with path_type / path_bodyId sheets."
+                "Build an edge list, create an empty HTML canvas, or load a "
+                "path result (CSV or Excel with path_type / path_bodyId sheets)."
             ).classes("text-caption drocat-muted")
 
             async def handle_path_upload(e):
@@ -1397,72 +1397,100 @@ def create_net_viz_tab():
                     path_upload_label.classes(replace="text-caption drocat-err")
                 path_upload_menu.close()
 
-            with ui.column().classes("w-full gap-2").props(
+            editor_mode_panel = ui.column().classes("w-full").props(
+                'id="card-net-viz-editor-panel"'
+            )
+            empty_canvas_panel = ui.column().classes("w-full").props(
+                'id="card-net-viz-empty-canvas"'
+            ).set_visibility(False)
+            path_input_panel = ui.column().classes("w-full").props(
                 'id="net-viz-path-input"'
-            ) as path_input_panel:
-                with ui.row().classes("w-full items-center gap-2"):
-                    with ui.button(icon="upload_file").props("flat dense round").classes(
-                        "drocat-upload-trigger"
-                    ).tooltip("Upload a *_allpaths_info file (CSV/Excel)"):
-                        with ui.menu() as path_upload_menu:
-                            ui.label("Load path data from Complete Paths").classes(
-                                "text-caption drocat-muted px-3 pt-2"
-                            )
-                            ui.label(
-                                "CSV / XLSX / XLS with path_type or path_bodyId sheets"
-                            ).classes("text-caption drocat-muted px-3 pb-1")
-                            ui.upload(
-                                label="Choose paths file",
-                                on_upload=handle_path_upload,
-                                auto_upload=True,
-                            ).props('accept=".csv,.xlsx,.xls" flat dense').classes("w-72")
-                            ui.link(
-                                "File format instructions",
-                                "docs/ui_guides/network.html#input-files",
-                            ).classes("drocat-doc-link px-3 pb-2")
-                    path_upload_label = ui.label("No path file selected.").classes(
-                        "text-caption drocat-muted drocat-truncate"
-                    )
+            ).set_visibility(False)
 
-            def update_net_viz_source():
-                source = net_viz_source.value
-                path_input_panel.set_visibility(source == "Path file")
-                if source != "Path file":
-                    path_upload_menu.close()
+            # Edge-list CSV exports are browser downloads. The configured
+            # output directory is reserved for artifacts generated by the
+            # Net-Viz run.
+            with editor_mode_panel:
+                editor = edge_list_editor(
+                    on_expand=lambda: _set_net_viz_mode("Edge list editor"),
+                )
 
-        editor_panel_ref = {"panel": None}
+            with empty_canvas_panel:
+                with ui.card().classes("w-full drocat-card").props(
+                    'id="card-net-viz-empty-canvas-card"'
+                ):
+                    section_header("Empty drawing canvas", "open_in_new")
+                    ui.label(
+                        "Create an empty interactive HTML canvas for direct "
+                        "drawing; no path data is needed."
+                    ).classes("text-caption drocat-muted")
+                    empty_canvas_button = ui.button(
+                        "Create Empty Canvas",
+                        icon="open_in_new",
+                    ).props("color=secondary outline").classes("drocat-empty-canvas-btn")
 
-        def expand_editor_for_source():
-            panel = editor_panel_ref.get("panel")
-            if panel is not None and not panel.value:
-                panel.set_value(True)
+            with path_input_panel:
+                with ui.card().classes("w-full drocat-card").props(
+                    'id="card-net-viz-path-upload-card"'
+                ):
+                    section_header("Path file (file upload)", "upload_file")
+                    ui.label(
+                        "Upload a Complete Paths result: CSV / XLSX / XLS with "
+                        "path_type or path_bodyId sheets."
+                    ).classes("text-caption drocat-muted")
+                    with ui.row().classes("w-full items-center gap-2"):
+                        with ui.button(icon="upload_file").props(
+                            "flat dense round"
+                        ).classes(
+                            "drocat-upload-trigger"
+                        ).tooltip("Upload a *_allpaths_info file (CSV/Excel)"):
+                            with ui.menu() as path_upload_menu:
+                                ui.label("Load path data from Complete Paths").classes(
+                                    "text-caption drocat-muted px-3 pt-2"
+                                )
+                                ui.label(
+                                    "CSV / XLSX / XLS with path_type or path_bodyId sheets"
+                                ).classes("text-caption drocat-muted px-3 pb-1")
+                                ui.upload(
+                                    label="Choose paths file",
+                                    on_upload=handle_path_upload,
+                                    auto_upload=True,
+                                ).props('accept=".csv,.xlsx,.xls" flat dense').classes(
+                                    "w-72"
+                                )
+                                ui.link(
+                                    "File format instructions",
+                                    "docs/ui_guides/network.html#input-files",
+                                ).classes("drocat-doc-link px-3 pb-2")
+                        path_upload_label = ui.label("No path file selected.").classes(
+                            "text-caption drocat-muted drocat-truncate"
+                        )
 
-        def collapse_editor_for_source():
-            panel = editor_panel_ref.get("panel")
-            if panel is not None and panel.value:
-                panel.set_value(False)
+        def _sync_net_viz_mode():
+            active = net_viz_mode["value"]
+            editor_mode_panel.set_visibility(active == "Edge list editor")
+            empty_canvas_panel.set_visibility(active == "Empty canvas")
+            path_input_panel.set_visibility(active == "File upload")
+            for _mode, _btn in mode_buttons.items():
+                _btn.props("color=primary" if _mode == active else "color=grey-7")
+            # Show the edge table directly (do not leave it collapsed behind
+            # its expansion header) when the editor mode is active. The guard
+            # avoids re-triggering the expansion's on_expand callback.
+            if active == "Edge list editor" and editor.expansion is not None:
+                if not editor.expansion.value:
+                    editor.expansion.set_value(True)
+            if active != "File upload":
+                path_upload_menu.close()
 
-        def update_net_viz_source_with_editor():
-            update_net_viz_source()
-            if net_viz_source.value == "Edge list editor":
-                expand_editor_for_source()
-            else:
-                collapse_editor_for_source()
+        def _set_net_viz_mode(value: str):
+            net_viz_mode["value"] = value
+            _sync_net_viz_mode()
 
-        # Keep the source selector and the editor expansion synchronized. The
-        # expansion callback handles the important reverse direction: opening
-        # the editor immediately selects it as the run source.
-        net_viz_source.on_value_change(
-            lambda _event: update_net_viz_source_with_editor()
-        )
-
-        # Edge-list CSV exports are browser downloads. The configured output
-        # directory is reserved for artifacts generated by the Net-Viz run.
-        editor = edge_list_editor(
-            on_expand=lambda: net_viz_source.set_value("Edge list editor"),
-        )
-        editor_panel_ref["panel"] = editor.expansion
-        update_net_viz_source()
+        # The expansion callback handles the reverse direction: opening the
+        # editor immediately selects it as the run source.
+        for _mode, _btn in mode_buttons.items():
+            _btn.on_click(lambda _e, m=_mode: _set_net_viz_mode(m))
+        _sync_net_viz_mode()
 
         with ui.card().classes("w-full drocat-card").props('id="card-net-viz-rendering"'):
             section_header("Rendering Options", "palette")
@@ -1534,7 +1562,10 @@ def create_net_viz_tab():
         return str(run_folder)
 
     async def execute_net_viz(empty_canvas=False):
-        editor_mode = (not empty_canvas) and net_viz_source.value == "Edge list editor"
+        editor_mode = (
+            (not empty_canvas)
+            and net_viz_mode["value"] == "Edge list editor"
+        )
         transient_editor_path = None
         if editor_mode:
             # Flush the auto-save when named; otherwise use a temporary CSV.
@@ -1576,7 +1607,12 @@ def create_net_viz_tab():
                     path_file_path["path"] = None
 
     async def run_net_viz():
-        await execute_net_viz(empty_canvas=False)
+        # In Empty canvas mode the main run button generates the canvas; the
+        # panel's dedicated button runs the same code path.
+        if net_viz_mode["value"] == "Empty canvas":
+            await execute_net_viz(empty_canvas=True)
+        else:
+            await execute_net_viz(empty_canvas=False)
 
 
     async def create_empty_canvas():

@@ -24,7 +24,7 @@ def _mesh_figure():
     # _apply_plotly_trace_color stores on the trace.
     fig.add_trace(go.Mesh3d(
         x=[0, 1, 0], y=[0, 0, 1], z=[0, 0, 0], i=[0], j=[1], k=[2],
-        color='#c8e6f0', opacity=0.05,
+        color='#74a8d6', opacity=0.04,
     ))
     # An explicit user mesh color must never be flipped by the switch.
     fig.add_trace(go.Mesh3d(
@@ -37,16 +37,16 @@ def _mesh_figure():
 
 def test_auto_mesh_theme_colors_pair():
     colors = VisualizeSkeleton._auto_mesh_theme_colors()
-    assert colors['light'] == 'rgba(200, 230, 240, 0.05)'
-    assert colors['dark'] == 'rgba(60, 60, 70, 0.05)'
+    assert colors['light'] == 'rgba(116, 168, 214, 0.04)'
+    assert colors['dark'] == 'rgba(116, 168, 214, 0.04)'
 
 
 def test_effective_mesh_color_follows_background():
     white = _make_visualizer('white')
     black = _make_visualizer('black')
-    assert white._get_effective_mesh_color('brain') == 'rgba(200, 230, 240, 0.05)'
-    assert black._get_effective_mesh_color('brain') == 'rgba(60, 60, 70, 0.05)'
-    assert black._get_effective_mesh_color('vnc') == 'rgba(60, 60, 70, 0.05)'
+    assert white._get_effective_mesh_color('brain') == 'rgba(116, 168, 214, 0.04)'
+    assert black._get_effective_mesh_color('brain') == 'rgba(116, 168, 214, 0.04)'
+    assert black._get_effective_mesh_color('vnc') == 'rgba(116, 168, 214, 0.04)'
 
 
 def test_collect_adaptive_mesh_indices_matches_only_auto_colors():
@@ -61,9 +61,9 @@ def test_theme_toggle_html_starts_at_background_theme():
     assert 'drocat-theme-toggle' in html
     assert '"initial": "light"' in html
     # Both adaptive mesh colors are baked in so the switch can flip either
-    # way regardless of the theme the page was generated with.
-    assert '#c8e6f0' in html
-    assert '#3c3c46' in html
+    # way regardless of the theme the page was generated with; both themes
+    # now share the #74a8d6 tone at 4% opacity.
+    assert html.count('#74a8d6') >= 2
     assert '"meshTraces": [0]' in html
     # Inert under automation so webdriver exports never capture it.
     assert 'navigator.webdriver' in html

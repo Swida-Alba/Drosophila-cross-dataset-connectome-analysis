@@ -134,6 +134,46 @@ def test_tree_neuron_label_normalizes_legacy_names():
         'MeVPMe7_L (12805)', row) == '12805_MeVPMe7_L'
 
 
+def test_tree_hover_body_id_resolution():
+    class _Vol:
+        id = 720575940647731252  # FAFB-sized: int64-exact only
+
+    assert VisualizeSkeleton._tree_hover_body_id(
+        [_Vol()], 0, '7205759406477') == 720575940647731252
+    # source_index beyond the list, empty list, un-int-able id, no list
+    assert VisualizeSkeleton._tree_hover_body_id([_Vol()], 5, '1') is None
+    assert VisualizeSkeleton._tree_hover_body_id([], 0, '1') is None
+    assert VisualizeSkeleton._tree_hover_body_id([object()], 0, None) is None
+    assert VisualizeSkeleton._tree_hover_body_id(None, 0, '1') is None
+
+
+def test_tree_leaf_hover_embeds_bodyid_without_renaming_trace():
+    """Ordinary tree scenes: the interactive hover reads like the bodyId
+    leaf while the trace keeps its type-level name for the native legend
+    (static exports never see hoverlabels)."""
+    trace = go.Scatter3d(x=[1], y=[2], z=[3], mode='lines', name='Tm3')
+    ok = VisualizeSkeleton._apply_tree_leaf_hover(
+        trace, '720575940647731252_Tm3_L', 720575940647731252)
+    assert ok is True
+    assert '<b>720575940647731252_Tm3_L</b>' in trace.hovertemplate
+    assert 'bodyId 720575940647731252' in trace.hovertemplate
+    # legend identity untouched: hover-only change
+    assert trace.name == 'Tm3'
+    assert trace.customdata is None
+    assert trace.legendgroup is None
+
+
+def test_tree_leaf_hover_falls_back_to_leaf_label():
+    """Without a resolvable bodyId the hover still names the leaf (the
+    label itself starts with the bodyId) instead of the type name."""
+    trace = go.Scatter3d(x=[1], y=[2], z=[3], mode='lines', name='Tm3')
+    ok = VisualizeSkeleton._apply_tree_leaf_hover(
+        trace, '11309_aMe4_L', None)
+    assert ok is False
+    assert trace.hovertemplate == '<b>11309_aMe4_L</b><extra></extra>'
+    assert trace.name == 'Tm3'
+
+
 def test_legend_tree_html_contains_panel_and_markers():
     html = _make_visualizer()._legend_tree_html()
     assert 'drocat-legend-tree' in html
@@ -146,11 +186,13 @@ def test_legend_tree_html_contains_panel_and_markers():
     # banner-aware positioning + webdriver guard
     assert 'drocat-warning-container' in html
     assert 'navigator.webdriver' in html
-    # panel sits on the right, below the theme switch
+    # panel sits on the right, below the theme switch; content-width (shrink
+    # to fit short labels) capped at 420px / the viewport.
     assert 'position:fixed;right:10px;top:60px;' in html
     assert '"brainMeshRank": 200000000' in html
     assert '"vncMeshRank": 200000001' in html
-    assert 'width:280px;max-width:calc(100vw - 20px);' in html
+    assert 'width:fit-content;min-width:180px;' in html
+    assert 'max-width:min(420px,calc(100vw - 20px));' in html
     assert 'overflow:auto;box-sizing:border-box;' in html
     assert '.drocat-lt-items{padding-left:16px;min-width:max-content;}' in html
     # manual detector matches Plotly 6.4.0's native doubleClickDelay default
@@ -252,3 +294,14 @@ def test_tree_injection_is_idempotent(tmp_path):
     before = page.read_text(encoding='utf-8')
     visualizer._inject_page_extras(str(page), legend_tree=True)
     assert page.read_text(encoding='utf-8') == before
+
+
+def test_tree_sort_only_when_sortkey_present():
+    """The legend panel re-orders a leaf container only when its leaves
+    carry an explicit sortKey (validation expansion bins). Other
+    custom-group scenes keep insertion order."""
+    html = _make_visualizer()._legend_tree_html()
+    # the client sorts inside a truthiness guard on the stamped key
+    assert 'if (lg.sortKey) {' in html
+    assert 'if (!tt.sortKeys || !Object.keys(tt.sortKeys).length) { return; }' \
+        in html

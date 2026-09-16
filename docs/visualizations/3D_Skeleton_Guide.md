@@ -691,8 +691,8 @@ vs = VisualizeSkeleton(
 
 **Note:** `mesh_color` and `mesh_alpha` apply only to ROI meshes (specified in `mesh_roi`).
 Brain envelope and VNC outline meshes use separate color settings:
-- `brain_mesh_color`: Color for the brain mesh (default: 'auto', 5% opacity)
-- `vnc_mesh_color`: Color for the VNC mesh (default: 'auto', 5% opacity)
+- `brain_mesh_color`: Color for the brain mesh (default: 'auto', #74A8D6 at 4% opacity)
+- `vnc_mesh_color`: Color for the VNC mesh (default: 'auto', #74A8D6 at 4% opacity)
 
 **Alpha Override Behavior:**
 - If `mesh_color` contains explicit alpha (e.g., RGBA tuple, `rgba()` string, or hex with alpha), those alpha values override `mesh_alpha`

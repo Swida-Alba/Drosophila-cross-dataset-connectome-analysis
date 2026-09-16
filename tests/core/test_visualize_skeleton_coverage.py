@@ -224,20 +224,20 @@ class TestVerbosityHelpers:
 
     def test_get_effective_mesh_color(self):
         vis = make_vis(brain_mesh_color='auto', vnc_mesh_color='auto')
-        assert vis._get_effective_mesh_color('brain') == 'rgba(200, 230, 240, 0.05)'
+        assert vis._get_effective_mesh_color('brain') == 'rgba(116, 168, 214, 0.04)'
         vis.background_color = 'black'
-        assert vis._get_effective_mesh_color('brain') == 'rgba(60, 60, 70, 0.05)'
-        assert vis._get_effective_mesh_color('vnc') == 'rgba(60, 60, 70, 0.05)'
+        assert vis._get_effective_mesh_color('brain') == 'rgba(116, 168, 214, 0.04)'
+        assert vis._get_effective_mesh_color('vnc') == 'rgba(116, 168, 214, 0.04)'
         vis.brain_mesh_color = 'rgba(1, 2, 3, 0.5)'
         vis.vnc_mesh_color = 'rgba(4, 5, 6, 0.5)'
         assert vis._get_effective_mesh_color('brain') == 'rgba(1, 2, 3, 0.5)'
         assert vis._get_effective_mesh_color('vnc') == 'rgba(4, 5, 6, 0.5)'
         vis.background_color = 'white'
         vis.vnc_mesh_color = 'auto'
-        assert vis._get_effective_mesh_color('vnc') == 'rgba(200, 230, 240, 0.05)'
+        assert vis._get_effective_mesh_color('vnc') == 'rgba(116, 168, 214, 0.04)'
 
     def test_mesh_opacity_defaults(self):
-        assert vs_module.DEFAULT_BRAIN_VNC_MESH_ALPHA == 0.05
+        assert vs_module.DEFAULT_BRAIN_VNC_MESH_ALPHA == 0.04
         assert vs_module.DEFAULT_ROI_MESH_ALPHA == 0.1
         assert VisualizeSkeleton.mesh_alpha == 0.1
 

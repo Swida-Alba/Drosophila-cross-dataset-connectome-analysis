@@ -223,7 +223,7 @@ vs = VisualizeSkeleton(
     dataset='hemibrain:v1.2.1',
     neuron_layers=['EB'],
     brain_mesh='whole',  # Requires transform confirmation
-    brain_mesh_color='rgba(200, 230, 240, 0.05)'
+    brain_mesh_color='rgba(116, 168, 214, 0.04)'
 )
 vs.plot_neurons()
 ```
