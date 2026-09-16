@@ -218,6 +218,16 @@ TOOL_REGISTRY: Dict[str, dict] = {
             "find_lines": "finder.find_lines_batch(**method_params)",
         },
     },
+    "nb_find_lines_expanded": {
+        "label": "Find Driver Lines (cross-dataset expansion)",
+        "import": "from neuronbridge_query_expansion import ExpandedLineFinder",
+        "class": "ExpandedLineFinder",
+        "var": "finder",
+        "init_method": None,
+        "methods": {
+            "find_lines": "finder.run(**method_params)",
+        },
+    },
     "nb_find_neuron": {
         "label": "Find EM Neurons",
         "import": "from neuronbridge_finder import NeuronBridgeFinder",

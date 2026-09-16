@@ -152,6 +152,25 @@ except ImportError:
         CrossDatasetTypeMapper = None  # type: ignore
         get_type_mapper = None  # type: ignore
 
+# Output-detail policy (Compact prune passes for the three batch methods)
+try:
+    from neuronbridge_output_policy import (
+        prune_colabel_run,
+        prune_find_lines_run,
+        prune_find_neurons_run,
+    )
+except ImportError:  # pragma: no cover - ``src/`` on sys.path imports
+    try:
+        from src.neuronbridge_output_policy import (
+            prune_colabel_run,
+            prune_find_lines_run,
+            prune_find_neurons_run,
+        )
+    except ImportError:
+        prune_find_lines_run = None  # type: ignore
+        prune_find_neurons_run = None  # type: ignore
+        prune_colabel_run = None  # type: ignore
+
 # Try to import img2pptx for PPTX generation
 try:
     from utils.report_utils import img2pptx
@@ -374,7 +393,11 @@ class NeuronBridgeFinder:
         Path to the datasets folder containing neuron_df CSV files.
         Default: auto-detect from module location.
     use_cache : bool
-        Whether to cache API results locally. Default: True
+        Whether to cache API results locally. Default: False — NeuronBridge
+        queries are large and rarely reused (unlike the connection-data
+        caches), so the match cache would grow without ever paying off.
+        The Find Lines / Find EM Neurons / Co-Labeling tabs expose this
+        default as the Settings → NeuronBridge Match Cache option.
     cache_folder : str, optional
         Folder for cached results. Default: auto-detect.
     verbose : bool
@@ -426,7 +449,7 @@ class NeuronBridgeFinder:
     """
     
     datasets_path: Optional[str] = None
-    use_cache: bool = True
+    use_cache: bool = False
     cache_folder: Optional[str] = None
     verbose: bool = True
     separate_splitgal4: bool = False
@@ -621,6 +644,11 @@ class NeuronBridgeFinder:
         bool
             True if the entry is in the cache index
         """
+        # Cache-off mode (the default since the output-modes change): the
+        # partition must treat everything as uncached, otherwise bodies are
+        # routed to the bulk cache loader and silently vanish.
+        if not self.use_cache:
+            return False
         # Direct checks cover newly-created entries even if another worker
         # saved them after the startup index was built.
         if os.path.exists(self._get_cache_path(cache_type, identifier)):
@@ -4927,6 +4955,30 @@ class NeuronBridgeFinder:
         actual_image = selected or em_images[0]
         return self._dataset_name_from_em_image(actual_image), selected
 
+    @classmethod
+    def _canonical_source_dataset(
+        cls,
+        expected_dataset: Optional[str],
+        actual_dataset: Optional[str],
+    ) -> Optional[str]:
+        """Stable output spelling for a body's source dataset.
+
+        Fresh fetches stamp NeuronBridge's ``publishedName`` identity
+        (``flywire_fafb:v783``) while cache loads stamp the caller's
+        spelling (``flywire_FAFB_v783``); the two spellings then split
+        ``datasets_labeled`` / ``matched_datasets`` counts.  When the
+        fetched identity MATCHES the expected dataset, the caller's
+        spelling wins; genuinely different identities pass through.
+        """
+        if (
+            actual_dataset
+            and expected_dataset
+            and expected_dataset != 'unknown'
+            and cls._datasets_match(expected_dataset, actual_dataset)
+        ):
+            return expected_dataset
+        return actual_dataset or expected_dataset
+
     def _validate_body_id_dataset(
         self,
         body_id: int,
@@ -5846,7 +5898,7 @@ class NeuronBridgeFinder:
                 )
                 if not lines_df.empty:
                     lines_df = lines_df.copy()
-                    lines_df['source_dataset'] = actual_ds or expected_ds
+                    lines_df['source_dataset'] = self._canonical_source_dataset(expected_ds, actual_ds)
                     lines_df['source_bodyId'] = body_id
                 return body_id, lines_df, False  # skipped=False
             except Exception as e:
@@ -6050,7 +6102,7 @@ class NeuronBridgeFinder:
                         )
                         if not lines_df.empty:
                             lines_df = lines_df.copy()
-                            lines_df['source_dataset'] = actual_ds or expected_ds
+                            lines_df['source_dataset'] = self._canonical_source_dataset(expected_ds, actual_ds)
                             lines_df['source_bodyId'] = body_id
                         results[body_id] = lines_df
                     except Exception as e:
@@ -6196,15 +6248,16 @@ class NeuronBridgeFinder:
         line_name: str,
         output_path: str,
         verbose: bool = True,
-        sort_by: str = 'max_score'
+        sort_by: str = 'max_score',
+        group_in_by_dataset: bool = True
     ) -> None:
         """
         Save dataset-categorized neuron files and type summary files.
-        
+
         Creates:
         - {line}_{dataset}_neurons.csv: Neurons for each dataset
         - {line}_{dataset}_types.csv: Type summary with labeled_N and typed_N_in_dataset
-        
+
         Parameters
         ----------
         neurons_df : pd.DataFrame
@@ -6215,25 +6268,39 @@ class NeuronBridgeFinder:
             Output directory path
         verbose : bool
             Whether to print progress messages
+        group_in_by_dataset : bool
+            Group the per-dataset files into a `by_dataset/` subfolder
+            (Find EM Neurons run roots; the Compact output-detail pass
+            prunes the row-level ones there). Co-Labeling passes False to
+            keep its `line_labeled_neurons/` layout unchanged.
         """
         if 'dataset' not in neurons_df.columns:
             return
-        
+
         # Group by dataset
         for dataset, ds_df in neurons_df.groupby('dataset'):
             # Normalize dataset name for filename (replace : with _)
             ds_filename = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
-            
+
+            # Per-dataset files are source-data details; Find EM Neurons
+            # groups them in one subfolder so the run root carries only the
+            # deliverables.
+            target_dir = (
+                os.path.join(output_path, 'by_dataset')
+                if group_in_by_dataset else output_path
+            )
+            os.makedirs(target_dir, exist_ok=True)
+
             # Save dataset-specific neurons file
-            ds_neurons_file = os.path.join(output_path, f'{line_name}_{ds_filename}_neurons.csv')
+            ds_neurons_file = os.path.join(target_dir, f'{line_name}_{ds_filename}_neurons.csv')
             ds_df.to_csv(ds_neurons_file, index=False)
             if verbose:
                 self._vprint(f"   💾 Saved: {ds_neurons_file}")
-            
+
             # Create type summary
             type_summary = self._create_type_summary(ds_df, dataset, sort_by=sort_by)
             if not type_summary.empty:
-                ds_types_file = os.path.join(output_path, f'{line_name}_{ds_filename}_types.csv')
+                ds_types_file = os.path.join(target_dir, f'{line_name}_{ds_filename}_types.csv')
                 type_summary.to_csv(ds_types_file, index=False)
                 if verbose:
                     self._vprint(f"   💾 Saved: {ds_types_file}")
@@ -7382,6 +7449,7 @@ class NeuronBridgeFinder:
         sort_by: str = 'max_score',
         visualization_settings: Optional[Dict[str, Any]] = None,
         min_score: float = 30000.0,
+        keep_per_match_csv: bool = True,
     ) -> pd.DataFrame:
         """
         Find EM neurons for multiple driver lines with automatic saving.
@@ -7443,6 +7511,11 @@ class NeuronBridgeFinder:
             Score cutoff used for score-based visualization annotations. The
             raw per-line result files always retain the ranked top-N matches,
             including matches below this cutoff.
+        keep_per_match_csv : bool, default True
+            Output detail: keep the bodyId-level tables ('all_neurons.csv',
+            '{line}_neurons.csv', 'by_dataset/*_neurons.csv'). False
+            (Compact) removes them once the per-dataset type summaries
+            exist; removals are audited in 'cleanup_audit.json'.
             
         Returns
         -------
@@ -7525,6 +7598,7 @@ class NeuronBridgeFinder:
                     'type_filter': type_filter,
                     'datasets_to_visualize': datasets_to_visualize,
                     'min_score': min_score,
+                    'keep_per_match_csv': keep_per_match_csv,
                 }
             )
             self._vprint(f"   💾 Parameters: parameters.json")
@@ -7866,7 +7940,18 @@ class NeuronBridgeFinder:
                         sort_by=sort_by,
                         visualization_settings=visualization_settings,
                     )
-            
+
+            # Output-detail policy (Full keeps everything; Compact drops the
+            # bodyId-level match tables once the type aggregates exist).
+            if output_path and prune_find_neurons_run is not None:
+                try:
+                    prune_find_neurons_run(
+                        output_path,
+                        keep_per_match_csv=keep_per_match_csv,
+                    )
+                except Exception as exc:
+                    self._vprint(f"   ⚠️ Output cleanup skipped: {exc}")
+
             return combined_df
         
         self._vprint(f"\n⚠️ No neurons found for any of the {len(lines)} line(s)")
@@ -7892,6 +7977,7 @@ class NeuronBridgeFinder:
         sort_by: str = 'max_score',
         visualize_by: str = 'type',
         visualization_settings: Optional[Dict[str, Any]] = None,
+        keep_per_match_csv: bool = True,
     ) -> Dict[str, Any]:
         """
         Analyze co-labeling patterns among given driver lines.
@@ -7906,6 +7992,11 @@ class NeuronBridgeFinder:
             - Single line: 'LH173'
             - Multiple as string: 'LH173,VT037867,SS00731'
             - Multiple as list: ['LH173', 'VT037867', 'SS00731']
+        keep_per_match_csv : bool, default True
+            Output detail: keep the row-level tables ('line_labeled_neurons/'
+            and 'distribution_data_by_neuron.csv'). False (Compact) removes
+            them once the similarity matrices/report exist; removals are
+            audited in 'cleanup_audit.json'.
         match_type : str, optional
             Match algorithm: 'cds', 'pppm', or 'both'.
             If None, uses self.match_type. Default: None
@@ -8105,6 +8196,7 @@ class NeuronBridgeFinder:
                     'background_color': background_color,
                     'type_filter': type_filter,
                     'datasets_to_visualize': datasets_to_visualize,
+                    'keep_per_match_csv': keep_per_match_csv,
                 }
             )
             self._vprint(f"   💾 Parameters: parameters.json")
@@ -8209,7 +8301,7 @@ class NeuronBridgeFinder:
                         neurons_df.to_csv(neurons_csv, index=False)
                         
                         # Split by dataset and save dataset-specific files with type summaries
-                        self._save_dataset_categorized_files(neurons_df, safe_name, neurons_dir, verbose=False, sort_by=sort_by)
+                        self._save_dataset_categorized_files(neurons_df, safe_name, neurons_dir, verbose=False, sort_by=sort_by, group_in_by_dataset=False)
                 
                 self._vprint(f"   💾 Line neurons: {neurons_dir}/ ({len(line_neurons_dict)} lines, split by dataset)")
         
@@ -8416,7 +8508,19 @@ class NeuronBridgeFinder:
         self._vprint(f"   Lines analyzed: {len(line_list)}")
         self._vprint(f"   Total unique types: {len(expression_transposed)}")
         self._vprint(f"   Output: {output_path}")
-        
+
+        # Output-detail policy (Full keeps everything; Compact drops
+        # line_labeled_neurons/ and the by-neuron distribution data once
+        # the matrices/report exist).
+        if output_path and prune_colabel_run is not None:
+            try:
+                prune_colabel_run(
+                    output_path,
+                    keep_per_match_csv=keep_per_match_csv,
+                )
+            except Exception as exc:
+                self._vprint(f"   ⚠️ Output cleanup skipped: {exc}")
+
         return results
     
     def _generate_colabeling_report(
@@ -8704,6 +8808,8 @@ class NeuronBridgeFinder:
         pdf_landscape: bool = True,
         summary_format: Union[str, List[str]] = 'pdf',
         summary_background_color: Union[str, Tuple[int, int, int]] = 'black',
+        keep_per_match_csv: bool = True,
+        cleanup_source_images: bool = False,
     ) -> pd.DataFrame:
         """
         Find driver lines for multiple EM neurons with automatic saving.
@@ -8783,6 +8889,17 @@ class NeuronBridgeFinder:
             Background color for PDF/PPTX summary files. Can be named color 
             ('black', 'white'), hex string ('#000000'), or RGB tuple (0-255).
             Default: 'black' (dark background with white text)
+        keep_per_match_csv : bool
+            Output detail: keep the bodyId-level per-query match tables
+            ('{query}_lines.csv'). Default True (Full). False (Compact)
+            removes them once 'line_summary.csv' exists — under the
+            default-off match cache they regenerate only by re-running the
+            query. Removals are audited in 'cleanup_audit.json'.
+        cleanup_source_images : bool
+            Output detail: remove the downloaded 'images/' folders after the
+            integrated PDF/PPTX contact sheet was written. Default False
+            (Full). The images are embedded in the document, so this only
+            triggers when the artifact exists.
         
         Notes
         -----
@@ -8989,7 +9106,10 @@ class NeuronBridgeFinder:
                     'organize_by_region': organize_by_region,
                     'simple_mode': simple_mode,
                     'pdf_images_per_page': pdf_images_per_page,
-                    'pdf_landscape': pdf_landscape
+                    'pdf_landscape': pdf_landscape,
+                    'keep_per_match_csv': keep_per_match_csv,
+                    'cleanup_source_images': cleanup_source_images,
+                    'use_cache': self.use_cache,
                 }
             )
             self._vprint(f"   💾 Parameters: parameters.json")
@@ -9429,7 +9549,20 @@ class NeuronBridgeFinder:
                             pdf_landscape=pdf_landscape,
                             summary_background_color=summary_background_color,
                         )
-            
+
+            # Output-detail policy (Full keeps everything; Compact drops the
+            # bodyId-level match tables once their summary exists and the
+            # downloaded images once the PDF/PPTX exists). Audited in
+            # cleanup_audit.json.
+            try:
+                prune_find_lines_run(
+                    output_path,
+                    keep_per_match_csv=keep_per_match_csv,
+                    cleanup_source_images=cleanup_source_images,
+                )
+            except Exception as exc:
+                self._vprint(f"   ⚠️ Output cleanup skipped: {exc}")
+
             return combined_df
         
         return pd.DataFrame()

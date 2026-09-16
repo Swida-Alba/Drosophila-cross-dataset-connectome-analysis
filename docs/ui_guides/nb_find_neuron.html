@@ -64,6 +64,17 @@
   plot-3d_{ABBREV}_{dataset_folder}/...  # 3D views (when Visualize Top N > 0)
   individual_profiles/...               # PDF/PPTX (when enabled)</code></pre>
 
+  <h2>Output detail</h2>
+  <p><b>Full</b> (default) keeps every exported file. <b>Compact</b> drops the
+    bodyId-level match tables (<code>all_neurons.csv</code>,
+    <code>{line}_neurons.csv</code>, <code>by_dataset/*_neurons.csv</code>)
+    once the per-dataset type summaries are written — every removal is audited
+    in the run's <code>cleanup_audit.json</code>. Type summaries, the
+    type-mapped table, the distribution plot, and 3D renders always stay. The
+    NeuronBridge match cache is off by default (<b>Settings → NeuronBridge
+    Match Cache</b> re-enables it), so removed tables regenerate only by
+    re-running the query.</p>
+
   <div class="callout info">
     <b>Exported run guide:</b> every successful run also writes
     <code>_UserGuide_please_read_me.html</code> into the run folder — a

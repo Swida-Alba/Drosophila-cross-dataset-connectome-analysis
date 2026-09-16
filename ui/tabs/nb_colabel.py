@@ -4,7 +4,7 @@ from nicegui import ui
 from ..config import DATASETS, MATCH_ALGORITHMS, get_user_default
 from ..components.common import (
     dataset_selector, neuron_list_input, number_input, select_input, checkbox_input,
-    dir_input, section_header, param_grid, tool_page,
+    dir_input, section_header, param_grid, tool_page, output_detail_control,
 )
 from ..components.output_panel import OutputPanel
 from ..components.skeleton_visualization_settings import skeleton_visualization_settings
@@ -83,6 +83,17 @@ def create_nb_colabel_tab():
                     dataset_provider=lambda: "" if dataset.value in (None, "(all)") else dataset.value,
                     dataset_watchers=[dataset],
                 )
+            _, detail_flags = output_detail_control(
+                "Full keeps every exported file. Compact drops the row-level "
+                "source data (line_labeled_neurons/ and "
+                "distribution_data_by_neuron.csv) once the similarity "
+                "matrices and report are written — every removal is audited "
+                "in the run's cleanup_audit.json. The matrices, expression "
+                "data, by-type distributions, and the HTML report always "
+                "stay. The NeuronBridge match cache is off by default "
+                "(Settings → NeuronBridge Match Cache), so removed tables "
+                "regenerate only by re-running the analysis."
+            )
 
         # --- Advanced Settings (kept at the bottom, in its own card) ---
         with ui.card().classes("w-full drocat-card").props('id="card-nb-colabel-advanced"'):
@@ -145,7 +156,10 @@ def create_nb_colabel_tab():
         visualization_values = visualization_settings.values()
         if visualize_3d.value:
             visualization_settings.warn_empty_custom_palettes()
-        constructor_params = {"verbose": True}
+        constructor_params = {
+            "verbose": True,
+            "use_cache": bool(get_user_default("nb_use_cache")),
+        }
 
         method_params = {
             "lines": lines,
@@ -167,6 +181,7 @@ def create_nb_colabel_tab():
             "datasets_to_visualize": ds,
             "visualize_by": visualization_values["visualize_by"],
             "visualization_settings": visualization_values,
+            "keep_per_match_csv": detail_flags()["keep_per_match_csv"],
         }
 
         result = await output_panel.run(runner, "nb_colabel", constructor_params, "colabel",

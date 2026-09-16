@@ -15,6 +15,9 @@ def _finder(tmp_path, monkeypatch):
     monkeypatch.setattr(neuronbridge_finder_module, "NBClient", _DummyClient)
     return NeuronBridgeFinder(
         cache_folder=str(tmp_path),
+        # This module exercises the cache paths, which are off by default
+        # since the output-modes change.
+        use_cache=True,
         verbose=False,
         max_workers=1,
     )

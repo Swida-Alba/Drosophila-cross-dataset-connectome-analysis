@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+from copy import deepcopy
 
 # Project root (parent of ui/)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -18,6 +19,9 @@ TOKEN_FILE = PROJECT_ROOT / "config_local.json"
 LOCAL_CONFIG_FILE = PROJECT_ROOT / "ui" / "local_config.json"
 TAB_OUTPUT_DIRS_KEY = "tab_output_dirs"
 
+# mtime-keyed cache behind :func:`load_local_config` (see its docstring).
+_LOCAL_CONFIG_CACHE: dict = {"mtime_ns": None, "data": {}}
+
 try:
     from src.utils.naming_utils import canonical_dataset_name
 except ImportError:  # src not importable; legacy names stay as-is
@@ -26,28 +30,45 @@ except ImportError:  # src not importable; legacy names stay as-is
 
 
 def load_local_config() -> dict:
-    """Load the user-editable local UI configuration (output dir, etc.)."""
+    """Load the user-editable local UI configuration (output dir, etc.).
+
+    The file is read once per mtime change, not per call: the config is
+    consulted on every input keystroke (auto-suggest/history toggles) and
+    hundreds of times per page build (one ``get_user_default`` per widget),
+    and a synchronous disk read per call stalls the NiceGUI event loop.
+    Callers receive a fresh copy, so mutating the result never poisons the
+    cache.
+    """
     try:
         if LOCAL_CONFIG_FILE.exists():
+            mtime_ns = LOCAL_CONFIG_FILE.stat().st_mtime_ns
+            if _LOCAL_CONFIG_CACHE["mtime_ns"] == mtime_ns:
+                return deepcopy(_LOCAL_CONFIG_CACHE["data"])
             # utf-8-sig tolerates the UTF-8 BOM that Windows editors
             # prepend to saved JSON files.
             data = json.loads(LOCAL_CONFIG_FILE.read_text(encoding="utf-8-sig"))
             if isinstance(data, dict):
-                return data
+                _LOCAL_CONFIG_CACHE["mtime_ns"] = mtime_ns
+                _LOCAL_CONFIG_CACHE["data"] = data
+                return deepcopy(data)
     except (OSError, ValueError):
         pass
     return {}
 
 
-def save_local_config(config: dict) -> None:
-    """Persist the local UI configuration."""
+def save_local_config(config: dict) -> bool:
+    """Persist the local UI configuration (and refresh the load cache)."""
     try:
         LOCAL_CONFIG_FILE.write_text(
             json.dumps(config, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        _LOCAL_CONFIG_CACHE["mtime_ns"] = LOCAL_CONFIG_FILE.stat().st_mtime_ns
+        # Store a copy: the caller keeps owning the dict it passed in.
+        _LOCAL_CONFIG_CACHE["data"] = deepcopy(config)
         return True
     except OSError:
+        _LOCAL_CONFIG_CACHE["mtime_ns"] = None
         return False
 
 
@@ -385,6 +406,11 @@ DEFAULTS = {
     "network_layout": "distributed",
     "use_cache": True,
     "cache_only": False,
+    # NeuronBridge match cache: OFF by default — NB queries are large and
+    # rarely reused (unlike the connection-data caches), so the per-body
+    # match tables would accumulate without ever paying off. Applies to
+    # Find Driver Lines / Find EM Neurons / Co-Labeling.
+    "nb_use_cache": False,
     # Cache defaults (Settings -> Default Settings). Connection and
     # skeleton caches both stay on by default: fetched skeletons persist as
     # portable .swc.zst files in the shared cache, so every tab benefits.
@@ -495,6 +521,8 @@ SYNAPSE_VIEW_MODES = ["synapse", "pre-post sites", "skip"]
 PRE_POST_SHAPES = ["solid (spheres + cones)", "scatter (circles + diamonds)"]
 # Layer editor modes (Skeleton tab), shown as segmented buttons.
 LAYER_EDITOR_MODES = ["Standard", "Advanced", "File upload"]
+# Net-Viz canvas source modes, shown as the same segmented-button row.
+NET_VIZ_SOURCE_MODES = ["Edge list editor", "Empty canvas", "File upload"]
 
 # Brain-mesh option tokens + legacy normalization are canonical in
 # src/utils/naming_utils and shared with the renderer.
@@ -619,6 +647,16 @@ DEFAULT_SETTING_SPECS = {
         "group": "cache",
         "kind": "bool",
         "hint": "Never contact the server; requires a pre-built cache.",
+    },
+    "nb_use_cache": {
+        "label": "NeuronBridge Match Cache",
+        "group": "cache",
+        "kind": "bool",
+        "hint": "Cache NeuronBridge match tables across runs (Find Driver "
+                "Lines / Find EM Neurons / Co-Labeling). Off by default: "
+                "NB queries are large and rarely reused; re-running "
+                "refetches. On, repeat queries resolve from the local "
+                "match cache instead of the API.",
     },
     "cache_neurons": {
         "label": "Skeleton Cache (Cache Neurons)",

@@ -46,6 +46,61 @@ finder.analyze_colabeling(lines=["SS00001", "SS00002"], output_dir="/abs/output/
   `visualize_expression_matrix_merged(...)`, `visualize_labeling_distribution(...)`,
   `visualize_colabeling_distribution(...)` — standalone heatmaps/plots.
 
+## Output-detail policy (`src/neuronbridge_output_policy.py`)
+
+Shared prune pass behind the **Output detail: Full / Compact** control on
+all three NeuronBridge tabs. `prune_find_lines_run` / `prune_find_neurons_run`
+/ `prune_colabel_run(output_path, keep_per_match_csv, ...)` remove the
+bodyId-level source-data tables after that run's summaries/report exist and
+`images/` after the PDF/PPTX artifact exists (artifact-existence is the
+success check — the generator swallows failures). Idempotent; audits every
+removal in the run's `cleanup_audit.json`. The finder methods
+(`find_lines_batch`, `find_neurons_batch`, `analyze_colabeling`) accept
+`keep_per_match_csv` / `cleanup_source_images` and call it before returning.
+
+## Match cache default
+
+`NeuronBridgeFinder.use_cache` defaults to **False** (Settings → NeuronBridge
+Match Cache re-enables it per installation): NB queries are large and rarely
+reused, so the per-body match tables would accumulate without paying off.
+The flag gates both cache reads and writes.
+
+## Coverage + expansion companion modules
+
+### `src/neuronbridge_coverage.py`
+
+Advisory dataset-coverage snapshots for the NeuronBridge tab. There is no
+name/library index in the NeuronBridge bucket, so coverage is measured by
+probing `metadata/by_body/{id}.json` for a small sample of typed bodyIds from
+each dataset's LOCAL table:
+
+```python
+import neuronbridge_coverage as nbc
+
+snapshot = nbc.refresh(["male-cns:v1.0", "banc_v626"])  # network, ~seconds
+snapshot = nbc.load_snapshot()                # persisted, no network
+snapshot.coverage_of("male-cns:v1.0").status  # exact | aligned | unavailable | unknown
+snapshot.covered_datasets(["male-cns:v1.0"])  # {'male-cns:v1.0': 'male-cns:v0.9'}
+nbc.warnings_for(["banc_v626"], snapshot)     # advisory warning strings
+```
+
+Contract: `unknown` never disables; `unavailable` only warns — a stale or
+failed refresh must never lock out a dataset that works. Snapshot persisted
+at `cache/neuronbridge/coverage_snapshot.json`, per-dataset 7-day TTL keyed
+on NeuronBridge's `current.txt` version.
+
+### `src/neuronbridge_query_expansion.py`
+
+`ExpandedLineFinder` composes an untouched `NeuronBridgeFinder`: per query
+chip, resolve cross-dataset equivalents with the row-based type resolver
+(`resolve_valid_targets` → `expansion_targets`), route at the hosted release
+(`male-cns:v1.0` → `v0.9` via the mapper's curated shared-name alias), and run
+one `find_lines_batch` per chip. Writes `expansion_map.csv`,
+`expansion_summary.json`, and `user_warning_notes.txt` (coverage notes
+carry a `coverage:` prefix) into one
+`NB-find-lines-expanded_*` run folder. Mapper-unavailable or coverage-unknown
+degrades to the plain query path. See `skills/drocat-usage/tabs/nb-find-lines.md`.
+
 ## Notes
 
 - `download_images` toggles image download (`"neuronbridge"`, `"flylight"`,

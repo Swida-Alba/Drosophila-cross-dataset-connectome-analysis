@@ -263,14 +263,13 @@ print(results[results['line_type'] == 'split_gal4']['line'].unique()[:5])
 
 **Separate Output Files** (when `separate_splitgal4=True`):
 ```
-output/NB-find-lines_20241223_123456/
-├── all_lines.csv              # Combined results (all lines)
+output/NB-find-lines_{query}_{timestamp}/
+├── {query}_lines.csv          # Per-query results (row-level matches)
 ├── line_summary.csv           # Aggregated stats (all lines)
-├── gal4_lexa_lines.csv        # GAL4/LexA results only
 ├── gal4_lexa_summary.csv      # GAL4/LexA summary
-├── split_gal4_lines.csv       # Split-GAL4 results only
 ├── split_gal4_summary.csv     # Split-GAL4 summary
-└── images/
+├── parameters.json
+└── images/                    # (when image download is enabled)
 ```
 
 ---
@@ -554,20 +553,22 @@ results = nbf.find_lines_batch(
 **Output Files** (when `output_dir` is specified):
 ```
 output/NB-find-lines_aMe12_20241223_123456/
-├── all_lines.csv              # Combined results (row-level matches)
+├── aMe12_lines.csv            # Individual query results (row-level matches)
 ├── line_summary.csv           # Aggregated stats per line, SORTED BY weighted_score
 ├── gal4_lexa_summary.csv      # GAL4/LexA summary, SORTED BY weighted_score
 ├── split_gal4_summary.csv     # Split-GAL4 summary, SORTED BY weighted_score
-├── {query}_lines.csv          # Individual query results
-├── {query}_types.csv          # Type-level summary sorted by avg_score (v4.3.2+)
-├── gal4_lexa_lines.csv        # GAL4/LexA lines (if separate_splitgal4=True)
-├── split_gal4_lines.csv       # Split-GAL4 lines (if separate_splitgal4=True)
-├── top_types_heatmap.png      # Heatmap of top N types by avg_score (v4.3.2+)
+├── parameters.json            # Analysis parameters
 ├── images_summary.pdf         # PDF summary (pages ordered by weighted_score ranking)
 └── images/                    # Downloaded images
     └── {line_name}/
         └── *.png, *.jpg
 ```
+
+> The combined row-level tables (`all_lines.csv`, `gal4_lexa_lines.csv`,
+> `split_gal4_lines.csv`) and the type-level exports (`{query}_types.csv`,
+> `top_types_heatmap.png`) are no longer written — they were extremely large
+> for whole-GAL4-line queries. `line_summary.csv` is the main output; the
+> per-query `*_lines.csv` files retain every row-level match.
 
 **Line Summary Columns** (`*_summary.csv`):
 
@@ -617,21 +618,77 @@ Querying 'aMe12,MBON01' together finds lines labeling BOTH types.
 
 **💡 Tip**: For specificity/selectivity analysis of found lines, use `NeuronBridge_Colabel.py` with your top candidate lines. See [Co-Labeling Analysis](#co-labeling-analysis) section.
 
-**Type Summary Files** (`{query}_types.csv`):
+**Type-level summaries**: the standalone `{query}_types.csv` /
+`top_types_heatmap.png` exports were retired with the row-level combined
+tables. Type-level aggregation now lives in the Find EM Neurons mode
+(`{line}_{dataset_folder}_types.csv`) and the Co-Labeling expression
+matrices; `line_summary.csv` carries the per-line `matched_types` column
+for Find Lines runs.
 
-The type summary file aggregates results by neuron type and sorts by `avg_score` (descending), making it easy to identify the strongest candidate types:
+---
 
-| Column               | Description                                      |
-| -------------------- | ------------------------------------------------ |
-| `type_label`         | Neuron type name                                 |
-| `labeled_N`          | Number of neurons labeled by matching lines      |
-| `avg_score`          | Average match score (used for sorting/ranking)   |
-| `max_score`          | Maximum match score                              |
-| `std_score`          | Standard deviation of scores                     |
-| `typed_N_in_dataset` | Total neurons of this type in the source dataset |
-| `lines`              | Comma-separated list of matching driver lines    |
+#### Coverage-Routed, Name-Expanded Find Lines (v4.5.0+)
 
-This sorted format ensures that `top_n` type visualizations and selections use the strongest matches.
+The Find Driver Lines tab (and `src/neuronbridge_query_expansion.py`) wraps
+`find_lines_batch` with two layers that fix a real gap: **names resolve only
+in local dataset tables, and NeuronBridge hosts EM bodies only for a subset
+of DROCAT's datasets, at specific releases.** Before v4.5.0 a `male-cns:v1.0`
+query (the default dataset!) returned zero rows silently — the same bodyIds
+are hosted only under male-cns **v0.9** libraries, and BANC / optic-lobe are
+not hosted at all.
+
+**Coverage service** (`src/neuronbridge_coverage.py`): samples a few typed
+bodyIds per dataset from the local tables, probes NeuronBridge's
+`metadata/by_body/{id}.json`, and classifies each dataset as `exact`,
+`aligned` (hosted at another release: `male-cns:v1.0` → `v0.9`,
+`manc:v1.2.3` → `v1.2.1`), `unavailable` (BANC, optic-lobe), or `unknown`
+(offline / no local table — never disables anything). The snapshot persists
+at `cache/neuronbridge/coverage_snapshot.json` and refreshes automatically
+when NeuronBridge's data version changes (or after 7 days). Disabling
+unavailable datasets in the UI is advisory: runs targeting them warn and
+proceed.
+
+**Expansion orchestrator** (`ExpandedLineFinder.run(...)`): per query chip,
+resolve cross-dataset equivalents with the row-based type resolver
+(`resolve_valid_targets` → `expansion_targets` — splits expand to all branch
+names, conflicts to none, unmapped keeps the raw name), then run one
+`find_lines_batch` per chip at the hosted releases. The male-cns v1.0 → v0.9
+alignment needs no extra code: it IS the mapper's curated shared-name alias.
+
+```python
+from neuronbridge_query_expansion import ExpandedLineFinder
+
+finder = ExpandedLineFinder(verbose=True, max_workers=8)
+result = finder.run(
+    queries=["DNp01"],                       # male-cns v1.0 name → 3888 rows via v0.9
+    dataset=["male-cns:v1.0", "banc_v626"],  # user selection (BANC unavailable → warning)
+    expand_names=True,
+    coverage_datasets=["male-cns:v1.0", "banc_v626"],
+    match_type="cds", download_images=None, summary_format=None,
+    output_dir="./output",
+)
+```
+
+**Run folder** (`NB-find-lines-expanded_*`): flat for single-chip runs; one
+`chip_{query}/` folder per chip for multi-chip runs — plus root reports:
+`expansion_map.csv` (chip → expanded name → hosted release → mapping
+status), `expansion_summary.json` (original selection + coverage routing +
+cleanup audit), and `user_warning_notes.txt` (coverage warnings carry a
+`coverage:` prefix). See [Output Files](OUTPUT_FILES.md) §9a-bis.
+
+**Output detail — Full vs Compact:** Full (default) keeps every file.
+Compact keeps the newest N expanded runs' match tables (default N=1 —
+the latest query stays inspectable), prunes older Compact runs' tables,
+and removes the downloaded images once the PDF/PPTX exists — audited in
+`cleanup_audit.json`. A zero-byte summary/PDF (a crashed writer) never
+licenses deletion. The NeuronBridge match cache is OFF by
+default (`use_cache=False`; Settings → NeuronBridge Match Cache re-enables
+it) because NB queries are large and rarely reused — so a removed match
+table regenerates only by re-running the query. The same knob exists on
+Find EM Neurons (drops `all_neurons.csv` / `{line}_neurons.csv` /
+`by_dataset/*_neurons.csv` after the type summaries are written) and
+Co-Labeling (drops `line_labeled_neurons/` and
+`distribution_data_by_neuron.csv` after the matrices/report are written).
 
 ---
 
@@ -803,6 +860,7 @@ results = nbf.find_neurons_batch(
 output/findneurons_20241223_123456/
 ├── {line}_neurons.csv         # Matched neurons for each line
 ├── all_neurons.csv            # Combined results
+├── by_dataset/                # Per-dataset matches + type summaries
 └── plot-3d_{dataset}/          # Per-dataset visualization folder
     ├── {dataset}.html         # Interactive 3D skeleton viewer
     ├── parameters.txt         # Visualization settings record

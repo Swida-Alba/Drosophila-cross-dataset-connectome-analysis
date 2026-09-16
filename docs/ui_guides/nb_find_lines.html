@@ -21,10 +21,34 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Enter EM neurons (bodyIds, types, instances, or patterns).</li>
-    <li>Keep <b>Dataset</b> at <code>(all)</code> or restrict to one dataset.</li>
+    <li>Enter EM neurons (bodyIds, types, instances, or patterns) — the box
+      auto-suggests type/instance/bodyId names with the dataset they come
+      from, and the history list tags each value with its datasets.</li>
+    <li>Pick one or more <b>Datasets</b>, or keep the exclusive
+      <code>(all)</code> indicator to search everywhere. Datasets NeuronBridge
+      does not host are greyed out (advisory — runs still proceed with a
+      warning).</li>
+    <li>Keep <b>Expand query names across datasets</b> on to find every
+      hosted release's equivalent of each name.</li>
     <li>Click <b>Find Driver Lines</b>.</li>
   </ol>
+
+  <h2>Datasets &amp; NeuronBridge coverage</h2>
+  <p>NeuronBridge hosts EM bodies for a subset of DROCAT's datasets, and only
+    at specific releases. The tab keeps an auto-refreshing coverage snapshot
+    (<code>cache/neuronbridge/coverage_snapshot.json</code>) and shows it in
+    the caption under the dataset selector:</p>
+  <ul>
+    <li><b>Hosted exactly</b> — searched as-is (e.g. hemibrain:v1.2.1,
+      male-cns:v0.9, manc:v1.2.1, flywire FAFB v783).</li>
+    <li><b>Aligned</b> — the same bodies live in another hosted release
+      (e.g. <code>male-cns:v1.0 → male-cns:v0.9</code>,
+      <code>manc:v1.2.3 → manc:v1.2.1</code>); expansion searches the hosted
+      release's names.</li>
+    <li><b>Not hosted (disabled)</b> — BANC and optic-lobe have no
+      NeuronBridge records; runs targeting them warn but never block, in case
+      a snapshot is stale or the refresh failed.</li>
+  </ul>
 
   <h2>Inputs &amp; examples</h2>
   <table>
@@ -38,12 +62,16 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td>Datasets</td><td>the hosted releases</td><td>Multi-select; <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
+    <tr><td>Expand query names across datasets</td><td>on</td><td>Expand each name through the cross-dataset type mapper into every hosted release before searching (splits expand to all branch names, conflicts to none, unmapped keeps the raw name)</td></tr>
     <tr><td>Algorithm</td><td>cds</td><td>cds (fast), pppm (precise), both</td></tr>
     <tr><td>Top Lines for Images</td><td>30</td><td>When image download is enabled, download images only for the top N ranked lines (per category in separate mode); the search CSVs still contain all matches</td></tr>
     <tr><td>Separate Split-GAL4</td><td>on</td><td>GAL4/LexA and Split-GAL4 summarized separately</td></tr>
     <tr><td>Region</td><td>Brain</td><td>Brain, VNC, or All (image downloads)</td></tr>
     <tr><td>Max Workers</td><td>8</td><td>Parallel API workers; lower if rate-limited</td></tr>
     <tr><td>Sort By</td><td>max</td><td>max score or completeness (coverage)</td></tr>
+    <tr><td>Output detail</td><td>Full</td><td>Compact keeps the newest N runs' match tables (default 1), prunes older Compact runs' tables, and removes the downloaded images after the PDF/PPTX is generated (audited in <code>cleanup_audit.json</code>)</td></tr>
+    <tr><td>Compact: Keep Last N Runs' Match Tables</td><td>1</td><td>Rolling window for Compact: the newest N expanded runs keep their bodyId-level match tables; older Compact runs are pruned. 0 deletes immediately. Full ignores this.</td></tr>
   </table>
 
   <h2>Image download options</h2>
@@ -62,17 +90,34 @@
   </ul>
 
   <h2>Output</h2>
-  <p>The folder name uses the dataset abbreviation (<code>MCNS</code> =
-    male-cns, <code>FAFB</code> = flywire FAFB, ...) or <code>ALL</code> for
-    all-datasets searches:</p>
-  <pre><code>{output_dir}/NB-find-lines_MCNS_aMe12_20260815_145107/
-  aMe12_lines.csv            # all matched lines with scores
+  <p>With expansion on (default), everything lands in ONE per-run folder:</p>
+  <pre><code>{output_dir}/NB-find-lines-expanded_ALL_DNp01_20260915_040155/
+  expansion_map.csv          # chip → expanded name → hosted release → mapping status
+  expansion_summary.json     # original selection + coverage routing + cleanup audit
+  user_warning_notes.txt     # (when unavailable datasets were targeted; "coverage:" prefix)
+  cleanup_audit.json         # (Compact runs: removed files + reclaimed bytes)
+  DNp01_lines.csv            # single-chip runs are FLAT (multi-chip: chip_{query}/ folders)
   line_summary.csv           # summary per line (sorted by weighted_score)
   gal4_lexa_summary.csv      # (when Split-GAL4 separation is on)
   split_gal4_summary.csv     # (when Split-GAL4 separation is on)
   parameters.json
   images/...                 # (when image download is on)
   {query}_summary.pdf        # (when a PDF/PPTX summary is requested)</code></pre>
+  <p>With <b>Expand query names</b> off, the plain single-folder layout is
+    used: <code>NB-find-lines_MCNS_aMe12_20260815_145107/</code> with the same
+    per-query files directly inside.</p>
+
+  <div class="callout info">
+    <b>Output detail:</b> <b>Full</b> (default) keeps every file. <b>Compact</b>
+    keeps the newest N runs' match tables (<code>{query}_lines.csv</code>;
+    N defaults to 1 — the latest query stays inspectable), prunes older
+    Compact runs' tables, and removes the downloaded images once the PDF/PPTX
+    is generated — every removal is audited in the runs'
+    <code>cleanup_audit.json</code>, and a zero-byte summary/PDF (a crashed
+    writer) never licenses deletion. The NeuronBridge match cache is off by
+    default (<b>Settings → NeuronBridge Match Cache</b> re-enables it), so a
+    pruned match table regenerates only by re-running the query.
+  </div>
 
   <div class="callout warn">
     <b>Weighted score</b> = avg match score × coverage. A line labeling all

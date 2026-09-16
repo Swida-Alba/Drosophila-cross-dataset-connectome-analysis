@@ -41,6 +41,16 @@ python skills/drocat-usage/scripts/run_direct.py \
   --conda-env drocat-4.5.0 --script archive/scripts_local/agent_Neuron_<date>.py
 ```
 
+## Output detail (Full / Compact)
+
+`keep_per_match_csv=True` (default, Full) keeps every file. Compact
+(`keep_per_match_csv=False`) drops the bodyId-level match tables
+(`all_neurons.csv`, `{line}_neurons.csv`, `by_dataset/*_neurons.csv`) once
+the per-dataset type summaries are written — audited in the run's
+`cleanup_audit.json`. Type summaries, `{line}_type_mapped.csv`, the
+distribution plot, and `plot-3d_*` renders always stay. Per-dataset files
+live in `by_dataset/`.
+
 ## Outputs
 
 - Ranked neuron matches (CSV) and optional 3D skeleton views / PDF profiles.

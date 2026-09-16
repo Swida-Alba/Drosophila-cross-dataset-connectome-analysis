@@ -145,6 +145,9 @@ def finder(tmp_path, monkeypatch):
     return NeuronBridgeFinder(
         datasets_path=str(datasets_path),
         cache_folder=str(tmp_path / "cache"),
+        # Cache-behavior coverage explicitly exercises the cache paths,
+        # which are off by default since the output-modes change.
+        use_cache=True,
         verbose=False,
         max_workers=1,
     )
@@ -1679,9 +1682,10 @@ def test_save_dataset_categorized_files_and_type_mapped(finder, tmp_path, monkey
     out = tmp_path / "cat"
     out.mkdir()
     finder._save_dataset_categorized_files(df, "L1", str(out))
-    assert (out / "L1_hemibrain_v1_2_1_neurons.csv").exists()
-    assert (out / "L1_hemibrain_v1_2_1_types.csv").exists()
-    assert (out / "L1_manc_v1_0_neurons.csv").exists()
+    by_dataset = out / "by_dataset"
+    assert (by_dataset / "L1_hemibrain_v1_2_1_neurons.csv").exists()
+    assert (by_dataset / "L1_hemibrain_v1_2_1_types.csv").exists()
+    assert (by_dataset / "L1_manc_v1_0_neurons.csv").exists()
     mapped = pd.read_csv(out / "L1_type_mapped.csv")
     assert "canonical_type" in mapped.columns and "best_max_score" in mapped.columns
     assert set(mapped["canonical_type"]) == {"canon_MBON", "canon_LH"}
@@ -1978,12 +1982,16 @@ def test_find_neurons_batch_single_line(finder_with_client, tmp_path, monkeypatc
     run_dirs = [d for d in tmp_path.iterdir() if d.name.startswith("NB-find-neurons_")]
     assert len(run_dirs) == 1
     out = run_dirs[0]
+    by_dataset = out / "by_dataset"
     for fname in [
         "L1_neurons.csv", "all_neurons.csv", "parameters.json",
-        "user_warning_notes.txt", "L1_hemibrain_v1_2_1_neurons.csv",
-        "L1_hemibrain_v1_2_1_types.csv",
+        "user_warning_notes.txt",
     ]:
         assert (out / fname).exists(), fname
+    for fname in [
+        "L1_hemibrain_v1_2_1_neurons.csv", "L1_hemibrain_v1_2_1_types.csv",
+    ]:
+        assert (by_dataset / fname).exists(), fname
     assert any(p.name.startswith("labeling_distribution") for p in out.iterdir())
 
     # empty inputs / no matches

@@ -59,6 +59,17 @@
     useful for identifying selective drivers.
   </div>
 
+  <h2>Output detail</h2>
+  <p><b>Full</b> (default) keeps every exported file. <b>Compact</b> drops the
+    row-level source data (<code>line_labeled_neurons/</code> and
+    <code>distribution_data_by_neuron.csv</code>) once the similarity matrices
+    and report are written — every removal is audited in the run's
+    <code>cleanup_audit.json</code>. Matrices, expression data, by-type
+    distributions, and the HTML report always stay. The NeuronBridge match
+    cache is off by default (<b>Settings → NeuronBridge Match Cache</b>
+    re-enables it), so removed tables regenerate only by re-running the
+    analysis.</p>
+
   <div class="callout info">
     <b>Exported run guide:</b> every successful run also writes
     <code>_UserGuide_please_read_me.html</code> into the run folder — a

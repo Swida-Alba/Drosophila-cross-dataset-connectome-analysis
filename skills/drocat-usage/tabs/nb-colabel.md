@@ -45,6 +45,14 @@ python skills/drocat-usage/scripts/run_direct.py \
   --conda-env drocat-4.5.0 --script archive/scripts_local/agent_Colabel_<date>.py
 ```
 
+## Output detail (Full / Compact)
+
+`keep_per_match_csv=True` (default, Full) keeps every file. Compact
+(`keep_per_match_csv=False`) drops `line_labeled_neurons/` and
+`distribution_data_by_neuron.csv` once the similarity matrices and report
+are written — audited in the run's `cleanup_audit.json`. Matrices,
+expression data, by-type distributions, and the HTML report always stay.
+
 ## Outputs
 
 - Expression matrices, co-labeling heatmaps, similarity/specificity tables, and a

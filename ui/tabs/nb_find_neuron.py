@@ -4,7 +4,7 @@ from nicegui import ui
 from ..config import MATCH_ALGORITHMS, get_user_default
 from ..components.common import (
     neuron_list_input, number_input, select_input, checkbox_input,
-    dir_input, section_header, param_grid, tool_page,
+    dir_input, section_header, param_grid, tool_page, output_detail_control,
 )
 from ..components.output_panel import OutputPanel
 from ..components.skeleton_visualization_settings import skeleton_visualization_settings
@@ -66,6 +66,17 @@ def create_nb_find_neuron_tab():
                     default_show_fig=False,
                     default_export_views=True,
                 )
+            _, detail_flags = output_detail_control(
+                "Full keeps every exported file. Compact drops the "
+                "bodyId-level match tables (all_neurons.csv, {line}_neurons.csv, "
+                "by_dataset/*_neurons.csv) once the per-dataset type summaries "
+                "are written — every removal is audited in the run's "
+                "cleanup_audit.json. Type summaries, the type-mapped table, "
+                "the distribution plot, and 3D renders always stay. The "
+                "NeuronBridge match cache is off by default (Settings → "
+                "NeuronBridge Match Cache), so removed tables regenerate only "
+                "by re-running the query."
+            )
 
         # --- Advanced Settings (kept at the bottom, in its own card) ---
         with ui.card().classes("w-full drocat-card").props('id="card-nb-findneuron-advanced"'):
@@ -96,6 +107,7 @@ def create_nb_find_neuron_tab():
                     )
                 generate_pdf = checkbox_input("PDF Summary", True, hint="Generate PDF/PPTX with individual neuron profiles.")
 
+
     with results_col:
         output_panel.create(run_label="Find EM Neurons", run_icon="play_arrow")
 
@@ -111,7 +123,10 @@ def create_nb_find_neuron_tab():
         if visualize.value:
             visualization_settings.warn_empty_custom_palettes()
 
-        constructor_params = {"verbose": True}
+        constructor_params = {
+            "verbose": True,
+            "use_cache": bool(get_user_default("nb_use_cache")),
+        }
 
         method_params = {
             "line_names": lines,
@@ -129,6 +144,7 @@ def create_nb_find_neuron_tab():
             "sort_by": sort_by.value,
             "pdf_images_per_page": (int(pdf_cols.value), int(pdf_rows.value)),
             "background_color": background_color.value,
+            "keep_per_match_csv": detail_flags()["keep_per_match_csv"],
         }
 
         result = await output_panel.run(runner, "nb_find_neuron", constructor_params, "find_neurons",
