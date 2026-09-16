@@ -136,6 +136,12 @@ COLUMN_GLOSSARY = {
     "probability": ("Edge traversal probability.", "0-1"),
     # --- Enrollment / status flags --------------------------------------------
     "isInPath": ("Whether the source neuron participates in at least one found path.", "boolean"),
+    # --- NeuronBridge find-lines expansion map --------------------------------
+    "source_query": ("Original query chip whose expansion produced this row.", "text"),
+    "expanded_name": ("Dataset-local equivalent name the query chip expanded into.", "text"),
+    "nb_dataset": ("NeuronBridge hosted release the expanded name belongs to.", "text"),
+    "mapping_status": ("Type-mapper resolution status for the expansion (mapped, evidence_only, unmapped, conflict, mapper unavailable).", "text"),
+    "mapping_kind": ("Resolution kind behind the status (e.g. renamed or split; empty when unmapped).", "text"),
     "Checked": ("Whether the target neuron was reached/checked during traversal.", "boolean"),
     "Layer": ("Traversal layer at which the target neuron was reached.", "integer"),
     "viz_layer": ("Layer index assigned to the neuron in the 3D visualization.", "integer"),

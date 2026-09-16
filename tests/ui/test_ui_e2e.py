@@ -624,11 +624,9 @@ class TestRunner:
         }
         assert set(mode_buttons) == {"Find Similar", "Comparison"}
         assert len(mode_buttons) == 2
-        # vector-cache action row
-        assert any(
-            getattr(el, "text", "") == "Build Vector Cache"
-            for el in client.elements.values()
-        )
+        # The per-tab "Build Vector Cache" action row was removed when the
+        # cross-dataset comparison sub-tab landed (1d356c7); vector-cache
+        # building lives with Find Similar / dataset tooling instead.
 
         # Comparison sub-tab: real form with its own dataset card, neuron
         # list, method selector, and run button.
@@ -644,7 +642,14 @@ class TestRunner:
         assert "Datasets to compare" in labels
         assert "Reference Template (scenes)" in labels
         assert "Null Sample Size" in labels
-        assert "Auto Type Mapping" in labels
+        # NiceGUI checkboxes carry their label in `_text`, not the `label`
+        # prop the collectors above read.
+        checkbox_labels = [
+            getattr(el, "_text", "")
+            for el in client.elements.values()
+            if getattr(el, "_text", "")
+        ]
+        assert "Auto Type Mapping" in checkbox_labels
         assert not any("Coming in a future update" in text for text in texts)
 
     def test_connectivity_tab_hosts_find_similar_and_comparison(self):
@@ -676,7 +681,7 @@ class TestRunner:
                       "Top N Candidates", "Top K Partners", "Min Types (M)",
                       "Sort By", "Min Synapse Threshold",
                       "Auto Type Mapping", "Visualize Top N Candidates",
-                      "Qualification bar offset above the null p95"):
+                      "Qualification bar offset above the null bar"):
             assert label in labels or label in texts, \
                 f"missing Find Homolog control: {label}"
         # Comparison controls

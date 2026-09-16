@@ -75,10 +75,14 @@ def test_similarity_panels_default_to_line_with_fast_pipeline():
             element for element in client.elements.values()
             if getattr(element, "_props", {}).get("label") == "Simplification Method"
         ]
-        # Each tab carries exactly one editor (Find Similar sub-tab).
-        assert len(modes) == 1
-        assert modes == ["line"]
-        assert [method.value for method in methods] == ["fast"]
+        # The Morphology tab hosts two editors since the Comparison
+        # sub-tab landed (Find Similar + Comparison); Connectivity keeps
+        # one (Find Similar).  Every editor starts in line mode with the
+        # fast method.
+        expected = 2 if factory is create_morphology_tab else 1
+        assert len(modes) == expected
+        assert set(modes) == {"line"}
+        assert [method.value for method in methods] == ["fast"] * expected
         # Line mode bypasses the pipeline selector.
         assert all(method.enabled is False for method in methods)
 
