@@ -1501,6 +1501,74 @@ class TestExpandedEdgeListReimport:
             assert column not in conn.columns
 
 
+class TestCustomNodeGroupsFromEdgeList:
+    """Free-form source_group/target_group values become declared custom
+    groups (legend chip, assign dropdown) carried by the node's 'group'
+    attribute; structural role values keep overriding node_type."""
+
+    def _build(self, tmp_path, rows):
+        df = pd.DataFrame(rows)
+        vp = VisualizePath(
+            path_file=df,
+            output_folder=str(tmp_path),
+            showfig=False,
+            verbose=False,
+        )
+        conn, G = vp.build_network()
+        return vp, conn, G
+
+    def test_free_form_groups_become_declared_groups(self, tmp_path):
+        vp, conn, G = self._build(tmp_path, [
+            {"source": "S", "target": "A", "weight": 10,
+             "source_group": "PAM cluster", "target_group": ""},
+            {"source": "A", "target": "T", "weight": 20,
+             "source_group": "intermediate", "target_group": "target"},
+        ])
+        # The free-form name is registered as a declared group: selector-safe
+        # name, raw label, palette color.
+        registered = {g["name"]: g for g in vp.node_groups}
+        assert set(registered) == {"PAM_cluster"}
+        assert registered["PAM_cluster"]["label"] == "PAM cluster"
+        assert registered["PAM_cluster"]["color"].startswith("#")
+        # The node carries the group attribute; its structural role stays.
+        assert G.nodes["S"].get("group") == "PAM_cluster"
+        assert G.nodes["S"]["node_type"] == "source"
+        # Structural roles were still applied to the other nodes and they
+        # carry no custom group.
+        assert G.nodes["A"]["node_type"] == "intermediate"
+        assert "group" not in G.nodes["A"]
+        assert G.nodes["T"]["node_type"] == "target"
+        assert "group" not in G.nodes["T"]
+
+    def test_group_registration_is_idempotent(self, tmp_path):
+        vp, conn, G = self._build(tmp_path, [
+            {"source": "S", "target": "T", "weight": 10,
+             "source_group": "PAM cluster", "target_group": "target"},
+        ])
+        count = len(vp.node_groups)
+        vp.build_network()
+        assert len(vp.node_groups) == count
+
+    def test_expanded_edge_list_with_extra_columns_converts(self, tmp_path):
+        """Regression: an edge list carrying the optional metadata columns
+        (color, groups, hover info) still converts to a network."""
+        vp, conn, G = self._build(tmp_path, [
+            {"source": "S", "target": "A", "weight": 10, "color": "#FF0000",
+             "source_group": "PAM", "target_group": "linker",
+             "edge info": "{nt:ACH}", "source info": "{M:S}",
+             "target info": "{F:A}"},
+            {"source": "A", "target": "T", "weight": 20, "color": "",
+             "source_group": "", "target_group": "",
+             "edge info": "", "source info": "", "target info": ""},
+        ])
+        assert len(conn) == 2
+        assert vp.custom_edge_colors[("S", "A")] == "#FF0000"
+        assert vp.edge_labels[("S", "A")] == {"nt": "ACH"}
+        assert vp.node_dataset_info["S"] == {"M": "S"}
+        assert {g["name"] for g in vp.node_groups} == {"PAM", "linker"}
+        assert G.nodes["A"].get("group") == "linker"
+
+
 # =============================================================================
 # Uploaded edge-list colors: the file's 'color' column must win over the UI
 # link color in the generated network canvas.
