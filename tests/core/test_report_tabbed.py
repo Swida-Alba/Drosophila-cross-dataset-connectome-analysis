@@ -51,7 +51,7 @@ def test_split_sections_balances_nested_divs():
     assert 'deep' in sections[0][1]
     # spans are div-rebalanced so page panes stay independent
     for _, span in sections:
-        assert span.count('<div') - span.count('</div>') <= 0 or True
+        assert span.count('<div') - span.count('</div>') <= 0
     assert sections[-1][1].count('<div') <= \
         sections[-1][1].count('</div>') + 8
     assert 'end' in sections[-1][1] or 'end' in tail
@@ -146,9 +146,11 @@ def test_build_tabbed_report_end_to_end(tmp_path):
     # page nav + templates + container exist
     assert 'id="page-content"' in out
     for page in ('overview', 'combos', 'types', 'plots', 'matrices',
-                 'crossviews', 'notes'):
+                 'crossviews'):
         assert f'data-page="{page}"' in out
         assert f'id="tpl-{page}"' in out
+    # the structurally-impossible Notes pane is gone
+    assert 'data-page="notes"' not in out
     # legacy content preserved exactly once per section
     assert out.count('findings text') == 1
     assert 'presence' in out
@@ -181,6 +183,32 @@ def test_split_plots_only_contain_their_own_group(tmp_path):
         'Density-matched analysis')[0]
     # the vertical chart payload must not contain density rows
     assert 'aligned_density' not in vertical_part.split('const groups')[0]
+
+
+def test_combo_deep_link_onclick_survives_html_parsing(tmp_path):
+    """json.dumps(qid) is double-quoted; unescaped inside a double-quoted
+    onclick attribute it truncates the attribute and kills the handler
+    (found in review 2026-09-16). The parsed attribute must be intact."""
+    from html.parser import HTMLParser
+    run_dir = _make_run_dir(tmp_path)
+    out = build_tabbed_report(StubAnalyzer(run_dir), legacy_page([]),
+                              run_dir=str(run_dir))
+    onclicks = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == 'button':
+                value = dict(attrs).get('onclick')
+                if value and value.startswith('TAB.goto'):
+                    onclicks.append(value)
+
+    _P().feed(out)
+    assert onclicks, 'deep-link buttons missing'
+    assert any(o.endswith(', true)') for o in onclicks), \
+        'networks deep link lost its wantNetworks flag'
+    for onclick in onclicks:
+        assert onclick.startswith("TAB.goto('matrices', \"")
+        assert onclick.endswith('this)') or onclick.endswith(', true)')
 
 
 def test_quick_navigation_excised_and_combined_chart_matched():
@@ -256,6 +284,17 @@ def test_balanced_div_end_skips_script_payloads():
     end = _balanced_div_end(section, 0)
     assert section[end:].startswith('<div class="section">')
     assert 'two' in section[end:]
+
+
+def test_div_deficit_skips_script_payloads():
+    """_div_deficit must skip script/style bodies like _balanced_div_end
+    does — a '<div' literal inside inline JS must not inflate the
+    rebalancing deficit (it never matched: 'scrip' != 'script')."""
+    from comparison.report_tabbed import _div_deficit
+    balanced = ('<div class="section"><script>var a = "<div";</script>'
+                '<div class="card">ok</div></div>')
+    assert _div_deficit(balanced) == 0
+    assert _div_deficit('<div><script>var a = "<div";</script>') == 1
 
 
 def test_quick_navigation_excised_inside_sections(tmp_path):

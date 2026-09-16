@@ -42,6 +42,11 @@ _TOKEN = re.compile(
     r'<script\b[^>]*>|</script\s*>|<style\b[^>]*>|</style\s*>'
     r'|<div\b|</div>', re.IGNORECASE)
 
+try:
+    from .html_report_generator import _query_report_slug
+except ImportError:  # direct src/ execution
+    from html_report_generator import _query_report_slug
+
 
 def _balanced_div_end(html: str, start: int) -> int:
     """Index just past the ``</div>`` that closes the ``<div>`` opening at
@@ -105,8 +110,11 @@ def _div_deficit(fragment: str) -> int:
             if token.startswith('</style'):
                 in_block = None
             continue
-        if token.startswith('<script') or token.startswith('<style'):
-            in_block = token[1:6]
+        if token.startswith('<script'):
+            in_block = 'script'
+            continue
+        if token.startswith('<style'):
+            in_block = 'style'
             continue
         if token.startswith('<div'):
             depth += 1
@@ -211,7 +219,6 @@ PAGE_TITLES = [
     ('plots', 'Plots'),
     ('matrices', 'Matrices & Networks'),
     ('crossviews', 'Cross-views'),
-    ('notes', 'Notes'),
 ]
 PAGE_ORDER = [page for page, _ in PAGE_TITLES]
 
@@ -332,7 +339,6 @@ def _combos_dashboard(analyzer, run_dir: Path, esc) -> str:
             parts.append(f'<h4>{esc(title)}</h4>')
         for row in group_rows:
             qid = row['id']
-            from comparison.html_report_generator import _query_report_slug
             slug = _query_report_slug(qid)
             stats = _presence_stats(run_dir, slug)
             n_types = len(stats.get('types', []))
@@ -359,12 +365,16 @@ def _combos_dashboard(analyzer, run_dir: Path, esc) -> str:
                     '<details><summary style="cursor:pointer;'
                     'font-size:0.85em;">involved types</summary>'
                     f'<div style="font-size:0.85em;">{shown}</div></details>')
+            # json.dumps(qid) is double-quoted; escape it for the
+            # double-quoted onclick attribute or the attribute truncates
+            # mid-literal and the handler dies with a JS SyntaxError.
+            qid_js = _html.escape(json.dumps(qid), quote=True)
             parts.append(
                 '<div style="margin-top:4px;">'
                 f'<button class="tab-btn" onclick="TAB.goto(\'matrices\', '
-                f'{json.dumps(qid)}, this)">matrices</button> '
+                f'{qid_js}, this)">matrices</button> '
                 f'<button class="tab-btn" onclick="TAB.goto(\'matrices\', '
-                f'{json.dumps(qid)}, this, true)">networks</button> '
+                f'{qid_js}, this, true)">networks</button> '
                 '</div></div>')
     parts.append('</div>')
     return ''.join(parts)
@@ -417,16 +427,10 @@ def _split_plots_html(run_dir: Path, esc) -> str:
                 qid = str(row.get('query_id') or '')
                 if not qid.startswith(marker):
                     continue
-                if marker == 'threshold=':
-                    try:
-                        x = float(qid.split('=', 1)[1])
-                    except ValueError:
-                        continue
-                else:
-                    try:
-                        x = float(qid.split('=', 1)[1])
-                    except ValueError:
-                        continue
+                try:
+                    x = float(qid.split('=', 1)[1])
+                except ValueError:
+                    continue
                 label = str(row.get('query_label') or qid)
                 ds = str(row.get('dataset') or '')
                 value = row.get(value_column)
@@ -561,9 +565,9 @@ def build_tabbed_report(analyzer, legacy_html: str,
             '(per-threshold and per-density mixed)</summary>'
             + ''.join(legacy_summary_cards) + '</details>')
 
-    # Notes page: whatever unmatched tail remains.
-    if tail.strip():
-        pages['notes'].append(tail)
+    # (There is no Notes pane: every section span extends to the end of
+    # the body, so an unmatched tail after the last section cannot exist
+    # — the previous always-empty pane only ever rendered its fallback.)
 
     nav = ''.join(
         f'<button class="page-tab-btn" data-page="{page}" role="tab" '
@@ -608,10 +612,18 @@ def build_tabbed_report(analyzer, legacy_html: str,
       document.dispatchEvent(new CustomEvent('page:shown',
           {detail: {page: page}}));
     },
-    goto: function(page, queryId, button) {
+    goto: function(page, queryId, button, wantNetworks) {
       this.show(page, true);
+      // The networks deep link targets the per-query tab inside the
+      // network sections; plain matrices targets the first matching tab
+      // anywhere on the page (heatmap sections come first).
+      var root = document;
+      if (wantNetworks) {
+        root = document.querySelector('#page-content .networks-section')
+            || document.getElementById('page-content') || document;
+      }
       var target = null;
-      document.querySelectorAll('#page-content button').forEach(function(b) {
+      root.querySelectorAll('button').forEach(function(b) {
         if (!target && b.textContent.trim() === queryId) { target = b; }
       });
       if (target) { try { target.click(); } catch (e) {} }

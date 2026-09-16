@@ -4382,8 +4382,10 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                         document.querySelectorAll('#' + scope + '__network_by_dataset .tab-content').forEach(el => el.classList.remove('active'));
                         // Remove active from all buttons in dataset view
                         document.querySelectorAll('#' + scope + '__network_by_dataset .tab-btn').forEach(el => el.classList.remove('active'));
-                        // Show selected tab
-                        const panel = domKey ? document.getElementById(scope + '__network_dataset_tab_' + domKey) : null;
+                        // Show selected tab (panel ids embed the section
+                        // prefix themselves; the scope must NOT be applied
+                        // again — that double prefix matched nothing).
+                        const panel = domKey ? document.getElementById('network_dataset_tab_' + domKey) : null;
                         if (!panel) return;
                         panel.classList.add('active');
                         // Mark button as active
@@ -4392,7 +4394,10 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                         // Re-fit the network since it may have been hidden
                         // Must call redraw() first to recalculate canvas dimensions
                         setTimeout(function() {
-                            const netData = window.allNetworks && window.allNetworks[(activeTab.dataset.networkDomKey || '') + '__' + dataset + '_dataset'];
+                            // Registration key: domKey + '__' + dataset + '_dataset'
+                            // (domKey comes from the clicked button; activeTab is
+                            // not in scope here).
+                            const netData = window.allNetworks && window.allNetworks[(domKey || '') + '__' + dataset + '_dataset'];
                             if (netData && netData.network) {
                                 netData.network.redraw();
                                 netData.network.fit({ animation: false });
@@ -6515,7 +6520,10 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                 for rec in recs:
                     status = str(rec.get('status') or '')
                     color = status_colors.get(status, '#6b7280')
-                    targets = str(rec.get('target_types') or '—')
+                    _targets = rec.get('target_types')
+                    targets = ('; '.join(str(t) for t in _targets)
+                               if isinstance(_targets, (list, tuple, set))
+                               else str(_targets or '—'))
                     parts_cell.append(
                         f'<div><span style="color:{color};" '
                         f'title="{html_module.escape(status)}">'
@@ -6738,9 +6746,6 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                 + (f'; {conflicts_total} mapping conflicts recorded — see '
                    f'auto_type_mapping_conflicts.csv' if conflicts_total else '; no mapping conflicts')
                 + '.</p></div></div>')
-    return ''.join(html)
-
-
     return ''.join(html)
 
 

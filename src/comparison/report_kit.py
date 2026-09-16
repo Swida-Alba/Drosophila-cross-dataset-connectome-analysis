@@ -25,8 +25,19 @@ import pandas as pd
 try:
     from tqdm import tqdm
 except ImportError:  # pragma: no cover - tqdm is a hard dependency in practice
-    def tqdm(iterable, *args, **kwargs):  # type: ignore[misc]
-        return iterable
+    class _NullBar:
+        """Stand-in for tqdm's kwargs-only call form (total=..., ...) —
+        the previous bare-function shim raised TypeError at that call
+        site and None.update() AttributeError after it."""
+
+        def update(self, _n: int = 1) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    def tqdm(iterable=None, *args, **kwargs):  # type: ignore[misc]
+        return iterable if iterable is not None else _NullBar()
 
 try:
     from .connectivity_profiler import progress_bars_disabled
