@@ -202,10 +202,16 @@ class TestConnectionCacheLoader:
         fc.script_path = str(tmp_path)
         status = fc._check_cache_exists()
 
+        # Resumable batch files count as connection data and feed the
+        # row counts even without a merged connections.parquet.
         assert status["has_connections"] is True
         assert status["has_neuron_index"] is True
-        assert status["is_usable"] is True
         assert status["connection_count"] == 1
+        # is_usable additionally requires the dataset neuron table
+        # (cache-only runs crash later in type resolution without it):
+        # this fixture has none, so the gate stays closed.
+        assert status["has_dataset"] is False
+        assert status["is_usable"] is False
 
     def test_load_normalizes_mixed_main_and_batch_files(self, tmp_path):
         import coana

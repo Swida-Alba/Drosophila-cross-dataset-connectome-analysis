@@ -1,9 +1,18 @@
-"""Keep DROCAT's duplicated dependency declarations in lockstep."""
+"""Keep DROCAT's duplicated dependency declarations in lockstep.
+
+requirements.txt intentionally pins exact versions (with per-pin reasons
+in trailing comments) where the ecosystem is fragile, while pyproject.toml
+declares the tolerated ranges. Lockstep therefore means: range entries
+must match the declared specifier verbatim, and exact pins must satisfy
+the declared range.
+"""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+from packaging.specifiers import SpecifierSet
 
 try:
     import tomllib
@@ -40,6 +49,36 @@ def _toml(path: Path) -> dict:
         return tomllib.load(stream)
 
 
+# Deliberate exact transitive pins in the root requirements files: each
+# entry names a package that is NOT a pyproject dependency but is pinned
+# anyway (resolver backtracking / known-bad newer lines), together with
+# the declared top-level dependency it accompanies. The companion must be
+# declared and the entry must be an exact pin.
+TRANSITIVE_PINS = {
+    "s3transfer": "boto3",
+    "botocore": "boto3",
+    "cloud-files": "cloud-volume",
+    "google-api-core": "cloud-volume",
+}
+
+
+def _pins_satisfy_declared(pinned: str, declared: str) -> bool:
+    """True when every exact ``==`` pin in *pinned* is inside *declared*.
+
+    Range entries (no ``==`` pin) must match verbatim and fall through to
+    the caller's equality check.
+    """
+    if pinned == declared:
+        return True
+    pins = [s for s in SpecifierSet(pinned) if s.operator == "=="]
+    if not pins:
+        return False
+    declared_set = SpecifierSet(declared or "")
+    return all(
+        declared_set.contains(pin.version, prereleases=True) for pin in pins
+    )
+
+
 def _assert_declared_dependencies_match(
     declared: dict[str, str], requirements: dict[str, str], source: str
 ) -> None:
@@ -47,7 +86,8 @@ def _assert_declared_dependencies_match(
     mismatched = {
         name: (specifier, requirements.get(name))
         for name, specifier in declared.items()
-        if name in requirements and requirements[name] != specifier
+        if name in requirements
+        and not _pins_satisfy_declared(requirements[name], specifier)
     }
     assert not missing, f"{source} is missing dependencies: {missing}"
     assert not mismatched, f"{source} has version drift: {mismatched}"
@@ -65,8 +105,18 @@ def test_root_runtime_requirements_match_package_metadata():
         _assert_declared_dependencies_match(
             declared, requirements, filename
         )
-        unexpected = sorted(set(requirements) - set(declared))
+        unexpected = sorted(
+            set(requirements) - set(declared) - set(TRANSITIVE_PINS)
+        )
         assert not unexpected, f"{filename} has undeclared dependencies: {unexpected}"
+        for name, companion in TRANSITIVE_PINS.items():
+            spec = requirements.get(name, "")
+            assert name not in requirements or (
+                companion in declared and spec.startswith("==")
+            ), (
+                f"{filename}: transitive pin {name} must stay an exact pin "
+                f"accompanying the declared dependency {companion}"
+            )
 
 
 def test_vispath_manifests_and_root_extra_match():
