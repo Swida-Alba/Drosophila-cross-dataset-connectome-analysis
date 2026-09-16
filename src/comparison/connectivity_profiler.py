@@ -4094,8 +4094,9 @@ class ConnectivityProfiler:
         Offline-first: a repo-local neuron table wins when the dataset has
         one (FAFB/BANC always; male-cns and other NeuPrint releases ship
         one too), so type lookups keep working when the NeuPrint API is
-        unreachable. The API path is used only for datasets with no local
-        table.
+        unreachable. On a local miss, FAFB/BANC (complete local datasets)
+        return [] — but a partial NeuPrint-release export falls back to
+        the API instead of shadowing it.
 
         Args:
             neuron_type: Type name
@@ -4111,57 +4112,62 @@ class ConnectivityProfiler:
         # kept only for datasets with no local table.
         local_df = self._load_local_neuron_frame(dataset)
         has_local_table = local_df is not None and not local_df.empty
-        if is_local_connectome_dataset(dataset) or has_local_table:
+        natively_local = is_local_connectome_dataset(dataset)
+        if natively_local or has_local_table:
             # Local dataset - resolve the query with the shared prioritized
             # column search used by the connection tabs (bodyId -> type ->
             # instance -> other *Type fields such as cell_type -> taxonomy).
             # The first column with a hit owns the query, so a name stored
             # only in cell_type (e.g. FAFB's circadian_clock) still resolves.
             df = local_df
-            if df is None or df.empty:
-                return []
-
-            try:
-                from ..neuron_search import resolve_dataframe_query
-            except ImportError:
-                from neuron_search import resolve_dataframe_query
-            try:
-                body_ids, _info = resolve_dataframe_query(
-                    df, neuron_type, search_columns='auto'
-                )
-            except Exception as e:
-                self._log(f"Warning: Could not resolve '{neuron_type}' in {dataset}: {e}")
-                return []
-
-            if not body_ids:
-                return []
-            resolved = pd.to_numeric(pd.Series(body_ids), errors='coerce').dropna()
-            return resolved.astype(int).tolist()
-        
-        else:
-            # NeuPrint query
-            client = self._get_client_for_dataset(dataset)
-            if client is None:
-                return []
-            
-            try:
-                # Import API utilities for Cypher escaping
+            body_ids = []
+            if df is not None and not df.empty:
                 try:
-                    from src.utils.api_utils import escape_cypher_string
+                    from ..neuron_search import resolve_dataframe_query
                 except ImportError:
-                    escape_cypher_string = _escape_cypher_string_fallback
-                
-                escaped_type = escape_cypher_string(neuron_type)
-                query = f"""
-                MATCH (n:Neuron)
-                WHERE n.type = '{escaped_type}'
-                RETURN n.bodyId AS bodyId
-                """
-                result = client.fetch_custom(query)
-                return result['bodyId'].astype(int).tolist()
-            except Exception as e:
-                self._log(f"Warning: Could not get bodyIds for {neuron_type} in {dataset}: {e}")
+                    from neuron_search import resolve_dataframe_query
+                try:
+                    body_ids, _info = resolve_dataframe_query(
+                        df, neuron_type, search_columns='auto'
+                    )
+                except Exception as e:
+                    self._log(f"Warning: Could not resolve '{neuron_type}' in {dataset}: {e}")
+
+            if body_ids:
+                resolved = pd.to_numeric(pd.Series(body_ids), errors='coerce').dropna()
+                return resolved.astype(int).tolist()
+            if natively_local:
+                # FAFB/BANC are complete local datasets — a miss is a real
+                # miss; there is nothing better to consult.
                 return []
+            # A partial local export (e.g. a hemibrain snapshot missing the
+            # type entirely) must not shadow a reachable API below — fall
+            # through instead of silently returning [].
+
+        # NeuPrint query (also the fallback when a non-native local export
+        # missed and the API is configured)
+        client = self._get_client_for_dataset(dataset)
+        if client is None:
+            return []
+
+        try:
+            # Import API utilities for Cypher escaping
+            try:
+                from src.utils.api_utils import escape_cypher_string
+            except ImportError:
+                escape_cypher_string = _escape_cypher_string_fallback
+
+            escaped_type = escape_cypher_string(neuron_type)
+            query = f"""
+            MATCH (n:Neuron)
+            WHERE n.type = '{escaped_type}'
+            RETURN n.bodyId AS bodyId
+            """
+            result = client.fetch_custom(query)
+            return result['bodyId'].astype(int).tolist()
+        except Exception as e:
+            self._log(f"Warning: Could not get bodyIds for {neuron_type} in {dataset}: {e}")
+            return []
     
     def _load_local_neuron_frame(self, dataset: str) -> Optional[pd.DataFrame]:
         """Load (and memoize) the local neuron table for FAFB or BANC.

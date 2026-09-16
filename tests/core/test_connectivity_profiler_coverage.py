@@ -1149,6 +1149,41 @@ def test_get_bodyids_for_type_neuprint(profiler, monkeypatch):
     assert profiler.get_bodyids_for_type('Mi1', 'hemibrain:v1.2.1') == []
 
 
+def test_get_bodyids_for_type_partial_local_table_falls_back(profiler, monkeypatch):
+    """Review 2026-09-16: a PARTIAL local export (e.g. a hemibrain snapshot
+    missing the queried type entirely) must not shadow a reachable API for
+    non-native datasets, while FAFB/BANC stay local-only on a miss."""
+    import pandas as pd
+    partial = pd.DataFrame({'bodyId': [1], 'type': ['T1']})
+    monkeypatch.setattr(profiler, '_load_local_neuron_frame',
+                        lambda d: partial)
+    monkeypatch.setattr('comparison.connectivity_profiler.'
+                        'is_local_connectome_dataset', lambda d: False)
+
+    class ApiClient:
+        def fetch_custom(self, q):
+            return pd.DataFrame({'bodyId': ['7']})
+
+    monkeypatch.setattr(profiler, '_get_client_for_dataset',
+                        lambda d: ApiClient())
+    # local miss -> API fallback
+    assert profiler.get_bodyids_for_type('Missing', 'hemibrain:v1.2.1') == [7]
+
+    class Boom:
+        def fetch_custom(self, q):
+            raise AssertionError('API must not be called on a local hit')
+
+    monkeypatch.setattr(profiler, '_get_client_for_dataset', lambda d: Boom())
+    # local hit still wins without touching the API
+    assert profiler.get_bodyids_for_type('T1', 'hemibrain:v1.2.1') == [1]
+
+    # a natively-local dataset never falls back
+    monkeypatch.setattr('comparison.connectivity_profiler.'
+                        'is_local_connectome_dataset', lambda d: True)
+    monkeypatch.setattr(profiler, '_get_client_for_dataset', lambda d: Boom())
+    assert profiler.get_bodyids_for_type('Missing', 'flywire_FAFB_v783') == []
+
+
 def test_get_bodyids_for_type_prioritized_columns(profiler, fake_repo):
     """Same prioritized column search as the connection tabs: the ``type``
     column wins, but names living only in ``cell_type`` (FAFB's

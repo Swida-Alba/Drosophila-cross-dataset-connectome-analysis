@@ -1069,7 +1069,7 @@ class ComparisonMetrics:
         mid_threshold = thresholds[len(thresholds) // 2]
         aligned = self._align_results_at_threshold(
             results, datasets, mid_threshold, label_mapper, type_mapper,
-            merge_policy=merge_policy)
+            merge_policy=merge_policy, hemi_aware=hemi_aware)
         
         if aligned.empty:
             summary['key_findings'].append("No data available for comparison")

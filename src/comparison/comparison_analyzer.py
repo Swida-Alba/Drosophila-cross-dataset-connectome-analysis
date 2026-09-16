@@ -7520,6 +7520,7 @@ class ComparisonAnalyzer:
                   f"for {len(datasets)} dataset(s)")
         saved_thresholds = list(self.parameters.thresholds)
         self.parameters.thresholds = [boot_t]
+        bootstrap_failed = False
         try:
             for ds in datasets:
                 if boot_t in self.raw_results.get(ds, {}):
@@ -7536,12 +7537,16 @@ class ComparisonAnalyzer:
                     self._save_result(ds, boot_t, df)
         except Exception as e:
             self._log(f"Auto threshold bootstrap failed: {e}")
-            # Without the measured rows the run still needs a schedule;
-            # default to the physical-minimum floor when no chips were set.
-            self.parameters.thresholds = saved_thresholds or [3]
-            return False
+            bootstrap_failed = True
         finally:
             self.parameters.thresholds = saved_thresholds
+        if bootstrap_failed:
+            # Applied after the restore: without the measured rows the run
+            # still needs a schedule — default to the physical-minimum
+            # floor when no chips were set (the finally above would
+            # otherwise overwrite this fallback with the empty list).
+            self.parameters.thresholds = saved_thresholds or [3]
+            return False
 
         curves, windows, metas = self._build_density_curves()
         if not curves:

@@ -1198,9 +1198,15 @@ class ComparisonParameters:
         # DESCENDING so the query axis follows thresholds increasing
         # (density falls as the Min Synapse Count rises).
         def _level(row):
+            raw = str(row['id']).split('=', 1)[-1]
+            head, _, tail = raw.rpartition('_')
+            # '_2'-style dedup suffixes (two horizontal rows at the same
+            # density) must not push the row to the end of the ordering.
+            if head and tail.isdigit():
+                raw = head
             try:
-                return float(str(row['id']).split('=', 1)[1])
-            except (ValueError, IndexError):
+                return float(raw)
+            except ValueError:
                 return float('-inf')
         verticals = [r for r in installed if r.get('row_mode') == 'vertical']
         horizontals = sorted(
@@ -2250,6 +2256,11 @@ class ComparisonParameters:
                 'keep_only_hemisphere_conserved_connections', False),
             find_reciprocal=data.get('find_reciprocal', False),
             skip_bodyId=data.get('skip_bodyId', True),
+
+            # Report layout (round-trip fix: without this a pinned
+            # resume/re-export of a tabbed run silently regenerated the
+            # legacy single-page report).
+            report_layout=data.get('report_layout', 'legacy'),
 
             # Output configuration
             output_folder=data.get('output_folder', '.'),

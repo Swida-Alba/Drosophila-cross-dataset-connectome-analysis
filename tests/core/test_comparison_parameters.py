@@ -828,6 +828,7 @@ def test_from_dict_round_trip_preserves_flags():
         separate_hemispheres=True, symmetry_analysis=True,
         keep_only_hemisphere_conserved_connections=True,
         find_reciprocal=True, skip_bodyId=False,
+        report_layout='tabbed',
     )
     d = p.to_dict()
     p2 = ComparisonParameters.from_dict(d)
@@ -836,3 +837,6 @@ def test_from_dict_round_trip_preserves_flags():
     assert p2.keep_only_hemisphere_conserved_connections is True
     assert p2.find_reciprocal is True
     assert p2.skip_bodyId is False
+    # round-trip fix (review 2026-09-16): a pinned re-export of a tabbed
+    # run must not silently regenerate the legacy single-page report.
+    assert p2.report_layout == 'tabbed'
