@@ -38,6 +38,11 @@ import numpy as np
 import pandas as pd
 
 NULL_K_DEFAULT = 200
+# Floors v3 (plan-unified-morph-qualification-bars): mapping_ref-mode Track-A
+# offset Δ and native floor margin.  The null-mode offset stays the user's
+# `bar_offset` slider; these govern the mapping-referenced rungs.
+MAPPING_REF_TRACK_A_OFFSET = 0.05
+MAPPING_REF_NATIVE_MARGIN = 0.05
 NULL_MIN_N = 10
 BAR_OFFSET_MAX = 0.2
 MAX_TRANSFORM_HOPS = 2
@@ -48,11 +53,13 @@ try:  # package import (runner scripts / tests)
     from .cross_dataset_type_mapper import get_type_mapper
     from .type_resolver import (MapperSnapshot, expansion_targets,
                                 resolve_valid_targets)
+    from . import report_kit
 except ImportError:  # direct src/ execution
     try:
         from cross_dataset_type_mapper import get_type_mapper
         from type_resolver import (MapperSnapshot, expansion_targets,
                                    resolve_valid_targets)
+        import report_kit
     except ImportError:  # mapper optional: feature degrades to same-name
         get_type_mapper = None
         MapperSnapshot = None
@@ -60,6 +67,30 @@ except ImportError:  # direct src/ execution
         expansion_targets = None
 
 DEFAULT_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+
+# The one morphology metric rendered by the comparison report. vector_v2 is
+# a whitened cosine that can go negative, so it uses the shared kit's
+# diverging scale (blue = negative, white = 0, red = positive) instead of
+# clipping negatives like the old green [0, 1] card.
+_MORPH_V2_STYLE = report_kit.MetricStyle(
+    'morph_v2', 'Vector v2', report_kit.REPORT_DIVERGING_COLORSCALE, -1.0, 1.0)
+_LEVEL_DISPLAY = {'type': 'Type level', 'bodyid': 'BodyId level'}
+
+
+def _body_id_label(dataset: str, bid, fallback_type: str) -> str:
+    """Tree-legend display label ('{bodyId}_{instance}' / '{bodyId}_{type}_{L|R}').
+
+    Uses the connectivity-profiler's dataset-backed label helper; degrades
+    to '{bodyId}_{type}' when that import or its label maps are unavailable.
+    """
+    try:
+        from .profile_comparator import _body_id_display_label
+    except ImportError:  # pragma: no cover - direct src/ execution
+        try:
+            from profile_comparator import _body_id_display_label
+        except ImportError:
+            return f'{bid}_{fallback_type}'
+    return _body_id_display_label(dataset, bid, fallback_type=fallback_type)
 
 
 def _logline(log, message: str) -> None:
@@ -362,25 +393,36 @@ def fetch_source_skeletons(dataset: str, body_ids: Sequence[int],
     Local raw cache first; online fetches only when ``allow_fetch`` is on
     (the unified contract: a strict-offline run must never trigger the
     declined network access, it just gets fewer members with notes).
+
+    The FAFB local release sources are network-free (repair caches, raw
+    cache, healed zip), so they are served for strict-offline runs too —
+    with the CAVE extrusion pass skipped. BANC's public-release stage
+    fetches online and therefore stays behind ``allow_fetch``.
     """
     bids = [int(b) for b in dict.fromkeys(int(b) for b in body_ids or [])]
     if not bids:
         return {}
     root = str(Path(project_root or DEFAULT_PROJECT_ROOT))
-    try:
-        from morphology import load_local_release_skeletons
-        if allow_fetch and _dataset_family(dataset) in ('FAFB', 'BANC'):
-            got = load_local_release_skeletons(dataset, bids, project_root=root,
-                                               log=None)
+    family = _dataset_family(dataset)
+    # FAFB release reading is offline-safe without the extrusion pass;
+    # BANC would hit the public bucket, so it keeps the online gate.
+    use_release = family in ('FAFB', 'BANC') and (
+        allow_fetch or family == 'FAFB')
+    if use_release:
+        try:
+            from morphology import load_local_release_skeletons
+            got = load_local_release_skeletons(
+                dataset, bids, project_root=root, log=None,
+                check_extrusions=allow_fetch)
             got = {int(k): v for k, v in (got or {}).items()}
             missing = [b for b in bids if b not in got]
             if missing:
                 _logline(log, f'  {len(missing)} source skeleton(s) '
                          f'unavailable locally in {dataset}')
             return got
-    except Exception as exc:  # noqa: BLE001
-        _logline(log, f'  Local release loader unavailable ({exc}); '
-                 'falling back to the raw cache.')
+        except Exception as exc:  # noqa: BLE001
+            _logline(log, f'  Local release loader unavailable ({exc}); '
+                     'falling back to the raw cache.')
     got: Dict[int, Any] = {}
     try:
         from morphology import (find_similar_raw_cache,
@@ -579,15 +621,21 @@ def null_baselines(source_dataset: str, target_dataset: str,
                    candidate_bids: Sequence[int], null_k: int = NULL_K_DEFAULT,
                    project_root: Optional[str] = None,
                    vector_cache: Optional[Dict[int, Any]] = None,
+                   level: int = 95,
+                   exclude: Sequence[int] = (),
                    log=None) -> Tuple[Dict[int, Dict[str, float]], List[int]]:
     """Score the shared null sample against every query; per-query stats.
 
     Returns ``({source_bid: {p95, median, std, mean, n}}, sample_bids)``.
     The null sample is deterministic per (dataset, k, candidates) and its
-    vectors persist in the NullVectorStore sidecar.
+    vectors persist in the NullVectorStore sidecar. ``exclude`` removes
+    extra bodyIds from the sample on top of the candidates — the query
+    bids for intra-dataset runs, where the queries live in the target
+    universe and could otherwise draw themselves into the null.
     """
     sample = null_sample(target_dataset, k=null_k,
-                         exclude=candidate_bids, project_root=project_root)
+                         exclude=list(candidate_bids) + list(exclude),
+                         project_root=project_root)
     stats: Dict[int, Dict[str, float]] = {}
     if not sample:
         return stats, []
@@ -612,6 +660,7 @@ def null_baselines(source_dataset: str, target_dataset: str,
             arr = np.asarray(vals, dtype=float)
             stats[int(src_bid)] = {
                 'p95': float(np.percentile(arr, 95)),
+                'bar_p': float(np.percentile(arr, level)),
                 'median': float(np.median(arr)),
                 'mean': float(arr.mean()),
                 'std': float(arr.std() if len(arr) > 1 else 0.0),
@@ -626,27 +675,60 @@ def null_baselines(source_dataset: str, target_dataset: str,
 
 @dataclass
 class MorphQualification:
-    """Result of the pooled morph-qualification pass for one run."""
+    """Result of the pooled morph-qualification pass for one run.
+
+    ``mode`` selects the bar family: ``'null'`` (default — per-source null
+    percentile + offset) or ``'mapping_ref'`` (floors v3: the mapper's
+    target-side branch pools as the matched+verified reference set —
+    native pool floor binding when the pool has >= 2 members, Track-A
+    backup floor ``B_b - Δ`` otherwise, per-source null fallback).
+    ``level`` is the null percentile of the bar (default 95 = the
+    historical null p95).
+    """
 
     source_dataset: str = ''
     target_dataset: str = ''
     null_k: int = NULL_K_DEFAULT
     bar_offset: float = 0.0
+    mode: str = 'null'
+    level: int = 95
     scores: Dict[Tuple[int, int], float] = field(default_factory=dict)
     null_stats: Dict[int, Dict[str, float]] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     active: bool = False
+    # mapping_ref mode: per-source bar provenance
+    # {source_bid: {'kind': 'native'|'track_a'|None, 'native_floor',
+    #               'backup_floor', 'B_b', 'n_refs'}}
+    ref_bars: Dict[int, Dict[str, object]] = field(default_factory=dict)
+    # mapping_ref mode: per-pair native candidate evidence
+    # {(source_bid, target_bid): max native sim to the source's pool}
+    native_scores: Dict[Tuple[int, int], float] = field(default_factory=dict)
 
     def bar(self, source_bid: int) -> Optional[float]:
         stats = self.null_stats.get(int(source_bid))
         if not stats:
             return None
-        return stats['p95'] + float(self.bar_offset)
+        return stats.get('bar_p', stats.get('p95')) + float(self.bar_offset)
 
     def is_qualified(self, source_bid: int, target_bid: int) -> Optional[bool]:
         score = self.scores.get((int(source_bid), int(target_bid)))
         if score is None or not np.isfinite(score):
             return None
+        if self.mode == 'mapping_ref':
+            rb = self.ref_bars.get(int(source_bid))
+            if not rb or rb.get('kind') is None:
+                return self._null_qualified(source_bid, target_bid, score)
+            if rb['kind'] == 'native':
+                nv = self.native_scores.get((int(source_bid),
+                                             int(target_bid)))
+                if nv is None or not np.isfinite(nv):
+                    return None
+                return bool(nv >= rb['native_floor'])
+            return bool(score >= rb['backup_floor'])
+        return self._null_qualified(source_bid, target_bid, score)
+
+    def _null_qualified(self, source_bid: int, target_bid: int,
+                        score: float) -> Optional[bool]:
         bar = self.bar(source_bid)
         if bar is None:
             return None
@@ -670,19 +752,34 @@ class MorphQualification:
 
 
 def select_visualized_pairs(results_df: pd.DataFrame,
-                            top_n: int) -> List[Tuple[int, int]]:
+                            top_n: int,
+                            exclude_targets=None) -> List[Tuple[int, int]]:
     """(source_bodyId, target_bodyId) pairs the visualization would render.
 
     Mirrors ``_visualize_homolog_candidates``' bodyId-level selection:
     per-source rank_union top-N, then a first-wins dedupe on the target
     across sources. Keeping the two in lockstep is what makes the pooled
-    pre-scoring cover exactly the rendered set.
+    pre-scoring cover exactly the rendered set. ``exclude_targets`` mirrors
+    the same-dataset scene rule — rows whose target is a query neuron (they
+    render as the query layer, not as candidates) drop out before the
+    top-N selection.
     """
     if results_df is None or results_df.empty:
         return []
     if 'target_bodyId' not in results_df.columns:
         return []
     candidate = results_df
+    if exclude_targets:
+        def _excluded(value) -> bool:
+            try:
+                if pd.isna(value):
+                    return False
+                return int(value) in exclude_targets
+            except (TypeError, ValueError):
+                return False
+        candidate = candidate.loc[~candidate['target_bodyId'].map(_excluded)]
+        if candidate.empty:
+            return []
     if top_n and top_n > 0:
         if 'source_bodyId' in candidate.columns:
             per_source = []
@@ -751,6 +848,35 @@ def merge_morph_columns(df: pd.DataFrame,
         (qualification.null_stats.get(k[0], {}) or {}).get('p95')
         if k and k[0] in qualification.null_stats else None for k in keys]
     out['morph_z'] = [qualification.z_score(*k) if k else None for k in keys]
+
+    def _bar_kind(k):
+        if not k:
+            return None
+        if qualification.mode == 'mapping_ref':
+            rb = qualification.ref_bars.get(k[0])
+            if rb and rb.get('kind') in ('native', 'track_a'):
+                return rb['kind']
+            return 'null_bar'
+        # Not 'null': that token round-trips as NaN through the default
+        # pandas NA parsing of the exported CSVs.
+        return 'null_bar'
+
+    def _bar_value(k):
+        if not k:
+            return None
+        if qualification.mode == 'mapping_ref':
+            rb = qualification.ref_bars.get(k[0])
+            if not rb:
+                return None
+            return (rb['native_floor'] if rb.get('kind') == 'native'
+                    else rb.get('backup_floor'))
+        return qualification.bar(k[0])
+
+    out['morph_bar_kind'] = [_bar_kind(k) for k in keys]
+    out['morph_bar'] = [_bar_value(k) for k in keys]
+    out['morph_null_level'] = [
+        qualification.level if k and k[0] in qualification.null_stats
+        else None for k in keys]
     out['morph_qualified'] = [qualification.is_qualified(*k) if k else None
                               for k in keys]
     return out
@@ -791,28 +917,169 @@ def filter_qualified_top_matches(top_matches: pd.DataFrame,
     return top_matches.loc[keep], excluded
 
 
+
+
+def _mapper_ref_pools(source_types: Dict[int, str], source_dataset: str,
+                      target_dataset: str,
+                      log=None) -> Dict[str, List[int]]:
+    """{source_type: [target bodyIds]} — the mapper's target-side branch
+    pools for the queried source types (the matched+verified reference
+    analog available without validation).  Per source type: the mapping
+    decision's target types, each refined through the prioritized bridge
+    pool; the union is the source type's reference pool.  Silent empty on
+    any resolution failure (the caller falls back to the null bar)."""
+    if not source_types:
+        return {}
+    try:
+        from comparison.cross_dataset_type_mapper import get_type_mapper
+        from ui.neuron_index import resolve_prioritized_bridge_pool
+    except Exception as exc:  # noqa: BLE001
+        _logline(log, f'[morph-qualify] mapping_ref unavailable: {exc}')
+        return {}
+    try:
+        mapper = get_type_mapper()
+        pools: Dict[str, List[int]] = {}
+        for stype in sorted(set(source_types.values())):
+            if not stype or stype in ('?', 'nan', 'None'):
+                continue
+            try:
+                dec = mapper.get_mapping_decision(stype, source_dataset,
+                                                  target_dataset)
+                targets = list(dec.get('target_types') or [])
+                refs: List[int] = []
+                for ttype in targets:
+                    chains = mapper.get_type_bridges(
+                        stype, source_dataset, target_dataset,
+                        max_bridges=0)
+                    pool = resolve_prioritized_bridge_pool(
+                        source_dataset, target_dataset, chains, stype, ttype)
+                    if pool.get('resolution_status') == 'supported':
+                        refs.extend(int(b) for b in
+                                    (pool.get('target_body_ids') or []))
+                if refs:
+                    pools[stype] = sorted(set(refs))
+                    _logline(log, f'[morph-qualify] mapping_ref: {stype} -> '
+                              f'pool {len(pools[stype])} via mapper branches')
+            except Exception:  # noqa: BLE001
+                continue
+        return pools
+    except Exception as exc:  # noqa: BLE001
+        _logline(log, f'[morph-qualify] mapping_ref pools failed: {exc}')
+        return {}
+
+
+def _finalize_mapping_ref_bars(mq: "MorphQualification",
+                               src_refs: Dict[int, List[int]],
+                               score_df, log=None) -> None:
+    """Compute per-source mapping_ref bars + native candidate evidence.
+
+    Per source: native floor = mean pairwise native sim among its pool refs
+    (binding when >= 2 refs have native vectors); otherwise the Track-A
+    backup floor ``B_b - Δ`` from the scored (source -> pool) pairs; a
+    source with neither keeps the per-source null bar.  Also records each
+    scored pair's max native similarity to the source's pool (the native
+    candidate evidence the native rung compares)."""
+    from morphology import (apply_whitening, find_similar_dataset_cache_v2,
+                            v2_similarity_matrix, DEFAULT_V2_BLOCK_WEIGHTS)
+    ids = sorted({b for refs in src_refs.values() for b in refs}
+                 | {t for (_s, t) in mq.scores})
+    cache = find_similar_dataset_cache_v2(mq.target_dataset, verbose=False)
+    X, ok, _ = cache.vectors_for(ids, compute_missing=True)
+    have = {bid: X[i] for i, bid in enumerate(ids) if ok[i]}
+    wd = cache.load() or {}
+    whiten = wd.get('whiten')
+
+    def nsim(a, b):
+        wa = apply_whitening(whiten, have[a].reshape(1, -1))
+        wb = apply_whitening(whiten, have[b].reshape(1, -1))
+        return float(v2_similarity_matrix(
+            wa, wb.reshape(1, -1), dict(DEFAULT_V2_BLOCK_WEIGHTS))[0][0])
+
+    for src, refs in src_refs.items():
+        avail = [r for r in refs if r in have]
+        rb = {'kind': None, 'native_floor': None, 'backup_floor': None,
+              'B_b': None, 'n_refs': len(avail)}
+        if len(avail) >= 2 and whiten is not None:
+            sims = [nsim(avail[i], avail[j])
+                    for i in range(len(avail))
+                    for j in range(i + 1, len(avail))]
+            rb['native_floor'] = (float(np.mean(sims))
+                                  - MAPPING_REF_NATIVE_MARGIN)
+            rb['kind'] = 'native'
+        pool_set = set(refs)
+        ta = []
+        if score_df is not None and not score_df.empty:
+            for _idx, row in score_df.iterrows():
+                try:
+                    if int(row['source_bodyId']) != int(src):
+                        continue
+                    if int(row['target_bodyId']) in pool_set:
+                        v = row.get('morph_v2_similarity')
+                        if v is not None and pd.notna(v) and np.isfinite(v):
+                            ta.append(float(v))
+                except (TypeError, ValueError):
+                    continue
+        if ta:
+            rb['B_b'] = float(np.mean(ta))
+            if rb['kind'] is None:
+                rb['kind'] = 'track_a'
+                rb['backup_floor'] = rb['B_b'] - MAPPING_REF_TRACK_A_OFFSET
+        mq.ref_bars[int(src)] = rb
+        _logline(log, f'[morph-qualify] mapping_ref source {src}: kind='
+                 f'{rb["kind"]} refs={len(avail)} B_b='
+                 f'{rb["B_b"] is not None and round(rb["B_b"], 3)}')
+    # native candidate evidence per scored pair
+    for (src, tgt) in list(mq.scores):
+        refs = src_refs.get(src)
+        if not refs or tgt not in have or whiten is None:
+            continue
+        sims = [nsim(tgt, r) for r in refs if r in have and r != tgt]
+        if sims:
+            mq.native_scores[(src, tgt)] = max(sims)
+
+
 def qualify_visualized_pairs(
         source_dataset: str, target_dataset: str,
         pairs: Sequence[Tuple[int, int]],
         null_k: int = NULL_K_DEFAULT,
         project_root: Optional[str] = None,
         bar_offset: float = 0.0,
+        mode: str = 'null',
+        level: int = 95,
+        source_types: Optional[Dict[int, str]] = None,
         log=None) -> MorphQualification:
     """Score the visualized (source, target) pairs + shared null sample.
 
     One scoring call covers the union of candidates and the null sample so
-    target transforms/vectorizations are computed once. Raises ValueError
-    on scope violations; returns an inactive MorphQualification (with a
-    warning) when scoring yields nothing usable.
+    target transforms/vectorizations are computed once. Same-dataset
+    (intra) runs go through the identity chain; their query bids are
+    excluded from the null sample since the queries live in the target
+    universe. Raises ValueError on scope violations; returns an inactive
+    MorphQualification (with a warning) when scoring yields nothing usable.
+
+    ``mode='mapping_ref'`` (floors v3) replaces the per-source null bar
+    with the mapper-referenced ladder wherever the pair's source type
+    resolves to mapper branch pools: native pool floor (>= 2 refs)
+    binding, Track-A backup floor ``B_b - Δ``, per-source null fallback.
+    ``source_types`` maps source bodyId -> source type name (required for
+    mapping_ref; built by the caller from the results rows).
     """
     mq = MorphQualification(source_dataset=source_dataset,
                             target_dataset=target_dataset,
-                            null_k=int(null_k), bar_offset=float(bar_offset))
+                            null_k=int(null_k), bar_offset=float(bar_offset),
+                            mode=str(mode or 'null'), level=int(level))
+    source_types = dict(source_types or {})
     check = check_pair_availability(source_dataset, target_dataset)
     if not check['ok']:
         raise ValueError(check['reason'])
     scope = dataset_scope(target_dataset)
     mq.warnings.extend(scope['warnings'])
+    # Same-dataset pairs short-circuit the pair check to identity before
+    # any scope validation, so enforce the target scope here — artifact-
+    # less datasets (male-cns:v0.9, optic-lobe) refuse with the clear
+    # reason instead of failing deep in the scorer.
+    if not scope['ok']:
+        raise ValueError(scope['reason'])
 
     unique_sources, unique_targets = [], []
     for src, tgt in pairs or []:
@@ -841,6 +1108,25 @@ def qualify_visualized_pairs(
     # Unified skeleton acquisition: score the visualized targets only
     # after they are in the shared raw cache (per-neuron isolation; uncached
     # targets would otherwise silently miss their morph verdict).
+    # mapping_ref: resolve the mapper's target-side branch pools per source
+    # type and make sure every pool member is fetched + scored (they back
+    # the native floor and the B_b baseline).
+    src_refs: Dict[int, List[int]] = {}
+    if mq.mode == 'mapping_ref':
+        ref_pools = _mapper_ref_pools(source_types, source_dataset,
+                                      target_dataset, log=log)
+        for src in unique_sources:
+            refs = ref_pools.get(source_types.get(src))
+            if refs:
+                src_refs[src] = list(refs)
+        if not src_refs:
+            mq.warnings.append('mapping_ref mode: no source type resolved '
+                               'to mapper branch pools; falling back to '
+                               'the null bar for every source.')
+    pool_bids = sorted({b for refs in src_refs.values() for b in refs})
+    if pool_bids:
+        unique_targets = unique_targets + [b for b in pool_bids
+                                           if b not in unique_targets]
     missing_targets = [b for b in unique_targets
                        if b not in _skeleton_cached_ids(
                            target_dataset, project_root)]
@@ -854,7 +1140,7 @@ def qualify_visualized_pairs(
     stats, sample = null_baselines(
         source_dataset, target_dataset, neurons, bids, unique_targets,
         null_k=null_k, project_root=project_root, vector_cache=vector_cache,
-        log=log)
+        level=level, exclude=bids, log=log)
     mq.null_stats = stats
     if not stats:
         mq.warnings.append('Null sample produced no usable scores; '
@@ -876,6 +1162,9 @@ def qualify_visualized_pairs(
                            'qualification inactive.')
         return mq
     sample_set = set(int(b) for b in sample)
+    # score_pairs covers the full unique-sources x unique-targets product;
+    # only the requested (visualized) pairs carry a qualification verdict.
+    requested = {(int(s), int(t)) for s, t in pairs or []}
     for _idx, row in df.iterrows():
         try:
             src, tgt = int(row['source_bodyId']), int(row['target_bodyId'])
@@ -883,20 +1172,32 @@ def qualify_visualized_pairs(
             continue
         if tgt in sample_set:
             continue
+        if (src, tgt) not in requested:
+            continue
         val = row.get('morph_v2_similarity')
         if val is None or pd.isna(val):
             continue
         mq.scores[(src, tgt)] = float(val)
 
+    if mq.mode == 'mapping_ref' and src_refs:
+        _finalize_mapping_ref_bars(mq, src_refs, df, log=log)
+    pool_bid_set = set(pool_bids)
     for (src, tgt), score in list(mq.scores.items()):
+        if tgt in pool_bid_set:
+            # Pool members were scored only to anchor B_b / native floors —
+            # they are references, never candidates of their own pool.
+            del mq.scores[(src, tgt)]
+            continue
         if mq.is_qualified(src, tgt) is None:
-            # No null bar for this source (unscored null): drop the pair.
+            # No bar for this source (unscored null / no mapping_ref
+            # basis): drop the pair.
             del mq.scores[(src, tgt)]
     n_qualified = sum(1 for pair in mq.scores if mq.is_qualified(*pair))
     mq.active = bool(mq.scores)
     _logline(log, f'[morph-qualify] scored {len(mq.scores)} visualized '
-             f'pair(s); {n_qualified} above the null p95 bar '
-             f'(offset {mq.bar_offset:+.2f}); null n='
+             f'pair(s); {n_qualified} above the bar '
+             f'(mode={mq.mode}, level={mq.level}, '
+             f'offset {mq.bar_offset:+.2f}); null n='
              f'{sorted({s["n"] for s in stats.values()})}')
     return mq
 
@@ -1039,82 +1340,6 @@ def ensure_population_artifacts(
 # Cross-dataset comparison backend (Similarity -> Morphology -> Cross-Dataset)
 # ---------------------------------------------------------------------------
 
-def plotly_header_tag() -> str:
-    """CDN Plotly include, identical to the connectivity report header.
-
-    Comparison reports embed their similarity matrices as in-page Plotly
-    heatmaps (the connectivity report's format); offline viewers see the
-    CDN fallback note instead of blank charts.
-    """
-    return ('<script src="https://cdn.plot.ly/plotly-2.27.0.min.js">'
-            '</script>'
-            '<script>if (typeof Plotly === "undefined") { '
-            'window.addEventListener("DOMContentLoaded", function() { '
-            "var b = document.getElementById('plotly-cdn-missing'); "
-            'if (b) { b.style.display = "block"; } }); }</script>')
-
-
-def similarity_matrix_card(dom_key: str, title: str, labels: List[str],
-                           matrix, *, links_html: str = '',
-                           note_html: str = '') -> str:
-    """One connectivity-report-style in-page Plotly similarity heatmap.
-
-    Green [0, 1] colorscale with per-cell value annotations and square
-    cells, mirroring ``html_report_generator._similarity_heatmap_card``.
-    ``matrix`` is a square DataFrame (NaN cells render as N/A). ``labels``
-    are the shared row/column names; ``links_html`` is emitted raw below
-    the title (CSV / interactive-heatmap links).
-    """
-    import html as _html
-    values = [[None if pd.isna(v) else round(float(v), 4) for v in row]
-              for row in matrix.values]
-    row_labels = [str(r) for r in matrix.index]
-    col_labels = [str(c) for c in matrix.columns]
-    n = max(len(col_labels), 1)
-    chart_size = min(n * 26 + 90, 640)
-    payload = json.dumps({'labels': col_labels, 'rows': row_labels,
-                          'z': values})
-    links = (f'<p style="font-size:0.8rem;margin:6px 0;">{links_html}</p>'
-             if links_html else '')
-    note = (f'<p style="font-size:0.8rem;color:#64748b;margin:6px 0;">'
-            f'{_html.escape(note_html)}</p>' if note_html else '')
-    return f"""
-    <div class="card">
-        <h2>{_html.escape(title)}</h2>
-        {links}{note}
-        <div class="scroll">
-            <div id="matrix_{_html.escape(dom_key)}"
-                 style="width:100%;height:{chart_size}px;"></div>
-        </div>
-    </div>
-    <script>
-    (function() {{
-        const data = {payload};
-        const greenScale = [[0, "#ffffff"], [0.3, "#c6efce"],
-                            [0.6, "#22c55e"], [1, "#166534"]];
-        const annotations = data.z.flatMap((row, i) => row.map((val, j) => ({{
-            x: data.labels[j], y: data.rows[i],
-            text: val === null ? "N/A" : val.toFixed(2),
-            showarrow: false,
-            font: {{ color: (val === null || val > 0.5) ? "white" : "black",
-                    size: 10 }}
-        }})));
-        Plotly.newPlot("matrix_{_html.escape(dom_key)}", [{{
-
-            z: data.z, x: data.labels, y: data.rows, type: "heatmap",
-            colorscale: greenScale, zmin: 0, zmax: 1, showscale: true
-        }}], {{
-            margin: {{ l: 90, r: 20, t: 20, b: 90 }},
-            xaxis: {{ tickangle: -45, scaleanchor: "y",
-                      constrain: "domain", tickfont: {{ size: 9 }} }},
-            yaxis: {{ autorange: "reversed", constrain: "domain",
-                      tickfont: {{ size: 9 }} }},
-            annotations: annotations
-        }}, {{ responsive: true }});
-    }})();
-    </script>"""
-
-
 def _safe_name(text: str, limit: int = 40) -> str:
     safe = ''.join(ch if ch.isalnum() or ch in '._-' else '_'
                    for ch in str(text))
@@ -1137,8 +1362,14 @@ class CrossDatasetMorphComparer:
 
     Pure comparison of the queried neurons (type-resolved per dataset,
     members capped) — pairwise vector_v2 per dataset pair in the target's
-    render space, a seeded null baseline per pair, overlay scenes in a
-    chosen reference template, and a self-contained report.html.
+    render space, a seeded null baseline per pair, and overlay scenes in a
+    chosen reference template. The export mirrors the connectivity-
+    profiling layout: per-pair ``results/`` with the type × type mean
+    matrix, the bodyId × bodyId score matrix, the long-form scores CSV and
+    the null reference; per-pair ``visualization/`` with interactive
+    VisPath heatmaps; and a tabbed ``report.html`` built on the shared
+    ``report_kit`` (pair tabs → Type/BodyId level tabs, Ward-clustered
+    cards, embedded Plotly so it renders offline).
     """
 
     def __init__(self, datasets: Optional[List[str]] = None,
@@ -1149,6 +1380,7 @@ class CrossDatasetMorphComparer:
                  reference_template: Optional[str] = None,
                  scene_members_per_type: int = 3,
                  visualize: bool = True,
+                 generate_heatmaps: bool = True,
                  fetch_online: bool = True,
                  token: str = '',
                  use_auto_type_mapping: bool = True,
@@ -1165,6 +1397,7 @@ class CrossDatasetMorphComparer:
         self.reference_template = reference_template
         self.scene_members_per_type = max(1, int(scene_members_per_type))
         self.visualize = bool(visualize)
+        self.generate_heatmaps = bool(generate_heatmaps)
         self.fetch_online = bool(fetch_online)
         self.token = token or ''
         self.use_auto_type_mapping = bool(use_auto_type_mapping)
@@ -1452,12 +1685,27 @@ class CrossDatasetMorphComparer:
         overview = self._overview_frame(tokens, datasets, members, pairs)
         files = self._write_outputs(run_path, tokens, datasets, members,
                                     pairs, overview, notes)
+        if self.generate_heatmaps:
+            try:
+                files.extend(self._write_heatmaps(run_path, pairs))
+            except Exception as exc:  # noqa: BLE001
+                self._log(f'heatmap generation failed (comparison kept): '
+                          f'{exc}')
         scenes = []
         if self.visualize:
             try:
                 scenes = self._render_scenes(run_path, datasets, members)
                 files.extend(scenes)
             except Exception as exc:  # noqa: BLE001
+                # KNOWN ISSUE (marked 2026-09-16, intentionally not fixed):
+                # the scene render intermittently dies inside the
+                # visualize_skeleton pipeline ("list index out of range").
+                # Observed on cross-dataset runs with bridged FAFB layers
+                # (consistently) and once on a native-only intra scene
+                # (flaky); transient NeuPrint fetch failures surface here
+                # too. Pre-existing user-WIP regression — reproduces with
+                # this module's changes stashed. Revisit when that WIP
+                # lands.
                 self._log(f'3D visualization failed (comparison kept): {exc}')
         files = self._write_report(run_path, tokens, datasets, members,
                                    pairs, overview, notes, scenes,
@@ -1513,17 +1761,23 @@ class CrossDatasetMorphComparer:
 
         # The scorer never fetches TARGET skeletons on demand; without a
         # pre-fetch, members outside the local cache would silently drop
-        # out of the matrix (NaN cells).
-        if self.fetch_online:
-            missing = [b for b in tgt_bids
-                       if b not in _skeleton_cached_ids(
-                           target, self.project_root)]
-            if missing and self.fetch_online:
+        # out of the matrix (NaN cells). Local sources (raw cache, FAFB
+        # release bundle) load even for strict-offline runs; only true
+        # online fetches are gated by fetch_online.
+        missing = [b for b in tgt_bids
+                   if b not in _skeleton_cached_ids(
+                       target, self.project_root)]
+        if missing:
+            if self.fetch_online:
                 self._log(f'[{target}] fetching {len(missing)} target '
                           'skeleton(s) not locally cached')
-                fetch_source_skeletons(target, missing,
-                                       project_root=self.project_root,
-                                       log=self._log)
+            else:
+                self._log(f'[{target}] loading {len(missing)} target '
+                          'skeleton(s) from local sources')
+            fetch_source_skeletons(target, missing,
+                                   project_root=self.project_root,
+                                   log=self._log,
+                                   allow_fetch=self.fetch_online)
 
         vector_cache: Dict[int, Any] = {}
         if self.use_cache:
@@ -1581,11 +1835,50 @@ class CrossDatasetMorphComparer:
                         round(float(sel['morph_v2'].mean()), 4)
                         if not sel.empty else np.nan)
         pair_info['type_matrix'] = type_matrix
+        pair_info['bodyid_matrix'] = self._member_matrix(
+            pair_info['rows'], source, src_members, target, tgt_members)
         self._log(f'[{source} -> {target}] scored {len(rows)} pair(s); '
                   f'baseline p95 range: '
                   f'{min((s["p95"] for s in stats.values()), default=float("nan")):.3f}'
                   f'..{max((s["p95"] for s in stats.values()), default=float("nan")):.3f}')
         return pair_info
+
+    def _member_matrix(self, rows: pd.DataFrame, source: str,
+                       src_members: Dict[str, List[int]], target: str,
+                       tgt_members: Dict[str, List[int]]) -> pd.DataFrame:
+        """BodyId x bodyId morph_v2 matrix for one dataset pair.
+
+        The bodyId-level counterpart of ``type_matrix``: rows are the source
+        members, columns the target members, values the raw vector_v2 score
+        (NaN where a pair was unscoreable). Axes use the tree-legend labels
+        ('{bodyId}_{instance}' or '{bodyId}_{type}_{L|R}'), ordered by type
+        then bodyId like the connectivity-profiler's bodyId matrices.
+        """
+        if rows is None or rows.empty:
+            return pd.DataFrame()
+
+        def axis(dataset: str, members: Dict[str, List[int]]
+                 ) -> Tuple[List[int], List[str]]:
+            bids: List[int] = []
+            labels: List[str] = []
+            for type_name in sorted(members):
+                for bid in sorted(members[type_name]):
+                    bid = int(bid)
+                    bids.append(bid)
+                    labels.append(_body_id_label(dataset, bid, type_name))
+            return bids, labels
+
+        src_bids, src_labels = axis(source, src_members)
+        tgt_bids, tgt_labels = axis(target, tgt_members)
+        src_map = dict(zip(src_bids, src_labels))
+        tgt_map = dict(zip(tgt_bids, tgt_labels))
+        long = rows.drop_duplicates(['source_bodyId', 'target_bodyId'])
+        long = long.assign(
+            _src=long['source_bodyId'].map(src_map),
+            _tgt=long['target_bodyId'].map(tgt_map))
+        matrix = long.pivot(index='_src', columns='_tgt',
+                            values='morph_v2')
+        return matrix.reindex(index=src_labels, columns=tgt_labels)
 
     def _overview_frame(self, tokens: Sequence[str], datasets: List[str],
                         members: Dict[str, Dict[str, List[int]]],
@@ -1633,18 +1926,23 @@ class CrossDatasetMorphComparer:
         files: List[Path] = []
         for (a, b), info in pairs.items():
             pair_dir = (run_path / f'{self._abbrevs.get(a, _dataset_abbrev(a))}'
-                        f'_to_{self._abbrevs.get(b, _dataset_abbrev(b))}')
+                        f'_to_{self._abbrevs.get(b, _dataset_abbrev(b))}'
+                        / 'results')
             pair_dir.mkdir(parents=True, exist_ok=True)
             rows = info.get('rows')
             if rows is not None and not rows.empty:
-                csv = pair_dir / 'bodyid_scores.csv'
+                csv = pair_dir / 'morph_bodyid_scores.csv'
                 rows.sort_values(['source_type', 'morph_v2'],
                                  ascending=[True, False],
                                  na_position='last').to_csv(csv, index=False)
             matrix = info.get('type_matrix')
             if matrix is not None and not matrix.empty:
-                csv = pair_dir / 'type_matrix.csv'
+                csv = pair_dir / 'morph_type_matrix.csv'
                 matrix.to_csv(csv)
+            bodyid = info.get('bodyid_matrix')
+            if bodyid is not None and not bodyid.empty:
+                csv = pair_dir / 'morph_bodyid_matrix.csv'
+                bodyid.to_csv(csv)
             baseline = {'source': a, 'target': b,
                         'null_k': self.null_k,
                         'per_query': {str(k): v for k, v in
@@ -1659,6 +1957,17 @@ class CrossDatasetMorphComparer:
             csv = run_path / 'overview.csv'
             overview.to_csv(csv, index=False)
             files.append(csv)
+        member_rows = []
+        for type_name in self._queried_type_order(datasets, members):
+            row = {'queried_type': type_name}
+            for name in datasets:
+                row[self._abbrevs.get(name, _dataset_abbrev(name))] = len(
+                    (members.get(name) or {}).get(type_name) or [])
+            member_rows.append(row)
+        if member_rows:
+            csv = run_path / 'members_summary.csv'
+            pd.DataFrame(member_rows).to_csv(csv, index=False)
+            files.append(csv)
         parameters = {
             'queries': list(tokens),
             'datasets': list(datasets),
@@ -1667,6 +1976,7 @@ class CrossDatasetMorphComparer:
             'reference_template': self.reference_template,
             'scene_members_per_type': self.scene_members_per_type,
             'visualize': self.visualize,
+            'generate_heatmaps': self.generate_heatmaps,
             'scoring': 'vector_v2 (block-weighted whitened cosine; '
                        'no NBLAST cross-dataset)',
             'generated_at': datetime.now().isoformat(timespec='seconds'),
@@ -1695,12 +2005,19 @@ class CrossDatasetMorphComparer:
             '',
             '  OUTPUT STRUCTURE',
             '  <SRC>_to_<TGT>/            per dataset pair',
-            '    ├── bodyid_scores.csv    member-level vector_v2 + baseline flag',
-            '    ├── type_matrix.csv      type x type mean matrix',
-            '    └── null_baseline.json   seeded null reference (p95/median)',
+            '    ├── results/',
+            '    │   ├── morph_type_matrix.csv      type x type mean matrix',
+            '    │   ├── morph_bodyid_matrix.csv    bodyId x bodyId vector_v2',
+            '    │   ├── morph_bodyid_scores.csv    long-form scores + null flag',
+            '    │   └── null_baseline.json         seeded null (p95/median)',
+            '    └── visualization/',
+            '        └── heatmap_morph_<SRC>_to_<TGT>_{level}.html',
+            '                                    interactive VisPath heatmaps',
             '  plot-3d_*/                 overlay scenes (reference template)',
-            '  report.html                full report',
-            '  overview.csv               queried type x pair: best target-type cell',
+            '  report.html                tabbed report (pair tabs, Type/BodyId',
+            '                             levels, Ward-clustered heatmaps)',
+            '  overview.csv               queried type x pair: best target cell',
+            '  members_summary.csv        compared member counts per type/dataset',
             '',
         ]
         if self.warnings:
@@ -1713,6 +2030,51 @@ class CrossDatasetMorphComparer:
         return '\n'.join(lines) + '\n'
 
     # ------------------------------------------------------------- scenes
+    def _pair_slug(self, a: str, b: str) -> str:
+        return (f'{self._abbrevs.get(a, _dataset_abbrev(a))}'
+                f'_to_{self._abbrevs.get(b, _dataset_abbrev(b))}')
+
+    def _write_heatmaps(self, run_path: Path,
+                        pairs: Dict[Tuple[str, str], Dict[str, Any]]
+                        ) -> List[Path]:
+        """Standalone interactive VisPath heatmaps per pair (type + bodyId).
+
+        Same writer as the connectivity-profiling export (shared report_kit):
+        Ward-clustered, diverging vector_v2 scale, interactive-heatmap
+        fallback when VisPath is unavailable. One kit call per (pair,
+        level): the kit's card keys are METRIC keys, so the level rides in
+        the closures while every call uses the ``morph_v2`` style.
+        """
+        styles = {'morph_v2': _MORPH_V2_STYLE}
+        saved: Dict[str, List[str]] = {'heatmaps_generated': []}
+        for (a, b), info in pairs.items():
+            if info.get('error'):
+                continue
+            slug = self._pair_slug(a, b)
+            pair_title = slug.replace('_to_', ' → ')
+            for level in ('type', 'bodyid'):
+                matrix = (info.get('type_matrix') if level == 'type'
+                          else info.get('bodyid_matrix'))
+                if matrix is None or matrix.empty:
+                    continue
+                report_kit.generate_standalone_heatmaps(
+                    {slug: {'morph_v2': matrix}},
+                    run_path / slug / 'visualization', styles,
+                    filename_builder=lambda group, key, _lv=level:
+                        f'heatmap_morph_{group}_{_lv}.html',
+                    group_display=lambda group: group.replace('_to_', ' → '),
+                    vispath_title=lambda group, key, gd, _lv=level:
+                        f'{_MORPH_V2_STYLE.display_name} — {gd} · '
+                        f'{_LEVEL_DISPLAY.get(_lv, _lv)}',
+                    fallback_title=lambda group, key, gd, _lv=level:
+                        f'Cross-Dataset Morphology - {gd} - '
+                        f'{_LEVEL_DISPLAY.get(_lv, _lv)}',
+                    tqdm_desc=f'Generating {pair_title} '
+                              f'{_LEVEL_DISPLAY.get(level, level)} heatmap',
+                    show_figures=False, verbose=self.verbose,
+                    saved_files=saved, log=self._log)
+        return [Path(p) for p in saved['heatmaps_generated']]
+
     def _render_scenes(self, run_path: Path, datasets: List[str],
                        members: Dict[str, Dict[str, List[int]]]
                        ) -> List[Path]:
@@ -1832,104 +2194,185 @@ class CrossDatasetMorphComparer:
                       overview: pd.DataFrame, notes: List[str],
                       scenes: List[Path],
                       existing: Optional[List[Path]] = None) -> List[Path]:
-        esc = lambda s: (str(s).replace('&', '&amp;').replace('<', '&lt;')
-                         .replace('>', '&gt;'))
-        parts: List[str] = [f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<title>Cross-Dataset Morphology Comparison</title>
-{plotly_header_tag()}
-<style>
-body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:24px;color:#1d1d1f;background:#fafafa}}
-h1{{font-size:1.5rem}} h2{{font-size:1.15rem;margin-top:1.6rem}}
-.card{{background:#fff;border:1px solid #e3e3e6;border-radius:10px;padding:16px 20px;margin:14px 0}}
-table{{border-collapse:collapse;margin:8px 0;font-size:.9rem}}
-th,td{{border:1px solid #d9d9de;padding:4px 10px;text-align:right}}
-th:first-child,td:first-child{{text-align:left}}
-.warn{{background:#fff7e0;border:1px solid #f0c36d;border-radius:8px;padding:10px 14px;margin:10px 0}}
-.note{{color:#666;font-size:.85rem}}
-a{{color:#0b66d0}}
-.scroll{{overflow-x:auto}}
-#plotly-cdn-missing{{display:none;background:#fff7e0;border:1px solid #f0c36d;border-radius:8px;padding:10px 14px;color:#92400e;font-size:.85rem;margin:10px 0}}
-</style></head><body>
-<div id="plotly-cdn-missing">⚠️ Plotly failed to load (CDN unreachable) — the interactive matrices need an internet connection; the CSV exports still work offline.</div>""",
-                           '<h1>Cross-Dataset Morphology Comparison</h1>',
-                           f'<p class="note">Generated '
-                           f'{datetime.now():%Y-%m-%d %H:%M:%S} · queries: '
-                           f'{esc(", ".join(tokens))} · datasets: '
-                           f'{esc(", ".join(datasets))}<br>'
-                           'Scoring: production vector_v2 in each target '
-                           'render space (no NBLAST cross-dataset). '
-                           'Scores are comparable within a column, not '
-                           'across columns: each dataset pair is scored in '
-                           'its target frame.</p>']
+        """Tabbed report on the shared report_kit (same format as the
+        connectivity-profiling export): hero header, one tab per dataset
+        pair, Type/BodyId level tabs, Ward-clustered heatmaps with CSV and
+        VisPath editor links, member/resolution details, overlay scenes.
+        Plotly.js is embedded, so the report renders offline.
+        """
+        from html import escape
+
+        def chip(label: str, value: str) -> str:
+            return (f"<div class='meta-chip'><span>{escape(label)}</span>"
+                    f"<strong>{escape(value)}</strong></div>")
+
+        reference = self.reference_template or datasets[0]
+        lines = [
+            '<!DOCTYPE html>',
+            "<html><head><meta charset='utf-8'>",
+            '<title>Cross-Dataset Morphology Comparison</title>',
+            report_kit.report_css(),
+            '</head><body><main class="report-shell">',
+            '<header class="report-hero">',
+            '<div class="report-kicker">DROCAT · Cross-dataset morphology</div>',
+            '<h1 class="report-title">Cross-dataset morphology comparison</h1>',
+            '<p class="report-subtitle">Production vector_v2 scored in each '
+            'target render space (no NBLAST cross-dataset). Scores are '
+            'comparable within a pair tab, not across tabs: each dataset '
+            'pair is scored in its target frame. Use the VisPath editor '
+            'links to change clustering; hover cells for exact values.</p>',
+            '<div class="report-meta">',
+            chip('Datasets', ' · '.join(datasets)),
+            chip('Queries', ', '.join(tokens)),
+            chip('Null k', str(self.null_k)),
+            chip('Reference template', str(reference)),
+            '</div>',
+            f"<p class='report-note'>Generated {datetime.now():%Y-%m-%d %H:%M:%S} · "
+            'negative vector_v2 cells are genuinely negative (whitened '
+            'cosine) and render blue on the diverging scale.</p>',
+            '</header>',
+        ]
         if self.warnings:
-            parts.append('<div class="warn"><b>Warnings</b><ul>' + ''.join(
-                f'<li>{esc(w)}</li>' for w in self.warnings) + '</ul></div>')
+            lines.append(
+                '<div class="section-card"><h2 class="section-heading">Warnings</h2><ul>'
+                + ''.join(f'<li>{escape(w)}</li>' for w in self.warnings)
+                + '</ul></div>')
 
         if not overview.empty:
-            parts.append('<h2>Overview — best target-type match per queried type</h2>')
-            parts.append('<div class="card">')
-            parts.append(overview.to_html(index=False, na_rep='—',
-                                          border=0, classes='ov'))
-            parts.append('</div>')
+            lines.append('<div class="section-card">'
+                         '<h2 class="section-heading">Overview — best '
+                         'target-type match per queried type</h2>')
+            lines.append(overview.to_html(index=False, na_rep='—', border=0,
+                                          classes='mapping-table'))
+            lines.append('</div>')
 
-        for (a, b), info in pairs.items():
-            abbrev = (f'{self._abbrevs.get(a, _dataset_abbrev(a))} → '
-                      f'{self._abbrevs.get(b, _dataset_abbrev(b))}')
-            parts.append(f'<h2>{esc(abbrev)}</h2><div class="card">')
-            if info.get('error'):
-                parts.append(f'<p class="warn">{esc(info["error"])}</p></div>')
-                continue
+        plotly_state = {'include_plotlyjs': True}
+
+        def render_level(pair_dir: str, info: Dict[str, Any],
+                         level: str, _level_panel_id: str) -> None:
+            level_label = _LEVEL_DISPLAY[level]
+            matrix = (info.get('type_matrix') if level == 'type'
+                      else info.get('bodyid_matrix'))
+            matrix = matrix if matrix is not None else pd.DataFrame()
+            if matrix.empty:
+                lines.append(
+                    "<div class='heatmap-empty'>This level was not computed "
+                    'for this pair.</div>')
+                return
+            rows = info.get('rows')
+            n_above = (int(rows['above_baseline'].fillna(False).sum())
+                       if rows is not None and not rows.empty else 0)
+            n_pairs = len(rows) if rows is not None and not rows.empty else 0
             baseline = info.get('baseline') or {}
+            note = (f'{n_pairs} member pairs · {n_above} above the null p95'
+                    if rows is not None and not rows.empty else
+                    'no scored member pairs')
             if baseline:
                 p95s = [s['p95'] for s in baseline.values()]
-                med = [s['median'] for s in baseline.values()]
-                ns = [s['n'] for s in baseline.values()]
-                parts.append(
-                    f'<p class="note">Null baseline (seeded random targets, '
-                    f'k≈{max(ns) if ns else 0}): p95 '
-                    f'{min(p95s):.3f}–{max(p95s):.3f}, median '
-                    f'{min(med):.3f}–{max(med):.3f}. Candidate scores above '
-                    'the p95 line are above the unrelated-pair noise '
-                    'floor.</p>')
-            matrix = info.get('type_matrix')
-            if matrix is not None and not matrix.empty:
-                slug = f"{_dataset_abbrev(a)}_{_dataset_abbrev(b)}"
-                pair_dir = f"{self._abbrevs.get(a, _dataset_abbrev(a))}_" \
-                           f"to_{self._abbrevs.get(b, _dataset_abbrev(b))}"
-                links = (f'<a href="{esc(pair_dir)}">bodyid_scores.csv</a>'
-                         f' · <a href="{esc(pair_dir)}">type_matrix.csv</a>')
-                parts.append(similarity_matrix_card(
-                    f"matrix_{slug}",
-                    f'Type × type mean vector_v2 ({abbrev})',
-                    [str(c) for c in matrix.columns], matrix,
-                    links_html=links))
-            rows = info.get('rows')
-            if rows is not None and not rows.empty:
-                n_above = int(rows['above_baseline'].fillna(False).sum())
-                parts.append(f'<p>Member pairs: {len(rows)} · above the '
-                             f'baseline p95: {n_above} · '
-                             f'<a href="{esc(abbrev.replace(" → ", "_to_"))}'
-                             '/bodyid_scores.csv">bodyid_scores.csv</a></p>')
-            parts.append('</div>')
+                note += (f' · null baseline p95 {min(p95s):.3f}–{max(p95s):.3f}'
+                         f' (seeded random targets, k≈{self.null_k})')
+            lines.append(
+                f"<div class='direction-intro'><h3 class='direction-title'>"
+                f'{escape(level_label)}</h3>'
+                f"<div class='direction-note'>{escape(note)}</div></div>")
+            report_kit.append_report_metric_grid(
+                lines, run_path, {'morph_v2': matrix},
+                f'{pair_dir.replace("_to_", " → ")} · {level_label}',
+                {'morph_v2': f'{pair_dir}/results/'
+                                  f'morph_{level}_matrix.csv'},
+                {'morph_v2': f'{pair_dir}/visualization/'
+                                  f'heatmap_morph_{pair_dir}_{level}.html'},
+                'Target neuron' if level == 'bodyid' else 'Target type',
+                'Source neuron' if level == 'bodyid' else 'Source type',
+                plotly_state,
+                styles={'morph_v2': _MORPH_V2_STYLE},
+                square_cells=(level == 'bodyid'),
+            )
+
+        def render_pair(key: str, panel_id: str) -> None:
+            info = self._pair_by_slug.get(key) or {}
+            a, b = self._slug_pairs[key]
+            pair_title = key.replace('_to_', ' → ')
+            lines.append(
+                '<div class="section-card">'
+                f"<h2 class='section-heading'>{escape(pair_title)}</h2>"
+                '<p class="section-summary">vector_v2 in the '
+                f'{escape(str(b))} render space; the mirrored direction '
+                'has its own tab.</p>')
+            if info.get('error'):
+                lines.append(
+                    f"<p class='heatmap-empty'>{escape(str(info['error']))}</p>"
+                    '</div>')
+                return
+            report_kit.append_report_tab_group(
+                lines, f'{panel_id}-levels',
+                [(level, _LEVEL_DISPLAY[level])
+                 for level in ('type', 'bodyid')],
+                lambda level, level_pid, _d=key, _i=info:
+                    render_level(_d, _i, level, level_pid),
+                panel_class='tab-panel direction-panel')
+            lines.append('</div>')
+
+        self._pair_by_slug: Dict[str, Dict[str, Any]] = {}
+        self._slug_pairs: Dict[str, Tuple[str, str]] = {}
+        pair_tabs = []
+        for (a, b) in pairs:
+            slug = self._pair_slug(a, b)
+            self._pair_by_slug[slug] = pairs[(a, b)]
+            self._slug_pairs[slug] = (a, b)
+            pair_tabs.append((slug, slug.replace('_to_', ' → ')))
+        if pair_tabs:
+            report_kit.append_report_tab_group(
+                lines, 'morph-pairs', pair_tabs, render_pair)
+        else:
+            lines.append("<div class='heatmap-empty'>No dataset pairs "
+                         'scored for this run.</div>')
+
+        # --- compared members + resolution notes -------------------------
+        detail_bits = []
+        if any((members.get(ds) or {}) for ds in datasets):
+            rows = ['<tr><th>queried type</th>'
+                    + ''.join(f'<th>{escape(self._abbrevs.get(ds, _dataset_abbrev(ds)))}</th>'
+                              for ds in datasets)
+                    + '</tr>']
+            for type_name in self._queried_type_order(datasets, members):
+                rows.append(
+                    f'<tr><td>{escape(type_name)}</td>'
+                    + ''.join(
+                        f"<td>{len((members.get(ds) or {}).get(type_name) or [])}</td>"
+                        for ds in datasets)
+                    + '</tr>')
+            detail_bits.append(
+                '<details class="detail-block"><summary>Compared members '
+                'per dataset</summary><div style="overflow-x:auto">'
+                "<table class='mapping-table'><thead>" + ''.join(rows)
+                + '</thead></table></div></details>')
+        if notes:
+            detail_bits.append(
+                '<details class="detail-block"><summary>Resolution '
+                'notes</summary><ul class="detail-list">'
+                + ''.join(f'<li>{escape(n)}</li>' for n in notes)
+                + '</ul></details>')
+        if detail_bits:
+            lines.append('<div class="section-card">' + ''.join(detail_bits)
+                         + '</div>')
 
         if scenes:
-            parts.append('<h2>Overlay scenes</h2><div class="card"><ul>' +
-                         ''.join(f'<li><a href="{esc(p.parent.name)}/'
-                                 f'{esc(p.name)}">'
-                                 f'{esc(Path(p.parent.name) / p.name)}</a></li>'
-                                 for p in scenes) + '</ul>'
-                         f'<p class="note">Scene frame: '
-                         f'{esc(self.reference_template or datasets[0])} '
-                         'render space — different frame from the scores '
-                         '(frame disclosure).</p></div>')
-        if notes:
-            parts.append('<h2>Resolution notes</h2><div class="card"><ul>' +
-                         ''.join(f'<li>{esc(n)}</li>' for n in notes) +
-                         '</ul></div>')
-        parts.append('</body></html>')
+            lines.append(
+                '<div class="section-card"><h2 class="section-heading">'
+                'Overlay scenes</h2><ul class="detail-list">'
+                + ''.join(f"<li><a href='{escape(p.parent.name)}/"
+                          f"{escape(p.name)}'>"
+                          f'{escape(str(Path(p.parent.name) / p.name))}</a></li>'
+                          for p in scenes)
+                + f'</ul><p class="muted">Scene frame: {escape(reference)} '
+                'render space — different frame from the scores (frame '
+                'disclosure).</p></div>')
+
+        lines.extend(['</main>', report_kit.report_script(),
+                      '</body></html>'])
         report = run_path / 'report.html'
-        report.write_text('\n'.join(parts))
+        report.write_text('\n'.join(lines), encoding='utf-8')
         files = list(existing or [])
         files.append(report)
         self._log(f'report written: {report}')

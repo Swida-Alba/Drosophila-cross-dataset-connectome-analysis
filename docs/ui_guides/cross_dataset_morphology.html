@@ -57,7 +57,10 @@
       the same queries scored against ~200 seeded random target neurons.
       The sample is shared across queries and runs, so repeat runs are
       fast. Member pairs above the baseline p95 are flagged in
-      <code>bodyid_scores.csv</code>.</li>
+      <code>morph_bodyid_scores.csv</code>, and the raw per-neuron scores
+      are exported as the <code>morph_bodyid_matrix.csv</code> bodyId ×
+      bodyId matrix. vector_v2 is a whitened cosine that can be negative,
+      so the report renders it on a diverging blue–white–red scale.</li>
     <li>Scores are comparable <i>within</i> a dataset pair (one frame), not
       across pairs — the report states each pair's frame (frame
       disclosure).</li>
@@ -70,12 +73,21 @@
   <h2>Output</h2>
   <pre><code>{output_dir}/morph_cross_{datasets}_{queries}_{timestamp}/
   overview.csv                    # queried type × pair: best target-type match
+  members_summary.csv             # compared member counts per type/dataset
   parameters.json / README.txt    # run config, warnings, resolution notes
-  report.html                     # full report with matrices + baselines
+  report.html                     # tabbed report (same generator as the
+                                  # connectivity-profiling report: pair tabs,
+                                  # Type/BodyId levels, Ward-clustered cards,
+                                  # Plotly embedded — renders offline)
   &lt;SRC&gt;_to_&lt;TGT&gt;/                 # one folder per dataset pair
-    bodyid_scores.csv             # member-level scores + above_baseline flag
-    type_matrix.csv               # type × type mean vector_v2
-    null_baseline.json            # seeded null reference per query
+    results/
+      morph_type_matrix.csv       # type × type mean vector_v2
+      morph_bodyid_matrix.csv     # bodyId × bodyId vector_v2 (tree-legend labels)
+      morph_bodyid_scores.csv     # long-form scores + above_baseline flag
+      null_baseline.json          # seeded null reference per query
+    visualization/
+      heatmap_morph_&lt;SRC&gt;_to_&lt;TGT&gt;_{type,bodyid}.html
+                                  # interactive VisPath heatmaps
   plot-3d_crossmorph_*/           # overlay scenes (reference template)</code></pre>
 
   <div class="callout info">

@@ -766,23 +766,28 @@ shuffled = finder.shuffle_profile(profile, seed=42)
 - [CrossDatasetComparison_Guide.md](./CrossDatasetComparison_Guide.md) - Cross-dataset workflows
 - [CacheSystem_Guide_v4.md](./CacheSystem_Guide_v4.md) - Cache architecture
 
-## Morph Qualification (cross-dataset, optional)
+## Morph Qualification (cross- or intra-dataset, optional)
 
 With **Morph Qualification** enabled (requires visualization and a
-cross-dataset target among FAFB / male-cns / BANC), the visualized top-N
+supported target among FAFB / male-cns / BANC — cross-dataset and
+same-dataset runs alike), the visualized top-N
 candidates get a morphological second opinion on top of the connectivity
 ranking:
 
-- the query skeleton is transformed into the target's render space and
+- the query skeleton is transformed into the target's render space
+  (identity for same-dataset runs) and
   scored with the production **vector_v2** scorer (no NBLAST
   cross-dataset);
 - the bar is **null-calibrated per query**: the p95 of `morph_null_k`
   (default 200) seeded random target neurons, plus a user-set offset —
   raw cross-dataset morph scores have a high, query-dependent baseline,
-  so only the distance above the noise floor is meaningful;
+  so only the distance above the noise floor is meaningful (for
+  same-dataset runs the query bodyIds are excluded from the null
+  sample, since the queries live in the target universe);
 - candidates below the bar are **excluded from the rendered scenes**; the
   results tables keep every row and gain `morph_v2`, `morph_null_p95`,
-  `morph_z` and `morph_qualified` on the scored rows, with a
+  `morph_z`, `morph_bar_kind`, `morph_bar`, `morph_null_level` and
+  `morph_qualified` on the scored rows, with a
   `results/morph_qualification.json` provenance summary;
 - with the option off, output is byte-identical to the classic behavior.
 

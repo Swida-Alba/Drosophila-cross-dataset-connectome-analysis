@@ -306,6 +306,74 @@ class TestQualifyVisualizedPairs:
         assert not state.active
         assert any("no usable scores" in w for w in state.warnings)
 
+    def test_intra_dataset_qualifies_and_excludes_queries(
+            self, monkeypatch, fafb_mcns):
+        # Same-dataset (intra) qualification runs on the identity chain;
+        # the queries live in the target universe, so they must be
+        # excluded from the shared null sample.
+        fafb, _ = fafb_mcns
+        self._install(monkeypatch, good_targets=(100,))
+        monkeypatch.setattr(
+            mcd, "transform_queries",
+            lambda src, tgt, skel, validate_bounds=False, log=None:
+            (["neuron-a"], [1000]))
+        captured = {}
+        real_null_sample = mcd.null_sample
+
+        def spy(ds, k=mcd.NULL_K_DEFAULT, exclude=(), project_root=None):
+            captured["exclude"] = list(exclude)
+            out = real_null_sample(ds, k=k, exclude=exclude,
+                                   project_root=project_root)
+            captured["sample"] = [int(b) for b in out]
+            return out
+
+        monkeypatch.setattr(mcd, "null_sample", spy)
+        state = mcd.qualify_visualized_pairs(
+            fafb, fafb, [(1000, 100), (1000, 101)], null_k=30,
+            project_root=".")
+        assert state.active
+        assert set(captured["exclude"]) == {1000, 100, 101}
+        assert 1000 not in captured["sample"]
+        assert state.null_stats[1000]["n"] == 30
+        assert state.is_qualified(1000, 100) is True
+        assert state.is_qualified(1000, 101) is False
+
+    def test_intra_dataset_unscoped_target_refused(self, monkeypatch):
+        # The pair check short-circuits same-dataset pairs to identity,
+        # so the target scope must refuse artifact-less datasets here.
+        with pytest.raises(ValueError, match="v1.0"):
+            mcd.qualify_visualized_pairs(
+                "male-cns:v0.9", "male-cns:v0.9", [(1, 100)],
+                null_k=10, project_root=".")
+
+    def test_scores_only_requested_pairs(self, monkeypatch, fafb_mcns):
+        # score_pairs covers the full sources x targets product; the
+        # qualification must keep exactly the requested (visualized) pairs.
+        mcns, fafb = fafb_mcns
+        self._install(monkeypatch, good_targets=(100, 101, 102))
+        state = mcd.qualify_visualized_pairs(
+            mcns, fafb, [(1, 100)], null_k=30, project_root=".")
+        # transform_queries fakes two query neurons; pair (2, 100) was
+        # never requested even though it was scored by the product call.
+        assert set(state.scores) == {(1, 100)}
+
+    def test_select_pairs_excludes_query_targets(self):
+        # Same-dataset scene rule: rows whose target is a query neuron are
+        # dropped BEFORE the per-source top-N, mirroring the scene's
+        # candidate_results filter.
+        df = pd.DataFrame({
+            "source_bodyId": [1, 1, 1, 2, 2, 2],
+            "target_bodyId": [2, 30, 31, 1, 32, 33],
+            "rank_union": [0.9, 0.1, 0.05, 0.8, 0.2, 0.1],
+        })
+        pairs = mcd.select_visualized_pairs(df, 1, exclude_targets={1, 2})
+        # Query-target rows (1->2, 2->1) drop first; each source's top-1 is
+        # then its best non-query target.
+        assert pairs == [(1, 30), (2, 32)]
+        # Without the exclusion the query-target rows win their top-N slot.
+        pairs_plain = mcd.select_visualized_pairs(df, 1)
+        assert (1, 2) in pairs_plain and (2, 1) in pairs_plain
+
 
 # ---------------------------------------------------------------------------
 # CrossDatasetMorphComparer end-to-end with fakes
@@ -381,24 +449,48 @@ class TestCrossDatasetMorphComparer:
         assert run_path == tmp_path / "run1"
         names = {Path(f["path"]).name for f in result["files"]}
         assert {"overview.csv", "report.html", "parameters.json",
-                "README.txt"} <= names
+                "README.txt", "members_summary.csv"} <= names
 
-        mcns_to_fafb = run_path / "MCNS_to_FAFB"
-        assert (mcns_to_fafb / "type_matrix.csv").exists()
-        assert (mcns_to_fafb / "bodyid_scores.csv").exists()
-        assert (mcns_to_fafb / "null_baseline.json").exists()
+        results = run_path / "MCNS_to_FAFB" / "results"
+        assert (results / "morph_type_matrix.csv").exists()
+        assert (results / "morph_bodyid_matrix.csv").exists()
+        assert (results / "morph_bodyid_scores.csv").exists()
+        assert (results / "null_baseline.json").exists()
 
-        matrix = pd.read_csv(mcns_to_fafb / "type_matrix.csv", index_col=0)
+        matrix = pd.read_csv(results / "morph_type_matrix.csv", index_col=0)
         assert list(matrix.columns) == ["APDN3"]
         # Both fake FAFB members (301: 0.85, 302: 0.25) share the type, so
         # the type cell is the member mean.
         assert matrix.loc["APDN3", "APDN3"] == pytest.approx(0.55, abs=1e-6)
 
-        rows = pd.read_csv(mcns_to_fafb / "bodyid_scores.csv")
+        rows = pd.read_csv(results / "morph_bodyid_scores.csv")
         good = rows[rows["target_bodyId"] == 301]
         assert (good["above_baseline"] == True).all()  # noqa: E712
         bad = rows[rows["target_bodyId"] == 302]
         assert (bad["above_baseline"] == False).all()  # noqa: E712
+
+        # BodyId-level matrix: rows = MCNS members, columns = FAFB members,
+        # tree-legend labels ('{bodyId}_{type}'), raw vector_v2 values.
+        bodyid = pd.read_csv(results / "morph_bodyid_matrix.csv", index_col=0)
+        assert bodyid.shape == (2, 2)
+        index_labels = [str(label) for label in bodyid.index]
+        column_labels = [str(label) for label in bodyid.columns]
+        assert any("201" in label for label in index_labels), index_labels
+        assert any("202" in label for label in index_labels), index_labels
+        assert any("301" in label for label in column_labels), column_labels
+        assert any("302" in label for label in column_labels), column_labels
+        assert bodyid.iloc[0, 0] == pytest.approx(0.85)
+        assert bodyid.iloc[0, 1] == pytest.approx(0.25)
+
+        # Standalone interactive heatmaps (shared report_kit / VisPath).
+        viz = run_path / "MCNS_to_FAFB" / "visualization"
+        assert (viz / "heatmap_morph_MCNS_to_FAFB_type.html").exists()
+        assert (viz / "heatmap_morph_MCNS_to_FAFB_bodyid.html").exists()
+
+        members = pd.read_csv(run_path / "members_summary.csv")
+        assert members.loc[0, "queried_type"] == "APDN3"
+        assert members.loc[0, "MCNS"] == 2
+        assert members.loc[0, "FAFB"] == 2
 
         overview = pd.read_csv(run_path / "overview.csv")
         assert overview.loc[0, "queried_type"] == "APDN3"
@@ -411,8 +503,35 @@ class TestCrossDatasetMorphComparer:
         assert apdn3["MCNS→FAFB"] == pytest.approx(0.55, abs=1e-6)
 
         report = (run_path / "report.html").read_text()
-        assert "Null baseline" in report
+        # Tabbed report on the shared kit: pair tabs, level tabs, Ward
+        # clustering, VisPath editor links, embedded Plotly (offline).
+        assert "data-tab-button" in report
+        assert "MCNS → FAFB" in report
+        assert "BodyId level" in report
+        assert "null baseline p95" in report
         assert "frame disclosure" in report or "render space" in report
+        assert "Ward clustered" in report
+        assert "Open VisPath heatmap for editing" in report
+        # Offline-capable: Plotly.js embedded inline, no CDN <script> tag.
+        assert '<script src="https://cdn.plot.ly' not in report
+        assert "'scaleanchor':'x'" in report or '"scaleanchor":"x"' in report
+
+    def test_heatmaps_disabled_skips_visualization(self, monkeypatch,
+                                                   tmp_path, fafb_mcns):
+        self._install_fakes(monkeypatch)
+        self._install_frames(monkeypatch)
+        comparer = mcd.CrossDatasetMorphComparer(
+            datasets=["male-cns:v1.0", "flywire_FAFB_v783"],
+            query=["APDN3"], output_dir=str(tmp_path), saveas="run2",
+            null_k=25, visualize=False, generate_heatmaps=False,
+            project_root=str(tmp_path))
+        result = comparer.run()
+        run_path = Path(result["output_folder"])
+        assert not (run_path / "MCNS_to_FAFB" / "visualization").exists()
+        report = (run_path / "report.html").read_text()
+        # CSV links remain; the VisPath editor link must not.
+        assert "morph_bodyid_matrix.csv" in report
+        assert "Open VisPath heatmap for editing" not in report
 
     def test_refused_dataset_raises(self, tmp_path):
         comparer = mcd.CrossDatasetMorphComparer(
@@ -590,3 +709,100 @@ class TestEnsurePopulationArtifacts:
         result = mcd.ensure_population_artifacts(
             dataset, sample_k=10, project_root=str(tmp_path))
         assert result["status"] == "insufficient"
+
+
+# ---------------------------------------------------------------------------
+# Floors v3: mode / level semantics (plan-unified-morph-qualification-bars)
+# ---------------------------------------------------------------------------
+
+class TestMorphQualificationModeLevel:
+    def _mq(self, **kw):
+        from comparison.morph_cross_dataset import MorphQualification
+        mq = MorphQualification(source_dataset='flywire_FAFB_v783',
+                                target_dataset='male-cns:v1.0', **kw)
+        return mq
+
+    def test_null_mode_bar_uses_level_percentile(self):
+        mq = self._mq(mode='null', level=75, bar_offset=0.02)
+        mq.null_stats[1] = {'p95': 0.60, 'bar_p': 0.45, 'n': 50}
+        mq.scores[(1, 100)] = 0.48
+        # bar = bar_p (p75) + offset, NOT the p95
+        assert mq.bar(1) == pytest.approx(0.47)
+        assert mq.is_qualified(1, 100) is True
+
+    def test_null_mode_default_level_is_95(self):
+        mq = self._mq()
+        assert mq.level == 95 and mq.mode == 'null'
+        mq.null_stats[1] = {'p95': 0.60, 'bar_p': 0.60, 'n': 50}
+        mq.scores[(1, 100)] = 0.61
+        assert mq.bar(1) == 0.60
+        assert mq.is_qualified(1, 100) is True
+
+    def test_mapping_ref_native_floor_binds(self):
+        mq = self._mq(mode='mapping_ref')
+        mq.ref_bars[1] = {'kind': 'native', 'native_floor': 0.70,
+                          'backup_floor': None, 'B_b': 0.75, 'n_refs': 3}
+        mq.native_scores[(1, 100)] = 0.72
+        mq.native_scores[(1, 101)] = 0.68
+        mq.scores[(1, 100)] = 0.40
+        mq.scores[(1, 101)] = 0.90
+        # native rung compares the native evidence; Track-A is irrelevant
+        assert mq.is_qualified(1, 100) is True
+        assert mq.is_qualified(1, 101) is False
+
+    def test_mapping_ref_track_a_backup(self):
+        mq = self._mq(mode='mapping_ref')
+        mq.ref_bars[1] = {'kind': 'track_a', 'native_floor': None,
+                          'backup_floor': 0.55, 'B_b': 0.60, 'n_refs': 1}
+        mq.scores[(1, 100)] = 0.56
+        mq.scores[(1, 101)] = 0.54
+        assert mq.is_qualified(1, 100) is True
+        assert mq.is_qualified(1, 101) is False
+
+    def test_mapping_ref_without_basis_falls_back_to_null(self):
+        mq = self._mq(mode='mapping_ref', bar_offset=0.02)
+        mq.ref_bars[1] = {'kind': None, 'native_floor': None,
+                          'backup_floor': None, 'B_b': None, 'n_refs': 0}
+        mq.null_stats[1] = {'p95': 0.60, 'bar_p': 0.45, 'n': 40}
+        mq.scores[(1, 100)] = 0.48
+        assert mq.is_qualified(1, 100) is True   # null bar_p + offset
+        mq.scores[(1, 101)] = 0.40
+        assert mq.is_qualified(1, 101) is False
+
+    def test_merge_morph_columns_adds_bar_columns(self):
+        import pandas as pd
+        mq = self._mq(mode='mapping_ref')
+        mq.ref_bars[1] = {'kind': 'native', 'native_floor': 0.70,
+                          'backup_floor': None, 'B_b': None, 'n_refs': 2}
+        mq.native_scores[(1, 100)] = 0.75
+        mq.scores[(1, 100)] = 0.5
+        mq.null_stats[1] = {'p95': 0.6, 'bar_p': 0.5, 'n': 30}
+        df = pd.DataFrame([{'source_bodyId': 1, 'target_bodyId': 100}])
+        out = mq  # merge lives at module level
+        from comparison.morph_cross_dataset import merge_morph_columns
+        merged = merge_morph_columns(df, mq)
+        assert list(merged['morph_bar_kind']) == ['native']
+        assert merged['morph_bar'].iloc[0] == 0.70
+        assert list(merged['morph_null_level']) == [95]
+        assert list(merged['morph_qualified']) == [True]
+
+    def test_merge_null_mode_kind_token_round_trips(self):
+        # 'null' is a pandas NA token — the exported CSV kind must survive
+        # a read_csv round trip, hence 'null_bar'.
+        import pandas as pd
+        from comparison.morph_cross_dataset import merge_morph_columns
+        mq = self._mq(mode='null')
+        mq.null_stats[1] = {'p95': 0.6, 'bar_p': 0.5, 'n': 30}
+        mq.scores[(1, 100)] = 0.55
+        df = pd.DataFrame([{'source_bodyId': 1, 'target_bodyId': 100}])
+        merged = merge_morph_columns(df, mq)
+        assert list(merged['morph_bar_kind']) == ['null_bar']
+        round_tripped = pd.read_csv(
+            __import__("io").StringIO(merged.to_csv(index=False)))
+        assert list(round_tripped['morph_bar_kind']) == ['null_bar']
+        # mapping_ref sources without a mapper basis are null-gated too.
+        mq2 = self._mq(mode='mapping_ref')
+        mq2.null_stats[1] = {'p95': 0.6, 'bar_p': 0.5, 'n': 30}
+        mq2.scores[(1, 100)] = 0.55
+        merged2 = merge_morph_columns(df, mq2)
+        assert list(merged2['morph_bar_kind']) == ['null_bar']

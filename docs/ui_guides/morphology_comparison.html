@@ -112,6 +112,14 @@
   visualization/heatmap_bodyid_{method}.html
   plot-3d_{dataset}/                       # optional 3D skeleton scene
   report.html</code></pre>
+  <p><code>report.html</code> uses the same tabbed generator as the
+    connectivity-profiling and cross-dataset morphology reports (shared
+    <code>report_kit</code>): a hero header, Type-level / BodyId-level
+    tabs with Ward-clustered heatmap cards (hover for exact values, CSV
+    and VisPath editor links), and compared-neuron / parameter details.
+    Plotly.js is embedded, so the report renders offline. vector_v2
+    renders on a diverging blue–white–red scale (a whitened cosine can be
+    negative); NBLAST stays on the positive [0, 1] scale.</p>
   <p>BodyId-level rows and axes are labeled
     <code>{bodyId}_{instance}</code> (NeuPrint-style datasets, e.g.
     <code>11309_aMe4_L</code>) or <code>{bodyId}_{type}_L/_R</code>

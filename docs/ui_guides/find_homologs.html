@@ -115,25 +115,47 @@
       what it needs.</li>
   </ul>
 
-  <h2>Morph qualification (cross-dataset, optional)</h2>
+  <h2>Morph qualification (cross- or intra-dataset, optional)</h2>
   <p><b>Morph Qualification</b> adds a morphological second opinion to the
     connectivity ranking. It runs only on the <b>visualized top-N</b>
-    candidates, and only for cross-dataset targets among
-    <b>FAFB / male-cns / BANC</b>:</p>
+    candidates, and needs a supported target among
+    <b>FAFB / male-cns / BANC</b> — cross-dataset and same-dataset (intra)
+    runs alike:</p>
   <ul>
-    <li>The query skeleton is transformed into the target's render space and
+    <li>The query skeleton is transformed into the target's render space
+      (identity for same-dataset runs; their query bodyIds are excluded
+      from the null sample) and
       scored with the production <b>vector_v2</b> scorer (no NBLAST
       cross-dataset).</li>
-    <li>A per-query <b>null bar</b> — the p95 of 200 seeded random target
-      neurons — calibrates the raw score: cross-dataset morph scores have a
-      high, query-dependent baseline, so only the distance above the noise
-      floor is meaningful.</li>
+    <li><b>Qualification mode</b>:
+      <ul>
+        <li><b>Null bar</b> (default) — a per-query bar at the
+          <code>null_p(level) + offset</code> of 200 seeded random target
+          neurons. Cross-dataset morph scores have a high, query-dependent
+          baseline, so only the distance above the noise floor is
+          meaningful.</li>
+        <li><b>Mapping-referenced floor</b> (floors v3) — when the queried
+          type resolves in the cross-dataset type mapper, the bar comes from
+          the mapper's target-side branch pools instead: the pool's mean
+          self-similarity minus a margin (native, ≥ 2 references required)
+          binds; otherwise the query's mean similarity to the pool minus the
+          offset (<code>B_b − Δ</code>); sources without a mapping fall back
+          to the null bar. Needs a cross-dataset pair — the option is
+          disabled when Target = Source (same-dataset runs use the null
+          bar).</li>
+      </ul>
+    </li>
+    <li><b>Level</b> (percentile, default <b>p95</b>) — which percentile of
+      the null distribution the bar sits at; p90/p75 loosen the bar for
+      review, p99 tightens it.</li>
     <li>Candidates below the bar are <b>excluded from the 3D scene</b> and
       reported; the results tables keep every row and gain
-      <code>morph_v2</code>, <code>morph_null_p95</code>, <code>morph_z</code>
-      and <code>morph_qualified</code> columns on the scored rows.</li>
-    <li>The <b>bar offset</b> slider raises the bar above the p95 for a
-      stricter confirmation. With the option off, output is byte-identical
+      <code>morph_v2</code>, <code>morph_null_p95</code>, <code>morph_z</code>,
+      <code>morph_bar_kind</code>, <code>morph_bar</code>,
+      <code>morph_null_level</code> and <code>morph_qualified</code> columns
+      on the scored rows.</li>
+    <li>The <b>bar offset</b> slider raises the bar above the null level for
+      a stricter confirmation. With the option off, output is byte-identical
       to the classic behavior.</li>
   </ul>
 

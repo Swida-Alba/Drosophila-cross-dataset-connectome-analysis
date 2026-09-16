@@ -30,6 +30,43 @@ from ..runner import ScriptRunner
 from ..type_suggestions import dataset_suggestions, datasets_suggestions
 from ..dataset_service import is_banc_dataset
 
+# (path, mtime_ns) -> ["All ROIs", <sorted unique ROI names>]. The tab build
+# and every dataset switch call refresh_roi_options; a full read of the
+# male-cns connections parquet (223 MB) used to run each time on the event
+# loop. Projected to the roi column and memoized per file change.
+_CONNECTION_ROIS_CACHE: dict = {}
+
+
+def _cached_connection_rois(conn_path) -> "list[str] | None":
+    """Connection-cache ROI names (leading 'All ROIs'), or None if absent.
+
+    Reads only the ``roi`` column and memoizes per (path, mtime): identical
+    to the previous full-file read, minus the 200 MB of untouched columns.
+    """
+    import polars as pl
+
+    path = str(conn_path)
+    try:
+        mtime_ns = conn_path.stat().st_mtime_ns
+    except OSError:
+        return None
+    cached = _CONNECTION_ROIS_CACHE.get((path, mtime_ns))
+    if cached is not None:
+        return list(cached)
+    try:
+        frame = pl.read_parquet(path, columns=["roi"])
+    except Exception:
+        return None
+    if "roi" not in frame.columns:
+        return None
+    vals = frame.filter(
+        pl.col("roi").is_not_null() & (pl.col("roi") != "")
+    ).get_column("roi").unique().sort().to_list()
+    rois = ["All ROIs"] + [str(v) for v in vals] if vals else ["All ROIs"]
+    _CONNECTION_ROIS_CACHE.clear()  # keep only the current file's entry
+    _CONNECTION_ROIS_CACHE[(path, mtime_ns)] = list(rois)
+    return rois
+
 
 def _cross_allowed_datasets():
     """Datasets eligible for cross-dataset morphology (FAFB/male-cns v1.0/BANC).
@@ -250,19 +287,12 @@ def create_morphology_tab():
                 # ROIs; hemibrain's connection cache has none).
                 try:
                     from pathlib import Path
-                    import polars as pl
                     conn_path = (Path(PROJECT_ROOT) / "cache"
                                  / dataset.value.replace(":", "_").replace(".", "_")
                                  / "connections.parquet")
-                    rois = ["All ROIs"]
-                    if conn_path.exists():
-                        conn = pl.read_parquet(conn_path)
-                        if "roi" in conn.columns:
-                            vals = (conn["roi"].drop_nulls()
-                                    .filter(pl.col("roi") != "")
-                                    .unique().sort().to_list())
-                            if vals:
-                                rois = ["All ROIs"] + [str(v) for v in vals]
+                    rois = _cached_connection_rois(conn_path)
+                    if rois is None:
+                        rois = ["All ROIs"]
                     roi_filter.options = rois
                     if roi_filter.value not in rois:
                         roi_filter.value = "All ROIs"

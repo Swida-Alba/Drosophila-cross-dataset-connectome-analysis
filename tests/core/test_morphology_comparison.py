@@ -566,16 +566,8 @@ def test_output_dir_defaults_under_project_root(vector_setup, monkeypatch):
 
 
 def test_heatmap_fallback_writes_files(vector_setup, monkeypatch):
-    """When VisPath is unavailable the plotly fallback renders both
+    """When VisPath is unavailable the kit's plotly fallback renders both
     heatmaps."""
-    written = []
-
-    def _fake_heatmap(matrices_dict, filename, title="", showfig=True,
-                      fontsize=12, verbose=True):
-        written.append(Path(filename))
-        Path(filename).write_text("<html></html>", encoding="utf-8")
-
-    monkeypatch.setattr(mc, "generate_interactive_heatmap", _fake_heatmap)
     monkeypatch.setitem(sys.modules, "vispath_pkg", None)
     monkeypatch.setitem(sys.modules, "vispath_pkg.vispath", None)
 
@@ -583,7 +575,10 @@ def test_heatmap_fallback_writes_files(vector_setup, monkeypatch):
     out = Path(result["output_folder"])
     assert (out / "visualization" / "heatmap_type_vector_v2.html").exists()
     assert (out / "visualization" / "heatmap_bodyid_vector_v2.html").exists()
-    assert len(written) == 2
+    # The fallback renderer's output is a full interactive heatmap page.
+    html = (out / "visualization" /
+            "heatmap_bodyid_vector_v2.html").read_text(encoding="utf-8")
+    assert "plotly" in html.lower()
 
 
 def test_completion_marker_printed(vector_setup, capsys):

@@ -35,7 +35,6 @@ Output folder (under ``output_dir``)::
 import json
 import math
 import re
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -111,9 +110,9 @@ except ImportError:  # pragma: no cover
         return str(dataset or "").split(":")[0].replace("_", "")[:5].upper()
 
 try:
-    from comparison.interactive_heatmap import generate_interactive_heatmap
+    from comparison import report_kit
 except ImportError:  # pragma: no cover - direct src/ execution
-    from interactive_heatmap import generate_interactive_heatmap  # type: ignore
+    import report_kit
 
 
 # Regex metacharacters that mark a query token as a pattern rather than an
@@ -123,17 +122,6 @@ _PATTERN_CHARS = set("*?[](){}|^$.+\\")
 # NBLAST builds a dotprop per neuron and scores every pair twice: O(N²)
 # skeleton loads dominate quickly, so the method is hard-capped.
 NBLAST_MAX_NEURONS = 30
-
-_POSITIVE_COLORSCALE = (
-    (0.0, "#ffffff"),
-    (0.1, "#fff5f0"),
-    (0.25, "#fee0d2"),
-    (0.4, "#fcbba1"),
-    (0.55, "#fc9272"),
-    (0.7, "#fb6a4a"),
-    (0.85, "#ef6548"),
-    (1.0, "#b30000"),
-)
 
 _METHOD_LABELS = {
     "vector_v2": "Vector (spatial, vector_v2)",
@@ -559,140 +547,198 @@ class MorphologyProfileComparer:
                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         return base / name
 
+    def _metric_style(self) -> "report_kit.MetricStyle":
+        """Report/heatmap presentation per scoring method.
+
+        vector_v2 is a whitened cosine that can go negative, so it uses
+        the shared kit's diverging [-1, 1] scale; NBLAST similarity is
+        treated as a [0, 1] score on the positive scale (matching the
+        historical rendering).
+        """
+        if self.method == "vector_v2":
+            return report_kit.MetricStyle(
+                "morph_similarity", "Vector v2",
+                report_kit.REPORT_DIVERGING_COLORSCALE, -1.0, 1.0)
+        return report_kit.MetricStyle(
+            "morph_similarity", "NBLAST similarity",
+            report_kit.REPORT_POSITIVE_COLORSCALE, 0.0, 1.0)
+
     def _write_heatmaps(self, matrices: Dict[str, pd.DataFrame],
                         viz_dir: Path) -> List[str]:
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        saved: List[str] = []
-        finite = {
-            name: df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-            for name, df in matrices.items()
-        }
-        try:
-            vispath_path = (Path(__file__).parent.parent
-                            / "vispath-subproject" / "src")
-            if str(vispath_path) not in sys.path:
-                sys.path.insert(0, str(vispath_path))
-            from vispath_pkg.vispath import VisConnMatInteractive
+        """Standalone interactive VisPath heatmaps (shared report_kit).
 
-            for name, df in finite.items():
-                html_path = viz_dir / f"heatmap_{name}_{self.method}.html"
-                VisConnMatInteractive(
-                    cmat=df,
-                    filename=str(html_path),
-                    title=f"Morphology Comparison - "
-                          f"{_METHOD_LABELS.get(self.method, self.method)} - "
-                          f"{name.replace('_', ' ').title()}",
-                    matrices_dict=None,
-                    showfig=self.show_figures,
-                    verbose=False,
-                    init_clustered=True,
-                    color_scale=_POSITIVE_COLORSCALE,
-                    zmin=0.0,
-                    zmax=1.0,
-                    metric_name=f"{self.method} similarity",
-                )
-                saved.append(str(html_path))
-                self._log(f"Generated heatmap: {html_path}")
-        except Exception as exc:
-            self._log(f"VisPath heatmaps unavailable ({exc}); using the "
-                      "plotly fallback.")
-            for name, df in matrices.items():
-                html_path = viz_dir / f"heatmap_{name}_{self.method}.html"
-                try:
-                    generate_interactive_heatmap(
-                        matrices_dict={name: df},
-                        filename=str(html_path),
-                        title=f"Morphology Comparison - {name}",
-                        showfig=self.show_figures,
-                        verbose=self.verbose,
-                    )
-                    saved.append(str(html_path))
-                except Exception as exc2:
-                    self._log(f"Heatmap {name} failed: {exc2}")
-        return saved
+        Card keys are the METRIC key (the kit looks styles up by it); the
+        level rides in the closures so the exported filenames stay
+        ``heatmap_{level}_{method}.html``. VisPath renders with native
+        clustering; any failure re-renders through the plotly fallback.
+        """
+        style = self._metric_style()
+        styles = {style.key: style}
+        method_label = _METHOD_LABELS.get(self.method, self.method)
+        level_labels = {"type": "Type level", "bodyid": "BodyId level"}
+        saved: Dict[str, List[str]] = {"heatmaps_generated": []}
+        for level in ("type", "bodyid"):
+            matrix = matrices.get(level)
+            if matrix is None or matrix.empty:
+                continue
+            report_kit.generate_standalone_heatmaps(
+                {self.dataset: {style.key: matrix}},
+                viz_dir, styles,
+                filename_builder=lambda group, key, _lv=level:
+                    f"heatmap_{_lv}_{self.method}.html",
+                group_display=lambda group: str(group),
+                vispath_title=lambda group, key, gd, _lv=level:
+                    f"{method_label} — {gd} · "
+                    f"{level_labels.get(_lv, _lv)}",
+                fallback_title=lambda group, key, gd, _lv=level:
+                    f"Morphology Comparison - {_lv}",
+                tqdm_desc=f"Generating {level_labels.get(level, level)} "
+                          "heatmaps",
+                show_figures=self.show_figures, verbose=self.verbose,
+                saved_files=saved, log=self._log)
+        return saved["heatmaps_generated"]
 
     def _write_report(self, report_path: Path,
                       matrices: Dict[str, pd.DataFrame],
                       csv_links: Dict[str, str],
                       params: Dict[str, object]) -> None:
+        """Tabbed report on the shared report_kit (the same generator
+        family as the connectivity-profiling and cross-dataset morphology
+        reports): hero header, Type/BodyId level tabs with Ward-clustered
+        heatmap cards (CSV + VisPath editor links), compared-members and
+        parameter details, and the 3D scene link. Plotly.js is embedded,
+        so the report renders offline.
+        """
+        from html import escape
+
         member_rows = params.pop("_member_rows", [])
         plot3d_link = str(params.pop("_plot3d_link", "") or "")
-        plot3d_html = ""
+        method_label = _METHOD_LABELS.get(self.method, self.method)
+        style = self._metric_style()
+        compared = sum(1 for m in member_rows
+                       if m.get("status") == "compared")
+
+        def chip(label: str, value: str) -> str:
+            return (f"<div class='meta-chip'><span>{escape(label)}</span>"
+                    f"<strong>{escape(value)}</strong></div>")
+
+        lines = [
+            '<!DOCTYPE html>',
+            "<html><head><meta charset='utf-8'>",
+            '<title>Morphology Comparison Report</title>',
+            report_kit.report_css(),
+            '</head><body><main class="report-shell">',
+            '<header class="report-hero">',
+            '<div class="report-kicker">DROCAT · Intra-dataset '
+            'morphology</div>',
+            '<h1 class="report-title">Morphology comparison</h1>',
+            '<p class="report-subtitle">N×N similarity of the queried '
+            f'neurons in {escape(str(self.dataset))} '
+            f'({escape(method_label)}). Each queried type contributes one '
+            'type-level row — the diagonal is the intra-type cohesion and '
+            'each entry the mean over the cross-member bodyId pairs; the '
+            'bodyId level carries every individual pair. Use the VisPath '
+            'editor links to change clustering; hover cells for exact '
+            'values.</p>',
+            '<div class="report-meta">',
+            chip('Dataset', str(self.dataset)),
+            chip('Method', method_label),
+            chip('Types compared', str(params.get("types_compared", "—"))),
+            chip('Neurons compared',
+                 f"{compared}/{len(member_rows)}"),
+            '</div>',
+        ]
+        scale_note = ('negative vector_v2 cells are genuinely negative '
+                      '(whitened cosine) and render blue on the diverging '
+                      'scale.' if self.method == "vector_v2" else
+                      'NBLAST similarity renders on the positive [0, 1] '
+                      'scale.')
+        lines.append(
+            f"<p class='report-note'>Generated "
+            f"{datetime.now():%Y-%m-%d %H:%M:%S} · {scale_note}</p>")
+        lines.append('</header>')
+
+        plotly_state = {'include_plotlyjs': True}
+        level_labels = {"type": "Type level", "bodyid": "BodyId level"}
+
+        def render_level(level: str, _level_panel_id: str) -> None:
+            matrix = matrices.get(level)
+            matrix = matrix if matrix is not None else pd.DataFrame()
+            if matrix.empty:
+                lines.append(
+                    "<div class='heatmap-empty'>This level was not "
+                    'computed for this run.</div>')
+                return
+            scored = int(matrix.notna().sum().sum())
+            note = (f'{matrix.shape[0]}×{matrix.shape[1]} · {scored} '
+                    'scored cells')
+            if level == 'type':
+                note += ' · diagonal = intra-type cohesion'
+            lines.append(
+                f"<div class='direction-intro'><h3 class='direction-title'>"
+                f'{escape(level_labels.get(level, level))}</h3>'
+                f"<div class='direction-note'>{escape(note)}</div></div>")
+            report_kit.append_report_metric_grid(
+                lines, report_path.parent, {style.key: matrix},
+                f'Intra-dataset · {level_labels.get(level, level)}',
+                {style.key: csv_links.get(level, "")},
+                {style.key: f'visualization/heatmap_{level}_'
+                            f'{self.method}.html'},
+                'Neuron' if level == 'bodyid' else 'Type',
+                'Neuron' if level == 'bodyid' else 'Type',
+                plotly_state,
+                styles={style.key: style},
+                square_cells=True,
+            )
+
+        report_kit.append_report_tab_group(
+            lines, 'morph-levels',
+            [(level, level_labels[level]) for level in ('type', 'bodyid')],
+            render_level,
+            panel_class='tab-panel direction-panel')
+
+        # --- compared members + parameters details -----------------------
+        detail_bits = []
+        if member_rows:
+            rows = "".join(
+                f"<tr><td>{escape(str(m['type']))}</td>"
+                f"<td>{escape(str(m['bodyId']))}</td>"
+                f"<td>{escape(str(m.get('instance', '')))}</td>"
+                f"<td>{escape(str(m.get('status', '')))}</td></tr>"
+                for m in member_rows)
+            detail_bits.append(
+                '<details class="detail-block"><summary>Compared '
+                'neurons</summary><div style="overflow-x:auto">'
+                "<table class='mapping-table'><thead><tr><th>type</th>"
+                '<th>bodyId</th><th>instance</th><th>status</th></tr>'
+                f'</thead><tbody>{rows}</tbody></table></div></details>')
+        if params:
+            rows = "".join(
+                f'<tr><th>{escape(str(k))}</th>'
+                f'<td>{escape(str(v))}</td></tr>'
+                for k, v in sorted(params.items()))
+            detail_bits.append(
+                '<details class="detail-block"><summary>Parameters'
+                '</summary><div style="overflow-x:auto">'
+                f"<table class='mapping-table'><tbody>{rows}</tbody>"
+                '</table></div></details>')
+        if detail_bits:
+            lines.append('<div class="section-card">' + ''.join(detail_bits)
+                         + '</div>')
+
         if plot3d_link:
-            plot3d_html = (
-                "<div class='card'><h2>3D skeleton visualization</h2>"
-                f"<p><a href='{plot3d_link}'>Open plot-3d scene</a> — one "
-                "layer per compared type; the legend tree lists every "
-                "bodyId leaf.</p></div>")
-        member_lines = "".join(
-            f"<tr><td>{m['type']}</td><td>{m['bodyId']}</td>"
-            f"<td>{m['instance']}</td><td>{m['status']}</td></tr>"
-            for m in member_rows)
-        param_rows = "".join(
-            f"<tr><td>{k}</td><td>{v}</td></tr>"
-            for k, v in params.items())
+            lines.append(
+                '<div class="section-card"><h2 class="section-heading">'
+                '3D skeleton visualization</h2>'
+                f"<p><a href='{escape(plot3d_link)}'>Open plot-3d scene"
+                '</a> — one layer per compared type; the legend tree '
+                'lists every bodyId leaf.</p></div>')
 
-        def _frame(name: str, df: pd.DataFrame) -> str:
-            """Connectivity-report-style card: an in-page Plotly similarity
-            heatmap with annotated cells; very large bodyId matrices fall
-            back to the scrollable table (the standalone interactive
-            heatmap and CSV links are always offered)."""
-            import html as _html
-            scored = int(df.notna().sum().sum())
-            heatmap = f"visualization/heatmap_{name}_{self.method}.html"
-            csv_rel = csv_links.get(name, "")
-            links = (f"{df.shape[0]}×{df.shape[1]} · {scored} scored cells · "
-                     f"<a href='{heatmap}'>interactive heatmap</a>"
-                     + (f" · <a href='{csv_rel}'>CSV</a>" if csv_rel else ""))
-            if max(df.shape) <= 60:
-                try:
-                    from comparison.morph_cross_dataset import (
-                        similarity_matrix_card)
-                except ImportError:
-                    from morph_cross_dataset import similarity_matrix_card
-                return similarity_matrix_card(
-                    f"morph_{name}", f"{name} level — similarity matrix",
-                    [str(c) for c in df.columns], df,
-                    links_html=links)
-            cells = ""
-            for idx, row in zip(df.index, df.values):
-                cells += f"<tr><th>{idx}</th>" + "".join(
-                    f"<td>{v:.3f}</td>" if pd.notna(v) else "<td>—</td>"
-                    for v in row) + "</tr>"
-            header = "".join(f"<th>{c}</th>" for c in df.columns)
-            return (
-                f"<div class='card'><h2>{_html.escape(name)} level</h2>"
-                f"<p>{links}</p><div class='scroll'>"
-                f"<table><tr><th></th>{header}</tr>{cells}"
-                f"</table></div></div>")
+        lines.extend(['</main>', report_kit.report_script(),
+                      '</body></html>'])
+        report_path.write_text('\n'.join(lines), encoding='utf-8')
+        self._log(f'report written: {report_path}')
 
-        try:
-            from comparison.morph_cross_dataset import plotly_header_tag
-        except ImportError:
-            from morph_cross_dataset import plotly_header_tag
-        html = f"""<!doctype html><html><head><meta charset="utf-8">
-<title>Morphology Comparison Report</title>
-{plotly_header_tag()}<style>
-body{{font-family:system-ui,sans-serif;margin:2rem;color:#222}}
-h1{{font-size:1.4rem}} h2{{font-size:1.1rem}} table{{border-collapse:collapse;margin:0.5rem 0 1.5rem}}
-th,td{{border:1px solid #ddd;padding:0.25rem 0.6rem;font-size:0.85rem;text-align:left}}
-.card{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-bottom:1.5rem}}
-.muted{{color:#777;font-size:0.85rem}}
-.scroll{{overflow-x:auto;max-height:32rem;overflow-y:auto}}
-#plotly-cdn-missing{{display:none;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:10px 14px;color:#92400e;font-size:0.85rem;margin:10px 0}}
-</style></head><body>
-<div id="plotly-cdn-missing">⚠️ Plotly failed to load (CDN unreachable) — the interactive matrices need an internet connection; the CSV and standalone heatmaps still work offline.</div>
-<h1>Morphology Comparison — {self.dataset}</h1>
-<p class="muted">Intra-dataset only · method: {_METHOD_LABELS.get(self.method, self.method)}</p>
-<h2>Parameters</h2><table>{param_rows}</table>
-<h2>Compared neurons</h2><table><tr><th>type</th><th>bodyId</th><th>instance</th><th>status</th></tr>{member_lines}</table>
-{''.join(_frame(n, d) for n, d in matrices.items())}
-{plot3d_html}
-<p class="muted">Generated {datetime.now().isoformat(timespec='seconds')}</p>
-</body></html>"""
-        report_path.write_text(html, encoding="utf-8")
-
-    # ------------------------------------------------------------- 3d scene
     def _display_labels(self, body_ids: List[object]) -> List[str]:
         """Tree-legend display labels ('{bodyId}_{instance}' or
         '{bodyId}_{type}_{L|R}') for the bodyId-level matrix axes."""

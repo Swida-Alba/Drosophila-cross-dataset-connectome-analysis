@@ -14,7 +14,14 @@ comprehensive search).
 - **class:** `HomologFinder` (var `finder`)
 - **method:** `finder.find_homologs_multi(**method_params)` with
   `method_params = {"use_fast": True}` (UI default); `use_fast=False` runs the
-  comprehensive search
+  comprehensive search. Add `"morph_qualify": True` (requires
+  `visualize_skeleton=True`) to score the visualized top-N against the
+  transformed query with vector_v2 and gate them by a per-query null bar —
+  works cross-dataset and intra-dataset alike on supported targets
+  (FAFB / male-cns:v1.0 / BANC). Optional: `"morph_bar_offset"` (0.0),
+  `"morph_mode"` (`"null"` default | `"mapping_ref"` — mapping_ref needs a
+  cross-dataset pair, same-dataset runs fall back to the null bar),
+  `"morph_level"` (95).
 
 ## Parameters the UI builds
 
@@ -59,6 +66,10 @@ For multiple source queries, the UI loops `source` and gives each query its own
 
 - bodyId/type homolog tables (CSV/XLSX) and summaries; intra-dataset runs add
   `results/intra_type_results.csv`.
+- With morph qualification: morph columns (`morph_v2`, `morph_bar`,
+  `morph_bar_kind`, `morph_qualified`, ...) on the visualized
+  `results/bodyid_results.csv` rows, `results/morph_qualification.json`
+  provenance, and below-bar candidates excluded from the rendered scenes.
 
 ## Notes
 

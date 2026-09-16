@@ -4,8 +4,9 @@ Module `src/comparison/morph_cross_dataset.py`. Shared implementation for
 two features (vector_v2 only — NBLAST is never used cross-dataset):
 
 - **Morph qualification** for Find Homolog: the visualized top-N of a
-  connectivity search scored against the transformed query and gated by a
-  per-query null bar.
+  connectivity search scored against the transformed query (identity for
+  same-dataset runs) and gated by a per-query bar (null percentile or
+  mapping-referenced floor).
 - **Cross-Dataset comparison** (`CrossDatasetMorphComparer`): queried
   neurons compared pairwise across datasets (drives the Morphology tab →
   Comparison sub-tab when two or more datasets are selected).
@@ -50,6 +51,7 @@ comparer = CrossDatasetMorphComparer(
     reference_template="male-cns:v1.0",  # scene frame (scores are per-pair)
     scene_members_per_type=3,
     visualize=True,                  # one overlay scene per run
+    generate_heatmaps=True,          # standalone VisPath heatmaps per pair
     fetch_online=True,
     verbose=True,
 )
@@ -57,9 +59,18 @@ result = comparer.run()   # {"output_folder", "files", "warnings"}
 ```
 
 Outputs per run folder: `overview.csv` (per queried type: the best target-type cell with
-its name + the pair baseline), `report.html`, `parameters.json`, `README.txt`,
-`<SRC>_to_<TGT>/{bodyid_scores.csv,type_matrix.csv,null_baseline.json}`,
-and `plot-3d_*/` overlay scenes in the reference render space.
+its name + the pair baseline), `members_summary.csv` (compared member counts per
+type/dataset), `report.html`, `parameters.json`, `README.txt`, per pair
+`<SRC>_to_<TGT>/results/{morph_type_matrix.csv,morph_bodyid_matrix.csv,morph_bodyid_scores.csv,null_baseline.json}`,
+per pair `<SRC>_to_<TGT>/visualization/heatmap_morph_<SRC>_to_<TGT>_{type,bodyid}.html`
+(VisPath interactive, shared report_kit), and `plot-3d_*/` overlay scenes in the
+reference render space. `report.html` uses the same tabbed generator as the
+connectivity-profiling export (shared `comparison.report_kit`): pair tabs →
+Type/BodyId level tabs → Ward-clustered Plotly cards with CSV + VisPath editor
+links; Plotly.js is embedded so it renders offline. The bodyId-level matrix
+carries the raw per-neuron scores under tree-legend axis labels
+(`{bodyId}_{instance}` / `{bodyId}_{type}_{L|R}`). vector_v2 renders on the
+diverging [-1, 1] scale (a whitened cosine can be negative).
 
 Semantics:
 
@@ -72,22 +83,43 @@ Semantics:
   seed — the sample and its render-space vectors are shared across
   queries and runs via a sidecar under
   `cache/<ds>/find_similar/morphology/`).
+- **Offline runs** (`fetch_online=False`): FAFB sources still resolve
+  network-free from the local release sources (repair caches, raw cache,
+  healed zip — the CAVE extrusion pass is skipped), so strict-offline
+  FAFB→X and X→FAFB directions score fully; BANC's public-release stage
+  fetches online and stays gated (raw-cache fallback only). A KNOWN WIP
+  ISSUE (marked at the `_render_scenes` call site, fix deferred): scene
+  rendering with bridged FAFB layers currently fails and the run keeps
+  the comparison.
 - Scores are comparable within a dataset pair (one render frame), not
   across pairs; the report states each pair's frame.
 
 ## Morph qualification (Find Homolog)
 
 `HomologFinder.find_homologs_multi(..., morph_qualify=True,
-morph_null_k=200, morph_bar_offset=0.0)` pools the would-be visualized
-pairs of every resolved type into one scoring call, then:
+morph_null_k=200, morph_bar_offset=0.0, morph_mode='null',
+morph_level=95)` pools the would-be visualized pairs of every resolved
+type into one scoring call, then:
 
+- works cross-dataset (bridging transform) and same-dataset (identity
+  chain) alike; the target must pass `dataset_scope` (FAFB /
+  male-cns:v1.0 / BANC) either way;
 - target candidates are pre-fetched into the shared raw cache (offline-first,
   per-neuron isolation) so uncached NeuPrint/BANC targets still receive a
   morph verdict;
-- bars each query at `null_p95 + bar_offset`;
+- bars each query per `morph_mode`: `'null'` — `null_p{morph_level} +
+  bar_offset` of the shared seeded null sample (query bodyIds are
+  excluded from the sample on intra-dataset runs, where the queries
+  live in the target universe); `'mapping_ref'` — the mapper's
+  target-side branch pools (native pool floor binding at >= 2 refs,
+  Track-A `B_b - Δ` backup, per-source null fallback; same-dataset
+  pairs have no mapper bridges — the UI disables the option when
+  Target = Source, and a forced same-dataset call falls back to the
+  null bar with a logged note);
 - excludes failing candidates from the rendered scenes;
 - annotates `bodyid_results.csv` (`morph_v2`, `morph_null_p95`,
-  `morph_z`, `morph_qualified`) on scored rows only and writes
+  `morph_z`, `morph_bar_kind`, `morph_bar`, `morph_null_level`,
+  `morph_qualified`) on scored rows only and writes
   `results/morph_qualification.json`;
 - with the option off, output is byte-identical.
 

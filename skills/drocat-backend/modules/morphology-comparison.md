@@ -69,14 +69,20 @@ NeuPrint datasets missing a token).
   every pair. Capped at 30 total neurons.
 - **Outputs**: `type_level/type_similarity_{method}.csv`,
   `bodyid_level/bodyid_similarity_{method}.csv`, `members.csv`,
-  `visualization/heatmap_*.html` (VisPath, plotly fallback),
-  `report.html`, `parameters.json`, `README.txt`. Completion log line:
-  `[MorphologyProfileComparer] Output: <run folder>` (parsed by the UI
-  runner).
+  `visualization/heatmap_*.html` (VisPath via the shared `report_kit`,
+  plotly fallback), `report.html`, `parameters.json`, `README.txt`.
+  `report.html` uses the same tabbed generator as the connectivity-
+  profiling and cross-dataset morphology reports (hero header,
+  Type/BodyId level tabs, Ward-clustered cards with CSV + VisPath editor
+  links, compared-neuron/parameter details, scene link; Plotly embedded
+  so it renders offline). Scale per method: vector_v2 diverging [-1, 1]
+  (whitened cosine can be negative), NBLAST positive [0, 1].
+  Completion log line: `[MorphologyProfileComparer] Output: <run folder>`
+  (parsed by the UI runner).
 
 ## Test seam
 
 `tests/core/test_morphology_comparison.py` exercises the whole pipeline
 hermetically: a fake vector cache (synthetic 256-dim rows, identity
-whitening), a stubbed `NBlaster` + fake dotprops, and a monkeypatched
-heatmap fallback.
+whitening), a stubbed `NBlaster` + fake dotprops, and a forced
+VisPath-unavailable run that exercises the kit's plotly fallback.
