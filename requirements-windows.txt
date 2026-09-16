@@ -3,6 +3,12 @@
 # Project Structure: Reorganized with src/ layout (v4.1)
 # Versions pinned to tested working versions from conda env 'drocat'
 # =============================================================================
+# 2026-09-12: remaining range pins converted to exact pins. Wide ranges
+# (selenium, boto3, cloud-volume, transitive botocore/cloud-files/
+# google-api-core) sent cold-cache pip resolution into ~40-minute
+# backtracking / resolution-too-deep failures (installer finding I2 in the
+# Windows test report). Keep new additions exact-pinned as well.
+# =============================================================================
 # Windows uses the same tested stack as macOS/Linux. NeuronBridge access is
 # provided by the bundled client and no longer pulls Linux-only Memray.
 # =============================================================================
@@ -22,8 +28,8 @@ seaborn==0.13.2            # Statistical visualizations
 opencv-python==4.10.0.84   # Computer vision (video generation, image processing)
 bokeh==3.6.0               # Additional visualization (palettes)
 kaleido==0.2.1             # Plotly static image export (0.2.1 is stable for large 3D figures)
-selenium>=4.0.0,<5         # Browser automation for WebGL-based exports
-webdriver-manager>=4.0.0,<5 # Automatic ChromeDriver management
+selenium==4.49.0           # Browser automation for WebGL-based exports
+webdriver-manager==4.1.2   # Automatic ChromeDriver management
 
 # Network Analysis
 # -----------------------------------------------------------------------------
@@ -40,7 +46,7 @@ Jinja2==3.1.6              # HTML templating (required by NiceGUI 3.15)
 pillow==11.0.0             # Image processing
 polars==1.34.0             # Memory-efficient DataFrames for large cache operations
 pydantic==2.13.4           # Exact match for the NiceGUI/FastAPI runtime
-xarray<2024.4              # Transitive (navis/caveclient); newer releases require NumPy 2.x and backtrack against numpy==1.26.4
+xarray==2024.3.0           # Transitive (navis/caveclient); newer releases require NumPy 2.x and backtrack against numpy==1.26.4
 
 # GUI Backends (for file picker and sheet selection dialogs)
 # -----------------------------------------------------------------------------
@@ -55,14 +61,18 @@ zstandard==0.23.0          # Compressed FlyWire MeshNeuron cache (.pkl.zst)
 
 # CAVE API / FlyWire Integration (v4.3.4)
 # -----------------------------------------------------------------------------
-caveclient>=8.0.0,<9       # CAVE materialization API for FlyWire FAFB
-cloud-volume>=12.0.0,<13   # CloudVolume for mesh fetching via graphene protocol
-fast-simplification>=0.1.0,<0.2 # Mesh simplification used by trimesh 4.x
+caveclient==8.2.1          # CAVE materialization API for FlyWire FAFB
+cloud-volume==12.14.4      # CloudVolume for mesh fetching via graphene protocol
+fast-simplification==0.1.13 # Mesh simplification used by trimesh 4.x (0.2.x is the incompatible newer line)
 trimesh==4.12.2            # Last stable 4.x API; avoid the incompatible 5.x line
 
 # NeuronBridge & FlyLight Integration (v4.3.0)
 # -----------------------------------------------------------------------------
-boto3>=1.26.0,<2           # AWS S3 access for FlyLight imagery downloads
+boto3==1.43.93             # AWS S3 access for FlyLight imagery downloads
+s3transfer==0.19.2         # Exact transitive pin (boto3 stack)
+botocore==1.43.93          # Exact transitive pin: loose botocore ranges drove deep resolver backtracking
+cloud-files==6.4.1         # Exact transitive pin (cloud-volume remote I/O)
+google-api-core==2.30.3    # Exact transitive pin (google-cloud stack under cloud-volume); 2.33+ demands requests>=2.33, conflicting with requests==2.32.3
 reportlab==5.0.1           # PDF generation for image summaries
 python-pptx==1.0.2         # PowerPoint generation for image summaries
 pymupdf==1.28.2            # PDF-to-PPTX conversion (import name: fitz; 1.28.x needs no PyMuPDFb)
@@ -81,9 +91,9 @@ open3d==0.19.0             # 3D mesh processing - REQUIRED for accurate mesh sim
 
 # System Utilities
 # -----------------------------------------------------------------------------
-psutil>=5.9.0,<8           # System monitoring utilities (memory usage tracking)
-xlsxwriter>=3.1.0,<4       # Excel file generation (.xlsx)
-packaging>=21.0            # Requirement parsing for the install verifier
+psutil==7.2.2              # System monitoring utilities (memory usage tracking)
+xlsxwriter==3.2.9          # Excel file generation (.xlsx)
+packaging==25.0            # Requirement parsing for the install verifier
 
 # NeuronBridge API (EM↔LM Integration)
 # -----------------------------------------------------------------------------

@@ -53,6 +53,15 @@ symptoms.
   client, so the Windows install has no `memray`, Ray, or conflicting Pydantic
   requirement.
 - Installers and launchers use `conda run`; shell initialization is not required.
+- Non-UTF-8 console (GBK/cp1252): direct library/script use used to die with
+  `UnicodeEncodeError: 'gbk' codec can't encode ...`. The library now
+  reconfigures its stdio to UTF-8 (errors="replace") at import and
+  `windows_DROCAT.bat` sets `PYTHONIOENCODING=utf-8`. Older revisions: set
+  the variable manually.
+- Cache-Only runs refuse an incomplete cache ("cache is incomplete ..." with
+  per-neuron recorded-vs-cached counts) instead of silently returning partial
+  results. Complete the cache with a normal server run first, or pass
+  `allow_incomplete_cache=True` to accept stamped partial output.
 
 ### Linux
 - Same flow as macOS (`bash archive/install/install.sh`, `./mac_DROCAT.command`).
@@ -106,6 +115,9 @@ symptoms.
    `webdriver_manager`, `fitz`, `psutil`, `trimesh`.
 5. Installed versions against the platform and UI requirement manifests.
 6. `pip check` dependency consistency.
-7. Token check reading `config_local.json` then `config.json` for a
+7. Atomic-write round trip: a real disk write through the shared
+   `write_parquet_atomic` helper (the path that broke BANC/FAFB table
+   preparation on Windows with `[Errno 9] Bad file descriptor`).
+8. Token check reading `config_local.json` then `config.json` for a
    non-placeholder `NEUPRINT_TOKEN` (advisory unless `--require-token`).
-8. UI package import (`ui.app`).
+9. UI package import (`ui.app`).

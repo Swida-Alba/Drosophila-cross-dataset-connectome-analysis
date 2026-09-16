@@ -110,6 +110,9 @@ the agent already has them — no fetch is required:
   call.
 - **Layer 2 — [drocat-backend](../drocat-backend/SKILL.md):** flexible usage of
   the backend modules and function blocks for custom combinations.
+- **[type-mapping-validation](../type-mapping-validation/SKILL.md):** bodyId-level
+  validation of an auto cross-dataset type mapping (category partition, nested
+  modes, gap-fill review scenes) via `scripts/RunMappingValidation.py`.
 
 Keep the UI closed for unattended runs and use `showfig=False` until the output
 has been validated.

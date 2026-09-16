@@ -182,6 +182,53 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\anaconda3\envs\drocat-4.5.0"
 
 ---
 
+#### UnicodeEncodeError / Garbled Symbols on Non-UTF-8 Windows Consoles
+
+**Symptom:**
+```
+UnicodeEncodeError: 'gbk' codec can't encode character '\u26a0' in position 0
+```
+raised from a `print` while running the library or a script directly in a
+terminal whose code page is not UTF-8 (e.g. zh-CN GBK, cp1252) — typically
+with output redirected to a file or pipe. The one-click UI launcher is
+unaffected: `windows_DROCAT.bat` sets `PYTHONIOENCODING=utf-8` and the
+library reconfigures its own streams at import.
+
+**Solution:** Update to a revision that includes the console-encoding guard
+(`src/utils/console_encoding.py`). For older revisions, set the variable
+yourself before running Python:
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+```
+
+---
+
+#### "Cache ... is incomplete" Refusal in Cache-Only Mode
+
+**Symptom:**
+```
+Cache-only mode requested but the local connection cache is incomplete ...
+N of M neurons flagged complete in the neuron index have fewer cached
+connection rows than recorded
+```
+or
+```
+Cache-only run needs N neuron(s) that are not in the local cache ...
+```
+
+**Cause:** The local cache does not fully cover the query. Earlier versions
+continued anyway and returned partial results presented as a complete
+analysis (in the 2026-09-12 Windows test, a truncated cache returned 9,469
+paths where the full cache returns 49,871).
+
+**Solution:** Run once with Cache-Only disabled (server reachable, token
+configured) so the cache is completed, then re-run offline. If you knowingly
+accept partial results, pass `allow_incomplete_cache=True` (library/CLI
+parameter): the run then warns and stamps its output folders with an
+`INCOMPLETE_CACHE.txt` marker.
+
+---
+
 #### Missing tkinter (Linux)
 
 **Symptom:**

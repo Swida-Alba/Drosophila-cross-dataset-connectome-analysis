@@ -433,3 +433,18 @@ Write-Host "Set tokens in the UI Settings tab after launching, or edit config.js
 Write-Host "(repository root, format: tokens.neuprint / tokens.cave)."
 Write-Host "Get a NeuPrint token from: https://neuprint.janelia.org/account"
 Write-Host "Get a CAVE token from: https://codex.flywire.ai/auth_token"
+
+# --- First-run guidance ---
+# Installation verifies packages, not dataset readiness: the first real
+# query may still download/prepare data, and Cache-Only mode refuses an
+# incomplete cache instead of silently returning partial results.
+Write-Host ""
+Write-Host "[First run]" -ForegroundColor Cyan
+Write-Host "NeuPrint datasets (hemibrain, male-cns, ...): the first query downloads"
+Write-Host "the neuron tables into datasets\<dataset>\ and builds the connection"
+Write-Host "cache - expect a one-time wait, and the NeuPrint token above."
+Write-Host "BANC (banc_v626 / banc_v888): needs NO token - tables are prepared from"
+Write-Host "the public bucket automatically on first use."
+Write-Host "Cache-Only runs require a COMPLETE pre-built cache: an incomplete cache"
+Write-Host "is refused with instructions instead of returning silently partial"
+Write-Host "results."

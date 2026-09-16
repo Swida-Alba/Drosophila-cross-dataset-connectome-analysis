@@ -105,6 +105,29 @@ for filename in sys.argv[1:]:
 print(json.dumps(results))
 """
 
+# Real disk round-trip through the shared atomic writer.  Imports and
+# `pip check` cannot catch platform-specific write failures: the BANC/FAFB
+# table converters and the lossless re-encoder all publish through
+# write_parquet_atomic, whose fsync used to open the temp file read-only and
+# abort with [Errno 9] on Windows — with the install still reporting PASS.
+ATOMIC_WRITE_PROBE = r"""
+import os, shutil, sys, tempfile
+sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+from utils.parquet_utils import write_parquet_atomic
+import polars as pl
+
+tmp = tempfile.mkdtemp(prefix="drocat_verify_atomic_")
+try:
+    target = os.path.join(tmp, "roundtrip.parquet")
+    write_parquet_atomic(
+        target,
+        lambda temp: pl.DataFrame({"v": [1, 2, 3]}).write_parquet(temp))
+    assert pl.read_parquet(target)["v"].to_list() == [1, 2, 3]
+    print("atomic-ok")
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+"""
+
 
 def isolated_python_env() -> dict[str, str]:
     """Keep probes inside the selected environment, excluding user site packages."""
@@ -279,6 +302,26 @@ def main() -> int:
         check("pip dependency consistency", proc.returncode == 0, detail)
     except Exception as exc:
         check("pip dependency consistency", False, str(exc))
+
+    # Atomic-write round trip (see ATOMIC_WRITE_PROBE): a real disk write
+    # through the shared atomic writer, the code path that broke BANC/FAFB
+    # table preparation on Windows while every import check passed.
+    try:
+        proc = subprocess.run(
+            [python_exe, "-c", ATOMIC_WRITE_PROBE],
+            cwd=str(project),
+            capture_output=True,
+            env=isolated_python_env(),
+            text=True,
+            timeout=300,
+        )
+        check(
+            "atomic write round-trip",
+            proc.returncode == 0 and "atomic-ok" in proc.stdout,
+            (proc.stderr or proc.stdout)[-300:],
+        )
+    except Exception as exc:
+        check("atomic write round-trip", False, str(exc))
 
     # Token file: config_local.json (gitignored override) then config.json
     # (committed clean defaults).

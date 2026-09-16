@@ -125,6 +125,26 @@ itself always ships with the repository.
 - Strict verification for a configured workstation:
   `python skills/drocat-install/scripts/verify_install.py --project . --require-token`
 
+### 4.1 What the first run downloads
+
+Installation verifies packages, not dataset readiness. Expect a one-time
+wait on the first real query:
+
+- **NeuPrint datasets** (hemibrain, male-cns, optic-lobe, ...): the first
+  query downloads the full neuron tables into `datasets/<dataset>/` (needs
+  the NeuPrint token) and builds the connection cache incrementally as you
+  query. Later runs reuse it.
+- **BANC** (`banc_v626`/`banc_v888`): the neuron meta and connection tables
+  are pulled from the public release bucket automatically — no token.
+- **Cache-Only (offline) runs** require a *complete* pre-built cache. Since
+  v4.5.0 the run verifies cache coverage (per-neuron recorded vs actually
+  cached connection counts) and refuses an incomplete cache with
+  instructions instead of silently returning partial results. Run once with
+  Cache-Only disabled to complete the cache, or pass
+  `allow_incomplete_cache=True` (library/CLI) to accept partial results,
+  which are then stamped with an `INCOMPLETE_CACHE.txt` marker in every
+  output folder.
+
 ## 5. Agent-assisted install
 
 ### 5.1 Agent-assisted install
@@ -149,7 +169,9 @@ cd drocat
 For agent-driven analysis *without* the UI, use the checked-in skills:
 [`drocat-usage`](../skills/drocat-usage/SKILL.md) (Layer 1, a recipe for every analysis panel)
 and [`drocat-backend`](../skills/drocat-backend/SKILL.md) (Layer 2, backend
-module composition).
+module composition). For bodyId-level type-mapping validation and
+gap-fill review, use
+[`type-mapping-validation`](../skills/type-mapping-validation/SKILL.md).
 
 ### 5.2 Running scripts directly
 

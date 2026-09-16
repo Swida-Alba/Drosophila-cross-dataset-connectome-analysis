@@ -5,6 +5,10 @@ REM archive\install\install.ps1), repairs it when inconsistent, resolves
 REM port conflicts interactively, and launches the web UI.
 setlocal EnableDelayedExpansion
 set "PYTHONNOUSERSITE=1"
+REM Force UTF-8 stdio: on zh-CN/GBK (and other legacy code page) systems the
+REM UI server and its child runs would otherwise crash or mojibake on the
+REM Unicode status symbols used throughout DROCAT output.
+set "PYTHONIOENCODING=utf-8"
 set "SCRIPT_DIR=%~dp0"
 set "CONDA_BIN="
 
