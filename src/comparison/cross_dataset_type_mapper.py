@@ -6290,7 +6290,16 @@ class CrossDatasetTypeMapper:
         counts: Dict[str, int] = {}
         try:
             import os
-            folder = str(dataset).replace(':', '_').replace('.', '_')
+            try:
+                from ..utils.naming_utils import canonical_dataset_name
+            except ImportError:
+                from utils.naming_utils import canonical_dataset_name
+            # Legacy aliases (bare 'banc', 'flywire_BANC_v626', ...) fold
+            # to their canonical folder name — the raw replace() missed
+            # those tables and silently disabled the asymmetry flag
+            # (review 2026-09-16).
+            folder = canonical_dataset_name(str(dataset)).replace(
+                ':', '_').replace('.', '_')
             base_path = os.path.join(
                 self._workspace_path or '.', 'datasets', folder,
                 f'{folder}_allneurons_neuron_df')

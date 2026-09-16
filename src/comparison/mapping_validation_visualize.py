@@ -605,7 +605,10 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
     # group pairs into parent mapping groups (query, source_type)
     parents: Dict[Tuple[str, str], List] = {}
     for pair in validator.pairs:
-        res = per_pair_res.get(pair.key)
+        # per_pair_res is keyed by (query, source_type, target_type);
+        # fall back to the bare pair.key for legacy/fixture dicts.
+        res = per_pair_res.get((pair.query,) + pair.key) \
+            or per_pair_res.get(pair.key)
         if res:
             parents.setdefault((pair.query, pair.source_type),
                                []).append((pair, res))

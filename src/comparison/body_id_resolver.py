@@ -317,7 +317,14 @@ def load_caliber_map(dataset: str,
     """
     root = Path(project_root) if project_root else \
         Path(__file__).resolve().parents[2]
-    folder = str(dataset).replace(':', '_').replace('.', '_')
+    try:
+        from ..utils.naming_utils import canonical_dataset_name
+    except ImportError:
+        from utils.naming_utils import canonical_dataset_name
+    # Canonicalize first: legacy aliases ('banc', 'flywire_BANC_v626', ...)
+    # fold to their canonical folder name (review 2026-09-16).
+    folder = canonical_dataset_name(str(dataset)).replace(
+        ':', '_').replace('.', '_')
     base = root / 'datasets' / folder / f'{folder}_allneurons_neuron_df'
     try:
         if base.with_suffix('.parquet').exists():
@@ -343,7 +350,14 @@ def load_hemisphere_map(dataset: str,
     side source."""
     root = Path(project_root) if project_root else \
         Path(__file__).resolve().parents[2]
-    folder = str(dataset).replace(':', '_').replace('.', '_')
+    try:
+        from ..utils.naming_utils import canonical_dataset_name
+    except ImportError:
+        from utils.naming_utils import canonical_dataset_name
+    # Canonicalize first: legacy aliases ('banc', 'flywire_BANC_v626', ...)
+    # fold to their canonical folder name (review 2026-09-16).
+    folder = canonical_dataset_name(str(dataset)).replace(
+        ':', '_').replace('.', '_')
     base = root / 'datasets' / folder / f'{folder}_allneurons_neuron_df'
     try:
         if base.with_suffix('.parquet').exists():

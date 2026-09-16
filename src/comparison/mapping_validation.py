@@ -383,7 +383,8 @@ def compute_set_coverage(pairs: List["TypePair"],
             int(b) for b in pair.parent_source_pool)
         parent_tgt.setdefault(pair.target_type, set()).update(
             int(b) for b in pair.parent_target_pool)
-        res = per_pair_res.get(pair.key)
+        res = per_pair_res.get((pair.query,) + pair.key) \
+            or per_pair_res.get(pair.key)
         if not res:
             continue
         for sid, tid in res.get('pairs', []):
@@ -680,8 +681,12 @@ def _abbrev(dataset: str) -> str:
     return (dataset or 'ds').replace(':', '_').replace('.', '_')
 
 
-def _write_csv(path: Path, rows: List[Dict]):
-    df = pd.DataFrame(rows)
+def _write_csv(path: Path, rows: List[Dict],
+               columns: Optional[List[str]] = None):
+    # An empty rows list with known columns still writes the header —
+    # a zero-byte file makes pd.read_csv raise EmptyDataError instead of
+    # yielding an empty frame (review 2026-09-16).
+    df = pd.DataFrame(rows, columns=columns)
     for col in df.columns:
         if col.endswith('bodyId'):
             df[col] = df[col].astype('Int64')
@@ -1279,7 +1284,7 @@ class MappingValidator:
         src_ids = [int(b) for b in (pool.get('source_body_ids') or [])]
         tgt_ids = [int(b) for b in (pool.get('target_body_ids') or [])]
         if not src_ids:
-            return
+            return False
         pair.source_pool = src_ids
         pair.target_pool = tgt_ids or pair.target_pool
         # Revision 3.12 (user 2026-09-13): chain-aware POOL WIDENING is
@@ -1994,7 +1999,8 @@ class MappingValidator:
         family_types = family_types or set()
         # sibling-branch pool membership (same parent, any branch)
         sibling_pools: Dict[int, List[Tuple[str, str, str]]] = {}
-        for (src_type, tgt_type), res in per_pair_res.items():
+        for bkey, res in per_pair_res.items():
+            src_type, tgt_type = bkey[-2], bkey[-1]
             for tbid, cat in (res.get('target_categories')
                               or {}).items():
                 sibling_pools.setdefault(int(tbid), []).append(
@@ -2240,22 +2246,32 @@ class MappingValidator:
                            for k in all_keys}
             bars_by_key.setdefault(None, synthesize_barset(null_bar=null_bar))
 
-        branch_pools: Dict[Tuple[str, str], set] = {}
-        tiers: Dict[Tuple[str, str], Dict] = {}
+        branch_pools: Dict[Tuple[str, str, str], set] = {}
+        tiers: Dict[Tuple[str, str, str], Dict] = {}
         for key, res in per_pair_res.items():
             branch_pools[key] = {int(b) for b in (
                 res.get('_pool_set') or [])}
             tiers[key] = res.get('target_categories') or {}
+        # Branch keys are (query, source, target); fixture-driven
+        # per_pair_res may still use the legacy (source, target) arity.
+        # Pin the whole finalization to whichever arity is in use.
+        legacy_branch_keys = any(len(k) == 2 for k in per_pair_res)
         in_map: set = set()
         for s in branch_pools.values():
             in_map |= s
-        in_map_types = {str(t) for (_s, t) in branch_pools}
+        # Branch keys are (query, source, target); target is always last.
+        in_map_types = {str(k[-1]) for k in branch_pools}
         self._in_map_ids = in_map
         self._in_map_types = in_map_types
         self._branch_pools = branch_pools
 
-        def key_of(row) -> Tuple[str, str]:
-            return (str(row['source_type']), str(row['target_type']))
+        def key_of(row) -> Tuple[str, ...]:
+            # Rows carry their query (validate_pair stamps it on every
+            # evidence/pool row); the query disambiguates branches that
+            # resolve to the same concrete (source, target) type pair.
+            full = (str(row.get('query') or ''), str(row['source_type']),
+                    str(row['target_type']))
+            return full[1:] if legacy_branch_keys else full
 
         def mq(row) -> bool:
             # When morphology is disabled there is no qualification
@@ -2312,7 +2328,7 @@ class MappingValidator:
             cat, in_scope, mfail = classify_category(
                 target_bid=bid, branch_pool=branch_pools.get(k),
                 in_map=in_map, target_type=tt,
-                branch_target_type=k[1], in_map_types=in_map_types,
+                branch_target_type=k[-1], in_map_types=in_map_types,
                 candidate_types=candidate_types.get(k),
                 connectivity_qualified=cq, morph_ok=mq(row),
                 suspicious_morph_ok=mq_suspicious(row),
@@ -2345,7 +2361,7 @@ class MappingValidator:
             cat, in_scope, mfail = classify_category(
                 target_bid=bid, branch_pool=branch_pools.get(k),
                 in_map=in_map, target_type=tt,
-                branch_target_type=k[1], in_map_types=in_map_types,
+                branch_target_type=k[-1], in_map_types=in_map_types,
                 candidate_types=candidate_types.get(k),
                 connectivity_qualified=False, morph_ok=mq(row),
                 suspicious_morph_ok=mq_suspicious(row),
@@ -2376,7 +2392,7 @@ class MappingValidator:
             rel_cache: Dict[str, List[int]] = {}
             for key, _pool in branch_pools.items():
                 k_labeled = labeled.get(key, set())
-                bt = key[1]
+                bt = key[-1]
                 if bt not in fam_cache:
                     fam_cache[bt] = self._bodyids_of_type(bt)
                 for b in fam_cache[bt]:
@@ -2487,13 +2503,16 @@ class MappingValidator:
                 int(f.get('proposal_bodyId') or -1), False)
         return dedup_rows
 
-    def _expansion_row(self, key: Tuple[str, str], bid: int, tname: str,
+    def _expansion_row(self, key: Tuple[str, ...], bid: int, tname: str,
                        category: str) -> Dict:
-        src_type, tgt_type = key
+        if len(key) == 3:
+            query, src_type, tgt_type = key
+        else:  # legacy 2-tuple keys (fixtures)
+            query, src_type, tgt_type = '', key[0], key[1]
         return {
-            'query': next((p.query for p in self.pairs
-                           if p.source_type == src_type
-                           and p.target_type == tgt_type), ''),
+            'query': query or next((p.query for p in self.pairs
+                                    if p.source_type == src_type
+                                    and p.target_type == tgt_type), ''),
             'source_type': src_type, 'target_type': tgt_type,
             'pool_basis': '', 'branch_linker_values': '',
             'branch_annotation': '', 'source_bodyId': None,
@@ -2590,7 +2609,17 @@ class MappingValidator:
                'note': 'morphology disabled'}
         if not cfg.morph_enabled:
             return out
+        # Rev 3.12 fix (review 2026-09-16): the pool reference pairs must
+        # be Track-A scored.  Without them the reference-tier mean (B_b)
+        # and the floors-v3 bars are computed over a biased subset (or
+        # none), and verified-only branches silently degrade from the
+        # track_a_backup bar to the low null bar.
+        pool_pairs = [
+            (d['best_source_bodyId'], d['target_bodyId'])
+            for d in (pool_detail or [])
+            if d.get('best_source_bodyId') is not None] or None
         pair_df = self._morph_pair_frame(val_rows, sus_rows, fills,
+                                         pool_pairs=pool_pairs,
                                          deep_rows=deep_rows,
                                          null_rows=null_rows)
         if pair_df.empty:
@@ -2662,9 +2691,9 @@ class MappingValidator:
         # reference tier (floors v3: matched+verified is THE reference tier
         # whenever it has >= 2 members — the matched-only preference is
         # deleted), and derive the per-branch admission bars from it.
-        thresholds: Dict[Tuple[str, str], Optional[float]] = {}
-        tiers: Dict[Tuple[str, str], Dict] = {}
-        by_branch_rows: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
+        thresholds: Dict[Tuple[str, str, str], Optional[float]] = {}
+        tiers: Dict[Tuple[str, str, str], Dict] = {}
+        by_branch_rows: Dict[Tuple[str, str, str], List[Dict]] = defaultdict(list)
         if pool_detail:
             for d in pool_detail:
                 # best_source is None for pool members whose best evidence
@@ -2675,7 +2704,11 @@ class MappingValidator:
                        if bsid is not None else None)
                 d['morph_v2_similarity'] = scores.get(key) if key else None
                 d['morph_nblast'] = nblast.get(key) if key else None
-                by_branch_rows[(d['source_type'],
+                # Branch keys carry the query: two queries can resolve the
+                # same concrete (source_type, target_type) — their pools
+                # and bars are distinct branches.
+                by_branch_rows[(str(d.get('query') or ''),
+                                d['source_type'],
                                 d['target_type'])].append(d)
             for key, rows in by_branch_rows.items():
                 matched = [d for d in rows if d['category'] == 'matched']
@@ -2704,35 +2737,45 @@ class MappingValidator:
             'mean(reference-tier pool morph_v2); factor='
             f'{self.cfg.candidate_morph_factor}.  The v3 admission rule is '
             'the per-branch bar engine (see branch_bars / bar_params).')
+        def _branch_label(key) -> str:
+            # Query-qualified branch label; the prefix is omitted for the
+            # empty (single-query / fixture) case to keep legacy keys.
+            q, s, t = key
+            return f'{s}->{t}' if not q else f'{q}|{s}->{t}'
+
         out['candidate_thresholds'] = {
-            f'{s}->{t}': v for (s, t), v in sorted(thresholds.items())}
-        pool_avg: Dict[Tuple[str, str], Optional[float]] = {}
-        pool_avg_n: Dict[Tuple[str, str], int] = {}
-        for (s, tt), tier in sorted(tiers.items()):
+            _branch_label(k): v
+            for k, v in sorted(thresholds.items())}
+        pool_avg: Dict[Tuple[str, str, str], Optional[float]] = {}
+        pool_avg_n: Dict[Tuple[str, str, str], int] = {}
+        for (q, s, tt), tier in sorted(tiers.items()):
             vals = [d['morph_v2_similarity'] for d in tier['rows']
                     if d.get('morph_v2_similarity') is not None]
-            pool_avg[(s, tt)] = (float(np.mean(vals)) if vals else None)
-            pool_avg_n[(s, tt)] = len(vals)
+            pool_avg[(q, s, tt)] = (float(np.mean(vals)) if vals else None)
+            pool_avg_n[(q, s, tt)] = len(vals)
         out['candidate_pool_avg_morph'] = {
-            f'{s}->{tt}': v for (s, tt), v in sorted(pool_avg.items())}
+            _branch_label(k): v
+            for k, v in sorted(pool_avg.items())}
 
         # ---- Revision 3.7 Track B: all-native pool reference --------
         # Invaders scored against their branch's matched+verified pool
         # natively (dataset-native v2 vector cache + native whitener) —
         # zero cross-dataset transforms, zero transform distortion.
-        floors: Dict[Tuple[str, str], Optional[float]] = {}
-        pool_ref_info: Dict[Tuple[str, str], Dict] = {}
-        invader_scores: Dict[Tuple[Tuple[str, str], int],
+        floors: Dict[Tuple[str, str, str], Optional[float]] = {}
+        pool_ref_info: Dict[Tuple[str, str, str], Dict] = {}
+        invader_scores: Dict[Tuple[Tuple[str, str, str], int],
                              Tuple[float, float]] = {}
-        invaders_by_branch: Dict[Tuple[str, str], set] = defaultdict(set)
+        invaders_by_branch: Dict[Tuple[str, str, str], set] = defaultdict(set)
         for r in list(sus_rows) + list(deep_rows or []):
-            invaders_by_branch[(r['source_type'],
+            invaders_by_branch[(str(r.get('query') or ''),
+                                r['source_type'],
                                 r['target_type'])].add(
                 int(r['ahead_target_bodyId']))
         for f in fills:
             if f.get('side') == 'source' \
                     and f.get('fill_class') == 'out_of_pool':
-                invaders_by_branch[(f['source_type'],
+                invaders_by_branch[(str(f.get('query') or ''),
+                                    f['source_type'],
                                     f['target_type'])].add(
                     int(f['proposal_bodyId']))
         try:
@@ -2798,7 +2841,8 @@ class MappingValidator:
         self._pool_ref_floors = floors
         for r in (list(sus_rows) + list(deep_rows or [])
                   + [f for f in fills if f.get('side') == 'source']):
-            key = (r['source_type'], r['target_type'])
+            key = (str(r.get('query') or ''),
+                   r['source_type'], r['target_type'])
             bid = int(r.get('ahead_target_bodyId',
                             r.get('proposal_bodyId')))
             mx_mn = invader_scores.get((key, bid))
@@ -2810,14 +2854,14 @@ class MappingValidator:
             if r.get('morph_v2_similarity') is None:
                 r['morph_v2_similarity'] = scores.get(key_a)
         out['pool_ref_tiers'] = {
-            f'{s}->{t}': info.get('tier')
-            for (s, t), info in sorted(pool_ref_info.items())}
+            _branch_label(k): info.get('tier')
+            for k, info in sorted(pool_ref_info.items())}
         out['pool_ref_baselines'] = {
-            f'{s}->{t}': info.get('baseline')
-            for (s, t), info in sorted(pool_ref_info.items())}
+            _branch_label(k): info.get('baseline')
+            for k, info in sorted(pool_ref_info.items())}
         out['pool_ref_floors'] = {
-            f'{s}->{t}': info.get('floor')
-            for (s, t), info in sorted(pool_ref_info.items())}
+            _branch_label(k): info.get('floor')
+            for k, info in sorted(pool_ref_info.items())}
 
         # ---- Floors v3: per-branch admission bars (plan-unified-
         # morph-qualification-bars).  One BarSet per branch drives EVERY
@@ -2828,7 +2872,7 @@ class MappingValidator:
         # last resort.  random_null_floor is None here: the pipeline does
         # not score a random sample (the clamp is available to consumers
         # that do, e.g. Find Homolog's per-source nulls).
-        branch_bars: Dict[Tuple[str, str], BarSet] = {}
+        branch_bars: Dict[Tuple[str, str, str], BarSet] = {}
         for key in sorted(tiers):
             info = pool_ref_info.get(key, {})
             branch_bars[key] = compute_branch_bars(
@@ -2852,7 +2896,7 @@ class MappingValidator:
                     f'B_b - Δ else null p{cfg.null_percentile:g}; suspicious '
                     '(aggressive deep window) = B_b - k*Δ else null p50'}
         out['branch_bars'] = {
-            f'{s}->{t}': {
+            _branch_label(k): {
                 'candidate_kind': b.candidate_kind,
                 'native_floor': b.native_floor,
                 'backup_floor': b.backup_floor,
@@ -2861,7 +2905,7 @@ class MappingValidator:
                 'pool_track_a_baseline': b.pool_track_a_baseline,
                 'n_native_refs': b.n_native_refs,
                 'n_scored_pool': b.n_scored_pool,
-            } for (s, t), b in sorted(branch_bars.items())}
+            } for k, b in sorted(branch_bars.items())}
         try:
             from visualize_skeleton import dataset_render_space
             render_space = dataset_render_space(cfg.target_dataset)
@@ -2897,7 +2941,8 @@ class MappingValidator:
         for f in fills:
             if f.get('invader_class') != 'same-type':
                 continue
-            key = (f['source_type'], f['target_type'])
+            key = (str(f.get('query') or ''),
+                   f['source_type'], f['target_type'])
             thr = thresholds.get(key)
             floor = floors.get(key)
             m = f.get('morph_v2_similarity')
@@ -3428,7 +3473,7 @@ class MappingValidator:
                                          weights=self._target_weights,
                                          source_sides=self._source_sides,
                                          target_sides=self._target_sides)
-                per_pair_res[pair.key] = res
+                per_pair_res[(pair.query,) + pair.key] = res
                 all_val_rows.extend(res['rows'])
                 all_sus_rows.extend(res['suspicious'])
                 all_noise_rows.extend(res['noise'])
@@ -3655,7 +3700,11 @@ class MappingValidator:
         _write_csv(rd / 'family_candidates.csv', family_rows or [])
         _write_csv(rd / 'gap_fill_dedup.csv', dedup_rows or [])
         _write_csv(rd / 'gap_fill_levels.csv', gap_levels or [])
-        _write_csv(rd / 'out_map_expansion.csv', out_map_rows or [])
+        _write_csv(rd / 'out_map_expansion.csv', out_map_rows or [],
+                   columns=['query', 'source_type', 'source_bodyId',
+                            'target_bodyId', 'target_type', 'rank_union',
+                            'rank_union_rank', 'jaccard', 'jaccard_rank',
+                            'in_map'])
         _write_csv(rd / 'pair_summary.csv', summaries)
         _write_csv(rd / 'gap_fill_proposals.csv', fills)
         _write_csv(rd / 'pool_categories.csv', pool_detail)

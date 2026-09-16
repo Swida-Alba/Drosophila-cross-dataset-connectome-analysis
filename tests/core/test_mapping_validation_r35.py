@@ -245,6 +245,71 @@ def test_run_morphology_records_candidate_rule(monkeypatch):
     assert 'factor=0.25' in out['candidate_morph_rule']
 
 
+def test_run_morphology_scores_pool_reference_pairs(monkeypatch):
+    """Review 2026-09-16 P1: ``pool_pairs`` were never passed to
+    ``_morph_pair_frame``, so pool reference pairs that are not the
+    mutual-best 'assigned' pair were never Track-A scored — the
+    reference-tier mean (B_b) and the floors-v3 bars built on it were
+    computed over a biased subset, and verified-only branches silently
+    degraded to the null bar."""
+    import morphology
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(
+        source_dataset='dsA', target_dataset='dsB', query_types=['T'],
+        visualize=False)
+    v.notes = []
+    v.log = lambda m='': None
+    val_rows = [{'source_bodyId': 1, 'target_bodyId': 11,
+                 'verdict': 'verified_strong', 'flags': ''}]
+    # Target 12's best source is 2 — NOT the assigned (1, 11) pair.
+    pool_detail = [
+        {'target_bodyId': 11, 'category': 'verified',
+         'best_source_bodyId': 1, 'source_type': 'T', 'target_type': 'T'},
+        {'target_bodyId': 12, 'category': 'verified',
+         'best_source_bodyId': 2, 'source_type': 'T', 'target_type': 'T'},
+    ]
+
+    def fake_enrich(pair_df, src, tgt, verbose=False):
+        df = pair_df.copy()
+        df['morph_v2_similarity'] = [
+            0.9 if int(t) == 12 else 0.5 for t in df['target_bodyId']]
+        df['morph_nblast'] = 0.4
+        return df
+
+    monkeypatch.setattr(morphology, 'enrich_homolog_results', fake_enrich)
+    out = v.run_morphology(val_rows, [], [], pool_detail)
+    scored = {d['target_bodyId']: d['morph_v2_similarity']
+              for d in pool_detail}
+    assert scored[12] == pytest.approx(0.9), \
+        'pool ref pair (2, 12) must be scored even though it is not ' \
+        'the assigned (1, 11) pair'
+    # the reference mean includes the pool score: (0.9 + 0.5) / 2
+    assert out['candidate_pool_avg_morph']['T->T'] == pytest.approx(0.7)
+
+
+def test_finalize_keeps_same_type_branches_from_different_queries():
+    """Review 2026-09-16 P2: per-branch results were keyed by
+    (source_type, target_type) only, so two queries resolving the same
+    concrete type pair overwrote each other's pools/tiers/scenes. The
+    branch key carries the query now; the target type is always the last
+    element (in_map_types must see T, not S)."""
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(
+        source_dataset='dsA', target_dataset='dsB',
+        query_types=['Q1', 'Q2'], visualize=False)
+    v.notes = []
+    v.log = lambda m='': None
+    per_pair_res = {
+        ('Q1', 'S', 'T'): {'_pool_set': [101], 'target_categories': {}},
+        ('Q2', 'S', 'T'): {'_pool_set': [202], 'target_categories': {}},
+    }
+    v.finalize_categories(per_pair_res, [], [], [], [])
+    assert len(v._branch_pools) == 2
+    assert v._branch_pools[('Q1', 'S', 'T')] == {101}
+    assert v._branch_pools[('Q2', 'S', 'T')] == {202}
+    assert v._in_map_types == {'T'}
+
+
 # ---------------------------------------------------------------------------
 # Issues 2/3/3b — invader cross-referencing helpers
 # ---------------------------------------------------------------------------

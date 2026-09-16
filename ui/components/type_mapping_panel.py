@@ -366,9 +366,23 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     recv_types_by_ds[target].update(present)
                     absent = [t for t in targets if not t_counts.get(t, 0)]
                     if absent:
-                        orphan_by_key.setdefault(
-                            (origin, target, otype),
-                            {"claimed": []})["claimed"].extend(absent)
+                        entry = orphan_by_key.get((origin, target, otype))
+                        if entry is None:
+                            # The type has flows into this target (so the
+                            # no-flow rule above skipped it), but the
+                            # resolver still claims a counterpart the
+                            # target dataset lacks.  Register a real
+                            # orphan entry so the claim renders — a bare
+                            # detached dict would silently drop it.
+                            entry = {"dataset": origin, "type": otype,
+                                     "count": count_types_in_index(
+                                         indexes[origin],
+                                         [otype]).get(otype, 0),
+                                     "target": target, "claimed": []}
+                            orphans.setdefault(
+                                (origin, target), []).append(entry)
+                            orphan_by_key[(origin, target, otype)] = entry
+                        entry["claimed"].extend(absent)
     # The flow ends are the bridge half of the same resolution.
     for (s, t), fl in pair_flows.items():
         recv_types_by_ds.setdefault(t, set()).update(
