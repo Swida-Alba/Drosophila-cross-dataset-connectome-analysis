@@ -391,6 +391,14 @@ def build_mapping_flows(entries, source_dataset: str,
                     "mapping_relationship": decision_fields["relationship"],
                     "mapping_target_types": decision_fields["target_types"],
                     "mapping_conflicts": decision_fields["conflicts"],
+                    # Same-name-first disclosure (plan-ui-type-mapper-
+                    # alignment §4.1): the panel's row marker and collapsed
+                    # Suspects expander read these from the FLOW, so they
+                    # must ride along here, not only on the resolution.
+                    "suspects": bool(decision_fields.get("suspects")),
+                    "suspect_rivals": list(
+                        decision_fields.get("suspect_rivals") or ()),
+                    "same_name_first": decision_fields.get("same_name_first"),
                 })
 
         for cand in (entry.get("types_all") or entry.get("types", [])):
@@ -521,6 +529,10 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
                 "mapping_relationship": decision_fields["relationship"],
                 "mapping_target_types": decision_fields["target_types"],
                 "mapping_conflicts": decision_fields["conflicts"],
+                "suspects": bool(decision_fields.get("suspects")),
+                "suspect_rivals": list(
+                    decision_fields.get("suspect_rivals") or ()),
+                "same_name_first": decision_fields.get("same_name_first"),
             })
     return flows
 
@@ -533,8 +545,10 @@ def dedupe_mirrored_pairs(pair_flows: Dict[tuple, list],
     dataset pair: the two derivation directions of one equivalence
     collapse to a single flow — origin-source direction preferred, then
     more verified chains, then the larger source-side neuron count, then
-    the longer bridge evidence (lexicographic ids last, for
-    determinism).  Type pairs that only the REVERSE direction found are
+    the longer bridge evidence, then the suspects-carrying direction (so a
+    same-name-first marker is not dropped on an otherwise-even tie), with
+    lexicographic ids last for determinism.  Type pairs that only the
+    REVERSE direction found are
     KEPT: an asymmetric route must not vanish with a dropped
     dataset-pair direction (crosswalk evidence reads male-cns → FAFB,
     but the FAFB↔male-cns equivalence must still render from the other
@@ -574,6 +588,12 @@ def dedupe_mirrored_pairs(pair_flows: Dict[tuple, list],
                 _verified(flow),
                 int(flow.get("source_count") or 0),
                 len(flow.get("bridges") or []),
+                # A same-name-first selection is direction-scoped: when the
+                # two mirrored directions otherwise tie, keep the direction
+                # that CARRIES the suspects so the panel's marker/details do
+                # not silently drop.  Never adds/removes a flow or moves a
+                # count — it only breaks an existing tie.
+                1 if flow.get("suspects") else 0,
                 src_ds, s_type,
             )
             prev = best.get(key)
@@ -1769,12 +1789,25 @@ def build_type_coverage(pair_flows,
     pools = pools or {}
     forward: Dict[tuple, Dict[str, Any]] = {}
     reverse: Dict[tuple, Dict[str, Any]] = {}
+    # Same-name-first suspects are query-scoped, per-flow facts: a forward
+    # key (source dataset, source type) records the target types reached via
+    # a suspects-flagged flow, the mirrored reverse key records the source
+    # types arriving that way.  The dataset-wide backward CONTEXT (§12.3)
+    # adds explanatory non-query sources that are NEVER marked as suspects,
+    # so these maps are fed only by the accepted query flows below.
+    forward_suspects: Dict[tuple, set] = {}
+    reverse_suspects: Dict[tuple, set] = {}
     for (src_ds, tgt_ds), flows in (pair_flows or {}).items():
         for flow in flows or []:
             s_type = flow.get("source_type", "")
             f_type = flow.get("foreign_type", "")
             if not s_type or not f_type:
                 continue
+            if flow.get("suspects"):
+                forward_suspects.setdefault((src_ds, s_type), set()).add(
+                    f_type)
+                reverse_suspects.setdefault((tgt_ds, f_type), set()).add(
+                    s_type)
             s_count = int(flow.get("source_count") or 0)
             f_count = int(flow.get("foreign_count") or 0)
             pool = get_mapping_pool(
@@ -1968,6 +2001,8 @@ def build_type_coverage(pair_flows,
                 f"{query_overlap_all_valid} source bodyIds, "
                 f"{target_overlap_all_valid} target bodyIds")
         coverage_note = "; ".join(coverage_notes)
+        _susp = sorted(forward_suspects.get((row["dataset"], row["type"]),
+                                            set()))
         forward_rows.append({
             "dataset": row["dataset"],
             "type": row["type"],
@@ -1976,6 +2011,11 @@ def build_type_coverage(pair_flows,
                 f"{code}: {', '.join(names)}"
                 for code, names in sorted(groups.items())),
             "targets": len(row["targets"]),
+            # Same-name-first suspects reaching this queried type (query-
+            # scoped, additive; empty when the row is not a fan-out)
+            "suspect_targets": ", ".join(_susp),
+            "suspect_count": len(_susp),
+            "has_suspects": bool(_susp),
             "relationship": _pair_relationship(
                 len(row["targets"]),
                 max((len(sources_by_target.get(key, ()))
@@ -2096,6 +2136,8 @@ def build_type_coverage(pair_flows,
                 f"{source_overlap_all_valid} source bodyIds, "
                 f"{target_overlap_all_valid} target bodyIds")
         coverage_note = "; ".join(coverage_notes)
+        _susp = sorted(reverse_suspects.get((row["dataset"], row["type"]),
+                                            set()))
         reverse_row = {
             "dataset": row["dataset"],
             "type": row["type"],
@@ -2104,6 +2146,11 @@ def build_type_coverage(pair_flows,
                 f"{code}: {', '.join(names)}"
                 for code, names in sorted(groups.items())),
             "sources": len(row["sources"]),
+            # Same-name-first suspects arriving at this receiving type
+            # (query-scoped; the dataset-wide context never adds to these)
+            "suspect_sources": ", ".join(_susp),
+            "suspect_count": len(_susp),
+            "has_suspects": bool(_susp),
             # §12.1 user decision: relationship cells follow the ROW
             # SUBJECT's fan-out — read from the receiving type back to its
             # source types, so several sources read `1-to-N`, never

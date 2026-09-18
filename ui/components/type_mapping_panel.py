@@ -126,6 +126,55 @@ def _pool_mapping_pair(flows, src, tgt, indexes, pools) -> None:
         pools[key] = result
 
 
+def _multivalue_marker(mapper, type_name: str, dataset: str) -> str:
+    """`🧩 multi (a|b)` marker when the release's own `type` cell lists
+    several candidate names, or "" when the name is a normal single name.
+
+    Display-only (plan-type-column-multivalue-normalization Stage 1 /
+    plan-ui-type-mapper-alignment §4.3): the cell stays an atomic type name;
+    the marker only tells the user the name is composite in the release.
+    """
+    try:
+        parts = mapper.multivalue_parts(type_name, dataset)
+    except Exception:
+        parts = None
+    if not parts:
+        return ""
+    return f" 🧩 multi ({'|'.join(str(p) for p in parts)})"
+
+
+def _held_same_name_reason(mapper, type_name: str, origin: str,
+                           target: str) -> str:
+    """Why a same-name fan-out was NOT selected, or "" when not applicable.
+
+    Reads the mapper's own verdict (``same_name_first_fires``); used to
+    explain an orphan that is really a HELD pair.  Observation-only wording:
+    the mapper never verifies, so this states which rivals lack a 1-to-1
+    pairing of their own — never a verdict about them.
+    """
+    try:
+        fired = mapper.same_name_first_fires(type_name, origin, target)
+    except Exception:
+        return ""
+    if not fired or fired.get("disposition") != "gated_held":
+        return ""
+    rivals = list(fired.get("rivals") or ())
+    n_no_pair = 0
+    try:
+        for rival in rivals:
+            if not mapper._rival_has_own_clean_pair(rival, origin, target):
+                n_no_pair += 1
+    except Exception:
+        n_no_pair = 0
+    if rivals and n_no_pair:
+        return (f"kept unmapped: {n_no_pair} of {len(rivals)} rival "
+                f"candidate(s) have no 1-to-1 pair of their own, so the "
+                f"same-name candidate '{fired.get('selected')}' was not "
+                f"selected")
+    return (f"kept unmapped: the same-name candidate "
+            f"'{fired.get('selected')}' was not selected")
+
+
 def _describe_orphan(entry: Dict[str, Any], target: str) -> str:
     """One orphan summary line: the type, its neuron count, and any
     crosswalk claim the target dataset cannot fulfil."""
@@ -135,6 +184,9 @@ def _describe_orphan(entry: Dict[str, Any], target: str) -> str:
         quoted = ", ".join(f"'{c}'" for c in claimed)
         text += (f" — auto-mapping claims {quoted} but {target} "
                  f"has no such neurons")
+    held = str(entry.get("held_reason") or "")
+    if held:
+        text += f" — {held}"
     return text
 
 
@@ -160,6 +212,7 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
         dedupe_mirrored_pairs,
         origin_seeded_flows,
         render_composed_mapping_html,
+        _pair_relationship,
     )
 
     try:
@@ -333,6 +386,14 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 entry = {"dataset": origin, "type": t,
                          "count": counts.get(t, 0), "target": target,
                          "claimed": []}
+                # Same-name-first HELD pairs land here as bare orphans
+                # (build_mapping_flows skips conflicts).  Record WHY so the
+                # orphan line can explain it instead of implying the type
+                # simply has no counterpart (plan-ui-type-mapper-alignment
+                # §4.2; boundary-clean wording — an observation, no verdict).
+                reason = _held_same_name_reason(mapper, t, origin, target)
+                if reason:
+                    entry["held_reason"] = reason
                 orphans[(origin, target)].append(entry)
                 orphan_by_key[(origin, target, t)] = entry
 
@@ -434,6 +495,14 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 if v:
                     chip_of[(ds_m, t_name)] = v
     summary_per_type: List[Dict[str, Any]] = []
+    # Per-pair sources-by-target map so a row's relationship can read N-to-1
+    # when several queried types converge on one target (built once per pair).
+    _s_by_t: Dict[tuple, Dict[str, set]] = {}
+    for (ds, tgt), fl in pair_flows.items():
+        m = _s_by_t.setdefault((ds, tgt), {})
+        for f in fl:
+            m.setdefault(str(f.get("foreign_type") or ""), set()).add(
+                str(f.get("source_type") or ""))
     for ds in datasets:
         matched = origins.get(ds, [])
         ds_counts = (count_types_in_index(indexes[ds], matched)
@@ -452,12 +521,20 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 claimed = claimed_by_type.get((ds, t, tgt), set())
                 orphaned = sum(1 for e in orphans.get((ds, tgt), [])
                                if e.get("type") == t)
+                _pair_map = _s_by_t.get((ds, tgt), {})
+                relationship = _pair_relationship(
+                    len(ftypes),
+                    max((len(_pair_map.get(ft, ())) for ft in ftypes),
+                        default=0))
+                suspect_n = sum(1 for f in tgt_flows if f.get("suspects"))
                 summary_per_type.append({
                     "dataset": ds,
                     "type": t,
                     "query": chip_of.get((ds, t), ""),
                     "neurons": ds_counts.get(t, 0),
                     "target": tgt,
+                    "relationship": relationship,
+                    "suspects": suspect_n,
                     "mapped_types": len(present_types),
                     "mapped_neurons": len(claimed),
                     "mapped": _format_mapped_neurons(
@@ -684,17 +761,144 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             f"{name} — check your browser's default downloads folder. "
             "Informational only, please double check.")
 
+    def _suspects_by_pair(flows, src_ds: str, tgt_ds: str) -> dict:
+        """Per-rival rows for the collapsed suspects blocks, GROUPED by the
+        surviving flow's own (source type → target type) pair (plan §4.1/D1;
+        fan-out/suspects display round).
+
+        Reads the mapper's own evidence record
+        (``get_same_name_conflict_detail``) for every flow carrying the
+        same-name-first flag, so the UI displays the mapper's facts without
+        re-deriving anything.  The group key is the FLOW's direction — the
+        same direction ``dedupe_mirrored_pairs`` kept and ``build_type_coverage``
+        marks — so the badge on a row and its details block always agree.
+        Display-only.
+        """
+        try:
+            from comparison.cross_dataset_type_mapper import get_type_mapper
+            mapper = get_type_mapper()
+        except Exception:
+            return {}
+        out: Dict[tuple, list] = {}
+        seen = set()
+        for flow in flows or []:
+            if not flow.get("suspects"):
+                continue
+            s_type = str(flow.get("source_type") or "")
+            f_type = str(flow.get("foreign_type") or "")
+            key = (s_type, f_type)
+            if key in seen or not (s_type and f_type):
+                continue
+            seen.add(key)
+            try:
+                detail = mapper.get_same_name_conflict_detail(
+                    s_type, src_ds, tgt_ds)
+            except Exception:
+                detail = None
+            rows: list = []
+            if not detail:
+                for rival in (flow.get("suspect_rivals") or []):
+                    rows.append({
+                        "rival": rival, "own_pair": "—", "votes": "—",
+                        "reverse": "—", "status": "—", "counts": "—",
+                    })
+            else:
+                for ev in detail.get("rival_evidence", []):
+                    verified = ev.get("verified_votes") or {}
+                    auto = ev.get("auto_votes") or {}
+                    curated_n = sum(int(v or 0) for v in verified.values())
+                    auto_n = sum(int(v or 0) for v in auto.values())
+                    rows.append({
+                        "rival": ev.get("rival", ""),
+                        "own_pair": ("yes"
+                                     if ev.get("rival_has_own_clean_pair")
+                                     else "no"),
+                        "votes": (f"{curated_n} curated / {auto_n} auto"
+                                  if (curated_n or auto_n) else "—"),
+                        "reverse": ev.get("reverse_target") or "—",
+                        "status": ev.get("rival_pair_status", "—"),
+                        "counts": (f"{ev.get('population_source') or 0}/"
+                                   f"{ev.get('population_target') or 0}"),
+                    })
+            if rows:
+                out[key] = rows
+        return out
+
+    def _suspect_details_blocks(rows_by_pair: dict) -> None:
+        """Render one COLLAPSED expander per suspect-flagged type pair (D1:
+        never hover-only, never expanded by default).  Shared by the pair
+        card and the coverage panel so the per-rival facts render once per
+        surface.  Body = the six-column rival table."""
+        for (s_type, f_type), rows in sorted((rows_by_pair or {}).items()):
+            if not rows:
+                continue
+            with ui.expansion(
+                    f"Suspects — {s_type} → {f_type}: {len(rows)} rival "
+                    f"candidate(s) not selected by same-name-first",
+                    icon="warning").classes("w-full"):
+                ui.label(
+                    "These rival names were in the fan-out's candidate set "
+                    "but were NOT selected (the same-name candidate was). "
+                    "`own 1-to-1 pair` = the crosswalk also pairs this "
+                    "rival's own name 1-to-1 in this direction — a separate "
+                    "pairing observation, not a verdict. Rivals are never "
+                    "merged; add a custom label mapping if one belongs to "
+                    "your analysis."
+                ).classes("text-caption drocat-muted")
+                ui.table(
+                    columns=[
+                        _col("rival", "Rival candidate", "rival",
+                             min_w=120),
+                        _col("own_pair", "Own 1-to-1 pair", "own_pair",
+                             min_w=110,
+                             tooltip="The crosswalk also pairs this rival's "
+                                     "own name 1-to-1 in this direction — a "
+                                     "separate pairing observation, not a "
+                                     "verdict."),
+                        _col("votes", "Votes (curated/auto)", "votes",
+                             min_w=130),
+                        _col("reverse", "Reverse target", "reverse",
+                             min_w=110),
+                        _col("status", "Rival pair status", "status",
+                             min_w=140),
+                        _col("counts", "Neurons (src/tgt)", "counts",
+                             min_w=120),
+                    ],
+                    rows=rows,
+                ).classes("w-full").add_slot("header-cell",
+                                             _HEADER_TOOLTIP_SLOT)
+
     def _pair_card(src: str, tgt: str, flows, pools: dict) -> None:
-        from comparison.cross_dataset_type_mapper import bridge_linker_text
+        from comparison.cross_dataset_type_mapper import (
+            bridge_linker_text, get_type_mapper,
+        )
         from comparison.mapping_visualization import (
+            _pair_relationship,
             format_pool_side,
             get_mapping_pool,
         )
         from utils.naming_utils import dataset_abbrev
 
+        try:
+            mapper = get_type_mapper()
+        except Exception:
+            mapper = None
+
         stamp = time.strftime("%Y%m%d_%H%M%S")
         src_code = dataset_abbrev(src) or src
         tgt_code = dataset_abbrev(tgt) or tgt
+        # Per-flow cardinality over this card's own flows — the SAME
+        # fan/fan-in counts the all-pairs CSV records (build_bridges_csv),
+        # so the card's Relationship column and the export never disagree.
+        targets_by_source: Dict[str, set] = {}
+        sources_by_target: Dict[str, set] = {}
+        for flow in flows:
+            targets_by_source.setdefault(
+                str(flow.get("source_type", "")), set()).add(
+                str(flow.get("foreign_type", "")))
+            sources_by_target.setdefault(
+                str(flow.get("foreign_type", "")), set()).add(
+                str(flow.get("source_type", "")))
         rows = []
         for flow in flows:
             s_type = flow.get("source_type", "")
@@ -758,10 +962,31 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 cov = "not pooled"
             if flow.get("mapping_status") == "valid_split_evidence":
                 cov = "branch evidence (non-exclusive); " + cov
+            # Same-name-first selection (plan-ui-type-mapper-alignment §4.1):
+            # a short inline marker only; the rival details go into the
+            # COLLAPSED block below the table (user directive: details
+            # collapsed, never a hover-only tooltip).
+            if flow.get("suspects"):
+                _n_riv = len(flow.get("suspect_rivals") or [])
+                map_used = (f"same-name-first selection — same-name "
+                            f"candidate chosen over {_n_riv} rival "
+                            f"candidate(s); {map_used}")
+            # Per-row cardinality + suspects badge (fan-out/suspects display
+            # round): the Relationship column mirrors the coverage tables and
+            # the CSV; the Suspects badge is the row's marker, its per-rival
+            # details render in the collapsed block below the table.
+            relationship = _pair_relationship(
+                len(targets_by_source.get(s_type, ())),
+                len(sources_by_target.get(f_type, ())))
+            suspects_cell = ""
+            if flow.get("suspects"):
+                suspects_cell = (f"⚠ suspects "
+                                 f"({len(flow.get('suspect_rivals') or [])})")
             rows.append([
-                s_type, f_type,
+                s_type + _multivalue_marker(mapper, s_type, src),
+                f_type + _multivalue_marker(mapper, f_type, tgt),
                 f"{s_total} {src_code} → {t_total} {tgt_code}",
-                map_used, cov,
+                relationship, suspects_cell, map_used, cov,
             ])
         # Quasar table cells nowrap by default: cap the long columns and
         # force wrapping so every column stays visible (user 2026-09-07)
@@ -771,13 +996,30 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 _col("foreign", f"Mapped to ({tgt_code})", "foreign",
                      max_w=170),
                 _col("counts", "Neurons", "counts", min_w=150),
+                _col("relationship", "Relationship", "relationship",
+                     min_w=100,
+                     tooltip="Cardinality over this pair's accepted "
+                             "mappings: 1-to-N fans out to several targets, "
+                             "N-to-1 converges from several sources."),
+                _col("suspects", "Suspects", "suspects", min_w=110,
+                     tooltip="Same-name-first selection: rival candidates "
+                             "were in the fan-out but were NOT selected — "
+                             "expand the Suspects block below for the "
+                             "per-rival evidence."),
                 _col("map_used", "Map used (per linker)", "map_used",
                      max_w=440),
                 _col("cov", "Pool coverage (bodyIds)", "cov", min_w=210),
             ],
-            rows=[dict(zip(("name", "foreign", "counts", "map_used",
-                             "cov"), r)) for r in rows],
-        ).classes("w-full")
+            rows=[dict(zip(("name", "foreign", "counts", "relationship",
+                             "suspects", "map_used", "cov"), r))
+                  for r in rows],
+        ).classes("w-full").add_slot("header-cell", _HEADER_TOOLTIP_SLOT)
+        # COLLAPSED suspects details (plan-ui-type-mapper-alignment §4.1/D1;
+        # fan-out/suspects display round): one expander per suspect-flagged
+        # type pair, one row per demoted rival, carrying the crosswalk
+        # observation + votes + the pair-level disposition.  Never a
+        # hover-only tooltip; never expanded by default.
+        _suspect_details_blocks(_suspects_by_pair(flows, src, tgt))
         with ui.row().classes("flex-wrap"):
             ui.button("Sankey (type-level)",
                       on_click=lambda: _deliver_flows(
@@ -848,6 +1090,36 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         backward = coverage.get("reverse") or []
         if not (forward or backward):
             return
+        # Same-name-first suspects: the per-rival evidence grouped by the
+        # surviving flow's (source → target) pair — drives both the row
+        # badges and the collapsed detail blocks below the tables.
+        suspect_map = _suspects_by_pair(flows, src, tgt)
+        # Format each row's suspects badge cell (query-scoped, from the
+        # coverage row's suspect_targets / suspect_sources fields).
+        for row in forward:
+            names = [n for n in str(row.get("suspect_targets") or "").split(",")
+                     if n.strip()]
+            n = int(row.get("suspect_count") or len(names))
+            row["suspects_cell"] = (f"⚠ suspects ({n}): "
+                                    f"{', '.join(names)}" if n else "")
+        for row in backward:
+            names = [n for n in str(row.get("suspect_sources") or "").split(",")
+                     if n.strip()]
+            n = int(row.get("suspect_count") or len(names))
+            row["suspects_cell"] = (f"⚠ suspects ({n}): "
+                                    f"{', '.join(names)}" if n else "")
+        # Data-driven fan-out summary for the expansion title (replaces the
+        # old hard-coded "1-to-N fan-out"): read from the forward rows' own
+        # relationship values.
+        rels = {str(r.get("relationship") or "") for r in forward}
+        if rels & {"1-to-N", "N-to-N"}:
+            fan_summary = "1-to-N fan-out"
+        elif "N-to-1" in rels:
+            fan_summary = "N-to-1 fan-in"
+        else:
+            fan_summary = "all 1-to-1"
+        if suspect_map:
+            fan_summary += f" · ⚠ {len(suspect_map)} suspect pair(s)"
         _legend = (
             "Forward: per queried type - neurons, mapped targets, and "
             "per-side bodyId coverage.\n"
@@ -857,10 +1129,18 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             "canonical acceptance).\n"
             "Coverage: selected = primary bridge chain; all valid = union "
             "of every supported chain.  States: not pooled / not measured "
-            "/ measured zero.  No bodyId-to-bodyId pairing is inferred.")
+            "/ measured zero.  No bodyId-to-bodyId pairing is inferred.\n"
+            "same-name-first selection: a fan-out whose candidate set "
+            "contained the source type's own name — that candidate was "
+            "selected and the other (rival) candidates were NOT; a "
+            "'⚠ suspects' badge marks the row and the collapsed 'Suspects' "
+            "block below lists the per-rival evidence.\n"
+            "🧩 multi-value: the release annotates several candidate names "
+            "in ONE `type` cell (e.g. 'LAL173,LAL174'); the cell is kept as "
+            "one atomic type name.")
         with ui.expansion(
                 f"Type coverage — {src} → {tgt} "
-                f"(bidirectional, 1-to-N fan-out)",
+                f"(bidirectional, {fan_summary})",
                 icon="swap_vert").classes("w-full") \
                 .tooltip(_legend):
             ui.table(
@@ -871,6 +1151,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                     _col("maps_to", "Maps to", "maps_to", max_w=480),
                     _col("relationship", "Relationship",
                          "relationship", min_w=110),
+                    _col("suspects_cell", "Suspects", "suspects_cell",
+                         min_w=140,
+                         tooltip="Same-name-first selection: rival "
+                                 "candidates were in the fan-out but were "
+                                 "NOT selected — expand the Suspects block "
+                                 "below for the per-rival evidence."),
                     _col("coverage_note", "Coverage interpretation",
                          "coverage_note", max_w=480),
                     _col("query_cov_selected", f"{src_code} · selected",
@@ -910,6 +1196,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                          max_w=480),
                     _col("relationship", "Relationship",
                          "relationship", min_w=110),
+                    _col("suspects_cell", "Suspects", "suspects_cell",
+                         min_w=140,
+                         tooltip="Same-name-first selection: rival "
+                                 "candidates were in the fan-out but were "
+                                 "NOT selected — expand the Suspects block "
+                                 "below for the per-rival evidence."),
                     _col("coverage_note", "Coverage interpretation",
                          "coverage_note", max_w=480),
                     _col("source_cov_selected", f"{src_code} · selected",
@@ -932,6 +1224,10 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 rows=backward,
             ).classes("w-full").add_slot("header-cell",
                                          _HEADER_TOOLTIP_SLOT)
+            # COLLAPSED per-rival suspect details for this pair's flagged
+            # type pairs — rendered ONCE (shared renderer with the pair
+            # card), never a hover-only tooltip, never expanded by default.
+            _suspect_details_blocks(suspect_map)
 
     def _render_results() -> None:
         results.clear()
@@ -987,7 +1283,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                          "field": "unmapped", "align": "left",
                          "tooltip": "Matched types here with no realized "
                                     "counterpart in another selected "
-                                    "dataset."},
+                                    "dataset — OR held back by same-name-"
+                                    "first: a same-name candidate existed, "
+                                    "but not every rival candidate has its "
+                                    "own 1-to-1 pairing, so none was "
+                                    "selected (see the Orphan types list for "
+                                    "the per-row reason)."},
                     ],
                     rows=summary,
                 ).classes("w-full").add_slot("header-cell",
@@ -1004,6 +1305,9 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                           or any((r.get("types") or 0) > 1
                                  for r in (summary or [])))
             if per_type and multi_type:
+                for r in per_type:
+                    _n = int(r.get("suspects") or 0)
+                    r["suspects_cell"] = (f"⚠ suspects ({_n})" if _n else "")
                 with ui.expansion(
                         f"Per-type breakdown — {len(per_type)} rows "
                         f"(matched type × target dataset)",
@@ -1025,6 +1329,18 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                          "counts are specific to THAT "
                                          "dataset, never summed across "
                                          "datasets."),
+                            _col("relationship", "Relationship",
+                                 "relationship", min_w=100,
+                                 tooltip="Cardinality of this matched type's "
+                                         "mapping into the row's target "
+                                         "dataset."),
+                            _col("suspects_cell", "Suspects", "suspects_cell",
+                                 min_w=120,
+                                 tooltip="Same-name-first selection: rival "
+                                         "candidates were in the fan-out but "
+                                         "were NOT selected — see the pair's "
+                                         "Suspects block for the per-rival "
+                                         "evidence."),
                             _col("mapped", "Mapped neurons", "mapped",
                                  min_w=120,
                                  tooltip="Branch-claimed bodyIds received "

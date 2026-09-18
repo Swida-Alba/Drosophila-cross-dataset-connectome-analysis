@@ -20,6 +20,7 @@ MCNS_INDEX = REPO_ROOT / 'neuron_indexes' / 'male-cns_v1_0' / 'neuron_index.parq
 FAFB_INDEX = REPO_ROOT / 'neuron_indexes' / 'flywire_FAFB_v783' / 'neuron_index.parquet'
 MCNS = 'male-cns:v1.0'
 FAFB = 'flywire_FAFB_v783'
+BANC = 'banc_v888'
 
 pytestmark = pytest.mark.skipif(
     not (MCNS_INDEX.exists() and FAFB_INDEX.exists()),
@@ -407,3 +408,189 @@ def test_format_mapped_neurons_combined_cell():
     assert _format_mapped_neurons(6, 2) == '6(2 types)'
     assert _format_mapped_neurons(9, 1) == '9'
     assert _format_mapped_neurons(0, 0) == '0'
+
+
+# ---------------------------------------------------------------------------
+# Suspects disclosure + boundary hygiene (plan-ui-type-mapper-alignment)
+# ---------------------------------------------------------------------------
+
+def test_flow_status_carries_same_name_first_fields():
+    """§3: the panel's flow record must carry the mapper's own suspects
+    verdict — the UI never re-derives it."""
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+    from comparison.type_resolver import resolve_flow_status
+
+    mapper = get_type_mapper()
+    assert mapper.load() is True
+    # a FIRED selection (broad, framing B)
+    status, fields = resolve_flow_status(mapper, 'aMe9', MCNS, BANC)
+    assert status == 'mapped'
+    assert fields['suspects'] is True
+    assert fields['suspect_rivals'], 'rivals must be carried for the expander'
+    assert fields['same_name_first']['disposition'] == 'broad_selection'
+    # a NON-fan-out pair keeps the fields at their empty defaults
+    _s2, f2 = resolve_flow_status(mapper, 'CB4091', MCNS, FAFB)
+    assert f2['suspects'] is False and f2['suspect_rivals'] == []
+
+
+def test_held_pair_orphan_reason_is_boundary_clean():
+    """§4.2: a HELD fan-out must explain itself; wording states the
+    observation and never a verdict (no 'duplicate'/'confirmed')."""
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+    from ui.components.type_mapping_panel import _held_same_name_reason
+
+    mapper = get_type_mapper()
+    assert mapper.load() is True
+    reason = _held_same_name_reason(mapper, 'ORN_D', BANC, MCNS)
+    assert reason, 'ORN_D is the gated_held flagship case'
+    assert 'kept unmapped' in reason
+    assert '1-to-1' in reason
+    for banned in ('duplicate', 'confirmed', 'gated'):
+        assert banned not in reason.lower(), banned
+
+
+def test_multivalue_marker_format():
+    """§4.3: the marker names the parts and nothing else."""
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+    from ui.components.type_mapping_panel import _multivalue_marker
+
+    mapper = get_type_mapper()
+    assert mapper.load() is True
+    mark = _multivalue_marker(mapper, 'LAL173,LAL174', BANC)
+    assert mark.strip().startswith('🧩 multi')
+    assert 'LAL173' in mark and 'LAL174' in mark
+    assert _multivalue_marker(mapper, 'KCg-d', MCNS) == ''
+
+
+def test_suspect_detail_rows_shape():
+    """§4.1: the collapsed block's rows carry the per-rival facts, sourced
+    from the mapper's evidence record (never re-derived).
+
+    ``_suspect_detail_rows`` is a closure inside ``create_type_mapping_entry``
+    (like its sibling renderers), so it is exercised through the mapper's
+    evidence record the closure reads — the closure itself is covered by the
+    panel_client tests above.
+    """
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+
+    mapper = get_type_mapper()
+    assert mapper.load() is True
+    detail = mapper.get_same_name_conflict_detail('aMe9', MCNS, BANC)
+    assert detail is not None and detail['fires'] is True
+    ev = detail['rival_evidence']
+    assert ev and ev[0]['rival'] == 'aMe12'
+    assert set(ev[0]) >= {'rival', 'rival_has_own_clean_pair',
+                          'reverse_target', 'rival_pair_status',
+                          'votes', 'verified_votes', 'auto_votes',
+                          'population_source', 'population_target'}
+    assert ev[0]['rival_pair_status'] in ('own_1to1_pair',
+                                           'no_own_1to1_pair')
+    # the boundary fix (D6): no verdict words anywhere in the record's keys
+    assert 'suspected_duplicate' not in ev[0]
+
+
+def test_panel_flows_carry_the_suspects_fields():
+    """§4.1 regression: the panel's row marker / collapsed expander read the
+    FLOW record, so `build_mapping_flows` must copy the same-name-first
+    fields from the resolved decision.  (Found 2026-09-18: only
+    status/relationship/target_types/conflicts were copied, so the marker
+    could never fire despite the resolver carrying the flag.)"""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    out = _compute_type_mapping(['aMe9'], [MCNS, BANC], 'exact')
+    flows = [f for fl in out['pair_flows'].values() for f in fl]
+    fired = [f for f in flows if f.get('suspects')]
+    assert fired, 'aMe9 -> banc must produce a suspects flow'
+    f = fired[0]
+    assert 'aMe12' in f['suspect_rivals']
+    assert f['same_name_first']['disposition'] == 'broad_selection'
+    assert f['mapping_relationship'] == 'suspects'
+    # and a non-fan-out flow keeps the empty defaults (no false positives)
+    other = [f for f in flows if not f.get('suspects')]
+    for f in other:
+        assert f['suspect_rivals'] == [] and not f['same_name_first']
+
+
+@pytest.fixture
+def suspects_panel_client(tmp_path, monkeypatch):
+    """A panel over male-cns v1.0 + BANC v888 — the pair whose ``aMe9``
+    query fires the same-name-first fan-out (suspects).  Mirrors
+    ``panel_client`` but with the suspects-carrying selection."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    monkeypatch.setattr(tmh, "_HISTORY_PATH",
+                        tmp_path / "type_mapping_history.json")
+    monkeypatch.setattr(hs, "_HISTORY_PATH", tmp_path / "neuron_history.json")
+    clear_neuron_index_cache()
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+
+    assert get_type_mapper().load() is True
+    client = Client(page('/type-mapping-suspects-test'))
+    with client:
+        selection = {'value': [MCNS, BANC]}
+        from ui.components.type_mapping_panel import create_type_mapping_entry
+        button = create_type_mapping_entry(lambda: list(selection['value']))
+    try:
+        yield client, button, selection
+    finally:
+        clear_neuron_index_cache()
+
+
+def _tables(client):
+    return [e for e in client.elements.values()
+            if type(e).__name__ == 'Table']
+
+
+def _column_labels(table):
+    return [c.get('label', '') for c in table._props.get('columns', [])]
+
+
+def test_per_type_breakdown_carries_relationship_and_suspects():
+    """The per-type breakdown row reports the pair's cardinality and its
+    suspects count (fan-out/suspects display round)."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    out = _compute_type_mapping(['aMe9'], [MCNS, BANC], 'exact')
+    row = next(r for r in out['summary_per_type']
+               if r['type'] == 'aMe9' and r['target'] == BANC)
+    assert row['relationship'] == '1-to-N'
+    assert int(row['suspects']) >= 1
+
+
+def test_pair_card_gains_relationship_and_suspects_columns(
+        suspects_panel_client):
+    client, button, _sel = suspects_panel_client
+    button.search_container.add_values(['aMe9'])
+    assert _click_button(client, 'Search mappings')
+    pair_cards = [t for t in _tables(client)
+                  if 'Map used (per linker)' in _column_labels(t)]
+    assert pair_cards, 'pair-card mapped-pairs table not found'
+    for t in pair_cards:
+        cols = _column_labels(t)
+        assert 'Relationship' in cols and 'Suspects' in cols
+    # the surviving suspects flow's row carries the badge cell
+    cells = [str(v) for t in pair_cards
+             for row in t._props.get('rows', []) for v in row.values()]
+    assert any('⚠ suspects' in c for c in cells)
+
+
+def test_coverage_and_suspects_blocks_render(suspects_panel_client):
+    client, button, _sel = suspects_panel_client
+    button.search_container.add_values(['aMe9'])
+    assert _click_button(client, 'Search mappings')
+    labels = _labels(client)
+    # coverage tables gained a Suspects column
+    cov = [t for t in _tables(client)
+           if any('· selected' in c for c in _column_labels(t))]
+    assert cov, 'coverage tables not found'
+    for t in cov:
+        assert 'Suspects' in _column_labels(t)
+    # data-driven title: fan summary + suspect-pair count replace the old
+    # hard-coded '(bidirectional, 1-to-N fan-out)'
+    assert any('Type coverage —' in lbl and 'fan-out' in lbl
+               and 'suspect pair(s)' in lbl for lbl in labels)
+    # COLLAPSED per-rival suspects block (D1: never hover-only, never
+    # expanded by default) titled by its (source -> target) type pair
+    assert any(lbl.startswith('Suspects — ') for lbl in labels)
+
