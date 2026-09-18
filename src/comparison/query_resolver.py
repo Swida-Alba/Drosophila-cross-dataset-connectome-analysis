@@ -486,6 +486,17 @@ def _member_targets(mapper, member, hit_ds, ds) -> List[str]:
     return []
 
 
+try:
+    from utils.label_utils import UntypedLabelPolicy
+except ImportError:  # pragma: no cover - direct src/ execution
+    from src.utils.label_utils import UntypedLabelPolicy
+
+try:
+    from utils.label_utils import UntypedLabelPolicy
+except ImportError:  # pragma: no cover - direct src/ execution
+    from src.utils.label_utils import UntypedLabelPolicy
+
+
 class DatasetTaxonomyResolver:
     """Expand taxonomy-column values to member type names per dataset.
 
@@ -514,7 +525,9 @@ class DatasetTaxonomyResolver:
     }
     _EXCLUDED = {'bodyid', 'type', 'instance',
                  'flywiretype', 'hemibraintype', 'manctype'}
-    _UNTYPED = {'nan', 'none', 'unknown', '', 'null', '<na>', '<null>'}
+    # Shared untyped sentinels (UntypedLabelPolicy) + '' for the
+    # membership test; plan-untyped-labels-and-drop-hardening 4.1.
+    _UNTYPED = UntypedLabelPolicy.SENTINELS | {''}
 
     def __init__(self, mapper=None, workspace_path=None):
         self._mapper = mapper

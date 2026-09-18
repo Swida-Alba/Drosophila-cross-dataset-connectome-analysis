@@ -52,6 +52,10 @@ from collections import Counter, defaultdict
 import pandas as pd
 
 from comparison.label_mapper import LabelMapper
+try:
+    from ..flywire_ids import is_fafb_dataset
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    from flywire_ids import is_fafb_dataset
 
 try:
     from ..utils.naming_utils import dataset_version, make_unique_dataset_labels
@@ -117,8 +121,14 @@ DATASET_TO_TYPE_COL = {
 # (§version control, user 2026-09-06).
 FLYWIRE_MAPPING_KEYS = ('flywire_FAFB_v783', 'banc_v626', 'banc_v888')
 BANC_RELEASE_KEYS = frozenset({'banc_v626', 'banc_v888'})
-_UNTYPED_SENTINELS = frozenset({'unknown', 'nan', 'none', 'null',
-                                '<na>', '<null>'})
+# Shared vocabulary (UntypedLabelPolicy.SENTINELS) — same spellings as
+# utils.label_utils, referenced instead of re-declared (untyped plan §4.1).
+try:
+    from utils.label_utils import UntypedLabelPolicy
+    _UNTYPED_SENTINELS = UntypedLabelPolicy.SENTINELS
+except ImportError:  # pragma: no cover - direct src/ execution
+    from src.utils.label_utils import UntypedLabelPolicy
+    _UNTYPED_SENTINELS = UntypedLabelPolicy.SENTINELS
 
 
 # A bodyId is not a type name.  Crosswalk and annotation cells occasionally
@@ -3683,7 +3693,9 @@ class CrossDatasetTypeMapper:
             return f"male-cns:{version or 'v1.0'}"
         if 'banc' in ds_lower:
             return f"banc_{version or 'v626'}"
-        if 'fafb' in ds_lower or ('flywire' in ds_lower and 'banc' not in ds_lower):
+        # banc-flywire §3: shared predicate (BANC returned above;
+        # a generic flywire_* prefix is not a FAFB release).
+        if is_fafb_dataset(ds_lower):
             return f"flywire_FAFB_{version or 'v783'}"
         if 'hemibrain' in ds_lower:
             return f"hemibrain:{version or 'v1.2.1'}"
@@ -3912,7 +3924,7 @@ class CrossDatasetTypeMapper:
             return 'M'
         if 'banc' in ds_lower:
             return 'B'
-        if 'fafb' in ds_lower or 'flywire' in ds_lower:
+        if is_fafb_dataset(ds_lower):
             return 'F'
         if 'hemibrain' in ds_lower:
             return 'H'
@@ -3969,7 +3981,7 @@ class CrossDatasetTypeMapper:
             family_name = 'male-cns'
         elif 'banc' in ds_lower:
             family_name = 'BANC'
-        elif 'fafb' in ds_lower or 'flywire' in ds_lower:
+        elif is_fafb_dataset(ds_lower):
             family_name = 'FlyWire FAFB'
         elif 'hemibrain' in ds_lower:
             family_name = 'hemibrain'

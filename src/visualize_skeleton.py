@@ -1510,7 +1510,7 @@ def dataset_native_space(dataset: str) -> str:
     Raises ValueError for datasets without a known native space.
     """
     d = str(dataset or '').lower()
-    if 'fafb' in d or ('flywire' in d and 'banc' not in d):
+    if is_fafb_dataset(d):
         return 'FLYWIRE'
     if 'banc' in d:
         return 'BANC'
@@ -1552,7 +1552,7 @@ def dataset_render_space(dataset: str) -> str:
     Raises ValueError for datasets without a known render space.
     """
     d = str(dataset or '').lower()
-    if 'fafb' in d or ('flywire' in d and 'banc' not in d):
+    if is_fafb_dataset(d):
         return 'FLYWIRE'
     if 'banc' in d:
         # BANC renders in its native space (public skeleton/ROI products

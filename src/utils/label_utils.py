@@ -9,6 +9,40 @@ a neuron dropped in one tool would be dropped in the other.
 """
 
 
+class UntypedLabelPolicy:
+    """Single owner of the untyped sentinel vocabulary (plan-untyped-labels-and-drop-hardening §4.1): every surface routes its untyped test
+through this policy so the spellings can never drift apart again."""
+
+    SENTINELS = frozenset({'unknown', 'nan', 'none', 'null',
+                           '<na>', '<null>'})
+
+    @classmethod
+    def is_untyped(cls, value) -> bool:
+        """True when a resolved type label means 'untyped' (the
+        :func:`is_untyped_type_label` contract)."""
+        s = str(value).strip()
+
+        def _fallback(text: str) -> bool:
+            return text.isdigit() or (
+                text.lower().startswith('hb') and text[2:].isdigit())
+
+        while True:
+            if not s or s.lower() in cls.SENTINELS or _fallback(s):
+                return True
+            if s.endswith(("_L", "_R", "_U")):
+                s = s[:-2].strip()
+                continue
+            if s.startswith("(") and s.endswith(")"):
+                s = s[1:-1].strip()
+                continue
+            return False
+
+    @classmethod
+    def normalize(cls, value) -> str:
+        """'' for an untyped label, else the stripped label."""
+        return '' if cls.is_untyped(value) else str(value).strip()
+
+
 def is_untyped_type_label(value) -> bool:
     """True when a resolved type label means 'untyped'.
 
@@ -30,28 +64,7 @@ def is_untyped_type_label(value) -> bool:
     normalization (``neuron_search._display_value``) so a label hidden as
     missing there is never kept as typed here.
     """
-    s = str(value).strip()
-    sentinels = {"unknown", "nan", "none", "null", "<na>", "<null>"}
-
-    def _fallback(text: str) -> bool:
-        # bodyId fallback: bare digits, or the hemibrain 'hb<digits>'
-        # convention used when an unannotated neuron is referenced by id.
-        return text.isdigit() or (
-            text.lower().startswith('hb') and text[2:].isdigit())
-
-    while True:
-        if not s or s.lower() in sentinels or _fallback(s):
-            return True
-        # Look through one layer of wrapping: hemisphere suffixes
-        # (_L/_R/_U) and parenthesized references ('(5901212906)',
-        # '(hb1049946735)').
-        if s.endswith(("_L", "_R", "_U")):
-            s = s[:-2].strip()
-            continue
-        if s.startswith("(") and s.endswith(")"):
-            s = s[1:-1].strip()
-            continue
-        return False
+    return UntypedLabelPolicy.is_untyped(value)
 
 
 def untyped_side(pre_untyped: bool, post_untyped: bool) -> str:

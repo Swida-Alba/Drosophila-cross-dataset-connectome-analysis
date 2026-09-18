@@ -210,6 +210,14 @@ TERM_DEFS: Dict[str, str] = {
     'verified_strong':
         'The source ranks the same pool target top-1 under BOTH metrics '
         '(positive rank_union AND jaccard) — the strongest verdict.',
+    'forward':
+        'The validation direction: source neurons are scanned and the '
+        'target-side pool members earn the verdict tiers. Branches, '
+        'Targets and Coverage report the forward view.',
+    'backward':
+        'The interpretive direction: what the receiving target types and '
+        'the in-branch sources look like from the other side (column '
+        'view of the same pair scores). Informational — never gates.',
     'examinee rows':
         'Non-pool neurons ranked ahead of the best pool member (the '
         'aggressive deep window adds more). Exported in examinees.csv; '
@@ -974,7 +982,7 @@ def _coverage_tab(d: Dict) -> str:
     cards = []
     if f_ and m:
         # §1 the three coverage levels
-        l1 = _kv_block('L1 CLAIM — what does the map cover?', [
+        l1 = _kv_block('L1 CLAIM (forward) — what does the map cover?', [
             ('In-map target population',
              f"{_esc(m.get('mapped_target_set', '—'))} neurons "
              f'({len(m.get("per_type") or {})} target types)'),
@@ -1384,7 +1392,7 @@ def _targets_tab(d: Dict) -> str:
             'or crosswalking them):<br>'
             + ' &nbsp; '.join(items) + '</div>')
     return _section_card(
-        'Target side — map-coverage, holes, family material',
+        'Forward — target side: map-coverage, holes, family material',
         summary,
         body + fam_html + gap_html,
         ['map-covered', 'hole', 'family material', '{T}(no_source)',

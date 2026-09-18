@@ -720,8 +720,9 @@ class LabelMapper:
             return column.replace('hemibrain_v', 'hemibrain:v').replace('_', '.', 1)
         elif column.startswith('male_cns_v') or column.startswith('male-cns_v'):
             return column.replace('male_cns_v', 'male-cns:v').replace('_', '.')
-        elif 'flywire' in column.lower() or 'fafb' in column.lower():
-            return column  # FlyWire names typically don't have colons
+        # FlyWire/FAFB column spellings round-trip unchanged (and the
+        # dataset-level is_fafb_dataset predicate does not apply to
+        # sanitized column names).
         else:
             return column
 

@@ -644,3 +644,122 @@ def test_spearman_min_shared_gate(metrics):
     # same sample against a 30-edge gate with only 20 shared -> NaN
     small = big_a.iloc[:20]
     assert np.isnan(metrics.calculate_spearman_rank_correlation(small, big_b, min_shared=30))
+
+
+class TestSimilarityV22RepresentativeMetrics:
+    """v2.2 representative metrics (plan-similarity-matrix-schema-v2 §4):
+    per-metric unit tests including floor/NaN behavior, tie safety and the
+    conserved-only-vs-union path distinction."""
+
+    # -- overlap coefficients ------------------------------------------
+
+    def test_overlap_coefficients_basic(self, metrics):
+        a = {('x', 'y'), ('p', 'q')}
+        b = {('x', 'y'), ('r', 's'), ('t', 'u')}
+        cov_a, cov_b, cov_min = metrics.calculate_overlap_coefficients(a, b)
+        assert cov_a == 0.5
+        assert cov_b == pytest.approx(1 / 3)
+        assert cov_min == min(cov_a, cov_b)
+
+    def test_overlap_coefficients_nan_and_identity(self, metrics):
+        cov_a, cov_b, cov_min = metrics.calculate_overlap_coefficients(
+            set(), {('a', 'b')})
+        assert cov_a != cov_a            # NaN for the empty direction
+        assert cov_b == 0.0              # nothing of B is covered by A
+        assert cov_min != cov_min
+        assert metrics.calculate_overlap_coefficients(
+            set(), set()) == (1.0, 1.0, 1.0)
+
+    # -- top-k overlap ---------------------------------------------------
+
+    def test_topk_overlap_counts(self, metrics):
+        wa = pd.Series({'e1': 5.0, 'e2': 4.0, 'e3': 1.0})
+        wb = pd.Series({'e1': 7.0, 'e2': 6.0, 'e9': 1.0})
+        assert metrics.calculate_topk_overlap(wa, wb, k=2) == 1.0
+        assert metrics.calculate_topk_overlap(wa, wb, k=3) == 2 / 3
+
+    def test_topk_overlap_tie_safe_deterministic_head(self, metrics):
+        # equal-weight heads: sort order is stable, so the same input
+        # gives the same head set and the same score on both calls
+        wa = pd.Series({'e1': 5.0, 'e2': 5.0, 'e3': 5.0, 'e4': 5.0})
+        wb = pd.Series({'e1': 5.0, 'e2': 5.0, 'e9': 5.0, 'e10': 5.0})
+        first = metrics.calculate_topk_overlap(wa, wb, k=2)
+        assert first == metrics.calculate_topk_overlap(wa, wb, k=2)
+        assert 0.0 <= first <= 1.0
+
+    def test_topk_overlap_nan_and_shrink_and_nonpositive(self, metrics):
+        empty = pd.Series(dtype=float)
+        assert metrics.calculate_topk_overlap(
+            empty, pd.Series({'a': 1.0})) != metrics.calculate_topk_overlap(
+                empty, pd.Series({'a': 1.0}))  # NaN != NaN
+        # k shrinks to the smaller side
+        wa = pd.Series({'a': 2.0})
+        wb = pd.Series({'a': 3.0, 'b': 1.0})
+        assert metrics.calculate_topk_overlap(wa, wb, k=20) == 1.0
+        # non-positive weights are floor-excluded before ranking
+        zero = pd.Series({'a': 0.0, 'b': -1.0})
+        assert metrics.calculate_topk_overlap(
+            zero, pd.Series({'a': 1.0})) != metrics.calculate_topk_overlap(
+                zero, pd.Series({'a': 1.0}))
+
+    # -- path metrics: union frame vs conserved-only ---------------------
+
+    def _path_frame(self):
+        return pd.DataFrame(
+            {'A': [3, 0, 2, 1], 'B': [1, 2, 0, 4]},
+            index=['p1 -> p2', 'p2 -> p3', 'p3 -> p4', 'p1 -> p4'])
+
+    def test_path_jaccard_union_frame(self, metrics):
+        df = self._path_frame()
+        # present A = {p1->p2, p3->p4, p1->p4}; B = {p1->p2, p2->p3, p1->p4}
+        # jaccard = |{p12, p14}| / |union 4| = 0.5
+        assert metrics.calculate_path_jaccard(
+            df, 'A', 'B', min_support=2) == pytest.approx(0.5)
+
+    def test_path_jaccard_min_support_nan(self, metrics):
+        df = pd.DataFrame({'A': [1, 0], 'B': [1, 1]},
+                          index=['a -> b', 'b -> c'])
+        assert metrics.calculate_path_jaccard(
+            df, 'A', 'B', min_support=5) != metrics.calculate_path_jaccard(
+                df, 'A', 'B', min_support=5)
+
+    def test_path_jaccard_conserved_only_frame_trivially_one(self, metrics):
+        # the exported path_presence_matrix CSV is pre-intersected
+        # (conserved-only) — the metric is trivially 1.0 there, which is
+        # exactly why the contract demands the UNION frame
+        df = pd.DataFrame({'A': [1, 2], 'B': [3, 4]},
+                          index=['x -> y', 'y -> z'])
+        assert metrics.calculate_path_jaccard(
+            df, 'A', 'B', min_support=1) == 1.0
+
+    def test_path_topk_overlap_bottleneck_ranking(self, metrics):
+        df = pd.DataFrame({'A': [5, 1], 'B': [4, 0]},
+                          index=['a -> b', 'b -> c'])
+        assert metrics.calculate_path_topk_overlap(
+            df, 'A', 'B', k=1) == 1.0
+
+    def test_hop_profile_w1_value(self, metrics):
+        idx = ['a -> b', 'b -> c', 'a -> b -> c', 'a -> b -> c -> d']
+        df = pd.DataFrame({'A': [1, 1, 1, 1], 'B': [1, 1, 0, 0]}, index=idx)
+        # A hop profile [1, 1, 2, 3]; B hop profile [1, 1]
+        assert metrics.calculate_hop_profile_w1(
+            df, 'A', 'B') == pytest.approx(0.75)
+
+    # -- NetSimile-lite ----------------------------------------------------
+
+    def test_netsimile_identical_graphs_score_one(self, metrics):
+        w = _edge_series({('n1', 'n2'): 3.0, ('n2', 'n3'): 1.5,
+                          ('n1', 'n3'): 2.0})
+        assert metrics.calculate_netsimile_similarity(w, w) == 1.0
+
+    def test_netsimile_empty_nan(self, metrics):
+        empty = pd.Series(dtype=float)
+        w = _edge_series({('n1', 'n2'): 1.0})
+        assert metrics.calculate_netsimile_similarity(
+            empty, w) != metrics.calculate_netsimile_similarity(empty, w)
+
+    def test_netsimile_signature_shape_and_content(self, metrics):
+        w = _edge_series({('n1', 'n2'): 3.0, ('n2', 'n3'): 1.5})
+        sig = metrics.netsimile_signature(w)
+        assert sig is not None and sig.shape == (8,)
+        assert metrics.netsimile_signature(pd.Series(dtype=float)) is None
