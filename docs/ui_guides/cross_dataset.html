@@ -192,30 +192,78 @@
     a <code>[merge fan-in]</code> note explains why — and when the shared
     branch belongs to a queried parent, the note explicitly states that
     the parent's row is <b>partial by design</b> (the co-queried branch is
-    presented separately at its own minimal level). The custom label mapper
+    presented separately at its own minimal level). The same prune also
+    applies <b>globally</b>: a split branch that the type-mapper crosswalk
+    itself lists as a 1-to-N target of a <em>different</em> parent type in
+    the home namespace (even one not queried in this run) is contested —
+    it leaves the queried parent's row <b>and</b> the merge counts, and a
+    <code>[merge fan-in] … global contest</code> note names the rival
+    parent. The custom label mapper
     overrides any of this when you know better.</p>
   <p>Evidence surfaces for the split groups: the report's Type Mapping
-    section is split into three tables — <b>Sources</b> (the
-    priority-selected <code>dataset: type</code> observation each canonical
-    row was built from: male-cns → FAFB → other neuprint → BANC, with the
-    remaining observations listed beside), <b>Targets</b> (the resolved
-    name in each dataset; the muted ● mark repeats the source dataset's
-    identity), and <b>Intermediates</b> (mid-chain hops of bridge routes).
-    The section also carries a collapsed <b>Resolution topology</b> card
+    section leads with the role tables below and keeps the full canonical
+    mapping grid as a collapsed appendix. The grid's <b>Source
+    (priority)</b> column shows the one observation from the
+    highest-priority dataset where the row resolves (male-cns → FAFB →
+    other neuprint → BANC — a global dataset order, never the per-name
+    merge anchor); a type that resolves in a single dataset keeps that
+    dataset, and the remaining observations collapse into a tooltip. The
+    source dataset's own target cell repeats its member name with a muted
+    <code>●</code> mark. The section also carries a collapsed <b>Resolution
+    topology</b> card
     (per-group tree with per-branch bridge pool sizes and vote provenance),
     the run folder gains <code>type_resolution_topology.json</code>, and
     <code>auto_type_mapping.csv</code> gains additive
     <code>anchor_group</code> / <code>auto_only</code> columns. Mappings
     resting on auto-transferred labels only carry a
     <code>⚠️ auto-only</code> badge on the auto-label <b>source dataset
-    cell</b> of the Targets table (the BANC column in a BANC-anchored run)
+    cell</b> of the grid (the BANC column in a BANC-anchored run)
     and are listed under a <code>[BANC auto labels]</code> note — they remain
     valid; the custom label mapper is the removal path.</p>
+  <p><b>Same-name-first within a fan-out.</b> When a fan-out's candidate
+    set contains the source type's own name (exactly — never as a prefix),
+    the mapper selects that same-name candidate and demotes the other
+    candidates to <b>suspects</b>. Rows carrying suspects show a
+    <code>⚠️ suspects (N)</code> badge plus a collapsed <b>details</b>
+    block listing each rival (own 1-to-1 pair · votes · reverse target ·
+    rival pair status), and the section opens with a
+    <b>Same-name-first suspects</b> card counting the fan-outs by
+    disposition. The full per-rival evidence — whether the rival's own name
+    also pairs 1-to-1 in this direction (<code>own_1to1_pair</code> /
+    <code>no_own_1to1_pair</code> — an observation, not a verdict) and
+    whether its mapping points back at the source — with votes, populations
+    and a ready-made custom label-mapper entry, is exported to
+    <code>auto_type_mapping_suspects.csv</code>. Suspects are never merged
+    automatically; if you believe a rival is a buried fact, add the mapping
+    with the <b>custom label mapper</b>. A terminal BANC vote conflict only
+    selects when every rival is a confirmed duplicate; <code>evidence_only</code>
+    (N-to-1 convergence) fan-outs are left as-is.</p>
+  <p><b>In the interactive panel and the viewer.</b> The Type Mapping panel
+    marks a same-name-first selection with a <code>⚠ suspects (N)</code>
+    badge in the row's own <b>Suspects</b> column — on the pair-card mapped
+    pairs table, the forward/backward Type coverage tables, and the
+    per-type breakdown — each carrying the rival details in a collapsed
+    <b>Suspects</b> expander (one row per rival: own
+    1-to-1 pair, votes, reverse target, rival pair status). A pair kept
+    unmapped for the same reason says so in the Orphan list instead of
+    looking unmapped for no reason. The "See available neurons" viewer with
+    cross-dataset type mapping enabled shows the same three-way distinction
+    in its annotations — curated relation, same-name-first selection, or the
+    bare-name caveat — with the rivals behind a collapsed expander. Both
+    surfaces display the mapper's facts; neither gates or merges anything.</p>
+  <p><b>Multi-value type cells.</b> Some releases annotate a neuron with
+    several candidate names in ONE <code>type</code> cell (e.g.
+    <code>DNp51,DNpe019</code>). The cell stays a single atomic type name —
+    no mapping changes — but rows carrying one are marked
+    <code>🧩 multi</code>, the run notes it as a data-quality item, and the
+    conflicts CSV carries <code>multivalue_source</code>/<code>source_parts</code>.</p>
   <p>The section's tables are organized by <b>query role</b>: <b>Queried
     Sources</b> (one row per queried source type, resolved per dataset with
     status colors), <b>Queried Targets</b> (same for target types), and
     <b>Path Intermediates</b> (distinct types that appear inside multi-hop
-    paths, ranked by traversal count, with per-dataset presence and their
+    paths, ranked by traversal count, showing the <b>resolved name in each
+    dataset</b> — muted when the type resolves there but was not traversed
+    in this run's paths — plus their
     query roles). The full canonical mapping grid remains as a collapsed
     appendix. With <code>separate_hemispheres</code> enabled the run header
     carries a <b>Hemisphere-aware run</b> badge explaining the _L/_R/_U type
@@ -345,8 +393,16 @@
       <code>verified</code> &gt; <code>borderline</code> &gt;
       <code>unmatched</code> for in-pool targets; <code>sibling</code>,
       <code>candidates</code>, <code>family</code>, <code>relative</code>,
-      <code>suspicious</code> for the expansion (nested modes:
-      restrictive / family / aggressive).</li>
+      <code>examinees</code> for the expansion (nested modes:
+      restrictive / family / aggressive; <code>examinees</code> was
+      renamed from <code>suspicious</code> — the type mapper's
+      rival-suspects concept owns that word now).</li>
+    <li><b>Same-name-first</b>: when the type mapper selects a fan-out
+      candidate carrying the source's own name, the pair is marked
+      &#11260; in the report and the withheld rivals can be verified
+      connectivity-wise with <code>--verify-suspects</code> (advisory;
+      held/excluded fan-outs land in
+      <code>same_name_excluded.csv</code>).</li>
     <li><b>Layered gap-fill report</b>
       (<code>gap_fill_levels.csv</code>): every non-claim bodyId graded
       <code>high</code> (native floor) / <code>medium</code> (Track-A
@@ -386,7 +442,12 @@
       <code>{N}</code> otherwise — a dataset that only issues the query
       reads 0 — plus Unmapped (orphans stay visible).</li>
     <li><b>Pair cards</b> (<code>src → tgt · N mapped pairs</code>): Type,
-      Mapped to, Neurons (<code>source → foreign</code>), Map used (the
+      Mapped to, Neurons (<code>source → foreign</code>), <b>Relationship</b>
+      (the per-flow cardinality, matching the coverage tables and the CSV),
+      <b>Suspects</b> (a <code>⚠ suspects (N)</code> badge on a row whose
+      same-name-first selection demoted rival candidates — expand the
+      collapsed <b>Suspects</b> block below the table for the per-rival
+      evidence), Map used (the
       derivation linkers, e.g. <code>flywireType 'LMTe01' +
       additional_type(s) 'LMTe01'</code>), and <b>Pool coverage</b> —
       one basis-aware cell per side so the states can never be confused:
@@ -405,8 +466,9 @@
       retained in the extended export.</li>
     <li><b>Type coverage tables</b> (top-level expansion per pair,
       bidirectional): the FORWARD view lists each queried type with its
-      neurons, mapped targets, <code>1-to-N</code>/<code>1-to-1</code>, and
-      per-side coverage; the BACKWARD view lists each receiving type with
+      neurons, mapped targets, <code>1-to-N</code>/<code>1-to-1</code>, a
+      <b>Suspects</b> badge column, and per-side coverage; the BACKWARD view
+      lists each receiving type with
       the sources that map onto it, read from the receiving type back to
       its sources — relationship cells follow the row subject's fan-out, so
       a row with several sources reads <code>1-to-N</code>, never
@@ -434,7 +496,12 @@
       separators; a side whose coverage index is unavailable renders
       <code>not measured</code> (never a fake zero), and a row without any
       pool renders <code>not pooled</code>. The state legend rides on the
-      expansion title's hover.</li>
+      expansion title's hover. That title is data-driven — it reads
+      <code>1-to-N fan-out</code> / <code>N-to-1 fan-in</code> /
+      <code>all 1-to-1</code> off the forward rows and appends
+      <code>· ⚠ N suspect pair(s)</code> when the pair carries suspects, so
+      the heading always matches the tables. The per-rival suspect details
+      render once, in a collapsed <b>Suspects</b> block below the tables.</li>
     <li><b>Same-name pairs</b>: a pair sharing its name derives through its
       metadata bridge when one exists (e.g.
       <code>flywireType 'DN1a'</code> — the male-cns crosswalk cell

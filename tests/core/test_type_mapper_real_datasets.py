@@ -1939,7 +1939,12 @@ def test_panel_adapter_sees_clean_same_name_for_l2(mapper):
     from ui.neuron_index import mapped_type_targets
 
     out = mapped_type_targets(mapper, 'L2', MCNS, FW)
-    assert out == {'kind': 'same name', 'targets': ['L2']}
+    # ``curated_identity`` is part of the adapter contract since the UI
+    # alignment round (plan-ui-type-mapper-alignment §5.1): the viewer must
+    # tell a curated same-name relation from a bare echo, so the flag rides
+    # on the annotation.  The rest of the shape is unchanged.
+    assert out == {'kind': 'same name', 'targets': ['L2'],
+                   'curated_identity': True}
 
 
 def test_same_name_origin_split_confirmed_vs_echo(mapper, tmp_path):

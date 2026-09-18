@@ -7,6 +7,8 @@ goes to pytest tmp_path. No network, no kaleido, no multiprocessing.
 import json
 import os
 import re
+import shutil
+import subprocess
 
 import matplotlib
 
@@ -537,6 +539,94 @@ def test_generate_networks_section_self_edges(tmp_path):
     assert "Network Visualizations" in html
 
 
+def _network_section_scripts(analyzer, section_id, point_keys):
+    html = hrg._generate_networks_section(
+        analyzer, DATASETS, [], NICKNAME_MAP,
+        point_keys=point_keys,
+        point_labels=[str(k) for k in point_keys],
+        aligned_network_getter=analyzer.get_aligned_data_for_network,
+        aligned_getter=analyzer.get_aligned_data,
+        path_getter=analyzer._get_path_data_for_threshold,
+        section_id=section_id,
+    )
+    return re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S)
+
+
+def test_networks_section_scripts_are_namespaced_and_merge_safe(analyzer):
+    # Auto mode renders TWO networks sections (per-threshold vertical +
+    # density-matched horizontal).  Each emits the state/toggle script; a
+    # second top-level `const networkDomKeys` is a parse-time SyntaxError
+    # that silently kills the whole second block (the per-density buttons
+    # then ran on vertical-only state and threw on every click).
+    v_blocks = _network_section_scripts(
+        analyzer, "networks-vertical", ["threshold=3", "threshold=5"])
+    h_blocks = _network_section_scripts(
+        analyzer, "networks-horizontal",
+        ["aligned_density=2.815", "aligned_density=0.2114"])
+
+    state_blocks = [
+        b for b in v_blocks + h_blocks if "Global network mode state" in b]
+    assert len(state_blocks) == 2
+    for block in state_blocks:
+        # everything nested in an IIFE -> no cross-section lexical collisions
+        assert "(function() {" in block
+        assert "})();" in block
+        # shared state must merge across sections, never reset
+        assert "window.networkFilterMode = window.networkFilterMode ||" in block
+        assert "window.allNetworks = window.allNetworks ||" in block
+        # inline onclick handlers need the global exposures
+        assert "window.toggleNetworkFilter = toggleNetworkFilter" in block
+        assert "window.toggleHemisphereMirror = toggleHemisphereMirror" in block
+    # no bare reset of the shared registry anywhere in the two sections
+    for block in v_blocks + h_blocks:
+        assert "window.allNetworks = {};" not in block
+        assert "window.networkFilterMode = {};" not in block
+
+
+def test_networks_section_scripts_coexecute_in_one_page(analyzer, tmp_path):
+    # Full simulation of the browser failure mode: run both sections'
+    # scripts sequentially in ONE js context and require the shared state
+    # to carry both sections' keys.  Needs node; skipped when absent.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not available for the js co-execution check")
+    v_blocks = _network_section_scripts(
+        analyzer, "networks-vertical", ["threshold=3", "threshold=5"])
+    h_blocks = _network_section_scripts(
+        analyzer, "networks-horizontal",
+        ["aligned_density=2.815", "aligned_density=0.2114"])
+
+    harness_dir = tmp_path / "jsblocks"
+    harness_dir.mkdir()
+    for i, block in enumerate(v_blocks + h_blocks):
+        (harness_dir / f"block_{i:03d}.js").write_text(block)
+    harness = (harness_dir / "_harness.js")
+    harness.write_text(
+        "const fs = require('fs');\n"
+        "const vm = require('vm');\n"
+        f"const dir = {str(harness_dir)!r};\n"
+        "const files = fs.readdirSync(dir).filter(f => /^block_\\d+\\.js$/.test(f)).sort();\n"
+        "const sandbox = { window: {}, vis: undefined, console, setTimeout, parseInt,\n"
+        "  document: { getElementById: () => ({ innerHTML: '', style: {} }),\n"
+        "    querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {} } };\n"
+        "sandbox.window.addEventListener = () => {};\n"
+        "sandbox.self = sandbox.window;\n"
+        "const ctx = vm.createContext(sandbox);\n"
+        "for (const f of files) vm.runInContext(fs.readFileSync(dir + '/' + f, 'utf8'), ctx, { filename: f });\n"
+        "const state = vm.runInContext('({ thresholds: window.allThresholds, dom: Object.keys(window.networkDomKeys), modes: Object.keys(window.networkFilterMode) })', ctx);\n"
+        "console.log(JSON.stringify(state));\n"
+    )
+    proc = subprocess.run(
+        [node, str(harness)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"js execution failed: {proc.stderr[-800:]}"
+    state = json.loads(proc.stdout.strip().splitlines()[-1])
+    for key in ("threshold=3", "threshold=5",
+                "aligned_density=2.815", "aligned_density=0.2114"):
+        assert key in state["thresholds"], state
+        assert key in state["dom"], state
+        assert key in state["modes"], state
+
+
 def test_generate_conservation_network(analyzer):
     html = hrg._generate_conservation_network(
         analyzer, DATASETS, 1, NICKNAME_MAP
@@ -611,6 +701,81 @@ def test_generate_statistics_section(analyzer):
     )
     assert "Statistics" in html
     assert "Similarity Trends Across Thresholds" in html
+
+
+# ---------------------------------------------------------------------------
+# Similarity-trends 2xN grid (round-4 F-7 layout, axis-binding regression)
+# ---------------------------------------------------------------------------
+
+def _sim_frame(**metric_overrides):
+    row = {
+        'dataset_1': 'ds_one', 'dataset_2': 'ds_two',
+        'jaccard_similarity': 0.5, 'edge_rank_correlation': 0.4,
+        'cosine_similarity': 0.6, 'spearman_rank_correlation': 0.3,
+    }
+    row.update(metric_overrides)
+    return pd.DataFrame([row])
+
+
+def _extract_plot_data(html):
+    match = re.search(r'var plotData = (\{.*?\});\s*Plotly', html, re.S)
+    assert match, 'plotData JSON not found in trends HTML'
+    return json.loads(match.group(1))
+
+
+def _assert_axis_binding(plot):
+    """Every trace's xaxis/yaxis refs must exist in the layout AND bind to
+    the same grid cell row: x-axes are numbered column-major
+    ((row-1)*n_cols + col) while y-axes are numbered row-major (row).
+    Regression: make_traces derived the y suffix from the x index, so
+    2-column runs bound panels to the wrong y-domain and rows 3+ referenced
+    undefined y5-y8 (rendered full-height over the grid)."""
+    layout = plot['layout']
+    x_axes = {k for k in layout if k.startswith('xaxis')}
+    y_axes = {k for k in layout if k.startswith('yaxis')}
+    n_rows = 4
+    n_cols = len(x_axes) // n_rows
+    assert n_cols * n_rows == len(x_axes)
+    for trace in plot['data']:
+        x_ref, y_ref = trace.get('xaxis', 'x'), trace.get('yaxis', 'y')
+        assert ('xaxis' + x_ref[1:]) in x_axes, f'undefined {x_ref}'
+        assert ('yaxis' + y_ref[1:]) in y_axes, f'undefined {y_ref}'
+        x_num = 1 if x_ref == 'x' else int(x_ref[1:])
+        y_num = 1 if y_ref == 'y' else int(y_ref[1:])
+        assert y_num == (x_num - 1) // n_cols + 1, (
+            f'trace on {x_ref} bound to {y_ref}; expected row '
+            f'y{(x_num - 1) // n_cols + 1}')
+
+
+def test_similarity_trends_grid_two_families_axis_binding(analyzer):
+    html = hrg._generate_similarity_trends_2x2_plot(
+        analyzer, DATASETS, [], NICKNAME_MAP,
+        point_keys=['threshold=3', 'aligned_density=1.5'],
+        point_labels=['threshold=3', 'aligned_density=1.5'],
+        point_similarities={
+            'threshold=3': _sim_frame(),
+            'aligned_density=1.5': _sim_frame(),
+        },
+        axis_title='Query (display order)',
+        card_title='Similarity Trends Across Query Rows')
+    plot = _extract_plot_data(html)
+    # 2 families -> 2 columns x 4 metric rows = 8 x-axes, 4 y-axes
+    assert sum(1 for k in plot['layout'] if k.startswith('xaxis')) == 8
+    assert sum(1 for k in plot['layout'] if k.startswith('yaxis')) == 4
+    _assert_axis_binding(plot)
+
+
+def test_similarity_trends_grid_single_family_axis_binding(analyzer):
+    html = hrg._generate_similarity_trends_2x2_plot(
+        analyzer, DATASETS, [], NICKNAME_MAP,
+        point_keys=['threshold=3'],
+        point_labels=['threshold=3'],
+        point_similarities={'threshold=3': _sim_frame()},
+        axis_title='Query (display order)',
+        card_title='Similarity Trends Across Query Rows')
+    plot = _extract_plot_data(html)
+    assert sum(1 for k in plot['layout'] if k.startswith('xaxis')) == 4
+    _assert_axis_binding(plot)
 
 
 def test_generate_reciprocal_section_disabled(analyzer):
@@ -791,7 +956,15 @@ def test_type_mapping_report_canonicalizes_by_source_dataset():
     assert report.count("<strong>MeVPLo2</strong>") == 1
     assert "<strong>MTe07</strong>" not in report
     assert '<th>Source (priority)</th>' in report
-    assert '<td>banc: MTe07, fafb: MTe07, mcns: MeVPLo2</td>' in report
+    # 2026-09-16: the Source column shows ONE globally-prioritized
+    # observation (male-cns first) with the remainder inline — Item 3
+    # (plan-cross-dataset-report-mapping-grid-and-role-tables) names the
+    # datasets instead of a bare count; the full observed names stay in
+    # the tooltip.
+    assert '<td>mcns: MeVPLo2 <span style="color:#94a3b8; ' \
+           'white-space:nowrap;" title="also observed: fafb: MTe07; ' \
+           'banc: MTe07">(+2: fafb, banc)</span></td>' in report
+    # Single-observation row: its only dataset IS the canonical source.
     assert '<td>banc: CB2399</td>' in report
     # The Targets table colors names differing from the canonical; the
     # renamed FAFB/BANC targets share one color and the canonical MCNS
@@ -802,6 +975,160 @@ def test_type_mapping_report_canonicalizes_by_source_dataset():
     assert '<span style="white-space:nowrap;">MeVPLo2</span>' in report
     assert report.count(
         '<span style="white-space:nowrap;">CB2399</span>') == 2
+
+
+def test_type_mapping_source_priority_banc_last():
+    """The global order is male-cns → FAFB → other neuprint → BANC: a row
+    observed in banc AND fafb must show the FAFB observation (plan F1/V1:
+    BANC annotations are the auto-transferred ones, not canonical)."""
+    from types import SimpleNamespace
+
+    datasets = ["fafb", "banc"]
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+        )
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {"fafb": {"SMPx"}, "banc": {"SMPx"}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert '<td>fafb: SMPx <span style="color:#94a3b8; ' \
+           'white-space:nowrap;" title="also observed: ' \
+           'banc: SMPx">(+1: banc)</span></td>' in report
+    # Item 2: the muted ● source marker is gone entirely — the Source
+    # (priority) column already carries the observation.
+    row = re.search(r'<tr data-canonical="SMPx".*?</tr>', report,
+                    re.S).group(0)
+    assert '&#9679;' not in row
+
+
+def test_path_intermediates_table_has_per_dataset_columns():
+    """2026-09-16: the Path Intermediates table carries the resolved name
+    in each dataset (like the queried-role tables) instead of a flat
+    'Datasets present' list; resolved-but-not-traversed cells mute.
+    Item 5 (plan-cross-dataset-report-mapping-grid-and-role-tables):
+    sources / targets / intermediates merge into ONE aligned table with
+    a shared coloring schema and a #paths column on every group; the
+    'Query roles' column is gone (the section header carries the role)."""
+    from types import SimpleNamespace
+    import pandas as pd
+
+    datasets = ["d1", "d2", "d3"]
+
+    class FakePolicy:
+        def key_for(self, ds, name):
+            return 'KCg-d' if name == 'KCg-d' else None
+
+        def label_for_name(self, name):
+            return 'KCg-d' if name == 'KCg-d' else None
+
+        def group_by_label(self, label):
+            return None
+
+        def names_by_dataset(self, label):
+            # d3 carries the RENAMED member — the per-dataset cell must
+            # show the resolved name, not the canonical label.
+            return {'d1': ['KCg-d'], 'd2': ['KCg-d'], 'd3': ['KCg-dX']}
+
+        def topology_dict(self):
+            return {'summary': 'fake', 'warnings': [], 'groups': [],
+                    'fan_in': {}}
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    path_data = pd.DataFrame(
+        {'d1': [4], 'd2': [2], 'd3': [0]},
+        index=pd.Index(['src -> KCg-d -> tgt'], name='path_key'))
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+            threshold_mode='standard',
+            thresholds=[1],
+            get_dataset_nicknames=lambda: ['D1', 'D2', 'D3'],
+        )
+
+        @staticmethod
+        def _merge_policy_or_none():
+            return FakePolicy()
+
+        @staticmethod
+        def resolve_query_inputs():
+            return [{'token': 'KCg-d', 'dataset': 'd1', 'role': 'source',
+                     'status': 'same_name_identity',
+                     'target_types': ['KCg-d']}]
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {'d1': {'KCg-d'}}
+
+        @staticmethod
+        def _get_path_data_for_threshold(threshold):
+            return path_data
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert '<h4>Queried types &amp; path participation</h4>' in report
+    # one merged table: shared header, section rows carry the role
+    assert '<th>Type</th><th>D1</th><th>D2</th><th>D3</th><th>#paths</th>' \
+           in report
+    assert '<th>Query roles</th>' not in report
+    assert '<th>Intermediate type</th>' not in report
+    assert '>Queried sources</td>' in report
+    assert '>Path intermediates</td>' in report
+    # traversed datasets show the resolved name in the shared green;
+    # d3 resolves to the renamed member but was never traversed — muted
+    # with tooltip.
+    assert ('<td><span style="color:#15803d;" title="traversed in this '
+            'run&#39;s paths">KCg-d</span></td>') in report
+    assert 'title="resolves here, not traversed in this run&#39;s ' \
+           'paths">KCg-dX</span>' in report
+    # the queried source row gains a #paths cell (0 here: the path's
+    # first hop is 'src', not KCg-d)
+    kcg_row = re.search(r'<tr><td><strong>KCg-d</strong></td>.*?</tr>',
+                        report, re.S).group(0)
+    assert '<td>0</td></tr>' in kcg_row
+    # the intermediates section row for the same type counts the
+    # traversing path and carries the shared green
+    inter_sec = report[report.find('>Path intermediates</td>'):]
+    inter_row = re.search(r'<tr><td><strong>KCg-d</strong></td>.*?</tr>',
+                          inter_sec, re.S).group(0)
+    assert '<td>1</td></tr>' in inter_row
+    assert 'traversed in this run&#39;s paths' in inter_row
 
 
 def test_generate_html_report_empty_data(empty_analyzer):
@@ -1643,3 +1970,306 @@ def test_type_mapping_auto_only_badge_on_source_cell():
     banc_start = row.find('<td>', mcns_end)
     assert 'auto-only' not in row[mcns_start:mcns_end]
     assert 'auto-only' in row[banc_start:]
+
+
+def test_type_mapping_grid_renders_without_source_observations():
+    """The mapper-less fallback shape (``result_types_by_dataset`` keyed by
+    None) records NO per-row source observations — the Source cell must
+    render '—' rather than crash or leak the previous row's cell
+    (found in the 2026-09-16 fix-round self-review)."""
+    from types import SimpleNamespace
+
+    datasets = ["d1", "d2"]
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+        )
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {None: {"Zeta", "Alpha"}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert '<td>—</td>' in report
+    assert 'also observed' not in report
+    # both rows rendered
+    assert '<strong>Alpha</strong>' in report
+    assert '<strong>Zeta</strong>' in report
+
+
+def test_type_mapping_conflicted_key_displays_plain_name():
+    """A conflicted type's canonical KEY is namespaced ('ds:type') so each
+    dataset's row stays separate — the Canonical type column must display
+    the PLAIN name; the key survives only in data-canonical (found in the
+    ORN_D→MBON.* run: the grid showed 'banc_v888:ORN_D')."""
+    from types import SimpleNamespace
+
+    datasets = ["banc_v888", "d2"]
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            if source_type == 'ORN_D' and source_dataset == 'banc_v888':
+                return {'status': 'conflict', 'source_type': source_type,
+                        'target_type': None, 'target_types': ['ORN_D'],
+                        'relationship': '1-to-N', 'conflicts': []}
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+        )
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {'banc_v888': {'ORN_D'}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert 'data-canonical="banc_v888:ORN_D"' in report
+    assert '<strong>ORN_D</strong>' in report
+    assert '<strong>banc_v888:ORN_D</strong>' not in report
+
+
+def test_type_mapping_universe_ignores_bootstrap_probe():
+    """The grid's type universe must be schedule-bound: a fresh run's
+    raw_results holds the auto-bootstrap probe threshold (t=floor, density
+    capture only) that a later re-export never loads — without the filter
+    the two exports of ONE run disagreed on row counts (found in the
+    ORN_D→MBON.* run: 1032 vs 567 canonical rows)."""
+    from types import SimpleNamespace
+    import pandas as pd
+
+    datasets = ["d1", "d2"]
+
+    class Mapper:
+        _conflicts = []
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+            threshold_mode='combinations',
+            thresholds=[36],
+            threshold_combinations=[
+                {'id': 'threshold=36', 'label': 'threshold=36',
+                 'thresholds': {'d1': 36, 'd2': 36}},
+            ],
+        )
+        raw_results = {
+            'd1': {
+                # compared schedule threshold: compared data lives here
+                36: pd.DataFrame({'type_pre': ['Ala'], 'type_post': ['Beta']}),
+                # bootstrap probe threshold: ProbeOnly never appears in a
+                # compared matrix
+                3: pd.DataFrame({'type_pre': ['ProbeOnly'],
+                                 'type_post': ['Beta']}),
+            },
+        }
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert '<strong>Ala</strong>' in report
+    assert 'ProbeOnly' not in report
+
+
+def test_type_mapping_grid_shows_suspects_and_multivalue_badges():
+    """The grid badges surface the same-name-first suspects and the
+    multi-value `type` cell marker (plans §3 / Stage 1)."""
+    from types import SimpleNamespace
+
+    datasets = ["d1", "d2"]
+
+    class _C:
+        source_dataset = 'd1'
+        target_dataset = 'd2'
+        source_type = 'Snf1'
+        target_types = ['Snf1', 'RivA', 'RivB']
+        relationship = '1-to-N'
+        origin = ''
+
+    class Mapper:
+        _conflicts = [_C()]
+        _loaded = True
+
+        def get_canonical_type(self, type_name, source_dataset=None):
+            return type_name
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+        def same_name_first_fires(self, source_type, source_dataset,
+                                  target_dataset):
+            if source_type == 'Snf1':
+                return {'selected': 'Snf1', 'rivals': ['RivA', 'RivB'],
+                        'path': 'valid_split_evidence',
+                        'disposition': 'broad_selection', 'fires': True}
+            return None
+
+        def same_name_first_summary(self, filter_types=None, datasets=None):
+            return {'selected': 1, 'rivals': 2, 'gated_held': 0,
+                    'excluded_evidence_only': 0}
+
+        def multivalue_summary(self, datasets=None):
+            return {'d1': 1}
+
+        def same_name_suspects_for_source(self, source_type, source_dataset,
+                                          datasets=None):
+            if source_type == 'Snf1':
+                return [{'selected': 'Snf1', 'rivals': ['RivA', 'RivB'],
+                         'path': 'valid_split_evidence',
+                         'disposition': 'broad_selection', 'fires': True}]
+            return []
+
+        def multivalue_parts(self, type_name, dataset):
+            if type_name == 'Mv1':
+                return ('Mv1a', 'Mv1b')
+            return None
+
+    class Analyzer:
+        parameters = SimpleNamespace(
+            auto_type_mapping=True,
+            _auto_type_mapper=Mapper(),
+            get_dataset_nicknames=lambda: ['D1', 'D2'],
+        )
+
+        @staticmethod
+        def _merge_policy_or_none():
+            return None
+
+        @staticmethod
+        def resolve_query_inputs():
+            return []
+
+        @staticmethod
+        def _collect_result_types_by_dataset():
+            return {'d1': {'Snf1', 'Mv1'}}
+
+    report = hrg._generate_type_mapping_section(Analyzer(), datasets)
+    assert 'suspects (2)' in report
+    # Item 4: the rival table lives in a hover popover (no in-cell
+    # <details> that re-anchors and scrolls the table)
+    assert 'class="suspects-wrap"' in report
+    assert 'class="suspects-trigger"' in report
+    assert 'class="suspects-pop"' in report
+    assert 'Same-name-first suspects' in report
+    assert 'broad_selection' in report
+    assert '🧩 multi (Mv1a|Mv1b)' in report
+
+
+# ---------------------------------------------------------------------------
+# Similarity schema v2.2 (plan-similarity-matrix-schema-v2)
+# ---------------------------------------------------------------------------
+
+def test_similarity_matrices_from_frame_four_representatives():
+    """The card matrices carry the four v2.2 representatives; legacy
+    columns stay in the frame but are not rendered as panels."""
+    frame = _sim_frame(
+        path_jaccard_similarity=0.42, netsimile_similarity=0.83)
+    matrices = hrg._similarity_matrices_from_frame(frame, ['ds_one', 'ds_two'])
+    assert set(matrices) == {'jaccard', 'cosine', 'path_jaccard', 'netsimile'}
+    assert matrices['jaccard'][0][1] == 0.5
+    assert matrices['cosine'][0][1] == 0.6
+    assert matrices['path_jaccard'][0][1] == 0.42
+    assert matrices['netsimile'][0][1] == 0.83
+    # NaN cells render as None (plotly 'N/A')
+    frame_nan = _sim_frame(path_jaccard_similarity=float('nan'))
+    matrices_nan = hrg._similarity_matrices_from_frame(frame_nan, ['ds_one', 'ds_two'])
+    assert matrices_nan['path_jaccard'][0][1] is None
+
+
+def test_similarity_heatmap_card_level_colors_and_captions():
+    """Card panels are colored by comparison LEVEL (edge blue, path violet,
+    graph amber); the old all-edge/set-based legend and the diverging
+    [-1,1] scale are gone."""
+    frame = _sim_frame(path_jaccard_similarity=0.4, netsimile_similarity=0.7)
+    matrices = hrg._similarity_matrices_from_frame(frame, ['ds_one', 'ds_two'])
+    html = hrg._similarity_heatmap_card('t1', 't = 1', ['D1', 'D2'], matrices)
+    # level-colored panels
+    assert 'background: #eff6ff' in html            # edge (Jaccard, Cosine)
+    assert 'background: #f5f3ff' in html            # path (violet)
+    assert 'background: #fef3c7' in html            # graph (amber)
+    assert 'color: #5b21b6' in html                 # path header
+    assert '🟣 Path Jaccard' in html
+    assert '🔶 NetSimile' in html
+    # per-level captions replace the all-edge/set-based legend
+    assert 'Edge level' in html and 'Path level' in html and 'Graph level' in html
+    assert 'All-edge (compare all edges' not in html
+    assert 'Set-based (shared edges only)' not in html
+    # single green scale; no diverging scale / annotation helper
+    assert 'divergingScale' not in html
+    assert 'makeDivergingAnnotations' not in html
+    assert html.count('greenScale') >= 4
+
+
+def test_similarity_detail_table_renders_pair_rows():
+    """The per-pair detail table carries coverage / top-20 / guarded
+    Spearman (+ shared count) / path diagnostics / strength-W1, with —
+    for undefined values."""
+    frame = pd.DataFrame([{
+        'dataset_1': 'ds_one', 'dataset_2': 'ds_two',
+        'coverage_min': 0.4, 'top20_overlap': 0.7,
+        'spearman_rank_correlation': float('nan'), 'common_edges': 12,
+        'path_jaccard_similarity': float('nan'),
+        'path_top20_overlap': 0.2, 'hop_profile_w1': 0.5,
+        'netsimile_similarity': 0.9,
+        'strength_w1_out': 0.3, 'strength_w1_in': 0.6,
+    }])
+    html = hrg._similarity_detail_table(frame, ['ds_one', 'ds_two'], NICKNAME_MAP)
+    assert 'D1 ↔ D2' in html
+    assert 'Spearman (shared, ≥30)' in html
+    assert '— (12)' in html            # gated spearman, shared count kept
+    assert 'NetSimile' in html
+    assert '0.300 / 0.600' in html
+    # empty frame -> no table
+    assert hrg._similarity_detail_table(pd.DataFrame(), ['ds_one', 'ds_two'], NICKNAME_MAP) == ''

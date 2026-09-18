@@ -5,6 +5,7 @@ pytest tmp_path. The real local neuron info file is only touched when it
 exists (guarded by Path(...).exists()).
 """
 
+import re
 import warnings
 from pathlib import Path
 
@@ -971,3 +972,361 @@ def test_workspace_autodetect_path():
     assert m._neuron_df_path.endswith(
         str(Path('datasets') / 'male-cns_v1_0' /
             'male-cns_v1_0_allneurons_neuron_df.csv'))
+
+
+# ---------------------------------------------------------------------------
+# Same-name-first within a fan-out (plan-samename-first-fanout-resolution)
+# ---------------------------------------------------------------------------
+
+# Row semantics for the same-name fixtures:
+#  - aMe12 rows: a mcns cell that ALSO lists the same name in its crosswalk
+#    but the fan-out carries OTHER candidate names too (same-name-in-fan-out).
+#  - SMP520a/SMP520b: an a/b variant split — the source SMP520 is NOT among
+#    the candidates (the exact-predicate do-NOT-fire guard).
+SAME_NAME_CSV_ROWS = (
+    "bodyId,type,flywireType,hemibrainType,mancType\n"
+    # same-name fan-out into FAFB: candidates {aMe12, MTe07} include 'aMe12'
+    "1,aMe12,\"aMe12,MTe07\",,\n"
+    "2,aMe12,\"aMe12,MTe07\",,\n"
+    # a/b variant split: candidates {Varianta, Variantb} — no 'Variant'
+    "3,Variant,Varianta,,\n"
+    "4,Variant,Variantb,,\n"
+    # a decoy: the rival 'MTe07' has its OWN clean pair elsewhere
+    "5,MTe07,MTe07,,\n"
+)
+
+
+@pytest.fixture
+def same_name_mapper(tmp_path):
+    csv = tmp_path / 'sn_neurons.csv'
+    csv.write_text(SAME_NAME_CSV_ROWS, encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    return m
+
+
+def test_same_name_first_selects_the_same_name_candidate(same_name_mapper):
+    m = same_name_mapper
+    snf = m.same_name_first_fires('aMe12', MCNS, FW)
+    assert snf is not None, 'the same-name fan-out must be detected'
+    assert snf['selected'] == 'aMe12'
+    assert 'MTe07' in snf['rivals']
+    assert snf['fires'] is True
+    d = m.get_mapping_decision('aMe12', MCNS, FW)
+    assert d['status'] == 'mapped'
+    assert d['target_type'] == 'aMe12'
+    assert d['relationship'] == 'suspects'
+    assert d['suspects'] is True
+    # DEFAULT: suspects stay OUT of target_types
+    assert d['target_types'] == ['aMe12']
+    assert 'MTe07' in d['fan_out_candidates']
+
+
+def test_same_name_first_optin_includes_rivals(same_name_mapper):
+    m = same_name_mapper
+    m.include_suspects_in_targets = True
+    try:
+        d = m.get_mapping_decision('aMe12', MCNS, FW)
+        assert d['status'] == 'mapped'
+        assert d['target_types'] == ['aMe12', 'MTe07']
+    finally:
+        m.include_suspects_in_targets = False
+
+
+def test_exact_predicate_never_fires_on_ab_variant_split(same_name_mapper):
+    """§17.1: SMP520 -> {SMP520a, SMP520b} style must NOT fire — the exact
+    base-name membership test, never a prefix/substring test."""
+    m = same_name_mapper
+    assert m.same_name_first_fires('Variant', MCNS, FW) is None
+    d = m.get_mapping_decision('Variant', MCNS, FW)
+    assert d['status'] != 'mapped'
+    assert d.get('target_type') in (None,)
+    assert d['relationship'] != 'suspects'
+
+
+def test_rival_has_own_clean_pair_discriminator(same_name_mapper):
+    m = same_name_mapper
+    # MTe07 has its own clean same-name pair in FAFB
+    assert m._rival_has_own_clean_pair('MTe07', MCNS, FW) is True
+
+
+def test_same_name_conflict_detail_shape(same_name_mapper):
+    m = same_name_mapper
+    det = m.get_same_name_conflict_detail('aMe12', MCNS, FW)
+    assert det is not None
+    assert det['selected'] == 'aMe12'
+    assert det['rivals'] == ['MTe07']
+    row = det['rival_evidence'][0]
+    assert row['rival'] == 'MTe07'
+    assert row['rival_has_own_clean_pair'] is True
+    # boundary-clean observation label (plan-ui-type-mapper-alignment §2.5):
+    # no verdict words ("duplicate"/"convergence"), no claim that a gate ran.
+    assert row['rival_pair_status'] == 'own_1to1_pair'
+    assert 'suspected_duplicate' not in row
+
+
+def test_suspects_export_roundtrip(same_name_mapper, tmp_path):
+    # per-direction: both the MCNS->FAFB and FAFB->MCNS fan-outs fire
+    m = same_name_mapper
+    out = tmp_path / 'suspects.csv'
+    n = m.export_suspects(str(out))
+    assert n == 2
+    df = pd.read_csv(out)
+    fwd = df[(df['source_type'] == 'aMe12')
+             & (df['target_dataset'] == FW)].iloc[0]
+    assert fwd['selected'] == 'aMe12' and fwd['rival'] == 'MTe07'
+    assert bool(fwd['rival_has_own_clean_pair']) is True
+    assert fwd['rival_pair_status'] == 'own_1to1_pair'
+    assert 'disposition' not in df.columns or 'selection_disposition' in df.columns
+    assert fwd['custom_mapper_from'] == 'aMe12'
+    assert fwd['custom_mapper_to'] == 'MTe07'
+
+
+def test_conflicts_export_carries_same_name_and_multivalue_columns(
+        same_name_mapper, tmp_path):
+    m = same_name_mapper
+    out = tmp_path / 'conflicts.csv'
+    m.export_conflicts(str(out))
+    df = pd.read_csv(out)
+    for col in ('same_name_candidate', 'same_name_path',
+                'same_name_disposition', 'multivalue_source', 'source_parts'):
+        assert col in df.columns, col
+
+
+def test_multivalue_accessors(tmp_path):
+    """plan-type-column-multivalue-normalization Stage 1: a comma-joined
+    release `type` cell is recorded and queryable, and STAYS atomic."""
+    csv = tmp_path / 'mv.csv'
+    csv.write_text(
+        "bodyId,type,flywireType,hemibrainType,mancType\n"
+        "1,\"DNp51,DNpe019\",\"DNp51,DNpe019\",PS296,DNp51\n"
+        "2,Plain1,,,\n", encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    assert m.is_multivalue_type('DNp51,DNpe019', MCNS) is True
+    assert m.multivalue_parts('DNp51,DNpe019', MCNS) == ('DNp51', 'DNpe019')
+    assert m.is_multivalue_type('Plain1', MCNS) is False
+    # the joined cell stays a native atomic name (status quo pinned)
+    assert m.has_native_type('DNp51,DNpe019', MCNS) is True
+    assert m.has_native_type('DNp51', MCNS) is False
+
+
+def test_same_name_first_summary_is_run_scoped(same_name_mapper):
+    """The disclosure note counts must match the export scoping."""
+    m = same_name_mapper
+    counts = m.same_name_first_summary(
+        datasets=[MCNS, FW], filter_types={'aMe12', 'MTe07'})
+    assert counts['selected'] >= 1
+    assert counts['rivals_exported'] >= 1
+    # a type set that touches nothing ⇒ zero counts (not global numbers)
+    empty = m.same_name_first_summary(
+        datasets=[MCNS, FW], filter_types={'NoSuchType'})
+    assert empty['selected'] == 0 and empty['rivals_exported'] == 0
+
+
+def test_multivalue_summary_is_run_scoped(tmp_path):
+    csv = tmp_path / 'mv2.csv'
+    csv.write_text(
+        "bodyId,type,flywireType,hemibrainType,mancType\n"
+        "1,\"A1,A2\",,,\n"
+        "2,\"B1,B2\",,,\n", encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    assert m.multivalue_summary(datasets=[MCNS]) == {MCNS: 2}
+    assert m.multivalue_summary(datasets=[FW]) == {}
+
+
+def test_multivalue_parser_handles_parenthesized_cells():
+    """A second release encoding: `(PLP191,PLP192)a` — the alternatives are
+    INSIDE the parens, the variant suffix is not a candidate name, and the
+    raw cell stays atomic.  Found 2026-09-18 while reviewing the multivalue
+    marker (the naive comma split produced ('(PLP191', 'PLP192)a'))."""
+    from comparison.cross_dataset_type_mapper import CrossDatasetTypeMapper
+
+    parse = CrossDatasetTypeMapper._multivalue_cell_parts
+    assert parse('(PLP191,PLP192)a') == ('PLP191', 'PLP192')
+    assert parse('(PLP191,PLP192)b') == ('PLP191', 'PLP192')
+    assert parse('(PS023,PS024)a') == ('PS023', 'PS024')
+    # plain comma-joined form is unchanged
+    assert parse('LAL173,LAL174') == ('LAL173', 'LAL174')
+    # single names / empty / bodyId-paren forms are NOT multi-value
+    assert parse('KCg-d') == ()
+    assert parse('') == ()
+    assert parse('(hb5813083315)') == ()
+
+
+def test_multivalue_marker_covers_both_encodings(tmp_path):
+    """Both encodings registered from a release table, and a bodyId-paren
+    cell (never native) stays unflagged."""
+    csv = tmp_path / 'mv3.csv'
+    csv.write_text(
+        "bodyId,type,flywireType,hemibrainType,mancType\n"
+        "1,\"(PLP191,PLP192)a\",,,\n"
+        "2,\"LAL173,LAL174\",,,\n"
+        "3,Plain2,,,\n", encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    assert m.multivalue_parts('(PLP191,PLP192)a', MCNS) == ('PLP191', 'PLP192')
+    assert m.multivalue_parts('LAL173,LAL174', MCNS) == ('LAL173', 'LAL174')
+    assert m.is_multivalue_type('Plain2', MCNS) is False
+    assert m.multivalue_summary(datasets=[MCNS]) == {MCNS: 2}
+
+
+# ---------------------------------------------------------------------------
+# Parenthesized alternative groups in crosswalk cells (2026-09-18)
+# ---------------------------------------------------------------------------
+
+def test_split_type_cell_parenthesized_alternatives():
+    """`(A,B)suffix` distributes the suffix to EACH alternative; the
+    `auto:` provenance prefix is preserved per token.  Verified semantics:
+    the FAFB counterpart of mcns AVLP346 is AVLP346a/b, and FAFB carries
+    AVLP346a/AVLP346b but no plain AVLP346."""
+    from comparison.cross_dataset_type_mapper import CrossDatasetTypeMapper
+
+    split = CrossDatasetTypeMapper._split_type_cell
+    assert split('(AVLP346,AVLP348)a') == ['AVLP346a', 'AVLP348a']
+    assert split('(AVLP346,AVLP348)b') == ['AVLP346b', 'AVLP348b']
+    assert split('(PLP191,PLP192)a') == ['PLP191a', 'PLP192a']
+    assert split('auto:(PLP191,PLP192)a') == ['auto:PLP191a', 'auto:PLP192a']
+    # plain lists and single names unchanged
+    assert split('A, B,C') == ['A', 'B', 'C']
+    assert split('KCg-d') == ['KCg-d']
+    # parens WITHOUT an inner comma are part of the name
+    assert split('PEN_a(PEN1)') == ['PEN_a(PEN1)']
+    assert split('auto:PLP191') == ['auto:PLP191']
+
+
+def test_crosswalk_parenthesized_cells_leave_no_garbage_keys(tmp_path):
+    """The Polars fast paths must apply the same expansion: no fragment keys
+    like '(AVLP346' / 'AVLP348)a' in the mapping tables, and the composite's
+    alternatives resolve to real names."""
+    csv = tmp_path / 'paren.csv'
+    csv.write_text(
+        "bodyId,type,flywireType,hemibrainType,mancType\n"
+        "1,AVLP346,\"(AVLP346,AVLP348)a\",,\n"
+        "2,AVLP346,\"(AVLP346,AVLP348)b\",,\n"
+        "3,PLP191,\"(PLP191,PLP192)a\",,\n", encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    fw = m._type_mappings.get(FW, {})
+    garbage = [k for k in fw if k.startswith('(') or k.endswith((')a', ')b'))]
+    assert garbage == [], garbage
+    # the emitted tokens are the suffixed alternatives (unresolvable ones are
+    # dropped by target-side resolution, exactly like a plain comma list)
+    assert m._split_type_cell('(AVLP346,AVLP348)a') == [
+        'AVLP346a', 'AVLP348a']
+
+
+# ---------------------------------------------------------------------------
+# BodyId-valued crosswalk cells (2026-09-18)
+# ---------------------------------------------------------------------------
+
+def test_bodyid_tokens_are_dropped_and_hybrids_keep_their_base_name():
+    """A bodyId is not a type name: cells like ``hb1874217622`` /
+    ``(hb5813083315)`` / ``(5901212906)`` are dropped instead of becoming
+    pseudo-types; a NAME carrying a bodyId annotation
+    (``PS279(hb1499087543)``) keeps its base name, because that base name
+    exists natively in the target dataset."""
+    from comparison.cross_dataset_type_mapper import CrossDatasetTypeMapper
+
+    split = CrossDatasetTypeMapper._split_type_cell
+    # pure bodyId forms (with/without hb, with/without parens, auto: prefix)
+    for cell in ('hb1874217622', '(hb5813083315)', '(5901212906)',
+                 '1343403608', '(hb487286529,hb517242832)', 'hb123456789.0',
+                 'auto:(hb5813083315)', 'auto:hb5813083315'):
+        assert split(cell) == [], cell
+    # hybrid name(bodyId) keeps the base name (real cells from mcns)
+    assert split('PS279(hb1499087543)') == ['PS279']
+    assert split('SLP405_a(hb5813008928)') == ['SLP405_a']
+    assert split('PVLP120(hb1599285725)') == ['PVLP120']
+    # paren content that is NOT a bodyId stays part of the name
+    assert split('PEN_a(PEN1)') == ['PEN_a(PEN1)']
+    assert split('PEN_b(PEN2)') == ['PEN_b(PEN2)']
+
+
+def test_bodyid_cells_do_not_become_mapping_keys(tmp_path):
+    """End to end: a crosswalk cell holding a bodyId produces NO mapping key
+    and NO decision target; the type simply stays unresolved (it can still
+    resolve through another lane)."""
+    csv = tmp_path / 'bodyid.csv'
+    csv.write_text(
+        "bodyId,type,flywireType,hemibrainType,mancType\n"
+        "1,RealA,RealA,hb1874217622,\n"       # bodyId in hemi cell
+        "2,RealB,RealB,(hb2316502686),\n"     # parenthesized bodyId
+        "3,PS279,PS279,PS279(hb1499087543),\n"  # hybrid -> base name
+        "4,Li33,Li33,1343403608,\n",          # bare-digit flywire-ish cell
+        encoding='utf-8')
+    m = CrossDatasetTypeMapper(neuron_df_path=str(csv), verbose=False)
+    assert m.load() is True
+    hemi = m._type_mappings.get(HB, {})
+    assert [k for k in hemi if re.search(r'\d{5,}', str(k))] == []
+    # the pure-bodyId rows resolve to nothing rather than to a pseudo-type
+    assert m.get_mapping_decision('RealA', MCNS, HB)['target_type'] in (None, '')
+    # the hybrid row resolves to its BASE NAME, not the annotated cell
+    dec = m.get_mapping_decision('PS279', MCNS, HB)
+    assert dec['target_type'] == 'PS279'
+
+
+# ---------------------------------------------------------------------------
+# build_type_coverage / dedupe_mirrored_pairs — same-name-first SUSPECTS
+# (fan-out/suspects display round, plan Panel_fan-out_suspects_display).
+# Both functions are pure over plain dicts, so these are hermetic.
+# ---------------------------------------------------------------------------
+
+
+def _sn_flow(src, tgt, s_type, f_type, suspects=False, count=2):
+    return {
+        'source_dataset': src, 'target_dataset': tgt,
+        'source_type': s_type, 'foreign_type': f_type,
+        'source_count': count, 'foreign_count': count + 1,
+        'suspects': suspects,
+    }
+
+
+def test_build_type_coverage_propagates_suspects_both_directions():
+    """A suspects-flagged flow marks its forward target row and the mirrored
+    backward source row; unflagged rows keep empty/False defaults."""
+    from comparison.mapping_visualization import build_type_coverage
+
+    flows = [
+        _sn_flow(MCNS, FW, 'aMe12', 'aMe12', suspects=True),
+        _sn_flow(MCNS, FW, 'Plain', 'PlainT'),
+    ]
+    cov = build_type_coverage({(MCNS, FW): flows})
+    fwd = {r['type']: r for r in cov['forward']}
+    rev = {r['type']: r for r in cov['reverse']}
+    # forward row: the queried type that fanned out via a suspects flow
+    assert fwd['aMe12']['has_suspects'] is True
+    assert fwd['aMe12']['suspect_targets'] == 'aMe12'
+    assert fwd['aMe12']['suspect_count'] == 1
+    # backward row: the receiving type arrived at via a suspects flow
+    assert rev['aMe12']['has_suspects'] is True
+    assert rev['aMe12']['suspect_sources'] == 'aMe12'
+    assert rev['aMe12']['suspect_count'] == 1
+    # an unflagged pair defaults to empty / False on BOTH sides
+    for row in (fwd['Plain'], rev['PlainT']):
+        assert row['has_suspects'] is False
+        assert row['suspect_count'] == 0
+        assert row.get('suspect_targets', row.get('suspect_sources')) == ''
+
+
+def test_dedupe_mirrored_pairs_keeps_the_suspects_direction():
+    """When the two mirrored directions otherwise tie, the suspects-carrying
+    direction survives so the panel's marker is not silently dropped.  The
+    suspects flow sits on the lexicographically SMALLER src_ds, so WITHOUT
+    the new term the non-suspects (larger src_ds) flow would win."""
+    from comparison.mapping_visualization import dedupe_mirrored_pairs
+
+    # 'flywire_FAFB_v783' (FW) sorts before 'male-cns:v1.0' (MCNS), so on
+    # the src_ds tie-break alone the MCNS/plain flow would win; only the
+    # earlier suspects term can keep the FW/suspects direction.
+    plain_flow = _sn_flow(MCNS, FW, 'aMe12', 'aMe12', suspects=False)
+    sus_flow = _sn_flow(FW, MCNS, 'aMe12', 'aMe12', suspects=True)
+    result = dedupe_mirrored_pairs(
+        {(MCNS, FW): [plain_flow], (FW, MCNS): [sus_flow]}, ())
+    survivors = [f for fl in result.values() for f in fl]
+    # collapse to ONE flow (no added/removed pair, no moved count)
+    assert len(survivors) == 1
+    survivor, = survivors
+    assert survivor['suspects'] is True
+    assert survivor['source_dataset'] == FW

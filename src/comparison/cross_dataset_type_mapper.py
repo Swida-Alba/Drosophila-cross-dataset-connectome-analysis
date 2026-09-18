@@ -39,6 +39,7 @@ code should use ``comparison.type_resolver``.
 """
 
 import os
+import re
 import threading
 import warnings
 from decimal import Decimal, InvalidOperation
@@ -118,6 +119,36 @@ FLYWIRE_MAPPING_KEYS = ('flywire_FAFB_v783', 'banc_v626', 'banc_v888')
 BANC_RELEASE_KEYS = frozenset({'banc_v626', 'banc_v888'})
 _UNTYPED_SENTINELS = frozenset({'unknown', 'nan', 'none', 'null',
                                 '<na>', '<null>'})
+
+
+# A bodyId is not a type name.  Crosswalk and annotation cells occasionally
+# carry one instead of a type (mcns ``hemibrainType`` values like
+# ``hb1874217622`` / ``(hb5813083315)`` / ``(5901212906)``, a few BANC label
+# cells).  Published as a "type" such a token becomes a pseudo-type and a
+# mapping key, so it is dropped like any other unresolvable token — the raw
+# cell stays on disk for bodyId-level inspection.  Pattern: an optional
+# ``hb`` prefix, digits (5+), an optional ``.0`` float tail, optionally in
+# parens.  Probed 2026-09-18: no PRIMARY ``type`` column carries such a name
+# except one BANC bodyId-in-type row, which this never touches (the primary
+# column is not split).
+_BODY_ID_TOKEN_RE = re.compile(r'^(?:auto:)?\((?:hb)?\d{5,}(?:\.0)?\)$'
+                               r'|^(?:auto:)?(?:hb)?\d{5,}(?:\.0)?$',
+                               re.IGNORECASE)
+
+# A NAME carrying a bodyId as a parenthesized annotation — ``PS279(hb1499087543)``
+# (3 distinct cells in each mcns release, all with a base name that exists
+# natively in the target dataset).  The bodyId is provenance, not part of the
+# name, so the base name is kept.  ``PEN_a(PEN1)`` is unaffected (its paren
+# content is not a bodyId).
+_BODY_ID_SUFFIX_RE = re.compile(r'^(.+?)\((?:auto:)?(?:hb)?\d{5,}(?:\.0)?\)$',
+                                re.IGNORECASE)
+
+# ``(A,B)suffix`` — a parenthesized alternative group with an optional
+# variant suffix (crosswalk/annotation cells; see _split_type_cell).  A BANC
+# label cell may carry the ``auto:`` provenance prefix in front of the group
+# (``auto:(PLP191,PLP192)a``), which is reattached to each emitted token so
+# the existing provenance handling keeps working.
+_PAREN_ALTERNATIVES_RE = re.compile(r'^(auto:)?\(([^()]+)\)([^()]*)$')
 
 
 def canonical_linker_token(value: Any) -> str:
@@ -910,6 +941,22 @@ class CrossDatasetTypeMapper:
         # Per FlyWire mapping key, the dataset's own primary type names.
         self._flywire_primaries: Dict[str, Set[str]] = {}
 
+        # Multi-value (comma-joined) primary `type` cells:
+        # {(mapping_key, raw_cell): (part, ...)}.  Some release tables
+        # annotate one neuron with several candidate types in a single
+        # `type` cell ('DNp51,DNpe019').  The raw cell stays the atomic
+        # type name (bodyId->primary cardinality is unchanged) and is
+        # recorded here so the oddity is visible/queryable
+        # (plan-type-column-multivalue-normalization, Stage 1).
+        self._multivalue_type_labels: Dict[Tuple[str, str], Tuple[str, ...]] = {}
+
+        # Same-name-first opt-in (plan-samename-first-fanout-resolution
+        # §0.0): when True, a selected same-name fan-out also carries its
+        # rival SUSPECTS in ``target_types`` so the TM VEV pipeline can
+        # verify each candidate.  DEFAULT OFF — by default ``target_types``
+        # holds the selection only and the rivals are disclosure-only.
+        self.include_suspects_in_targets: bool = False
+
         # Derived lookup for get_alias_candidates; rebuilt with the mappings.
         self._alias_n_to_1_cache: Optional[
             Dict[Tuple[str, str], List[TypeMappingConflict]]
@@ -994,6 +1041,23 @@ class CrossDatasetTypeMapper:
         Crosswalk columns (flywireType/hemibrainType/mancType) and the
         FlyWire additional-type columns may list several names separated by
         commas; each name is used individually.
+
+        BodyId-valued tokens are DROPPED (see ``_BODY_ID_TOKEN_RE``): a
+        crosswalk cell sometimes carries ``hb1874217622`` / ``(hb5813083315)``
+        / ``(5901212906)`` instead of a type name, and publishing that as a
+        type would create a pseudo-type mapping key.
+
+        A second release encoding is a parenthesized alternative group with
+        an optional variant suffix — ``'(AVLP346,AVLP348)a'``.  The suffix
+        belongs to EACH alternative, not to the group (verified 2026-09-18:
+        the FAFB counterpart of mcns ``AVLP346`` is ``AVLP346a``, and FAFB
+        carries ``AVLP346a``/``AVLP346b`` but NO plain ``AVLP346``), so the
+        emitted tokens are ``AVLP346a`` / ``AVLP348a``.  A name that no
+        target namespace carries — like the ``AVLP348a`` of that example, or
+        the bodyId-derived hemibrain ``(hb…,hb…)`` cells — is dropped by the
+        existing target-side resolution, exactly as for a plain comma list.
+        Parens WITHOUT an inner comma (``PEN_a(PEN1)``) are part of the name
+        and stay atomic.
         """
         if not isinstance(value, str):
             return []
@@ -1004,10 +1068,28 @@ class CrossDatasetTypeMapper:
         if ',' not in value:
             if (value and not value[0].isspace()
                     and not value[-1].isspace()):
-                return [value]
+                if _BODY_ID_TOKEN_RE.match(value):
+                    return []
+                _suffix_hit = _BODY_ID_SUFFIX_RE.match(value)
+                return [_suffix_hit.group(1).strip()] if _suffix_hit else [value]
             name = value.strip()
-            return [name] if name else []
-        return [name.strip() for name in value.split(',') if name.strip()]
+            if not name or _BODY_ID_TOKEN_RE.match(name):
+                return []
+            _suffix_hit = _BODY_ID_SUFFIX_RE.match(name)
+            return [_suffix_hit.group(1).strip()] if _suffix_hit else [name]
+        text = value.strip()
+        match = _PAREN_ALTERNATIVES_RE.match(text)
+        if match:
+            prefix = match.group(1) or ''
+            suffix = match.group(3).strip()
+            parts = [part.strip() for part in match.group(2).split(',')
+                     if part.strip()]
+            if len(parts) > 1:
+                return [f'{prefix}{part}{suffix}' for part in parts
+                        if not _BODY_ID_TOKEN_RE.match(f'{part}{suffix}')
+                        and not _BODY_ID_TOKEN_RE.match(part)]
+        names = [name.strip() for name in text.split(',') if name.strip()]
+        return [name for name in names if not _BODY_ID_TOKEN_RE.match(name)]
 
     @staticmethod
     def _normalize_body_id(value) -> str:
@@ -1155,6 +1237,7 @@ class CrossDatasetTypeMapper:
         # it.  The filtered table stays authoritative for rename semantics.
         self._flywire_annotation_primaries = {}
         self._flywire_primaries = {}
+        self._multivalue_type_labels = {}
         self._banc_label_tables = {}
         self._banc_label_table_paths = {}
         self._body_id_to_primary = {}
@@ -1999,6 +2082,24 @@ class CrossDatasetTypeMapper:
             # 176k rows while retaining the same set-based semantics.
             source = pl.from_pandas(
                 df[['type', column]], include_index=False)
+            # Normalize the parenthesized alternative form ONCE per distinct
+            # cell through the shared splitter (``(A,B)suffix`` -> ``Aa,Ba``)
+            # so the plain comma-explode below sees name lists.  A dict
+            # replace is O(1) per row; the dict has a handful of entries.
+            raw_col = pl.col(column).cast(pl.Utf8, strict=False).fill_null('')
+            try:
+                _distinct = source.select(
+                    raw_col.unique().alias('__cell'))['__cell'].to_list()
+                _expansion = {
+                    cell: ','.join(
+                        CrossDatasetTypeMapper._split_type_cell(cell))
+                    for cell in _distinct if cell}
+                if _expansion:
+                    source = source.with_columns(
+                        raw_col.replace_strict(
+                            _expansion, default=raw_col).alias(column))
+            except Exception:  # noqa: BLE001 — fall back to the raw cell
+                pass
             grouped = (
                 source
                 .with_columns(
@@ -2116,6 +2217,17 @@ class CrossDatasetTypeMapper:
                 'male-cns:v0.9', {}).values():
             if mcns_type and not self._is_untyped_value(mcns_type):
                 self._dataset_types['male-cns:v0.9'].add(mcns_type)
+
+        # Multi-value (comma-joined) primary `type` cells, recorded once
+        # every dataset's native-type set is populated (banc/FAFB/mcns/hemi/
+        # manc).  The raw cell stays the atomic type name — bodyId->primary
+        # cardinality is unchanged — and the parts are stored for the
+        # data-quality marker (plan-type-column-multivalue-normalization).
+        for _ds_key, _names in self._dataset_types.items():
+            for _pname in _names:
+                _parts = self._multivalue_cell_parts(_pname)
+                if _parts:
+                    self._multivalue_type_labels[(_ds_key, _pname)] = _parts
         
         # Process male-cns to other datasets
         for mcns_type in male_cns_types:
@@ -2400,6 +2512,25 @@ class CrossDatasetTypeMapper:
         )
 
         type_lower = pl.col("__banc_type").str.to_lowercase()
+        # Normalize the parenthesized alternative form once per distinct
+        # label cell (``auto:(PLP191,PLP192)a`` -> ``auto:PLP191a,auto:PLP192a``)
+        # so the comma-explode yields real names; the ``auto:`` prefix is
+        # reattached per token and stripped by the provenance code below.
+        try:
+            _labels = selected.select(
+                pl.col("__banc_label").unique().alias("__cell"))[
+                    "__cell"].to_list()
+            _lexp = {
+                cell: ','.join(
+                    CrossDatasetTypeMapper._split_type_cell(cell))
+                for cell in _labels if cell}
+            if _lexp:
+                selected = selected.with_columns(
+                    pl.col("__banc_label").replace_strict(
+                        _lexp, default=pl.col("__banc_label")
+                    ).alias("__banc_label"))
+        except Exception:  # noqa: BLE001 — fall back to the raw cell
+            pass
         tokens = (
             selected.select(["__banc_row", "__banc_type", "__banc_label"])
             .with_columns(
@@ -3349,6 +3480,52 @@ class CrossDatasetTypeMapper:
             return names in primaries
         return names in self._dataset_types.get(key, set())
 
+    @staticmethod
+    def _multivalue_cell_parts(cell: str) -> Tuple[str, ...]:
+        """Candidate names of a multi-value `type` cell (disclosure only).
+
+        Two encodings occur in the releases (probed 2026-09-18):
+        * plain comma-joined — ``'LAL173,LAL174'``;
+        * parenthesized group with an optional variant suffix —
+          ``'(PLP191,PLP192)a'`` (the alternatives are INSIDE the parens;
+          the suffix distinguishes release variants and is not part of the
+          candidate names; the whole cell stays the atomic type name).
+
+        Returns ``()`` when the cell is not multi-value.  This is a display
+        helper: the raw cell is never rewritten.
+        """
+        text = str(cell or '').strip()
+        if not text or ',' not in text:
+            return ()
+        match = re.match(r'^\(([^()]+)\)(.*)$', text)
+        inner = match.group(1) if match else text
+        parts = tuple(part.strip() for part in inner.split(',')
+                      if part.strip())
+        return parts if len(parts) > 1 else ()
+
+    def is_multivalue_type(self, type_name: str, dataset: str) -> bool:
+        """True when this dataset's ``type`` cell lists several candidate
+        names (a comma-joined multi-value annotation).
+
+        The raw cell remains the ATOMIC type name (bodyId->primary
+        cardinality is unchanged); this accessor exists so the oddity is
+        visible and queryable (plan-type-column-multivalue-normalization).
+        """
+        return self.multivalue_parts(type_name, dataset) is not None
+
+    def multivalue_parts(
+            self, type_name: str, dataset: str) -> Optional[Tuple[str, ...]]:
+        """The candidate names of a comma-joined ``type`` cell, or ``None``
+        when the name is not a multi-value label in that dataset."""
+        if not self._loaded:
+            if not self.load():
+                return None
+        names = str(type_name or '').strip()
+        if not names:
+            return None
+        key = self._get_type_mapping_key(dataset)
+        return self._multivalue_type_labels.get((key, names))
+
     def get_type_neuron_count(self, type_name: str, dataset: str) -> int:
         """Presence-backed count for one type in a dataset (0 when absent).
 
@@ -4015,6 +4192,232 @@ class CrossDatasetTypeMapper:
         base_target, _ = self._split_hemi_suffix(target_type)
         return index.get(base_target, set())
 
+    # ------------------------------------------------------------------
+    # Same-name-first within a fan-out (plan-samename-first-fanout-resolution §0.0)
+    # ------------------------------------------------------------------
+    def _fanout_path(self, conflict: "TypeMappingConflict") -> str:
+        """The status path this conflict record would produce.
+
+        Mirrors the structural_split determination inside
+        ``get_mapping_decision`` so the same-name-first dispositions
+        (gate/broad/exclude) can be decided per path without duplicating
+        the surrounding decision logic.
+        """
+        source_key = self._get_type_mapping_key(conflict.source_dataset)
+        target_key = self._get_type_mapping_key(conflict.target_dataset)
+        structural_split = (
+            not getattr(conflict, 'origin', None)
+            or (
+                conflict.origin == 'cross-dataset cell type'
+                and target_key in BANC_RELEASE_KEYS
+                and source_key not in BANC_RELEASE_KEYS
+            )
+        )
+        if structural_split and conflict.relationship == '1-to-N':
+            return 'valid_split_evidence'
+        if structural_split and conflict.relationship == 'N-to-1':
+            return 'evidence_only'
+        return 'conflict'
+
+    def _same_name_first_selection(
+            self, raw_type: str,
+            candidates) -> Optional[Tuple[str, Tuple[str, ...]]]:
+        """``(selected, rivals)`` when the fan-out's candidate set contains
+        the source type's OWN name — EXACT base-name equality, never a
+        prefix/substring test (plan §17.1: 1,800 a/b-variant splits such as
+        ``SMP520 -> {SMP520a, SMP520b}`` and the ``vDeltaB -> {vDelta,
+        vDeltaA}`` reverse trap depend on exactness).  ``None`` otherwise.
+        """
+        base = self._split_hemi_suffix(str(raw_type or '').strip())[0]
+        if not base:
+            return None
+        cand_map = {}
+        for cand in candidates or ():
+            text = str(cand).strip()
+            if text:
+                cand_map.setdefault(
+                    self._split_hemi_suffix(text)[0], text)
+        selected = cand_map.get(base)
+        if not selected:
+            return None
+        rivals = tuple(sorted(
+            text for name, text in cand_map.items() if text != selected))
+        return selected, rivals
+
+    def _rival_has_own_clean_pair(
+            self, rival: str, source_dataset: str,
+            target_dataset: str) -> bool:
+        """True when ``rival``'s own name already pairs 1-to-1 in this
+        direction — a separate crosswalk pairing of that name.
+
+        A CROSSWALK OBSERVATION only: it says the crosswalk carries a
+        same-name pairing for this rival name too.  It does NOT establish
+        which type the rival belongs to, and it confirms nothing (naming
+        stays the verification pipeline's job; see the boundary note in
+        ``get_same_name_conflict_detail``).  Uses the compatibility
+        single-target API, which does not re-enter the same-name-first rule.
+        """
+        try:
+            return self.get_mapped_type(
+                rival, source_dataset, target_dataset) == rival
+        except Exception:  # noqa: BLE001 — unknown ⇒ observation absent
+            return False
+
+    def same_name_first_fires(
+            self, raw_type: str, source_dataset: str,
+            target_dataset: str) -> Optional[Dict[str, Any]]:
+        """Evaluate the same-name-first rule for one ordered pair.
+
+        Returns ``None`` when the pair is not a same-name fan-out, otherwise
+        ``{'selected', 'rivals', 'path', 'disposition', 'fires'}`` with the
+        per-path disposition (plan §0.0):
+        ``valid_split_evidence`` → broad (always fires);
+        ``conflict`` → GATED on the duplication check (every rival candidate
+        must also have its own 1-to-1 pairing), else ``gated_held``;
+        ``evidence_only`` → excluded (never fires).
+        """
+        raw = str(raw_type or '').strip()
+        if not raw:
+            return None
+        conflicts = self.get_mapping_conflicts(
+            source_dataset, target_dataset, raw)
+        if not conflicts:
+            return None
+        conflict = conflicts[0]
+        sel = self._same_name_first_selection(
+            raw, conflict.target_types)
+        if sel is None:
+            return None
+        selected, rivals = sel
+        path = self._fanout_path(conflict)
+        if path == 'valid_split_evidence':
+            fires = True
+            disposition = 'broad_selection'
+        elif path == 'conflict':
+            gate_ok = all(
+                self._rival_has_own_clean_pair(
+                    r, source_dataset, target_dataset)
+                for r in rivals) if rivals else False
+            fires = bool(gate_ok)
+            disposition = 'gated_selection' if fires else 'gated_held'
+        else:  # evidence_only — N-to-1 convergence view
+            fires = False
+            disposition = 'excluded_evidence_only'
+        return {
+            'selected': selected,
+            'rivals': rivals,
+            'path': path,
+            'disposition': disposition,
+            'fires': fires,
+        }
+
+    def get_same_name_conflict_detail(
+            self, source_type: str, source_dataset: str,
+            target_dataset: str) -> Optional[Dict[str, Any]]:
+        """Evidence record for the suspects surfaces (grid details block,
+        panel expander, ``auto_type_mapping_suspects.csv``): the selection,
+        the rival candidates with per-rival crosswalk evidence, votes and
+        populations — or ``None`` when the pair is not a same-name fan-out.
+
+        Boundary note (plan-ui-type-mapper-alignment §2.5): the per-rival
+        ``rival_pair_status`` states a CROSSWALK OBSERVATION only —
+        ``own_1to1_pair`` / ``no_own_1to1_pair`` for whether that rival's own
+        name also pairs 1-to-1 in this direction.  It carries no verdict: this
+        mapper never verifies, and the word "duplicate" belongs to the
+        verification pipeline's bodyId-level ``(dup)`` tag, not here.
+        """
+        if not self._loaded and not self.load():
+            return None
+        decision = self.same_name_first_fires(
+            source_type, source_dataset, target_dataset)
+        if decision is None:
+            return None
+        raw = str(source_type or '').strip()
+        src_key = self._get_type_mapping_key(source_dataset)
+        tgt_key = self._get_type_mapping_key(target_dataset)
+        rows = []
+        for rival in decision['rivals']:
+            own_pair = self._rival_has_own_clean_pair(
+                rival, source_dataset, target_dataset)
+            reverse = None
+            try:
+                reverse = self.get_mapped_type(
+                    rival, target_dataset, source_dataset)
+            except Exception:  # noqa: BLE001
+                reverse = None
+            support = self._bridge_support_for_pair(
+                rival, source_dataset, rival, target_dataset)
+            rows.append({
+                'rival': rival,
+                'rival_has_own_clean_pair': bool(own_pair),
+                'reverse_target': reverse,
+                'backs_source': bool(reverse == raw),
+                # Crosswalk OBSERVATION (never a verdict) — see the
+                # method docstring's boundary note.
+                'rival_pair_status': (
+                    'own_1to1_pair' if own_pair
+                    else 'no_own_1to1_pair'),
+                'votes': (support or {}).get('votes'),
+                'verified_votes': (support or {}).get('verified_votes'),
+                'auto_votes': (support or {}).get('auto_stripped_votes'),
+                'population_source': self.get_type_population(
+                    rival, source_dataset),
+                'population_target': self.get_type_population(
+                    rival, target_dataset),
+            })
+        return {
+            'source_type': raw,
+            'source_dataset': src_key,
+            'target_dataset': tgt_key,
+            'selected': decision['selected'],
+            'rivals': list(decision['rivals']),
+            'path': decision['path'],
+            'disposition': decision['disposition'],
+            'fires': decision['fires'],
+            'rival_evidence': rows,
+        }
+
+    def same_name_suspects_for_source(
+            self, source_type: str, source_dataset: str,
+            datasets: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """All same-name-fan-out detail records for one source type across
+        the given target datasets (default: every dataset the crosswalk
+        knows, restricted to those with a recorded conflict).
+
+        Backs the report's grid badge and the panel aggregate card, which
+        know a row's source observation but not which target dataset the
+        fan-out belongs to.
+        """
+        if not self._loaded:
+            if not self.load():
+                return []
+        raw = str(source_type or '').strip()
+        if not raw:
+            return []
+        src_key = self._get_type_mapping_key(source_dataset)
+        allowed = ({self._get_type_mapping_key(d) for d in datasets}
+                   if datasets else None)
+        seen_targets = []
+        for conflict in self._conflicts:
+            if (self._get_type_mapping_key(conflict.source_dataset)
+                    != src_key
+                    or str(conflict.source_type) != raw):
+                continue
+            tgt_key = self._get_type_mapping_key(conflict.target_dataset)
+            if allowed is not None and tgt_key not in allowed:
+                continue
+            if tgt_key in seen_targets:
+                continue
+            seen_targets.append(tgt_key)
+        out = []
+        for tgt_key in seen_targets:
+            detail = self.get_same_name_conflict_detail(
+                raw, source_dataset, tgt_key)
+            if detail is not None:
+                out.append(detail)
+        return out
+
     def get_mapping_decision(
         self,
         source_type: Union[str, int, None],
@@ -4081,6 +4484,57 @@ class CrossDatasetTypeMapper:
             result['target_types'] = sorted(conflict.target_types)
             source_key = self._get_type_mapping_key(source_dataset)
             target_key = self._get_type_mapping_key(target_dataset)
+            # ---- Same-name-first within the fan-out (plan §0.0) ----------
+            # When the candidate set contains the source's OWN name (exact
+            # base-name equality), and the per-path disposition allows it,
+            # select that candidate.  Sits BEFORE the structural_split /
+            # terminal-conflict determination so both status paths collapse
+            # into one outcome.  Fan-outs without the same-name candidate
+            # are untouched.
+            _snf = self.same_name_first_fires(
+                raw_type, source_dataset, target_dataset)
+            if _snf is not None:
+                if not _snf['fires']:
+                    # Held (gated) or excluded: keep the ordinary status
+                    # below, but expose the decision for the suspects lanes.
+                    result['same_name_first'] = {
+                        'fires': False,
+                        'selected': _snf['selected'],
+                        'rivals': list(_snf['rivals']),
+                        'path': _snf['path'],
+                        'disposition': _snf['disposition'],
+                    }
+                else:
+                    selected = _snf['selected']
+                    result['status'] = 'mapped'
+                    result['target_type'] = selected
+                    # DEFAULT: suspects stay OUT of target_types (they are
+                    # not candidates for this source).  The opt-in restores
+                    # [selection] + rivals for in-pipeline TM VEV checks.
+                    if self.include_suspects_in_targets:
+                        result['target_types'] = [selected] + [
+                            r for r in sorted(conflict.target_types)
+                            if str(r) != selected]
+                    else:
+                        result['target_types'] = [selected]
+                    result['relationship'] = 'suspects'
+                    result['suspects'] = True
+                    result['same_name_first'] = {
+                        'fires': True,
+                        'selected': selected,
+                        'rivals': list(_snf['rivals']),
+                        'path': _snf['path'],
+                        'disposition': _snf['disposition'],
+                    }
+                    result['fan_out_candidates'] = list(_snf['rivals'])
+                    # per-candidate votes for the disclosure surfaces
+                    result['support'] = {
+                        t: self._bridge_support_for_pair(
+                            raw_type, source_dataset, t, target_dataset)
+                        for t in ([selected]
+                                  + list(_snf['rivals']))
+                    }
+                    return result
             # Crosswalk conflicts are structural evidence in the direction
             # represented by the source table.  Reverse BANC-label fan-out
             # is the same kind of target-side structural evidence: several
@@ -4517,6 +4971,12 @@ class CrossDatasetTypeMapper:
         filter_msg = f" ({', '.join(filter_parts)})" if filter_parts else " (complete)"
         self._log(f"Exported {len(rows)} type mappings to {output_path}{filter_msg}")
     
+    def _multivalue_lookup(self):
+        """The multi-value `type` table, tolerant of partially-built mapper
+        instances (tests construct the mapper via ``__new__``)."""
+        table = getattr(self, '_multivalue_type_labels', None)
+        return table if isinstance(table, dict) else {}
+
     def export_conflicts(
         self,
         output_path: str,
@@ -4570,7 +5030,34 @@ class CrossDatasetTypeMapper:
                 'target_types': ', '.join(sorted(conflict.target_types)),
                 'relationship': conflict.relationship,
                 'origin': getattr(conflict, 'origin', '') or 'crosswalk',
+                # Multi-value `type` cell marker (plan-type-column-
+                # multivalue-normalization): the source cell lists several
+                # candidate names; the raw cell is kept atomic.
+                'multivalue_source': bool(
+                    self._multivalue_lookup().get(
+                        (self._get_type_mapping_key(
+                            conflict.source_dataset),
+                         conflict.source_type))),
+                'source_parts': '|'.join(
+                    self._multivalue_lookup().get(
+                        (self._get_type_mapping_key(
+                            conflict.source_dataset),
+                         conflict.source_type), ())),
+                # Same-name-first disclosure: when the fan-out's candidates
+                # include the source's own name, which disposition applied
+                # (plan-samename-first-fanout-resolution §0.0).
+                'same_name_candidate': bool(self._same_name_first_selection(
+                    conflict.source_type, conflict.target_types)),
+                'same_name_path': '',
+                'same_name_disposition': '',
             })
+            if rows[-1]['same_name_candidate']:
+                _snf = self.same_name_first_fires(
+                    conflict.source_type, conflict.source_dataset,
+                    conflict.target_dataset)
+                if _snf is not None:
+                    rows[-1]['same_name_path'] = _snf['path']
+                    rows[-1]['same_name_disposition'] = _snf['disposition']
         
         if not rows:
             self._log("No conflicts to export (all filtered out)")
@@ -4581,6 +5068,164 @@ class CrossDatasetTypeMapper:
         
         filter_msg = f" (filtered to result types)" if filter_types else " (complete)"
         self._log(f"Exported {len(rows)} conflicts to {output_path}{filter_msg}")
+
+    def same_name_first_summary(
+            self,
+            filter_types: Optional[Set[str]] = None,
+            datasets: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Run-scoped counts of same-name fan-outs for the disclosure note.
+
+        Applies the SAME scoping as :meth:`export_suspects` (result types +
+        run datasets) so the note and the CSV always agree.
+        """
+        if not self._loaded:
+            if not self.load():
+                return {}
+        ds_keys = ({self._get_type_mapping_key(d) for d in datasets}
+                   if datasets else None)
+        counts: Dict[str, int] = {'selected': 0, 'rivals': 0,
+                                  'rivals_exported': 0,
+                                  'selected_rivals': 0,
+                                  'gated_held': 0,
+                                  'excluded_evidence_only': 0}
+        for conflict in self._conflicts:
+            if ds_keys is not None and (
+                    self._get_type_mapping_key(conflict.source_dataset)
+                    not in ds_keys
+                    or self._get_type_mapping_key(conflict.target_dataset)
+                    not in ds_keys):
+                continue
+            if filter_types is not None and not (
+                    {conflict.source_type} | set(conflict.target_types)
+                    ).intersection(filter_types):
+                continue
+            snf = self.same_name_first_fires(
+                conflict.source_type, conflict.source_dataset,
+                conflict.target_dataset)
+            if snf is None:
+                continue
+            # Every row the suspects CSV exports (fires OR held OR
+            # evidence-only-excluded) contributes its rivals, so the
+            # exported total always matches the CSV.
+            counts['rivals_exported'] = (
+                counts.get('rivals_exported', 0) + len(snf['rivals']))
+            if snf['fires']:
+                counts['selected'] += 1
+                counts['selected_rivals'] = (
+                    counts.get('selected_rivals', 0) + len(snf['rivals']))
+            else:
+                counts[snf['disposition']] = (
+                    counts.get(snf['disposition'], 0) + 1)
+        return counts
+
+    def multivalue_summary(
+            self,
+            datasets: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Run-scoped counts of comma-joined multi-value `type` cells:
+        ``{dataset_key: distinct_label_count}``."""
+        table = self._multivalue_lookup()
+        if not table:
+            return {}
+        keys = ({self._get_type_mapping_key(d) for d in datasets}
+                if datasets else None)
+        out: Dict[str, int] = {}
+        for (key, _name) in table:
+            if keys is not None and key not in keys:
+                continue
+            out[key] = out.get(key, 0) + 1
+        return out
+
+    def export_suspects(
+        self,
+        output_path: str,
+        filter_types: Optional[Set[str]] = None,
+        datasets: Optional[List[str]] = None,
+    ) -> int:
+        """Export the same-name-first SUSPECT relations to a CSV.
+
+        One row per (source type, rival candidate) for every same-name
+        fan-out the mapper found — the rivals that were NOT selected
+        (plan-samename-first-fanout-resolution §0.0/§16.4).  Carries the
+        per-rival evidence the user needs to adjudicate: whether that
+        rival's own name ALSO pairs 1-to-1 in this direction
+        (``rival_pair_status`` — a crosswalk observation, never a verdict),
+        its reverse target (⇒ whether it "backs" the source), votes,
+        populations, and the pair-level ``selection_disposition`` that
+        applied.  Words like *duplicate*/(dup)/*confirmed* belong to the
+        verification pipeline's bodyId level, not here.
+
+        Returns the number of rows written (0 when there is nothing).
+        """
+        if not self._loaded:
+            if not self.load():
+                return 0
+        rows = []
+        seen = set()
+        for conflict in self._conflicts:
+            raw = conflict.source_type
+            sel = self._same_name_first_selection(raw, conflict.target_types)
+            if sel is None:
+                continue
+            selected, rivals = sel
+            if filter_types is not None:
+                if not ({raw, selected} | set(rivals)).intersection(
+                        filter_types):
+                    continue
+            if datasets is not None:
+                ds_keys = {self._get_type_mapping_key(d) for d in datasets}
+                if (self._get_type_mapping_key(conflict.source_dataset)
+                        not in ds_keys
+                        or self._get_type_mapping_key(conflict.target_dataset)
+                        not in ds_keys):
+                    continue
+            detail = self.get_same_name_conflict_detail(
+                raw, conflict.source_dataset, conflict.target_dataset)
+            if detail is None:
+                continue
+            for row in detail['rival_evidence']:
+                key = (detail['source_dataset'], detail['target_dataset'],
+                       raw, row['rival'])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    'source_dataset': conflict.source_dataset,
+                    'source_type': raw,
+                    'target_dataset': conflict.target_dataset,
+                    'selected': selected,
+                    'rival': row['rival'],
+                    'rival_has_own_clean_pair': row[
+                        'rival_has_own_clean_pair'],
+                    'reverse_target': row['reverse_target'] or '',
+                    'backs_source': row['backs_source'],
+                    'path': detail['path'],
+                    # Per-rival crosswalk observation; the PAIR-level verdict
+                    # lives in selection_disposition (the two must not be
+                    # conflated — plan-ui-type-mapper-alignment §2.5).
+                    'rival_pair_status': row['rival_pair_status'],
+                    'selection_disposition': detail['disposition'],
+                    'votes': row['votes'],
+                    'verified_votes': row['verified_votes'],
+                    'auto_votes': row['auto_votes'],
+                    'population_source': row['population_source'],
+                    'population_target': row['population_target'],
+                    # ready-made custom-label-mapper entry for the user's
+                    # inclusion path (plan §3): "in <target dataset>, this
+                    # rival should pair with the selection" — copy-pasteable
+                    # into a user LabelMapper preset.
+                    'custom_mapper_dataset': detail['target_dataset'],
+                    'custom_mapper_from': selected,
+                    'custom_mapper_to': row['rival'],
+                })
+        if not rows:
+            self._log("No same-name-first suspects to export")
+            return 0
+        df = pd.DataFrame(rows)
+        df.to_csv(output_path, index=False)
+        self._log(f"Exported {len(rows)} suspect relations to {output_path}")
+        return len(rows)
 
     def get_mapping_branches(
         self,

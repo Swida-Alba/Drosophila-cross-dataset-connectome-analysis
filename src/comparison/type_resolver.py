@@ -246,6 +246,15 @@ class TypeResolution:
     # (Phase 1b): a tabular/label relation confirms this exact pairing, so
     # consumers must not treat it as a tier-6 name echo.
     curated_identity: bool = False
+    # Same-name-first selection (plan-samename-first-fanout-resolution):
+    # True when this resolution IS the mapper's rule-driven selection of a
+    # fan-out's own-name candidate.  ``suspect_rivals`` lists the demoted
+    # rival candidates (disclosure only — never defaults, never targets).
+    # Carried so display surfaces can distinguish a deliberate selection
+    # from a bare same-name echo WITHOUT re-deriving the decision; the
+    # mapper owns detection, consumers only display it.
+    suspects: bool = False
+    suspect_rivals: Tuple[str, ...] = ()
 
     @property
     def direction(self) -> str:
@@ -381,6 +390,16 @@ def resolve_valid_targets(
     #    any same-name bridge chain (BANC CB1011 class).
     decision = snap.decision(raw, source_dataset, target_dataset,
                              include_bridges=False)
+    # Same-name-first disclosure (plan-samename-first-fanout-resolution):
+    # carry the mapper's own verdict on this resolution so display surfaces
+    # can tell a deliberate SELECTION from a bare same-name echo without
+    # re-deriving the decision.  ``suspects`` is True only when the rule
+    # fired (status mapped); a held pair keeps its ordinary status but still
+    # carries ``suspect_rivals``, which is what lets the UI explain WHY it
+    # was held.  Disclosure only — never a target, never a default.
+    base['suspects'] = bool(decision.get('suspects'))
+    base['suspect_rivals'] = tuple(
+        decision.get('same_name_first', {}).get('rivals') or ())
     if decision['status'] == STATUS_MAPPER_UNAVAILABLE:
         return TypeResolution(
             status=STATUS_MAPPER_UNAVAILABLE, kind='mapper unavailable',
@@ -696,7 +715,8 @@ def resolve_flow_status(
     if mapper is None or not snap.loaded:
         result = (STATUS_MAPPER_UNAVAILABLE,
                   {'relationship': None, 'target_types': [],
-                   'conflicts': []})
+                   'conflicts': [], 'suspects': False,
+                   'suspect_rivals': [], 'same_name_first': None})
         if cache is not None:
             cache[cache_key] = result
         return result
@@ -710,7 +730,15 @@ def resolve_flow_status(
     result = (status,
               {'relationship': decision.get('relationship'),
                'target_types': list(decision.get('target_types') or []),
-               'conflicts': list(decision.get('conflicts') or [])})
+               'conflicts': list(decision.get('conflicts') or []),
+               # Same-name-first disclosure for the UI flow record
+               # (plan-ui-type-mapper-alignment §3): the selection flag and
+               # the demoted rivals, so the panel can render the collapsed
+               # suspects block without re-deriving the decision.
+               'suspects': bool(decision.get('suspects')),
+               'suspect_rivals': list(
+                   decision.get('same_name_first', {}).get('rivals') or []),
+               'same_name_first': decision.get('same_name_first')})
     if cache is not None:
         cache[cache_key] = result
     return result

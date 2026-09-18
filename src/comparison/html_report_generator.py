@@ -819,10 +819,10 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                                 var r = rows.find(function(v) {
                                     return v.dataset === ds && v.query_id === id; });
                                 return r ? Number(r[field]) : 0; }),
-                            type: 'bar'
+                            type: 'scatter', mode: 'lines+markers',
+                            connectgaps: false
                         }; });
                     Plotly.newPlot(div, traces, {
-                        barmode: 'group',
                         xaxis: { title: 'Query' },
                         yaxis: { title: yTitle }
                     }, { responsive: true });
@@ -833,6 +833,11 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
     """.replace('__IDS__', labels_json).replace('__DATASETS__', datasets_json).replace('__COUNTS__', counts_json).replace('__WEIGHTS__', weights_json).replace('__RATIOS__', ratio_json).replace('__PROBS__', prob_json))
     parts.append('</div></div>')
     parts.append(_generate_neuron_counts_section(analyzer, dataset_names, nickname_map))
+    # The Quick Navigation links #query-resolution — the section is
+    # threshold-agnostic (per-token resolver records), so the combination
+    # report must render it too, not just the Standard report.
+    parts.append(_generate_query_resolution_section(
+        analyzer, dataset_names, nickname_map))
     parts.append(_generate_type_mapping_section(analyzer, dataset_names))
 
     # Hemisphere symmetry: point-aware. When the feature is enabled, render
@@ -916,6 +921,7 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
         parts.append(_similarity_heatmap_card(
             safe, _point_heading(query_id, query_label),
             [nickname_map.get(ds, ds) for ds in dataset_names], matrices))
+        parts.append(_similarity_detail_table(qdf, dataset_names, nickname_map))
         parts.append('<p class="note">Used data: ' + _make_link(os.path.join(used_dir, 'similarity_by_query.csv'), output_root) + f' | query export: {_make_link(os.path.join(output_root, "similarity_matrices", f"similarity_query_{safe}.csv"), output_root)}</p>')
     parts.append('</div></div>')
 
@@ -1436,6 +1442,23 @@ def _generate_html_header() -> str:
             --partial-color: #f59e0b;
             --unique-color: #94a3b8;
         }
+        /* Suspects hover popover (plan-cross-dataset-report-mapping-grid-
+           and-role-tables Item 4): opens on hover/focus, absolutely
+           positioned so the table never re-flows or scrolls, and stays
+           open while the pointer is over badge or panel so the rival
+           table's text stays selectable and copiable. */
+        .suspects-wrap { position: relative; display: inline-block; z-index: 5; }
+        .suspects-wrap .suspects-trigger { cursor: help; }
+        .suspects-wrap .suspects-pop {
+            display: none; position: absolute; top: 100%; left: 0; z-index: 60;
+            background: #ffffff; border: 1px solid var(--border-color);
+            border-radius: 8px; padding: 10px 12px;
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+            min-width: 420px; max-width: 620px; font-size: 0.8em; color: #333;
+            text-align: left; white-space: normal; cursor: auto;
+        }
+        .suspects-wrap:hover .suspects-pop,
+        .suspects-wrap:focus-within .suspects-pop { display: block; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -3286,94 +3309,147 @@ def _similarity_matrices_from_frame(similarities: pd.DataFrame,
                                     available: List[str]) -> Dict[str, list]:
     """Build symmetric per-metric matrices from pairwise similarity rows.
 
-    Shared by the Standard per-threshold section and the Custom per-query
-    section so both render the identical four-metric set.
+    v2.2 (plan-similarity-matrix-schema-v2): the four representatives are
+    Jaccard + Cosine (edge level), Path Jaccard (path level) and
+    NetSimile-lite (graph level). Shared by the Standard per-threshold
+    section and the Custom per-query section so both render the identical
+    four-panel set.
     """
     n = len(available)
     jaccard = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
-    spearman_sim = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
-    edge_rank_sim = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
     cosine_sim = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
+    path_jac = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
+    netsimile = [[1.0 if i == j else None for j in range(n)] for i in range(n)]
     if similarities is not None and not similarities.empty:
         for _, row in similarities.iterrows():
             d1, d2 = row['dataset_1'], row['dataset_2']
             if d1 in available and d2 in available:
                 i1, i2 = available.index(d1), available.index(d2)
                 jac = row.get('jaccard_similarity', None)
-                spearman_val = row.get('spearman_rank_correlation', None)
-                edge_rank_val = row.get('edge_rank_correlation', None)
-                cosine_val = row.get('cosine_similarity', None)
+                cos_val = row.get('cosine_similarity', None)
+                pj_val = row.get('path_jaccard_similarity', None)
+                ns_val = row.get('netsimile_similarity', None)
                 if pd.isna(jac): jac = None
-                if pd.isna(edge_rank_val): edge_rank_val = None
-                if pd.isna(cosine_val): cosine_val = None
-                if pd.isna(spearman_val): spearman_val = None
+                if pd.isna(cos_val): cos_val = None
+                if pd.isna(pj_val): pj_val = None
+                if pd.isna(ns_val): ns_val = None
                 jaccard[i1][i2] = jaccard[i2][i1] = jac
-                spearman_sim[i1][i2] = spearman_sim[i2][i1] = spearman_val
-                edge_rank_sim[i1][i2] = edge_rank_sim[i2][i1] = edge_rank_val
-                cosine_sim[i1][i2] = cosine_sim[i2][i1] = cosine_val
+                cosine_sim[i1][i2] = cosine_sim[i2][i1] = cos_val
+                path_jac[i1][i2] = path_jac[i2][i1] = pj_val
+                netsimile[i1][i2] = netsimile[i2][i1] = ns_val
     return {
-        'edge_rank': edge_rank_sim,
-        'cosine': cosine_sim,
         'jaccard': jaccard,
-        'spearman': spearman_sim,
+        'cosine': cosine_sim,
+        'path_jaccard': path_jac,
+        'netsimile': netsimile,
     }
+
+
+def _similarity_detail_table(similarities: pd.DataFrame,
+                             available: List[str],
+                             nickname_map: Dict[str, str]) -> str:
+    """Per-pair detail metrics for the v2.2 panel (plan §3.1): coverage,
+    edge top-20, guarded Spearman (+ shared count), path diagnostics and
+    strength-W1. One row per dataset pair; — for undefined values."""
+    if similarities is None or similarities.empty:
+        return ''
+    rows = []
+    for _, row in similarities.iterrows():
+        d1, d2 = row.get('dataset_1'), row.get('dataset_2')
+        if d1 not in available or d2 not in available:
+            continue
+        def fmt(value, nd=3):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return '—'
+            return '—' if pd.isna(value) else f'{value:.{nd}f}'
+        nick = lambda d: nickname_map.get(d, d)
+        rows.append(
+            f'<tr><td>{html.escape(nick(d1))} ↔ {html.escape(nick(d2))}</td>'
+            f'<td>{fmt(row.get("coverage_min"))}</td>'
+            f'<td>{fmt(row.get("top20_overlap"))}</td>'
+            f'<td>{fmt(row.get("spearman_rank_correlation"))} '
+            f'({fmt(row.get("common_edges"), 0)})</td>'
+            f'<td>{fmt(row.get("path_jaccard_similarity"))}</td>'
+            f'<td>{fmt(row.get("path_top20_overlap"))}</td>'
+            f'<td>{fmt(row.get("hop_profile_w1"))}</td>'
+            f'<td>{fmt(row.get("netsimile_similarity"))}</td>'
+            f'<td>{fmt(row.get("strength_w1_out"))} / '
+            f'{fmt(row.get("strength_w1_in"))}</td>'
+            '</tr>')
+    if not rows:
+        return ''
+    return (
+        '<div class="sticky-table-container" style="overflow-x: auto; margin-top: 8px;">'
+        '<table style="font-size:0.85em;"><thead><tr>'
+        '<th>Pair</th><th>Coverage (min)</th><th>Edge top-20</th>'
+        '<th>Spearman (shared, ≥30)</th><th>Path Jaccard</th>'
+        '<th>Path top-20</th><th>Hop W1</th><th>NetSimile</th>'
+        '<th>Strength W1 (out/in)</th>'
+        '</tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div>')
 
 
 def _similarity_heatmap_card(dom_key: str, title: str, labels: List[str],
                              matrices: Dict[str, list]) -> str:
-    """Render one four-metric similarity heatmap card.
+    """Render the v2.2 four-representative similarity heatmap card.
 
     ``dom_key`` must be a DOM-safe string unique within the report (the
     Standard mode passes the scalar threshold, Custom mode the safe query
-    slug). The chart/annotation logic is shared verbatim by both modes.
+    slug). Panels are colored by comparison LEVEL (plan-similarity-matrix-
+    schema-v2 §3.1.1): edge 🔷 blue, path 🟣 violet, graph 🔶 amber; all
+    four run the green [0,1] scale and the per-level captions replace the
+    old all-edge/set-based legend. Shared verbatim by both modes.
     """
     cell_size = 50
     n = len(labels)
     chart_size = min(n * cell_size + 80, 200)
     num_metrics = 4
     max_width_pct = f"{100 // num_metrics}%"
-    edge_rank_sim = matrices['edge_rank']
-    cosine_sim = matrices['cosine']
     jaccard = matrices['jaccard']
-    spearman_sim = matrices['spearman']
+    cosine_sim = matrices['cosine']
+    path_jac = matrices['path_jaccard']
+    net_sim = matrices['netsimile']
     return f"""
                 <div class="card">
                     <h3>{html.escape(title)}</h3>
 
-                    <!-- Metrics in one row -->
+                    <!-- Representatives in one row, colored by level -->
                     <div style="display: flex; flex-wrap: nowrap; gap: 10px; overflow-x: auto; padding: 8px 0;">
-                        <!-- Edge Rank Correlation (union) -->
+                        <!-- EDGE LEVEL: Jaccard (presence over the union) -->
                         <div style="flex: 1; min-width: {chart_size}px; max-width: {max_width_pct}; background: #eff6ff; border-radius: 6px; padding: 8px;">
-                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #1e40af; text-align: center;">🔷 Edge Rank</h5>
-                            <div id="edge_rank_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
+                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #1e40af; text-align: center;">🔷 Jaccard</h5>
+                            <div id="jaccard_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
                         </div>
-                        <!-- Cosine Similarity (union) -->
+                        <!-- EDGE LEVEL: Cosine (weights over the union) -->
                         <div style="flex: 1; min-width: {chart_size}px; max-width: {max_width_pct}; background: #eff6ff; border-radius: 6px; padding: 8px;">
                             <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #1e40af; text-align: center;">🔷 Cosine</h5>
                             <div id="cosine_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
                         </div>
-                        <!-- Jaccard -->
-                        <div style="flex: 1; min-width: {chart_size}px; max-width: {max_width_pct}; background: #fef3c7; border-radius: 6px; padding: 8px;">
-                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #92400e; text-align: center;">🔶 Jaccard</h5>
-                            <div id="jaccard_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
+                        <!-- PATH LEVEL: Path Jaccard (canonical path union) -->
+                        <div style="flex: 1; min-width: {chart_size}px; max-width: {max_width_pct}; background: #f5f3ff; border-radius: 6px; padding: 8px;">
+                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #5b21b6; text-align: center;">🟣 Path Jaccard</h5>
+                            <div id="path_jaccard_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
                         </div>
-                        <!-- Spearman (shared) -->
+                        <!-- GRAPH LEVEL: NetSimile-lite (alignment-free) -->
                         <div style="flex: 1; min-width: {chart_size}px; max-width: {max_width_pct}; background: #fef3c7; border-radius: 6px; padding: 8px;">
-                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #92400e; text-align: center;">🔶 Spearman</h5>
-                            <div id="spearman_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
+                            <h5 style="font-size: 10px; margin: 0 0 4px 0; color: #92400e; text-align: center;">🔶 NetSimile</h5>
+                            <div id="netsimile_{dom_key}" style="width: 100%; height: {chart_size}px;"></div>
                         </div>
                     </div>
                     <p style="font-size: 0.75em; color: #64748b; margin-top: 8px; text-align: center;">
-                        🔷 All-edge (compare all edges, 0 for missing) | 🔶 Set-based (shared edges only)
+                        🔷 <strong>Edge level</strong> — Jaccard: presence over the edge union · Cosine: weights over the union (0 for missing)<br>
+                        🟣 <strong>Path level</strong> — Path Jaccard: presence over the canonical path union (in-memory; N/A below 5 paths per side)<br>
+                        🔶 <strong>Graph level</strong> — NetSimile-lite: alignment-free node-feature signature (no edge support)
                     </p>
                 </div>
                 <script>
                     (function() {{
                         const labels = {json.dumps(labels)};
                         const jaccard = {json.dumps(jaccard)};
-                        const edgeRankSim = {json.dumps(edge_rank_sim)};
                         const cosineSim = {json.dumps(cosine_sim)};
-                        const spearmanSim = {json.dumps(spearman_sim)};
+                        const pathJac = {json.dumps(path_jac)};
+                        const netSim = {json.dumps(net_sim)};
                         const layout = {{
                             margin: {{ l: 45, r: 10, t: 10, b: 45 }},
                             xaxis: {{ tickangle: -45, scaleanchor: 'y', constrain: 'domain', tickfont: {{size: 8}} }},
@@ -3387,38 +3463,28 @@ def _similarity_heatmap_card(dom_key: str, title: str, labels: List[str],
                                 showarrow: false,
                                 font: {{ color: (val === null || val > 0.5) ? 'white' : 'black', size: 10 }}
                             }})));
-                        // Annotation function for [-1, 1] range (Edge Rank, Spearman)
-                        const makeDivergingAnnotations = (data, labels) => data.flatMap((row, i) =>
-                            row.map((val, j) => ({{
-                                x: labels[j], y: labels[i],
-                                text: val === null ? 'N/A' : val.toFixed(2),
-                                showarrow: false,
-                                font: {{ color: (val === null || val > 0) ? 'white' : 'black', size: 10 }}
-                            }})));
-                        // Use consistent green colorscale: higher value = darker green
+                        // Use consistent green colorscale for every
+                        // representative: higher value = darker green
                         const greenScale = [[0, '#ffffff'], [0.3, '#c6efce'], [0.6, '#22c55e'], [1, '#166534']];
-                        // Diverging colorscale for [-1, 1]: red (negative) -> white (0) -> green (positive)
-                        const divergingScale = [[0, '#dc2626'], [0.5, '#ffffff'], [1, '#166534']];
-                        // Edge Rank uses diverging scale [-1, 1] (all-edge, blue background)
-                        Plotly.newPlot('edge_rank_{dom_key}', [{{
-                            z: edgeRankSim, x: labels, y: labels, type: 'heatmap',
-                            colorscale: divergingScale, zmin: -1, zmax: 1, showscale: false
-                        }}], {{...layout, annotations: makeDivergingAnnotations(edgeRankSim, labels)}}, {{responsive: true}});
-                        // Cosine uses [0, 1] scale (all-edge, blue background)
-                        Plotly.newPlot('cosine_{dom_key}', [{{
-                            z: cosineSim, x: labels, y: labels, type: 'heatmap',
-                            colorscale: greenScale, zmin: 0, zmax: 1, showscale: false
-                        }}], {{...layout, annotations: makeAnnotations(cosineSim, labels)}}, {{responsive: true}});
-                        // Jaccard uses [0, 1] scale (set-based, yellow background)
+                        // EDGE LEVEL (blue cards)
                         Plotly.newPlot('jaccard_{dom_key}', [{{
                             z: jaccard, x: labels, y: labels, type: 'heatmap',
                             colorscale: greenScale, zmin: 0, zmax: 1, showscale: false
                         }}], {{...layout, annotations: makeAnnotations(jaccard, labels)}}, {{responsive: true}});
-                        // Spearman uses diverging scale [-1, 1] (set-based, yellow background)
-                        Plotly.newPlot('spearman_{dom_key}', [{{
-                            z: spearmanSim, x: labels, y: labels, type: 'heatmap',
-                            colorscale: divergingScale, zmin: -1, zmax: 1, showscale: false
-                        }}], {{...layout, annotations: makeDivergingAnnotations(spearmanSim, labels)}}, {{responsive: true}});
+                        Plotly.newPlot('cosine_{dom_key}', [{{
+                            z: cosineSim, x: labels, y: labels, type: 'heatmap',
+                            colorscale: greenScale, zmin: 0, zmax: 1, showscale: false
+                        }}], {{...layout, annotations: makeAnnotations(cosineSim, labels)}}, {{responsive: true}});
+                        // PATH LEVEL (violet card)
+                        Plotly.newPlot('path_jaccard_{dom_key}', [{{
+                            z: pathJac, x: labels, y: labels, type: 'heatmap',
+                            colorscale: greenScale, zmin: 0, zmax: 1, showscale: false
+                        }}], {{...layout, annotations: makeAnnotations(pathJac, labels)}}, {{responsive: true}});
+                        // GRAPH LEVEL (amber card)
+                        Plotly.newPlot('netsimile_{dom_key}', [{{
+                            z: netSim, x: labels, y: labels, type: 'heatmap',
+                            colorscale: greenScale, zmin: 0, zmax: 1, showscale: false
+                        }}], {{...layout, annotations: makeAnnotations(netSim, labels)}}, {{responsive: true}});
                     }})();
                 </script>
 """
@@ -3436,13 +3502,15 @@ def _generate_similarity_section(analyzer, dataset_names: List[str], thresholds:
             <div class="section-header">🔢 Similarity Matrices</div>
             <div class="section-content">
                 <p style="margin-bottom: 20px; color: var(--secondary-color);">
-                    Pairwise similarity between datasets at each threshold.<br>
-                    <strong>ALL-EDGE METRICS</strong> (compare all edges, assign 0 to missing edges):<br>
-                    &nbsp;&nbsp;• <strong>Edge Rank</strong> [-1, 1]: Spearman correlation comparing how edges are <em>ranked by weight</em> across datasets<br>
-                    &nbsp;&nbsp;• <strong>Cosine</strong> [0, 1]: Measures <em>directional similarity</em> of weight vectors (scale-invariant, ignores magnitude)<br>
-                    <strong>SET-BASED METRICS</strong>:<br>
-                    &nbsp;&nbsp;• <strong>Jaccard</strong> [0, 1]: Binary edge <em>overlap ratio</em> |A∩B|/|A∪B| (ignores weights)<br>
-                    &nbsp;&nbsp;• <strong>Spearman (shared)</strong> [-1, 1]: Rank correlation on <em>shared edges only</em> (N/A if &lt;3 shared edges)
+                    Pairwise similarity between datasets, presented at three levels (card colors = level):<br>
+                    <strong>🔷 Edge level</strong> — <strong>Jaccard</strong> [0, 1]: binary edge <em>presence overlap</em> |A∩B|/|A∪B| ·
+                    <strong>Cosine</strong> [0, 1]: <em>directional similarity</em> of weight vectors over the union (0 for missing)<br>
+                    <strong>🟣 Path level</strong> — <strong>Path Jaccard</strong> [0, 1]: overlap of the canonical <em>multi-hop path sets</em>
+                    (N/A below 5 paths per side)<br>
+                    <strong>🔶 Graph level</strong> — <strong>NetSimile-lite</strong> [0, 1]: alignment-free comparison of node-feature
+                    distributions (degree/strength profile) — no type correspondence needed<br>
+                    Detail metrics per pair (coverage, edge top-20, guarded Spearman ≥30 shared, path top-20, hop/strength W1) sit in the
+                    table under each card; legacy columns (Edge Rank, Path Rank, Pearson, RV, Ruzicka) remain in the CSV exports only.
                 </p>
 """)
     
@@ -3494,12 +3562,14 @@ def _generate_similarity_section(analyzer, dataset_names: List[str], thresholds:
         # Calculate cell size for square cells - smaller to fit 4 in a row
         # (handled inside the shared heatmap card helper)
 
-        # Always display 4 metrics: Edge Rank, Cosine, Jaccard, Spearman —
-        # through the shared card so the Custom query section stays in
-        # lockstep with this layout.
+        # Always display the four v2.2 representatives through the shared
+        # card so the Custom query section stays in lockstep, followed by
+        # the per-pair detail table.
         matrices = _similarity_matrices_from_frame(similarities, available)
         html_parts.append(_similarity_heatmap_card(
             str(threshold), _threshold_display_label(analyzer, threshold, dataset_names), labels, matrices))
+        html_parts.append(_similarity_detail_table(
+            similarities, available, nickname_map))
     
     html_parts.append('</div></div>')
     return ''.join(html_parts)
@@ -3761,18 +3831,26 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                     </p>
                 </div>
                 <script>
+                    // Auto mode renders TWO networks sections (per-threshold +
+                    // density-matched), each emitting this script. A second
+                    // top-level `const networkDomKeys` is a parse-time
+                    // SyntaxError that silently kills the whole block for the
+                    // second section, so every declaration lives in this IIFE
+                    // and the shared window.* state MERGES instead of resetting.
+                    (function() {{
                     // Global network mode state (default: static)
                     // Filter mode: 0 = Show All, 1 = Conserved Only, 2 = No Unique
-                    window.networkFilterMode = {{}}; // Per-threshold filter mode
-                    window.networkPhysicsEnabled = {{}}; // Per-threshold physics state
-                    window.hideDeadEndNodes = {{}}; // Per-threshold dead-end state
-                    window.allNetworks = {{}};
-                    window.allThresholds = {thresholds_json};
-                    window.networkDomKeys = {{}};
+                    window.networkFilterMode = window.networkFilterMode || {{}}; // Per-key filter mode
+                    window.networkPhysicsEnabled = window.networkPhysicsEnabled || {{}}; // Per-key physics state
+                    window.hideDeadEndNodes = window.hideDeadEndNodes || {{}}; // Per-key dead-end state
+                    window.allNetworks = window.allNetworks || {{}};
+                    const sectionKeys = {thresholds_json};
+                    window.allThresholds = (window.allThresholds || []).concat(sectionKeys);
+                    window.networkDomKeys = window.networkDomKeys || {{}};
                     const networkDomKeys = {dom_keys_json};
-                    
-                    // Initialize per-threshold states
-                    window.allThresholds.forEach((t, index) => {{
+
+                    // Initialize this section's keys only (merge-safe across sections)
+                    sectionKeys.forEach((t, index) => {{
                         window.networkFilterMode[t] = 0;  // 0=All, 1=Conserved, 2=NoUnique
                         window.networkPhysicsEnabled[t] = false;
                         window.hideDeadEndNodes[t] = false;
@@ -3829,8 +3907,8 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                     }}
                     
                     // Hemisphere mirroring toggle
-                    window.hemisphereMirrorEnabled = {{}};  // Per-threshold mirror state
-                    window.allThresholds.forEach(t => {{
+                    window.hemisphereMirrorEnabled = window.hemisphereMirrorEnabled || {{}};  // Per-key mirror state
+                    sectionKeys.forEach(t => {{
                         // Mirror auto-enables when Separate Hemispheres (L/R) is checked
                         window.hemisphereMirrorEnabled[t] = {'true' if separate_hemispheres else 'false'};
                     }});
@@ -4205,6 +4283,13 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                             }}, 200);
                         }}
                     }}
+
+                    // Inline onclick handlers resolve these at click time
+                    window.toggleNetworkFilter = toggleNetworkFilter;
+                    window.toggleDeadEndNodes = toggleDeadEndNodes;
+                    window.toggleNetworkPhysics = toggleNetworkPhysics;
+                    window.toggleHemisphereMirror = toggleHemisphereMirror;
+                    }})();
                 </script>
 """)
     
@@ -4293,6 +4378,14 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
     # JavaScript for tab switching
     html_parts.append("""
                 <script>
+                    // Same namespace discipline as the state block above: this
+                    // script is emitted once per networks section, so everything
+                    // lives in an IIFE and only the handlers the inline onclick
+                    // attributes resolve are published on window.
+                    (function() {
+                    var sectionEl = document.currentScript
+                        ? document.currentScript.closest('.networks-section') : null;
+
                     function switchNetworkMode(scope, mode) {
                         var pfx = scope + '__';
                         document.getElementById(pfx + 'network_mode_threshold').classList.toggle('active', mode === 'threshold');
@@ -4330,20 +4423,23 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                         }, 100);
                     }
                     
-                    // Re-draw and fit networks after page load to handle any initial rendering issues
-                    // IMPORTANT: Only redraw networks that are in VISIBLE containers
-                    // vis.js cannot calculate dimensions for hidden containers (display:none)
+                    // Re-draw and fit THIS section's active network after page
+                    // load. Each section emits its own copy of this script, so
+                    // every per-threshold / density-matched section fits itself
+                    // (window.allThresholds[0] only ever named the first one).
+                    // IMPORTANT: Only redraw networks in VISIBLE containers;
+                    // vis.js cannot calculate dimensions for hidden containers.
                     window.addEventListener('load', function() {
                         setTimeout(function() {
-                            // Only redraw the first/active threshold network on load
-                            // Tab switching handles hidden networks when they become visible
-                            const firstThreshold = window.allThresholds[0];
-                            if (window.allNetworks && window.allNetworks[firstThreshold]) {
-                                const netData = window.allNetworks[firstThreshold];
-                                if (netData && netData.network) {
-                                    netData.network.redraw();
-                                    netData.network.fit({ animation: false });
-                                }
+                            if (!sectionEl || !sectionEl.id) return;
+                            const activeTab = document.querySelector(
+                                '#' + sectionEl.id + '__network_by_threshold .tab-content.active');
+                            if (!activeTab) return;
+                            const threshold = activeTab.dataset.networkKey;
+                            const netData = window.allNetworks && window.allNetworks[threshold];
+                            if (netData && netData.network) {
+                                netData.network.redraw();
+                                netData.network.fit({ animation: false });
                             }
                         }, 300);
                     });
@@ -4404,6 +4500,12 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                             }
                         }, 100);
                     }
+
+                    // Inline onclick handlers resolve these at click time
+                    window.switchNetworkMode = switchNetworkMode;
+                    window.showNetworkTab = showNetworkTab;
+                    window.showNetworkDatasetTab = showNetworkDatasetTab;
+                    })();
                 </script>
             </div>
         </div>
@@ -6201,6 +6303,99 @@ def _render_merge_policy_topology(policy, dataset_names: List[str]) -> str:
     return ''.join(parts)
 
 
+def _filtered_result_types(raw_results, only_thresholds=None):
+    """``{dataset: type set}`` scan of ``raw_results`` (dataset → threshold
+    → result frame), optionally restricted to ``only_thresholds`` (ints).
+
+    Mirrors ``ComparisonAnalyzer._collect_result_types_by_dataset`` (string
+    values from the known type columns) with an added threshold filter —
+    the type-mapping grid passes the compared schedule so its universe is
+    identical between a fresh export and a later re-export (a fresh run's
+    raw_results additionally holds the auto-bootstrap probe threshold,
+    which re-exports never load)."""
+    types_by_dataset: Dict[str, set] = {}
+    for dataset, thresh_results in raw_results.items():
+        if not isinstance(thresh_results, dict):
+            continue
+        dataset_types = types_by_dataset.setdefault(dataset, set())
+        for threshold, result in thresh_results.items():
+            if only_thresholds is not None and threshold not in \
+                    only_thresholds:
+                continue
+            if isinstance(result, pd.DataFrame) and not result.empty:
+                for col in ['type_pre', 'type_post', 'from_type', 'to_type',
+                            'std_label_pre', 'std_label_post']:
+                    if col in result.columns:
+                        dataset_types.update(
+                            result[col].dropna().unique())
+            elif isinstance(result, dict):
+                for key in ['type_level', 'edge_level']:
+                    df = result.get(key)
+                    if df is not None and hasattr(df, 'empty') \
+                            and not df.empty:
+                        for col in ['from', 'to', 'from_type', 'to_type',
+                                    'type_pre', 'type_post']:
+                            if col in df.columns:
+                                dataset_types.update(
+                                    df[col].dropna().unique())
+    return {
+        dataset: {value for value in values if isinstance(value, str)}
+        for dataset, values in types_by_dataset.items()
+        if any(isinstance(value, str) for value in values)
+    }
+
+
+def _rival_evidence_of(detail):
+    """Per-rival evidence rows of one same-name detail record (or []) —
+    tolerates both the dict shape and older list shapes."""
+    if isinstance(detail, dict):
+        ev = detail.get('rival_evidence')
+        return list(ev) if isinstance(ev, (list, tuple)) else []
+    return []
+
+
+def _votes_text(ev):
+    """`N curated / M auto` for one rival evidence row (or an em dash)."""
+    verified = ev.get('verified_votes') or {}
+    auto = ev.get('auto_votes') or {}
+    try:
+        curated_n = sum(int(v or 0) for v in verified.values())
+        auto_n = sum(int(v or 0) for v in auto.values())
+    except Exception:
+        return '—'
+    if not (curated_n or auto_n):
+        return '—'
+    return f'{curated_n} curated / {auto_n} auto'
+
+
+def _same_name_first_aggregate(mapper, dataset_names, filter_types=None):
+    """Count same-name fan-outs among the run's datasets, by disposition,
+    plus the multi-value `type` cell count.
+
+    Backs the Type Mapping panel's suspects card
+    (plan-samename-first-fanout-resolution §3;
+    plan-type-column-multivalue-normalization Stage 1).  Read-only; returns
+    ``{}`` when the mapper has neither."""
+    if mapper is None:
+        return {}
+    try:
+        counts = mapper.same_name_first_summary(
+            filter_types=(set(filter_types) if filter_types else None),
+            datasets=dataset_names)
+    except Exception:
+        counts = None
+    if not isinstance(counts, dict):
+        return {}
+    out = {k: v for k, v in counts.items() if v}
+    try:
+        mv = mapper.multivalue_summary(datasets=dataset_names)
+        if mv:
+            out['multivalue_cells'] = sum(mv.values())
+    except Exception:
+        pass
+    return out
+
+
 def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     """🔗 Type Mapping (auto) — the run's type resolution in three tables.
 
@@ -6220,20 +6415,68 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     if params is None or not getattr(params, 'auto_type_mapping', False) \
             or mapper is None:
         return ''
-    try:
-        result_types_by_dataset = \
-            analyzer._collect_result_types_by_dataset()
-    except Exception:
+    def _compared_threshold_set():
+        """Per-dataset thresholds the compared queries actually read.
+
+        A fresh run's ``raw_results`` also holds the auto-bootstrap probe
+        (t=floor, density capture only — no compared matrix uses it); a
+        later re-export never loads it.  Restricting the type universe to
+        the schedule keeps the grid identical between the two."""
         try:
-            result_types = list(analyzer._collect_result_types())
+            combos = getattr(params, 'threshold_combinations', None)
+            if combos:
+                return {int(v) for q in combos
+                        for v in (q.get('thresholds') or {}).values()}
+            thresholds = getattr(params, 'thresholds', None)
+            return {int(t) for t in (thresholds or [])} or None
         except Exception:
-            return ''
-        result_types_by_dataset = {None: set(result_types)}
+            return None
+
+    def _compared_threshold_set():
+        """Per-dataset thresholds the compared queries actually read.
+
+        A fresh run's ``raw_results`` also holds the auto-bootstrap probe
+        (t=floor, density capture only — no compared matrix uses it); a
+        later re-export never loads it.  Restricting the type universe to
+        the schedule keeps the grid identical between the two."""
+        try:
+            combos = getattr(params, 'threshold_combinations', None)
+            if combos:
+                return {int(v) for q in combos
+                        for v in (q.get('thresholds') or {}).values()}
+            thresholds = getattr(params, 'thresholds', None)
+            return {int(t) for t in (thresholds or [])} or None
+        except Exception:
+            return None
+
+    raw_results = getattr(analyzer, 'raw_results', None)
+    if isinstance(raw_results, dict) and raw_results:
+        result_types_by_dataset = _filtered_result_types(
+            raw_results, _compared_threshold_set())
+    else:
+        try:
+            result_types_by_dataset = \
+                analyzer._collect_result_types_by_dataset()
+        except Exception:
+            try:
+                result_types = list(analyzer._collect_result_types())
+            except Exception:
+                return ''
+            result_types_by_dataset = {None: set(result_types)}
 
     raw_type_count = sum(
         len(types) for types in result_types_by_dataset.values())
     if not raw_type_count:
         return ''
+
+    def _source_rank(dataset):
+        """Global canonical-source priority (plan F1): male-cns → FAFB →
+        other neuprint → BANC; unknown datasets rank with neuprint."""
+        try:
+            from comparison.comparison_parameters import canonical_source_rank
+            return canonical_source_rank(dataset)
+        except Exception:
+            return 2
 
     def _canonical_for(type_name, source_dataset):
         """Canonical row key via the shared resolver's merge keys
@@ -6353,6 +6596,15 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                                 policy_label).items():
                             if ds in group_row:
                                 group_row[ds].update(names)
+                                # Every member observation feeds the
+                                # Source column's GLOBAL priority pick
+                                # (plan F1/V1: the displayed source is the
+                                # highest-priority dataset where the row
+                                # resolves — male-cns first — never the
+                                # per-name merge anchor alone).
+                                row_sources.setdefault(
+                                    policy_label, set()).update(
+                                    (str(ds), str(nm)) for nm in names)
                         group = policy.group_by_label(policy_label)
                         if group is not None:
                             anchor_ds, anchor_type = getattr(
@@ -6439,12 +6691,13 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                                               dataset_names))
     except Exception:
         auto_only_rows = []
-    auto_only_types = {_row['source_type'] for _row in auto_only_rows} | \
-                      {_row['target_type'] for _row in auto_only_rows}
     # Per-(canonical row, dataset) auto-only counts: the badge attaches to
     # the AUTO-LABEL SOURCE cell (plan F3) — the dataset whose transferred
     # annotations the row's mappings rest on (in a BANC-anchored run that
-    # is the BANC column) — instead of to the canonical label.
+    # is the BANC column) — instead of to the canonical label. The badge
+    # lives ONLY there (plan-cross-dataset-report-mapping-grid-and-role-
+    # tables Item 1): the canonical cell carries none, so the fact renders
+    # exactly once per donor dataset.
     auto_only_badge: Dict[Tuple[str, str], int] = {}
 
     def _row_key_for(name, ds):
@@ -6469,6 +6722,49 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
             '<div class="section-content">']
     if topology_html:
         html.append(topology_html)
+    # ---- Same-name-first suspects aggregate card (plan-samename-first-
+    # fanout-resolution §3): how many fan-outs carried a same-name
+    # candidate, by disposition, so the user can gauge the adjudication
+    # workload before opening the suspects CSV.
+    try:
+        # Use the SAME type universe as the suspects CSV and the run note
+        # (the analyzer's collected result types) so every surface agrees.
+        _run_types = set(analyzer._collect_result_types())
+        _agg = _same_name_first_aggregate(
+            mapper, dataset_names, filter_types=_run_types)
+    except Exception:
+        try:
+            _agg = _same_name_first_aggregate(mapper, dataset_names)
+        except Exception:
+            _agg = None
+    if _agg:
+        # Boundary-clean labels (plan-ui-type-mapper-alignment §2.5): the
+        # card states the mapper's observations; "duplicate"/"confirmed" are
+        # verification-stage words and must not appear here.
+        _label = {
+            'selected': 'selected (same-name candidate chosen)',
+            'rivals': 'rival relations exported (suspects CSV)',
+            'rivals_exported': 'rival relations exported (suspects CSV)',
+            'selected_rivals': 'rivals of the selected fan-outs',
+            'gated_held': 'kept unmapped (rivals not all separably paired)',
+            'excluded_evidence_only': 'evidence-only (N-to-1) — excluded',
+            'multivalue_cells': 'multi-value type cells (🧩, kept atomic)',
+        }
+        _rows_txt = ''.join(
+            f'<tr><td>{html_module.escape(_label.get(k, k))}</td>'
+            f'<td>{v}</td></tr>'
+            for k, v in sorted(_agg.items()))
+        html.append(
+            '<div class="card" style="margin:10px 0;">'
+            '<strong>Same-name-first suspects</strong> '
+            '<span style="color:var(--secondary-color);font-size:0.9em;">'
+            '— fan-outs whose candidate set contained the source\'s own '
+            'name; the same-name candidate is selected, the rivals are '
+            'suspects to verify (see '
+            '<code>auto_type_mapping_suspects.csv</code>).</span>'
+            '<table style="margin-top:6px;"><thead><tr>'
+            '<th>disposition</th><th>count</th></tr></thead><tbody>'
+            f'{_rows_txt}</tbody></table></div>')
     try:
         _nicks = analyzer.parameters.get_dataset_nicknames()
         section_nicks = {ds: _nicks[i] for i, ds in enumerate(dataset_names)}
@@ -6484,8 +6780,24 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     except Exception:
         records = []
 
-    def _records_table(role, role_title, role_blurb):
-        """One row per queried token; per-dataset resolved names + status."""
+    # Merged query-role table (plan round-4 F-2; unified per plan-cross-
+    # dataset-report-mapping-grid-and-role-tables Item 5): ONE aligned
+    # table with three section groups — queried sources, queried targets,
+    # path intermediates — sharing one column geometry, one coloring
+    # schema, and a #paths column on every group.
+    status_colors = {
+        'same_name_identity': '#15803d', 'mapped': '#15803d',
+        'bridged': '#15803d', 'taxonomy': '#1d4ed8',
+        'taxonomy_mapped': '#1d4ed8', 'valid_split': '#7c3aed',
+        'same_name_fallback': '#b45309', 'evidence_only': '#b45309',
+        'conflict': '#b91c1c', 'unmapped': '#6b7280',
+    }
+    _traversed_color = '#15803d'
+    _muted_color = '#9ca3af'
+    _not_traversed_tip = ('resolves here, not traversed in this '
+                          'run&#39;s paths')
+
+    def _tokens_for(role):
         toks, seen = [], set()
         for rec in records:
             if str(rec.get('role') or '') != role:
@@ -6494,63 +6806,69 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
             if token and token not in seen:
                 seen.add(token)
                 toks.append(token)
-        if not toks:
-            return (f'<h4>{role_title}</h4>'
-                    f'<p style="color:#666; font-size:0.9em;">No queried '
-                    f'{role} neurons in this run.</p>')
-        status_colors = {
-            'same_name_identity': '#15803d', 'mapped': '#15803d',
-            'bridged': '#15803d', 'taxonomy': '#1d4ed8',
-            'taxonomy_mapped': '#1d4ed8', 'valid_split': '#7c3aed',
-            'same_name_fallback': '#b45309', 'evidence_only': '#b45309',
-            'conflict': '#b91c1c', 'unmapped': '#6b7280',
-        }
-        rows = []
-        for token in toks:
-            cells = []
-            for d in dataset_names:
-                recs = [r for r in records
-                        if str(r.get('token')) == token
-                        and str(r.get('dataset')) == d
-                        and str(r.get('role')) == role]
-                if not recs:
-                    cells.append('<td>—</td>')
-                    continue
-                parts_cell = []
-                for rec in recs:
-                    status = str(rec.get('status') or '')
-                    color = status_colors.get(status, '#6b7280')
-                    _targets = rec.get('target_types')
-                    targets = ('; '.join(str(t) for t in _targets)
-                               if isinstance(_targets, (list, tuple, set))
-                               else str(_targets or '—'))
+        return toks
+
+    def _record_row(token, role, present_datasets):
+        """One queried token's per-dataset resolved names + status.
+
+        ``present_datasets`` is the set of datasets whose paths start
+        (source) / end (target) at the type; a dataset that resolves the
+        token but never participates renders muted — the same semantics
+        the intermediates table always had (Item 5). ``None`` = no path
+        data at all, so nothing is muted."""
+        cells = []
+        for d in dataset_names:
+            recs = [r for r in records
+                    if str(r.get('token')) == token
+                    and str(r.get('dataset')) == d
+                    and str(r.get('role')) == role]
+            if not recs:
+                cells.append('<td>—</td>')
+                continue
+            parts_cell = []
+            for rec in recs:
+                status = str(rec.get('status') or '')
+                color = status_colors.get(status, '#6b7280')
+                _targets = rec.get('target_types')
+                targets = ('; '.join(str(t) for t in _targets)
+                           if isinstance(_targets, (list, tuple, set))
+                           else str(_targets or '—'))
+                if present_datasets is not None and \
+                        d not in present_datasets:
+                    tip = (html_module.escape(status) + '; '
+                           + _not_traversed_tip)
+                    parts_cell.append(
+                        f'<div><span style="color:{_muted_color};" '
+                        f'title="{tip}">'
+                        f'{html_module.escape(targets)}</span></div>')
+                else:
                     parts_cell.append(
                         f'<div><span style="color:{color};" '
                         f'title="{html_module.escape(status)}">'
                         f'{html_module.escape(targets)}</span></div>')
-                cells.append('<td>' + ''.join(parts_cell) + '</td>')
-            rows.append('<tr><td><strong>' + html_module.escape(token)
-                        + '</strong></td>' + ''.join(cells) + '</tr>')
-        head = ''.join(
-            f'<th>{html_module.escape(str(section_nicks.get(d, d)))}</th>'
-            for d in dataset_names)
-        return (f'<h4>{role_title}</h4>'
-                f'<p style="color:#666; font-size:0.85em;">{role_blurb}</p>'
-                f'<div class="sticky-table-container" style="overflow-x: auto;">'
-                f'<table><thead><tr><th>Queried {role_title}</th>{head}'
-                f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+            cells.append('<td>' + ''.join(parts_cell) + '</td>')
+        return ('<tr><td><strong>' + html_module.escape(token)
+                + '</strong></td>' + ''.join(cells))
 
-    html.append(_records_table(
-        'source', 'Queried Sources',
-        'The queried source neuron types, resolved per dataset. Color = '
-        'resolution status (green identity/mapped, blue taxonomy, grey '
-        'unmapped, red conflict).'))
-    html.append(_records_table(
-        'target', 'Queried Targets',
-        'The queried target neuron types, resolved per dataset.'))
+    def _token_row(token, role, hop_stats):
+        present = hop_stats.get(token, {}).get('datasets')
+        n_paths = hop_stats.get(token, {}).get('paths', 0)
+        return (_record_row(token, role, present)
+                + f'<td>{n_paths}</td></tr>')
 
-    # ---- Intermediates: distinct types that appear INSIDE paths ----
-    inter_stats = {}
+    src_toks = _tokens_for('source')
+    tgt_toks = _tokens_for('target')
+
+    # ---- Path participation: distinct types INSIDE paths (intermediates)
+    # plus first/last hops — the queried sources' and targets' #paths and
+    # their not-traversed muting come from the same walk. ----
+    inter_stats: Dict[str, Dict] = {}
+    start_stats: Dict[str, Dict] = {}
+    end_stats: Dict[str, Dict] = {}
+
+    def _hop_entry(store, name):
+        return store.setdefault(str(name), {'paths': 0, 'datasets': set()})
+
     try:
         if getattr(params, 'threshold_mode', '') == 'combinations':
             path_iters = [(str(q.get('id')),
@@ -6565,9 +6883,19 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
             ds_cols = [d for d in dataset_names if d in pdf.columns]
             for key in pdf.index:
                 hops = _normalize_path_key(key).split(' -> ')
+                if len(hops) >= 2:
+                    for hop, store in ((hops[0], start_stats),
+                                       (hops[-1], end_stats)):
+                        entry = _hop_entry(store, hop)
+                        entry['paths'] += 1
+                        for d in ds_cols:
+                            try:
+                                if pdf.loc[key, d] > 0:
+                                    entry['datasets'].add(d)
+                            except (TypeError, ValueError, KeyError):
+                                continue
                 for mid in hops[1:-1]:
-                    entry = inter_stats.setdefault(
-                        str(mid), {'paths': 0, 'datasets': set()})
+                    entry = _hop_entry(inter_stats, mid)
                     entry['paths'] += 1
                     for d in ds_cols:
                         try:
@@ -6576,40 +6904,112 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                         except (TypeError, ValueError, KeyError):
                             continue
     except Exception:
-        inter_stats = {}
-    queried_roles = {}
-    for rec in records:
-        queried_roles.setdefault(str(rec.get('token')), set()).add(
-            str(rec.get('role')))
+        inter_stats, start_stats, end_stats = {}, {}, {}
+
+    def _intermediate_cells(mid, present_datasets):
+        """Per-dataset resolved names for one path intermediate (parity
+        with the queried-role tables).  Resolution lanes: the merge
+        policy's group members first (the per-run resolution the analysis
+        actually used), then the shared validity resolver; a dataset that
+        resolved nowhere but carried the type in its paths keeps the
+        observed canonical label.  Resolved-but-never-traversed datasets
+        render muted."""
+        per_ds: Dict[str, List[str]] = {}
+        if policy is not None:
+            try:
+                label = policy.label_for_name(mid)
+                if label:
+                    per_ds = {
+                        ds: [str(n) for n in names]
+                        for ds, names in (
+                            policy.names_by_dataset(label).items())
+                        if ds in dataset_names}
+            except Exception:
+                per_ds = {}
+        if not per_ds:
+            try:
+                mappings, _ = _resolve_for(mid, None)
+            except Exception:
+                mappings = {}
+            for ds, value in mappings.items():
+                if not value:
+                    continue
+                per_ds[str(ds)] = (
+                    [str(v) for v in value]
+                    if isinstance(value, (tuple, list, set))
+                    else [str(value)])
+        cells = []
+        for d in dataset_names:
+            names = per_ds.get(d) or (
+                [mid] if d in present_datasets else [])
+            if not names:
+                cells.append('<td>—</td>')
+                continue
+            shown = ' '.join(html_module.escape(n) for n in names)
+            if d in present_datasets:
+                cells.append(
+                    f'<td><span style="color:{_traversed_color};" '
+                    f'title="traversed in this run&#39;s paths">'
+                    f'{shown}</span></td>')
+            else:
+                cells.append(
+                    f'<td><span style="color:{_muted_color};" title="resolves '
+                    f'here, not traversed in this run&#39;s paths">'
+                    f'{shown}</span></td>')
+        return cells
+
+    sections = []
+    if src_toks:
+        sections.append(('Queried sources', [
+            _token_row(tok, 'source', start_stats) for tok in src_toks]))
+    if tgt_toks:
+        sections.append(('Queried targets', [
+            _token_row(tok, 'target', end_stats) for tok in tgt_toks]))
     if inter_stats:
         ordered_inter = sorted(inter_stats.items(),
                                key=lambda kv: (-kv[1]['paths'], kv[0]))
         irows = []
         for mid, info in ordered_inter[:50]:
-            roles_txt = ', '.join(
-                sorted(queried_roles.get(mid, {'intermediate'})))
-            ds_txt = ', '.join(sorted(info['datasets'])) or '—'
+            cells = ''.join(_intermediate_cells(mid, info['datasets']))
             irows.append(
                 f'<tr><td><strong>{html_module.escape(mid)}</strong></td>'
-                f'<td>{len(info["datasets"])}</td>'
-                f'<td>{info["paths"]}</td>'
-                f'<td>{html_module.escape(ds_txt)}</td>'
-                f'<td>{html_module.escape(roles_txt)}</td></tr>')
+                f'{cells}'
+                f'<td>{info["paths"]}</td></tr>')
+        sections.append(('Path intermediates', irows))
+
+    if sections:
+        head_cells = ''.join(
+            f'<th>{html_module.escape(str(section_nicks.get(d, d)))}</th>'
+            for d in dataset_names)
+        body = []
+        for title, rows in sections:
+            body.append(
+                f'<tr><td colspan="{len(dataset_names) + 2}" '
+                f'style="background:#f1f5f9; font-weight:600; '
+                f'color:#334155;">{html_module.escape(title)}</td></tr>')
+            body.extend(rows)
         html.append(
-            '<h4>Path Intermediates</h4>'
-            '<p style="color:#666; font-size:0.85em;">Distinct neuron types '
-            'that appear INSIDE multi-hop paths (not as queried source or '
-            'target). Ordered by how many paths traverse them.</p>'
+            '<h4>Queried types &amp; path participation</h4>'
+            '<p style="color:#666; font-size:0.85em;">Queried source and '
+            'target types plus the distinct intermediates inside this '
+            'run&#39;s multi-hop paths — one shared column layout and one '
+            'coloring schema. Color = resolution status (green identity/'
+            'mapped, blue taxonomy, purple valid split, amber fallback, '
+            'red conflict, grey unmapped); muted = resolves here but was '
+            'not traversed in this run&#39;s paths; &#8212; = no '
+            'resolution. #paths = paths starting at a source, ending at '
+            'a target, or traversing an intermediate, summed over all '
+            'query points.</p>'
             '<div class="sticky-table-container" style="overflow-x: auto;">'
-            '<table><thead><tr><th>Intermediate type</th><th>#datasets'
-            '</th><th>#paths</th><th>Datasets present</th><th>Query roles'
-            '</th></tr></thead><tbody>' + ''.join(irows) +
-            '</tbody></table></div>')
+            '<table><thead><tr><th>Type</th>' + head_cells
+            + '<th>#paths</th></tr></thead><tbody>'
+            + ''.join(body) + '</tbody></table></div>')
     else:
         html.append(
-            '<h4>Path Intermediates</h4><p style="color:#666; '
-            'font-size:0.9em;">No intermediate types appear in this '
-            'run&#39;s paths (single-hop paths only, or no paths).</p>')
+            '<h4>Queried types &amp; path participation</h4>'
+            '<p style="color:#666; font-size:0.9em;">No queried types or '
+            'path intermediates to show (single-hop paths only, or no '
+            'paths).</p>')
 
     # ---- Appendix: the full canonical mapping grid (collapsed) ----
     html.append('<details><summary style="cursor:pointer; font-weight:600; '
@@ -6632,7 +7032,7 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
             return appearance.get(key, 10 ** 9)
         return sorted(values, key=lambda nm: (rank(nm), str(nm)))
 
-    def _cell_html(t, values, source_ds=None):
+    def _cell_html(t, values):
         values = _ordered_names(t, values)
         cmap = row_branch_colors.get(t) or {}
         unbranched = [nm for nm in values if nm != t and nm not in cmap]
@@ -6656,10 +7056,6 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
 
         inline, rest = values[:3], values[3:]
         cell = ' '.join(span(nm) for nm in inline)
-        if source_ds is not None and t in values:
-            cell += (f' <span style="color:#94a3b8; white-space:nowrap;" '
-                     f'title="source dataset (identity)">&#9679;'
-                     f'{html_module.escape(str(t))}</span>')
         if rest:
             more = ''.join(f'<div>{span(nm)}</div>' for nm in rest)
             cell += (f' <details style="display:inline-block;">'
@@ -6691,25 +7087,137 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     html.append('</tr></thead><tbody>')
     for rank, (t, mappings) in enumerate(shown, start=1):
         data_name = html_module.escape(str(t))
-        auto_badge = ''
-        if auto_only_types and (
-                str(t) in auto_only_types
-                or any(str(v) in auto_only_types
-                       for values in mappings.values()
-                       for v in values)):
-            auto_badge = (
-                ' <span style="color:#b45309;font-size:0.8em;" '
-                'title="Mapping(s) on this row rest on auto-transferred '
-                'labels only (no curated vote) — see user_warning_notes.">'
-                '⚠️ auto-only</span>')
-        sources = sorted(row_sources.get(t) or ())
-        source_cell = ', '.join(
-            f'{html_module.escape(ds)}: {html_module.escape(rt)}'
-            for ds, rt in sources) if sources else '—'
+        # A conflicted type's canonical KEY is namespaced ('ds:type') to
+        # keep each dataset's row separate — DISPLAY the plain type name;
+        # the namespaced key stays on data-canonical for the sorter.
+        display_t = str(t)
+        for _ds in dataset_names:
+            if display_t.startswith(_ds + ':'):
+                display_t = display_t[len(_ds) + 1:]
+                break
+        display_name = html_module.escape(display_t)
+        # Same-name-first SUSPECTS badge (plan-samename-first-fanout-
+        # resolution): this row's source had a fan-out whose candidate set
+        # contained its own name — the rivals are suspects to verify.
+        suspects_badge = ''
+        _suspect_rows: Dict[str, Dict] = {}
+        for _obs_ds, _obs_type in sorted(row_sources.get(t) or ()):
+            try:
+                _details = mapper.same_name_suspects_for_source(
+                    _obs_type, _obs_ds, dataset_names)
+            except Exception:
+                _details = []
+            if _details:
+                _suspect_rows[_obs_ds] = _details
+                break
+        if _suspect_rows:
+            # Collapsed IN-CELL details (plan-ui-type-mapper-alignment
+            # §4.5 / D4): a short always-visible badge plus a native
+            # <details> holding the per-rival table — the same four facts
+            # the panel's expander and the suspects CSV carry.  No JS.
+            _all_ev = [ev for _details in _suspect_rows.values()
+                       for _d in _details
+                       for ev in _rival_evidence_of(_d)]
+            if not _all_ev:
+                # Evidence unavailable (stub mappers / older shapes): count
+                # the recorded rival names so the badge is still truthful.
+                _nv = sum(len(_d.get('rivals') or ())
+                          for _details in _suspect_rows.values()
+                          for _d in _details if isinstance(_d, dict))
+                _all_ev = [{'rival': r}
+                           for _details in _suspect_rows.values()
+                           for _d in _details if isinstance(_d, dict)
+                           for r in (_d.get('rivals') or ())][:max(_nv, 0)]
+            _n_rivals = len(_all_ev)
+            _disp = html_module.escape(', '.join(sorted({
+                str(_d.get('disposition'))
+                for _details in _suspect_rows.values()
+                for _d in _details
+                if isinstance(_d, dict) and _d.get('disposition')})))
+            _ev_rows = ''.join(
+                '<tr>'
+                f'<td>{html_module.escape(str(ev.get("rival") or ""))}</td>'
+                f'<td>{"yes" if ev.get("rival_has_own_clean_pair") else "no"}</td>'
+                f'<td>{html_module.escape(_votes_text(ev))}</td>'
+                f'<td>{html_module.escape(str(ev.get("reverse_target") or "—"))}</td>'
+                f'<td>{html_module.escape(str(ev.get("rival_pair_status") or ""))}</td>'
+                '</tr>'
+                for ev in _all_ev)
+            suspects_badge = (
+                # Item 4: hover popover instead of an inline <details> —
+                # the expander grew the row inside .sticky-table-container
+                # and the browser re-anchored, scrolling the table. The
+                # popover is absolutely positioned (zero layout shift) and
+                # stays open while the pointer is over badge or panel, so
+                # the rival table's text is selectable and copiable.
+                f' <span class="suspects-wrap">'
+                f'<span class="suspects-trigger" tabindex="0" '
+                f'style="color:#b45309;font-size:0.8em;">'
+                f'⚠️ suspects ({_n_rivals})</span>'
+                '<span class="suspects-pop">'
+                '<div style="color:#666;margin-bottom:4px;">same-name-first '
+                f'selection over {_n_rivals} rival candidate(s) — rivals are '
+                f'never merged; pair-level disposition: {_disp}. '
+                '`own 1-to-1 pair` states that the crosswalk also pairs that '
+                'rival\'s own name 1-to-1 in this direction (an observation, '
+                'not a verdict). See auto_type_mapping_suspects.csv.</div>'
+                '<table style="border-collapse:collapse;">'
+                '<thead><tr><th style="text-align:left;padding:2px 8px 2px 0;">'
+                'rival</th><th style="text-align:left;padding:2px 8px 2px 0;">'
+                'own 1-to-1 pair</th><th style="text-align:left;'
+                'padding:2px 8px 2px 0;">votes (curated/auto)</th>'
+                '<th style="text-align:left;padding:2px 8px 2px 0;">reverse '
+                'target</th><th style="text-align:left;">rival pair status'
+                '</th></tr></thead>'
+                f'<tbody>{_ev_rows}</tbody></table></span></span>')
+        # Multi-value `type` cell marker (plan-type-column-multivalue-
+        # normalization): the source cell lists several candidate names.
+        mv_badge = ''
+        for _obs_ds, _obs_type in sorted(row_sources.get(t) or ()):
+            try:
+                _parts = mapper.multivalue_parts(_obs_type, _obs_ds)
+            except Exception:
+                _parts = None
+            if _parts:
+                mv_badge = (
+                    ' <span style="color:#0e7490;font-size:0.8em;" '
+                    f'title="multi-value type cell: this release annotates '
+                    f'several candidate names in one type cell">'
+                    f'🧩 multi ({html_module.escape("|".join(_parts))})'
+                    '</span>')
+                break
+        # Global priority pick (plan F1/V1): the row's source is the
+        # highest-priority dataset where it resolves — male-cns → FAFB →
+        # other neuprint → BANC — independent of which dataset the merge
+        # policy anchored on.  A name present in one dataset only keeps
+        # that dataset automatically; remaining observations collapse
+        # into a tooltip.
+        sources = sorted(
+            row_sources.get(t) or (),
+            key=lambda pair: (_source_rank(pair[0]), pair[0], pair[1]))
+        if sources:
+            top_ds, top_type = sources[0]
+            rest = sources[1:]
+            source_cell = (f'{html_module.escape(top_ds)}: '
+                           f'{html_module.escape(top_type)}')
+            if rest:
+                tip = html_module.escape('; '.join(
+                    f'{ds}: {rt}' for ds, rt in rest))
+                # Item 3: the count alone forced a hover to be meaningful —
+                # name the datasets inline too.
+                nick_list = ', '.join(
+                    section_nicks.get(ds, ds) for ds, _ in rest)
+                source_cell += (
+                    f' <span style="color:#94a3b8; white-space:nowrap;" '
+                    f'title="also observed: {tip}">(+{len(rest)}: '
+                    f'{html_module.escape(nick_list)})</span>')
+        else:
+            source_cell = '—'
         html.append(f'<tr data-canonical="{data_name}" '
                     f'data-rank="{appearance.get(t, "")}">'
                     f'<td>{rank}</td>'
-                    f'<td><strong>{data_name}</strong>{auto_badge}</td>'
+                    f'<td><strong>{display_name}</strong>'
+                    f'{suspects_badge}{mv_badge}</td>'
                     f'<td>{source_cell}</td>')
         for d in dataset_names:
             values = sorted(mappings.get(d) or ())
@@ -6723,7 +7231,10 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
                     f'dataset (no curated vote) — see '
                     f'user_warning_notes.">&#9888;&#65039; auto-only'
                     f'</span>')
-            val = _cell_html(t, values) if values else "—"
+            # Pass the DISPLAY name so canonical-vs-member comparisons
+            # (coloring, marker) work on the plain name for conflicted
+            # rows whose key is namespaced.
+            val = (_cell_html(display_t, values) if values else "—")
             html.append(f'<td>{val}{badge}</td>')
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -8048,7 +8559,13 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
 
     def make_traces(metric_data, axis_keys_subset, x_i, y_i, show_legend,
                     y_range):
-        axis_suffix = '' if x_i == 1 else str(x_i)
+        # x-axes are numbered column-major ((r-1)*n_cols + c) while y-axes
+        # are numbered row-major (r) — the two suffixes must be derived
+        # independently, or every panel right of (1,1) binds to the WRONG
+        # y-domain and rows 3+ reference y-axes the layout never defines
+        # (Plotly then renders them full-height over the grid).
+        x_suffix = '' if x_i == 1 else str(x_i)
+        y_suffix = '' if y_i == 1 else str(y_i)
         traces = []
         for idx, pair_key in enumerate(available_pairs):
             d1, d2 = pair_key
@@ -8071,7 +8588,7 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
                 'marker': {'size': 6},
                 'legendgroup': f'{n1} vs {n2}',
                 'showlegend': show_legend,
-                'xaxis': f'x{axis_suffix}', 'yaxis': f'y{axis_suffix}',
+                'xaxis': f'x{x_suffix}', 'yaxis': f'y{y_suffix}',
             })
         avg_x, avg_y = [], []
         for k in axis_keys_subset:
@@ -8089,7 +8606,7 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
                 'line': {'color': '#64748b', 'width': 3, 'dash': 'dash'},
                 'marker': {'size': 8, 'symbol': 'star'},
                 'legendgroup': 'Average', 'showlegend': show_legend,
-                'xaxis': f'x{axis_suffix}', 'yaxis': f'y{axis_suffix}',
+                'xaxis': f'x{x_suffix}', 'yaxis': f'y{y_suffix}',
             })
         return traces
 
@@ -8102,7 +8619,10 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
             x_dom = _col_domain(c)
             y_dom = _row_domain(r)
             xaxis_layout[f'xaxis{"" if x_i == 1 else x_i}'] = {
-                'title': axis_title if r == n_rows else '',
+                # no axis titles here: Plotly mispositions a shared-domain
+                # x-axis title to the FIRST row when several x-axes span
+                # the same column with automargin — the column caption is
+                # emitted as a paper annotation below instead.
                 'type': 'category', 'domain': x_dom,
                 'tickangle': -40, 'automargin': True,
             }
@@ -8128,14 +8648,26 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
                 })
         show_legend = False
 
-    height = 340 * n_rows + 160
+    # One x-axis caption per column, under the last row's tick labels
+    # (paper coords — deterministic, unlike axis titles here).
+    for c, (_keys, _col_title) in enumerate(columns, start=1):
+        x_dom = _col_domain(c)
+        annotations.append({
+            'text': axis_title,
+            'x': (x_dom[0] + x_dom[1]) / 2, 'y': -0.052,
+            'xref': 'paper', 'yref': 'paper', 'xanchor': 'center',
+            'yanchor': 'top', 'showarrow': False,
+            'font': {'size': 12},
+        })
+
+    height = 340 * n_rows + 200
     layout = {
         'annotations': annotations,
         **xaxis_layout,
         **yaxis_layout,
-        'legend': {'orientation': 'h', 'y': -0.02 / max(n_rows - 1, 1) - 0.04,
+        'legend': {'orientation': 'h', 'y': -0.02 / max(n_rows - 1, 1) - 0.075,
                    'x': 0.5, 'xanchor': 'center'},
-        'margin': {'t': 30, 'b': 80, 'l': 60, 'r': 30},
+        'margin': {'t': 30, 'b': 110, 'l': 60, 'r': 30},
         'hovermode': 'x unified',
         'shapes': shapes,
     }

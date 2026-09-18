@@ -340,7 +340,9 @@ row-based bridge evidence** — never from connectivity similarity:
   all bodyIds of the type across both datasets (`same name (all bodyIds
   pooled)`), except a same-name type inside a 1-to-N — there the
   bridge's linker rows/votes resolve the bodyId-level resolution per
-  branch.  A same-name pair whose populations differ by an order of
+  branch, and under the same-name-first rule (above) the same-name
+  candidate is SELECTED with the other candidates demoted to rival
+  suspects.  A same-name pair whose populations differ by an order of
   magnitude (ratio < 0.1 — e.g. `TmY18`: 1,367 neurons in male-cns vs 1
   in FlyWire) carries an `extreme population asymmetry … suggested
   check` flag on the support surfaces and in the viewer's same-name
@@ -412,6 +414,20 @@ forward row (queried type → several targets) and a backward row (receiving
 type ← several sources) both read **1-to-N** — read the backward rows from
 the receiving type back to its sources; a multi-source row never reads
 `1-to-1`.
+
+The **Relationship** cardinality is not confined to these tables: the
+pair-card **mapped-pairs** table and the collapsed **per-type breakdown**
+report the same per-flow cardinality (from `_pair_relationship`, matching
+the all-pairs CSV's `relationship`), and both also carry a **Suspects**
+column — a `⚠ suspects (N)` badge on a row whose same-name-first selection
+demoted rival candidates.  Expanding the row's collapsed **Suspects**
+block below the table lists the per-rival evidence (rival name, own 1-to-1
+pair, votes, reverse target, rival-pair status, populations) — the facts
+`get_same_name_conflict_detail` already returns, rendered once per surface
+and never hover-only.  The Type coverage expansion's own title is
+data-driven off the forward rows (`1-to-N fan-out` / `N-to-1 fan-in` /
+`all 1-to-1`, plus `· ⚠ N suspect pair(s)` when the pair carries suspects),
+so the heading matches the tables rather than always claiming fan-out.
 
 Backward rows marked **dataset-wide incoming** list every source type in
 the source dataset that maps onto the receiving type (the active query
@@ -874,6 +890,88 @@ When running `ComparisonAnalyzer.export_results()` with `auto_type_mapping=True`
   known normalized `auto:` label, but a conflicting vote set stays rejected.
   For example, BANC `CB1011` remains unmapped toward MCNS despite its
   same-name row.
+
+### Same-name-first within a fan-out (rival suspects)
+
+When a fan-out's candidate set contains the **source type's own name** —
+exactly, never as a prefix (MCNS `SMP520` → `{SMP520a, SMP520b}` never
+fires; `DNp51,DNpe019` never matches a part) — the mapper SELECTS that
+same-name candidate instead of leaving the fan-out unresolved:
+
+```
+status='mapped', target_type=<same name>, relationship='suspects',
+suspects=True, fan_out_candidates=<the OTHER candidates>,
+target_types=[<same name>]        # the rivals stay OUT by default
+```
+
+- The other candidates become **suspects**: exported one row per rival in
+  `auto_type_mapping_suspects.csv` (with `rival_has_own_clean_pair`,
+  `rival_pair_status`, `reverse_target`/`backs_source`, votes, populations,
+  the pair-level `selection_disposition`, and a ready-made
+  custom-label-mapper entry).
+- **Dispositions are per path** (plan-samename-first-fanout-resolution
+  §0.0): a structural split (crosswalk 1-to-N into a BANC target,
+  `valid_split_evidence`) fires broadly; a **terminal BANC vote conflict**
+  fires only when **every** rival candidate has its own 1-to-1 pairing
+  (the duplication check — otherwise it keeps its ordinary `conflict` status
+  and goes to the suspects list for the user to adjudicate); an
+  `evidence_only` (N-to-1 convergence view) fan-out is **excluded**.
+- The rivals are NOT candidates for the source type, so they are left out
+  of `target_types` by default (`mapper.include_suspects_in_targets = True`
+  restores `[selection] + rivals` for in-pipeline verification).
+- The user's inclusion path for a rival believed to be a buried fact is the
+  **custom label mapper** (user mappings win by construction).
+- Read the decision via `mapper.same_name_first_fires(...)`, the per-rival
+  evidence via `mapper.get_same_name_conflict_detail(...)` /
+  `mapper.same_name_suspects_for_source(...)`, and the run-scoped counts
+  via `mapper.same_name_first_summary(...)`.
+- **Per-rival labels state observations, never verdicts**: the evidence
+  record carries `rival_pair_status` = `own_1to1_pair` /
+  `no_own_1to1_pair` (does that rival's own name also pair 1-to-1 in this
+  direction) plus the boolean `rival_has_own_clean_pair`.  Terms like
+  *duplicate*/*(dup)* and *confirmed* belong to the verification pipeline
+  (its bodyId-level tag), not here — the mapper never verifies.
+- **UI surfaces** (plan-ui-type-mapper-alignment): the cross-dataset tab's
+  Type Mapping panel and the "See available neurons" viewer with
+  cross-dataset mapping ON display this state — a short marker plus
+  **collapsed** details, never a hover-only tooltip.  In the panel the
+  `⚠ suspects (N)` badge rides on the row's own **Suspects** column across
+  all three surfaces (the pair-card mapped-pairs table, the forward and
+  backward Type coverage tables, and the per-type breakdown), each with a
+  collapsed **Suspects** block below the table holding the per-rival
+  expander; the viewer keeps its per-candidate expander.  A pair that did
+  NOT fire explains itself where it surfaces: a held conflict/kept-unmapped
+  line naming how many rivals lack their own 1-to-1 pairing.  The viewer's
+  same-name annotation distinguishes three cases — curated cross-dataset
+  relation, same-name-first selection, bare echo — instead of showing the
+  bare-echo caveat for all three.
+
+### Multi-value (comma-joined) `type` cells
+
+Some releases annotate a neuron with several candidate types in ONE `type`
+cell, in either of two encodings: plain comma-joined (MCNS `DNp51,DNpe019`,
+BANC `LAL173,LAL174`) or parenthesized with an optional variant suffix
+(BANC `(PLP191,PLP192)a` — the alternatives are inside the parens; the
+suffix is not a candidate name).  In **crosswalk/annotation** cells the
+parenthesized group is split with the suffix DISTRIBUTED to each alternative
+(`'(AVLP346,AVLP348)a'` -> `AVLP346a`, `AVLP348a`), including the BANC
+`auto:`-prefixed form; the `type` column itself is never split.  **BodyId-valued cells are dropped**
+(a bodyId is not a type name): `hb1874217622`, `(hb5813083315)`,
+`(5901212906)`, the paired `(hb…,hb…)` form and their `auto:`-prefixed
+variants resolve to nothing instead of becoming pseudo-types; a NAME carrying
+a bodyId annotation (`PS279(hb1499087543)`) keeps its base name.  The raw
+cells remain on disk, so bodyId-level provenance is available to the
+verification pipeline. The **raw cell stays
+the atomic type name** — bodyId→primary cardinality is unchanged and no
+mapping decision moves. The oddity is recorded and queryable so it is
+visible rather than silent: `mapper.is_multivalue_type(name, dataset)` /
+`mapper.multivalue_parts(name, dataset)` / `mapper.multivalue_summary(...)`,
+a data-quality line in `user_warning_notes.txt`, a `🧩 multi` marker on the
+report grid row, and `multivalue_source` / `source_parts` columns in
+`auto_type_mapping_conflicts.csv`. Splitting the cells (registering each
+part) would change bodyId→type cardinality and every consumer — that is a
+separate, deliberately un-scheduled round
+(plan-type-column-multivalue-normalization).
 
 Use `mapper.get_mapping_conflicts(source_dataset, target_dataset,
 source_type)` for a direction-scoped conflict, and

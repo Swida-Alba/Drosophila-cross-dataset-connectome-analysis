@@ -656,18 +656,57 @@ class ComparisonAnalyzer:
             # Fallback for polars issues (schema inference, etc.)
             return pd.read_csv(filepath, encoding='utf-8', **kwargs)
     
-    def _collect_result_types_by_dataset(self) -> Dict[str, Set[str]]:
+    def _compared_thresholds(self) -> Optional[Set[int]]:
+        """Per-dataset thresholds the compared queries actually read.
+
+        ``None`` means "no schedule information" (callers then scan every
+        key, the legacy behaviour).  A fresh auto-mode run ALSO holds the
+        bootstrap probe (``min(thresholds)``, density capture only — no
+        compared matrix uses it) in ``raw_results``, while a later re-export
+        never loads it; restricting the universe to the compared schedule
+        keeps exported artifacts identical between the two (found 2026-09-18:
+        the suspects CSV differed 1068 vs 779 rows for the SAME run).
+        """
+        try:
+            combos = getattr(self.parameters, 'threshold_combinations', None)
+            if combos:
+                return {int(v) for q in combos
+                        for v in (q.get('thresholds') or {}).values()}
+            thresholds = getattr(self.parameters, 'thresholds', None)
+            return {int(t) for t in (thresholds or [])} or None
+        except Exception:
+            return None
+
+    def _compared_result_types(self) -> Set[str]:
+        """Result types restricted to the compared schedule (deterministic
+        across a fresh run and any later re-export)."""
+        type_map = self._collect_result_types_by_dataset(
+            only_thresholds=self._compared_thresholds())
+        return {type_name for values in type_map.values()
+                for type_name in values}
+
+    def _collect_result_types_by_dataset(
+            self, only_thresholds: Optional[Set[int]] = None
+    ) -> Dict[str, Set[str]]:
         """Collect result type names while retaining their source dataset.
 
         ``raw_results`` is keyed by dataset and then threshold.  Keeping the
         first key through this scan lets report consumers resolve a raw name
         in the namespace where it was actually observed instead of guessing
         from the name alone.
+
+        ``only_thresholds`` (optional set of ints) restricts the scan to the
+        given per-dataset threshold keys — pass the compared schedule so the
+        type universe cannot depend on whether the process also ran an
+        auto-bootstrap probe.
         """
         types_by_dataset: Dict[str, Set[str]] = {}
         for dataset, thresh_results in self.raw_results.items():
             dataset_types = types_by_dataset.setdefault(dataset, set())
             for threshold, result in thresh_results.items():
+                if only_thresholds is not None and threshold not in \
+                        only_thresholds:
+                    continue
                 # Handle DataFrame directly (path/edge analysis results)
                 if isinstance(result, pd.DataFrame) and not result.empty:
                     # Check common type columns
@@ -905,7 +944,8 @@ class ComparisonAnalyzer:
             return
         
         # Use the helper method to collect all types from results
-        str_types = self._collect_result_types()
+        # (schedule-bound: the auto-bootstrap probe must not change exports)
+        str_types = self._compared_result_types()
         
         if not str_types:
             return
@@ -939,6 +979,76 @@ class ComparisonAnalyzer:
                 f"dataset-scoped in path/edge merges (no raw same-name merging): "
                 f"{', '.join(sorted(self._conflicted_merge_types)[:5])}"
                 + (" …" if len(self._conflicted_merge_types) > 5 else ""))
+
+    # Notes that describe current run STATE (not a historical log line): a
+    # re-export replaces the previous copy instead of appending, so
+    # contradictory counts can never accumulate (found 2026-09-18: four
+    # copies of the merge-policy / BANC-auto notes after three re-exports,
+    # two of them disagreeing — 1060 vs 593 mappings — because the first
+    # predated the schedule-bound type universe).
+    #
+    # A "block" is one top-level header line (starting with ``[`` at column
+    # 0) plus its following lines: bullets of the SAME family (tagged
+    # ``- [merge fan-in] …``, ``- [type granularity] …`` or untagged) move
+    # with the header, while a bullet of ANOTHER tagged family ends the
+    # block (``- [untyped dropped] …`` is its own note family and must
+    # survive — that family has no header line of its own).
+    _STATE_NOTE_PREFIXES = ('[same-name-first]',
+                            '[multi-value type cells]',
+                            '[merge policy]',
+                            '[BANC auto labels]')
+    # Tagged bullet families that are NOT state-owned: their bullets always
+    # survive, and one ends an enclosing state block.
+    _FOREIGN_BULLET_TAGS = ('[untyped dropped]',)
+
+    def _replace_state_notes(self, blocks: List[str]) -> List[str]:
+        """Drop prior copies of the STATE notes from ``user_warning_notes``
+        so a re-export does not accumulate contradictory counts.
+
+        Block-aware: a state block is its header line plus every following
+        line that is not itself a top-level header (so multi-line bullet
+        lists are removed whole, never left orphaned).
+        """
+        note_path = os.path.join(
+            self.parameters.full_output_path, 'user_warning_notes.txt')
+        if not os.path.exists(note_path):
+            return blocks
+        try:
+            with open(note_path, encoding='utf-8') as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return blocks
+        import re as _re
+        bullet_tag = _re.compile(r'^-\s*\[([^\]]+)\]')
+        kept: List[str] = []
+        skipping = False
+        for ln in lines:
+            if ln.startswith('['):
+                skipping = ln.startswith(self._STATE_NOTE_PREFIXES)
+            elif skipping:
+                # A bullet of a foreign family ends the state block; its own
+                # untagged/tagged continuations move with it.
+                m = bullet_tag.match(ln)
+                if m and f'[{m.group(1)}]' in self._FOREIGN_BULLET_TAGS:
+                    skipping = False
+            if skipping:
+                continue
+            kept.append(ln)
+        # Drop the old header lines and trailing blanks; re-emit exactly one
+        # header below.
+        kept = [ln for ln in kept
+                if ln.strip() not in ('User warning notes',
+                                      '==================')]
+        while kept and not kept[-1].strip():
+            kept.pop()
+        try:
+            with open(note_path, 'w', encoding='utf-8') as f:
+                f.write('User warning notes\n==================\n')
+                if kept:
+                    f.write('\n' + '\n'.join(kept) + '\n')
+        except OSError:
+            return blocks
+        return blocks
 
     def _append_user_warning_notes(self, out_dir: str, blocks: List[str]) -> None:
         """Append pre-formatted blocks to ``user_warning_notes.txt``.
@@ -2525,6 +2635,52 @@ class ComparisonAnalyzer:
                 f"{listed}{more}\n"
                 "These remain valid; to exclude or override them use the "
                 "custom label mapper (LabelMapper / overall_mapping_json).")
+        # Same-name-first disclosure + multi-value `type` cells
+        # (plan-samename-first-fanout-resolution §3;
+        # plan-type-column-multivalue-normalization Stage 1).  Counts are
+        # scoped EXACTLY like the exports (result types + run datasets) so
+        # the note and the CSVs agree.
+        try:
+            mapper = self.parameters._auto_type_mapper
+            counts = mapper.same_name_first_summary(
+                filter_types=set(result_types or []) or None,
+                datasets=dataset_names or None)
+            if counts.get('selected') or counts.get('gated_held'):
+                blocks.append(
+                    '[same-name-first] '
+                    f"{counts.get('selected', 0)} fan-out(s) in this run had "
+                    f"the source's own name among their candidates and were "
+                    f"SELECTED; {counts.get('gated_held', 0)} were kept "
+                    "unmapped (not every rival candidate has its own 1-to-1 "
+                    "pairing, so the same-name candidate was not selected; "
+                    "they keep their ordinary status); "
+                    f"{counts.get('excluded_evidence_only', 0)} evidence-only "
+                    "(N-to-1) fan-out(s) are excluded by policy. "
+                    f"{counts.get('rivals_exported', 0)} rival relation(s) in "
+                    "total are listed for verification in "
+                    "auto_type_mapping_suspects.csv (one row per rival, with "
+                    "the per-rival pairing evidence and the ready-made "
+                    "custom-mapper entry).")
+            mv = mapper.multivalue_summary(datasets=dataset_names or None)
+            if mv:
+                ds_txt = ', '.join(f'{k} ({v})'
+                                   for k, v in sorted(mv.items()))
+                blocks.append(
+                    '[multi-value type cells] '
+                    f"{sum(mv.values())} release type name(s) are "
+                    "comma-joined multi-value annotations (a release lists "
+                    "several candidate names in one `type` cell); they are "
+                    "kept atomic, noted here, and marked in the type-mapping "
+                    "grid row when it is rendered (top rows by appearance); "
+                    "the conflicts CSV carries multivalue_source/source_parts "
+                    f"for the full set. Datasets: {ds_txt}.")
+        except Exception as exc:  # noqa: BLE001 — disclosure only
+            self._log(f"Same-name-first notes skipped: {exc}")
+        # These two notes are per-run STATE (they describe the current
+        # mapper scoping), so a re-export must REPLACE prior copies rather
+        # than accumulate contradictory stale counts.
+        if blocks:
+            blocks = self._replace_state_notes(blocks)
         if blocks:
             os.makedirs(self.parameters.full_output_path, exist_ok=True)
             self._append_user_warning_notes(
@@ -5051,16 +5207,20 @@ class ComparisonAnalyzer:
                               if q['id'] == query_id), query_id)
                 lines.append(f"\n  {query_id} ({label}):")
                 for _, row in query_sims.iterrows():
-                    pearson = row.get('pearson_correlation', 0)
-                    if pd.isna(pearson):
-                        pearson = 0
+                    def _num(key):
+                        value = row.get(key, 0)
+                        if pd.isna(value):
+                            value = 0
+                        return value
                     lines.append(
                         f"    {row.get('dataset_1')} vs "
                         f"{row.get('dataset_2')}: Jaccard "
-                        f"{row.get('jaccard_similarity', 0):.3f} | "
-                        f"Ruzicka {row.get('ruzicka_similarity', 0):.3f} | "
-                        f"Weight Corr {pearson:.3f} | Common "
-                        f"{row.get('common_edges', 0)}")
+                        f"{_num('jaccard_similarity'):.3f} | "
+                        f"Cosine {_num('cosine_similarity'):.3f} | "
+                        f"Top-20 {_num('top20_overlap'):.3f} | "
+                        f"NetSimile {_num('netsimile_similarity'):.3f} | "
+                        f"Common {_num('common_edges')}")
+
         else:
             lines.append("  (No pairwise similarity rows found)")
 
@@ -5537,7 +5697,8 @@ class ComparisonAnalyzer:
         if self.parameters.auto_type_mapping and self.parameters._auto_type_mapper:
             try:
                 # Collect types from results for filtered export
-                result_types = self._collect_result_types()
+                # (schedule-bound: deterministic fresh-run vs re-export)
+                result_types = self._compared_result_types()
                 dataset_names = self.parameters.get_dataset_names()
                 
                 auto_map_path = os.path.join(out_dir, "auto_type_mapping.csv")
@@ -5633,6 +5794,23 @@ class ComparisonAnalyzer:
                         datasets=dataset_names,
                     )
                     self._log_file(conflicts_path, "Type mapping conflicts")
+
+                # Same-name-first SUSPECT relations (plan-samename-first-
+                # fanout-resolution): the rival candidates that were NOT
+                # selected, with per-rival adjudication evidence.
+                try:
+                    suspects_path = os.path.join(
+                        out_dir, "auto_type_mapping_suspects.csv")
+                    n_suspects = self.parameters._auto_type_mapper.export_suspects(
+                        suspects_path,
+                        filter_types=result_types if result_types else None,
+                        datasets=dataset_names,
+                    )
+                    if n_suspects:
+                        self._log_file(suspects_path,
+                                       "Type mapping suspects")
+                except Exception as exc:
+                    self._log(f"Warning: could not write suspects export: {exc}")
 
                 # Bridge visualizations for the run's mapped pairs
                 try:

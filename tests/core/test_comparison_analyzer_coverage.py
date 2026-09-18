@@ -2219,3 +2219,46 @@ def test_quick_compare_defaults_and_export(tmp_path, monkeypatch):
     assert exported == [True]
 
 # --- APPEND-POINT-4 ---
+
+
+def test_state_notes_replace_across_re_exports(tmp_path):
+    """A re-export must REPLACE the same-name-first / multi-value notes
+    rather than accumulate contradictory stale counts (found in the
+    ORN_D→MBON.* round: 3 stale copies with different numbers)."""
+    import types
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+
+    # Fixture mirrors the REAL file structure: state headers are top-level
+    # ``[`` lines; multi-line state blocks carry bullet continuations
+    # (``- [merge fan-in] …``); unrelated note families such as
+    # ``- [untyped dropped] …`` have NO header line and must survive.
+    note = tmp_path / 'user_warning_notes.txt'
+    note.write_text(
+        'User warning notes\n==================\n\n'
+        '[same-name-first] 3640 stale global counts\n'
+        '[merge policy] stale policy summary\n'
+        '- [merge fan-in] stale bullet belonging to that header\n'
+        '- [untyped dropped] keep me\n'
+        '[multi-value type cells] 403 stale counts\n'
+        '- [untyped dropped] and me too\n',
+        encoding='utf-8')
+
+    analyzer = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
+    analyzer.parameters = types.SimpleNamespace(
+        full_output_path=str(tmp_path))
+    analyzer._log = lambda *a, **k: None
+
+    blocks = ['[same-name-first] fresh run-scoped counts',
+              '[multi-value type cells] fresh counts']
+    out = analyzer._replace_state_notes(blocks)
+    assert out == blocks
+    text = note.read_text(encoding='utf-8')
+    assert text.count('[same-name-first]') == 0  # removed; re-appended next
+    assert text.count('[multi-value type cells]') == 0
+    assert text.count('[merge policy]') == 0
+    # the multi-line state block leaves nothing orphaned ...
+    assert '- [merge fan-in] stale bullet' not in text
+    # ... while unrelated bullet families survive untouched
+    assert '- [untyped dropped] keep me' in text
+    assert '- [untyped dropped] and me too' in text
+    assert text.count('User warning notes') == 1
