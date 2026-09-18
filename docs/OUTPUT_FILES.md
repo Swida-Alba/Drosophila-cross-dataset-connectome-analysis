@@ -56,6 +56,42 @@ Pulled NeuPrint datasets are stored under `datasets/<dataset>/` with a
 | **NeuronBridge**             | [NeuronBridge_Guide](core-features/NeuronBridge_Guide.md)                     | EM↔LM mapping and co-labeling analysis                                 |
 | **FlyLight Downloads**       | [FlyLight_Guide](core-features/FlyLight_Guide.md)                             | Image downloading and processing                                       |
 | **Auto Type Mapping**        | [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md)                                     | Cross-dataset type name standardization                                |
+| **Storage management**       | Settings → Storage card (UI); `src/storage_inventory.py`                       | Scan/reclaim caches and exported run folders; nothing runs automatically |
+
+### Storage management (Settings → Storage)
+
+Every run folder in this document is inventoried by the Settings → Storage
+card (`src/storage_inventory.py`). A folder counts as a run folder only
+when it matches a known tool prefix **and** carries the embedded
+`_{ts}` timestamp (`src/utils/naming_utils.py` is the single prefix
+source of truth, shared with `ui/runner.py`); prefix-less-of-timestamp
+directories such as `morph_cross_dataset/` are shared roots holding many
+runs and are only descended into, never offered whole.
+
+* **Caches** (`cache/`, rebuildable) are listed per class × dataset with
+  sizes and rebuild-cost notes. BANC connection caches rebuild offline
+  from the local merged tables (gated by the `connections.parquet.src`
+  marker); FAFB re-derives from its local merged table; NeuPrint datasets
+  refetch from the server. The NeuronBridge match cache clears through
+  `NeuronBridgeFinder.clear_cache`. The incoming-connections class
+  removes `incoming_connections.parquet` together with
+  `incoming_complete.json` — the completion state is never deletable
+  alone, because complete posts would never refetch.
+* **Scan coverage** = the default output directory + recorded output
+  roots (persisted in `ui/local_config.json`; recorded automatically
+  when a run exports to a non-default folder, forgettable as chips) +
+  remembered per-tab overrides + folders from the run history. Table
+  rows carry a full-path hover tooltip, and each row's
+  `folder_open` button reveals the folder in the system file manager.
+* **Protected, never offered**: `cache/dataset_availability.json`,
+  `cache/neuronbridge/coverage_snapshot.json`, per-dataset
+  `available_rois.json`, and `cache/user_mappings/` (user-authored
+  LabelMapper presets — no rebuild path).
+* **Exported data** shows a source-data vs deliverables split for the
+  registered NeuronBridge tools (the Compact classification of
+  `src/neuronbridge_output_policy.py`); other tools are delete-folder
+  only. Prunes append to each folder's `cleanup_audit.json`; cache
+  clears and folder deletions append to `cache/storage_audit.json`.
 
 ---
 
@@ -465,7 +501,8 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`run_manifest.json`**: Self-describing manifest shared by the report/UI/scripts — datasets, nicknames, full parameters, applied thresholds, threshold views, comparability, **`dataset_coverage`** (`ok`/`no_data` per configured dataset with threshold/row counts), untyped-drop stats, alignment suggestions, and code version.
 *   **`label_map.json`**: Label mappings for source/target neurons across datasets (includes `metadata.auto_type_mapping`)
 *   **`dataset_metadata_comparison.csv`**: Per-dataset metadata comparison (also present under `comparison_results/`). Columns: `dataset`, `total_neurons`, `typed_neurons`, `untyped_neurons`, `type_coverage_pct`, `total_presynaptic`, `total_postsynaptic`, `total_synapses`, `roi_count`, `coverage_notes`
-*   **`auto_type_mapping.csv`** / **`auto_type_mapping_conflicts.csv`**: Cross-dataset type mapping tables and their conflicts. The table carries a trailing **`mapping_support`** column — the row-based bodyId-level bridge evidence (label votes per source type with curated vs `auto` provenance; broad votes list the top 3 candidates + `+N more candidates`; `same name (all bodyIds pooled)` for direct same-name pairs, empty when the pair carries none). Evidence only: never consumed to gate or verify a mapping (see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md))
+*   **`auto_type_mapping.csv`** / **`auto_type_mapping_conflicts.csv`**: Cross-dataset type mapping tables and their conflicts. The table carries a trailing **`mapping_support`** column — the row-based bodyId-level bridge evidence (label votes per source type with curated vs `auto` provenance; broad votes list the top 3 candidates + `+N more candidates`; `same name (all bodyIds pooled)` for direct same-name pairs, empty when the pair carries none). Evidence only: never consumed to gate or verify a mapping. The conflicts CSV also carries **`multivalue_source`** / **`source_parts`** (the source cell is a comma-joined multi-value `type` annotation) and **`same_name_candidate`** / **`same_name_path`** / **`same_name_disposition`** (the same-name-first verdict for that row) — see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md)
+*   **`auto_type_mapping_suspects.csv`**: the same-name-first SUSPECT relations — one row per rival candidate of a fan-out whose candidate set contained the source's own name (plan-samename-first-fanout-resolution). Carries `selected`, `rival`, **`rival_has_own_clean_pair`** and **`rival_pair_status`** (`own_1to1_pair` / `no_own_1to1_pair` — whether that rival's own name also pairs 1-to-1 in this direction; an observation, never a verdict), `reverse_target`/`backs_source`, `path` + `selection_disposition` (which policy fired for the pair), per-candidate votes, populations, and a ready-made custom-label-mapper entry (`custom_mapper_dataset`/`from`/`to`) — the user's inclusion path. Evidence only: rivals are never merged automatically; TM VEV verifies them separately (see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md))
 *   **`auto_type_mapping_per_bridge.csv`**: One row per (source type, target type, bridge chain) with the selected chain, linker values, bridge-refined bodyId pools and branch annotations, plus trailing **`support_votes` / `support_verified` / `support_auto` / `support_linker_value`** columns carrying the full per-source-type vote counts behind the bridge
 *   **`auto_type_mapping.json`**: Auto-type-mapping provenance for the run (mapper requested/active, source table and version, load error, per-status resolution counts and basis, raw-fallback flag); also written for homolog runs (run root) and cross-dataset profile comparisons
 
@@ -498,7 +535,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`visualization_data/`**: CSVs backing the report (`edge_overlap.csv`, `key_findings_per_threshold.csv`, `overlap_matrices_per_threshold.csv`, `path_counts.csv`, `path_heatmap_{N}.csv`, `edge_heatmap_{N}.csv`). In Custom combination mode, aggregate rows carry `query_id`/`query_label` and query threshold-map columns; the scalar `threshold` field is left blank rather than overloaded with a query ID.
 
 #### Similarity Matrices (`similarity_matrices/`)
-*   **`similarity_threshold_{N}.csv`**: Cross-dataset similarity rows for threshold N. Columns: `dataset_1`, `dataset_2`, `jaccard_similarity`, `ruzicka_similarity`, `pearson_correlation`, `edges_in_d1`, `edges_in_d2`, `common_edges`, `union_edges`, `unique_to_d1`, `unique_to_d2`, `edge_rank_correlation`, `cosine_similarity`, `path_rank_correlation`, `spearman_rank_correlation`, `rv_coefficient`, `threshold`
+*   **`similarity_threshold_{N}.csv`**: Cross-dataset similarity rows for threshold N. Columns: `dataset_1`, `dataset_2`, `jaccard_similarity`, `ruzicka_similarity`, `pearson_correlation`, `edges_in_d1`, `edges_in_d2`, `common_edges`, `union_edges`, `unique_to_d1`, `unique_to_d2`, `edge_rank_correlation`, `cosine_similarity`, `path_rank_correlation`, `spearman_rank_correlation` (gated: NaN below 30 shared edges), `rv_coefficient`, **v2.2 columns**: `path_jaccard_similarity` (canonical path-set overlap, union frame, NaN below 5 paths per side), `path_top20_overlap`, `hop_profile_w1`, `netsimile_similarity` (alignment-free graph signature), `coverage_d1`/`coverage_d2`/`coverage_min`, `top20_overlap`, `strength_w1_out`/`strength_w1_in`, `threshold`. The four heatmap representatives are Jaccard + Cosine (edge), Path Jaccard (path), NetSimile-lite (graph); Edge Rank / Path Rank / Pearson / RV / Ruzicka are legacy CSV-only columns.
 *   **`similarity_query_{query_id}.csv`** / **`similarity_by_query.csv`**: Combination-mode similarity rows keyed by the original `query_id`; the per-query filename uses a filesystem-safe slug and the manifest/table retains the verbatim ID. Each row retains `query_label` and one requested-threshold column per dataset. These files never use the raw threshold union as a comparison axis.
 
 #### Raw Threshold-Schedule Diagnostics (`comparison_results/`)
@@ -586,7 +623,9 @@ mapping_validation/type-map_{src}_to_{tgt}_{label}_{ts}/
     validation_results.csv
     pair_summary.csv
     pool_categories.csv
-    suspicious_candidates.csv
+    examinees.csv
+    same_name_excluded.csv
+    source_candidates.csv
     deep_candidates.csv
     noise_filtered_candidates.csv
     gap_fill_proposals.csv
@@ -620,10 +659,12 @@ more neurons, never relabels one:
    (family/aggressive modes; type-gated, not morph-gated).
 5. `relative` — type-mates of candidate types outside the map
    (family/aggressive modes).
-6. `suspicious` — the aggressive-only deep window.
+6. `examinees` — the aggressive-only deep window (renamed from
+   `suspicious` 2026-09-18: the mapper's rival-suspects concept now owns
+   that word).
 
 Every expansion leaf (all four of `candidates` / `family` / `relative` /
-`suspicious`) carries **one ordered token**:
+`examinees`) carries **one ordered token**:
 `{T}(out-map)` — the type is one of the mapping's in-map types, so this is
 an unmapped bodyId of a type already in the map (the fill material; every
 `family` member); a **bodyId-level** statement that takes precedence.
@@ -649,7 +690,8 @@ reconciliation).
 *   **`pool_categories.csv`**: per in-map target — the tier category
     (`matched` / `verified` / `borderline` / `unmatched`) with its
     best-evidence metrics and `size`.
-*   **`suspicious_candidates.csv`**: every expansion row with
+*   **`examinees.csv`** (renamed from `suspicious_candidates.csv`):
+    every expansion row with
     `category`, `in_scope`, `morph_failed`, `candidate_annotation`,
     `counts_toward_restrictive_fill` / `counts_toward_family_fill`, the
     caliber columns, the legacy `invader_class`/`invader_label`, and both
@@ -680,7 +722,7 @@ reconciliation).
     and profile-pre-flight events) — the backend log a future UI tails.
 *   **`gap_fill_dedup.csv`**: query-level, one row per target bodyId —
     `dedup_category` (precedence `matched > verified > borderline >
-    unmatched > sibling > candidates > family > relative > suspicious`),
+    unmatched > sibling > candidates > family > relative > examinees`),
     `n_branches`, and `dup` (True only for non-sibling cross-branch
     repeats). This is the deduplicated fill, reflecting the real gap.
 *   **`family_candidates.csv`** / **`relatives.csv`**: the whole `family`
@@ -695,8 +737,10 @@ reconciliation).
     counted proposal, and no morph-qualified `candidates` row. Also
     lists `family_material`: in-map-type bodyIds no branch pool claims
     (the population overhang of the claim set — TM VEV family/candidate
-    material, never a mapper failure). Out-map candidates are enumerated
-    in TWO files (`suspicious_candidates.csv` + proposal rows in
+    material, never a mapper failure). New runs also record
+    `mapper_gap` (target types hit with no backward mapping to the
+    source). Out-map candidates are enumerated
+    in TWO files (`examinees.csv` + proposal rows in
     `gap_fill_proposals.csv`); `gap_fill_dedup.csv` is the per-bodyId
     rollup.
 *   **`morphology_calibration.json`**: per-branch qualification bars —
@@ -710,12 +754,51 @@ reconciliation).
     its own `bar_kind`.
 *   **`parameters.json`**: every knob incl. `validation_mode` /
     `mode_rank` and the cutoffs.
-*   **`README.txt`**: glossary (verdicts, categories, noise gates, morph
-    frames, pool-ref tiers, mapper-gap report) + the full run log.
+*   **`source_status.csv`**: backward `source-` status (matched /
+    verified / borderline / unmatched, `source-` prefixed) per in-branch
+    source bodyId, with its column rank and best pair — advisory, never a
+    gate (plan `plan-backward-source-status.md`).
+*   **`same_name_excluded.csv`**: queried source types whose same-name
+    fan-out was HELD (`gated_held`) or excluded (`excluded_evidence_only`)
+    by the mapper, plus multi-value type cells (kept atomic). One row per
+    type with `disposition`, `selected`, `rivals` and `reason` — advisory
+    accounting that says WHY a queried type is missing; never a gate
+    (plan `plan-tmvev-samename-first-consumers.md`).
+*   **`source_candidates.csv`** (re-aimed 2026-09-18, user option 2):
+    the D-B8 backward mirror of candidate admission — sources claimed by
+    NO branch whose best-ranked scan hits land in a branch pool AND pass
+    the run null bar (morph), attributed to the branch owning that pool,
+    with `dup` for multi-branch sources. Advisory; the scenes'
+    `source-candidates` roots render these rows. (Older runs derived
+    this surface from sibling rows — those were other branches' query
+    neurons by construction.)
+*   **`suspects_verification.csv`** (only with `--verify-suspects`):
+    advisory connectivity verification of the mapper's rival suspects —
+    the ordinary verdict machinery applied to each rival's own target
+    pool, with `rival_of`, `disposition`, the mapper-side
+    `rival_has_own_clean_pair`, votes and rival populations. Rendered
+    in the report's Suspects tab; never merged into the validation
+    counts, fills or dedup.
+*   **`report.html`**: the per-run report — headline + the three
+    coverage levels (L1 claim / L2 provenance / L3 validation),
+    branches (⟡ marks same-name-first selections), targets, fills,
+    out-map expansion, backward source status, suspects verification
+    (opt-in runs), morphology record, scenes, and the file index; a
+    same-name-first & multivalue accounting card renders when the run
+    has such content; hover-glossary on every term, and every `!` log
+    line reproduced verbatim in its Warnings section.
+    Regenerable for any past run:
+    `python -m comparison.mapping_validation_report <run_dir>`.
+*   **`user_warning_notes.txt`**: bracketed-tag warning lines appended by
+    the report writer (scene self-check status, the null-sample
+    run-sensitivity advisory, mapper-gap evidence).
+*   **`README.txt`**: slim directions (what file is what, where to start)
+    + the full raw run log — the analysis content moved into
+    `report.html`.
 *   **`visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/*.html`**: one
     3D review scene per parent type. The collapsible legend tree is
     branch → category → bodyId; the four expansion categories
-    (`candidates` / `suspicious` / `family` / `relative`) are one root
+    (`candidates` / `examinees` / `family` / `relative`) are one root
     each, with the qualified type (`{T}>{src}` / `{T}(no_source)` /
     `untyped`) and a standalone `(dup)` tag on the bodyId leaves, sorted
     by `type + suffix`. The panel is content-width, capped at 420px.

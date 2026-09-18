@@ -26,7 +26,9 @@ Stages
    query) > ``candidates`` (out-of-map, connectivity- AND morph-qualified;
    the restrictive fill) > ``family`` (out-map bodyIds of the branch's
    target type) > ``relative`` (candidate-type mates outside the map) >
-   ``suspicious`` (the aggressive-only deep window).  A
+   ``examinees`` (the aggressive-only deep window; renamed from
+   'suspicious' 2026-09-18 — the mapper's rival-suspects concept now owns
+   that word).  A
    connectivity-qualified suspect failing the morph rule is OUT OF SCOPE
    (``in_scope=False``, ``morph_failed=True``) — kept in the CSVs for
    reconciliation with a connectivity-only homolog search, never rendered.
@@ -37,11 +39,11 @@ Stages
    ``candidates`` only, the family fill adds ``family``+``relative``.  The
    query-level dedup (``gap_fill_dedup.csv``) is bodyId-unique with
    precedence tier > sibling > candidates > family > relative >
-   suspicious.  Proposals only — the mapping is never rewritten.
+   examinees.  Proposals only — the mapping is never rewritten.
 5. Morphology verification: vector_v2 + NBLAST via
    ``morphology.enrich_homolog_results`` on the pairs that matter, with
    per-run self-calibration (AUC separating verified_strong from
-   suspicious) and a guard rail: morph gates ``verified_strong`` only when
+   examinees) and a guard rail: morph gates ``verified_strong`` only when
    ``AUC >= morph_auc_floor``.  :func:`morph_qualified` (rule v3, the
    shared bar engine in :mod:`comparison.morph_bars`) is shared with the
    scene so the CSV and the picture cannot disagree.
@@ -198,7 +200,7 @@ class MappingValidationConfig:
     #   family                - adds the family/relative bins (out-map
     #                           bodyIds of the in-map types, and the
     #                           type-mates of candidate types).
-    #   aggressive            - adds the deep-window `suspicious` bin.
+    #   aggressive            - adds the deep-window `examinees` bin.
     # `aggressive_expansion` and `pool_widen` are legacy boolean aliases
     # resolved by `normalize_mode` (pool_widen -> family).  Pool widening
     # itself is RETIRED (Revision 3.12): family mode no longer touches the
@@ -213,7 +215,12 @@ class MappingValidationConfig:
     # is NULL-CALIBRATED per run — the p95 of the Track-A morph over
     # window rows with jaccard <= `null_jaccard_max` (provably unrelated
     # by connectivity), replacing the arbitrary factor x pooled-average
-    # bar when enough null samples exist (null_min_n).
+    # bar when enough null samples exist (null_min_n).  Selection is
+    # deterministic (targets sorted by bodyId, see select_null_sample);
+    # the bar is recomputed per run BY DESIGN — morph is an arbitrary
+    # floor gate (connectivity ranks, the user verifies), so a small
+    # sampled set is enough and there is no cross-run persistence
+    # (user 2026-09-17).
     null_jaccard_max: float = 0.05
     null_per_source_cap: int = 5
     null_min_n: int = 10
@@ -233,6 +240,11 @@ class MappingValidationConfig:
     # each legend leaf's geometry bbox matches its labeled neuron's bbox.
     scene_selfcheck: bool = False
     # plumbing
+    # Same-name-first suspects verification (plan-tmvev-samename-first-
+    # consumers.md P3): advisory connectivity check of the rival
+    # candidates.  OPT-IN, default OFF — an off-run behaves exactly as
+    # before (no extra scans, no suspects_verification.csv).
+    verify_suspects: bool = False
     output_dir: Optional[str] = None
     run_label: str = 'run'
     use_cache: bool = True
@@ -287,6 +299,11 @@ class TypePair:
     # artifact, not a membership boundary).
     pool_widen_added_sources: List[int] = field(default_factory=list)
     pool_widen_added_targets: List[int] = field(default_factory=list)
+    # Same-name-first provenance (plan-tmvev-samename-first-consumers.md
+    # P1): the FIRED decision's {selected, rivals, path, disposition};
+    # None for ordinary pairs.  Advisory marking only — the pair validates
+    # exactly like any other mapped pair.
+    same_name_first: Optional[dict] = None
 
     @property
     def key(self) -> Tuple[str, str]:
@@ -348,7 +365,8 @@ def annotate_pair_branches(pairs: List["TypePair"]) -> None:
 def compute_set_coverage(pairs: List["TypePair"],
                          per_pair_res: Dict,
                          fills: List[Dict],
-                         evidence_rows: Optional[List[Dict]] = None) -> Dict:
+                         evidence_rows: Optional[List[Dict]] = None,
+                         extra_counters: Optional[Dict] = None) -> Dict:
     """Revision 3.10: set-level coverage of the source->target mapping.
 
     Per-branch gaps are diagnostics (they double-count cross-branch
@@ -454,7 +472,7 @@ def compute_set_coverage(pairs: List["TypePair"],
             'hole_body_ids': holes}
     all_src = set().union(*parent_src.values()) if parent_src else set()
     all_tgt = set().union(*parent_tgt.values()) if parent_tgt else set()
-    return {
+    out = {
         'fafb': {
             'total_queried': len(all_src),
             'assigned': len(assigned_src),
@@ -481,6 +499,15 @@ def compute_set_coverage(pairs: List["TypePair"],
                             'convergence; the set-level numbers here '
                             'are the deliverable'),
     }
+    # Same-name-first consumers (plan-tmvev-samename-first-consumers.md):
+    # additive counters, no schema break.  P1 marks the FIRED selections;
+    # extra_counters carries the validator's P2/P4 accounting (held /
+    # evidence-only fan-outs, multivalue cells).
+    snf_pairs = [p for p in pairs if p.same_name_first]
+    out['same_name_first_pairs'] = len(snf_pairs)
+    out['same_name_first_types'] = len({p.source_type for p in snf_pairs})
+    out.update(extra_counters or {})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +708,175 @@ def _abbrev(dataset: str) -> str:
     return (dataset or 'ds').replace(':', '_').replace('.', '_')
 
 
+def _short_name(dataset: str) -> str:
+    """Short display nickname for run-folder names (user 2026-09-18:
+    `type-map-validation_FAFB_to_MCNS_{stamp}`).  Mirrors the
+    cross-dataset backend's `ComparisonParameters.get_display_nickname`
+    (flywire_FAFB_v783 -> FAFB, male-cns:v1.0 -> MCNS, banc_v888 -> BANC,
+    hemibrain:v1.2.1 -> HEMI); falls back to `_abbrev` when the nickname
+    table is unavailable."""
+    try:
+        from comparison.comparison_parameters import ComparisonParameters
+        return str(ComparisonParameters.get_display_nickname(
+            ComparisonParameters, dataset))
+    except Exception:  # noqa: BLE001
+        return _abbrev(dataset)
+
+
+# Header-only empty exports (user 2026-09-18): a run folder should never
+# contain zero-byte CSVs — pd.read_csv raises EmptyDataError on them.  When
+# `_write_outputs` has no rows for one of these files it writes the header
+# line from this registry instead.  The registries mirror the CURRENT
+# schemas; a schema change only needs to touch them if empty files must
+# carry the new column (non-empty files are unaffected — DataFrame(rows)
+# uses the row dicts' own keys).
+_RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
+    'validation_results.csv': [
+        'query', 'source_dataset', 'source_type', 'target_dataset',
+        'target_type', 'mapping_status', 'relationship', 'same_name_first',
+        'same_name_rivals', 'pool_basis', 'branch_linker_values',
+        'branch_annotation', 'branches_disjoint', 'source_bodyId',
+        'source_connectivity_status', 'verdict', 'metric_top1', 'flags',
+        'suspicious_count', 'suspicious_noise_filtered',
+        'suspicious_size_filtered', 'suspicious_tie_filtered',
+        'target_bodyId', 'rank_union', 'rank_union_rank', 'jaccard',
+        'jaccard_rank', 'cosine', 'weighted_jaccard', 'morph_v2_similarity',
+        'morph_nblast', 'source_size'],
+    'examinees.csv': [
+        'query', 'source_type', 'target_type', 'pool_basis',
+        'branch_linker_values', 'branch_annotation', 'source_bodyId',
+        'ahead_target_bodyId', 'ahead_target_type', 'ahead_metric',
+        'ahead_rank', 'ahead_rank_union', 'ahead_jaccard',
+        'best_pool_target_bodyId', 'best_pool_rank', 'best_pool_rank_union',
+        'best_pool_jaccard', 'ahead_size', 'pool_best_size', 'size_ratio',
+        'size_filtered', 'invader_class', 'invader_label', 'sibling_pool_of',
+        'sibling_category', 'backward_status', 'backward_maps_to',
+        'fafb_home_count', 'backward_home_real', 'alt_chain_of_parent',
+        'in_query_family', 'same_type_residue', 'morph_pool_ref',
+        'morph_pool_ref_mean', 'pool_ref_tier', 'morph_v2_similarity',
+        'morph_nblast', 'category', 'in_scope', 'morph_failed', 'bar_kind',
+        'bar_value', 'candidate_annotation',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'counts_toward_gap_fill', 'dup'],
+    'noise_filtered_candidates.csv': [
+        'query', 'source_type', 'target_type', 'pool_basis',
+        'branch_linker_values', 'branch_annotation', 'source_bodyId',
+        'ahead_target_bodyId', 'ahead_target_type', 'ahead_metric',
+        'ahead_rank', 'ahead_rank_union', 'ahead_jaccard',
+        'best_pool_target_bodyId', 'best_pool_rank', 'best_pool_rank_union',
+        'best_pool_jaccard', 'ahead_size', 'pool_best_size', 'size_ratio',
+        'noise_reason'],
+    'deep_candidates.csv': [
+        'query', 'source_type', 'target_type', 'pool_basis',
+        'branch_linker_values', 'branch_annotation', 'source_bodyId',
+        'ahead_target_bodyId', 'ahead_target_type', 'ahead_metric',
+        'ahead_rank', 'ahead_rank_union', 'ahead_jaccard',
+        'best_pool_target_bodyId', 'best_pool_rank', 'best_pool_rank_union',
+        'best_pool_jaccard', 'ahead_size', 'pool_best_size', 'size_ratio',
+        'size_filtered', 'invader_class', 'invader_label', 'category',
+        'in_scope', 'morph_failed', 'candidate_annotation',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'candidate_source', 'dup'],
+    'relatives.csv': [
+        'query', 'source_type', 'target_type', 'pool_basis',
+        'branch_linker_values', 'branch_annotation', 'source_bodyId',
+        'ahead_target_bodyId', 'ahead_target_type', 'ahead_metric',
+        'ahead_rank', 'ahead_rank_union', 'ahead_jaccard',
+        'best_pool_target_bodyId', 'best_pool_rank', 'best_pool_rank_union',
+        'best_pool_jaccard', 'ahead_size', 'pool_best_size', 'size_ratio',
+        'size_filtered', 'invader_class', 'invader_label', 'category',
+        'in_scope', 'morph_failed', 'candidate_annotation',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'candidate_source', 'dup'],
+    'family_candidates.csv': [
+        'query', 'source_type', 'target_type', 'pool_basis',
+        'branch_linker_values', 'branch_annotation', 'source_bodyId',
+        'ahead_target_bodyId', 'ahead_target_type', 'ahead_metric',
+        'ahead_rank', 'ahead_rank_union', 'ahead_jaccard',
+        'best_pool_target_bodyId', 'best_pool_rank', 'best_pool_rank_union',
+        'best_pool_jaccard', 'ahead_size', 'pool_best_size', 'size_ratio',
+        'size_filtered', 'invader_class', 'invader_label', 'category',
+        'in_scope', 'morph_failed', 'candidate_annotation',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'candidate_source', 'dup'],
+    'gap_fill_dedup.csv': [
+        'target_bodyId', 'target_type', 'dedup_category', 'n_branches',
+        'dup', 'counts_toward_restrictive_fill',
+        'counts_toward_family_fill'],
+    'gap_fill_levels.csv': [
+        'level', 'target_bodyId', 'target_type', 'dedup_category',
+        'evidence', 'bar_value', 'dup', 'note'],
+    'gap_fill_proposals.csv': [
+        'query', 'source_type', 'target_type', 'side', 'bodyId',
+        'source_verdict', 'proposal_bodyId', 'fill_class',
+        'proposal_type', 'rank_union', 'rank_union_rank', 'jaccard',
+        'jaccard_rank', 'invader_class', 'invader_label',
+        'sibling_pool_of', 'sibling_category', 'backward_status',
+        'backward_maps_to', 'fafb_home_count', 'backward_home_real',
+        'alt_chain_of_parent', 'in_query_family', 'fill_scope_note',
+        'counts_toward_gap_fill', 'morph_pool_ref', 'morph_pool_ref_mean',
+        'pool_ref_tier', 'morph_v2_similarity', 'morph_nblast',
+        'candidate_annotation', 'category', 'in_scope', 'morph_failed',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'dup', 'same_type_residue', 'bar_kind', 'bar_value',
+        'fill_qualified'],
+    'pair_summary.csv': [
+        'query', 'source_type', 'target_type', 'mapping_status',
+        'relationship', 'same_name_first', 'same_name_rivals',
+        'pool_basis', 'selected_chain', 'branch_linker_values',
+        'branch_annotation', 'branches_disjoint', 'source_pool',
+        'target_pool', 'pool_widen_added', 'source_type_total',
+        'target_type_total', 'matched', 'verdict_verified_strong',
+        'verdict_verified', 'verdict_borderline', 'verdict_unmatched',
+        'verdict_skipped', 'suspicious_neurons',
+        'suspicious_noise_filtered', 'suspicious_size_filtered',
+        'suspicious_tie_filtered', 'gap', 'gap_ratio', 'gap_triggered',
+        'hemisphere', 'pool_best_size', 'deep_candidates', 'null_sample'],
+    'pool_categories.csv': [
+        'target_bodyId', 'category', 'best_source_bodyId', 'rank_union',
+        'rank_union_rank', 'jaccard_rank', 'invaders_ahead', 'query',
+        'source_type', 'target_type', 'pool_basis', 'branch_annotation',
+        'size', 'morph_v2_similarity', 'morph_nblast', 'in_scope',
+        'morph_failed', 'candidate_annotation',
+        'counts_toward_restrictive_fill', 'counts_toward_family_fill',
+        'dup'],
+    'mapping_export.csv': [
+        'source_dataset', 'source_type', 'target_dataset', 'target_type',
+        'relationship', 'mapping_status', 'same_name_first',
+        'same_name_rivals', 'query', 'is_selected', 'chain_rank',
+        'selected_bridge', 'bridge_linkers', 'selected_linker_values',
+        'pool_basis', 'target_pool_basis', 'pool_widen_sources',
+        'pool_widen_targets', 'source_neurons', 'target_neurons',
+        'source_type_total', 'target_type_total', 'source_body_ids',
+        'target_body_ids', 'parent_source_body_ids',
+        'parent_target_body_ids', 'branch_index', 'branch_of',
+        'branches_disjoint', 'annotation'],
+    'source_status.csv': [
+        'query', 'source_bodyId', 'source_type', 'branch_target_type',
+        'pool_basis', 'status', 'col_rank', 'best_column_target',
+        'best_pair_ru', 'n_competitors'],
+    'same_name_excluded.csv': [
+        'query', 'source_type', 'decision_status', 'disposition',
+        'selected', 'n_rivals', 'rivals', 'reason'],
+    'source_candidates.csv': [
+        'source_bodyId', 'source_type', 'target_bodyId', 'target_type',
+        'rank_union', 'jaccard', 'morph_v2_similarity', 'morph_qualified',
+        'query', 'branch_source_type', 'branch_target_type', 'dup'],
+    'out_map_expansion.csv': [
+        'query', 'source_type', 'source_bodyId', 'target_bodyId',
+        'target_type', 'rank_union', 'rank_union_rank', 'jaccard',
+        'jaccard_rank', 'in_map', 'morph_v2_similarity',
+        'morph_qualified'],
+}
+
+
+def _write_run_csv(run_dir: Path, name: str, rows: List[Dict]) -> None:
+    """Write one run CSV with the registry's columns so an empty export
+    is a header-only file, never zero bytes."""
+    _write_csv(run_dir / name, rows,
+               columns=_RUN_CSV_SCHEMAS.get(name))
+
+
 def _write_csv(path: Path, rows: List[Dict],
                columns: Optional[List[str]] = None):
     # An empty rows list with known columns still writes the header —
@@ -715,6 +911,50 @@ def _dedup_rows_by_bid(rows: List[Dict]) -> List[Dict]:
         seen.add(key)
         out.append(r)
     return out
+
+
+def select_null_sample(per_source: Dict[int, pd.DataFrame],
+                       pool_set: set,
+                       seen_null: set,
+                       null_jaccard_max: float,
+                       null_per_source_cap: int,
+                       ) -> List[Tuple[int, int]]:
+    """Deterministically pick the Rev 3.9 null-calibration sample.
+
+    Per source, the candidates are the scanned targets OUTSIDE the pool
+    with ``jaccard <= null_jaccard_max`` (provably unrelated by
+    connectivity) that no earlier bin consumed (``seen_null`` carries the
+    deep-window rows).  Selection sorts by ``target_bid`` before the
+    per-source cap, so the sample is a pure function of the scan rows —
+    immune to DataFrame/scan order.
+
+    Design stance (user 2026-09-17): the null bar gates an arbitrary
+    floor — connectivity ranks, the user verifies — so a small sampled
+    set recomputed per run is enough; there is deliberately NO cross-run
+    persistence of the bar.
+
+    Returns ``(source_bodyId, target_bid)`` pairs in selection order and
+    updates ``seen_null`` in place.
+    """
+    per_src: Dict[int, int] = {}
+    picked: List[Tuple[int, int]] = []
+    for sbid in sorted(per_source):
+        df = per_source[sbid]
+        if per_src.get(sbid, 0) >= null_per_source_cap:
+            continue
+        nulldf = df[(~df['target_bid'].isin(pool_set))
+                    & (df['jaccard'].notna())
+                    & (df['jaccard'] <= null_jaccard_max)
+                    & (~df['target_bid'].isin(seen_null))]
+        for bid in sorted(int(b) for b in nulldf['target_bid'].tolist()):
+            if per_src.get(sbid, 0) >= null_per_source_cap:
+                break
+            if bid in seen_null or bid in pool_set:
+                continue
+            per_src[sbid] = per_src.get(sbid, 0) + 1
+            seen_null.add(bid)
+            picked.append((sbid, bid))
+    return picked
 
 
 def mutual_best_assignment(pool_set: set,
@@ -810,7 +1050,13 @@ MODE_RANK = {m: i for i, m in enumerate(VALIDATION_MODES)}
 # Tier values (validated in-map targets) and expansion values.
 TIER_CATEGORIES = ('matched', 'verified', 'borderline', 'unmatched')
 EXPANSION_CATEGORIES = ('sibling', 'candidates', 'family', 'relative',
-                        'suspicious')
+                        'examinees')
+# 'examinees' is the aggressive-only deep-window category, RENAMED from
+# 'suspicious' (2026-09-18): the mapper's rival-suspects concept now owns
+# that word.  Data-schema names that embed `suspicious_` (CSV columns,
+# config fields, the res['suspicious'] key) keep their names for
+# compatibility; only user-facing category values, filenames and labels
+# changed.
 # `paired_in_pool` is the category of a FILL row that pairs an unpaired
 # neuron with an accepted pool member (either direction); it is a property
 # of the fill table, not of a target neuron, so it never appears in the
@@ -822,12 +1068,16 @@ CATEGORY_VALUES = TIER_CATEGORIES + EXPANSION_CATEGORIES + (PAIRED_CATEGORY,)
 TIER_RANK = {c: i for i, c in enumerate(TIER_CATEGORIES)}
 # Query-level dedup precedence (S6), higher wins:
 # matched > verified > borderline > unmatched > sibling > candidates >
-# family > relative > suspicious.  (Suspicious is the aggressive-only
-# deep window, the lowest-confidence suggestion, so it rolls up last.)
+# family > relative > examinees.  (Restored 2026-09-17: the precedence
+# serves the GAP-FILL accounting — a bodyId proposed as a fill by one
+# branch must count once.  It must not distort the family category,
+# which describes map structure (the in-map minus map-covered
+# remainder); the run report therefore renders family material complete
+# from set_coverage and reconciles it against the dedup bins.)
 DEDUP_RANK = {
     'matched': 9, 'verified': 8, 'borderline': 7, 'unmatched': 6,
     'sibling': 5, 'candidates': 4, 'family': 3, 'relative': 2,
-    'suspicious': 1,
+    'examinees': 1,
 }
 
 
@@ -869,7 +1119,7 @@ def classify_category(*, target_bid, branch_pool, in_map, target_type,
       suspicious bar.
 
     The order is part of the definition: tier -> sibling -> candidates ->
-    family -> relative -> suspicious.  Each rule is evaluated on the
+    family -> relative -> examinees.  Each rule is evaluated on the
     complement of the earlier ones, and the last applicable rule is a
     residual, so the result is total and exclusive over the mode's scope.
 
@@ -912,13 +1162,13 @@ def classify_category(*, target_bid, branch_pool, in_map, target_type,
                 and tt not in in_map_types:
             return ('relative', True, False)
     # 6. the aggressive-only deep window (floors v3 two-gate): a deep
-    #    row is suspicious when it passes EITHER the qualified bar (it is
-    #    then below-pool-best but fully morph-qualified) OR the loose
-    #    suspicious bar; below both it stays out of scope, flagged as
-    #    morph-failed (it failed the bar that would have admitted it).
+    #    row becomes an examinee when it passes EITHER the qualified bar
+    #    (it is then below-pool-best but fully morph-qualified) OR the
+    #    loose suspicious bar; below both it stays out of scope, flagged
+    #    as morph-failed (it failed the bar that would have admitted it).
     if is_deep and mode == 'aggressive':
         if morph_ok or suspicious_morph_ok:
-            return ('suspicious', True, False)
+            return ('examinees', True, False)
         return ('', False, True)
     return ('', False, False)
 
@@ -982,7 +1232,7 @@ def morph_qualified_suspicious(row: Dict, bars) -> bool:
     """The LOOSE aggressive-mode bar for the deep window: Track-A above
     ``B_b - k*Δ`` (or the run null p50 when the branch has no scored pool
     pairs).  Deep-window rows failing the candidate bar but passing this
-    become ``suspicious``; below it they stay out of scope."""
+    become ``examinees``; below it they stay out of scope."""
     if bars is None:
         return False
     return suspicious_qualified(bars, row.get('morph_v2_similarity'))
@@ -1087,9 +1337,132 @@ def categorize_pool_targets(per_source: Dict[int, pd.DataFrame],
     return categories, detail
 
 
+def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
+                            target_pool: set, source_pool: set,
+                            top_n: int = 2, invader_max: int = 3,
+                            matched_ru_min: float = 0.1
+                            ) -> Tuple[Dict[int, str], List[Dict]]:
+    """Backward mirror of `categorize_pool_targets` (plan
+    plan-backward-source-status.md): read-only `source-` status per
+    in-branch source bodyId, from the SAME bodyId-bodyId pair scores —
+    the column view (per target, rank the sources) beside the forward row
+    view (per source, rank the targets).
+
+    ``target_pool`` defines the columns; ``source_pool`` defines WHO gets
+    a status (the branch's own source pool — D-B7, in-branch sources
+    only).
+
+    source-matched    column-top-1 (either metric) of its own row-best
+                      pool target AND pair rank_union > matched_ru_min
+    source-verified   column-top-1 (either metric) of some pool target,
+                      or a column's top-N sources are ALL in-pool
+    source-borderline not column-top-1, but at most invader_max
+                      OUT-OF-POOL sources rank above it in its best
+                      column
+    source-unmatched  more out-of-pool sources above / no ranked rows
+                      into the pool
+
+    ADVISORY ONLY (D-B11): the statuses are user-read interpretation —
+    they never gate, never enter the dedup, and never rewrite the
+    mapping. The targets remain the validated entities.
+
+    Returns ({source_bid: status}, per-source detail rows).
+    """
+    # build the branch-local columns: per pool target, every source row
+    columns: Dict[int, List[Dict]] = {t: [] for t in target_pool}
+    for sbid, df in per_source.items():
+        sub = df[df['target_bid'].isin(target_pool)]
+        for r in sub.itertuples(index=False):
+            ru = getattr(r, 'rank_union')
+            jac = getattr(r, 'jaccard')
+            ru_nan = ru is None or pd.isna(ru)
+            jac_nan = jac is None or pd.isna(jac)
+            if ru_nan and jac_nan:
+                continue
+            columns[int(r.target_bid)].append({
+                'source': sbid,
+                'ru': None if ru_nan else float(ru),
+                'jac': None if jac_nan else float(jac),
+                'in_pool': sbid in source_pool,
+            })
+
+    def _order(entries, key):
+        # deterministic: higher score first (both metrics: higher is
+        # better; NaN sinks), then bodyId
+        return sorted(entries,
+                      key=lambda e: (e[key] is None,
+                                     -(e[key] if e[key] is not None
+                                       else 0.0),
+                                     e['source']))
+
+    col_top1_ru: set = set()
+    col_top1_jac: set = set()
+    topn_verified: set = set()
+    for t, entries in columns.items():
+        by_ru = _order(entries, 'ru')
+        by_jac = _order(entries, 'jac')
+        if by_ru:
+            col_top1_ru.add(by_ru[0]['source'])
+        if by_jac:
+            col_top1_jac.add(by_jac[0]['source'])
+        # the forward top-N mirror: a column whose top-N sources are ALL
+        # in-pool admits those N sources as source-verified
+        for ordered in (by_ru, by_jac):
+            head = ordered[:top_n]
+            if len(head) == top_n and all(e['in_pool'] for e in head):
+                topn_verified.update(e['source'] for e in head)
+
+    verified_sources = col_top1_ru | col_top1_jac | topn_verified
+
+    statuses: Dict[int, str] = {}
+    detail: List[Dict] = []
+    for s in sorted(source_pool):
+        # row-best pool target: the target this source ranks #1
+        # (highest rank_union; rank_union_rank 1)
+        own_rows = [(t, e) for t, entries in columns.items()
+                    for e in entries if e['source'] == s]
+        row_best = (max(own_rows, key=lambda te: (
+            te[1]['ru'] is not None,
+            te[1]['ru'] if te[1]['ru'] is not None else -1.0,
+            -te[0]))[0] if own_rows else None)
+        best_col = None
+        best_rank = None
+        competitors = None
+        best_ru = None
+        for t, e in own_rows:
+            by_ru = _order(columns[t], 'ru')
+            pos = next(i for i, x in enumerate(by_ru, start=1)
+                       if x['source'] == s)
+            if best_rank is None or pos < best_rank:
+                best_col = t
+                best_rank = pos
+                competitors = sum(1 for e2 in by_ru[:pos - 1]
+                                  if not e2['in_pool'])
+                best_ru = e['ru']
+        if s in verified_sources and row_best is not None \
+                and best_col == row_best and best_rank == 1 \
+                and best_ru is not None and best_ru > matched_ru_min:
+            statuses[s] = 'source-matched'
+        elif s in verified_sources:
+            statuses[s] = 'source-verified'
+        elif competitors is not None and competitors <= invader_max:
+            statuses[s] = 'source-borderline'
+        else:
+            statuses[s] = 'source-unmatched'
+        detail.append({
+            'source_bodyId': s,
+            'status': statuses[s],
+            'best_column_target': best_col,
+            'col_rank': best_rank,
+            'best_pair_ru': best_ru,
+            'n_competitors': competitors,
+        })
+    return statuses, detail
+
+
 def morph_auc(verified_scores: List[float],
               suspicious_scores: List[float]) -> Optional[float]:
-    """P(verified morph score > suspicious morph score) via Mann-Whitney U."""
+    """P(verified morph score > examinee morph score) via Mann-Whitney U."""
     from scipy.stats import mannwhitneyu
     v = [x for x in verified_scores if x is not None and not np.isnan(x)]
     s = [x for x in suspicious_scores if x is not None and not np.isnan(x)]
@@ -1316,15 +1689,81 @@ class MappingValidator:
         pair.target_type_total = int(pool.get('target_type_total') or 0)
         return True
 
+    def _is_multivalue(self, name: str, dataset: str) -> bool:
+        """P4: is this a comma-joined multi-value type cell?  Defensive
+        against partial mapper instances (no is_multivalue_type)."""
+        fn = getattr(self.mapper, 'is_multivalue_type', None)
+        if fn is None or not name:
+            return False
+        try:
+            return bool(fn(str(name), dataset))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _record_same_name_excluded(self, src_type: str,
+                                   snf: Dict, reason: str = 'same_name_fanout',
+                                   status: str = '') -> None:
+        """P2 accounting: a queried type whose same-name fan-out did NOT
+        fire (gated_held / excluded_evidence_only), or a multivalue type
+        cell (P4, reason='multivalue_cell').  Advisory record only — the
+        type stays excluded exactly as before."""
+        if not hasattr(self, '_same_name_excluded'):
+            self._same_name_excluded = []
+        self._same_name_excluded.append({
+            'query': getattr(self, '_current_query', ''),
+            'source_type': src_type,
+            'decision_status': status,
+            'disposition': snf.get('disposition') or '',
+            'selected': snf.get('selected') or '',
+            'n_rivals': len(snf.get('rivals') or []),
+            'rivals': ';'.join(snf.get('rivals') or []),
+            'reason': reason,
+        })
+
     def _pairs_for_type(self, src_type: str, pool: List[int],
                         query: str) -> List[TypePair]:
         cfg = self.cfg
+        self._current_query = query
         dec = self.mapper.get_mapping_decision(
             src_type, cfg.source_dataset, cfg.target_dataset)
         status = dec.get('status')
+        snf = dec.get('same_name_first') or {}
         if status in ('conflict', 'unmapped'):
-            self.log(f'  - {src_type}: {status} — excluded (fail-closed)')
+            if self._is_multivalue(src_type, cfg.source_dataset):
+                # P4: multi-value cells stay ATOMIC (locked decision) —
+                # accounted, never split.
+                self._record_same_name_excluded(
+                    src_type, {'disposition': 'multivalue_cell'},
+                    reason='multivalue_cell', status=str(status))
+                self.log('! [same-name-first] '
+                         f'{src_type}: multi-value type cell (kept '
+                         'atomic) — excluded from validation')
+            elif snf and not snf.get('fires', False):
+                # P2: the same-name fan-out was HELD (gated_held) —
+                # record it and say WHY the type is missing.
+                self._record_same_name_excluded(src_type, snf,
+                                                status=str(status))
+                self.log('! [same-name-first] '
+                         f'{src_type}: same-name fan-out held '
+                         f'({snf.get("disposition")}) — selection '
+                         f'{snf.get("selected")!r} withheld; '
+                         f'{len(snf.get("rivals") or [])} rival(s) in '
+                         'auto_type_mapping_suspects.csv; the run '
+                         'continues without this type')
+            else:
+                self.log(f'  - {src_type}: {status} — excluded (fail-closed)')
             return []
+        # P2: an evidence_only-path fan-out never fires (locked §0.0
+        # disposition) — record it, then let the ordinary evidence_only
+        # branch rules below decide pair survival.
+        if snf and not snf.get('fires', False) \
+                and snf.get('disposition') == 'excluded_evidence_only':
+            self._record_same_name_excluded(src_type, snf,
+                                            status=str(status))
+            self.log('! [same-name-first] '
+                     f'{src_type}: evidence-only fan-out (N-to-1 '
+                     'convergence view) excluded by policy — rivals in '
+                     'auto_type_mapping_suspects.csv')
         targets = list(dec.get('target_types') or [])
         if not targets:
             self.log(f'  - {src_type}: status {status} with no target — '
@@ -1340,6 +1779,13 @@ class MappingValidator:
 
         pairs = []
         for tgt_type in targets:
+            if self._is_multivalue(tgt_type, cfg.target_dataset):
+                self.log(f'  - {tgt_type}: multi-value target type cell '
+                         '(kept atomic) — skipped')
+                if not hasattr(self, '_multivalue_target_skips'):
+                    self._multivalue_target_skips = 0
+                self._multivalue_target_skips += 1
+                continue
             tgt_pool = self._bodyids_for(tgt_type, cfg.target_dataset)
             if not tgt_pool:
                 self.log(f'  - {src_type} -> {tgt_type}: empty target pool '
@@ -1355,6 +1801,14 @@ class MappingValidator:
                 relationship=dec.get('relationship') or '',
                 status=status,
                 query=query)
+            # P1: mark FIRED same-name-first selections (advisory only).
+            if snf.get('fires'):
+                pair.same_name_first = {
+                    'selected': snf.get('selected'),
+                    'rivals': list(snf.get('rivals') or []),
+                    'path': snf.get('path'),
+                    'disposition': snf.get('disposition'),
+                }
             pair.parent_source_pool = list(pair.source_pool)
             pair.parent_target_pool = list(pair.target_pool)
             if not self._refine_pair_branch(pair) \
@@ -1379,7 +1833,8 @@ class MappingValidator:
 
         ``sizes`` / ``weights`` are the target-dataset caliber maps
         (spatial size per bodyId; expanded-vector total weight as the
-        fallback caliber).  Returns {'rows', 'suspicious', 'noise',
+        fallback caliber).  Returns {'rows', 'suspicious' (the examinee
+        rows — the res key keeps its pre-rename name), 'noise',
         'pairs', 'summary', 'fills', 'per_source', ...}.
         """
         cfg = self.cfg
@@ -1442,7 +1897,7 @@ class MappingValidator:
             else:
                 verdict, which = 'unmatched', ''
 
-            # suspicious: non-pool neurons ranked ahead of the best pool
+            # examinees (sus_rows): non-pool neurons ranked ahead of the best pool
             # member under either metric (one row per metric).
             # Noise gates, in order (Rev 3.6 — spatial caliber PRIMARY,
             # connectivity heuristics secondary):
@@ -1635,31 +2090,23 @@ class MappingValidator:
         # connectivity — their Track-A morph distribution IS the
         # cross-dataset baseline (T1/R1-R6 live here).  Independent of
         # the deep window (works in the default mode); calibration data
-        # only: never exported as candidates.
+        # only: never exported as candidates.  Selection is
+        # deterministic (sorted by target bid, user 2026-09-17: a small
+        # sampled set is enough for the arbitrary floor gate — no
+        # cross-run persistence).
         seen_null = seen_deep
-        null_per_src: Dict[int, int] = {}
-        for sbid, df in per_source.items():
+        eligible = {s: df for s, df in per_source.items()
+                    if best_by_src.get(s) is not None}
+        for sbid, bid in select_null_sample(
+                eligible, pool_set, seen_null,
+                cfg.null_jaccard_max, cfg.null_per_source_cap):
+            df = per_source[sbid]
+            r = df[df['target_bid'] == bid].iloc[0]
             src_best = best_by_src.get(sbid)
-            if src_best is None:
-                continue
-            if null_per_src.get(sbid, 0) >= cfg.null_per_source_cap:
-                continue
-            nulldf = df[(~df['target_bid'].isin(pool_set))
-                        & (df['jaccard'].notna())
-                        & (df['jaccard'] <= cfg.null_jaccard_max)
-                        & (~df['target_bid'].isin(seen_null))]
-            for r in nulldf.itertuples(index=False):
-                bid = int(r.target_bid)
-                if null_per_src.get(sbid, 0) >= cfg.null_per_source_cap:
-                    break
-                if bid in seen_null or bid in pool_set:
-                    continue
-                null_per_src[sbid] = null_per_src.get(sbid, 0) + 1
-                seen_null.add(bid)
-                null_rows.append(self._sus_row(
-                    pair, sbid, r, src_best, 'jaccard',
-                    getattr(r, 'rank_union_rank', None),
-                    getattr(r, 'jaccard_rank', None), target_id2type))
+            null_rows.append(self._sus_row(
+                pair, sbid, r, src_best, 'jaccard',
+                getattr(r, 'rank_union_rank', None),
+                getattr(r, 'jaccard_rank', None), target_id2type))
 
         assigned = mutual_best_assignment(pool_set, per_source, val_rows)
         summary = self._summary(pair, val_rows, assigned,
@@ -1726,6 +2173,10 @@ class MappingValidator:
             'target_type': pair.target_type,
             'mapping_status': pair.status,
             'relationship': pair.relationship,
+            'same_name_first': bool(pair.same_name_first),
+            'same_name_rivals': ';'.join(
+                pair.same_name_first.get('rivals') or [])
+            if pair.same_name_first else '',
             'pool_basis': pair.pool_basis,
             'branch_linker_values': pair.linker_values,
             'branch_annotation': pair.branch_annotation,
@@ -1793,6 +2244,10 @@ class MappingValidator:
             'target_type': pair.target_type,
             'mapping_status': pair.status,
             'relationship': pair.relationship,
+            'same_name_first': bool(pair.same_name_first),
+            'same_name_rivals': ';'.join(
+                pair.same_name_first.get('rivals') or [])
+            if pair.same_name_first else '',
             'pool_basis': pair.pool_basis,
             'selected_chain': pair.chain_text,
             'branch_linker_values': pair.linker_values,
@@ -1843,7 +2298,7 @@ class MappingValidator:
         in pair_summary.csv.
 
         Out-of-pool candidates pass the SAME spatial-caliber gate as the
-        suspicious rows (Rev 3.6: a fragment proposed as a homolog is
+        examinee rows (Rev 3.6: a fragment proposed as a homolog is
         noise, e.g. MCNS 603004462 — 15 pre / 9 post, 2.4 M nm³ vs a
         ~4e8 nm³ pool — won rank_union for an unpaired source and used
         to flow straight into the scene).
@@ -1988,7 +2443,7 @@ class MappingValidator:
         compatibility `invader_class`/`invader_label` columns and the
         legacy bucket tests.  The CANONICAL classification is now
         :meth:`finalize_categories` (the S2 partition into
-        matched/…/sibling/candidates/family/relative/suspicious), which
+        matched/…/sibling/candidates/family/relative/examinees), which
         runs after morphology.  This method still tags each row with the
         old evidence columns (`sibling_pool_of`, `backward_status`,
         `alt_chain_of_parent`, …) and the legacy counts.
@@ -2345,7 +2800,7 @@ class MappingValidator:
             if str(row.get('category') or ''):
                 labeled[key_of(row)].add(bid)
 
-        # Phase B: residual bins (family / relative / suspicious) for the
+        # Phase B: residual bins (family / relative / examinees) for the
         # DEEP rows only — they are the sole evidence rows that are not
         # connectivity-qualified, and rule 5 (relative) needs the complete
         # per-branch candidate-type set from phase A.  Rows already
@@ -2372,9 +2827,14 @@ class MappingValidator:
             if str(cat):
                 labeled[k].add(bid)
 
-        # Pool (tier) rows.
+        # Pool (tier) rows.  `tiers` is keyed by the SAME branch arity as
+        # per_pair_res — use key_of (NOT a hand-rolled (source, target)
+        # tuple): the multi-query migration re-keyed tiers to
+        # (query, source, target), and a 2-tuple lookup here silently
+        # demoted every pool row to `unmatched` (found in the
+        # 2026-09-17 reportcheck end-to-end run).
         for d in pool_detail:
-            k = (str(d['source_type']), str(d['target_type']))
+            k = key_of(d)
             cat = tiers.get(k, {}).get(int(d['target_bodyId'])) or 'unmatched'
             d['category'] = cat
             d['in_scope'] = True
@@ -2432,10 +2892,10 @@ class MappingValidator:
                                 if bars else None)
             cat = str(row.get('category') or '')
             # Revision 3.12: every expansion leaf (family / candidates /
-            # relative / suspicious) carries the per-bodyId token; the
+            # relative / examinees) carries the per-bodyId token; the
             # order (out-map -> >src -> no_source -> untyped) is decided in
             # `_leaf_token`.
-            if cat in ('family', 'candidates', 'relative', 'suspicious'):
+            if cat in ('family', 'candidates', 'relative', 'examinees'):
                 row['candidate_annotation'] = self._leaf_token(row, ttype)
             else:
                 row.setdefault('candidate_annotation', '')
@@ -2579,7 +3039,7 @@ class MappingValidator:
             # expected and never flagged (user 2026-09-13: "siblings are
             # always dup, so don't tag them").
             dup = n_branches > 1 and cat in (
-                'candidates', 'family', 'relative', 'suspicious')
+                'candidates', 'family', 'relative', 'examinees')
             rows.append({
                 'target_bodyId': bid,
                 'target_type': rec['target_type_name'],
@@ -2865,7 +3325,7 @@ class MappingValidator:
 
         # ---- Floors v3: per-branch admission bars (plan-unified-
         # morph-qualification-bars).  One BarSet per branch drives EVERY
-        # admission decision (candidates, siblings, aggressive suspicious)
+        # admission decision (candidates, siblings, aggressive examinees)
         # through candidate_qualified / suspicious_qualified; native binds
         # when the m+v reference tier has >=2 scored members, the Track-A
         # backup (B_b − Δ) takes over below that, and the run null is the
@@ -3117,7 +3577,7 @@ class MappingValidator:
             sid = int(row['source_bodyId'])
             if per_src[sid] < cfg.candidate_morph_cap:
                 per_src[sid] += 1
-                add(sid, int(row['ahead_target_bodyId']), 'suspicious')
+                add(sid, int(row['ahead_target_bodyId']), 'examinees')
         for row in (deep_rows or []):
             sid = int(row['source_bodyId'])
             if per_src[sid] < cfg.candidate_morph_cap:
@@ -3137,7 +3597,23 @@ class MappingValidator:
     # -- Revision 3.10: set-level coverage --------------------------------
 
     def _set_coverage_payload(self, coverage) -> Dict:
-        return coverage
+        """set_coverage.json payload: the coverage dict plus the
+        mapper-gap evidence (additive), so the evidence survives the
+        slim README for the report generator's fallback chain."""
+        if not coverage:
+            return coverage
+        payload = dict(coverage)
+        counts = getattr(self, '_source_status_counts', None)
+        if counts:
+            fafb = dict(payload.get('fafb') or {})
+            fafb['source_status'] = dict(counts)
+            payload['fafb'] = fafb
+        gap_types = getattr(self, '_mapper_gap_types', None)
+        if gap_types:
+            payload['mapper_gap'] = {
+                'types': dict(gap_types),
+                'untyped_rows': getattr(self, '_mapper_gap_untyped', 0)}
+        return payload
 
     # -- driver -----------------------------------------------------------
 
@@ -3255,14 +3731,26 @@ class MappingValidator:
     # -- Plan I follow-up: out-map expansion -----------------------------
 
     def _expand_out_map_sources(self, out_map_by_type, in_map, target_stats,
-                                target_bids, target_id2type, top_k):
+                                target_bids, target_id2type, top_k,
+                                pool_owner=None):
         """Scan every out-map (unpaired) source neuron against the full
         target universe and keep the top-k connectivity-ranked targets that
         are NOT in-map claims.  Connectivity-only evidence: no morph bars
         apply at this stage (the scene layer and out_map_expansion.csv are
-        exploratory surfaces, never fills)."""
+        exploratory surfaces, never fills).
+
+        Source-candidates re-aim (plan-tmvev-samename-first-consumers.md
+        §10, user option 2): the SAME scans also record the source's
+        best-ranked hits onto IN-MAP branch pools — the D-B8 backward
+        mirror of candidate admission (out-of-map source,
+        connectivity-qualified onto pool(B), morph-checked against the
+        run null bar, attributed to the branch owning the pool).
+        ``pool_owner`` maps pool bodyId -> branch key.  Returns
+        ``(rows, cand_rows)``; ``cand_rows`` still need their morph
+        check before they are candidates."""
         cfg = self.cfg
         rows = []
+        cand_rows = []
         t0 = time.time()
         total = sum(len(v) for v in out_map_by_type.values())
         done = 0
@@ -3285,9 +3773,11 @@ class MappingValidator:
                 df = df.sort_values(['rank_union_rank', 'jaccard_rank'],
                                     na_position='last')
                 kept = 0
+                kept_pool = 0
                 for r in df.itertuples(index=False):
                     tgt = int(r.target_bid)
-                    if tgt in in_map:
+                    in_pool_owner = (pool_owner or {}).get(tgt)
+                    if tgt in in_map and in_pool_owner is None:
                         continue          # in-map claims are not new finds
                     # Typed targets only: an untyped (NaN/'Unknown') neuron
                     # can never enter the mapping, so it is noise here —
@@ -3298,8 +3788,7 @@ class MappingValidator:
                                                   'Unknown')
                             or (isinstance(tt, float) and tt != tt)):
                         continue
-                    kept += 1
-                    rows.append({
+                    base = {
                         'query': query,
                         'source_type': src_type,
                         'source_bodyId': bid,
@@ -3310,9 +3799,25 @@ class MappingValidator:
                                                       None)),
                         'jaccard': _f(getattr(r, 'jaccard', None)),
                         'jaccard_rank': _f(getattr(r, 'jaccard_rank', None)),
-                        'in_map': False,
-                    })
-                    if kept >= top_k:
+                    }
+                    if in_pool_owner is not None:
+                        # D-B8 mirror: the unclaimed source ranks a branch
+                        # pool member among its best hits.  Same per-source
+                        # rank window as the expansion (rows are sorted).
+                        if kept_pool < top_k:
+                            kept_pool += 1
+                            rec = dict(base)
+                            rec['in_map'] = True
+                            rec['branch_key'] = in_pool_owner
+                            cand_rows.append(rec)
+                        continue
+                    if kept < top_k:
+                        kept += 1
+                        rows.append({**base, 'in_map': False})
+                    # The non-in-map rows are capped, but in-pool hits
+                    # further down the ranking still count — keep
+                    # iterating until BOTH caps are closed.
+                    if kept >= top_k and kept_pool >= top_k:
                         break
                 if done % 25 == 0 or done == total:
                     self.log(f'[TMVEV] out-map expansion: {done}/{total} '
@@ -3325,15 +3830,19 @@ class MappingValidator:
         # Morph qualification for the expansion candidates (Track-A): the
         # run null bar is the noise floor — exploratory pairs below it
         # FAIL (e.g. photoreceptor/orphan captures).  Bounded by the
-        # per-source cap (top_k rows), NBLAST off.
-        if rows and getattr(self, '_track_a_null_bar', None) is not None:
+        # per-source cap (top_k rows), NBLAST off.  The in-pool
+        # source-candidate rows are checked against the SAME bar (they
+        # share the score map — one enrich pass covers both).
+        morph_targets = rows + cand_rows
+        if morph_targets and getattr(self, '_track_a_null_bar',
+                                     None) is not None:
             try:
                 import pandas as pd
                 from morphology import enrich_homolog_results
                 pair_df = pd.DataFrame(
                     [{'source_bodyId': r['source_bodyId'],
                       'target_bodyId': r['target_bodyId'],
-                      'pair_kind': 'out_map'} for r in rows])
+                      'pair_kind': 'out_map'} for r in morph_targets])
                 enr = enrich_homolog_results(
                     pair_df, cfg.source_dataset, cfg.target_dataset,
                     verbose=False, compute_nblast=False)
@@ -3345,13 +3854,14 @@ class MappingValidator:
                         sc[(int(er.source_bodyId),
                             int(er.target_bodyId))] = float(v)
                 n_pass = 0
-                for r in rows:
+                for r in morph_targets:
                     key = (int(r['source_bodyId']), int(r['target_bodyId']))
                     r['morph_v2_similarity'] = sc.get(key)
                     r['morph_qualified'] = bool(
                         r['morph_v2_similarity'] is not None
                         and r['morph_v2_similarity'] >= self._track_a_null_bar)
-                    n_pass += r['morph_qualified']
+                    if not r.get('in_map'):
+                        n_pass += r['morph_qualified']
                 self.log(f'[TMVEV] out-map expansion morph check: '
                          f'{n_pass}/{len(rows)} pass the null bar '
                          f'({self._track_a_null_bar:.3f})')
@@ -3361,7 +3871,270 @@ class MappingValidator:
                 import traceback
                 self.log(f'[TMVEV] out-map morph check failed: {exc}')
                 self.log(traceback.format_exc())
-        return rows
+        return rows, cand_rows
+
+    def _backward_source_pass(self, per_pair_res: Dict,
+                              all_sus_rows: List[Dict]) -> None:
+        """Populate the advisory backward view (plan-
+        backward-source-status.md): `source-` statuses per in-branch
+        source (column view of the same pair scores) and the
+        source-candidates regroup (foreign sources whose qualified
+        sibling rows point into a branch pool)."""
+        all_source_status: List[Dict] = []
+        source_candidates: Dict[Tuple[str, str, str], List[Dict]] = {}
+        target_branch: Dict[int, Tuple] = {}
+        for key, res in per_pair_res.items():
+            for t in (res.get('_pool_set') or []):
+                target_branch[int(t)] = key
+        seen_status: set = set()
+        for key, res in per_pair_res.items():
+            pool_set = {int(b) for b in (res.get('_pool_set') or [])}
+            per_src = res.get('per_source')
+            if not pool_set or per_src is None:
+                continue
+            pd0 = (res.get('pool_detail') or [{}])[0]
+            q = str(pd0.get('query') or (key[0] if len(key) == 3 else ''))
+            src_type = str(pd0.get('source_type')
+                           or (key[1] if len(key) == 3 else key[0]))
+            tgt_type = str(pd0.get('target_type') or key[-1])
+            basis = str(pd0.get('pool_basis') or 'linker rows')
+            statuses, detail = categorize_pool_sources(
+                per_src, pool_set, set(per_src.keys()),
+                top_n=self.cfg.verified_top_n,
+                invader_max=self.cfg.invader_borderline_max,
+                matched_ru_min=self.cfg.matched_ru_min)
+            for d in detail:
+                sbid = int(d['source_bodyId'])
+                if sbid in seen_status:
+                    continue
+                seen_status.add(sbid)
+                all_source_status.append({
+                    'query': q, 'source_bodyId': sbid,
+                    'source_type': src_type,
+                    'branch_target_type': tgt_type,
+                    'pool_basis': basis, 'status': d['status'],
+                    'col_rank': d['col_rank'],
+                    'best_column_target': d['best_column_target'],
+                    'best_pair_ru': d['best_pair_ru'],
+                    'n_competitors': d['n_competitors'],
+                })
+        self._source_status_rows = all_source_status
+        if all_source_status:
+            counts = Counter(
+                r['status'] for r in all_source_status)
+            self._source_status_counts = dict(counts)
+            self.log('[TMVEV] backward source status: '
+                     + ', '.join(f'{k} {v}' for k, v in
+                                 counts.most_common()))
+
+    def _collect_source_candidates(self, cand_rows: List[Dict]) -> None:
+        """Build the branch-attributed source-candidates from the
+        out-map expansion's in-pool rows (plan
+        `plan-tmvev-samename-first-consumers.md` §10 — user option 2).
+
+        RE-AIMED semantics (replacing the sibling-row route, whose
+        candidates were by construction other branches' query neurons):
+        a source-candidate of branch B is an OUT-OF-MAP source (claimed
+        by no branch) whose best-ranked scan hits land in pool(B) and
+        pass the run null bar — the D-B8 backward mirror of candidate
+        admission.  Sets `_source_candidates` + `_source_candidates_multi`
+        for the scenes and `source_candidates.csv`."""
+        by_branch: Dict[Tuple, List[Dict]] = {}
+        for r in cand_rows or []:
+            if not r.get('morph_qualified'):
+                continue
+            bkey = r.get('branch_key')
+            if bkey is None:
+                continue
+            by_branch.setdefault(bkey, []).append({
+                'source_bodyId': int(r['source_bodyId']),
+                'source_type': r.get('source_type'),
+                'target_bodyId': int(r['target_bodyId']),
+                'target_type': r.get('target_type'),
+                'rank_union': r.get('rank_union'),
+                'jaccard': r.get('jaccard'),
+                'morph_v2_similarity': r.get('morph_v2_similarity'),
+                'morph_qualified': True,
+            })
+        cand_count: Counter = Counter()
+        for rows in by_branch.values():
+            for c in rows:
+                cand_count[c['source_bodyId']] += 1
+        self._source_candidates_multi = {
+            bid for bid, n in cand_count.items() if n > 1}
+        self._source_candidates = by_branch
+        if by_branch:
+            self.log('[TMVEV] source-candidates: '
+                     + f"{sum(len(v) for v in by_branch.values())}"
+                     + ' morph-qualified row(s) across '
+                     + f"{len(by_branch)} target branch(es) from "
+                     + f'{len(cand_count)} distinct out-of-map source(s)')
+
+    # -- P3: advisory suspects verification (OPT-IN) ----------------------
+
+    def _suspects_decision(self, src_type: str) -> Optional[Dict]:
+        """The mapper's same-name-first decision for one source type
+        (None when the mapper lacks the accessor or the type is not a
+        same-name fan-out)."""
+        fn = getattr(self.mapper, 'same_name_first_fires', None)
+        if fn is None:
+            return None
+        try:
+            return fn(src_type, self.cfg.source_dataset,
+                      self.cfg.target_dataset)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _verify_suspects_for_type(self, src_type: str, pool: List[int],
+                                  scans: Dict[int, pd.DataFrame],
+                                  decision: Optional[Dict],
+                                  target_id2type=None, sizes=None,
+                                  weights=None, source_sides=None,
+                                  target_sides=None) -> None:
+        """Verify ONE source type's rival candidates against their own
+        target pools with the ordinary validation machinery, routing the
+        rows into the SEPARATE suspects accumulators.  Never touches the
+        main validation outputs (advisory, P3)."""
+        if not decision or not (decision.get('rivals') or []):
+            return
+        if not hasattr(self, '_suspects_verification_rows'):
+            self._suspects_verification_rows = []
+            self._suspects_verified_types = set()
+        if src_type in self._suspects_verified_types:
+            return
+        self._suspects_verified_types.add(src_type)
+        cfg = self.cfg
+        # mapper-side per-rival evidence (clean own pair, votes, ...)
+        rival_evidence = {}
+        gd = getattr(self.mapper, 'get_same_name_conflict_detail', None)
+        if gd is not None:
+            try:
+                detail = gd(src_type, cfg.source_dataset,
+                            cfg.target_dataset)
+                for r in (detail or {}).get('rival_evidence') or []:
+                    rival_evidence[str(r.get('rival'))] = r
+            except Exception:  # noqa: BLE001
+                rival_evidence = {}
+        status = str(decision.get('disposition') or '')
+        for rival in decision.get('rivals') or []:
+            tgt_pool = self._bodyids_for(rival, cfg.target_dataset)
+            if not tgt_pool:
+                self.log(f'  [suspects] {src_type}: rival {rival!r} has '
+                         'no target pool — skipped')
+                continue
+            spair = TypePair(
+                source_dataset=cfg.source_dataset,
+                source_type=src_type,
+                source_pool=sorted(int(b) for b in pool),
+                target_dataset=cfg.target_dataset,
+                target_type=rival,
+                target_pool=tgt_pool,
+                relationship='suspects',
+                status=status,
+                query=str(getattr(self, '_current_query', '')
+                          or src_type))
+            res = self.validate_pair(
+                spair, scans, target_id2type, sizes=sizes,
+                weights=weights, source_sides=source_sides,
+                target_sides=target_sides)
+            ev = rival_evidence.get(str(rival)) or {}
+            for row in res['rows']:
+                row['rival_of'] = decision.get('selected') or ''
+                row['disposition'] = decision.get('disposition') or ''
+                row['rival_has_own_clean_pair'] = bool(
+                    ev.get('rival_has_own_clean_pair'))
+                row['rival_reverse_target'] = ev.get('reverse_target') or ''
+                row['rival_votes'] = ev.get('votes')
+                # mapper-side population context (interpretation aid:
+                # how many neurons carry the rival name on each side)
+                row['rival_population_source'] = ev.get('population_source')
+                row['rival_population_target'] = ev.get('population_target')
+                self._suspects_verification_rows.append(row)
+            self.log(f'  [suspects] {src_type}: rival {rival} — '
+                     f'verdicts: '
+                     f'{_counter_text("verdict", res["rows"])}')
+
+    def _verify_suspects_for_excluded(self, target_id2type=None,
+                                      sizes=None, weights=None,
+                                      source_sides=None, target_sides=None,
+                                      target_stats=None,
+                                      target_bids=None) -> None:
+        """P3 second hook: held / evidence-only types have no validated
+        pairs, so their source pools were never scanned.  Build their
+        scans and verify their rivals too (D-A: all queried fan-outs)."""
+        cfg = self.cfg
+        records = [r for r in (getattr(self, '_same_name_excluded', []) or [])
+                   if r.get('disposition') in ('gated_held',
+                                               'excluded_evidence_only')]
+        for rec in records:
+            src_type = str(rec.get('source_type') or '')
+            if not src_type:
+                continue
+            decision = self._suspects_decision(src_type)
+            if not decision:
+                continue
+            pool = self._bodyids_for(src_type, cfg.source_dataset)
+            if not pool:
+                continue
+            self._current_query = str(rec.get('query') or src_type)
+            scans: Dict[int, pd.DataFrame] = {}
+            for sbid in pool:
+                sp = self.profiler.get_profile(sbid, cfg.source_dataset)
+                if sp is None or \
+                        sp.connectivity_status.name in SOURCE_STATUS_SKIP:
+                    continue
+                scans[sbid] = scan_source(
+                    expanded_vector(sp, self.mapper),
+                    target_stats, target_bids)
+            try:
+                self._verify_suspects_for_type(
+                    src_type, pool, scans, decision,
+                    target_id2type=target_id2type, sizes=sizes,
+                    weights=weights, source_sides=source_sides,
+                    target_sides=target_sides)
+            finally:
+                del scans
+
+    def _suspects_only_pass(self) -> None:
+        """P3 for a run whose EVERY queried type was fail-closed (e.g. a
+        lone held fan-out): there are no pairs to validate, but the
+        rivals still deserve their advisory verification.  Builds the
+        minimal stage-2 target frame, then runs the excluded-types
+        hook."""
+        cfg = self.cfg
+        self.log('[stage 2-lite] building target vectors for the '
+                 'suspects pass (--verify-suspects)')
+        if not cfg.skip_profile_build:
+            try:
+                self._preflight_target_profiles(cfg.target_dataset)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[TMVEV] profile pre-flight failed '
+                         f'(continuing cache-only): {exc}')
+        vectors = build_target_vectors(
+            self.profiler, cfg.target_dataset, self.mapper, cfg.verbose,
+            min_weight=cfg.target_min_weight,
+            min_partner_types=cfg.target_min_partner_types)
+        target_stats = prep_target_stats(vectors)
+        target_bids = list(target_stats)
+        target_id2type = self._target_types(target_bids)
+        self._target_sizes = load_caliber_map(cfg.target_dataset)
+        self._source_sizes = load_caliber_map(cfg.source_dataset)
+        self._target_sides = load_hemisphere_map(cfg.target_dataset)
+        self._source_sides = load_hemisphere_map(cfg.source_dataset)
+        self._source_type_counts, self._source_add_counts = \
+            load_source_type_counts(cfg.source_dataset)
+        self._target_weights = {bid: s.sum1 for bid, s in
+                                target_stats.items()}
+        self._verify_suspects_for_excluded(
+            target_id2type=target_id2type,
+            sizes=self._target_sizes, weights=self._target_weights,
+            source_sides=self._source_sides,
+            target_sides=self._target_sides,
+            target_stats=target_stats, target_bids=target_bids)
+        n_rows = len(getattr(self, '_suspects_verification_rows', []) or [])
+        if n_rows:
+            self.log(f'[TMVEV] suspects verification: {n_rows} rows '
+                     '(no-pair run)')
 
     def run(self) -> Path:
         cfg = self.cfg
@@ -3370,12 +4143,13 @@ class MappingValidator:
         base = Path(cfg.output_dir) if cfg.output_dir else \
             Path(__file__).resolve().parents[2] / 'local_data' / \
             'mapping_validation'
-        # The analysis ROOT folder carries the type-map prefix (the
-        # scene folders inside keep their own plot-3d naming).
+        # The analysis ROOT folder carries the type-map-validation
+        # prefix with the SHORT dataset nicknames (user 2026-09-18;
+        # scene folders inside keep their own plot-3d naming).  The
+        # --label stays in parameters.json / the report, not the name.
         self.run_dir = base / (
-            f'type-map_{_abbrev(cfg.source_dataset)}_to_'
-            f'{_abbrev(cfg.target_dataset)}'
-            f'_{cfg.run_label}_{stamp}')
+            f'type-map-validation_{_short_name(cfg.source_dataset)}_to_'
+            f'{_short_name(cfg.target_dataset)}_{stamp}')
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.progress = ProgressReporter(self.run_dir)
         self.progress.emit('run_start', source_dataset=cfg.source_dataset,
@@ -3389,6 +4163,16 @@ class MappingValidator:
         self.pairs = self.resolve_type_pairs()
         if not self.pairs:
             self.log('no valid type pairs resolved; nothing to validate')
+            # P3: a no-pair run (e.g. a lone held fan-out) still verifies
+            # its rivals when the pass is opted in.
+            if cfg.verify_suspects:
+                try:
+                    self._suspects_only_pass()
+                except Exception as exc:  # noqa: BLE001
+                    import traceback
+                    self.log(f'[TMVEV] suspects verification (no-pair '
+                             f'run) failed (advisory, skipped): {exc}')
+                    self.log(traceback.format_exc())
             self._write_outputs([], [], [], [], None, None, [], [], [])
             return self.run_dir
 
@@ -3490,9 +4274,63 @@ class MappingValidator:
                          f'gap={res["summary"]["gap"]} '
                          f'({res["summary"]["gap_ratio"]:.0%}), '
                          f'triggered={res["summary"]["gap_triggered"]}, '
-                         f'suspicious rows={len(res["suspicious"])}, '
+                         f'examinee rows={len(res["suspicious"])}, '
                          f'noise filtered={len(res["noise"])}')
+            # P3 (opt-in): verify this type's rival suspects against the
+            # SAME scan frames — advisory, separate accumulators.
+            if cfg.verify_suspects:
+                try:
+                    self._verify_suspects_for_type(
+                        src_type, pool, scans,
+                        self._suspects_decision(src_type),
+                        target_id2type=target_id2type,
+                        sizes=self._target_sizes,
+                        weights=self._target_weights,
+                        source_sides=self._source_sides,
+                        target_sides=self._target_sides)
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f'  [suspects] verification failed for '
+                             f'{src_type} (advisory, skipped): {exc}')
             del scans
+
+        # P3 second hook (opt-in): held / evidence-only types were never
+        # scanned (no validated pairs) — build their scans now so their
+        # rivals get verified too (D-A: all queried fan-outs).
+        if cfg.verify_suspects:
+            try:
+                self._verify_suspects_for_excluded(
+                    target_id2type=target_id2type,
+                    sizes=self._target_sizes,
+                    weights=self._target_weights,
+                    source_sides=self._source_sides,
+                    target_sides=self._target_sides,
+                    target_stats=target_stats, target_bids=target_bids)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[TMVEV] suspects verification (excluded types) '
+                         f'failed (advisory, skipped): {exc}')
+            n_sus_ver = len(getattr(self, '_suspects_verification_rows',
+                                    []) or [])
+            n_sus_types = len(getattr(self, '_suspects_verified_types',
+                                      set()) or set())
+            if n_sus_ver:
+                self.log(f'[TMVEV] suspects verification: {n_sus_ver} '
+                         f'rows across {n_sus_types} source type(s)')
+
+        # Backward source status (plan-backward-source-status.md): the
+        # column view of the SAME pair scores — read-only `source-`
+        # statuses per in-branch source (advisory, D-B11), plus the
+        # source-candidates regroup (foreign sources whose qualified
+        # sibling rows point into the branch pool). Additive: nothing
+        # downstream consumes these for gating. FAIL-OPEN: any failure
+        # here logs and skips — an advisory layer must never kill a run.
+        try:
+            self._backward_source_pass(per_pair_res, all_sus_rows)
+        except Exception as exc:
+            import traceback
+            self.log(f'[TMVEV] backward source status failed '
+                     f'(advisory, skipped): {exc}')
+            self.log(traceback.format_exc())
+
 
         # Revision 3.6: classify every invader BEFORE morph promotion —
         # structural facts (sibling pools, collapsed chains, real backward
@@ -3567,6 +4405,7 @@ class MappingValidator:
             self.log(f'[categories] failed: {exc}')
             self.log(traceback.format_exc())
 
+
         # Revision 3.10: set-level coverage — the deliverable for
         # "how much of the source→target mapping is validated, proposed,
         # and still missing" (per-branch gaps are diagnostics).  Computed
@@ -3574,10 +4413,31 @@ class MappingValidator:
         # category-qualified `counts_toward_gap_fill` (Rev 3.12).
         coverage = None
         try:
+            # P2/P4 accounting counters (advisory, additive): held /
+            # evidence-only same-name fan-outs + multivalue cells.
+            snf_excluded = getattr(self, '_same_name_excluded', []) or []
+            extra = {}
+            if snf_excluded:
+                held = [r for r in snf_excluded
+                        if r.get('disposition') == 'gated_held']
+                excl = [r for r in snf_excluded
+                        if r.get('disposition') == 'excluded_evidence_only']
+                multi = [r for r in snf_excluded
+                         if r.get('reason') == 'multivalue_cell']
+                if held:
+                    extra['same_name_first_held'] = len(held)
+                if excl:
+                    extra['same_name_first_excluded'] = len(excl)
+                if multi:
+                    extra['multivalue_types'] = len(multi)
+            if getattr(self, '_multivalue_target_skips', 0):
+                extra['multivalue_target_types'] = int(
+                    self._multivalue_target_skips)
             coverage = compute_set_coverage(self.pairs, per_pair_res,
                                             all_fills,
                                             evidence_rows=all_sus_rows
-                                            + all_deep_rows)
+                                            + all_deep_rows,
+                                            extra_counters=extra)
             self._set_coverage = coverage
         except Exception as exc:  # noqa: BLE001
             import traceback
@@ -3615,12 +4475,22 @@ class MappingValidator:
                      '(nothing to scan)')
         elif n_out_map:
             in_map = set()
-            for res in per_pair_res.values():
-                in_map |= {int(b) for b in (res.get('_pool_set') or [])}
+            pool_owner: Dict[int, tuple] = {}
+            for key, res in per_pair_res.items():
+                for b in (res.get('_pool_set') or []):
+                    in_map.add(int(b))
+                    pool_owner[int(b)] = key
             try:
-                out_map_rows = self._expand_out_map_sources(
+                out_map_rows, cand_raw = self._expand_out_map_sources(
                     out_map_by_type, in_map, target_stats, target_bids,
-                    target_id2type, cfg.out_map_top_k)
+                    target_id2type, cfg.out_map_top_k,
+                    pool_owner=pool_owner)
+                # Source-candidates, RE-AIMED (plan §10, user option 2):
+                # out-of-map sources whose best-ranked hits land in a
+                # branch pool, morph-qualified against the run null bar
+                # (D-B8's mirror of candidate admission — now actually
+                # foreign, unlike the sibling-row route).
+                self._collect_source_candidates(cand_raw)
             except Exception as exc:  # noqa: BLE001
                 import traceback
                 self.log(f'[TMVEV] out-map expansion failed: {exc}')
@@ -3657,10 +4527,22 @@ class MappingValidator:
                            run_dir=str(self.run_dir),
                            elapsed_s=round(time.time() - t_start, 1))
         self.log(f'done in {time.time() - t_start:.0f}s -> {self.run_dir}')
+        # Refresh the slim README so its raw run log also carries the
+        # closing lines (report written / done) — the copy written inside
+        # `_write_outputs` predates them.  The report.html is refreshed
+        # for the same reason (the run_done elapsed lands in its
+        # header/timeline); notes append is idempotent.
+        self._write_readme(summaries, morph_info, coverage)
+        try:
+            from comparison.mapping_validation_report import (
+                collect_and_write as _report_refresh)
+            _report_refresh(self.run_dir, log=self.log)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'    ! run report refresh failed: {exc}')
         return self.run_dir
 
     def _target_types(self, target_bids: List[int]) -> Dict[int, str]:
-        """Type label per target bodyId (for suspicious/fill reporting)."""
+        """Type label per target bodyId (for examinee/fill reporting)."""
         id2type: Dict[int, str] = {}
         if not target_bids:
             return id2type
@@ -3691,24 +4573,43 @@ class MappingValidator:
         bodyId-unique rollup (``gap_fill_dedup.csv``).
         """
         rd = self.run_dir
-        _write_csv(rd / 'validation_results.csv', val_rows)
-        _write_csv(rd / 'suspicious_candidates.csv', sus_rows)
-        _write_csv(rd / 'noise_filtered_candidates.csv',
-                   noise_rows or [])
-        _write_csv(rd / 'deep_candidates.csv', deep_rows or [])
-        _write_csv(rd / 'relatives.csv', relatives or [])
-        _write_csv(rd / 'family_candidates.csv', family_rows or [])
-        _write_csv(rd / 'gap_fill_dedup.csv', dedup_rows or [])
-        _write_csv(rd / 'gap_fill_levels.csv', gap_levels or [])
-        _write_csv(rd / 'out_map_expansion.csv', out_map_rows or [],
-                   columns=['query', 'source_type', 'source_bodyId',
-                            'target_bodyId', 'target_type', 'rank_union',
-                            'rank_union_rank', 'jaccard', 'jaccard_rank',
-                            'in_map'])
-        _write_csv(rd / 'pair_summary.csv', summaries)
-        _write_csv(rd / 'gap_fill_proposals.csv', fills)
-        _write_csv(rd / 'pool_categories.csv', pool_detail)
-        _write_csv(rd / 'mapping_export.csv', self._mapping_export_rows())
+        # Every export goes through `_write_run_csv` so an empty result is
+        # a header-only file (never zero bytes — user 2026-09-18).
+        _write_run_csv(rd, 'validation_results.csv', val_rows)
+        _write_run_csv(rd, 'examinees.csv', sus_rows)
+        _write_run_csv(rd, 'noise_filtered_candidates.csv',
+                       noise_rows or [])
+        _write_run_csv(rd, 'deep_candidates.csv', deep_rows or [])
+        _write_run_csv(rd, 'relatives.csv', relatives or [])
+        _write_run_csv(rd, 'family_candidates.csv', family_rows or [])
+        _write_run_csv(rd, 'gap_fill_dedup.csv', dedup_rows or [])
+        _write_run_csv(rd, 'gap_fill_levels.csv', gap_levels or [])
+        _write_run_csv(rd, 'source_status.csv',
+                       getattr(self, '_source_status_rows', None) or [])
+        # source-candidates flattened (branch attribution + the dup flag)
+        # so the offline report reads the SAME rows the scene renders.
+        _sc_rows = []
+        for _bk, _rows in (getattr(self, '_source_candidates', {}) or {}).items():
+            for _c in _rows:
+                _row = dict(_c)
+                _row['query'] = _bk[0] if isinstance(_bk, tuple) and len(_bk) >= 1 else ''
+                _row['branch_source_type'] = _bk[1] if isinstance(_bk, tuple) and len(_bk) >= 2 else ''
+                _row['branch_target_type'] = _bk[2] if isinstance(_bk, tuple) and len(_bk) >= 3 else ''
+                _row['dup'] = int(_c['source_bodyId']) in (
+                    getattr(self, '_source_candidates_multi', set()) or set())
+                _sc_rows.append(_row)
+        _write_run_csv(rd, 'source_candidates.csv', _sc_rows)
+        _write_run_csv(rd, 'same_name_excluded.csv',
+                       getattr(self, '_same_name_excluded', None) or [])
+        if getattr(self.cfg, 'verify_suspects', False):
+            _write_run_csv(rd, 'suspects_verification.csv',
+                           getattr(self, '_suspects_verification_rows', None)
+                           or [])
+        _write_run_csv(rd, 'out_map_expansion.csv', out_map_rows or [])
+        _write_run_csv(rd, 'pair_summary.csv', summaries)
+        _write_run_csv(rd, 'gap_fill_proposals.csv', fills)
+        _write_run_csv(rd, 'pool_categories.csv', pool_detail)
+        _write_run_csv(rd, 'mapping_export.csv', self._mapping_export_rows())
         (rd / 'parameters.json').write_text(json.dumps({
             'source_dataset': self.cfg.source_dataset,
             'target_dataset': self.cfg.target_dataset,
@@ -3719,6 +4620,7 @@ class MappingValidator:
             'rank_top_k': self.cfg.rank_top_k,
             'gap_min': self.cfg.gap_min,
             'gap_trigger_retired': True,
+            'verify_suspects': self.cfg.verify_suspects,
             'verified_top_n': self.cfg.verified_top_n,
             'invader_borderline_max': self.cfg.invader_borderline_max,
             'matched_ru_min': self.cfg.matched_ru_min,
@@ -3752,166 +4654,91 @@ class MappingValidator:
                 json.dumps(morph_info, indent=2, default=str))
         if set_coverage:
             (rd / 'set_coverage.json').write_text(
-                json.dumps(set_coverage, indent=2, default=str))
+                json.dumps(self._set_coverage_payload(set_coverage),
+                           indent=2, default=str))
         self._write_readme(summaries, morph_info, set_coverage)
+        # per-run HTML report (report.html) + user warning notes —
+        # fail-open, never blocks the run
+        try:
+            from comparison.mapping_validation_report import \
+                finish_run_outputs
+            finish_run_outputs(
+                rd,
+                mapper_gap_types=getattr(self, '_mapper_gap_types',
+                                         None),
+                mapper_gap_untyped=getattr(self,
+                                           '_mapper_gap_untyped', 0),
+                log=self.log)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'    ! run report failed: {exc}')
 
     def _write_readme(self, summaries, morph_info, set_coverage=None):
+        """Slim README: directions + raw run log only.
+
+        The analysis content (coverage levels, branches, fills,
+        expansion bins, morph record, scenes, column glossary) lives in
+        ``report.html``, generated right after this by
+        ``mapping_validation_report``; ``summaries`` / ``morph_info`` /
+        ``set_coverage`` stay in their own CSV/JSON artifacts.  Every
+        ``!`` warning line reaches the user through the run log here AND
+        the appended ``user_warning_notes.txt``.  Pure function of
+        ``self.notes`` — ``run()`` writes it inside ``_write_outputs``
+        and refreshes it once more after the closing log lines so the
+        captured log is complete.
+        """
         lines = [
             'Type-mapping validation run',
             '===========================',
             f'source: {self.cfg.source_dataset}  target: '
             f'{self.cfg.target_dataset}',
             f'queries: {", ".join(self.cfg.query_types)}',
+            f'mode: {self.cfg.effective_mode}',
             '',
-            'Column glossary:',
-            f'- validation mode: {self.cfg.effective_mode} '
-            '(ordered enum restrictive < family < aggressive; modes',
-            '  NEST — switching mode only admits more neurons, never',
-            '  relabels one).',
-            '- verdict: tiered rule — verified_strong (best pool member is',
-            '  global top-1 under BOTH rank_union and jaccard), verified',
-            f'  (top-1 under one), borderline (top-{self.cfg.rank_top_k}',
-            '  window), unmatched.',
-            '- category (Revision 3.12 partition; every in-scope target',
-            '  gets EXACTLY one, decided in this order):',
-            '    matched/verified/borderline/unmatched = the validated',
-            '      in-map targets of THIS branch (tier; unmatched is the',
-            '      else, no skipped);',
-            '    sibling = an in-map target of the query in ANOTHER branch',
-            '      that appears in this branch\'s expansion (connectivity-',
-            '      and morph-qualified) — already mapped, never a fill;',
-            '    candidates = out-of-map suspect, connectivity-qualified',
-            '      (invader or gap fire) AND morph-qualified — the',
-            '      restrictive fill;',
-            '    family = out-map bodyIds of THIS branch\'s target type',
-            '      (family/aggressive modes; type-gated, not morph-gated);',
-            '    relative = type-mates of candidate types outside the map',
-            '      (family/aggressive modes);',
-            '    suspicious = the aggressive-only deep window.',
-            '- candidate_annotation: the per-bodyId leaf token on every',
-            '  expansion bin (family / candidates / relative / suspicious),',
-            '  one ordered value:',
-            '    {T}(out-map)  = the TYPE is an in-map type (bodyId-level',
-            '                    out-of-map; every `family` member) — the',
-            '                    fill material.  Wins over the tokens below.',
-            '    {T}>{src}     = the type is NOT in-map but maps backward to',
-            '                    a real source population (type-level).',
-            '    {T}(no_source)= the type is NOT in-map with no usable',
-            '                    backward route (hollow/absent; type-level).',
-            '    untyped       = no type annotation.',
-            '  (dup) is a standalone trailing tag.',
-            '- in_scope / morph_failed: a connectivity-qualified suspect',
-            '  that FAILS the morph rule is out of scope — exported with',
-            '  in_scope=False, morph_failed=True, category blank, and',
-            '  never rendered (this is the connectivity-only homolog',
-            '  result, kept for reconciliation).',
-            '- counts_toward_restrictive_fill = category is candidates;',
-            '  counts_toward_family_fill = category is candidates/family/',
-            '  relative.  The fill is a ranked process, not deterministic.',
-            '- gap_fill_dedup.csv: query-level, one row per target bodyId',
-            '  (precedence matched>verified>borderline>unmatched>sibling>',
-            '  candidates>family>relative>suspicious); `dup` flags a',
-            '  non-sibling bodyId labeled in more than one branch.',
-            '- noise gates (rows moved to noise_filtered_candidates.csv',
-            '  with noise_reason): spatial caliber <',
-            f'  {self.cfg.target_min_size_ratio} x the branch pool best',
-            '  (PRIMARY, from the neuron-table size — annotation-',
-            '  independent), rank_union <= 0, jaccard < '
-            f'{self.cfg.suspicious_jaccard_factor} x the pool best,',
-            f'  rank_union margin < {self.cfg.suspicious_ru_margin}',
-            '  (numerical tie).',
-            '- candidate qualification (rule v3, floors): the NATIVE',
-            '  matched+verified floor (mean pairwise reference sim -',
-            '  native margin) is binding when the branch has >= 2 scored',
-            '  references; otherwise the Track-A backup floor',
-            '  B_b - Δ (Δ = morph_track_a_offset) on the branch scored',
-            '  pool pairs; otherwise the run null p95.  The aggressive',
-            '  deep window is admitted at B_b - k*Δ (null p50 fallback).',
-            '  Bars and kinds are in morphology_calibration.json',
-            '  (branch_bars / bar_params).',
-            '- MORPHOLOGY SCORING FRAMES: both morph tracks score in the',
-            '  TARGET dataset\'s coordinates — morph_v2_similarity/',
-            '  morph_nblast (Track A) use the source transformed into',
-            '  the target render space; morph_pool_ref (Track B, native',
-            '  reference) is fully native with NO transforms. The scene',
-            '  HTMLs render in the SOURCE dataset\'s coordinates',
-            '  (targets bridged into the source template) — a different',
-            '  frame from the scores; NBLAST is coordinate-sensitive,',
-            '  so read the scene as anatomy, not as the scoring frame.',
-            '- pool_ref tiers: the native reference set is matched-only',
-            '  when a branch has >= 2 matched neurons; verified joins as',
-            '  an explicitly-flagged compromise otherwise (see',
-            '  pool_ref_tier in morphology_calibration.json).',
-            '- gap: min(source_pool, target_pool) - matched; fills fire',
-            f'  when gap > {self.cfg.gap_min} (default).',
-            '  --mode aggressive adds the deep-window search (out-of-pool',
-            '  homologs below the pool best) — off by default after the',
-            '  r36e review showed over-expansion in finely identified',
-            '  brain regions.',
-            '- deep_candidates.csv (aggressive mode only):',
-            '  out-of-pool neurons within the',
-            f'  top-{self.cfg.candidate_window} per metric that rank',
-            '  BELOW the pool best (Revision 3.8 deep window) — homologs',
-            '  a strong pool member can hide.  Same gates as suspicious',
-            '  rows; morph-qualified unexplained ones are `suspicious`.',
-            '- pool_categories.csv: per in-map target, the tier category',
-            '  (matched / verified / borderline / unmatched) with its',
-            '  best-evidence metrics and size.',
-            '- fills are proposals only (in_pool / out_of_pool tagged,',
-            '  proposed for every unpaired neuron); out_of_pool fills',
-            '  with their actual type are mapper-gap evidence. The',
-            '  mapping is never rewritten.',
+            'Start here:',
+            '- report.html — the run report: headline + coverage levels '
+            '(L1 claim / L2 provenance / L3 validation), branches,',
+            '  fills, out-map expansion, morphology record, scenes; '
+            'hover any term for its definition.',
+            '- set_coverage.json — set-level coverage (per-type '
+            'rollups, hole bodyIds, family_material).',
+            '- gap_fill_dedup.csv — the bodyId-unique fill; '
+            'gap_fill_levels.csv ranks it per branch.',
+            '- examinees.csv — expansion bins (Revision '
+            '3.12 categories; the aggressive deep-window leaf was '
+            'renamed from suspicious_candidates.csv); '
+            'noise_filtered_candidates.csv holds the '
+            'gated rows.',
+            '- same_name_excluded.csv — queried types whose same-name '
+            'fan-out was held/excluded by the mapper, or multi-value '
+            'type cells (kept atomic); advisory accounting, never a '
+            'gate.',
+            '- suspects_verification.csv (only with --verify-suspects) '
+            '— advisory connectivity verification of the rivals listed '
+            'in auto_type_mapping_suspects.csv, one row per source × '
+            'rival with the ordinary verdict tiers; never merged into '
+            'the validation counts.',
+            '- source_status.csv — backward `source-` status per '
+            'in-branch source (column view of the same pair scores); '
+            'advisory, never a gate.',
+            '- source_candidates.csv — out-of-map sources whose '
+            'best-ranked hits reach a branch pool (null-bar '
+            'morph-qualified); the scenes\' source-candidates roots '
+            '(hidden by default).',
+            '- out_map_expansion.csv — each unclaimed source\'s top-k '
+            'typed non-in-map expansion candidates, morph-checked '
+            'against the run null bar.',
+            '- pair_summary.csv — per-branch pools / gap / verdicts; '
+            'mapping_export.csv — the branch mapping with bodyId '
+            'pools.',
+            '- morphology_calibration.json — branch bars, run null '
+            'bar, AUC gate, score frames.',
+            '- visualization/ — one 3D scene per parent type (rendered '
+            'in SOURCE coordinates; scores live in TARGET '
+            'coordinates).',
+            'Fills are proposals only; the mapping is never rewritten.',
             '',
             'Run log:', *self.notes, '',
-            'Pair summaries:',
         ]
-        for s in summaries:
-            lines.append(
-                f"  {s['source_type']} -> {s['target_type']} "
-                f"[{s['mapping_status']}/{s['pool_basis']}]: "
-                f"pools {s['source_pool']}/{s['target_pool']}"
-                f" (of {s.get('source_type_total', 0)}/"
-                f"{s.get('target_type_total', 0)}), M={s['matched']}, "
-                f"gap={s['gap']} ({s['gap_ratio']:.0%}), "
-                f"triggered={s['gap_triggered']}")
-        cov = set_coverage
-        if cov:
-            f, m = cov['fafb'], cov['mcns']
-            lines += ['', 'SET-LEVEL COVERAGE (the deliverable; branch',
-                      ' gaps double-count cross-branch convergence):',
-                      f"  FAFB: {f['assigned']} of {f['total_queried']} "
-                      "sources assigned;",
-                      f"  +{f['fill_proposed_only']} fill-proposed only; "
-                      f"{f['unpaired_unproposed']} unpaired without "
-                      'proposal.',
-                      f"  MCNS: mapped target set {m['mapped_target_set']};"
-                      f" {m['in_branch_pool']} in branch pools;",
-                      f"  {m['reached_as_candidates_only']} reached only "
-                      'as candidates;',
-                      f"  HOLES (never claimed): {m['holes']}",
-                      f"  family material (in-map types, unclaimed by any"
-                      f" branch pool): {len(m.get('family_material', []))}",
-                      '  -> see set_coverage.json for per-type rollups, '
-                      'the hole bodyIds, and family_material.',
-                      '  NOTE: out-map candidates are listed in TWO files'
-                      ' - suspicious_candidates.csv (category=candidates)'
-                      ' and as proposal rows in gap_fill_proposals.csv;',
-                      '  gap_fill_dedup.csv is the per-bodyId rollup.']
-        gap_types = getattr(self, '_mapper_gap_types', None)
-        if gap_types:
-            lines += ['', 'Mapper-gap evidence (target types flagged in',
-                      ' this run with NO backward mapping to the source',
-                      ' dataset - candidate annotation holes; consider',
-                      ' annotating or crosswalking them):']
-            lines += [f'  {k}: {v} row(s)' for k, v in
-                      sorted(gap_types.items(), key=lambda kv: -kv[1])]
-        n_untyped = getattr(self, '_mapper_gap_untyped', 0)
-        if n_untyped:
-            lines.append(f'  (untyped): {n_untyped} row(s) - no type '
-                         'annotation at all')
-        if morph_info:
-            lines += ['', 'Morphology calibration: ' +
-                      json.dumps(morph_info, default=str)]
         (self.run_dir / 'README.txt').write_text('\n'.join(lines) + '\n')
 
     def _mapping_export_rows(self) -> List[Dict]:
@@ -3935,6 +4762,10 @@ class MappingValidator:
                 'target_type': p.target_type,
                 'relationship': p.relationship,
                 'mapping_status': p.status,
+                'same_name_first': bool(p.same_name_first),
+                'same_name_rivals': ';'.join(
+                    p.same_name_first.get('rivals') or [])
+                if p.same_name_first else '',
                 'query': p.query,
                 'is_selected': True,
                 'chain_rank': p.branch_index,

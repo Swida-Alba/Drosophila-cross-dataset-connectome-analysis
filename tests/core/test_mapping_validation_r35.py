@@ -327,25 +327,25 @@ def test_invader_bucket_key_sibling_wins():
         52161, 'SMP221', sibling_index, lambda t: None) == 'sibling'
 
 
-def test_invader_bucket_key_backward_then_plain_suspicious():
+def test_invader_bucket_key_backward_then_plain_examinees():
     mapping = {'SMP221': 's-CPDN3C', 'CB4091': 'CB4091'}
     lookup = lambda t: mapping.get(t)  # noqa: E731
     assert invader_bucket_key(1, 'SMP221', {}, lookup) \
         == 'backward · s-CPDN3C'
-    # unmapped + unknown type -> plain suspicious bucket
-    assert invader_bucket_key(2, 'SMP999', {}, lookup) == 'suspicious'
-    assert invader_bucket_key(3, '?', {}, lookup) == 'suspicious'
-    # no sibling hit and no mapper -> plain suspicious
-    assert invader_bucket_key(4, 'SMP221', {}, None) == 'suspicious'
+    # unmapped + unknown type -> plain examinees bucket
+    assert invader_bucket_key(2, 'SMP999', {}, lookup) == 'examinees'
+    assert invader_bucket_key(3, '?', {}, lookup) == 'examinees'
+    # no sibling hit and no mapper -> plain examinees
+    assert invader_bucket_key(4, 'SMP221', {}, None) == 'examinees'
 
 
 def test_bucket_root_label_counts_types():
     # Revision 3.12: the four expansion categories are ONE root each (the
     # type detail rides on the leaf), so a bare key returns itself.
-    assert bucket_root_label('suspicious', {1: 'SMP223'}) == 'suspicious'
+    assert bucket_root_label('examinees', {1: 'SMP223'}) == 'examinees'
     assert bucket_root_label(
-        'suspicious', {1: 'CB4091', 2: 'SMP223', 3: 'CB3508'}) \
-        == 'suspicious'
+        'examinees', {1: 'CB4091', 2: 'SMP223', 3: 'CB3508'}) \
+        == 'examinees'
     assert bucket_root_label('candidates', {1: 'SMP223'}) == 'candidates'
     assert bucket_root_label('family', {1: 'SMP219'}) == 'family'
     assert bucket_root_label('relative', {1: 'CB4091'}) == 'relative'
@@ -379,16 +379,16 @@ def test_assign_invader_single_bucket_rule():
     assign_invader(claimed, buckets, order, 61868, 'SMP223', 'sibling')
     assign_invader(claimed, buckets, order, 61868, 'SMP223', 'backward · X')
     assert 61868 in ids('sibling')
-    # and suspicious never steals from anything
-    assign_invader(claimed, buckets, order, 61868, 'SMP223', 'suspicious')
+    # and examinees never steal from anything
+    assign_invader(claimed, buckets, order, 61868, 'SMP223', 'examinees')
     assert 61868 in ids('sibling')
 
     # a later higher-priority (lower value) claim moves the neuron
-    assign_invader(claimed, buckets, order, 61430, 'SMP223', 'suspicious')
+    assign_invader(claimed, buckets, order, 61430, 'SMP223', 'examinees')
     assign_invader(claimed, buckets, order, 61430, 'SMP223',
                    'backward · s-CPDN3D')
     assert 61430 in ids('backward · s-CPDN3D')
-    assert 61430 not in ids('suspicious')
+    assert 61430 not in ids('examinees')
 
     # each neuron renders exactly once overall
     all_ids = [b for rec in buckets.values() for b in rec['ids']]
@@ -409,7 +409,7 @@ def test_assign_invader_single_bucket_rule():
 def test_build_invader_buckets_uses_precomputed_classification():
     """Rows annotated by annotate_invaders drive the bucketing: sibling/
     alternate-chain labels render verbatim; only unexplained invaders are
-    morph-promotable; untyped stay `suspicious · untyped`; out-of-pool
+    morph-promotable; untyped stay `examinees · untyped`; out-of-pool
     fill proposals merge in (Rev 3.8) and non-qualifying ones don't."""
     from comparison.mapping_validation_visualize import build_invader_buckets
     res = {
@@ -451,19 +451,19 @@ def test_build_invader_buckets_uses_precomputed_classification():
                                            threshold=0.5, floors=None)
     # collapsed roots: in-scope family residues are all siblings
     assert set(buckets) == {
-        'sibling', 'candidates', 'suspicious · untyped', 'suspicious'}
+        'sibling', 'candidates', 'examinees · untyped', 'examinees'}
     assert 80536 in buckets['candidates']['ids']   # morph-qualified, unexplained
     assert 888 in buckets['candidates']['ids']     # qualifying fill proposal
-    assert 777 not in buckets.get('suspicious', {'ids': set()})['ids']
-    assert buckets['suspicious · untyped']['ids'] == {293154}
-    assert bucket_root_label('suspicious · untyped', {293154: 'untyped'}) \
-        == 'suspicious · untyped'
-    # priority order: sibling < alternate-chain < candidates < suspicious
+    assert 777 not in buckets.get('examinees', {'ids': set()})['ids']
+    assert buckets['examinees · untyped']['ids'] == {293154}
+    assert bucket_root_label('examinees · untyped', {293154: 'untyped'}) \
+        == 'examinees · untyped'
+    # priority order: sibling < alternate-chain < candidates < examinees
     from comparison.mapping_validation_visualize import INVADER_BUCKET_PRIORITY
     ranked = sorted(order, key=lambda k: (
         INVADER_BUCKET_PRIORITY[k.split(' · ')[0]], k))
     assert ranked[0] == 'sibling'
-    assert ranked[-1].startswith('suspicious')
+    assert ranked[-1].startswith('examinees')
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +756,7 @@ def test_morph_gate_on_structural_bins_always():
     """User 2026-09-12: ALL rendered STRUCTURAL members pass the morph
     rule in every scope — a backward/sibling row that fails rule v2
     (e.g. R1-R6 with NaN pool-ref) does not render.  The unexplained
-    flow keeps its review path (candidates when qualified, suspicious
+    flow keeps its review path (candidates when qualified, examinees
     otherwise), and the null-calibrated Track-A bar replaces the
     arbitrary factor x pooled-average bar for branches without a
     native floor."""
@@ -795,7 +795,7 @@ def test_morph_gate_on_structural_bins_always():
     # no-floor branch: the null bar (0.3) governs, not the 0.25 threshold
     assert 'candidates' in b and 80536 in b['candidates']['ids']
     assert 39416 not in b.get('candidates', {'ids': set()})['ids']
-    assert 39416 in b['suspicious']['ids']
+    assert 39416 in b['examinees']['ids']
 
 
 def test_hemisphere_asymmetry_fires_gap():
@@ -1143,7 +1143,7 @@ def test_rev312_category_buckets_from_exported_category():
 def test_rev312_classify_category_partition():
     """The S2 ordered first-match (Rev 3.12): uniqueness of a target
     across categories, the sibling/candidates membership split, and the
-    mode gating of family/relative/suspicious."""
+    mode gating of family/relative/examinees."""
     from comparison.mapping_validation import classify_category
 
     # tier: in this branch's pool
@@ -1198,12 +1198,12 @@ def test_rev312_classify_category_partition():
         candidate_types={'CB4091'}, connectivity_qualified=False,
         morph_ok=False, is_deep=False, tier=None, mode='family')[0] \
         == 'relative'
-    # suspicious: deep window, aggressive only
+    # examinees: deep window, aggressive only
     assert classify_category(
         target_bid=9, branch_pool={1}, in_map={1}, target_type='X',
         branch_target_type='T', in_map_types={'T'}, candidate_types=set(),
         connectivity_qualified=False, morph_ok=True, is_deep=True,
-        tier=None, mode='aggressive')[0] == 'suspicious'
+        tier=None, mode='aggressive')[0] == 'examinees'
     assert classify_category(
         target_bid=9, branch_pool={1}, in_map={1}, target_type='X',
         branch_target_type='T', in_map_types={'T'}, candidate_types=set(),
@@ -1283,8 +1283,10 @@ def test_rev311_widen_retired_pool_unchanged():
 
 
 def test_mapper_gap_report_in_readme():
-    """Unmapped/untyped invader types are reported as mapper-gap
-    evidence in the run README (never silently absent)."""
+    """Mapper-gap evidence is never silently absent — after the slim
+    README (template `_plan/tmvev-run-report-template.md`, D1), the
+    block moved out of README.txt into the set_coverage payload + the
+    per-run report (report.html §4 + user_warning_notes.txt)."""
     from collections import Counter
     v = MappingValidator.__new__(MappingValidator)
     v.cfg = MappingValidationConfig(
@@ -1293,12 +1295,11 @@ def test_mapper_gap_report_in_readme():
     v.notes = ['log line']
     v._mapper_gap_types = Counter({'ME_unclear': 2, 'SMP999': 1})
     v._mapper_gap_untyped = 3
-    v.run_dir = None
     # _write_readme writes to self.run_dir — redirect to tmp
     import tempfile
     from pathlib import Path as _Path
-    tmp = tempfile.mkdtemp()
-    v.run_dir = _Path(tmp)
+    tmp = _Path(tempfile.mkdtemp())
+    v.run_dir = tmp
     summaries = [{'source_type': 'A', 'target_type': 'B',
                   'mapping_status': 'mapped', 'pool_basis': 'linker rows',
                   'source_pool': 1, 'target_pool': 1, 'matched': 1,
@@ -1306,10 +1307,29 @@ def test_mapper_gap_report_in_readme():
                   'source_type_total': 0, 'target_type_total': 0}]
     v._write_readme(summaries, None)
     text = (v.run_dir / 'README.txt').read_text()
-    assert 'Mapper-gap evidence' in text
-    assert 'ME_unclear: 2 row(s)' in text
-    assert 'SMP999: 1 row(s)' in text
-    assert '(untyped): 3 row(s)' in text
+    # slim README contract: no mapper-gap block, the report carries it
+    assert 'Mapper-gap evidence' not in text
+    assert 'report.html' in text
+    # the evidence lands in the set_coverage payload (additive key)
+    payload = v._set_coverage_payload({'fafb': {'total_queried': 1},
+                                       'mcns': {'holes': 0}})
+    assert payload['mapper_gap']['types'] == {'ME_unclear': 2,
+                                              'SMP999': 1}
+    assert payload['mapper_gap']['untyped_rows'] == 3
+    # and the report generator surfaces it (data → warnings → HTML)
+    from comparison.mapping_validation_report import (
+        collect_run_data,
+        collect_warnings,
+        build_report_document,
+    )
+    d = collect_run_data(tmp, mapper_gap_types=dict(v._mapper_gap_types),
+                         mapper_gap_untyped=3)
+    assert d['mapper_gap'] == {'ME_unclear': 2, 'SMP999': 1}
+    warns = collect_warnings(d)
+    assert any(w.startswith('[mapper-gap] ME_unclear: 2')
+               for w in warns)
+    assert any('(untyped): 3 row(s)' in w for w in warns)
+    assert 'Mapper-gap evidence' in build_report_document(d)
 
 
 def test_track_b_floor_calibration_with_mock_cache(monkeypatch):
@@ -1599,7 +1619,7 @@ def test_gap_fill_caliber_gate_and_untyped_render():
     ]}
     buckets, _ = build_invader_buckets(res, suspicious_cap=20,
                                        threshold=0.5, floors=None)
-    assert 603004462 not in buckets.get('suspicious · untyped',
+    assert 603004462 not in buckets.get('examinees · untyped',
                                         {'ids': set()})['ids']
     assert 888 in buckets['candidates']['ids']
     # root label: sibling carries the member-count suffix
@@ -1926,8 +1946,10 @@ def test_rev312_mode_nesting_superset():
 
 
 def test_rev312_dedup_precedence_and_dup_flag():
-    """Invariant 6: dedup precedence tier > sibling > candidates > family
-    > relative; (dup) flags non-sibling repeats only."""
+    """Invariant 6: dedup precedence tier > sibling > family > candidates
+    > relative (user 2026-09-17: family outranks candidates — an
+    unmapped member of an already-mapped type keeps its type identity);
+    (dup) flags non-sibling repeats only."""
     v = _rev312_validator('family')
     v._bodyids_of_type = lambda t: []
     # 201 is a sibling under T1 and a tier (matched) under T2 -> the tier
@@ -1952,6 +1974,61 @@ def test_rev312_dedup_precedence_and_dup_flag():
     by = {r['target_bodyId']: r for r in rows}
     assert by[201]['dedup_category'] == 'matched'   # tier beats sibling
     assert by[201]['dup'] is False                  # tier row, not sibling-tagged
+
+
+def test_rev312_dedup_candidates_outranks_family():
+    """Restored precedence (user 2026-09-17): candidates > family in the
+    dedup rollup — the precedence serves the gap-fill accounting, so a
+    family-material bodyId that ALSO carries candidate evidence rolls up
+    as `candidates` (restrictive fill). The family category is reported
+    COMPLETE via family_material + family_candidates.csv (the family
+    enumeration is independent of the dedup rank), so nothing is hidden."""
+    v = _rev312_validator('family')
+    # T1's out-of-map type population: 301 carries candidate evidence in
+    # branch T1; the same bodyId is family material under T2 (its type).
+    v._bodyids_of_type = lambda t: {'T1': [101, 102],
+                                    'T2': [201, 301]}.get(t, [])
+    per_pair = {
+        ('s-CPDN3C', 'T1'): _rev312_branch(
+            pool=[101, 102], cats={101: 'matched', 102: 'verified'},
+            pool_detail=[
+                {'source_type': 's-CPDN3C', 'target_type': 'T1',
+                 'target_bodyId': 101, 'category': 'matched'},
+                {'source_type': 's-CPDN3C', 'target_type': 'T1',
+                 'target_bodyId': 102, 'category': 'verified'}]),
+        ('s-CPDN3D', 'T2'): _rev312_branch(
+            pool=[201], cats={201: 'matched'},
+            pool_detail=[
+                {'source_type': 's-CPDN3D', 'target_type': 'T2',
+                 'target_bodyId': 201, 'category': 'matched'}]),
+    }
+    sus = [
+        # 301: candidate evidence under T1 ...
+        {'source_type': 's-CPDN3C', 'target_type': 'T1',
+         'source_bodyId': 1, 'ahead_target_bodyId': 301,
+         'ahead_target_type': 'T2', 'morph_v2_similarity': 0.9,
+         'backward_maps_to': ''},
+        # 302: candidate evidence only, never family material
+        {'source_type': 's-CPDN3C', 'target_type': 'T1',
+         'source_bodyId': 1, 'ahead_target_bodyId': 302,
+         'ahead_target_type': 'CB4091', 'morph_v2_similarity': 0.9,
+         'backward_maps_to': ''},
+    ]
+    rows = v.finalize_categories(
+        per_pair, sus, [], [],
+        [per_pair[('s-CPDN3C', 'T1')]['pool_detail'][0],
+         per_pair[('s-CPDN3D', 'T2')]['pool_detail'][0]])
+    by = {r['target_bodyId']: r for r in rows}
+    # dual-evidence bodyId rolls up candidates (fill accounting) ...
+    assert by[301]['dedup_category'] == 'candidates'
+    assert by[301]['counts_toward_restrictive_fill'] is True
+    assert by[301]['counts_toward_family_fill'] is True
+    # ... while the family enumeration still lists it (map structure)
+    fam_bids = {r['ahead_target_bodyId'] for r in v._family_rows}
+    assert '301' in fam_bids or 301 in fam_bids
+    # candidate-only bodyId stays candidates
+    assert by[302]['dedup_category'] == 'candidates'
+    assert by[302]['counts_toward_restrictive_fill'] is True
 
 
 def test_rev312_csv_invariants_acceptance(tmp_path):
@@ -2005,8 +2082,8 @@ def test_rev312_csv_invariants_acceptance(tmp_path):
                      fills, None,
                      per_pair[('s-CPDN3C', 'T1')]['pool_detail'],
                      dedup_rows=dedup)
-    # suspicious CSV: every in-scope row has a category; out-of-scope blank
-    sc = pd.read_csv(tmp_path / 'suspicious_candidates.csv')
+    # examinees CSV: every in-scope row has a category; out-of-scope blank
+    sc = pd.read_csv(tmp_path / 'examinees.csv')
     insc = sc[sc['in_scope'].astype(bool)]
     assert (insc['category'].fillna('') != '').all()
     oos = sc[~sc['in_scope'].astype(bool)]
@@ -2020,7 +2097,7 @@ def test_rev312_csv_invariants_acceptance(tmp_path):
     assert dd['target_bodyId'].is_unique
     assert set(dd['dedup_category']) <= {
         'matched', 'verified', 'borderline', 'unmatched', 'sibling',
-        'candidates', 'family', 'relative', 'suspicious'}
+        'candidates', 'family', 'relative', 'examinees'}
 
 
 def test_rev312_normalize_mode_enum():
@@ -2190,7 +2267,7 @@ def test_rev312_relative_family_csv_cover_whole_bin():
 
 def test_rev312_expansion_categories_have_colors():
     """Every expansion category must have an explicit color, otherwise the
-    scene silently falls back to suspicious red (the `relative` vs
+    scene silently falls back to examinees red (the `relative` vs
     `relatives` key mismatch)."""
     from comparison.mapping_validation import EXPANSION_CATEGORIES
     from comparison.mapping_validation_visualize import CATEGORY_COLORS
@@ -2269,7 +2346,7 @@ def test_rev312_family_evidence_row_token():
 
 def test_rev312_in_map_type_elsewhere_is_out_map_not_src():
     """The exact 110764/65631 case: a deep row whose type is an in-map type
-    of ANOTHER branch (so it is `suspicious` here) still gets {T}(out-map),
+    of ANOTHER branch (so it is an `examinees` row here) still gets {T}(out-map),
     NOT {T}>{src} — an in-map type is never described by a type-level
     token."""
     v = _rev312_validator('aggressive')
@@ -2292,8 +2369,8 @@ def test_rev312_in_map_type_elsewhere_is_out_map_not_src():
                           per_pair[('s', 'T1')]['pool_detail']
                           + per_pair[('s', 'T2')]['pool_detail'])
     # T1 is an in-map type (another branch) -> not sibling (not admitted),
-    # and out-of-map by bodyId -> suspicious, but the type is in-map.
-    assert deep[0]['category'] == 'suspicious'
+    # and out-of-map by bodyId -> examinees, but the type is in-map.
+    assert deep[0]['category'] == 'examinees'
     assert deep[0]['candidate_annotation'] == 'T1(out-map)'
 
 
@@ -2354,3 +2431,37 @@ def test_compute_out_map_sources_source_side_gap():
     out = compute_out_map_sources([(Pair(), res)])
     # claimed = {10, 12, 14}; unclaimed = 11, 13 (never scanned)
     assert out == [11, 13]
+
+
+def test_rev312_finalize_pool_categories_query_arity():
+    """Regression (2026-09-17 reportcheck end-to-end run): the pool-row
+    tier lookup inside finalize_categories still used a legacy
+    (source, target) tuple after tiers migrated to (query, source,
+    target) — every pool row silently collapsed to `unmatched`, which
+    cascaded into gap_fill_dedup.csv (52/113/39 -> 204 unmatched) and
+    the report's L2 provenance.  With real-run (query, ...) arity the
+    pool rows must keep their tier categories."""
+    v = _rev312_validator('restrictive')
+    Q = 'circadian_clock'
+    per_pair = {
+        (Q, 's-CPDN3C', 'T1'): _rev312_branch(
+            pool=[101, 102], cats={101: 'matched', 102: 'verified'},
+            pool_detail=[
+                {'query': Q, 'source_type': 's-CPDN3C',
+                 'target_type': 'T1', 'target_bodyId': 101,
+                 'category': 'matched'},
+                {'query': Q, 'source_type': 's-CPDN3C',
+                 'target_type': 'T1', 'target_bodyId': 102,
+                 'category': 'verified'}]),
+        (Q, 's-CPDN3D', 'T2'): _rev312_branch(
+            pool=[201], cats={201: 'borderline'},
+            pool_detail=[
+                {'query': Q, 'source_type': 's-CPDN3D',
+                 'target_type': 'T2', 'target_bodyId': 201,
+                 'category': 'borderline'}]),
+    }
+    pool_detail = (per_pair[(Q, 's-CPDN3C', 'T1')]['pool_detail']
+                   + per_pair[(Q, 's-CPDN3D', 'T2')]['pool_detail'])
+    v.finalize_categories(per_pair, [], [], [], pool_detail)
+    by_bid = {int(d['target_bodyId']): d['category'] for d in pool_detail}
+    assert by_bid == {101: 'matched', 102: 'verified', 201: 'borderline'}

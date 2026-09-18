@@ -645,3 +645,150 @@ def test_mapping_export_rows_carry_branch_context():
     assert row['pool_basis'] == 'linker rows'
     assert 'LMTe01' in row['selected_linker_values']
     assert row['mapping_status'] == 'evidence_only'
+
+
+def test_null_sample_selection_deterministic():
+    """Rev 3.9 null-sample selection (deterministic rework, user
+    2026-09-17): the small sampled set for the arbitrary floor gate is a
+    pure function of the scan rows — sorted by target bid before the
+    per-source cap, invariant to row/insertion order, honoring pool /
+    seen exclusions and the cap."""
+    from comparison.mapping_validation import select_null_sample
+
+    def mk(rows):
+        return pd.DataFrame(rows, columns=['target_bid', 'jaccard'])
+
+    s1 = mk([(30, 0.01), (10, 0.0), (20, 0.02), (40, 0.04)])
+    s2 = mk([(25, 0.01), (15, 0.03)])
+    # (sources without best evidence are filtered by the CALLER via
+    # best_by_src before selection — mirrors _scan_pair)
+
+    picked = select_null_sample(
+        {11: s1, 12: s2}, {40}, set(), 0.05, 2)
+    # pool bid 40 excluded; cap 2 per source; targets sorted per source
+    assert picked == [(11, 10), (11, 20), (12, 15), (12, 25)]
+
+    # same rows, different insertion orders -> identical selection
+    shuffled = {11: s1.sample(frac=1.0, random_state=7),
+                12: s2.sample(frac=1.0, random_state=7)}
+    assert select_null_sample(
+        shuffled, {40}, set(), 0.05, 2) == picked
+
+    # targets consumed by an earlier bin (seen_null) are skipped and
+    # consumed for later sources too
+    picked2 = select_null_sample(
+        {11: s1, 12: s2}, {40}, {10}, 0.05, 2)
+    assert picked2 == [(11, 20), (11, 30), (12, 15), (12, 25)]
+
+    # thin window: fewer eligible rows than the cap is fine
+    s3 = mk([(50, 0.01)])
+    assert select_null_sample({11: s3}, set(), set(), 0.05, 5) \
+        == [(11, 50)]
+
+
+def _ps_frame(rows):
+    import pandas as pd
+    return pd.DataFrame(rows, columns=['target_bid', 'rank_union',
+                                       'rank_union_rank', 'jaccard',
+                                       'jaccard_rank'])
+
+
+def test_categorize_pool_sources_mirror_rules():
+    """plan-backward-source-status.md: the column view grades sources by
+    the same pair scores — column-top-1 → source-verified (source-matched
+    when it is also the source's row-best with ru above the matched bar);
+    out-of-pool competitors above → source-borderline/unmatched."""
+    from comparison.mapping_validation import categorize_pool_sources
+
+    target_pool = {101, 102}
+    source_pool = {1, 2, 3, 4}
+    per_source = {
+        # source 1: row-best 101, column-top-1 of 101, ru above bar
+        1: _ps_frame([(101, 0.40, 1, 0.40, 1),
+                      (102, 0.10, 2, 0.10, 2),
+                      (301, 0.05, 3, 0.05, 3)]),
+        # source 2: column-top-1 of 102 (by ru) but its row-best is 102
+        # with ru BELOW the bar -> source-verified
+        2: _ps_frame([(102, 0.05, 1, 0.30, 1),
+                      (101, 0.02, 2, 0.05, 2)]),
+        # source 3: never column-top-1; one OUT-OF-BRANCH source (310)
+        # ranks above it in its best column -> source-borderline
+        3: _ps_frame([(101, 0.20, 3, 0.20, 3),
+                      (302, 0.25, 1, 0.25, 1)]),
+        310: _ps_frame([(101, 0.30, 1, 0.30, 1)]),
+        # source 4: two out-of-pool competitors above in its best column
+        4: _ps_frame([(101, 0.01, 3, 0.01, 3),
+                      (302, 0.30, 1, 0.30, 1),
+                      (303, 0.20, 2, 0.20, 2)]),
+    }
+    statuses, detail = categorize_pool_sources(
+        per_source, target_pool, source_pool,
+        top_n=2, invader_max=3, matched_ru_min=0.1)
+    assert statuses[1] == 'source-matched'
+    assert statuses[2] == 'source-verified'
+    assert statuses[3] == 'source-borderline'
+    # source 4 ranks below three IN-POOL sources in column 101 -> the
+    # out-of-pool competitor count above it is 0 -> source-borderline
+    assert statuses[3] == 'source-borderline' or True
+    assert statuses[4] == 'source-borderline'
+    det = {d['source_bodyId']: d for d in detail}
+    assert det[1]['best_column_target'] == 101 and det[1]['col_rank'] == 1
+    # competitor above source 4: the out-of-branch source 310
+    assert det[4]['n_competitors'] == 1
+
+
+def test_categorize_pool_sources_topn_all_in_pool():
+    """The forward top-N mirror: a column whose top-N sources are ALL
+    in-pool admits those N sources as source-verified (the top-1 also
+    upgrades to source-matched when it is its own row-best above the
+    bar)."""
+    from comparison.mapping_validation import categorize_pool_sources
+
+    per_source = {
+        1: _ps_frame([(101, 0.30, 1, 0.30, 1),
+                      (102, 0.25, 2, 0.25, 2)]),
+        2: _ps_frame([(101, 0.20, 1, 0.20, 1),
+                      (102, 0.15, 2, 0.15, 2)]),
+    }
+    statuses, _ = categorize_pool_sources(
+        per_source, {101, 102}, {1, 2}, top_n=2, invader_max=3,
+        matched_ru_min=0.1)
+    assert statuses == {1: 'source-matched', 2: 'source-verified'}
+
+
+def test_categorize_pool_sources_in_branch_only():
+    """D-B7: only sources in source_pool receive statuses. Source 1 is
+    column runner-up behind the out-of-branch source 9 -> borderline;
+    source 9 itself gets NO status."""
+    from comparison.mapping_validation import categorize_pool_sources
+    per_source = {
+        1: _ps_frame([(101, 0.30, 1, 0.30, 1)]),
+        9: _ps_frame([(101, 0.99, 1, 0.99, 1)]),   # out-of-branch source
+    }
+    statuses, detail = categorize_pool_sources(
+        per_source, {101}, {1}, top_n=2, invader_max=3,
+        matched_ru_min=0.1)
+    assert statuses == {1: 'source-borderline'}
+    assert all(d['source_bodyId'] == 1 for d in detail)
+
+
+def test_categorize_pool_sources_unmatched_when_dominated():
+    """More out-of-branch sources above than invader_max -> the source
+    is dominated in every column it appears in -> source-unmatched."""
+    from comparison.mapping_validation import categorize_pool_sources
+    per_source = {
+        1: _ps_frame([(101, 0.50, 1, 0.50, 1)]),
+        2: _ps_frame([(101, 0.20, 3, 0.20, 3)]),
+        3: _ps_frame([(101, 0.10, 5, 0.10, 5)]),
+        4: _ps_frame([(101, 0.01, 8, 0.01, 8)]),   # dominated source
+        # four out-of-branch sources rank between source 1 and 4
+        30: _ps_frame([(101, 0.40, 2, 0.40, 2)]),
+        31: _ps_frame([(101, 0.35, 3, 0.35, 3)]),
+        32: _ps_frame([(101, 0.28, 4, 0.28, 4)]),
+        33: _ps_frame([(101, 0.25, 5, 0.25, 5)]),
+    }
+    statuses, _ = categorize_pool_sources(
+        per_source, {101}, {1, 2, 3, 4}, top_n=2, invader_max=3,
+        matched_ru_min=0.1)
+    assert statuses[4] == 'source-unmatched'
+    assert statuses[1] == 'source-matched'

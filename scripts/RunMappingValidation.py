@@ -76,7 +76,7 @@ def parse_args(argv=None):
                         'jaccard < factor x best pool jaccard is filtered '
                         'as noise (Revision 3.5 Issue 5b; default 0.5)')
     p.add_argument('--target-min-size-ratio', type=float, default=0.1,
-                   help='PRIMARY noise filter (Rev 3.6): suspicious rows '
+                   help='PRIMARY noise filter (Rev 3.6): examinee rows '
                         'whose spatial size < ratio x the branch pool '
                         'best are dropped (default 0.1)')
     p.add_argument('--suspicious-ru-margin', type=float, default=0.02,
@@ -110,7 +110,8 @@ def parse_args(argv=None):
                         'restrictive (default) = tier + sibling + '
                         'candidates; family = adds the family/relative '
                         'bins; aggressive = adds the deep-window '
-                        'suspicious bin. Modes NEST: switching mode only '
+                        'examinees bin (renamed from suspicious). '
+                        'Modes NEST: switching mode only '
                         'admits more neurons, never relabels one.')
     p.add_argument('--aggressive-expansion', action='store_true',
                    help='alias for --mode aggressive (Rev 3.12; retained '
@@ -135,7 +136,12 @@ def parse_args(argv=None):
     p.add_argument('--neuron-alpha', type=float, default=0.2,
                    help='global neuron opacity in scenes (default: 0.2)')
     p.add_argument('--suspicious-cap', type=int, default=20,
-                   help='max suspicious candidates kept per source neuron')
+                   help='max examinee rows kept per source neuron')
+    p.add_argument('--verify-suspects', action='store_true',
+                   help='opt-in (default OFF): verify each queried '
+                        'same-name fan-out\'s rival candidates against '
+                        'their own target pools — advisory, writes '
+                        'suspects_verification.csv + the Suspects tab')
     p.add_argument('--quiet', action='store_true')
     return p.parse_args(argv)
 
@@ -179,6 +185,7 @@ def main(argv=None):
         max_scenes=args.max_scenes,
         neuron_alpha=args.neuron_alpha,
         suspicious_per_source_cap=args.suspicious_cap,
+        verify_suspects=args.verify_suspects,
         output_dir=args.output_dir,
         run_label=args.label,
         verbose=not args.quiet,
@@ -186,6 +193,26 @@ def main(argv=None):
     validator = MappingValidator(cfg)
     run_dir = validator.run()
     print(f'\nResults: {run_dir}')
+    # per-run _UserGuide (same content model the UI runner uses; never
+    # fails the run). report.html itself is written by the pipeline's
+    # own report writer (mapping_validation_report).
+    try:
+        from ui.output_guide import write_run_guide
+        guide = write_run_guide(
+            run_dir, 'type_mapping_validation',
+            params={
+                'source_dataset': cfg.source_dataset,
+                'target_dataset': cfg.target_dataset,
+                'query': ', '.join(cfg.query_types),
+                'validation_mode': cfg.effective_mode,
+                'top_k': cfg.top_k, 'top_m': cfg.top_m,
+                'min_synapse_threshold': cfg.min_synapse_threshold,
+                'rank_top_k': cfg.rank_top_k,
+            })
+        if guide:
+            print(f'Run guide: {guide.name}')
+    except Exception as exc:  # noqa: BLE001
+        print(f'(run guide skipped: {exc})')
     return 0
 
 

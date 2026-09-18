@@ -18,7 +18,7 @@ This directory contains detailed technical documentation about:
 Technical report for the bodyId-level type-mapping validation pipeline
 (FAFB ↔ male-cns): branch-resolved pools, global connectivity scan,
 tiered verdicts, the **Rev 3.12 category partition** (tier / `sibling` /
-`candidates` / `family` / `relative` / `suspicious`, with the per-bodyId
+`candidates` / `family` / `relative` / `examinees`, with the per-bodyId
 `(out-map)` / `>{src}` / `(no_source)` leaf token), the three nested modes
 (`restrictive ⊆ family ⊆ aggressive`), two-track morphology with a
 binding native floor and null-calibrated bar, scene rendering, and the

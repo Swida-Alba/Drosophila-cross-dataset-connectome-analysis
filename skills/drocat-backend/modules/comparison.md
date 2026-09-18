@@ -146,6 +146,28 @@ come from `merge_policy.auto_only_edges(mapper, types, datasets)` —
 evidence only, mappings stay valid. Neuron counts are keyed by group
 labels with a `group_members` composition column.
 
+### Same-name-first within a fan-out (selection + suspects)
+
+`get_mapping_decision` selects the same-name candidate when a fan-out's
+candidate set contains the source type's own name (**EXACT base-name
+equality** — never a prefix test, so a/b variant splits like
+`SMP520 -> {SMP520a, SMP520b}` stay splits).  Per-path dispositions: a
+structural 1-to-N into BANC fires broadly; a terminal BANC vote conflict
+fires only when every rival candidate has its own 1-to-1 pairing; an
+`evidence_only` N-to-1 fan-out is excluded.  Fired shape: `status='mapped'`,
+`target_type=<same name>`, `relationship='suspects'`, `suspects=True`,
+`fan_out_candidates=<rivals>`, `target_types=[selection]` (the
+`include_suspects_in_targets` opt-in restores `[selection] + rivals` for
+in-pipeline TM VEV verification).  The rivals are exported one row each to
+`auto_type_mapping_suspects.csv` with the mapper's own crosswalk
+observations (`rival_has_own_clean_pair`, `rival_pair_status` =
+`own_1to1_pair` / `no_own_1to1_pair` — observations, never verdicts; words
+like *duplicate*/(dup) belong to the verification pipeline's bodyId level).
+Read it via `same_name_first_fires` / `get_same_name_conflict_detail` /
+`same_name_suspects_for_source` / `same_name_first_summary` /
+`export_suspects`.  Nothing is merged automatically — the custom label
+mapper is the inclusion path.
+
 ### Mapper boundary (row-based evidence is carried, not consumed)
 
 The mapper produces the mapping plus the row-based bodyId-level evidence
@@ -204,7 +226,8 @@ BodyId-level validation of an auto type mapping (CLI
   bodyId of another branch) > `candidates` (out-of-map, invader or gap
   fire, morph-qualified) > `family` (out-map bodyIds of THIS branch's
   target type) > `relative` (candidate-type mates outside the map) >
-  `suspicious` (aggressive-only deep window). `unmatched` is the tier's
+  `examinees` (aggressive-only deep window; renamed from 'suspicious'
+  2026-09-18). `unmatched` is the tier's
   final else; there is no target-side `skipped`.
 - **Modes nest**: `restrictive ⊆ family ⊆ aggressive` (single enum;
   `normalize_mode`). Chain-aware POOL widening is retired — family mode

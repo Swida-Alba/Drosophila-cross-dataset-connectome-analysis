@@ -25,7 +25,7 @@ matches with per-type bodyId pools, but nothing verifies the pairing at
 
 1. **validate** — for every resolved branch, tier each in-map target
    bodyId by global cross-dataset connectivity evidence (§3);
-2. **expand** — from the homolog finding, add the suspicious neurons the
+2. **expand** — from the homolog finding, add the examinee neurons the
    type mapping missed, cross-referenced against the mapping structure
    and the morphology (§4, §6);
 3. **visualize** — one 3D scene per parent mapping group with the full
@@ -142,12 +142,12 @@ defined by an ordered first-match. The full derivation and proofs live in
 | 3 | `candidates` | `t ∉ IM` AND connectivity-qualified AND morph-qualified | all |
 | 4 | `family` | `type(t) == T_b` (THIS branch's target type) AND `t ∉ IM` AND not already labeled | family+ |
 | 5 | `relative` | `type(t)` is a candidate type of THIS branch AND `type(t) ∉ IMT` AND not already labeled | family+ |
-| 6 | `suspicious` | deep-window AND morph-qualified AND not already labeled | aggressive |
+| 6 | `examinees` | deep-window AND morph-qualified AND not already labeled | aggressive |
 
 **Totality and exclusivity** follow from the order: each criterion is
 evaluated on the complement of the earlier ones, so the bins are pairwise
 disjoint; and the last applicable bin is always a residual (`unmatched`
-for the tier, `candidates` in restrictive, `family`/`relative`/`suspicious`
+for the tier, `candidates` in restrictive, `family`/`relative`/`examinees`
 as "not already labeled" residuals), so nothing is unlabelled. The
 structural fact that matters most: `sibling ⇒ t ∈ IM` while
 `candidates/family/relative ⇒ t ∉ IM`, so sibling and candidates can never
@@ -183,7 +183,9 @@ neuron that clears the invader/gap bar is a candidate, never both.
   conceptual level as `family`; the `∉ IMT` clause makes the two
   **disjoint by type** — an in-map type's mates go to `family`, an
   out-of-map type's mates go to `relative`. Ungated by qualification.
-- **`suspicious`** — the aggressive-only deep window: out-of-pool homologs
+- **`examinees`** — the aggressive-only deep window (renamed from
+  `suspicious` 2026-09-18: the mapper's rival-suspects concept now owns
+  that word): out-of-pool homologs
   ranked **below** the pool best, within `candidate_window` (25) per
   metric and `deep_cap` (10) per source, morph-qualified, and neither an
   invader nor a gap fire.
@@ -193,7 +195,7 @@ neuron that clears the invader/gap bar is a candidate, never both.
 A category is never split into more categories by annotation; the
 annotation is a **leaf token** on the bin, not the root (the four
 expansion roots are bare, §8). It is applied to **every** expansion bin —
-`candidates`, `relative`, `suspicious`, `family` — and is a bodyId leaf
+`candidates`, `relative`, `examinees`, `family` — and is a bodyId leaf
 suffix in the scene (`{bodyId}_{token}_{side}`).
 
 It is **one ordered, mutually exclusive value**:
@@ -221,7 +223,7 @@ differ only in which expansion neurons are admitted. Hence, per branch:
 **restrictive ⊆ family ⊆ aggressive**, with shared neurons keeping the
 identical category, topology included. Restrictive admits the tier,
 `sibling`, and `candidates`; family adds `family` and `relative`;
-aggressive adds `suspicious`. Two inspected interactions: a same-type
+aggressive adds `examinees`. Two inspected interactions: a same-type
 out-map neuron in the deep window lands in `family` (rule 4 precedes rule
 6), and a gap-fired target ranked below the pool best is a `candidate`
 (rule 3 precedes rule 6).
@@ -231,13 +233,77 @@ out-map neuron in the deep window lands in `family` (rule 4 precedes rule
 A bodyId can appear in several branches (N-to-1 gives one target type
 several source parents). Export a bodyId-level deduplicated result with
 precedence **`tier > sibling > candidates > family > relative`** (within
-the tier `matched > verified > borderline > unmatched`). A `(dup)` flag
-marks **non-sibling** bodyIds labeled in more than one branch — siblings
-are duplicated by definition and are never flagged. The flag is written
-back onto every per-branch row (`dup` column) and surfaces in the scene as
-a ` (dup)` suffix on the category root (e.g. `candidates · CB4091
-(no_source) (dup)`). The mapper already deduplicates each branch's in-map
-set; the dedup pass is a safeguard.
+the tier `matched > verified > borderline > unmatched`). The precedence
+serves the gap-fill accounting; the family category itself is reported
+complete via `family_material` (set_coverage) and reconciled against the
+dedup bins in the per-run report. A
+`(dup)` flag marks **non-sibling** bodyIds labeled in more than one
+branch — siblings are duplicated by definition and are never flagged. The
+flag is written back onto every per-branch row (`dup` column) and
+surfaces in the scene as a ` (dup)` suffix on the category root (e.g.
+`candidates · CB4091 (no_source) (dup)`). The mapper already
+deduplicates each branch's in-map set; the dedup pass is a safeguard.
+
+### 4.6b Backward source status (advisory)
+
+The same bodyId-bodyId pair scores power a **column view**: for each pool
+target, rank its sources; for each in-branch source, its best column
+standing maps to `source-matched` (column-top-1 of its own row-best
+target, pair ru > matched_ru_min), `source-verified` (column-top-1
+elsewhere, or a column whose top-N sources are all in-branch),
+`source-borderline` (≤ invader_max out-of-branch sources above), or
+`source-unmatched`. `source-candidates` = OUT-OF-MAP sources (claimed by no branch) whose
+best-ranked scan hits land in the branch pool AND pass the run null bar
+— the D-B8 backward mirror of candidate admission, attributed to the
+branch owning the pool and visualized as a scene root (RE-AIMED
+2026-09-18, user option 2: the first implementation derived candidates
+from sibling rows, which are other branches' query neurons by
+construction; the route now scans the out-of-map sources inside the
+out-map expansion and morph-checks the in-pool hits against the run
+null bar). Exported as `source_candidates.csv` (cross-branch
+convergence remains visible via the sibling category). **Advisory only** — the
+targets remain the validated entities; statuses never gate and never
+enter the dedup. Exported as `source_status.csv` +
+`set_coverage.fafb.source_status`; rendered in the report's Backward tab
+(plan `plan-backward-source-status.md`).
+
+### 4.6c Same-name-first consumers (advisory)
+
+The mapper's same-name-first rule (within a fan-out, the candidate
+carrying the source's own base name is SELECTED; the rivals become
+disclosure-only suspects — `plan-samename-first-fanout-resolution.md`
+§0.0) reshapes what this pipeline receives:
+
+- **Fired selections** arrive as ordinary `mapped` pairs. They are
+  MARKED, never gated: `TypePair.same_name_first` carries
+  `{selected, rivals, path, disposition}`; validation rows and pair
+  summaries gain the advisory `same_name_first` / `same_name_rivals`
+  columns; `set_coverage.json` gains `same_name_first_pairs` /
+  `same_name_first_types`; the report marks such pairs ⟡ in Branches
+  and adds a Coverage-tab accounting card (also derived from
+  `same_name_excluded.csv` so a no-pair run renders it too).
+- **Held / evidence-only fan-outs** stay excluded (fail-closed), but are
+  now ACCOUNTED: the improved log line names the disposition and the
+  suspects CSV; `same_name_excluded.csv` records one row per type;
+  `set_coverage.json` gains `same_name_first_held` /
+  `same_name_first_excluded`.
+- **Suspects verification (OPT-IN, `--verify-suspects`, default OFF)**:
+  each rival of every queried same-name fan-out (fired, held, or
+  excluded) is validated against its own target pool with the ordinary
+  tier machinery, using the same scan frames (fired types) or a fresh
+  scan pass (held/excluded types). Rows land ONLY in
+  `suspects_verification.csv` and the report's Suspects tab — never in
+  the validation counts, fills, dedup, or scenes. Advisory: a rival that
+  verifies well is a candidate annotation, not a mapping; inclusion goes
+  through the custom label mapper.
+- **Multi-value type cells** (comma-joined `type` annotations, kept
+  atomic by the mapper) are accounted, never split:
+  `multivalue_types` / `multivalue_target_types` counters, rows in
+  `same_name_excluded.csv` under `reason='multivalue_cell'`.
+- A fired decision in the REVERSE direction also improves the backward
+  home-reality check (`_backward_decision`): a type whose reverse
+  mapping used to be `conflict` can now be `mapped` (plan
+  `plan-tmvev-samename-first-consumers.md`).
 
 ### 4.7 Gap-fill semantics
 
@@ -254,7 +320,8 @@ expansion suspects the mode admits, where admission requires **both**
 connectivity-qualification and morph-qualification. A
 connectivity-qualified suspect that fails the morph rule is **not a
 category** — it is out of scope. It is still **exported** in
-`suspicious_candidates.csv` with `in_scope=False`, `morph_failed=True`,
+`examinees.csv` (renamed from `suspicious_candidates.csv`) with
+`in_scope=False`, `morph_failed=True`,
 `category=''`, because it is exactly what a **connectivity-only homolog
 search** returns, so the validation run can be reconciled against one.
 Out-of-scope rows are never rendered. Note the in-scope boundary can be
@@ -302,7 +369,7 @@ target-vector build time.
   - **family**: adds `family` (all out-map bodyIds of in-map types) and
     `relative` (candidate-type mates outside the map). Both are ungated by
     qualification and bounded by type membership.
-  - **aggressive**: adds the **deep-window** `suspicious` rows —
+  - **aggressive**: adds the **deep-window** `examinees` rows —
     out-of-pool neurons within the retained top-`candidate_window` (25)
     per metric ranked BELOW the pool best, `deep_cap` (10) per source,
     exported to `deep_candidates.csv`. Rolled back from default after the
@@ -311,7 +378,7 @@ target-vector build time.
 - **Fill accounting** (restrictive): only `candidates` count — they are
   connectivity- and morph-qualified. `sibling` never counts (already in
   the map); `family`/`relative` never count in restrictive mode.
-- **Set-level coverage** (`set_coverage.json` + README section): the
+- **Set-level coverage** (`set_coverage.json` + report §1): the
   deliverable for "how much of the mapping is validated/proposed/
   missing" — FAFB rollup (assigned / fill-proposed / unpaired) over the
   queried population, MCNS rollup over the mapped target set (in-pool by
@@ -321,7 +388,7 @@ target-vector build time.
   a claim, so it closes the hole).
   Out-of-pool candidates pass the same spatial-caliber gate.
   Out-of-map candidates are enumerated in TWO exports —
-  `suspicious_candidates.csv` (category `candidates`) and as proposal
+  `examinees.csv` (category `candidates`) and as proposal
   rows in `gap_fill_proposals.csv`; `gap_fill_dedup.csv` is the
   per-bodyId rollup.  `set_coverage.json` also lists `family_material`:
   the in-map-type bodyIds no branch pool claims (the population
@@ -379,7 +446,7 @@ target-vector build time.
 Both tracks score in the **target dataset's coordinates**; the Stage-4
 scenes render in the **source** coordinates (targets bridged into the
 source template). The frame difference is disclosed in
-`morphology_calibration.json` (`score_frame`) and the README.
+`morphology_calibration.json` (`score_frame`) and the report's Morph tab.
 
 - **Track A (cross, query-based)**: the source skeletons are
   transformed into the target render space
@@ -387,7 +454,7 @@ source template). The frame difference is disclosed in
   scored per (source, target) pair: `morph_v2_similarity` (production
   vector_v2, ZCA-whitened per-block cosine, identical to Find Similar)
   and `morph_nblast` (forward, normalized). Scored pairs: assigned
-  verdicts, expansion rows (`candidates`/`suspicious`, ≤
+  verdicts, expansion rows (`candidates`/`examinees`, ≤
   `candidate_morph_cap` = 20/source), deep-window rows, pooled fills,
   and pool pairs.
 - **Track B (all-native, pool reference)**: the branch's reference set
@@ -421,7 +488,7 @@ and every admission compares the currency its bar kind names.
   `morph_v2 ≥ B_b − morph_suspicious_level × morph_track_a_offset`
   (defaults k = 3), falling back to the null **p50** when the branch has
   no scored pool pairs. A deep row passing the candidate bar is
-  admitted by the normal rules; between the bars it is `suspicious`;
+  admitted by the normal rules; between the bars it is `examinees`;
   below the suspicious bar it stays out of scope (`morph_failed`).
   Invader rows failing the candidate bar stay out of scope in every
   mode.
@@ -433,7 +500,7 @@ and every admission compares the currency its bar kind names.
 
 **AUC guard rail (unchanged)**: the Track-A score gates
 `verified_strong` (demotes to `verified`) only when the run's
-self-calibration AUC (verified_strong vs suspicious) ≥ `morph_auc_floor`
+self-calibration AUC (verified_strong vs examinees) ≥ `morph_auc_floor`
 (0.65); otherwise scores stay informational. Every run so far: AUC
 0.52–0.59 → gate INACTIVE.
 
@@ -457,7 +524,7 @@ branch: {source_type} → {target_type} · {linker_signature}
 │   └── {bodyId}_{token}_{side} [ (dup)]
 ├── relative (n)                               relative [family/aggressive]
 │   └── {bodyId}_{token}_{side} [ (dup)]
-└── suspicious (n)                             suspicious [aggressive]
+└── examinees (n)                             examinees [aggressive]
     └── {bodyId}_{token}_{side} [ (dup)]
 ```
 Plus, per parent type, one extra branch group renders the **source-side
@@ -468,7 +535,7 @@ against `candidates` directly; skipped sources (no connectivity
 profile) keep their separate `unassigned` layer.
 
 The four expansion categories (`candidates` / `family` / `relative` /
-`suspicious`) are **ONE root each**; the bodyId-level detail rides on the
+`examinees`) are **ONE root each**; the bodyId-level detail rides on the
 leaf:
 
 - Every expansion leaf carries the ordered per-row token (§4.4):
@@ -483,7 +550,14 @@ each root always renders even when it holds a single leaf.
 
 Any bin may carry the `untyped` suffix (§4.4). Bins are drawn only when
 non-empty. `family`/`relative` appear only in family/aggressive mode;
-`suspicious` only in aggressive mode.
+`examinees` only in aggressive mode.
+- Scenes render in the source dataset's RENDER template space (the
+  visualization backend's template target): FAFB/BANC are their native
+  frames, male-cns/hemibrain/manc are bridged native → render
+  (`JRCFIB2022Mraw → JRCFIB2022M` etc.) — BOTH sides.  Sources and
+  targets are always delivered in one frame; the 2026-09-18 MCNS→BANC
+  misplacement (raw-space neurons on a nanometre mesh) was exactly this
+  frame mismatch.
 
 - **Every rendered member passes the morph rule** (default scope
   included); structural labels only name the bin. The one deliberate
@@ -491,7 +565,7 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
   qualification keeps its CSV label but is not drawn.
 - Colors (category-keyed): query blue, matched cyan, verified green,
   borderline gold, unmatched grey, sibling pink, candidates orange,
-  family light green, relative olive, suspicious red.
+  family light green, relative olive, examinees red.
 - The collapsible legend panel is content-width, shrinking for short
   labels and capping at 420px (or the viewport width, whichever is
   smaller); a custom horizontal scrollbar appears when a row overflows.
@@ -510,7 +584,7 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
 | sibling | yes | yes | yes |
 | candidates | invaders ∪ gap fires | same | same |
 | family / relative | no | yes | yes |
-| deep-window suspicious | no | no | yes |
+| deep-window examinees | no | no | yes |
 | nesting | ⊆ family | ⊆ aggressive | superset |
 
 The mode is recorded in `parameters.json` (`validation_mode`). Modes are
@@ -527,19 +601,21 @@ columns retained for compatibility.
 | --- | --- |
 | `mapping_export.csv` | per-bridge record: refined `{…}` pools, selected chain, linkers, pool basis, parent context |
 | `validation_results.csv` | per source bodyId: verdict, ranks + scores, connectivity flags, `source_size`, per-source noise counters |
-| `suspicious_candidates.csv` | expansion rows with metrics, caliber columns (`ahead_size`, `pool_best_size`, `size_ratio`), `category` + `candidate_annotation` + `dup`, legacy classification columns, Track-A/B morph, `pool_ref_tier` |
+| `examinees.csv` (was `suspicious_candidates.csv`) | expansion rows with metrics, caliber columns (`ahead_size`, `pool_best_size`, `size_ratio`), `category` + `candidate_annotation` + `dup`, legacy classification columns, Track-A/B morph, `pool_ref_tier` |
 | `noise_filtered_candidates.csv` | every gate-dropped row with `noise_reason` (spatial_caliber, tie_margin, negative_rank_union, jaccard_below_pool) |
-| `deep_candidates.csv` | deep-window `suspicious` rows (aggressive only) with `candidate_source='deep_window'` |
+| `deep_candidates.csv` | deep-window `examinees` rows (aggressive only) with `candidate_source='deep_window'` |
 | `gap_fill_proposals.csv` | proposals with `fill_class` (in/out of pool), `category`, `counts_toward_restrictive_fill`, `counts_toward_family_fill` |
 | `family_candidates.csv` | the whole `family` bin — enumerated members ∪ evidence rows classified `family`, per branch+bodyId (family/aggressive modes) |
 | `gap_fill_dedup.csv` | query-level bodyId dedup with `dedup_category` (precedence §4.6) and `dup` |
-| `set_coverage.json` | set-level coverage: FAFB assigned/proposed/unpaired rollup, MCNS in-pool/candidates/holes per type, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) |
+| `set_coverage.json` | set-level coverage: FAFB assigned/proposed/unpaired rollup, MCNS in-pool/candidates/holes per type, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) and `mapper_gap` (types with no backward mapping) |
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size` |
 | `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `README.txt` | glossary (verdicts, categories, noise gates, morph frames, pool-ref tiers) + full run log |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches, fills, out-map expansion, morphology record, scenes, file index; hover-glossary on every term; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
+| `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap) |
 | `visualization/*.html` | tree-legend scenes per parent group |
 
 ## 10. Performance (measured, FAFB → male-cns, warm caches)

@@ -1,6 +1,6 @@
 ---
 name: type-mapping-validation
-description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / suspicious) and per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), nested modes (restrictive / family / aggressive), two-track morphology, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\"."
+description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now) and per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), nested modes (restrictive / family / aggressive), two-track morphology, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\"."
 ---
 
 # DROCAT Type-Mapping Validation
@@ -54,11 +54,21 @@ $PY scripts/RunMappingValidation.py \
 
 ## 2. Read the outputs (always in this order)
 
-1. `README.txt` — glossary + full run log (scan the log lines starting
-   with `!` for self-check failures or gate warnings).
-2. `pair_summary.csv` — per branch: pools, matched `M`, `gap`
+1. `report.html` — the per-run report: headline + the three coverage
+   levels (L1 claim / L2 provenance / L3 validation), branches, fills,
+   out-map expansion, morphology record, scenes, file index. Hover any
+   dotted term for its definition; every `!` log line is reproduced
+   verbatim in its Warnings section. Regenerable for any past run:
+   `python -m comparison.mapping_validation_report <run_dir>`.
+2. `README.txt` — slim directions (what file is what) + the raw run log
+   (scan the log lines starting with `!` for self-check failures or
+   gate warnings). The old glossary / pair-summaries / coverage
+   sections moved into `report.html`; `user_warning_notes.txt` mirrors
+   the warnings in bracketed-tag lines.
+3. `pair_summary.csv` — per branch: pools, matched `M`, `gap`
    (informational), verdict/noise counters.
-3. `suspicious_candidates.csv` — the expansion rows. Key columns:
+4. `examinees.csv` (renamed from `suspicious_candidates.csv`) — the
+   expansion rows. Key columns:
    `category` (the Rev 3.12 bin — see §3), `in_scope` / `morph_failed`
    (out-of-scope rows are connectivity-only, kept for reconciliation),
    `candidate_annotation` (`{T}(out-map)` / `{T}>{src}` /
@@ -69,20 +79,31 @@ $PY scripts/RunMappingValidation.py \
    (Track B, native pool reference), `pool_ref_tier`. The legacy
    `invader_class` / `invader_label` columns are retained for
    compatibility.
-4. `noise_filtered_candidates.csv` — dropped rows with `noise_reason`.
-5. `deep_candidates.csv` — only when `--mode aggressive`.
-6. `gap_fill_proposals.csv` — proposals with `fill_class`
+5. `noise_filtered_candidates.csv` — dropped rows with `noise_reason`.
+6. `deep_candidates.csv` — only when `--mode aggressive`.
+7. `gap_fill_proposals.csv` — proposals with `fill_class`
    (`in_pool`/`out_of_pool`), `category`, and the fill-count columns.
-7. `gap_fill_dedup.csv` — query-level, one row per target bodyId:
+8. `gap_fill_dedup.csv` — query-level, one row per target bodyId:
    `dedup_category`, `n_branches`, `dup`. This is the deduplicated fill
    (the real gap-fill list).
-8. `family_candidates.csv` / `relatives.csv` — the whole `family` /
+9. `family_candidates.csv` / `relatives.csv` — the whole `family` /
    `relative` bin (family/aggressive modes): enumerated members ∪
    evidence rows classified into those bins.
-9. `morphology_calibration.json` — per-branch `candidate_thresholds`,
-   `pool_ref_tiers`/`baselines`/`floors`, `track_a_null_bar`,
-   `score_frame`, AUC gate record.
-10. `visualization/*.html` — one 3D scene per parent type.
+10. `morphology_calibration.json` — per-branch `candidate_thresholds`,
+    `pool_ref_tiers`/`baselines`/`floors`, `track_a_null_bar`,
+    `score_frame`, AUC gate record.
+11. `source_status.csv` — backward `source-` status (matched / verified /
+    borderline / unmatched, `source-` prefixed) per in-branch source,
+    with its column rank and best pair. ADVISORY: column view of the same
+    pair scores, for user reading only — never a gate.
+11b. `source_candidates.csv` — OUT-OF-MAP sources (claimed by no
+    branch) whose best-ranked hits land in a branch pool and pass the
+    run null bar — the backward mirror of candidate admission.
+    Advisory; renders as the scenes' `source-candidates` roots
+    (re-aimed 2026-09-18: the earlier sibling-row derivation showed
+    other branches' query neurons, which the sibling category already
+    covers).
+12. `visualization/*.html` — one 3D scene per parent type.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
 
@@ -92,7 +113,7 @@ $PY scripts/RunMappingValidation.py \
   another branch) > `candidates` (out-of-map, connectivity- AND
   morph-qualified — the restrictive fill) > `family` (out-map bodyIds of
   THIS branch's target type) > `relative` (candidate-type mates outside
-  the map) > `suspicious` (aggressive-only deep window). A target gets
+  the map) > `examinees` (aggressive-only deep window). A target gets
   exactly one; the modes NEST.
 - **One ordered per-bodyId leaf token on every expansion bin**:
   `{T}(out-map)` = the type is an in-map type, so this is an unmapped
@@ -128,7 +149,19 @@ $PY scripts/RunMappingValidation.py \
 - **`matched` is the only asserted tier**; verified/borderline are
   review tiers; all proposals are evidence — the mapping is never
   rewritten.
-- **Frames**: scenes render in SOURCE coordinates; both morph tracks
+- **Backward `source-` statuses are advisory** (column view of the same
+  pair scores; plan `plan-backward-source-status.md`): an unpaired
+  source is typically a column runner-up of an already matched/verified
+  target (population surplus + N-to-1 convergence), NOT a mapping
+  failure. They never gate and never enter the dedup.
+  `source_candidates.csv` lists OUT-OF-MAP sources whose best-ranked
+  hits reach a branch pool (null-bar morph-qualified) — the true
+  foreign-candidate mirror; in-branch sources never appear (they carry
+  the `source-` statuses), and cross-branch convergence lives in the
+  sibling category.
+- **Frames**: scenes render in the source dataset's RENDER coordinates
+  (FAFB/BANC native; male-cns/hemibrain raw→render bridged — sources
+  AND targets share one frame); both morph tracks
   score in TARGET coordinates. Never read scene geometry as the
   scoring frame.
 - **Untyped neurons**: `untyped` is a leaf token on whatever bin the
@@ -136,7 +169,7 @@ $PY scripts/RunMappingValidation.py \
   peer category. Known noise populations (R1-R6 photoreceptors etc.) are
   structurally labeled by real crosswalks, not homolog claims.
 - **Legend shape (Rev 3.12)**: the scene has ONE root per expansion
-  category (`candidates` / `suspicious` / `family` / `relative`); every
+  category (`candidates` / `examinees` / `family` / `relative`); every
   bodyId LEAF — in all four — carries ONE ordered token (`{T}(out-map)` /
   `{T}>{src}` / `{T}(no_source)` / `untyped`) plus a standalone `(dup)`
   tag. `(out-map)` = an unmapped bodyId of an in-map type (bodyId-level,
@@ -156,8 +189,14 @@ admits more neurons.
   target type) and `relative` (candidate-type mates). Expected: more of
   the type population surfaces; the tier is unchanged.
 - **`--mode aggressive`** (legacy alias `--aggressive-expansion`): adds
-  the deep-window `suspicious` bin. Over-expansion prone (r36e review) —
+  the deep-window `examinees` bin. Over-expansion prone (r36e review) —
   flag it clearly in any report.
+- **`--verify-suspects`** (default OFF): advisory connectivity check of
+  each queried same-name fan-out's rival candidates →
+  `suspects_verification.csv` + the report Suspects tab. A rival that
+  verifies well is a candidate ANNOTATION, not a mapping — inclusion
+  goes through the custom label mapper. Held/excluded fan-outs land in
+  `same_name_excluded.csv` (always written, advisory accounting).
 - `--no-morphology`: fast structural pass (skips Track A/B); admission
   then falls back to connectivity-only.
 
@@ -169,10 +208,13 @@ bin. `parameters.json` records `validation_mode` / `mode_rank`.
 
 When presenting results to the user:
 
+0. `report.html` assembles items 1–6 of this checklist per run — open
+   it first, then drill into the CSVs below when a number needs
+   scrutiny.
 1. Run folder path + self-check status (must be "all legend leaves
    match their neuron geometry" per scene).
-2. Branch table: pools, M, gap, suspicious/noise counts.
-3. Category distribution (`suspicious_candidates.csv` → `category`
+2. Branch table: pools, M, gap, examinee/noise counts.
+3. Category distribution (`examinees.csv` → `category`
    value counts), the out-of-scope count, and what it says
    (sibling-dominated = cross-branch convergence; a `candidates ...
    (no_source)` cluster = source-annotation gap).

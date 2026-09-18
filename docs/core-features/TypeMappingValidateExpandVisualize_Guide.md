@@ -19,7 +19,7 @@ python scripts/RunMappingValidation.py \
     --types s-CPDN3C,s-CPDN3D \
     --label my_first_run --scene-selfcheck
 
-# a whole coarse cell type (242 neurons → 219 targets)
+# a whole coarse cell type (242 FAFB neurons → 204 MCNS neurons map-covered)
 python scripts/RunMappingValidation.py \
     --source flywire_FAFB_v783 --target male-cns:v1.0 \
     --types circadian_clock --label circadian --max-scenes 21
@@ -30,6 +30,24 @@ Runtime: ~2 min for a small type pair, ~6 min for a 50-neuron family,
 ~35 min for the full circadian clock (warm caches).
 
 ## 2. Reading the results
+
+### 2.0 The per-run report (`report.html`)
+
+Every run writes ONE self-contained `report.html` into the run folder —
+start there. It assembles the headline (e.g. **242 source neurons →
+204 male-cns:v1.0 neurons map-covered**), the three coverage levels
+(L1 claim / L2 provenance / L3 validation), the branch table, the
+target-side holes, the fill proposals with per-row provenance, the
+out-map expansion, the morphology record (with the null-sample advisory
+when null-kind bars are in play), the scene gallery, and a file index.
+Hover any dotted term for its definition; every `!` log line is
+reproduced verbatim in its Warnings section, and the same warnings are
+appended to `user_warning_notes.txt`. `README.txt` stays slim
+(directions + the raw run log). Any past run can be regenerated:
+
+```
+python -m comparison.mapping_validation_report <run_dir>
+```
 
 ### 2.1 The 3D scenes (`visualization/*.html`)
 
@@ -47,9 +65,10 @@ template** (targets are bridged in). The legend tree, top to bottom:
 | `candidates` (orange) | suspected neurons the mapping missed: **outside the map**, connectivity-qualified, morph-qualified. One root; each bodyId leaf carries `{type}(out-map)` / `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` when it recurs across branches |
 | `family` (light green) | out-map bodyIds whose type is one of your in-map types — the same annotated family, not re-validated. One root; each bodyId leaf carries `{type}(out-map)`, plus `(dup)` **[family mode]** |
 | `relative` (olive) | type-mates of candidate types for types **outside** the map — annotation-review targets; each leaf carries `{type}>{src}` / `{type}(no_source)` / `untyped` **[family mode]** |
-| `suspicious` (red) | deep-window homologs below the pool best — lowest confidence; each leaf carries `{type}(out-map)` / `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` **[aggressive mode]** |
+| `examinees` (red) | deep-window homologs below the pool best (renamed from `suspicious` — the mapper's rival-suspects concept now owns that word) — lowest confidence; each leaf carries `{type}(out-map)` / `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` **[aggressive mode]** |
 | `out-map query · {type}` (blue) | your source neurons of the type that **no branch pool claims** — the unplaced residue of the source-side gap; compare them with `candidates` to judge the fill |
 | `out-map candidates · {type}` (light blue) | the top connectivity-ranked targets found by scanning those unpaired sources (no morph bars; exploratory) |
+| `source-candidates · {target type}` (brown — Category10 `#8c564d`; hidden by default, one eye click restores) | **out-of-map sources** (claimed by no branch) whose best-ranked connectivity hits land in this branch's targets and pass the run null bar — the backward mirror of candidate admission; advisory only, never a fill. The leaf's type suffix is the source's own type; `(dup)` marks sources that are candidates for several branches. Report: Backward tab |
 
 Every expansion leaf carries **one** token, decided in this order:
 
@@ -64,7 +83,7 @@ Every expansion leaf carries **one** token, decided in this order:
   backward route (**type-level**; e.g. CB4091).
 - `untyped` — no type annotation.
 
-Within the `candidates` / `family` / `relative` / `suspicious` roots the
+Within the `candidates` / `family` / `relative` / `examinees` roots the
 bodyId leaves are sorted by `type + suffix` (not bodyId), and each root
 always renders even with a single leaf.
 
@@ -75,9 +94,9 @@ skeleton line to see its **bodyId**.
 **What the bins mean as a set.** The categories are a partition: every
 in-scope neuron falls into exactly one, decided in the order
 matched/verified/borderline/unmatched → sibling → candidates → family →
-relative → suspicious. The bins nest by mode: restrictive has the tier,
+relative → examinees. The bins nest by mode: restrictive has the tier,
 `sibling` and `candidates`; family adds `family` and `relative`;
-aggressive adds `suspicious`. A neuron keeps the same bin across modes —
+aggressive adds `examinees`. A neuron keeps the same bin across modes —
 switching mode only reveals more neurons, never relabels one.
 
 > **Frames note:** the scenes draw in the *source* brain coordinates,
@@ -108,7 +127,7 @@ bar engine, two currencies; exact bars per branch in
 In **aggressive mode** the deep window (neurons ranked below the pool
 best) gets a second, looser bar — the pool baseline minus
 `k × Δ` — between the candidate bar and noise; those rows are labeled
-`suspicious`, never fills.
+`examinees`, never fills.
 
 ### 2.2b The layered gap-fill report
 
@@ -143,14 +162,29 @@ Rows that fail a gate move to `noise_filtered_candidates.csv` with a
 | `jaccard_below_pool` | wins on correlation but shares far fewer partners than the pool member |
 | `tie_margin` | beats the pool member by < 0.02 — a numerical tie |
 
+### 2.3b Backward `source-` statuses (advisory)
+
+The same bodyId-bodyId pair scores also grade the **source** side (the
+column view: per target, rank its sources). Every in-branch source gets a
+read-only status — `source-matched` (column-best of its own top target,
+above the matched bar), `source-verified` (column-best of another target),
+`source-borderline` (few out-of-branch sources rank above it),
+`source-unmatched` (dominated by out-of-branch sources). These are for
+your reading only: an unpaired source is usually a *column runner-up of an
+already matched/verified target* (population surplus + N-to-1
+convergence), not a mapping failure. They never gate and never enter the
+dedup. See the report's Backward tab and `source_status.csv`.
+
 ## 2.4 The CSVs
 
 | file | question it answers |
 | --- | --- |
 | `pair_summary.csv` | per branch: pool sizes, matched count, gap (informational), verdict/noise counters |
 | `validation_results.csv` | per source neuron: verdict, global ranks, scores |
-| `suspicious_candidates.csv` | every expansion row with its `category` + `candidate_annotation` and both morph tracks |
-| `deep_candidates.csv` | deep-window rows (`suspicious`, aggressive mode only) |
+| `examinees.csv` (was `suspicious_candidates.csv`) | every expansion row with its `category` + `candidate_annotation` and both morph tracks |
+| `same_name_excluded.csv` | queried types whose same-name fan-out was held/excluded, or multi-value cells — advisory accounting |
+| `suspects_verification.csv` | opt-in (`--verify-suspects`): rival-suspect connectivity verification — advisory |
+| `deep_candidates.csv` | deep-window rows (`examinees`, aggressive mode only) |
 | `noise_filtered_candidates.csv` | every dropped row and why |
 | `gap_fill_proposals.csv` | proposed partners for unpaired neurons (evidence only), with `counts_toward_restrictive_fill` / `counts_toward_family_fill` |
 | `family_candidates.csv` | the whole `family` bin (enumerated members ∪ evidence rows classified `family`) **[family mode]** |
@@ -207,14 +241,14 @@ suggestion.
    in-map types, `relative` covers the neighborhoods of the suspects
    themselves. The two are disjoint by type. One `relative` root; each
    leaf carries `{type}>{src}` / `{type}(no_source)` / `untyped`.
-6. **`suspicious`.** In *aggressive mode*: the deep window — out-of-pool
+6. **`examinees`.** In *aggressive mode*: the deep window — out-of-pool
    homologs ranked *below* the pool best. Lowest confidence, reviewed
-   last. One `suspicious` root; each leaf carries `{type}(out-map)` /
+   last. One `examinees` root; each leaf carries `{type}(out-map)` /
    `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` when the
    bodyId recurs.
 
 **Leaf ordering.** Within a `candidates` / `family` / `relative` /
-`suspicious` root the bodyId leaves are sorted by `type + suffix` (e.g.
+`examinees` root the bodyId leaves are sorted by `type + suffix` (e.g.
 `CB1011>s-CPDN3B` before `SMP217(no_source)` before `SMP217(no_source)
 (dup)`), not by bodyId, so the same target type groups together. The root
 row always renders, even when it holds a single leaf.
@@ -231,7 +265,7 @@ export gives each bodyId one row, choosing in the order
 `tier > sibling > candidates > family > relative`, and flags non-sibling
 repeats with `dup`. The same `dup` flag is written onto every per-branch
 CSV row, and the scene marks those roots with a ` (dup)` suffix (e.g.
-`suspicious · SMP217 (dup)`) so you can see which expansion neurons recur
+`examinees · SMP217 (dup)`) so you can see which expansion neurons recur
 across branches.
 
 **Connectivity-only rows are kept, not shown.** A suspect that ranks ahead
@@ -251,7 +285,7 @@ question.
 | --- | --- | --- | --- |
 | **restrictive** (default) | — | — | the validated tier + `sibling` + `candidates` (invaders and gap fires that pass the morph rule). Minimal expansion |
 | **family** | `--mode family` | `family`, `relative` | also surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). Ungated by qualification — bounded by the types themselves |
-| **aggressive** | `--mode aggressive` | `suspicious` | everything in family, plus the deep window (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
+| **aggressive** | `--mode aggressive` | `examinees` | everything in family, plus the deep window (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
 
 The mode is recorded in `parameters.json` (`validation_mode`). Only
 `candidates` count toward the restrictive gap fill; `family` and
@@ -286,7 +320,7 @@ The mode is recorded in `parameters.json` (`validation_mode`). Only
 - **A `relative` root** — family mode: type-mates of candidate types for
   types outside the map. Context for reviewing a candidate, not a
   proposal itself; leaves carry the `{type}>{src}` / `(no_source)` token.
-- **A `suspicious` root** — aggressive mode: deep-window homologs below
+- **An `examinees` root** — aggressive mode: deep-window homologs below
   the pool best; the lowest confidence, and a known over-expansion
   signal in finely identified brain regions. Leaves carry the same
   `{type}>{src}` / `(no_source)` token plus `(dup)` when a bodyId recurs.

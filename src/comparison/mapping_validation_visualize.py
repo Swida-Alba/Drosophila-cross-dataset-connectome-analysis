@@ -7,16 +7,18 @@ report §4).  The scene reads the EXPORTED ``category`` /
 prefixes — so the legend and the CSVs cannot disagree.
 
 - One scene per PARENT mapping group (a source type with all its bridge
-  branches), rendered in the SOURCE dataset's native template (locked
-  first-run direction: source=FAFB -> FLYWIRE brain; target neurons are
-  bridged in via ``transform_neurons_to_space``).
+  branches), rendered in the SOURCE dataset's RENDER template (locked
+  first-run direction: source=FAFB -> FLYWIRE brain; sources are bridged
+  native -> render when those differ — male-cns/hemibrain raw-voxel
+  frames — and target neurons are bridged in via
+  ``transform_neurons_to_space``).
 - ONE legend group per BRANCH, named ``{src} → {tgt} · {linker}``.  The
   hierarchy is branch group -> category root -> bodyId leaf, with roots:
     ``query · {src_type}``                  (all branch source neurons)
     ``matched`` / ``verified`` / ``borderline`` / ``unmatched`` · {tgt}
     ``sibling · {N} members``               (in-map targets of other
                                              branches of the query)
-    ``family`` / ``candidates`` / ``relative`` / ``suspicious`` (one root
+    ``family`` / ``candidates`` / ``relative`` / ``examinees`` (one root
                                              each; every bodyId leaf carries
                                              the qualified token
                                              ``{T}(out-map)`` / ``{T}>{src}``
@@ -26,7 +28,7 @@ prefixes — so the legend and the CSVs cannot disagree.
   bare-category root always renders even with a single leaf.
   Query roots always render ahead of the category roots (layer order); the
   expansion bins follow in the order sibling > candidates > family >
-  relative > suspicious.
+  relative > examinees.
 - Only in-scope rows render: a connectivity-qualified suspect failing the
   morph rule carries ``in_scope=False`` / ``morph_failed=True`` and stays
   in the CSVs (the connectivity-only homolog-finding result).
@@ -34,7 +36,7 @@ prefixes — so the legend and the CSVs cannot disagree.
 - Colors: each category has one fixed color across branches and types
   (query blue, matched cyan, verified green, borderline gold, unmatched
   grey, sibling pink, candidates orange, family light green, relatives
-  olive, suspicious red).
+  olive, examinees red).
 - ``legend_mode='tree'``: the drocat legend panel builds branch ->
   category -> bodyId from the ``drocatLegend`` meta tags, so the row-to-
   trace mapping can never drift from the figure.  Targets whose skeleton
@@ -71,9 +73,13 @@ CATEGORY_COLORS = {
     'unmatched': '#7f7f7f',    # grey    - more invaders ahead
     'candidates': '#ff7f0e',   # orange  - out-of-pool, morph-qualified
     'fill': '#9467bd',         # purple  - candidates promoted on gap
-    'suspicious': '#d62728',   # red     - ahead invaders without morph support
+    'examinees': '#d62728',   # red     - ahead invaders without morph support
+                              # (category renamed from 'suspicious')
     'sibling': '#e377c2',      # pink    - pool member of a sibling branch
     'backward': '#8c564b',     # brown   - type maps backward to the query
+    'source-candidates': '#8c564d',  # brown (bokeh.palettes Category10[5])
+                                     # - re-aimed out-of-map candidates; user
+                                     # color adjustment of D-B12's #6baed6
     'family': '#98df8a',       # light green - same-type extra, unqualified
     'relative': '#bcbd22',     # olive   - type-mates of candidate types
     'relatives': '#bcbd22',    # olive   - legacy alias (pre-3.12 root name)
@@ -93,7 +99,7 @@ INVADER_BUCKET_PRIORITY = {
     'fill': 2,
     'candidates': 2,
     'family': 3,
-    'suspicious': 4,
+    'examinees': 4,
 }
 
 # Revision 3.12 render order for the new S2 categories (lower = earlier).
@@ -104,7 +110,7 @@ CATEGORY_RENDER_PRIORITY = {
     'candidates': 1,
     'family': 2,
     'relative': 3,
-    'suspicious': 4,
+    'examinees': 4,
 }
 
 
@@ -131,7 +137,7 @@ def invader_bucket_key(ahead_bid: int, ahead_type: str,
     mapped = backward_lookup(ahead_type) if backward_lookup else None
     if mapped:
         return f'backward · {mapped}'
-    return 'suspicious'
+    return 'examinees'
 
 
 def bucket_root_label(key: str, types_by_bid: Dict[int, str]) -> str:
@@ -140,7 +146,7 @@ def bucket_root_label(key: str, types_by_bid: Dict[int, str]) -> str:
     Only the legacy `` · ``-suffixed keys (compatibility callers) pass
     through verbatim; a bare category key returns itself."""
     prefix = key.split(' · ')[0]
-    if prefix in ('candidates', 'suspicious', 'family', 'relative'):
+    if prefix in ('candidates', 'examinees', 'family', 'relative'):
         if ' · ' in key:
             # legacy/verbatim key (pre-merge callers) — keep as-is
             return key
@@ -150,12 +156,12 @@ def bucket_root_label(key: str, types_by_bid: Dict[int, str]) -> str:
         return f'sibling · {n} member{"" if n == 1 else "s"}'
     if ' · ' in key:
         return key
-    if key == 'suspicious · untyped':
+    if key == 'examinees · untyped':
         return key
     types = sorted({str(t) for t in types_by_bid.values()
                     if t and t != 'untyped'})
     if not types and 'untyped' in {str(t) for t in types_by_bid.values()}:
-        return 'suspicious · untyped'
+        return 'examinees · untyped'
     if len(types) <= 1:
         return f'{prefix} · {types[0] if types else "?"}'
     return f'{prefix} · {len(types)} types'
@@ -256,7 +262,7 @@ def build_category_buckets(res, validator, pair, suspicious_cap: int
     (``in_scope`` True and a non-empty ``category``); out-of-scope rows
     (connectivity-qualified but morph-failed) stay CSV-only.
 
-    Each expansion category is ONE root (``candidates`` / ``suspicious`` /
+    Each expansion category is ONE root (``candidates`` / ``examinees`` /
     ``family`` / ``relative``); the bodyId-level detail — the qualified
     ordered token (``{T}(out-map)`` / ``{T}>{src}`` /
     ``{T}(no_source)`` / ``untyped``) and the standalone ``(dup)`` tag —
@@ -339,7 +345,7 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
     alternate-chain) only name the bucket — they never bypass
     qualification, and failures stay in the CSVs (a morph-failing
     sibling is still structurally explainable, so it does not demote
-    to suspicious either).  Rule v2 with the binding native floor:
+    to examinees either).  Rule v2 with the binding native floor:
     `pool_ref >= floor` when the branch has one, otherwise
     `query morph >= bar` (null-calibrated when available, else the
     factor x pooled-average threshold).
@@ -350,7 +356,7 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
     verbatim; only UNEXPLAINED invaders (hollow-backward, unmapped) are
     eligible for morph-qualified `candidates` promotion — qualification
     rule v2 `query_or_pool` (Rev 3.7): query-based morph >= threshold OR
-    native pool_ref >= floor.  Untyped invaders stay `suspicious ·
+    native pool_ref >= floor.  Untyped invaders stay `examinees ·
     untyped` (never promoted, never `?`).  Out-of-pool fill proposals
     (proposed unconditionally per Rev 3.8) merge into the same buckets.
 
@@ -385,7 +391,7 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
         cls = r.get('invader_class')
         if cls == 'untyped':
             # Rev 3.6 untyped policy: explicit review root, never promoted
-            return 'suspicious · untyped'
+            return 'examinees · untyped'
         # Rev 3.11 (user 2026-09-13): SAME-TYPE extras (ahead/proposal
         # type == the branch target type, outside the widened pool --
         # their annotation group has no chain to the parent) are the
@@ -403,7 +409,7 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
         # (user 2026-09-12, default included): sibling/backward labels
         # only name the bin — they never bypass qualification; failures
         # stay in the CSVs (a morph-failing sibling is still structurally
-        # explainable, so it does not demote to suspicious either).
+        # explainable, so it does not demote to examinees either).
         if cls in ('sibling', 'backward') and not morph_ok(r):
             return None
         # Rev 3.11 (user 2026-09-13): alternate-chain residues are
@@ -427,14 +433,14 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
         if sibling_index is not None or backward_lookup is not None:
             key = invader_bucket_key(bid, atype, sibling_index or {},
                                      backward_lookup)
-            if key != 'suspicious':
+            if key != 'examinees':
                 return key
         # unexplained: morph-qualified -> candidates; otherwise the
-        # suspicious review root (the "ranked ahead, failed
+        # examinees review root (the "ranked ahead, failed
         # qualification" signal survives by design)
         if morph_ok(r):
             return 'candidates'
-        return 'suspicious'
+        return 'examinees'
 
     buckets: Dict[str, Dict] = {}
     bucket_order: List[str] = []
@@ -455,11 +461,11 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
     # rank BELOW the pool best (not invaders) join the same buckets —
     # structural labels respected, morph-qualified unexplained ones
     # become `candidates`; unqualified deep rows stay in
-    # deep_candidates.csv only (suspicious remains an ahead-only
+    # deep_candidates.csv only (examinees remains an ahead-only
     # concept).
     for r in res.get('deep', []):
         key = bucket_key(r)
-        if key is None or key in ('suspicious', 'suspicious · untyped'):
+        if key is None or key in ('examinees', 'examinees · untyped'):
             continue
         assign_invader(claimed, buckets, bucket_order,
                        int(r['ahead_target_bodyId']),
@@ -474,7 +480,7 @@ def build_invader_buckets(res, suspicious_cap: int, threshold,
                 or f.get('fill_class') != 'out_of_pool':
             continue
         key = bucket_key(f)
-        if key is None or key in ('suspicious', 'suspicious · untyped'):
+        if key is None or key in ('examinees', 'examinees · untyped'):
             continue
         assign_invader(claimed, buckets, bucket_order,
                        int(f['proposal_bodyId']),
@@ -592,15 +598,37 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                                     transform_neurons_to_space)
     from morphology import _load_cached_skeleton_file
 
-    src_space = dataset_native_space(cfg.source_dataset)
+    # The backend renders injected overlay layers AS-IS in its template
+    # space (visualize_skeleton's template target = the RENDER space), so
+    # the scene must deliver EVERY neuron — sources and bridged targets —
+    # in the source dataset's RENDER space.  FAFB/BANC are identity
+    # (native == render); male-cns/hemibrain/manc raw-voxel frames differ
+    # from their render frames (the 2026-09-18 MCNS→BANC misplacement:
+    # raw-space neurons drawn on the JRCFIB2022M-nanometre mesh).
+    src_native = dataset_native_space(cfg.source_dataset)
+    src_space = dataset_render_space(cfg.source_dataset)
     tgt_native = dataset_native_space(cfg.target_dataset)
     tgt_render = dataset_render_space(cfg.target_dataset)
     needs_transform = src_space != tgt_render
+    src_needs_bridge = src_native != src_space
     validator.log(
         f'[stage 4] scenes in {cfg.source_dataset} template ({src_space}); '
         f'target {tgt_native} -> {tgt_render}'
         if needs_transform else
         f'[stage 4] scenes in {src_space} (no transform needed)')
+
+    def bridge_to_scene_space(neurons):
+        """Bridge SOURCE-dataset neurons into the scene's render space
+        (identity when native == render).  Fail-open: unbridgeable
+        neurons are dropped with the helper's own warning."""
+        if not neurons or not src_needs_bridge:
+            return neurons
+        xformed = transform_neurons_to_space(
+            navis.NeuronList(neurons), src_native, src_space,
+            validate_bounds=True, verbose=False)
+        if isinstance(xformed, navis.NeuronList):
+            xformed = list(xformed)
+        return xformed or []
 
     # group pairs into parent mapping groups (query, source_type)
     parents: Dict[Tuple[str, str], List] = {}
@@ -666,6 +694,9 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         pass
                     neurons.append(trees[b])
             dropped = [(b, 'no skeleton') for b in bids if b not in trees]
+            # The scene renders in the source RENDER space; raw cached
+            # skeletons are in the dataset's native frame.
+            neurons = bridge_to_scene_space(neurons)
             return neurons, dropped
         except Exception as exc:  # noqa: BLE001
             return [], [(b, str(exc)) for b in bids]
@@ -790,6 +821,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         sn = [trees[b] for b in skipped_src if b in trees]
                     except Exception:  # noqa: BLE001
                         sn = []
+                    sn = bridge_to_scene_space(sn)
                     if sn:
                         add_layer(group, sn, UNASSIGNED_COLOR,
                                   [f'query · {src_type} · unassigned']
@@ -832,6 +864,53 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         neurons = xformed
                     add_layer(group, neurons, cat_colors[cat],
                               [root] * len(neurons), category=cat)
+
+                # Backward source-candidates (plan-
+                # backward-source-status.md D-B8/D-B12, RE-AIMED per plan
+                # `-samename-first-consumers.md` §10, user option 2):
+                # OUT-OF-MAP sources (claimed by no branch) whose
+                # best-ranked scan hits land in THIS branch's pool and
+                # pass the run null bar — the true mirror of candidate
+                # admission.  Advisory only (D-B11).  Leaf type suffix =
+                # the source's own type (provenance); `(dup)` marks
+                # sources that are candidates for several branches.
+                bkey = (query,) + pair.key
+                cand_rows = (getattr(validator, '_source_candidates',
+                                     {}) or {}).get(bkey) or []
+                if cand_rows:
+                    by_src = {}
+                    for c in cand_rows:
+                        by_src.setdefault(int(c['source_bodyId']), c)
+                    cids = sorted(by_src)
+                    cn, cd = load_query_neurons(cids)
+                    for bid, why in cd:
+                        validator.log(f'    ! source-candidate {bid} '
+                                      f'skipped ({why})')
+                    if cn:
+                        multi = getattr(validator,
+                                        '_source_candidates_multi',
+                                        set()) or set()
+                        root = f'source-candidates · {pair.target_type}'
+                        leaf_types = {}
+                        leaf_tags = {}
+                        leaf_sorts = {}
+                        for n in cn:
+                            c = by_src.get(int(n.id)) or {}
+                            stype = str(c.get('source_type') or '?')
+                            leaf_types[int(n.id)] = stype
+                            tag = '(dup)' if int(n.id) in multi else ''
+                            if tag:
+                                leaf_tags[int(n.id)] = tag
+                            leaf_sorts[int(n.id)] = \
+                                f'{stype} {tag}'.strip()
+                        add_layer(group, cn,
+                                  CATEGORY_COLORS['source-candidates'],
+                                  [root] * len(cn),
+                                  category='source-candidates',
+                                  leaf_types=leaf_types,
+                                  leaf_tags=leaf_tags or None,
+                                  leaf_sorts=leaf_sorts,
+                                  default_off=True)
 
                 # -----------------------------------------------------------------
                 # Revision 3.12: expansion bins are the EXPORTED categories
@@ -879,7 +958,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                             continue
                         prefix = _cat_of_key(key)
                         color = CATEGORY_COLORS.get(
-                            prefix, CATEGORY_COLORS['suspicious'])
+                            prefix, CATEGORY_COLORS['examinees'])
                         root = bucket_root_label(key, rec['types'])
                         raw, dropped = load_target_neurons(ids)
                         for bid, why in dropped:

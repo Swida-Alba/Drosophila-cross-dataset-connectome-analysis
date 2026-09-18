@@ -664,5 +664,5 @@ review disagreements in 3D scenes, and collect gap-fill/candidate
 proposals (evidence only — the mapping is never rewritten). Categories
 form a partition per branch (`matched`/`verified`/`borderline`/`unmatched`,
 `sibling`, `candidates`, and — in the wider modes — `family`, `relative`,
-`suspicious`), and the three modes nest
+`examinees`), and the three modes nest
 (`restrictive ⊆ family ⊆ aggressive`).

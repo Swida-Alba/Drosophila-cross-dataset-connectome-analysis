@@ -1292,10 +1292,12 @@ TOOL_GUIDE_SPECS = {
         "files": [
             {"pattern": "report.html",
              "description": "Tabbed report (same generator as the "
-                            "connectivity-profiling report): per-pair tabs "
-                            "with Type/BodyId level heatmaps, CSV and "
-                            "VisPath editor links, null baselines, and "
-                            "overlay-scene links."},
+                            "connectivity-profiling report): scrollable "
+                            "overview table with frame-asymmetry "
+                            "disclosure, per-pair tabs with Type/BodyId "
+                            "level heatmaps (square cells via explicit-width "
+                            "sizing), CSV and VisPath editor links, null "
+                            "baselines, and overlay-scene links."},
             {"pattern": "parameters.json",
              "description": "All analysis parameters (queries, datasets, "
                             "member caps, null sample size, reference "
@@ -1304,8 +1306,11 @@ TOOL_GUIDE_SPECS = {
              "description": "Human-readable summary with the output "
                             "structure."},
             {"pattern": "overview.csv",
-             "description": "Queried type x dataset-pair mean vector_v2 "
-                            "scores with each pair's baseline p95.",
+             "description": "Queried type x dataset-pair best target-type "
+                            "match score, target name, and baseline p95. "
+                            "Each column block is scored in the target's "
+                            "render space — A\u2192B and B\u2192A are not "
+                            "symmetric.",
              "preview": True,
              "preview_title": "Overview",
              "columns": ["queried_type"]},
@@ -1434,7 +1439,27 @@ TOOL_GUIDE_SPECS = {
              "description": "Conflicting cross-dataset type mappings "
                             "(N-to-1 / 1-to-N, never guessed). The origin "
                             "column distinguishes crosswalk conflicts from "
-                            "annotation-bridge ones."},
+                            "annotation-bridge ones; multivalue_source / "
+                            "source_parts flag comma-joined multi-value type "
+                            "cells, and same_name_candidate / same_name_path / "
+                            "same_name_disposition record the same-name-first "
+                            "verdict for the row."},
+            {"pattern": "auto_type_mapping_suspects.csv",
+             "description": "Same-name-first SUSPECT relations: one row per "
+                            "rival candidate of a fan-out whose candidate set "
+                            "contained the source type's own name. "
+                            "rival_has_own_clean_pair + rival_pair_status "
+                            "(own_1to1_pair / no_own_1to1_pair) tell whether "
+                            "the rival's own name also pairs 1-to-1 in this "
+                            "direction — an observation, never a verdict; "
+                            "reverse_target/backs_source says whether it "
+                            "points back at the source. Includes per-candidate "
+                            "votes, populations, the pair-level "
+                            "selection_disposition, and a ready-made "
+                            "custom-label-mapper entry "
+                            "(custom_mapper_dataset/from/to) — the user's "
+                            "inclusion path. Rivals are never merged "
+                            "automatically."},
             {"pattern": "auto_type_mapping.json",
              "description": "Auto-type-mapping provenance for this run: "
                             "which mapper was requested vs active, its source "
@@ -1949,7 +1974,115 @@ TOOL_GUIDE_SPECS = {
                             "(when a PDF summary is requested)."},
             {"pattern": "*_summary.pptx",
              "description": "Summary slides with the downloaded images "
-                            "(when a PPTX summary is requested)."},
+                            "(when a PDF summary is requested)."},
+        ],
+    },
+    "type_mapping_validation": {
+        "title": "Type-Mapping Validation (TM VEV)",
+        "summary": "BodyId-level cross-dataset type validation "
+                   "(validate · expand · visualize): branch pools, "
+                   "expansion bins, fill proposals, out-map expansion, "
+                   "morph qualification, and 3D scenes. Proposals only — "
+                   "the mapping is never rewritten.",
+        "files": [
+            {"pattern": "report.html",
+             "description": "The per-run report: headline + the three "
+                            "coverage levels (L1 claim / L2 provenance / "
+                            "L3 validation), branches (marks same-name-"
+                            "first selections), targets, fills, out-map "
+                            "expansion, backward source status, suspects "
+                            "verification (opt-in runs), morphology "
+                            "record, scenes, file index. Hover any dotted "
+                            "term for its definition. Regenerable for any "
+                            "past run: python -m "
+                            "comparison.mapping_validation_report <run_dir>"},
+            {"pattern": "README.txt",
+             "description": "Slim directions (what file is what, where to "
+                            "start) + the raw run log. The analysis content "
+                            "lives in report.html."},
+            {"pattern": "user_warning_notes.txt",
+             "description": "Bracketed-tag warning lines: scene self-check "
+                            "status, the null-sample run-sensitivity "
+                            "advisory, and mapper-gap evidence (types with "
+                            "no backward mapping)."},
+            {"pattern": "set_coverage.json",
+             "description": "Set-level coverage (the deliverable): FAFB "
+                            "assigned / fill-proposed / unpaired, MCNS "
+                            "in-pool by tier, holes with bodyIds, "
+                            "family_material, and mapper_gap."},
+            {"pattern": "pair_summary.csv",
+             "description": "Per branch: pools, matched M, gap, "
+                            "gap_triggered, verdict/noise counters, "
+                            "hemisphere symmetry."},
+            {"pattern": "mapping_export.csv",
+             "description": "Branch-level mapping: chains, linker values, "
+                            "refined bodyId pools (the mapper-facing "
+                            "export)."},
+            {"pattern": "validation_results.csv",
+             "description": "Source×branch verdict rows: verdict tier, "
+                            "ranks + scores, connectivity flags, source "
+                            "size."},
+            {"pattern": "pool_categories.csv",
+             "description": "Per in-map target: tier (matched / verified / "
+                            "borderline / unmatched) with best evidence."},
+            {"pattern": "examinees.csv",
+             "description": "Expansion rows with the Revision 3.12 "
+                            "category partition (tier / sibling / "
+                            "candidates / family / relative / examinees "
+                            "- renamed from suspicious_candidates.csv), "
+                            "leaf tokens, bars, and out-of-scope flags."},
+            {"pattern": "same_name_excluded.csv",
+             "description": "Queried types whose same-name fan-out was "
+                            "held/excluded by the mapper, or multi-value "
+                            "type cells (kept atomic) - advisory "
+                            "accounting, never a gate."},
+            {"pattern": "suspects_verification.csv",
+             "description": "Opt-in (--verify-suspects): advisory "
+                            "connectivity verification of the mapper's "
+                            "rival suspects - never merged into the "
+                            "validation counts."},
+            {"pattern": "noise_filtered_candidates.csv",
+             "description": "Gate-dropped expansion rows with "
+                            "noise_reason."},
+            {"pattern": "deep_candidates.csv",
+             "description": "Aggressive-mode-only deep window (empty in "
+                            "family/restrictive modes)."},
+            {"pattern": "gap_fill_proposals.csv",
+             "description": "Fill proposals (in_pool / out_of_pool) for "
+                            "every unpaired neuron — proposals only."},
+            {"pattern": "gap_fill_levels.csv",
+             "description": "Branch-level fill level: high / medium / low / "
+                            "type_gated / advice."},
+            {"pattern": "gap_fill_dedup.csv",
+             "description": "The bodyId-unique fill (one row per target "
+                            "bodyId, dedup precedence + dup flag) — the "
+                            "real gap-fill list."},
+            {"pattern": "family_candidates.csv",
+             "description": "The whole family bin (out-map bodyIds of each "
+                            "branch's target type)."},
+            {"pattern": "relatives.csv",
+             "description": "The whole relative bin (type-mates of "
+                            "candidate types outside the map)."},
+            {"pattern": "out_map_expansion.csv",
+             "description": "Top-k typed non-in-map candidates per "
+                            "UNCLAIMED source, morph-checked against the "
+                            "run null bar — mapper-gap evidence, not "
+                            "fills."},
+            {"pattern": "morphology_calibration.json",
+             "description": "Per-branch qualification bars (floors v3), "
+                            "the run null bar, AUC gate record, and score "
+                            "frames."},
+            {"pattern": "parameters.json",
+             "description": "Every knob incl. validation_mode / mode_rank."},
+            {"pattern": "pipeline_progress.jsonl",
+             "description": "Stage timeline events (pre-flight, scans, "
+                            "out-map expansion, run_done)."},
+            {"pattern": "visualization/*/branches_*.html",
+             "description": "One 3D review scene per parent type with "
+                            "expansion content (source coordinates; a PNG "
+                            "preview sits next to it). The legend tree is "
+                            "one root per expansion category with ordered "
+                            "leaf tokens on every bodyId."},
         ],
     },
 }
@@ -2071,6 +2204,18 @@ def _metric_anchor(name) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", str(name)).strip("-")
 
 
+def _tmvev_glossary() -> list:
+    """TM VEV terms explained one by one (user 2026-09-18): the canonical
+    definitions from the run report's glossary, so the exported UserGuide
+    and the report can never drift apart."""
+    try:
+        from comparison.mapping_validation_report import TERM_DEFS
+        return [{"term": k, "description": TERM_DEFS[k]}
+                for k in sorted(TERM_DEFS)]
+    except Exception:
+        return []
+
+
 def assemble_run_content(run_folder: Path, tool_name: str,
                          params: Optional[dict]) -> dict:
     """Build the format-independent content model for one run folder."""
@@ -2145,6 +2290,10 @@ def assemble_run_content(run_folder: Path, tool_name: str,
         "metrics": metrics,
         "leftovers": leftovers,
         "warnings": warnings,
+        # TM VEV term glossary (type-mapping validation only; empty for
+        # the other tools).
+        "glossary": (_tmvev_glossary()
+                     if tool_name == "type_mapping_validation" else []),
     }
 
 
@@ -2694,6 +2843,8 @@ def render_txt(content: dict) -> str:
         lines.append("")
     lines.append(f"Run folder : {content['folder']}")
     lines.append(f"Generated  : {content['generated']}")
+    lines.append(f"Storage    : this folder appears in Settings -> Storage, "
+                 f"where it can be pruned (source data) or deleted.")
     lines.append("")
 
     key_params = _key_params(content["params"])
@@ -2735,6 +2886,14 @@ def render_txt(content: dict) -> str:
     else:
         lines.append("  (none)")
     lines.append("")
+
+    if content.get("glossary"):
+        lines.append("GLOSSARY - TM VEV TERMS")
+        lines.append("-" * 72)
+        for g in content["glossary"]:
+            lines.append(f"  {g['term']}: "
+                         f"{_math_to_txt(g['description'])}")
+        lines.append("")
 
     lines.append("OUTPUT FILES")
     lines.append("-" * 72)
@@ -2841,6 +3000,9 @@ def render_markdown(content: dict) -> str:
         md.append("")
     md.append(f"- **Run folder:** `{content['folder']}`")
     md.append(f"- **Generated:** {content['generated']}")
+    md.append("- **Storage:** this folder appears in the app's Settings → "
+              "Storage card, where it can be pruned (source data) or "
+              "deleted.")
     md.append("")
 
     key_params = _key_params(content["params"])
@@ -2888,6 +3050,13 @@ def render_markdown(content: dict) -> str:
     else:
         md.append("*No metrics or parameters are documented for this run.*")
     md.append("")
+
+    if content.get("glossary"):
+        md.append("## Glossary — TM VEV terms")
+        md.append("")
+        for g in content["glossary"]:
+            md.append(f"- **{g['term']}** — {g['description']}")
+        md.append("")
 
     md.append("## Output files")
     md.append("")
@@ -2985,7 +3154,8 @@ def render_html(content: dict) -> str:
         parts.append(f"<p>{_html_escape(content['summary'])}</p>")
     parts.append(f'<div class="meta">Run folder: '
                  f"<code>{_html_escape(content['folder'])}</code> · "
-                 f"Generated: {_html_escape(content['generated'])}</div>")
+                 f"Generated: {_html_escape(content['generated'])} · "
+                 f"Manage this folder in Settings → Storage</div>")
     parts.append("</div>")
 
     key_params = _key_params(content["params"])
@@ -3179,6 +3349,20 @@ def render_html(content: dict) -> str:
     else:
         parts.append(f'<div class="ok">{_html_escape(NO_WARNINGS_TEXT)}'
                      "</div>")
+
+    if content.get("glossary"):
+        parts.append('<h2 id="glossary">Glossary — TM VEV terms</h2>')
+        parts.append("<p class=\"small\">Every pipeline term, explained. "
+                     "The report's dotted terms link to the same "
+                     "definitions.</p>")
+        parts.append("<table>")
+        parts.append("<thead><tr><th>Term</th><th>Meaning</th></tr>"
+                     "</thead><tbody>")
+        for g in content["glossary"]:
+            parts.append(f"<tr><td><code>"
+                         f"{_html_escape(g['term'])}</code></td>"
+                         f"<td>{_html_escape(g['description'])}</td></tr>")
+        parts.append("</tbody></table>")
 
     parts.append('<h2 id="metrics">Metrics &amp; parameters</h2>')
     if content["metrics"]:

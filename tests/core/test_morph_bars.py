@@ -195,7 +195,7 @@ def test_aggressive_deep_window_two_gate_split():
     cat, scope, failed = classify_category(
         morph_ok=True, suspicious_morph_ok=False, is_deep=True,
         mode='aggressive', **common)
-    assert (cat, scope, failed) == ('suspicious', True, False)
+    assert (cat, scope, failed) == ('examinees', True, False)
     # same-type deep row -> family (rule 4 precedes rule 6, per §4.5)
     same_type = dict(common, target_type='SMP220')
     cat, scope, failed = classify_category(
@@ -206,7 +206,7 @@ def test_aggressive_deep_window_two_gate_split():
     cat, scope, failed = classify_category(
         morph_ok=False, suspicious_morph_ok=True, is_deep=True,
         mode='aggressive', **common)
-    assert (cat, scope, failed) == ('suspicious', True, False)
+    assert (cat, scope, failed) == ('examinees', True, False)
     # below both -> out of scope, morph-failed
     cat, scope, failed = classify_category(
         morph_ok=False, suspicious_morph_ok=False, is_deep=True,
@@ -357,12 +357,15 @@ def test_expand_out_map_sources_topk_excludes_in_map(monkeypatch, tmp_path):
 
     out_map_by_type = {('q', 'T'): [10]}
     in_map = {100}
-    rows = v._expand_out_map_sources(out_map_by_type, in_map,
-                                     target_stats=None, target_bids=[100, 101, 102, 103],
-                                     target_id2type={101: 'NEW1', 102: 'NEW2',
-                                                     103: 'NEW3',
-                                                     104: float('nan')},
-                                     top_k=2)
+    rows, cand_rows = v._expand_out_map_sources(
+        out_map_by_type, in_map,
+        target_stats=None, target_bids=[100, 101, 102, 103],
+        target_id2type={101: 'NEW1', 102: 'NEW2',
+                        103: 'NEW3',
+                        104: float('nan')},
+        top_k=2)
+    # the in-map claim 100 has no pool owner here -> still excluded
+    assert cand_rows == []
     assert len(rows) == 2
     assert [r['target_bodyId'] for r in rows] == [101, 102]
     assert all(r['target_bodyId'] != 104 for r in rows)

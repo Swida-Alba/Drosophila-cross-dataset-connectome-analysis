@@ -21,6 +21,11 @@ All paths are relative to the repo root unless noted.
 - `MorphologyComparer(query, dataset, level, method, metric, candidate_cap, candidate_source, visualize_top_n, visualize_by, min_weight, min_shared_partners, roi_filter, ...)` → `find_similar()`
 - `SkeletonVectorCache(dataset, project_root=None, ...)` → `build(fetch_missing=0)`, `ensure(fetch_missing=0)`, `coverage()`, `vectors_for(body_ids, compute_missing=True)`
 - `find_similar_raw_cache(dataset, ...)`, `find_similar_dataset_cache(dataset, ...)`, `find_similar_flywire_mesh_cache(...)`
+- Raw-basis design: the skeleton cache stores RAW (level-0) skeletons — fetch
+  pipelines default `simplification=0`; vector caches (V1/V2) build from raw
+  trees only (simplified files are skipped, never releveled). Simplification
+  is applied at visualization/render time only. Legacy simp90 files can be
+  quarantined with `scripts/maintenance/purge_legacy_simp90_cache.py`.
 
 ## morphology_comparison (`src/morphology_comparison.py`)
 
@@ -66,14 +71,22 @@ BodyId-level type-mapping **validate-expand-visualize** orchestrator (CLI
   `run()`.
 - Category partition (one ordered first-match per branch): tier
   (`matched`/`verified`/`borderline`/`unmatched`) > `sibling` >
-  `candidates` > `family` > `relative` > `suspicious`; helpers
+  `candidates` > `family` > `relative` > `examinees` (renamed from
+  'suspicious' 2026-09-18); helpers
   `classify_category(...)`, `candidate_annotation(...)`,
   `morph_qualified(...)`, `_leaf_token(...)`, `normalize_mode(...)`,
   `_dedup_rows_by_bid(...)`.
 - Per-bodyId leaf token, ordered: `{T}(out-map)` (type is an in-map type;
   bodyId-level) > `{T}>{src}` > `{T}(no_source)` > `untyped`.
+- Same-name-first consumers: `TypePair.same_name_first` provenance on
+  fired selections; `same_name_excluded.csv` accounting for held /
+  evidence-only / multivalue types; opt-in `verify_suspects` rival
+  verification → `suspects_verification.csv` (advisory, default OFF).
 - Exports → `validation_results.csv`, `pool_categories.csv`,
-  `suspicious_candidates.csv`, `deep_candidates.csv`,
+  `examinees.csv` (was `suspicious_candidates.csv`),
+  `same_name_excluded.csv`, `source_candidates.csv`
+  (out-of-map sources reaching branch pools, null-bar
+  morph-qualified), `deep_candidates.csv`,
   `noise_filtered_candidates.csv`, `gap_fill_proposals.csv`,
   `gap_fill_dedup.csv`, `family_candidates.csv`, `relatives.csv`,
   `mapping_export.csv`, `pair_summary.csv`, `set_coverage.json`,
