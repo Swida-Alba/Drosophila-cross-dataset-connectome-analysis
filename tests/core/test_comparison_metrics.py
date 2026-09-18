@@ -563,3 +563,84 @@ def test_graph_kernel_similarity(metrics):
     # _cosine_similarity_dicts edge cases
     assert metrics._cosine_similarity_dicts({}, {}) == 1.0
     assert metrics._cosine_similarity_dicts({"a": 1}, {"b": 1}) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v2.2 representatives (plan-similarity-matrix-schema-v2)
+# ---------------------------------------------------------------------------
+
+def test_overlap_coefficients(metrics):
+    a = {"A -> B", "B -> C", "X -> Y"}
+    b = {"A -> B", "C -> D"}
+    cov_a, cov_b, cov_min = metrics.calculate_overlap_coefficients(a, b)
+    assert cov_a == pytest.approx(1 / 3)
+    assert cov_b == pytest.approx(0.5)
+    assert cov_min == pytest.approx(1 / 3)
+    # both empty = identical
+    assert metrics.calculate_overlap_coefficients(set(), set()) == (1.0, 1.0, 1.0)
+    # one-sided empty leaves that direction undefined
+    cov_a, cov_b, cov_min = metrics.calculate_overlap_coefficients({"A -> B"}, set())
+    assert np.isnan(cov_b) and np.isnan(cov_min) and cov_a == 0.0
+
+
+def test_topk_overlap(metrics):
+    wa = pd.Series([5.0, 3.0, 1.0], index=["A -> B", "B -> C", "A -> C"])
+    wb = pd.Series([4.0, 2.0, 0.5, 7.0], index=["A -> B", "B -> C", "A -> C", "C -> D"])
+    # k=2: A's top-2 {A->B, B->C}; B's top-2 {C->D, A->B}; intersection 1/2
+    assert metrics.calculate_topk_overlap(wa, wb, k=2) == pytest.approx(0.5)
+    # identical vectors = 1.0
+    assert metrics.calculate_topk_overlap(wa, wa, k=2) == 1.0
+    # empty side = NaN
+    empty = pd.Series(dtype=float)
+    assert np.isnan(metrics.calculate_topk_overlap(empty, wb))
+
+
+def test_path_jaccard_and_diagnostics(metrics):
+    path_data = pd.DataFrame(
+        {"d1": [3.0, 2.0, 0.0, np.nan], "d2": [1.0, 0.0, 4.0, 5.0]},
+        index=["A -> B -> C", "B -> C", "C -> D", "D -> E"],
+    )
+    # presence: d1 = {A->B->C, B->C}, d2 = {A->B->C, C->D, D->E}
+    # jaccard = 1 / 4 (with the small-sample gate lowered for the fixture)
+    assert metrics.calculate_path_jaccard(
+        path_data, "d1", "d2", min_support=2) == pytest.approx(0.25)
+    # default min_support=5 gates the tiny fixture -> NaN
+    assert np.isnan(metrics.calculate_path_jaccard(path_data, "d1", "d2"))
+    # top-k overlap on bottleneck weights: d1's top-1 is A->B->C (3.0),
+    # d2's is D->E (5.0) — disjoint heads at k=1
+    assert metrics.calculate_path_topk_overlap(path_data, "d1", "d2", k=1) == 0.0
+    # hop W1: d1 hops [3, 2] vs d2 hops [3, 2, 2, 2]
+    w1 = metrics.calculate_hop_profile_w1(path_data, "d1", "d2")
+    assert 0 <= w1 <= 1.0
+    # missing frame/columns -> NaN
+    assert np.isnan(metrics.calculate_path_jaccard(None, "d1", "d2"))
+    assert np.isnan(metrics.calculate_hop_profile_w1(path_data, "d1", "zz"))
+
+
+def test_netsimile_similarity_and_strength_w1(metrics):
+    wa = pd.Series([5.0, 3.0, 1.0], index=["A -> B", "B -> C", "A -> C"])
+    wb = pd.Series([4.0, 2.0, 0.5, 7.0], index=["A -> B", "B -> C", "A -> C", "C -> D"])
+    sim_same = metrics.calculate_netsimile_similarity(wa, wa)
+    assert sim_same == pytest.approx(1.0)
+    sim_diff = metrics.calculate_netsimile_similarity(wa, wb)
+    assert 0.0 <= sim_diff < 1.0
+    empty = pd.Series(dtype=float)
+    assert np.isnan(metrics.calculate_netsimile_similarity(empty, wb))
+    w1_out, w1_in = metrics.calculate_strength_w1(wa, wb)
+    assert w1_out >= 0 and w1_in >= 0
+    assert np.isnan(metrics.calculate_strength_w1(empty, wb)[0])
+
+
+def test_spearman_min_shared_gate(metrics):
+    wa = pd.Series([5.0, 3.0, 1.0], index=["A -> B", "B -> C", "A -> C"])
+    wb = pd.Series([4.0, 2.0], index=["A -> B", "B -> C"])
+    # legacy behavior (no gate): 2 shared edges -> NaN via the <3 rule
+    assert np.isnan(metrics.calculate_spearman_rank_correlation(wa, wb))
+    # perfectly rank-correlated larger sample passes the gate
+    big_a = pd.Series(range(40, 0, -1), index=[f"n{i} -> m{i}" for i in range(40)])
+    big_b = pd.Series(range(40, 0, -1), index=[f"n{i} -> m{i}" for i in range(40)])
+    gated = metrics.calculate_spearman_rank_correlation(big_a, big_b, min_shared=30)
+    assert gated == pytest.approx(1.0)
+    # same sample against a 30-edge gate with only 20 shared -> NaN
+    small = big_a.iloc[:20]
+    assert np.isnan(metrics.calculate_spearman_rank_correlation(small, big_b, min_shared=30))

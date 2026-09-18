@@ -471,24 +471,24 @@ def test_plot_jaccard_similarity_trend(viz, aligned):
     assert not df.empty and "jaccard" in df.columns
 
 
-def test_plot_edge_rank_correlation_trend(viz, aligned):
-    fig, df = viz.plot_edge_rank_correlation_trend(
+def test_plot_topk_overlap_trend(viz, aligned):
+    fig, df = viz.plot_topk_overlap_trend(
         lambda t: aligned, THRESHOLDS, DATASETS
     )
     assert fig is not None
-    assert not df.empty
+    assert not df.empty and "top20_overlap" in df.columns
 
 
-def test_plot_path_rank_correlation_trend(viz, path_data):
-    fig, df = viz.plot_path_rank_correlation_trend(
-        lambda t: path_data, THRESHOLDS, DATASETS
+def test_plot_netsimile_trend(viz, aligned):
+    fig, df = viz.plot_netsimile_trend(
+        lambda t: aligned, THRESHOLDS, DATASETS
     )
     assert fig is not None
-    assert not df.empty
+    assert not df.empty and "netsimile_similarity" in df.columns
 
 
-def test_plot_path_rank_correlation_trend_empty(viz):
-    fig, df = viz.plot_path_rank_correlation_trend(
+def test_plot_netsimile_trend_empty(viz):
+    fig, df = viz.plot_netsimile_trend(
         lambda t: pd.DataFrame(), THRESHOLDS, DATASETS
     )
     assert fig is not None
@@ -706,9 +706,9 @@ def test_trend_functions_require_matplotlib(monkeypatch, viz, results, aligned, 
     monkeypatch.setattr(vis_module, "HAS_MATPLOTLIB", False)
     fig, df = viz.plot_jaccard_similarity_trend(lambda t: aligned, THRESHOLDS, DATASETS)
     assert fig is None and df.empty
-    fig, df = viz.plot_edge_rank_correlation_trend(lambda t: aligned, THRESHOLDS, DATASETS)
+    fig, df = viz.plot_topk_overlap_trend(lambda t: aligned, THRESHOLDS, DATASETS)
     assert fig is None and df.empty
-    fig, df = viz.plot_path_rank_correlation_trend(lambda t: path_data, THRESHOLDS, DATASETS)
+    fig, df = viz.plot_netsimile_trend(lambda t: aligned, THRESHOLDS, DATASETS)
     assert fig is None and df.empty
     fig, df = viz.plot_cosine_similarity_trend(lambda t: aligned, THRESHOLDS, DATASETS)
     assert fig is None and df.empty
@@ -953,14 +953,14 @@ def test_jaccard_and_edge_rank_trend_empty_aligned(viz):
         lambda t: pd.DataFrame(), THRESHOLDS, DATASETS
     )
     assert fig is not None and df.empty
-    fig, df = viz.plot_edge_rank_correlation_trend(
+    fig, df = viz.plot_topk_overlap_trend(
         lambda t: pd.DataFrame(), THRESHOLDS, DATASETS
     )
     assert fig is not None and df.empty
 
 
-def test_path_rank_trend_raising(viz):
-    fig, df = viz.plot_path_rank_correlation_trend(_raiser, THRESHOLDS, DATASETS)
+def test_netsimile_trend_raising(viz):
+    fig, df = viz.plot_netsimile_trend(_raiser, THRESHOLDS, DATASETS)
     assert fig is not None and df.empty
 
 
@@ -1029,7 +1029,7 @@ def test_plotly_conservation_empty_results(viz):
 
 def test_save_all_plots_error_paths(viz, results, aligned, tmp_path, monkeypatch):
     monkeypatch.setattr(viz, "plot_conservation_across_thresholds", _raiser)
-    monkeypatch.setattr(viz, "plot_path_rank_correlation_trend", _raiser)
+    monkeypatch.setattr(viz, "plot_netsimile_trend", _raiser)
     monkeypatch.setattr(viz, "plot_cosine_similarity_trend", _raiser)
     viz.save_all_plots(
         results, aligned, pd.DataFrame(), str(tmp_path / "out"), THRESHOLDS,

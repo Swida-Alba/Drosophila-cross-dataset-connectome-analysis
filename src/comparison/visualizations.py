@@ -1280,9 +1280,11 @@ class ComparisonVisualizer:
         """
         Plot similarity matrices for each threshold in a combined subplot figure.
         
-        Creates a grid of similarity matrices showing 4 metrics per threshold:
-        - Topology: Jaccard, Edge Rank Correlation
-        - Matrix-based: Spearman Rank, RV Coefficient
+        Creates a grid of similarity matrices showing the 4 v2.2
+        representatives per threshold:
+        - Edge: Jaccard, Cosine
+        - Path: Path Jaccard
+        - Graph: NetSimile-lite
         
         Args:
             results: Nested dict {dataset: {threshold: DataFrame}}
@@ -1304,28 +1306,27 @@ class ComparisonVisualizer:
         metrics = ComparisonMetrics()
         
         n_thresholds = len(thresholds)
-        # 4 metrics per threshold: Jaccard, Edge Rank, Path Rank, Spearman
+        # 4 v2.2 representatives per threshold: Jaccard, Cosine (edge);
+        # Path Jaccard (path); NetSimile-lite (graph)
         n_metrics = 4
         n_cols = n_thresholds
         n_rows = n_metrics
-        
+
         if figsize is None:
             figsize = (n_cols * 3.5, n_rows * 3)
-        
+
         fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
-        
+
         datasets = list(results.keys())
-        
-        # Metric definitions with progress info
-        # Jaccard: [0, 1] overlap ratio
-        # Edge Rank: raw Spearman correlation [-1, 1] on union of edges (0 for missing)
-        # Cosine: [0, 1] scale-invariant similarity on union of edges
-        # Spearman: raw Spearman correlation [-1, 1] on shared edges only (intersection)
+
+        # Metric definitions with progress info — all [0, 1], single-hue
+        # (plan-similarity-matrix-schema-v2 §3.1.1: level chips live in the
+        # HTML report; the static grid stays uniform green)
         metric_configs = [
             ('jaccard_similarity', 'Jaccard', 'Greens', 0, 1),
-            ('edge_rank_correlation', 'Edge Rank (union)', 'RdYlGn', -1, 1),  # Diverging colormap for [-1, 1]
-            ('cosine_similarity', 'Cosine (union)', 'Blues', 0, 1),
-            ('spearman_rank_correlation', 'Spearman (shared)', 'RdYlGn', -1, 1),  # Diverging colormap for [-1, 1]
+            ('cosine_similarity', 'Cosine (union)', 'Greens', 0, 1),
+            ('path_jaccard_similarity', 'Path Jaccard', 'Greens', 0, 1),
+            ('netsimile_similarity', 'NetSimile-lite', 'Greens', 0, 1),
         ]
         
         # Use progress bar for threshold iteration
@@ -1361,8 +1362,8 @@ class ComparisonVisualizer:
                 
                 if similarity_func:
                     similarities = similarity_func(threshold)
-                    # Add advanced metrics if not present (including cosine_similarity)
-                    if similarities.empty or 'edge_rank_correlation' not in similarities.columns or 'cosine_similarity' not in similarities.columns:
+                    # Add advanced metrics if not present (v2.2 representatives)
+                    if similarities.empty or 'netsimile_similarity' not in similarities.columns or 'cosine_similarity' not in similarities.columns:
                         similarities = metrics.calculate_all_pairwise_similarities(
                             aligned, datasets, threshold=1, include_advanced_metrics=True, path_data=path_data_t
                         )
@@ -2675,37 +2676,39 @@ class ComparisonVisualizer:
             except Exception as e:
                 self._vprint(f"Warning: Could not create Jaccard similarity plot: {e}")
         
-        # Generate Edge Rank Correlation trend plot
+        # Generate Edge top-20 overlap trend plot (v2.2; replaces the
+        # retired Edge Rank trend)
         if align_func and len(thresholds) > 1 and threshold_mode != 'combinations':
             try:
-                fig, edge_rank_df = self.plot_edge_rank_correlation_trend(
+                fig, topk_df = self.plot_topk_overlap_trend(
                     align_func, thresholds, datasets,
-                    title="Edge Rank Correlation Across Thresholds",
+                    title="Edge Top-20 Overlap Across Thresholds",
                     nickname_map=nickname_map
                 )
-                self.save_figure(fig, os.path.join(output_dir, "edge_rank_correlation_trend.png"))
+                self.save_figure(fig, os.path.join(output_dir, "top20_overlap_trend.png"))
                 plt.close(fig)
-                
+
                 # Save data
-                edge_rank_df.to_csv(os.path.join(vis_data_dir, "edge_rank_correlation_trend.csv"), index=False)
+                topk_df.to_csv(os.path.join(vis_data_dir, "top20_overlap_trend.csv"), index=False)
             except Exception as e:
-                self._vprint(f"Warning: Could not create Edge Rank Correlation plot: {e}")
-        
-        # Generate Path Rank Correlation trend plot
-        if path_data_func and len(thresholds) > 1 and threshold_mode != 'combinations':
+                self._vprint(f"Warning: Could not create Edge Top-20 overlap plot: {e}")
+
+        # Generate NetSimile-lite trend plot (v2.2 graph-level; replaces
+        # the retired Path Rank trend)
+        if align_func and len(thresholds) > 1 and threshold_mode != 'combinations':
             try:
-                fig, path_rank_df = self.plot_path_rank_correlation_trend(
-                    path_data_func, thresholds, datasets,
-                    title="Path Rank Correlation Across Thresholds",
+                fig, netsimile_df = self.plot_netsimile_trend(
+                    align_func, thresholds, datasets,
+                    title="NetSimile-lite Similarity Across Thresholds",
                     nickname_map=nickname_map
                 )
-                self.save_figure(fig, os.path.join(output_dir, "path_rank_correlation_trend.png"))
+                self.save_figure(fig, os.path.join(output_dir, "netsimile_trend.png"))
                 plt.close(fig)
-                
+
                 # Save data
-                path_rank_df.to_csv(os.path.join(vis_data_dir, "path_rank_correlation_trend.csv"), index=False)
+                netsimile_df.to_csv(os.path.join(vis_data_dir, "netsimile_trend.csv"), index=False)
             except Exception as e:
-                self._vprint(f"Warning: Could not create Path Rank Correlation plot: {e}")
+                self._vprint(f"Warning: Could not create NetSimile trend plot: {e}")
         
         # Generate Cosine Similarity trend plot
         if align_func and len(thresholds) > 1 and threshold_mode != 'combinations':
@@ -3181,20 +3184,19 @@ class ComparisonVisualizer:
         
         return fig, pd.DataFrame(all_data)
 
-    def plot_edge_rank_correlation_trend(
+    def plot_topk_overlap_trend(
         self,
         align_func,
         thresholds: List[int],
         datasets: List[str],
-        title: str = "Edge Rank Correlation Across Thresholds",
+        title: str = "Edge Top-20 Overlap Across Thresholds",
         nickname_map: Dict[str, str] = None,
         figsize: Optional[Tuple[int, int]] = None
     ) -> Tuple[plt.Figure, pd.DataFrame]:
         """
-        Plot edge rank correlation trend across thresholds for all dataset pairs.
-        
-        Uses the union of edges and compares rankings by weight.
-        
+        Plot the edge top-20 overlap trend across thresholds for all dataset
+        pairs (v2.2 detail metric; replaces the retired Edge Rank trend).
+
         Args:
             align_func: Function to get aligned data at a threshold
             thresholds: List of thresholds
@@ -3202,47 +3204,50 @@ class ComparisonVisualizer:
             title: Plot title
             nickname_map: Dict mapping dataset names to display names
             figsize: Figure size tuple
-            
+
         Returns:
-            Tuple of (matplotlib Figure, DataFrame with correlation data)
+            Tuple of (matplotlib Figure, DataFrame with overlap data)
         """
         if not HAS_MATPLOTLIB:
             return None, pd.DataFrame()
-        
+
         if nickname_map is None:
             nickname_map = {d: d for d in datasets}
-        
+
         sorted_thresholds = sorted(thresholds)
-        
+
         from itertools import combinations
         from .metrics import ComparisonMetrics
         metrics = ComparisonMetrics()
-        
-        pair_data = {}  # {(d1, d2): {threshold: correlation}}
+
+        pair_data = {}  # {(d1, d2): {threshold: overlap}}
         all_data = []  # For DataFrame export
-        
+
         pairs = list(combinations(datasets, 2))
         for pair in pairs:
             pair_data[pair] = {}
-        
+
         for threshold in sorted_thresholds:
-            aligned = align_func(threshold)
+            try:
+                aligned = align_func(threshold)
+            except Exception:
+                continue
             if aligned.empty:
                 continue
-            
+
             available = [d for d in datasets if d in aligned.columns]
-            
+
             for d1, d2 in combinations(available, 2):
                 pair_key = (d1, d2) if (d1, d2) in pair_data else (d2, d1)
-                
+
                 # Get edge weights as Series
                 weights_a = aligned[d1].dropna()
                 weights_b = aligned[d2].dropna()
-                
-                # Calculate edge rank correlation
-                corr = metrics.calculate_edge_list_rank_correlation(weights_a, weights_b)
-                pair_data[pair_key][threshold] = corr
-                
+
+                # Top-20 overlap (head-of-ranking agreement)
+                overlap = metrics.calculate_topk_overlap(weights_a, weights_b)
+                pair_data[pair_key][threshold] = overlap
+
                 # For export
                 n1 = nickname_map.get(d1, d1)
                 n2 = nickname_map.get(d2, d2)
@@ -3250,7 +3255,7 @@ class ComparisonVisualizer:
                     'threshold': threshold,
                     'dataset1': n1,
                     'dataset2': n2,
-                    'edge_rank_correlation': corr
+                    'top20_overlap': overlap
                 })
         
         # Create figure
@@ -3295,7 +3300,7 @@ class ComparisonVisualizer:
                     'threshold': t,
                     'dataset1': 'Average',
                     'dataset2': 'Average',
-                    'edge_rank_correlation': sum(vals) / len(vals)
+                    'top20_overlap': sum(vals) / len(vals)
                 })
         
         if avg_x:
@@ -3303,9 +3308,9 @@ class ComparisonVisualizer:
                    markersize=12, linestyle='--', label='Average', alpha=0.7)
         
         ax.set_xlabel('Threshold')
-        ax.set_ylabel('Edge Rank Correlation')
-        ax.set_ylim(-1, 1)  # Raw Spearman correlation range
-        ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)  # Zero reference line
+        ax.set_ylabel('Edge top-20 overlap')
+        ax.set_ylim(0, 1)  # overlap ratio range
+        ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
         ax.set_title(title)
         # Only show legend if there are labeled artists
         if ax.get_legend_handles_labels()[0]:
@@ -3317,72 +3322,71 @@ class ComparisonVisualizer:
         
         return fig, pd.DataFrame(all_data)
 
-    def plot_path_rank_correlation_trend(
+    def plot_netsimile_trend(
         self,
-        path_data_func,
+        align_func,
         thresholds: List[int],
         datasets: List[str],
-        title: str = "Path Rank Correlation Across Thresholds",
+        title: str = "NetSimile-lite Similarity Across Thresholds",
         nickname_map: Dict[str, str] = None,
         figsize: Optional[Tuple[int, int]] = None
     ) -> Tuple[plt.Figure, pd.DataFrame]:
         """
-        Plot path rank correlation trend across thresholds for all dataset pairs.
-        
-        Uses the union of paths and compares rankings by min_weight.
-        
+        Plot the graph-level NetSimile-lite similarity trend across
+        thresholds for all dataset pairs (v2.2 graph-level representative;
+        replaces the retired Path Rank trend).
+
         Args:
-            path_data_func: Function to get path data (min_weight) at a threshold
+            align_func: Function to get aligned data at a threshold
             thresholds: List of thresholds
             datasets: List of dataset names
             title: Plot title
             nickname_map: Dict mapping dataset names to display names
             figsize: Figure size tuple
-            
+
         Returns:
-            Tuple of (matplotlib Figure, DataFrame with correlation data)
+            Tuple of (matplotlib Figure, DataFrame with similarity data)
         """
         if not HAS_MATPLOTLIB:
             return None, pd.DataFrame()
-        
+
         if nickname_map is None:
             nickname_map = {d: d for d in datasets}
-        
+
         sorted_thresholds = sorted(thresholds)
-        
+
         from itertools import combinations
         from .metrics import ComparisonMetrics
         metrics = ComparisonMetrics()
-        
-        pair_data = {}  # {(d1, d2): {threshold: correlation}}
+
+        pair_data = {}  # {(d1, d2): {threshold: similarity}}
         all_data = []  # For DataFrame export
-        
+
         pairs = list(combinations(datasets, 2))
         for pair in pairs:
             pair_data[pair] = {}
-        
+
         for threshold in sorted_thresholds:
             try:
-                path_df = path_data_func(threshold)
-            except:
+                aligned = align_func(threshold)
+            except Exception:
                 continue
-            
-            if path_df is None or path_df.empty:
+            if aligned.empty:
                 continue
-            
-            available = [d for d in datasets if d in path_df.columns]
-            
+
+            available = [d for d in datasets if d in aligned.columns]
+
             for d1, d2 in combinations(available, 2):
                 pair_key = (d1, d2) if (d1, d2) in pair_data else (d2, d1)
-                
-                # Get path weights as Series
-                paths_a = path_df[d1].dropna()
-                paths_b = path_df[d2].dropna()
-                
-                # Calculate path rank correlation
-                corr = metrics.calculate_path_list_rank_correlation(paths_a, paths_b)
-                pair_data[pair_key][threshold] = corr
-                
+
+                # Get edge weights as Series
+                weights_a = aligned[d1].dropna()
+                weights_b = aligned[d2].dropna()
+
+                # NetSimile-lite similarity (alignment-free)
+                sim = metrics.calculate_netsimile_similarity(weights_a, weights_b)
+                pair_data[pair_key][threshold] = sim
+
                 # For export
                 n1 = nickname_map.get(d1, d1)
                 n2 = nickname_map.get(d2, d2)
@@ -3390,7 +3394,7 @@ class ComparisonVisualizer:
                     'threshold': threshold,
                     'dataset1': n1,
                     'dataset2': n2,
-                    'path_rank_correlation': corr
+                    'netsimile_similarity': sim
                 })
         
         # Create figure
@@ -3435,7 +3439,7 @@ class ComparisonVisualizer:
                     'threshold': t,
                     'dataset1': 'Average',
                     'dataset2': 'Average',
-                    'path_rank_correlation': sum(vals) / len(vals)
+                    'netsimile_similarity': sum(vals) / len(vals)
                 })
         
         if avg_x:
@@ -3443,8 +3447,9 @@ class ComparisonVisualizer:
                    markersize=12, linestyle='--', label='Average', alpha=0.7)
         
         ax.set_xlabel('Threshold')
-        ax.set_ylabel('Path Rank Correlation')
-        ax.set_ylim(-1, 1)  # Raw Spearman correlation range
+        ax.set_ylabel('NetSimile-lite similarity')
+        ax.set_ylim(0, 1)  # similarity range
+        ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
         ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)  # Zero reference line
         ax.set_title(title)
         # Only show legend if there are labeled artists

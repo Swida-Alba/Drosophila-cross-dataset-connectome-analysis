@@ -244,8 +244,219 @@ class ComparisonMetrics:
         # Check for zero variance to avoid numpy warnings
         if wa.std() == 0 or wb.std() == 0:
             return np.nan
-        
+
         return wa.corr(wb)
+
+    # =========================================================================
+    # Similarity Metrics — v2.2 representatives
+    # (plan-similarity-matrix-schema-v2: edge Jaccard/Cosine stay, path
+    # Jaccard and NetSimile-lite join the panel, everything else here is
+    # detail-table material)
+    # =========================================================================
+
+    def calculate_overlap_coefficients(
+        self,
+        edges_a: Set[Tuple],
+        edges_b: Set[Tuple]
+    ) -> Tuple[float, float, float]:
+        """
+        Per-direction coverage of one edge set by the other (overlap
+        coefficients): |A∩B|/|A|, |A∩B|/|B| and their minimum.
+
+        Size-asymmetry-robust presence signal — Jaccard collapses toward 0
+        when one dataset is much less complete; coverage answers "how much
+        of the smaller set is contained in the larger" instead.
+
+        Returns:
+            (coverage_a, coverage_b, coverage_min); a direction with an
+            empty edge set is NaN.
+        """
+        if not edges_a and not edges_b:
+            return (1.0, 1.0, 1.0)
+        inter = len(edges_a & edges_b)
+        cov_a = inter / len(edges_a) if edges_a else np.nan
+        cov_b = inter / len(edges_b) if edges_b else np.nan
+        if np.isnan(cov_a) or np.isnan(cov_b):
+            cov_min = np.nan
+        else:
+            cov_min = min(cov_a, cov_b)
+        return (cov_a, cov_b, cov_min)
+
+    def calculate_topk_overlap(
+        self,
+        weights_a: pd.Series,
+        weights_b: pd.Series,
+        k: int = 20
+    ) -> float:
+        """
+        Overlap of the k heaviest edges per side: |top-k(A) ∩ top-k(B)| / k.
+
+        Tie-safe head-of-ranking signal ("do the strongest edges agree").
+        k shrinks to min(|A|, |B|) when either set is smaller; NaN when
+        either side has no positive-weight edges.
+        """
+        a = weights_a[weights_a > 0]
+        b = weights_b[weights_b > 0]
+        if a.empty or b.empty:
+            return np.nan
+        kk = min(k, len(a), len(b))
+        if kk <= 0:
+            return np.nan
+        top_a = set(a.sort_values(ascending=False).head(kk).index)
+        top_b = set(b.sort_values(ascending=False).head(kk).index)
+        return len(top_a & top_b) / kk
+
+    def calculate_path_jaccard(
+        self,
+        path_data: pd.DataFrame,
+        d1: str,
+        d2: str,
+        min_support: int = 5
+    ) -> float:
+        """
+        Jaccard over canonical path sets: |P1 ∩ P2| / |P1 ∪ P2| where a
+        path is present in a dataset when its min-weight > 0.
+
+        MUST be fed the in-memory UNION path frame — the exported
+        path_presence_matrix CSV is pre-intersected (conserved-only), on
+        which this metric is trivially 1.0. NaN when either side carries
+        fewer than ``min_support`` present paths (small-set granularity,
+        plan Item: parameter-free representative, gated instead).
+        """
+        if path_data is None or d1 not in path_data.columns \
+                or d2 not in path_data.columns:
+            return np.nan
+        p1 = path_data[d1].fillna(0) > 0
+        p2 = path_data[d2].fillna(0) > 0
+        n1, n2 = int(p1.sum()), int(p2.sum())
+        if n1 < min_support or n2 < min_support:
+            return np.nan
+        both = int((p1 & p2).sum())
+        union = n1 + n2 - both
+        return both / union if union else np.nan
+
+    def calculate_path_topk_overlap(
+        self,
+        path_data: pd.DataFrame,
+        d1: str,
+        d2: str,
+        k: int = 20
+    ) -> float:
+        """Top-k overlap of paths ranked by bottleneck min-weight (CSV
+        diagnostic only — k is a free parameter, not a panel metric)."""
+        if path_data is None or d1 not in path_data.columns \
+                or d2 not in path_data.columns:
+            return np.nan
+        w1 = path_data[d1].fillna(0)
+        w2 = path_data[d2].fillna(0)
+        return self.calculate_topk_overlap(w1, w2, k=k)
+
+    def calculate_hop_profile_w1(
+        self,
+        path_data: pd.DataFrame,
+        d1: str,
+        d2: str
+    ) -> float:
+        """Wasserstein-1 between the two datasets' hop-count distributions
+        over their present paths. NaN when either side has none."""
+        from scipy.stats import wasserstein_distance
+        if path_data is None or d1 not in path_data.columns \
+                or d2 not in path_data.columns:
+            return np.nan
+        p1 = path_data[d1].fillna(0) > 0
+        p2 = path_data[d2].fillna(0) > 0
+        hops1 = [str(key).count(' -> ') + 1
+                 for key in path_data.index[p1]]
+        hops2 = [str(key).count(' -> ') + 1
+                 for key in path_data.index[p2]]
+        if not hops1 or not hops2:
+            return np.nan
+        return float(wasserstein_distance(hops1, hops2))
+
+    def netsimile_signature(self, weights: pd.Series) -> Optional[np.ndarray]:
+        """
+        Lite NetSimile signature (Donnat & Holmes 2018, reduced): per-node
+        log out-strength / log in-strength / mean out-weight / mean
+        in-weight, summarized by per-feature median and MAD (8 values).
+
+        Alignment-free — node identity is not required, only the feature
+        DISTRIBUTIONS are compared, so the signature stays meaningful when
+        the aligned type table is sparse. None for an empty graph.
+        """
+        edges = weights[weights > 0]
+        if edges.empty:
+            return None
+        df = pd.DataFrame({'node_w': edges.values}, index=edges.index)
+        parts = df.index.str.split(' -> ')
+        df['src'] = [p[0] if len(p) > 0 else '' for p in parts]
+        df['tgt'] = [p[1] if len(p) > 1 else '' for p in parts]
+        out_strength = df.groupby('src')['node_w'].sum()
+        in_strength = df.groupby('tgt')['node_w'].sum()
+        out_mean = df.groupby('src')['node_w'].mean()
+        in_mean = df.groupby('tgt')['node_w'].mean()
+        nodes = sorted(set(out_strength.index) | set(in_strength.index))
+        if not nodes:
+            return None
+        feats = np.column_stack([
+            np.log1p(out_strength.reindex(nodes).fillna(0.0).values),
+            np.log1p(in_strength.reindex(nodes).fillna(0.0).values),
+            out_mean.reindex(nodes).fillna(0.0).values,
+            in_mean.reindex(nodes).fillna(0.0).values,
+        ])
+        med = np.median(feats, axis=0)
+        mad = np.median(np.abs(feats - med), axis=0)
+        return np.concatenate([med, mad])
+
+    def calculate_netsimile_similarity(
+        self,
+        weights_a: pd.Series,
+        weights_b: pd.Series
+    ) -> float:
+        """
+        Similarity in [0, 1] from the two NetSimile-lite signatures:
+        1 / (1 + normalized Canberra distance). NaN when either graph is
+        empty.
+        """
+        s1 = self.netsimile_signature(weights_a)
+        s2 = self.netsimile_signature(weights_b)
+        if s1 is None or s2 is None:
+            return np.nan
+        denom = np.abs(s1) + np.abs(s2)
+        distance = np.where(denom > 0,
+                            np.abs(s1 - s2) / np.where(denom > 0, denom, 1),
+                            0.0).sum() / len(s1)
+        return 1.0 / (1.0 + distance)
+
+    def calculate_strength_w1(
+        self,
+        weights_a: pd.Series,
+        weights_b: pd.Series
+    ) -> Tuple[float, float]:
+        """Wasserstein-1 between the log1p out-strength and in-strength
+        distributions of the two graphs (distance — lower is closer).
+        NaN per direction when either graph is empty."""
+        from scipy.stats import wasserstein_distance
+
+        def strengths(weights, position):
+            edges = weights[weights > 0]
+            if edges.empty:
+                return None
+            df = pd.DataFrame({'node_w': edges.values}, index=edges.index)
+            parts = df.index.str.split(' -> ')
+            df['node'] = [p[position] if len(p) > position else ''
+                          for p in parts]
+            grouped = df.groupby('node')['node_w'].sum()
+            return np.log1p(grouped.values)
+
+        result = []
+        for position in (0, 1):
+            s1 = strengths(weights_a, position)
+            s2 = strengths(weights_b, position)
+            if s1 is None or s2 is None:
+                result.append(np.nan)
+            else:
+                result.append(float(wasserstein_distance(s1, s2)))
+        return (result[0], result[1])
     
     def calculate_all_pairwise_similarities(
         self,
@@ -344,19 +555,48 @@ class ComparisonMetrics:
                     paths_2 = path_data[d2].dropna()
                     path_rank_sim = self.calculate_path_list_rank_correlation(paths_1, paths_2)
                     row['path_rank_correlation'] = path_rank_sim
+                    # v2.2 path-level representative + diagnostics
+                    row['path_jaccard_similarity'] = self.calculate_path_jaccard(
+                        path_data, d1, d2)
+                    row['path_top20_overlap'] = self.calculate_path_topk_overlap(
+                        path_data, d1, d2)
+                    row['hop_profile_w1'] = self.calculate_hop_profile_w1(
+                        path_data, d1, d2)
                 else:
                     row['path_rank_correlation'] = np.nan
-                
+                    row['path_jaccard_similarity'] = np.nan
+                    row['path_top20_overlap'] = np.nan
+                    row['hop_profile_w1'] = np.nan
+
                 # WEIGHT-SENSITIVE: Spearman rank correlation on SHARED edges only
-                # Uses shared edges (not union) to avoid low coefficients from many 0s
+                # (detail-table metric; gated — NaN below 30 shared edges so a
+                # tiny-sample 1.0 can never read as a strong result)
                 spearman_sim = self.calculate_spearman_rank_correlation(
-                    weights_1, weights_2, use_shared_edges=True, use_normalized=True
+                    weights_1, weights_2, use_shared_edges=True, use_normalized=True,
+                    min_shared=30
                 )
                 row['spearman_rank_correlation'] = spearman_sim
-                
+
                 # WEIGHT-SENSITIVE: RV coefficient (multivariate matrix similarity)
                 rv_coef = self.calculate_rv_coefficient(weights_1, weights_2, use_normalized=True)
                 row['rv_coefficient'] = rv_coef
+
+                # v2.2 representatives + detail metrics (plan-similarity-
+                # matrix-schema-v2): NetSimile-lite is the graph-level
+                # representative; coverage / top-20 / strength-W1 are detail
+                # metrics. Legacy columns above stay for one release.
+                cov_a, cov_b, cov_min = self.calculate_overlap_coefficients(
+                    edges_1, edges_2)
+                row['coverage_d1'] = cov_a
+                row['coverage_d2'] = cov_b
+                row['coverage_min'] = cov_min
+                row['top20_overlap'] = self.calculate_topk_overlap(
+                    weights_1, weights_2)
+                row['netsimile_similarity'] = self.calculate_netsimile_similarity(
+                    weights_1, weights_2)
+                w1_out, w1_in = self.calculate_strength_w1(weights_1, weights_2)
+                row['strength_w1_out'] = w1_out
+                row['strength_w1_in'] = w1_in
             
             rows.append(row)
         
@@ -1599,50 +1839,54 @@ class ComparisonMetrics:
         weights_a: pd.Series,
         weights_b: pd.Series,
         use_shared_edges: bool = True,
-        use_normalized: bool = True
+        use_normalized: bool = True,
+        min_shared: int = 0
     ) -> float:
         """
         Calculate Spearman rank correlation between edge weights.
-        
+
         Uses SHARED edges (edges present in both graphs) to avoid the problem
         where many 0s in the union dilute the correlation coefficient.
-        
+
         Returns raw Spearman correlation in [-1, 1] range:
         - 1.0 = perfect positive correlation (same ranking)
         - 0.0 = no correlation
         - -1.0 = perfect negative correlation (inverse ranking)
-        - NaN = undefined (fewer than 3 shared edges)
-        
+        - NaN = undefined (fewer than 3 shared edges, or fewer than
+          ``min_shared`` when the caller gates small samples)
+
         This metric answers: "For edges that exist in both graphs, are the
         strongest edges in graph A also the strongest in graph B?"
-        
+
         Properties:
         - Scale-invariant: rank-based, doesn't matter if weights differ by 10x
         - Focuses on relative importance, not absolute values
         - Robust to outliers (uses ranks, not raw values)
-        
+
         Args:
             weights_a: Series of weights indexed by edge
             weights_b: Series of weights indexed by edge
             use_shared_edges: If True, only compare edges present in both (default).
                               If False, use union with 0 for missing edges.
             use_normalized: If True, normalize weights to proportions (default: True)
-            
+            min_shared: Gate on the shared-positive-edge count — NaN below it
+                        (v2.2: the detail table uses 30; 0 keeps legacy behavior).
+
         Returns:
             Rank correlation in [-1, 1], or NaN if undefined
         """
         from scipy.stats import spearmanr
-        
+
         if use_shared_edges:
             # Only compare edges that exist in BOTH graphs
             shared_edges = set(weights_a.index) & set(weights_b.index)
             # Filter to edges with positive weight in both
-            shared_edges = [e for e in shared_edges 
+            shared_edges = [e for e in shared_edges
                            if weights_a.get(e, 0) > 0 and weights_b.get(e, 0) > 0]
-            
-            if len(shared_edges) < 3:  # Need at least 3 points for meaningful correlation
-                return np.nan  # Undefined - return NaN
-            
+
+            if len(shared_edges) < max(3, min_shared):
+                return np.nan  # Undefined (or gated as too small a sample)
+
             a_vals = pd.Series([weights_a[e] for e in shared_edges])
             b_vals = pd.Series([weights_b[e] for e in shared_edges])
         else:
