@@ -12900,7 +12900,12 @@ def visualize_network(
     return vp.visualize_network()
 
 
-def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None):
+def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False):
+    """Standalone interactive heatmap page (ordering, color, export controls).
+
+    ``square_cells=True`` opens the page with cells locked square and the
+    canvas height auto-fitted to the matrix shape.
+    """
     # Remember whether the CALLER passed a colorscale: only then do we seed the
     # heatmap with a custom colorscale (the default below is a legacy leftover).
     provided_color_scale = color_scale
@@ -13210,6 +13215,18 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         default_colorscale = 'Purples'
     
     # Create HTML with comprehensive interactive controls
+    # Optional: open with square cells locked (callers generating similarity
+    # heatmaps request this so the matrix cells are square on first render).
+    SQUARE_CELLS_ONLOAD = ''
+    if square_cells:
+        SQUARE_CELLS_ONLOAD = (
+            "window.addEventListener('load', function() {"
+            " setTimeout(function() {"
+            " if (!window.__drocatHasSavedSettings && !squareCellsLocked)"
+            " { makeSquareCells(); }"
+            " }, 250); });"
+        )
+
     html_content = f'''<!DOCTYPE html>
 <html>
 <head>
@@ -16311,12 +16328,15 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const saved = localStorage.getItem(storageKey);
             if (saved) {{
                 loadSettings(false);  // Silent load on initialization
+                window.__drocatHasSavedSettings = true;
             }} else {{
+                window.__drocatHasSavedSettings = false;
                 // createHeatmap() will apply clustering automatically if useClusteredOrder=true
                 // No need to pre-set currentYLabels/currentXLabels here
                 createHeatmap();
             }}
         }});
+        {SQUARE_CELLS_ONLOAD}
     </script>
 </body>
 </html>

@@ -145,8 +145,13 @@ def plotly_heatmap_fragment(
 ) -> Tuple[Optional[str], bool]:
     """Render one clustered Plotly heatmap fragment without cell labels.
 
-    ``square_cells`` is used for similarity matrices whose row and column
-    dimensions represent the same set of items.
+    ``square_cells`` locks each matrix cell to a 1:1 aspect ratio.
+    For small matrices (max dimension <= 30) an explicit figure width is
+    computed so cells render square *without* Plotly's ``scaleanchor``
+    (which would center the constrained domain and detach row labels from
+    the cell band in wide single-metric cards). For larger matrices the
+    plot area is tall enough that ``scaleanchor`` works correctly and is
+    retained.
     """
     if matrix is None or matrix.empty:
         return None, False
@@ -191,14 +196,34 @@ def plotly_heatmap_fragment(
     left_margin = min(235, max(90, max_label_length * 5 + 22))
     matrix_dimension = max(len(y_labels), len(x_labels))
     row_height = 18 if len(y_labels) > 60 else 23
-    if square_cells:
-        # Two-column cards are wider than the previous three-column
-        # layout. Give square intra-dataset matrices enough vertical
-        # room before Plotly applies the equal-axis constraint.
+    # Square-cell strategy depends on matrix size. For small matrices the
+    # single-metric card's 1100px plotly-graph-div cap leaves the plot area
+    # much wider than tall; Plotly's scaleanchor then centers the constrained
+    # domain and detaches row labels from the cell band. In that regime we
+    # compute an explicit figure width so cells are naturally square without
+    # any anchor. Large matrices have a balanced plot area, so the anchor
+    # path stays.
+    n_cols = max(len(x_labels), 1)
+    n_rows = max(len(y_labels), 1)
+    colorbar_allow = 100
+    square_explicit_width = False
+    fig_width_px: Optional[int] = None
+    if square_cells and matrix_dimension <= 30:
         row_height = 18 if matrix_dimension > 60 else 27
-    height = max(335, min(880, 185 + len(y_labels) * row_height))
-    if square_cells:
-        height = max(390, height)
+        # Compute cell size from BOTH dimensions so the height cap is
+        # respected even for non-square matrices (e.g. 19 rows x 13 cols).
+        width_limit = (1100 - left_margin - 12 - colorbar_allow) // n_cols
+        height_limit = (880 - 168) // n_rows
+        cell_px = max(30, min(80, width_limit, height_limit))
+        fig_width_px = min(1100, left_margin + 12 + colorbar_allow + n_cols * cell_px)
+        height = max(390, min(880, 168 + n_rows * cell_px))
+        square_explicit_width = True
+    elif square_cells:
+        row_height = 18 if matrix_dimension > 60 else 27
+        height = max(390, 185 + len(y_labels) * row_height)
+        height = min(880, height)
+    else:
+        height = max(335, min(880, 185 + len(y_labels) * row_height))
     xaxis = {
         'title': {'text': x_title, 'font': {'size': 10}},
         'tickangle': -42,
@@ -215,9 +240,11 @@ def plotly_heatmap_fragment(
         'zeroline': False,
         'showline': False,
     }
-    if square_cells:
-        # Equal axis scaling makes each matrix cell a true square even
-        # when the responsive report card is resized.
+    if square_cells and not square_explicit_width:
+        # Large matrix: equal axis scaling makes each matrix cell a true
+        # square even when the responsive report card is resized. The plot
+        # area is tall enough that the constrained domain stays adjacent
+        # to the row labels.
         yaxis.update({
             'scaleanchor': 'x',
             'scaleratio': 1,
@@ -245,7 +272,7 @@ def plotly_heatmap_fragment(
         yaxis=yaxis,
     )
 
-    return fig.to_html(
+    fragment = fig.to_html(
         full_html=False,
         include_plotlyjs='inline' if include_plotlyjs else False,
         config={
@@ -254,7 +281,15 @@ def plotly_heatmap_fragment(
             'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
         },
         default_width='100%',
-    ), clustered
+    )
+    if square_explicit_width and fig_width_px:
+        # Cap the plotly div's container width so cells render as true
+        # squares; the outer CSS rule `.heatmap-stage .plotly-graph-div
+        # { width: 100% !important; }` still applies inside the wrapper.
+        fragment = (f'<div class="heatmap-square-fit" '
+                    f'style="max-width:{fig_width_px}px;margin:0 auto">'
+                    f'{fragment}</div>')
+    return fragment, clustered
 
 
 def report_css() -> str:
@@ -376,6 +411,12 @@ a:hover { text-decoration: underline; }
 .mapping-table { border-collapse: collapse; font-size: 12px; margin-top: 12px; width: 100%; }
 .mapping-table th, .mapping-table td { border: 1px solid var(--line); padding: 7px 9px; text-align: left; }
 .mapping-table th { background: var(--surface-soft); color: var(--muted); font-weight: 750; }
+/* Overview tables in the cross-dataset morphology report carry one column
+   block per directed pair; keep headers on one line and let the surrounding
+   overflow-x:auto container handle the horizontal scroll. */
+.overview-table { width: auto; }
+.overview-table th, .overview-table td { white-space: nowrap; }
+.overview-table th { position: sticky; top: 0; z-index: 1; }
 .muted { color: var(--muted); font-size: 12px; }
 @media (max-width: 700px) {
   .report-shell { padding: 17px 12px 34px; }
@@ -631,6 +672,7 @@ def generate_standalone_heatmaps(
     verbose: bool = True,
     saved_files: Optional[Dict[str, List[str]]] = None,
     log: Optional[Callable[[str], None]] = None,
+    square_cells: bool = True,
 ) -> int:
     """Write one standalone interactive heatmap per (group, key) matrix.
 
@@ -654,6 +696,8 @@ def generate_standalone_heatmaps(
         saved_files: dict whose ``'heatmaps_generated'`` list accumulates
             the written paths (created when omitted).
         log: optional sink for fallback notices.
+        square_cells: open the rendered heatmaps with square cells locked
+            (default True — all similarity heatmaps render square).
 
     Returns:
         Number of non-finite cells replaced for rendering.
@@ -748,6 +792,7 @@ def generate_standalone_heatmaps(
                     zmin=style.zmin,
                     zmax=style.zmax,
                     metric_name=style.display_name,
+                    square_cells=square_cells,
                 )
 
                 saved_files['heatmaps_generated'].append(str(html_path))

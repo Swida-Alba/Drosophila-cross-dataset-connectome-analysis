@@ -7,6 +7,7 @@ info as the canonical name-mapping source (was v0.9).
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -299,8 +300,17 @@ def test_report_redraws_plotly_and_links_vispath_editor(tmp_path):
     # actual generated chart invocation at the end of the report instead.
     plot_call = text.rsplit("Plotly.newPlot(", 1)[1].split(");", 1)[0]
     assert '"texttemplate":' not in plot_call
-    assert '"scaleanchor":"x"' in plot_call
-    assert '"scaleratio":1' in plot_call
+    # Small-matrix square strategy (square_cells, finished 2026-09-18):
+    # for matrices <= 30 the cells are made square by the computed
+    # heatmap-square-fit wrapper width, and Plotly's scaleanchor is
+    # deliberately ABSENT — anchoring centered the constrained domain and
+    # detached the row labels from the cell band in wide cards.  (Large
+    # matrices keep the scaleanchor path.)
+    assert '"scaleanchor"' not in plot_call
+    square_fit = re.search(
+        r'heatmap-square-fit" style="max-width:(\d+)px', text)
+    assert square_fit, 'square-fit wrapper missing'
+    assert 200 <= int(square_fit.group(1)) <= 1100
 
 
 def test_report_uses_vispath_ward_order_for_plotly_heatmaps():
