@@ -208,3 +208,81 @@ def split_hemi_suffix(label) -> tuple:
         if label.endswith(suffix):
             return label[:-len(suffix)], suffix
     return label, ''
+
+
+# --------------------------------------------------------------------------
+# Per-run output-folder classification (Settings → Storage + ui/runner).
+#
+# Every main function creates one timestamped run folder named
+# ``{tool}_{dataset_abbrev}_{detail}_{YYYYMMDD_HHMMSS}`` (see the module
+# docstring).  This table is the single source of truth for "does this
+# folder name look like a tool run folder": ui/runner's scan-dir heuristic
+# and the storage utility's run-folder classifier both derive from it, so
+# the two can never drift apart.
+RUN_FOLDER_PREFIXES = (
+    # Current tool prefixes (hyphenated / multi-word spellings).
+    "find-paths-complete",
+    "find-paths-shortest",
+    "find-network",
+    "cross-dataset",
+    "plot-3d",
+    "plot-network",
+    "homologs",
+    "similar-morphology",
+    "similar-connectivity",
+    "similar",
+    "profiling",
+    "morphology_comparison",
+    "morph_cross",
+    # 'expanded' must precede the bare prefix: the regex anchors an
+    # underscore directly after the alternative, so 'NB-find-lines' alone
+    # never matched 'NB-find-lines-expanded_...' names.
+    "NB-find-lines-expanded",
+    "NB-find-lines",
+    "NB-find-neurons",
+    "NB-colabeling",
+    # Legacy pre-reorg one-word spellings still found in old output roots
+    # (and the historical 'flylignt' typo, kept so those folders classify).
+    "flylight-downloads",
+    "flylignt-downloads",
+    "findpath",
+    "findallpath",
+    "findshortestpath",
+    "findnetwork",
+    "finddirect",
+    "findhomologs",
+    "interdataset",
+    "plot3d",
+    "plotpath",
+    "colabel",
+    "findlines",
+    "findneuron",
+    "findsimilar",
+)
+
+RUN_FOLDER_PREFIX_RE = re.compile(
+    r"^(?:" + "|".join(RUN_FOLDER_PREFIXES) + r")_"
+)
+
+_RUN_FOLDER_TIMESTAMP_RE = re.compile(r"_(\d{8}_\d{6})$")
+
+
+def is_run_folder_name(name) -> bool:
+    """True when *name* is a per-run output folder name.
+
+    A run folder = known tool prefix AND the embedded
+    ``_YYYYMMDD_HHMMSS`` timestamp.  The prefix alone is not sufficient:
+    shared roots such as ``morph_cross_dataset/`` also match the
+    ``morph_cross`` prefix but hold many runs, so callers descend into
+    them instead of treating them as single runs.
+    """
+    text = str(name or "")
+    if not RUN_FOLDER_PREFIX_RE.match(text):
+        return False
+    return bool(_RUN_FOLDER_TIMESTAMP_RE.search(text))
+
+
+def run_folder_timestamp(name) -> str:
+    """Return the embedded ``YYYYMMDD_HHMMSS`` stamp, or '' when absent."""
+    match = _RUN_FOLDER_TIMESTAMP_RE.search(str(name or ""))
+    return match.group(1) if match else ""

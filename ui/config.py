@@ -186,6 +186,91 @@ def clear_tab_output_overrides() -> bool:
     return save_local_config(config)
 
 
+STORAGE_SCAN_ROOTS_KEY = "storage_scan_roots"
+
+
+def get_storage_scan_roots() -> list[str]:
+    """Recorded output roots for the Settings → Storage scanner.
+
+    Roots land here automatically when a tool run uses a non-default
+    output directory (recorded by ``ui.runner``) or when the user adds
+    one from the Storage card. The default output directory and the
+    per-tab overrides are scanned regardless and are not duplicated
+    here.
+    """
+    values = load_local_config().get(STORAGE_SCAN_ROOTS_KEY, [])
+    if not isinstance(values, list):
+        return []
+    roots: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = Path(value.strip()).expanduser()
+        if path.is_absolute() and str(path) not in roots:
+            roots.append(str(path))
+    return roots
+
+
+def add_storage_scan_root(path: str | os.PathLike) -> bool:
+    """Record an output root for the Storage scanner (deduplicated)."""
+    try:
+        resolved = str(Path(path).expanduser().resolve())
+    except (OSError, ValueError):
+        return False
+    if not resolved:
+        return False
+    config = load_local_config()
+    values = config.get(STORAGE_SCAN_ROOTS_KEY, [])
+    if not isinstance(values, list):
+        values = []
+    roots: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            candidate = str(Path(value.strip()).expanduser().resolve())
+        except (OSError, ValueError):
+            continue
+        if candidate not in roots:
+            roots.append(candidate)
+    if resolved in roots:
+        return True
+    roots.append(resolved)
+    config[STORAGE_SCAN_ROOTS_KEY] = roots
+    return save_local_config(config)
+
+
+def remove_storage_scan_root(path: str | os.PathLike) -> bool:
+    """Forget a recorded Storage-scanner output root."""
+    try:
+        resolved = str(Path(path).expanduser().resolve())
+    except (OSError, ValueError):
+        return False
+    config = load_local_config()
+    values = config.get(STORAGE_SCAN_ROOTS_KEY, [])
+    if not isinstance(values, list):
+        return True
+    kept: list[str] = []
+    changed = False
+    for value in values:
+        if not isinstance(value, str):
+            changed = True
+            continue
+        try:
+            candidate = str(Path(value.strip()).expanduser().resolve())
+        except (OSError, ValueError):
+            changed = True
+            continue
+        if candidate == resolved:
+            changed = True
+            continue
+        kept.append(value)
+    config[STORAGE_SCAN_ROOTS_KEY] = kept
+    if not changed:
+        return True
+    return save_local_config(config)
+
+
 def get_auto_suggest_enabled() -> bool:
     """Whether type-ahead neuron-name suggestions are enabled (Settings).
 

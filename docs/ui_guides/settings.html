@@ -64,8 +64,10 @@
     right above its own progress bar, together with the
     <b>Cache Simplification</b>
     selector that chooses the percent of skeleton nodes
-    removed when writing those cache files (90% by default = keep ~10% of
-    nodes; 0 = raw), and a <b>Skeleton Batch Size</b> input (64 default).
+    removed when writing those cache files (0 = raw by default — the
+    cache stores raw skeletons and simplification is applied at
+    visualization time; higher values store pre-simplified trees), and a
+    <b>Skeleton Batch Size</b> input (64 default).
     Progress is reported per completed skeleton, so the batch size does not
     affect progress granularity; larger batches only reduce the repeated
     per-batch metadata queries. The <b>Parallel workers</b> field above sets how
@@ -75,6 +77,47 @@
     <code>cache/&lt;dataset&gt;/connections.parquet</code> cache, so it
     can resume an interrupted pull. Enable <b>Force rebuild</b> only when the
     existing connection cache needs to be replaced.</p>
+
+  <h2>Storage</h2>
+  <p>The <b>Storage</b> card (below <b>Dataset Cache</b>) inspects and
+    reclaims disk space. Nothing is removed automatically — the card scans
+    on first open (and via <b>Scan Now</b>), and every removal previews the
+    exact paths and bytes before you confirm. Actions are disabled while a
+    dataset or skeleton pull is running.</p>
+  <p><b>Scan coverage:</b> the scanner always covers the default output
+    directory, the remembered per-tab output folders, every folder recorded
+    under <b>Recorded output roots</b>, and the folders seen in the run
+    history. A root is recorded automatically the first time a run exports
+    to a non-default directory; type one more folder and press
+    <b>Remember</b> to record it manually, and click the ✕ on a chip to
+    stop scanning it (nothing is deleted by forgetting).</p>
+  <p>Every row shows a hover tooltip with the full path (cache rows list
+    the exact files that a clear would remove), and the
+    <b>folder_open</b> button at the end of each row opens that folder in
+    the system file manager.</p>
+  <p><b>Caches</b> lists one row per cache class and dataset with its size,
+    last-used time, and rebuild cost. Deleting the NB match cache goes
+    through the finder's own clearer; the incoming-connections row removes
+    the parquet <em>and</em> its completion-state file together (the state
+    file can never be deleted alone, and is never left behind). Protected
+    data — availability snapshots, the coverage snapshot, per-dataset
+    <code>available_rois.json</code>, and <code>cache/user_mappings/</code>
+    (your LabelMapper presets) — is never offered. BANC and FAFB connection
+    caches rebuild offline from the local tables; NeuPrint ones refetch
+    from the server. A clear takes full effect after an app restart
+    (in-process caches may still serve cleared data until then). When
+    <b>Cache Only (Offline)</b> is enabled and the selection contains
+    connection data, a warning is shown — the clear still runs.</p>
+  <p><b>Exported data</b> lists timestamped run folders under the default
+    output directory (plus any folder typed into the extra-scan field).
+    Registered NeuronBridge tools show a source-data vs deliverables split:
+    <b>Prune Source Data</b> runs the Compact prune regardless of the runs'
+    original output mode (deliverables stay, each folder's
+    <code>cleanup_audit.json</code> records the removals). <b>Delete
+    Folder</b> removes whole run folders after a checkbox double-confirm.
+    Folders belonging to an active run are locked. Removals of cache files
+    and deleted folders are appended to
+    <code>cache/storage_audit.json</code>.</p>
 
   <h2>Output settings</h2>
   <p><b>Default Output Directory</b> is pre-filled in every panel; change it

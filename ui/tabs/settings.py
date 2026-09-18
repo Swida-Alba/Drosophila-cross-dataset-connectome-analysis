@@ -1,4 +1,6 @@
-"""Settings Tab - Token configuration, dataset status, and app settings."""
+"""Settings Tab - Tokens, dataset status, app settings, and storage
+management (Settings → Storage: cache/run-folder scan + guarded
+removal via ``src/storage_inventory.py``)."""
 
 import json
 import os
@@ -43,6 +45,7 @@ from ..components.common import (
 )
 from ..components.custom_grouper import to_canonical_dict
 from ..components.mapping_editor import custom_grouping_block
+from ..components.storage_card import create_storage_card
 from ..dataset_service import get_dataset_service
 from .. import mapping_store
 
@@ -162,6 +165,8 @@ def create_settings_tab():
             def refresh_pull_state():
                 st = puller.state
                 skeleton_running = skeleton_puller.running
+                storage_panel.set_pull_active(
+                    st["running"] or skeleton_running)
                 if (
                     not st["running"]
                     and run_btn.enabled
@@ -326,13 +331,14 @@ def create_settings_tab():
             with ui.row().classes("items-center gap-2").style("flex-wrap: wrap"):
                 skeleton_simplification = ui.select(
                     options=CACHE_SIMPLIFICATION_OPTIONS,
-                    value=90,
+                    value=0,
                     label="Cache Simplification",
                 ).props("outlined").classes("drocat-select").style("min-width: 190px").tooltip(
                     "Percent of skeleton nodes REMOVED when 'Download All "
-                    "Skeletons' writes the shared .swc.zst cache: 90 = keep "
-                    "~10% of nodes (default), 0 = raw. Every file records "
-                    "its level in the header."
+                    "Skeletons' writes the shared .swc.zst cache: 0 = raw "
+                    "(default — the cache stores raw skeletons; "
+                    "simplification is applied at visualization time). "
+                    "Every file records its level in the header."
                 )
                 skeleton_batch_size = ui.number(
                     label="Skeleton Batch Size", value=64, min=10, max=500,
@@ -371,6 +377,7 @@ def create_settings_tab():
                 st = skeleton_puller.state
                 running = bool(st["running"])
                 dataset_running = puller.running
+                storage_panel.set_pull_active(running or dataset_running)
                 skeleton_run_btn.set_enabled(not running and not dataset_running)
                 cancel_btn.set_enabled(running or dataset_running)
                 # The dataset selector is shared with both dataset-cache pulls.
@@ -482,6 +489,10 @@ def create_settings_tab():
 
             skeleton_run_btn.on_click(start_skeleton_pull)
             ui.timer(0.5, refresh_skeleton_pull_state)
+
+        # Storage (caches + exported data): the scan/delete utility card.
+        # The pull pollers below flip its actions off while a pull runs.
+        storage_panel = create_storage_card(puller, skeleton_puller)
 
         # Tokens
         with ui.card().classes("w-full drocat-card"):

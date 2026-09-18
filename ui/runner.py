@@ -501,6 +501,21 @@ class ScriptRunner:
             _progress("collect", "Collecting output files")
             scan_dir = self._resolve_scan_dir(output_dir)
 
+            # Record the used output root for the Settings → Storage
+            # scanner, so every location the user exports to shows up in
+            # storage management automatically. Best-effort only.
+            if returncode == 0 and not self._cancelled and output_dir:
+                try:
+                    from .config import (
+                        add_storage_scan_root,
+                        get_default_output_dir,
+                    )
+                    if str(Path(output_dir).resolve()) != str(
+                            Path(get_default_output_dir()).resolve()):
+                        add_storage_scan_root(output_dir)
+                except Exception:
+                    pass
+
             # Export the per-run user guide into the run folder (Settings →
             # Run Guide Format; never fails the run itself). Written before
             # the file scan so it appears in the Output Files panel.
@@ -885,16 +900,23 @@ print("[DROCAT] Done.")
         "Output will be saved to: ",
     ]
 
-    # Per-run output folder prefixes used by every DROCAT tool
-    # (find-paths-complete_, homologs_, similar-morphology_, ...). A directory whose name does
-    # not start with one of these is a shared storage root that may contain
-    # many runs — it must never be scanned as the current run's folder.
-    _RUN_FOLDER_PREFIX_RE = re.compile(
-        r"^(find-paths-complete|find-paths-shortest|find-network|cross-dataset|plot-3d|plot-network|"
-        r"homologs|similar-morphology|similar-connectivity|similar|profiling|morphology_comparison|morph_cross|NB-find-lines|NB-find-neurons|NB-colabeling|flylight-downloads|flylignt-downloads|"
-        r"findpath|findallpath|findshortestpath|findnetwork|finddirect|findhomologs|interdataset|"
-        r"plot3d|plotpath|colabel|findlines|findneuron|findsimilar)_"
-    )
+    # Per-run output folder prefixes used by every DROCAT tool. The table
+    # lives in src/utils/naming_utils.py (next to the naming scheme it
+    # documents) so the Settings → Storage classifier and this scan-dir
+    # guard can never drift apart. A directory whose name does not start
+    # with one of these is a shared storage root that may contain many
+    # runs — it must never be scanned as the current run's folder.
+    try:
+        from src.utils.naming_utils import (
+            RUN_FOLDER_PREFIX_RE as _RUN_FOLDER_PREFIX_RE,
+        )
+    except ImportError:  # src not importable standalone; keep the local copy
+        _RUN_FOLDER_PREFIX_RE = re.compile(
+            r"^(find-paths-complete|find-paths-shortest|find-network|cross-dataset|plot-3d|plot-network|"
+            r"homologs|similar-morphology|similar-connectivity|similar|profiling|morphology_comparison|morph_cross|NB-find-lines-expanded|NB-find-lines|NB-find-neurons|NB-colabeling|flylight-downloads|flylignt-downloads|"
+            r"findpath|findallpath|findshortestpath|findnetwork|finddirect|findhomologs|interdataset|"
+            r"plot3d|plotpath|colabel|findlines|findneuron|findsimilar)_"
+        )
 
     def _resolve_scan_dir(self, output_dir: Optional[str] = None) -> Optional[str]:
         """Return the folder whose files belong to the current run.
