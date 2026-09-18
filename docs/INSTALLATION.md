@@ -136,14 +136,18 @@ wait on the first real query:
   query. Later runs reuse it.
 - **BANC** (`banc_v626`/`banc_v888`): the neuron meta and connection tables
   are pulled from the public release bucket automatically — no token.
-- **Cache-Only (offline) runs** require a *complete* pre-built cache. Since
-  v4.5.0 the run verifies cache coverage (per-neuron recorded vs actually
-  cached connection counts) and refuses an incomplete cache with
-  instructions instead of silently returning partial results. Run once with
-  Cache-Only disabled to complete the cache, or pass
-  `allow_incomplete_cache=True` (library/CLI) to accept partial results,
-  which are then stamped with an `INCOMPLETE_CACHE.txt` marker in every
-  output folder.
+- **Cache-Only (offline) runs** require a *verifiably complete* pre-built
+  cache. The run verifies cache coverage two ways: per-neuron recorded vs
+  actually-cached (deduplicated) connection counts, and the whole-cache
+  distinct-connection count against `cache/<dataset>/cache_manifest.json`.
+  Caches built before this verification existed have no manifest yet —
+  their **first non-cache-only run** records the baseline; until then a
+  cache-only run is refused with instructions. An incomplete or
+  unverifiable cache is refused instead of silently returning partial
+  results. To accept partial results anyway, pass
+  `allow_incomplete_cache=True` (library/CLI): the run warns and stamps its
+  output folders with an `INCOMPLETE_CACHE.txt` marker including the
+  coverage evidence.
 
 ## 5. Agent-assisted install
 

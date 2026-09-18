@@ -84,7 +84,7 @@ def test_query_visualization_points_are_all_exported(tmp_path):
     # imply a monotone threshold axis must not be emitted in combinations
     # mode (plan Phase D / non-goals).
     assert not (tmp_path / "jaccard_similarity_trend.png").exists()
-    assert not (tmp_path / "edge_rank_correlation_trend.png").exists()
+    assert not (tmp_path / "top20_overlap_trend.png").exists()
     assert not (tmp_path / "path_rank_correlation_trend.png").exists()
     assert not (tmp_path / "cosine_similarity_trend.png").exists()
     assert not (tmp_path / "conservation_across_thresholds.png").exists()
@@ -178,6 +178,19 @@ def _build_query_report(tmp_path, extra_parameters=None):
         @staticmethod
         def get_threshold_queries():
             return queries
+
+        @staticmethod
+        def resolve_query_inputs():
+            return [
+                {"token": "source", "dataset": "d1", "role": "source",
+                 "status": "same_name_identity", "method": "native_type",
+                 "target_types": ["source"], "evidence": "confirmed",
+                 "confidence": 4, "note": ""},
+                {"token": "target", "dataset": "d3", "role": "target",
+                 "status": "mapped", "method": "crosswalk",
+                 "target_types": ["target"], "evidence": "",
+                 "confidence": 3, "note": ""},
+            ]
 
         @staticmethod
         def get_aligned_data_for_query(_query):
@@ -284,12 +297,13 @@ def test_combination_html_uses_full_query_keyed_report_shell(tmp_path):
     assert 'showNetworkTab(&quot;combo_001&quot;, this)' in report
     assert 'showNetworkTab(&quot;combo_002&quot;, this)' in report
     assert 'event.target' not in report
-    # Per-query similarity heatmap cards use the shared four-metric set.
-    assert 'id="edge_rank_combo_001"' in report
-    assert 'id="cosine_combo_001"' in report
+    # Per-query similarity heatmap cards use the shared four-representative
+    # set (v2.2: edge/path/graph levels)
     assert 'id="jaccard_combo_001"' in report
-    assert 'id="spearman_combo_001"' in report
-    assert 'id="edge_rank_combo_002"' in report
+    assert 'id="cosine_combo_001"' in report
+    assert 'id="path_jaccard_combo_001"' in report
+    assert 'id="netsimile_combo_001"' in report
+    assert 'id="jaccard_combo_002"' in report
     # Overlap heatmaps with the count/proportion toggle per query.
     assert 'id="edge_overlap_combo_001"' in report
     assert 'id="path_overlap_combo_002"' in report
@@ -379,6 +393,14 @@ def test_combination_summary_has_ratio_and_probability_charts(tmp_path):
                  "avg_ratio_data_by_query.csv", "avg_prob_data_by_query.csv",
                  "provenance_by_query.csv"):
         assert (used_dir / name).exists(), name
+    # 2026-09-16: the per-query summary charts render as LINES (user
+    # request — grouped bars were unreadable at 4 datasets x N queries),
+    # same convention as the similarity-trends grid.
+    card_start = report.index('Edges, Weight, Ratio and Probability')
+    card_js = report[card_start:card_start + 6000]
+    assert "type: 'scatter', mode: 'lines+markers'" in card_js
+    assert "type: 'bar'" not in card_js
+    assert 'barmode' not in card_js
 
 
 def test_combination_parameters_validation_is_behavioral():
@@ -563,3 +585,13 @@ def test_standard_and_custom_pathfinding_suppress_ratio_probability(tmp_path, mo
         kwargs = run(mode)
         assert kwargs.get("ratio_data_func") is None, mode
         assert kwargs.get("prob_data_func") is None, mode
+
+
+def test_combination_report_renders_query_resolution_section(tmp_path):
+    """The combination Quick Navigation links #query-resolution — the
+    section itself must render too (2026-09-16 report inspection found the
+    dead anchor: nav item present, section Standard-only)."""
+    report = _build_query_report(tmp_path)
+    assert 'id="query-resolution"' in report
+    assert 'Query Resolution' in report
+    assert '<td>source</td>' in report

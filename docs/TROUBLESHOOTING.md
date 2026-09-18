@@ -208,24 +208,35 @@ $env:PYTHONIOENCODING = "utf-8"
 **Symptom:**
 ```
 Cache-only mode requested but the local connection cache is incomplete ...
-N of M neurons flagged complete in the neuron index have fewer cached
-connection rows than recorded
+```
+with one or both of:
+```
+the cache has no integrity manifest, so whole-cache loss cannot be ruled out
+the cache holds N distinct connections but the integrity manifest records M
 ```
 or
 ```
 Cache-only run needs N neuron(s) that are not in the local cache ...
 ```
 
-**Cause:** The local cache does not fully cover the query. Earlier versions
-continued anyway and returned partial results presented as a complete
-analysis (in the 2026-09-12 Windows test, a truncated cache returned 9,469
-paths where the full cache returns 49,871).
+**Cause:** The local cache does not fully cover the query, or its
+completeness cannot be verified. Since the 2026-09-16 re-test fixes the run
+verifies two layers before and during a cache-only run: per-neuron recorded
+vs actually-cached (deduplicated) connection counts, and the whole-cache
+distinct-connection count against `cache/<dataset>/cache_manifest.json` (the
+baseline written at the last consolidation or first non-cache-only run).
+Earlier versions continued anyway and returned partial results presented as
+a complete analysis (in the 2026-09-12 Windows test, a truncated cache
+returned 9,469 paths where the full cache returns 49,871; in the 2026-09-16
+re-test a shallow query still completed with 63 vs 113 paths before the
+manifest layer was added).
 
 **Solution:** Run once with Cache-Only disabled (server reachable, token
-configured) so the cache is completed, then re-run offline. If you knowingly
-accept partial results, pass `allow_incomplete_cache=True` (library/CLI
-parameter): the run then warns and stamps its output folders with an
-`INCOMPLETE_CACHE.txt` marker.
+configured) so the cache is completed and its integrity manifest is written,
+then re-run offline. If you knowingly accept partial results, pass
+`allow_incomplete_cache=True` (library/CLI parameter): the run then warns
+and stamps its output folders with an `INCOMPLETE_CACHE.txt` marker
+including the coverage evidence.
 
 ---
 

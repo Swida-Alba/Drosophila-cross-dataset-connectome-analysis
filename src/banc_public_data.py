@@ -198,7 +198,12 @@ def http_get(url: str, timeout: float = 120, attempts: int = 3,
             if exc.code == 404:
                 return None
             last_error = exc
-        except (urllib.error.URLError, OSError, ConnectionError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException,
+                OSError, ConnectionError) as exc:
+            # http.client.HTTPException covers IncompleteRead: a connection
+            # dropped mid-body used to escape the retry loop entirely and
+            # abort BANC preparation after tens of MB (re-test finding F3,
+            # 2026-09-16).  The partial body is discarded and re-read.
             last_error = exc
         if attempt + 1 < attempts:
             time.sleep(1.5 * (attempt + 1))

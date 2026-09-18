@@ -1,14 +1,26 @@
-"""Cache-only integrity gates (Defect A from the 2026-09-12 Windows report).
+"""Cache-only integrity gates (Defect A from the 2026-09-12 Windows report,
+extended per the 2026-09-16 re-test findings F2/F4).
 
 A cache whose rows were truncated (or whose fetches never finished) passes
-every file-presence check, so cache-only runs must compare the neuron
-index's recorded per-neuron ``connection_count`` against the connection
-rows actually present in the cache, and refuse (or require an explicit
-``allow_incomplete_cache`` opt-in) on mismatch.  Mirrors the report's §2.3
-experiment: pristine cache -> 0 mismatches; truncated cache -> mismatches.
+every file-presence check, so cache-only runs must verify:
+
+- per-neuron coverage: the neuron index's recorded ``connection_count``
+  against the DEDUPLICATED connection rows actually present (the loader
+  dedups on ``(bodyId_pre, bodyId_post, roi)`` — counting raw rows gives a
+  ~2x cushion on consolidated caches);
+- whole-cache coverage: on-disk distinct connections vs the
+  ``cache_manifest.json`` baseline written at consolidation / first online
+  run — the only detector for loss outside the flagged-neuron subset.
+
+Runs without any problem pass; on a problem the run is refused unless
+``allow_incomplete_cache`` opted in (warnings + INCOMPLETE_CACHE.txt
+stamping).  Mirrors the report's §2.3 experiment: pristine cache -> 0
+mismatches; truncated cache -> mismatches.
 """
 
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -101,32 +113,43 @@ def _make_fc(tmp_path, dataset, allow_incomplete_cache=False, notes=None):
     return fc
 
 
+def _write_manifest(tmp_path, dataset, distinct):
+    dataset_safe = coana.dataset_folder(dataset)
+    path = tmp_path / 'cache' / dataset_safe / 'cache_manifest.json'
+    path.write_text(json.dumps({
+        'schema': 1, 'dataset': dataset, 'distinct_connections': distinct,
+        'built_at': '2026-09-17T00:00:00', 'source': 'test'}))
+
+
 def test_check_cache_coverage_pristine(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200, 5)] * 189,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
         index_rows=[(100, True, 189), (101, True, 0)],
     )
     fc = _make_fc(tmp_path, dataset)
     coverage = fc._check_cache_coverage()
     assert coverage is not None
-    mismatches, complete_flagged = coverage
-    assert mismatches == []
-    assert complete_flagged == 2
+    assert coverage['mismatches'] == []
+    assert coverage['complete_flagged'] == 2
+    assert coverage['distinct_connections'] == 189
+    assert coverage['manifest'] is None
 
 
 def test_check_cache_coverage_truncated(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
         connection_rows=(
-            [(100, 200, 10)] * 12 + [(101, 201, 10)] * 6 + [(102, 202, 10)] * 3),
+            [(100, 200 + i, 10) for i in range(12)]
+            + [(101, 300 + i, 10) for i in range(6)]
+            + [(102, 400 + i, 10) for i in range(3)]),
         index_rows=[(100, True, 189), (101, True, 125), (102, False, 500)],
     )
     fc = _make_fc(tmp_path, dataset)
-    mismatches, complete_flagged = fc._check_cache_coverage()
-    assert mismatches == [('100', 189, 12), ('101', 125, 6)]
+    coverage = fc._check_cache_coverage()
+    assert coverage['mismatches'] == [('100', 189, 12), ('101', 125, 6)]
     # Only complete-flagged neurons are counted (102 is ignored).
-    assert complete_flagged == 2
+    assert coverage['complete_flagged'] == 2
 
 
 def test_check_cache_coverage_none_when_cache_missing(tmp_path):
@@ -159,7 +182,7 @@ def test_check_cache_coverage_memoized_until_files_change(tmp_path):
 def test_enforce_refuses_incomplete_cache(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200, 10)] * 12,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
         index_rows=[(100, True, 189)],
     )
     fc = _make_fc(tmp_path, dataset)
@@ -167,37 +190,126 @@ def test_enforce_refuses_incomplete_cache(tmp_path):
         fc._enforce_cache_coverage('user_requested')
 
 
-def test_enforce_error_names_remediation(tmp_path):
+def test_enforce_refuses_legacy_cache_without_manifest(tmp_path):
+    """A cache without an integrity manifest cannot be verified whole-cache;
+    cache-only runs are refused until an online run writes the baseline."""
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200, 10)] * 12,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
         index_rows=[(100, True, 189)],
     )
     fc = _make_fc(tmp_path, dataset)
-    with pytest.raises(RuntimeError, match='allow_incomplete_cache=True'):
+    with pytest.raises(RuntimeError, match='no integrity manifest'):
+        fc._enforce_cache_coverage('user_requested')
+
+
+def test_enforce_passes_complete_cache_with_matching_manifest(tmp_path):
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    _write_manifest(tmp_path, dataset, distinct=189)
+    fc = _make_fc(tmp_path, dataset)
+    fc._enforce_cache_coverage('user_requested')  # must not raise
+
+
+def test_enforce_passes_when_cache_grew_beyond_manifest(tmp_path):
+    """Batch files appended after the last consolidation grow the cache;
+    growth is never a refusal."""
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    _write_manifest(tmp_path, dataset, distinct=100)
+    fc = _make_fc(tmp_path, dataset)
+    fc._enforce_cache_coverage('user_requested')  # must not raise
+
+
+def test_enforce_refuses_on_manifest_loss(tmp_path):
+    """The field T6 shape: flagged neurons' rows survive in batch files while
+    the rest of the cache is truncated — the manifest layer is the only
+    detector (re-test finding F2)."""
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
+        index_rows=[(100, True, 12)],  # flagged subset intact
+    )
+    _write_manifest(tmp_path, dataset, distinct=1_000_000)
+    fc = _make_fc(tmp_path, dataset)
+    with pytest.raises(RuntimeError, match='integrity manifest records'):
+        fc._enforce_cache_coverage('user_requested')
+
+
+def test_enforce_error_names_remediation(tmp_path):
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
+        index_rows=[(100, True, 189)],
+    )
+    fc = _make_fc(tmp_path, dataset)
+    with pytest.raises(RuntimeError) as excinfo:
         fc._enforce_cache_coverage('server_unavailable')
+    message = str(excinfo.value)
+    assert 'allow_incomplete_cache=True' in message
+    # The UI remedy is spelled out because the opt-in flag is library-only
+    # (re-test finding F4).
+    assert 'Cache Only' in message
 
 
 def test_enforce_allows_opted_in_partial_run(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200, 10)] * 12,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
         index_rows=[(100, True, 189)],
     )
     notes = []
     fc = _make_fc(tmp_path, dataset, allow_incomplete_cache=True, notes=notes)
     fc._enforce_cache_coverage('user_requested')  # must not raise
     assert any('allow_incomplete_cache=True' in n for n in notes)
+    # The summary is stored for the INCOMPLETE_CACHE.txt stamp.
+    assert 'flagged complete' in fc._cache_incomplete_summary
 
 
-def test_enforce_passes_complete_cache(tmp_path):
+def test_ensure_cache_manifest_writes_baseline_once(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200, 5)] * 189,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
         index_rows=[(100, True, 189)],
     )
     fc = _make_fc(tmp_path, dataset)
-    fc._enforce_cache_coverage('user_requested')  # must not raise
+    assert fc._load_cache_manifest() is None
+    fc._ensure_cache_manifest()
+    manifest = fc._load_cache_manifest()
+    assert manifest is not None
+    assert manifest['distinct_connections'] == 189
+    assert manifest['source'] == 'baseline'
+    # Second call is a no-op: the baseline is never refreshed silently.
+    built_at = manifest['built_at']
+    fc._ensure_cache_manifest()
+    assert fc._load_cache_manifest()['built_at'] == built_at
+
+
+def test_incomplete_marker_carries_coverage_numbers(tmp_path):
+    """A stamped partial run documents HOW incomplete it was (F4)."""
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
+        index_rows=[(100, True, 189)],
+    )
+    fc = _make_fc(tmp_path, dataset, allow_incomplete_cache=True)
+    fc.cache_only = True
+    fc._warn_notes = []
+    fc._enforce_cache_coverage('user_requested')
+    fc._handle_cache_only_miss([512925, 72227], has_cached=False)
+    run_dir = tmp_path / 'run'
+    run_dir.mkdir()
+    fc._write_user_warning_notes(str(run_dir))
+    marker = (run_dir / 'INCOMPLETE_CACHE.txt').read_text(encoding='utf-8')
+    assert 'Coverage:' in marker
+    assert 'flagged complete' in marker
+    assert '2 neuron(s) absent' in marker
 
 
 def test_handle_cache_only_miss_refuses_without_opt_in():
