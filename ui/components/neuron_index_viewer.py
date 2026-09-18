@@ -1815,6 +1815,24 @@ def _render_index(
                                     icon="download",
                                 ).props("flat dense").on_click(_export_matches_csv)
 
+                    def _multivalue_marker(type_name: str,
+                                           dataset: str) -> str:
+                        """` 🧩 multi (a|b)` when the release's own `type`
+                        cell lists several candidate names (plan §5.3/D5).
+                        Display-only."""
+                        try:
+                            from comparison.cross_dataset_type_mapper import (
+                                get_type_mapper,
+                            )
+                            parts = get_type_mapper().multivalue_parts(
+                                type_name, dataset)
+                        except Exception:
+                            parts = None
+                        if not parts:
+                            return ""
+                        return (" 🧩 multi ("
+                                + "|".join(str(x) for x in parts) + ")")
+
                     def _annotation_text(ann) -> str:
                         if not ann:
                             return "— no counterpart in this dataset"
@@ -1822,7 +1840,31 @@ def _render_index(
                             return "— here: one of " + ", ".join(ann["targets"])
                         if ann["kind"] == "renamed":
                             return "— here: maps to '" + ann["targets"][0] + "'"
+                        if ann["kind"] == "conflict":
+                            # A HELD same-name fan-out is a conflict with a
+                            # reason (plan §5.2): say WHY nothing was
+                            # selected instead of leaving a bare "conflict".
+                            _riv = ann.get("suspect_rivals") or []
+                            if _riv:
+                                return (f"— none selected: the same-name "
+                                        f"candidate was held; {len(_riv)} "
+                                        "rival candidate(s) could not be "
+                                        "excluded (see Suspects below)")
+                            return "— unresolved mapping conflict"
                         if ann["kind"] == "same name":
+                            # Three DIFFERENT evidential situations used to
+                            # share one caveat, so curated identities and
+                            # same-name-first selections were both labelled
+                            # "no metadata verification" (plan-ui-type-
+                            # mapper-alignment §5.1 / U7).
+                            if ann.get("suspects"):
+                                _n = len(ann.get("suspect_rivals") or [])
+                                return (f"— same-name-first selection; {_n} "
+                                        "rival candidate(s) not selected "
+                                        "(expand Suspects)")
+                            if ann.get("curated_identity"):
+                                return ("— same name, backed by a curated "
+                                        "cross-dataset relation")
                             return ("— same name in this dataset "
                                     "(no metadata verification — "
                                     "please double check)")
@@ -1907,8 +1949,10 @@ def _render_index(
                             ):
                                 for cand in entry.get("types", []):
                                     text = (
-                                        f"'{cand['name']}' "
-                                        f"({cand['count']:,} neurons) "
+                                        f"'{cand['name']}'"
+                                        + _multivalue_marker(
+                                            cand["name"], entry["dataset"])
+                                        + f" ({cand['count']:,} neurons) "
                                         + _annotation_text(cand.get("mapped"))
                                     )
                                     ui.label(text).classes("text-caption")
@@ -2025,10 +2069,25 @@ def _render_index(
                                         )
                                     with ui.element("div").classes("min-w-0"):
                                         for cand in entry["candidates"]:
-                                            text = f"'{cand['name']}' — {cand['kind']}"
+                                            text = ("'" + cand['name'] + "'"
+                                                    + _multivalue_marker(
+                                                        cand["name"],
+                                                        entry["dataset"])
+                                                    + f" — {cand['kind']}")
                                             if cand["kind"] == "same name":
-                                                text += (" (no metadata verification — "
-                                                         "please double check)")
+                                                # Same three-way split as
+                                                # _annotation_text (§5.1).
+                                                if cand.get("suspects"):
+                                                    text += (" (same-name-first "
+                                                             "selection; rivals "
+                                                             "not selected)")
+                                                elif cand.get("curated_identity"):
+                                                    text += (" (backed by a "
+                                                             "curated cross-dataset "
+                                                             "relation)")
+                                                else:
+                                                    text += (" (no metadata verification — "
+                                                             "please double check)")
                                             if cand.get("asymmetry_note"):
                                                 text += ("; "
                                                          + cand["asymmetry_note"])
@@ -2055,6 +2114,33 @@ def _render_index(
                                                         lambda _e=None, name=cand["name"]:
                                                         _search_local_alias(name)
                                                     )
+                                            # COLLAPSED same-name-first details
+                                            # (plan §5.2/D1): the rivals that were
+                                            # NOT selected, one row each, from the
+                                            # mapper's own evidence record.
+                                            if cand.get("suspect_rivals"):
+                                                _rivals = list(cand["suspect_rivals"])
+                                                with ui.expansion(
+                                                        f"Suspects — "
+                                                        f"{len(_rivals)} rival "
+                                                        f"candidate(s) not selected",
+                                                        icon="warning").classes(
+                                                            "text-caption"):
+                                                    ui.label(
+                                                        "These rival names were in "
+                                                        "the fan-out's candidate "
+                                                        "set but were NOT selected "
+                                                        "(the same-name candidate "
+                                                        "was). Rivals are never "
+                                                        "merged; add a custom "
+                                                        "label mapping if one "
+                                                        "belongs to your analysis."
+                                                    ).classes(
+                                                        "text-caption drocat-muted")
+                                                    for _r in _rivals:
+                                                        ui.label(
+                                                            f"• '{_r}'"
+                                                        ).classes("text-caption")
 
                         unknown = [
                             entry["dataset"]

@@ -4492,7 +4492,7 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
     if res.status == STATUS_MAPPER_UNAVAILABLE:
         return None
     if res.status == STATUS_CONFLICT:
-        return {
+        out = {
             'kind': 'conflict',
             'targets': [],
             'status': 'conflict',
@@ -4500,11 +4500,26 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
             'target_dataset': res.target_dataset,
             'conflicts': [dict(c) for c in res.conflicts],
         }
+        # A HELD same-name fan-out is a conflict with a story: carry the
+        # mapper's verdict so the viewer can explain WHY nothing was
+        # selected instead of leaving a bare conflict (plan-ui-type-mapper-
+        # alignment §5.2).  Disclosure only.
+        if res.suspect_rivals:
+            out['suspect_rivals'] = list(res.suspect_rivals)
+        return out
     if res.status == STATUS_UNMAPPED and not res.target_types:
         return None
     result: Dict[str, Any] = {'kind': res.kind, 'targets': list(res.target_types)}
     if res.status != STATUS_MAPPED or res.kind in ('one of N', 'splits into'):
         result['status'] = res.status
+    # Same-name-first disclosure (plan §5.1): a deliberate SELECTION must be
+    # distinguishable from a bare same-name echo, and a curated identity from
+    # both — the mapper's own flags, never re-derived here.
+    if getattr(res, 'suspects', False):
+        result['suspects'] = True
+        result['suspect_rivals'] = list(res.suspect_rivals or ())
+    if res.kind == 'same name':
+        result['curated_identity'] = bool(res.curated_identity)
     return result
 
 
@@ -4712,12 +4727,37 @@ def collect_alias_matches(
             index = _load_cross_match_index(ds)
             if index is None:
                 continue
+            # Same-name disclosure for the alias list (plan-ui-type-mapper-
+            # alignment §5.1/§5.3).  ONE scoped decision per (search -> ds)
+            # pair: the mapper's own verdict, never re-derived.  Disclosure
+            # only — never a merge, never a selection change.
+            _decision: Dict[str, Any] = {}
+            try:
+                _decision = mapper.get_mapping_decision(
+                    search, dataset, ds, include_bridges=False) or {}
+            except Exception:
+                _decision = {}
+            _fired = bool(_decision.get('suspects'))
+            _curated = bool(_decision.get('status') == 'mapped'
+                            and _decision.get('target_type'))
             for cand in info.get("candidates", []):
+                _cand_extra: Dict[str, Any] = {}
+                if cand["kind"] == "same name":
+                    if _fired:
+                        _cand_extra["suspects"] = True
+                        _cand_extra["suspect_rivals"] = list(
+                            (_decision.get('same_name_first') or {}
+                             ).get('rivals') or ())
+                    elif _curated:
+                        # The scoped decision resolves this pair — the alias
+                        # list must not call that "no metadata verification".
+                        _cand_extra["curated_identity"] = True
                 entry["candidates"].append({
                     "name": cand["name"],
                     "kind": cand["kind"],
                     "aggregates": cand.get("aggregates"),
                     "count": count_type_in_index(index, cand["name"]),
+                    **_cand_extra,
                 })
             # Same-name fidelity flag (user 2026-09-14): a same-name
             # candidate whose population is an order of magnitude below

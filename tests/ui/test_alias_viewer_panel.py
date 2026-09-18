@@ -17,6 +17,11 @@ from ui.neuron_index import clear_neuron_index_cache
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MCNS_INDEX = REPO_ROOT / 'neuron_indexes' / 'male-cns_v1_0' / 'neuron_index.parquet'
 
+# dataset ids used by the same-name-first disclosure tests below
+MCNS = 'male-cns:v1.0'
+FAFB = 'flywire_FAFB_v783'
+BANC = 'banc_v888'
+
 pytestmark = pytest.mark.skipif(
     not MCNS_INDEX.exists(),
     reason='cached male-cns v1.0 neuron index not available locally',
@@ -764,3 +769,49 @@ def test_value_mapped_tier_renders_in_co_display(mode_viewer_client):
         if type(el).__name__ == 'Badge'
     ]
     assert any('FAFB' in badge or 'banc' in badge for badge in badges), badges
+
+
+# ---------------------------------------------------------------------------
+# Same-name-first disclosure in the viewer (plan-ui-type-mapper-alignment §5)
+# ---------------------------------------------------------------------------
+
+def test_mapped_type_targets_carries_the_mapper_verdict():
+    """§5.1: the adapter must distinguish a curated identity, a same-name-first
+    SELECTION, and a bare echo — the mapping used to collapse all three into
+    'no metadata verification'."""
+    from comparison.cross_dataset_type_mapper import get_type_mapper
+    from ui.neuron_index import mapped_type_targets
+
+    mapper = get_type_mapper()
+    assert mapper.load() is True
+    # curated 1-to-1 identity
+    curated = mapped_type_targets(mapper, 'aMe26', BANC, FAFB)
+    assert curated['kind'] == 'same name'
+    assert curated.get('curated_identity') is True
+    assert not curated.get('suspects')
+    # same-name-first selection
+    fired = mapped_type_targets(mapper, 'aMe9', MCNS, BANC)
+    assert fired['suspects'] is True
+    assert fired['suspect_rivals'], 'rivals must ride along for the expander'
+    # held pair: a conflict that explains itself
+    held = mapped_type_targets(mapper, 'ORN_D', BANC, MCNS)
+    assert held['kind'] == 'conflict'
+    assert held.get('suspect_rivals'), 'held pairs must carry their rivals'
+
+
+def test_alias_candidates_distinguish_curated_and_fired():
+    """§5.1 second site: the alias-candidate list must stop calling a curated
+    pairing 'no metadata verification'."""
+    from ui.neuron_index import collect_alias_matches
+
+    matches = collect_alias_matches(MCNS, 'aMe26', [BANC, FAFB])
+    cands = [c for m in matches for c in m['candidates']]
+    assert cands, 'aMe26 must resolve in the cached indexes'
+    assert all(c.get('curated_identity') for c in cands
+               if c['kind'] == 'same name')
+
+    fired = collect_alias_matches(MCNS, 'aMe9', [BANC])
+    fcands = [c for m in fired for c in m['candidates']
+              if c['kind'] == 'same name']
+    assert fcands and fcands[0].get('suspects') is True
+    assert fcands[0].get('suspect_rivals')
