@@ -588,3 +588,97 @@ def test_fan_in_prunes_claimant_group_members():
                      if g['label'] == '5thsLNv_LNd6')
     for ds, names in top_group['members'].items():
         assert 'LNd_CRY+_ITP+' not in names
+
+
+# ---------------------------------------------------------------------------
+# Globally contested branches (data-scoped fan-in, 2026-09-16)
+# ---------------------------------------------------------------------------
+
+class _RivalConflict:
+    """One mapper crosswalk conflict: mcns aMe9 --1-to-N--> {CL317, aMe9}."""
+
+    relationship = '1-to-N'
+    source_type = 'aMe9'
+    target_types = ['CL317', 'aMe9']
+    origin = 'cross-dataset cell type'
+
+
+class ContestedRivalMapper(FakeMapper):
+    """The chip's home namespace splits to {aMe26, CL317} like the real
+    2026-09-16 run; the mapper's GLOBAL conflict table also lists CL317 as
+    a 1-to-N target of home aMe9 — a parent NOT queried in the run."""
+
+    def has_native_type(self, token, dataset):
+        return token in ('aMe26', 'aMe9') and dataset == MCNS
+
+    def get_mapping_decision(self, token, source_ds, target_ds):
+        key = (token, source_ds, target_ds)
+        if key == ('aMe26', MCNS, FAFB):
+            return {'status': 'valid_split_evidence',
+                    'relationship': '1-to-N',
+                    'target_types': ['CL317', 'aMe26'],
+                    'target_type': None, 'conflicts': [], 'support': None}
+        if key == ('aMe9', MCNS, FAFB):
+            return {'status': 'valid_split_evidence',
+                    'relationship': '1-to-N',
+                    'target_types': ['CL317', 'aMe9'],
+                    'target_type': None, 'conflicts': [], 'support': None}
+        return super().get_mapping_decision(token, source_ds, target_ds)
+
+    def get_mapping_conflicts(self, source_ds, target_ds, source_type=None):
+        if (source_ds, target_ds) == (MCNS, FAFB):
+            return [_RivalConflict()]
+        return []
+
+
+CONTESTED_RECORDS = {
+    'aMe26': rec('aMe26', {
+        MCNS: 'same_name_identity', FAFB: 'valid_split'}),
+}
+
+
+def test_globally_contested_branch_stays_out_of_parent_row():
+    """A branch that is ALSO a 1-to-N target of an UNQUERIED rival parent
+    in the mapper's crosswalk must leave the queried parent's row AND the
+    key map (real-data 2026-09-16: every aMe26-without-aMe9 run re-folded
+    CL317 into the aMe26 row because run-scoped fan-in never fired)."""
+    policy = build(ContestedRivalMapper(), ['aMe26'], [],
+                   dict(CONTESTED_RECORDS))
+    # CL317 merges with neither claimant — keyed nowhere, own raw row.
+    assert policy.key_for(FAFB, 'CL317') is None
+    # The uncontested same-name branch still folds into the parent row.
+    assert policy.key_for(FAFB, 'aMe26') == 'aMe26'
+    assert policy.key_for(MCNS, 'aMe26') == 'aMe26'
+    group = policy.group_by_label('aMe26')
+    assert group is not None
+    assert group.members[FAFB] == ['aMe26']
+    assert [b.label for b in group.branches] == ['aMe26']
+    # run-scoped fan-in is empty — the contest is data-scoped.
+    assert policy.fan_in == {}
+    assert any('global contest' in w for w in policy.warnings)
+
+
+def test_contested_branch_coqueried_uses_run_scoped_fan_in():
+    """With the rival parent queried too, the run-scoped fan-in owns the
+    pruning and the global check adds NO duplicate contest warning."""
+    records = dict(CONTESTED_RECORDS)
+    records['aMe9'] = rec('aMe9', {
+        MCNS: 'same_name_identity', FAFB: 'valid_split'})
+    policy = build(ContestedRivalMapper(), ['aMe26', 'aMe9'], [], records)
+    assert policy.key_for(FAFB, 'CL317') is None
+    assert (FAFB, 'CL317') in policy.fan_in
+    assert not [w for w in policy.warnings if 'global contest' in w]
+
+
+def test_contested_branch_check_requires_conflicts_api():
+    """A mapper without a conflicts API keeps the pre-existing fold
+    behavior (the guard must not invent contest knowledge)."""
+    class NoConflictsMapper(ContestedRivalMapper):
+        get_mapping_conflicts = None  # type: ignore[assignment]
+
+    policy = build(NoConflictsMapper(), ['aMe26'], [],
+                   dict(CONTESTED_RECORDS))
+    assert policy.key_for(FAFB, 'CL317') == 'aMe26'
+    group = policy.group_by_label('aMe26')
+    assert group is not None
+    assert sorted(group.members[FAFB]) == ['CL317', 'aMe26']

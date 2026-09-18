@@ -668,6 +668,74 @@ def build_merge_policy(
                     else:
                         del group.members[ds]
 
+    # Globally contested branches (data-scoped fan-in, same lane): a
+    # branch whose name is ALSO a 1-to-N target of a DIFFERENT source
+    # type in the parent's home namespace is ambiguous in the mapper's
+    # crosswalk regardless of this run's chips — the run-scoped check
+    # above only fires when the rival parent is queried too (real-data
+    # finding 2026-09-16: banc CL317 is a 1-to-N target of BOTH aMe26
+    # and aMe9, so every aMe26-without-aMe9 run re-folded CL317 into
+    # the aMe26 row and key_map).  Same treatment as fan-in: the
+    # branch leaves the parent row AND the key map, so display and
+    # counts agree; the branch name stays its own raw row downstream.
+    conflicts_fn = getattr(mapper, 'get_mapping_conflicts', None)
+    if conflicts_fn is not None and datasets:
+        for group in groups:
+            if not group.branches:
+                continue
+            home = group.anchor[0]
+            if not home:
+                continue
+            # rivals per branch label: other home-namespace source
+            # types whose 1-to-N conflicts list the branch name.
+            contested: Dict[str, Set[str]] = {}
+            for branch in group.branches:
+                branch_name = str(branch.label)
+                rivals: Set[str] = set()
+                for ds in datasets:
+                    try:
+                        pair_conflicts = conflicts_fn(home, ds) or []
+                    except Exception:  # noqa: BLE001 — no mapper = no contest
+                        continue
+                    for conflict in pair_conflicts:
+                        if str(getattr(conflict, 'relationship', '')) \
+                                != '1-to-N':
+                            continue
+                        if str(getattr(conflict, 'source_type', '')) \
+                                == group.label:
+                            continue
+                        if branch_name in {
+                                str(t) for t in
+                                (getattr(conflict, 'target_types', None)
+                                 or [])}:
+                            rivals.add(str(conflict.source_type))
+                if rivals:
+                    contested[branch_name] = rivals
+            if not contested:
+                continue
+            for branch_name, rivals in sorted(contested.items()):
+                warnings.append(
+                    f'[merge fan-in] {home} {branch_name} is also a '
+                    f'1-to-N target of {" and ".join(sorted(f"{home} {r}" for r in rivals))} '
+                    f'in the type-mapper crosswalk (global contest — '
+                    f'the rival parent is not queried in this run); it '
+                    f'merges with neither claimant and stays out of '
+                    f'the {group.label} row')
+            kept_branches = []
+            for branch in group.branches:
+                if str(branch.label) in contested:
+                    group.branch_pools.pop(branch.label, None)
+                    continue
+                kept_branches.append(branch)
+            group.branches = kept_branches
+            for ds in list(group.members):
+                kept = [n for n in group.members[ds]
+                        if str(n) not in contested]
+                if kept:
+                    group.members[ds] = kept
+                else:
+                    del group.members[ds]
+
     # ---- canonical group ids + key map ----------------------------------
     groups.sort(key=lambda g: (g.anchor[0], g.anchor[1], g.label))
     # Deduplicate identical groups (same label AND same member set): in a

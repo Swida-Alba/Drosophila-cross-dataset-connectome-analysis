@@ -112,16 +112,29 @@ writes both files.
   claimed by two queried parents merges with neither (`[merge fan-in]` —
   with an explicit note that the queried parent's row is PARTIAL by
   design).
-- Evidence surfaces: the report's Type Mapping section is split into
-  THREE tables — **Sources** (the priority-selected `(dataset: type)`
-  observation per canonical row: male-cns → FAFB → other neuprint → BANC,
-  with remaining observations listed beside), **Targets** (per-dataset
-  resolved names; names differing from the canonical are colored —
+- Evidence surfaces: the report's Type Mapping section leads with ONE
+  merged, column-aligned query-role table — section groups **Queried
+  sources** / **Queried targets** / **Path intermediates** share one
+  coloring schema (status colors; muted = resolves there but was not
+  traversed) and one `#paths` column (paths starting at / ending at /
+  traversing the type), with the full canonical grid as a collapsed
+  appendix. The grid's **Source (priority)** column shows the ONE
+  observation from the highest-priority dataset where the row resolves —
+  male-cns → FAFB → other neuprint → BANC, a GLOBAL order, never the
+  per-name merge anchor (remaining observations collapse into a
+  tooltip); target cells show per-dataset resolved names — names
+  differing from the canonical are colored —
   split-branch members share one color — and lists beyond three names
-  collapse; the muted ● mark repeats the source dataset's identity; the
-  ⚠️ auto-only badge attaches to the auto-label SOURCE dataset cell) —
-  and **Intermediates** (mid-chain hops of bridge routes). A fan-in key
-  (claimed by two parents) is pruned from both parents' rows. The
+  collapse; the Source column names remaining observations inline
+  (`(+2: FAFB, BANC)`); the ⚠️ auto-only badge attaches ONLY to the
+  auto-label source (donor) dataset cell, never the canonical name; the
+  same-name-first suspects open in a persistent hover popover (copiable)
+  instead of an in-cell expander. A
+  fan-in key (claimed by two parents) is pruned from both parents' rows,
+  and the SAME prune applies globally: a split branch that the mapper
+  crosswalk itself lists as a 1-to-N target of a different (even
+  unqueried) home-namespace parent leaves the parent row AND the merge
+  counts (`[merge fan-in] … global contest`). The
   **Resolution topology** card stays collapsed by default; the
   run folder gains `type_resolution_topology.json`; `auto_type_mapping.csv`
   gains additive `anchor_group`/`auto_only` columns (`anchor_group` only
@@ -130,8 +143,8 @@ writes both files.
   warning blocks mirror into
   `user_warning_notes.txt`; the custom label mapper (LabelMapper /
   `overall_mapping_json`) overrides any merge decision. Round-4 note: the
-  section leads with role tables (Queried Sources / Queried Targets / Path
-  Intermediates ranked by traversal count) and the run header carries a
+  section leads with the merged query-role table (intermediates ranked
+  by traversal count) and the run header carries a
   "🧠 Hemisphere-aware run" badge whenever `separate_hemispheres` is on;
   `ComparisonParameters.for_run_folder(run_dir)` + `skip_existing` resumes
   a run folder in place WITHOUT losing the hemisphere/symmetry/reciprocity
@@ -186,6 +199,12 @@ writes both files.
 - Combination-mode similarities are written under
   `similarity_matrices/similarity_query_{query_id}.csv` and
   `similarity_by_query.csv`; use the query ID and per-dataset threshold
+  The Similarity section presents four representatives by LEVEL — edge
+  🔷 Jaccard + Cosine, path 🟣 Path Jaccard, graph 🔶 NetSimile-lite
+  (cards colored by level) — with a per-pair detail table (coverage,
+  edge/path top-20, gated Spearman ≥30 shared, hop/strength W1). Edge
+  Rank / Path Rank / Pearson / RV / Ruzicka are legacy CSV-only columns;
+  the trend PNGs are now `top20_overlap_trend.png` / `netsimile_trend.png`.
   columns rather than a scalar threshold union.
 - Combination-mode `comparison_report.html` uses the same full report shell as
   Standard mode (summary charts, provenance, similarities, networks,
@@ -250,5 +269,23 @@ writes both files.
   validate-expand-visualize verification machinery) may summarize a
   per-neuron partition. Strictly informational — none of it changes the
   analysis selection or run exports.
+- **Same-name-first suspects** (plan-ui-type-mapper-alignment): when a
+  fan-out's candidate set contained the queried type's own name, the mapper
+  selects that candidate and demotes the rest to *suspects*. The panel marks
+  such a row with a `⚠ suspects (N)` badge in its own **Suspects** column —
+  on the pair-card mapped-pairs table, the forward/backward Type coverage
+  tables, and the per-type breakdown — and carries the rival details in a
+  **collapsed `Suspects` expander** below the table (rival · own 1-to-1 pair
+  · votes · reverse target · rival pair status); the pair's Type coverage
+  expansion title is data-driven (`1-to-N fan-out` / `N-to-1 fan-in` /
+  `all 1-to-1`, plus `· ⚠ N suspect pair(s)`), and a pair kept unmapped for
+  this reason says so in the
+  Orphan list instead of looking unmapped for no reason. The
+  "See available neurons" viewer (cross-dataset mapping ON) shows the same
+  state — three-way annotations (curated relation / same-name-first
+  selection / bare-name echo) plus a collapsed suspects expander. The full
+  per-rival record is `auto_type_mapping_suspects.csv`; labels state
+  observations (`own_1to1_pair` / `no_own_1to1_pair`), never verdicts, and
+  nothing is merged — the custom label mapper is the inclusion path.
 - Use `parallel=True` with a bounded `max_workers` for many datasets; start with
   `skip_bodyId=True` and `max_interlayer=2`.

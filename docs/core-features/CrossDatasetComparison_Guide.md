@@ -654,9 +654,22 @@ the full provenance table sits in a collapsed
 headings print the id and label as one deduplicated title (horizontal
 labels embed the id as their prefix), and the conservation donut cards lay
 out on the same auto-fill grid as the per-threshold cards. The Type
-Mapping section is split into Sources / Targets / Intermediates tables
-(source chosen by the priority male-cns → FAFB → other neuprint → BANC;
-the ⚠️ auto-only badge attaches to the auto-label source dataset cell).
+Mapping section leads with ONE merged, column-aligned query-role table
+(Queried sources / Queried targets / Path intermediates as section groups
+— shared coloring schema, a #paths column on every group, and the muted
+"resolves here, not traversed" treatment everywhere) with the
+full canonical grid as a collapsed appendix; the grid's **Source
+(priority)** column picks the observation from the highest-priority
+dataset where the row resolves (male-cns → FAFB → other neuprint → BANC —
+a global order, not the per-name merge anchor) and names the remaining
+datasets inline — `(+2: FAFB, BANC)`. The ⚠️ auto-only badge attaches
+ONLY to the auto-label source (donor) dataset cell — never to the
+canonical name. Same-name-first suspects open in a hover popover
+(persistent while you interact, text copiable) instead of an in-cell
+expander. A split branch contested globally in the type-mapper crosswalk
+(also a 1-to-N target of an unqueried parent type) is pruned from the
+parent row and the merge counts with a `[merge fan-in] … global contest`
+note.
 When a configured dataset produced no data (e.g. a silent fetch failure),
 a red **dataset coverage warning** names it above the analyses, the run
 manifest records `dataset_coverage`, and per-dataset console traces land
@@ -747,7 +760,7 @@ conservation_rate = (edges in ALL datasets) / (total unique edges) × 100%
 
 ### Similarity Metrics
 
-> **📖 Detailed Documentation**: See [Graph Similarity Metrics Documentation](GraphSimilarityMetrics_Documentation.md) for comprehensive explanations of all metrics including Edge Rank Correlation, Cosine Similarity, Spearman Rank, and NaN handling.
+> **📖 Detailed Documentation**: See [Graph Similarity Metrics Documentation](GraphSimilarityMetrics_Documentation.md) for comprehensive explanations of all metrics including Edge Rank Correlation (legacy, CSV-only since the v2.2 schema), Cosine Similarity, Path Jaccard, NetSimile-lite, and NaN handling.
 
 #### Jaccard Similarity
 Measures overlap of edge sets between two datasets.
@@ -766,14 +779,41 @@ Cosine(A, B) = (A · B) / (||A|| × ||B||)
 - Scale-invariant (only considers angle, not magnitude)
 - Higher values indicate similar weight distributions
 
-#### Edge Rank Correlation (NEW)
+#### Edge Rank Correlation (LEGACY — CSV export only)
 Raw Spearman correlation on union of edges (missing edges = weight 0).
+Retired from the report panel in the v2.2 similarity schema: the tied
+zero-mass of absent edges dominates the ranking, so the number tracks set
+size asymmetry rather than weight agreement (v2.2 audit: a −0.09 value
+next to cosine 0.95). Kept in the CSV exports for one release.
 ```
 EdgeRank(A, B) = Spearman(ranks_A, ranks_B)
 ```
 - Range: [-1, +1], NaN if fewer than 3 non-zero edges
-- Positive: similar ranking, Negative: inverse ranking
-- Captures both overlap and weight ranking agreement
+
+#### Path Jaccard (v2.2 path-level representative)
+Overlap of the canonical multi-hop path sets: |P1 ∩ P2| / |P1 ∪ P2|,
+computed on the in-memory union path frame (the exported
+`path_presence_matrix_*.csv` is conserved-only and would read 1.0
+trivially). NaN below 5 paths per side.
+
+#### NetSimile-lite (v2.2 graph-level representative)
+Alignment-free whole-graph similarity: per-node log out/in-strengths and
+mean edge weights summarized by median + MAD into one signature, compared
+with a normalized Canberra distance mapped to [0, 1] via 1/(1+d). Node
+identity is not required, so it stays meaningful when the aligned type
+table is sparse.
+
+#### Coverage / Top-20 overlap / Spearman (shared) / W1 (detail metrics)
+- `coverage_min` = min(|A∩B|/|A|, |A∩B|/|B|) — size-asymmetry-robust
+  presence (BANC vs MCNS: Jaccard 0.075 but coverage 0.43).
+- `top20_overlap` — Jaccard of the 20 heaviest edges per side (head of
+  the ranking, tie-safe).
+- `spearman_rank_correlation` — rank correlation on shared positive
+  edges, gated: NaN below 30 shared edges (`common_edges` reported
+  beside it).
+- `hop_profile_w1` / `strength_w1_out` / `strength_w1_in` — Wasserstein-1
+  distances between hop-count / log-strength distributions (lower is
+  closer).
 
 ### Weight Statistics
 
@@ -871,8 +911,9 @@ The interactive HTML report includes:
 
 ### 1. Summary Section
 - Key metrics by threshold
-- Edge count bar charts
-- Total weight comparison
+- Edge count / total weight / connection ratio / traversal probability
+  across all queries as per-dataset **line charts** (grouped bars were
+  replaced — one line per dataset, markers on every query row)
 
 ### 2. Neuron Counts Comparison
 - **Summary Table**: Total source/target neuron counts per dataset
@@ -921,6 +962,11 @@ This section is especially useful for internal network analysis (source=target) 
 ### 8. Statistics Tables
 - Per-dataset metrics (edge count, total weight, mean, max)
 - Pairwise similarity scores
+- **Similarity Trends grid**: one panel per representative (Jaccard,
+  Cosine, Path Jaccard, NetSimile-lite) × per comparison family — per-threshold and
+  per-density columns each anchor to their own grid cell, with the
+  per-pair traces, a dashed cross-pair average, and an x-axis caption
+  per column
 
 ---
 
