@@ -1483,14 +1483,21 @@ class TestSimplificationPipeline:
         assert loaded._drocat_simplification == 50
         assert 0.3 * raw <= len(loaded.nodes) <= 0.7 * raw
 
-    def test_default_simplification_is_90(self, tmp_path):
+    def test_default_simplification_is_raw(self, tmp_path):
+        """persist_skeletons defaults to raw (level 0): the cache stores
+        raw skeletons; simplification is a visualization-time concern."""
         nrn = line_neuron(length=200)
         cache = self._raw_cache(tmp_path)
-        cache.persist_skeletons({101: nrn})  # default 90
+        cache.persist_skeletons({101: nrn})  # default raw
         loaded = morph._load_cached_skeleton_file(
             cache.skeleton_dir / "101.swc.zst")
-        assert loaded._drocat_simplification == 90
-        assert len(loaded.nodes) < 0.2 * len(nrn.nodes)
+        assert (loaded._drocat_simplification or 0) == 0
+        assert len(loaded.nodes) == len(nrn.nodes)
+        # an explicitly requested coarse level still stores that level
+        cache.persist_skeletons({102: nrn}, simplification=90)
+        loaded90 = morph._load_cached_skeleton_file(
+            cache.skeleton_dir / "102.swc.zst")
+        assert (loaded90._drocat_simplification or 0) == 90
 
     def test_raw_level_zero_records_header(self, tmp_path):
         nrn = line_neuron(length=200)
@@ -1575,7 +1582,10 @@ class TestSimplificationPipeline:
             "np:v1", 101, project_root=str(tmp_path), persist=True)
         assert out is not None
         kinds = [e[0] for e in events]
-        assert kinds.index("vectorize") < kinds.index("simplify")
+        # Raw-basis design: the raw neuron is vectorized and NO cache-time
+        # simplification runs at all (simplification is render-time only).
+        assert "vectorize" in kinds
+        assert "simplify" not in kinds
         # standalone vector cache holds the raw-basis row
         cache = morph.find_similar_raw_cache(
             "np:v1", project_root=str(tmp_path), verbose=False)

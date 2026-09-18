@@ -577,11 +577,16 @@ class NullVectorStore:
         self.path = self.dir / f'cross_dataset_nullvec_{self.space}.npz'
 
     def _bounds_signature(self) -> str:
+        # Signature includes the V2 vector-cache version: sidecar vectors
+        # must share the vectorization basis of the live cache (raw since
+        # the raw-basis flip); a cache-version bump invalidates them.
+        from morphology import VECTOR_CACHE_V2_VERSION
+        tag = f"raw-basis|v2cache={VECTOR_CACHE_V2_VERSION}".encode()
         bounds = _scoring_bounds(self.dataset, str(self.root))
         if bounds is None:
-            return 'none'
+            return hashlib.sha1(tag).hexdigest()[:16]
         return hashlib.sha1(np.asarray(bounds, dtype=float).tobytes()
-                            ).hexdigest()[:16]
+                            + tag).hexdigest()[:16]
 
     def load(self) -> Dict[int, Any]:
         try:
@@ -1622,6 +1627,21 @@ class CrossDatasetMorphComparer:
         datasets = [s for s in self.datasets]
         for scope in scopes:
             self.warnings.extend(scope['warnings'])
+        # FAFB's L/R annotation is inverted relative to the other datasets
+        # in the ORIGINAL source data (male-cns + BANC agree with each
+        # other; FLYWIRE-native x runs opposite). Surface it once per run:
+        # side labels do not transfer across datasets here, so same-type
+        # partners pair across sides. Scores are unaffected — the morphology
+        # features are side-invariant — and nothing is flipped in either
+        # direction.
+        if (any(_dataset_family(name) == 'FAFB' for name in datasets)
+                and any(_dataset_family(name) != 'FAFB' for name in datasets)):
+            self.warnings.append(
+                'FAFB L/R annotation is opposite to the other datasets in '
+                'the original data: same-type cross-dataset partners pair '
+                'across sides (L <-> R). Scores are unaffected - the '
+                'morphology features are side-invariant and nothing was '
+                'flipped.')
         # BANC / stale-artifact bootstrap (offline; one-time per dataset).
         for name in datasets:
             scope = dataset_scope(name)
@@ -2196,10 +2216,13 @@ class CrossDatasetMorphComparer:
                       scenes: List[Path],
                       existing: Optional[List[Path]] = None) -> List[Path]:
         """Tabbed report on the shared report_kit (same format as the
-        connectivity-profiling export): hero header, one tab per dataset
-        pair, Type/BodyId level tabs, Ward-clustered heatmaps with CSV and
-        VisPath editor links, member/resolution details, overlay scenes.
-        Plotly.js is embedded, so the report renders offline.
+        connectivity-profiling export): hero header, a horizontally
+        scrollable overview table with a frame-asymmetry disclosure, one
+        tab per dataset pair, Type/BodyId level tabs, Ward-clustered
+        heatmaps (square cells via explicit-width sizing for small
+        matrices) with CSV and VisPath editor links, member/resolution
+        details, overlay scenes.  Plotly.js is embedded, so the report
+        renders offline.
         """
         from html import escape
 
@@ -2240,11 +2263,29 @@ class CrossDatasetMorphComparer:
                 + '</ul></div>')
 
         if not overview.empty:
+            # The overview frame carries one column block per directed pair
+            # (3 sub-columns each), so the table grows quadratically with
+            # the dataset count and can overflow the section-card. Wrap it
+            # in a horizontally scrollable container (mirrors the members
+            # details block below) and disclose the frame asymmetry so
+            # readers don't compare A→B and B→A scores as if they were
+            # mirrored measurements of the same quantity.
             lines.append('<div class="section-card">'
                          '<h2 class="section-heading">Overview — best '
-                         'target-type match per queried type</h2>')
-            lines.append(overview.to_html(index=False, na_rep='—', border=0,
-                                          classes='mapping-table'))
+                         'target-type match per queried type</h2>'
+                         '<p class="section-summary">Each column block is '
+                         'scored in its TARGET dataset\u2019s render space '
+                         'with the target\u2019s vector_v2 whitening basis, '
+                         'so A\u2192B and B\u2192A are not symmetric by '
+                         'construction \u2014 they measure morphological '
+                         'similarity in two different coordinate frames. '
+                         'Baseline p95 also shifts with the basis; compare '
+                         'a score only against its own column\u2019s '
+                         'baseline.</p>')
+            lines.append('<div style="overflow-x:auto">')
+            lines.append(overview.to_html(index=False, na_rep='\u2014', border=0,
+                                          classes='mapping-table overview-table'))
+            lines.append('</div>')
             lines.append('</div>')
 
         plotly_state = {'include_plotlyjs': True}
@@ -2287,7 +2328,7 @@ class CrossDatasetMorphComparer:
                 'Source neuron' if level == 'bodyid' else 'Source type',
                 plotly_state,
                 styles={'morph_v2': _MORPH_V2_STYLE},
-                square_cells=(level == 'bodyid'),
+                square_cells=True,
             )
 
         def render_pair(key: str, panel_id: str) -> None:

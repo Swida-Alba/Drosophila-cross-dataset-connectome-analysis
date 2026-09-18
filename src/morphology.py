@@ -203,7 +203,10 @@ SPATIAL_EXTRA_FEATURES: List[str] = (
 # candidate-list-first (connectivity screen -> fetch -> vectorize), so the
 # cache no longer defines the search population. Set a positive target to
 # opt back into a pre-seeded exploratory pool for cache-direct browsing.
-FAFB_BUNDLE_SAMPLE_TARGET = 0
+FAFB_BUNDLE_SAMPLE_TARGET = 1500   # raw-basis whole-brain sample: the V2
+# cache seeds itself from the healed zip so identity-space runs (Find
+# Similar / cross-dataset targets) have population artifacts and a
+# candidate pool entirely offline.
 SPATIAL_BLOCK_DIM = len(SPATIAL_ELLIPSOID_FEATURES) + SPATIAL_HIST_DIM \
     + SPATIAL_PROFILE_DIM
 SHAPE_BLOCK_DIM = VECTOR_DIM + SHAPE_EXTRA_DIM
@@ -241,7 +244,7 @@ DEFAULT_EXPAND_PER_TYPE = 10
 # this the V2 comparison falls back to z-scored per-block cosine.
 MIN_ROWS_FOR_WHITENING = 64
 
-VECTOR_CACHE_V2_VERSION = 5   # 5 = bbox_xy_ratio capped at 1e6 (planar arbors with zero y-span produced 1e13-scale features that dominated the population stats); 4 = topology block removed, +8 sx_* +16 spatial profile dims (rp_/md_)
+VECTOR_CACHE_V2_VERSION = 6   # 6 = raw skeleton basis (simplification is visualization-only): vectors are computed from raw trees, never releveled to simp90; 5 = bbox_xy_ratio capped at 1e6 (planar arbors with zero y-span produced 1e13-scale features that dominated the population stats); 4 = topology block removed, +8 sx_* +16 spatial profile dims (rp_/md_)
 
 # Bump when the whitening fit changes so persisted matrices are refit.
 WHITEN_FIT_VERSION = 3
@@ -1227,6 +1230,10 @@ def _write_compressed_skeleton(path, neuron,
 
     - ``simplification`` int 0-90: deterministically simplifies the neuron
       to that level (percent removed) before writing; ``0`` = raw.
+      ``0`` records the level already attached to the neuron (a tree
+      loaded from a simplified file is never relabeled as raw) — the
+      on-disk cache stores raw skeletons; simplification is applied at
+      visualization/render time, never at cache time.
     - ``simplification=None``: writes the neuron as-is and records the level
       already attached to it (``neuron._drocat_simplification``; absent = 0)
       - used by lazy migrations that must not re-simplify.
@@ -1241,7 +1248,7 @@ def _write_compressed_skeleton(path, neuron,
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if simplification is None:
+    if simplification is None or simplification == 0:
         stored = getattr(neuron, "_drocat_simplification", 0) or 0
         neuron_out = neuron
     else:
@@ -1372,12 +1379,10 @@ def _vectorize_one_file_v2(path: str,
     global _V2_WORKER_BOUNDS
     try:
         neuron = _load_cached_skeleton_file(path)
-        stored = getattr(neuron, "_drocat_simplification", 0)
-        if stored != DEFAULT_SIMPLIFICATION:
-            try:
-                neuron = _relevel_for_target(neuron, stored, DEFAULT_SIMPLIFICATION)
-            except Exception:
-                pass
+        # Raw basis: only level-0 (raw) trees are vectorized; simplified
+        # files are skipped (their bodies are re-fetched raw on demand).
+        if (getattr(neuron, "_drocat_simplification", 0) or 0) != 0:
+            return None
         used_bounds = bounds if bounds is not None else _V2_WORKER_BOUNDS
         _, vector = vectorize_neuron_v2(neuron, used_bounds,
                                         lateral_normalize=True)
@@ -2789,18 +2794,20 @@ class SkeletonVectorCache:
             return None
 
     def persist_skeletons(self, neurons: Dict[Union[int, str], object],
-                          simplification: Optional[int] = DEFAULT_SIMPLIFICATION
+                          simplification: Optional[int] = 0
                           ) -> int:
         """Persist neurons in this cache's skeleton namespace.
 
         Shared raw caches store the fetched TreeNeuron through the shared
-        simplify + compress pipeline: the requested ``simplification`` level
-        (percent of nodes removed, 0-90; default 90) is applied and recorded
-        in each ``.swc.zst`` file header.  ``simplification=None`` writes the
-        neuron as-is, recording the level already attached to it (used by
-        lazy migrations).  Legacy pickle files remain readable and selectable
-        with ``raw_format='pkl'``. The legacy visualization cache continues
-        to use its explicit downsampling path and does not call this helper.
+        compress pipeline: ``simplification`` (percent of nodes removed,
+        0-90) is applied and recorded in each ``.swc.zst`` file header.
+        The default is ``0`` — raw skeletons are cached as-is; simplification
+        is a visualization-time concern and must not enter the stored cache.
+        ``simplification=None`` writes the neuron as-is, recording the level
+        already attached to it (used by lazy migrations).  Legacy pickle
+        files remain readable and selectable with ``raw_format='pkl'``. The
+        legacy visualization cache continues to use its explicit
+        downsampling path and does not call this helper.
         """
         if not neurons:
             return 0
@@ -3713,14 +3720,17 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         return VECTOR_V2_DIM
 
     def _default_basis(self) -> str:
-        # V2 vectorizes whatever the shared skeleton store holds, releveled
-        # to the canonical simp90 level (the fetch pipeline's default), so
-        # the full local population is usable without online fetches. Every
-        # row is releveled identically -> one consistent basis.
-        return VECTOR_BASIS_SIMP90
+        # Raw skeleton basis (design contract): vectorization runs on raw
+        # skeletons; simplification is a visualization-time concern and
+        # never enters the vector cache. Files stored at a simplified
+        # level are skipped (their bodies are re-fetched raw on demand).
+        return VECTOR_BASIS_RAW
 
     def _file_level_ok(self, neuron) -> bool:
-        return True   # any stored level; releveled in _vectorize_neuron
+        # Only raw (level 0 / unstamped) trees join the raw basis; a
+        # simp90-stamped file would silently shift this body onto a
+        # different feature basis than the rest of the cache.
+        return (getattr(neuron, "_drocat_simplification", 0) or 0) == 0
 
     def _feature_columns(self) -> List[str]:
         return (MORPHOMETRIC_FEATURES + [f"pv_{i}" for i in range(PERSISTENCE_DIM)]
@@ -3733,29 +3743,18 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         return VECTOR_CACHE_V2_VERSION
 
     def _vectorize_neuron(self, neuron):
-        stored = getattr(neuron, "_drocat_simplification", 0)
-        if stored != DEFAULT_SIMPLIFICATION:
-            try:
-                neuron = _relevel_for_target(neuron, stored, DEFAULT_SIMPLIFICATION)
-            except Exception:
-                pass   # tiny/degenerate arbors: vectorize at the stored level
+        # Raw basis: vectorize the stored skeleton as-is (the caller's
+        # _file_level_ok gate keeps simplified files out).
         return vectorize_neuron_v2(neuron, self.spatial_bounds(),
                                    lateral_normalize=True)
 
     def _in_memory_vector_row(self, body_id, neuron):
         """V2 cache row for an in-memory (loader-resolved) tree.
 
-        Mirrors ``_vectorize_one_file_v2``: relevel to the cache basis, then
-        the full 256-dim V2 schema. Returns None on failure.
+        Raw basis: the loader-resolved tree is vectorized as-is. Returns
+        None on failure.
         """
         try:
-            stored = getattr(neuron, "_drocat_simplification", 0)
-            if stored != DEFAULT_SIMPLIFICATION:
-                try:
-                    neuron = _relevel_for_target(
-                        neuron, stored, DEFAULT_SIMPLIFICATION)
-                except Exception:
-                    pass
             _, vector = vectorize_neuron_v2(
                 neuron, self.spatial_bounds(), lateral_normalize=True)
             rep = _neuron_rep(neuron)
@@ -3849,7 +3848,7 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             "block_weights": dict(DEFAULT_V2_BLOCK_WEIGHTS),
             "n_rows": n_rows,
             "rep": rep,
-            "vector_basis": VECTOR_BASIS_SIMP90,
+            "vector_basis": VECTOR_BASIS_RAW,
             "raw_format": self.raw_format if self.raw_only else None,
             "built_at": datetime.now().isoformat(timespec="seconds"),
             "mean": stats["mean"],
@@ -3904,6 +3903,16 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         if self._is_stale():
             self._log("[SkeletonVectorCacheV2] Cache predates the current "
                       "vector semantics; rebuilding.")
+            # A stale basis must never be reused incrementally: drop the
+            # old rows so build() re-vectorizes every body at the current
+            # basis (raw since the raw-basis flip) instead of merging them
+            # into the new cache.
+            for path in (self.parquet_path, self.meta_path,
+                         self.pending_path):
+                try:
+                    Path(path).unlink()
+                except OSError:
+                    pass
             return self.build(fetch_missing=fetch_missing)
         return super().ensure(fetch_missing=fetch_missing)
 
@@ -4094,8 +4103,12 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
                    if self._canonical_body_id(_skeleton_body_id(f))
                    not in existing]
 
-        if not pending and not fafb_fetch_rows \
-                and not self.pending_path.exists():
+        # FAFB whole-brain seeding needs to fall through even with an empty
+        # raw store: the bundle sample derives its own population bounds.
+        fafb_seeding = (is_fafb_dataset(self.dataset) and not self.mesh_only
+                        and self.bundle_sample_target > 0)
+        if (not pending and not fafb_fetch_rows and not fafb_seeding
+                and not self.pending_path.exists()):
             self._log("[SkeletonVectorCacheV2] No skeletons available to "
                       "vectorize.")
             return {"rows": len(existing), "new": 0, "fetched": 0}
@@ -4163,7 +4176,10 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             if foreign:
                 self._log(f"[SkeletonVectorCacheV2] Skipping {foreign} files "
                           f"of a different representation than {rep}.")
-            rows = [r if r is None or r[2] == rep else None for r in rows]
+            # Merge from ok_rows (file rows + in-memory rows such as the
+            # FAFB bundle sample): filtering the original `rows` list here
+            # silently dropped every in-memory row.
+            rows = ok_rows
 
         records = []
         for bid, rec in existing.items():
@@ -4199,7 +4215,7 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         std = mat.std(axis=0).tolist()
         std = [s if s > 0 else 1.0 for s in std]
         self._write_meta({"mean": mean, "std": std}, len(df), rep=rep,
-                         vector_basis=VECTOR_BASIS_SIMP90)
+                         vector_basis=VECTOR_BASIS_RAW)
         # A fresh population invalidates the fitted whitener.
         try:
             self.whiten_path.unlink(missing_ok=True)
@@ -4642,17 +4658,19 @@ def fetch_skeleton_on_demand(dataset: str, body_id: int,
                              raw_cache: Optional[SkeletonVectorCache] = None,
                              vector_cache: Optional[SkeletonVectorCache] = None,
                              soma_pos=None,
-                             simplification: int = DEFAULT_SIMPLIFICATION,
+                             simplification: int = 0,
                              banc_resolution: str = "l2"
                              ) -> Optional[object]:
     """Fetch one dataset-native neuron if missing.
 
     NeuPrint datasets use ``neuprint.fetch_skeleton`` and persist raw
-    ``TreeNeuron`` objects through the shared simplify + compress pipeline
-    (``simplification`` percent removed, default 90, recorded in the
-    ``.swc.zst`` header). FAFB uses the CAVE mesh path and persists prepared
-    ``MeshNeuron`` objects in the representation-specific mesh cache; BANC
-    uses public-release SWCs. The two local-release paths never share a file.
+    ``TreeNeuron`` objects through the shared compress pipeline
+    (``simplification`` percent removed, default 0 — the cache stores raw
+    skeletons, and simplification is a visualization-time concern,
+    recorded in the ``.swc.zst`` header). FAFB uses the CAVE mesh path and
+    persists prepared ``MeshNeuron`` objects in the representation-specific
+    mesh cache; BANC uses public-release SWCs. The two local-release paths
+    never share a file.
 
     Vectorization always runs on the RAW fetched neuron and is persisted to
     the standalone vector cache BEFORE the simplified on-disk file is
@@ -5234,7 +5252,7 @@ def fetch_skeletons_on_demand_batch(
         progress_callback=None, client=None,
         raw_cache: Optional[SkeletonVectorCache] = None,
         vector_cache: Optional[SkeletonVectorCache] = None,
-        simplification: int = DEFAULT_SIMPLIFICATION,
+        simplification: int = 0,
         cancel_event=None) -> Dict[int, object]:
     """Cache-aware online fetch for one dataset family.
 
@@ -5560,15 +5578,16 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
                            verbose: bool = True,
                            raw: bool = True, mode: Optional[str] = None,
                            raw_format: str = "swc.zst",
-                           simplification: int = DEFAULT_SIMPLIFICATION,
+                           simplification: int = 0,
                            batch_size: int = NEUPRINT_FETCH_BATCH_SIZE
                            ) -> Dict[str, object]:
     """Download every missing skeleton of a dataset to the local cache.
 
     Mirrors the Settings-panel full dataset pull. NeuPrint pulls persist
-    ``TreeNeuron`` objects through the shared simplify + compress pipeline
-    in ``skeletons/raw_skeletons/{bodyId}.swc.zst``: one simplification level
-    per run (``simplification``, percent of nodes removed, 0-90, default 90)
+    ``TreeNeuron`` objects through the shared compress pipeline in
+    ``skeletons/raw_skeletons/{bodyId}.swc.zst``: the cache stores raw
+    skeletons (``simplification`` percent of nodes removed, 0-90, default
+    0 — simplification is a visualization-time concern), with the level
     recorded in each file header.
 
     FAFB is not supported: bulk skeleton downloads are disabled (the healed
@@ -9014,6 +9033,10 @@ def render_v2_artifacts(dataset: str, project_root: Optional[str] = None,
             return None
         if meta.get("render_space") != render_space:
             return None
+        if int(meta.get("v2_cache_version", -1)) != VECTOR_CACHE_V2_VERSION:
+            # Artifacts fit on a population vectorized at a different cache
+            # basis (e.g. pre-raw-basis simp90 rows) are stale.
+            return None
         bounds = (np.asarray(meta.get("spatial_bounds"), dtype=float)
                   if meta.get("spatial_bounds") is not None else None)
         mean = (np.asarray(meta.get("mean"), dtype=float)
@@ -9137,6 +9160,7 @@ def render_v2_artifacts(dataset: str, project_root: Optional[str] = None,
             meta_out = {
                 "render_space": render_space,
                 "native_space": native_space,
+                "v2_cache_version": VECTOR_CACHE_V2_VERSION,
                 "sample_rows": int(len(X)),
                 "spatial_bounds": bounds.tolist(),
                 "mean": mean.tolist(),
@@ -9340,10 +9364,20 @@ def compute_morph_similarity_vs_queries(
     # render-space artifacts derived from a transformed population sample;
     # identity spaces (native == render, or unknown datasets) use the
     # native cache artifacts directly — exact Find Similar parity.
+    # ensure(fetch_missing=0): a cache whose version predates the current
+    # vector semantics (e.g. the raw-basis flip) is rebuilt from the local
+    # raw skeletons instead of silently degrading this comparison.
     native_cache_data = None
     try:
-        native_cache_data = find_similar_dataset_cache_v2(
-            target_dataset, project_root=root, verbose=False).load()
+        _v2_cache = find_similar_dataset_cache_v2(
+            target_dataset, project_root=root, verbose=False)
+        native_cache_data = _v2_cache.load()
+        if native_cache_data is None:
+            # Stale (old basis) or absent: rebuild from the local raw
+            # skeletons, then load. ensure()'s summary dict is never used
+            # as cache data.
+            _v2_cache.ensure(fetch_missing=0)
+            native_cache_data = _v2_cache.load()
     except Exception:
         native_cache_data = None
 

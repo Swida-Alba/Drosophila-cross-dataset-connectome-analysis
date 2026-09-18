@@ -63,10 +63,12 @@ its name + the pair baseline), `members_summary.csv` (compared member counts per
 type/dataset), `report.html`, `parameters.json`, `README.txt`, per pair
 `<SRC>_to_<TGT>/results/{morph_type_matrix.csv,morph_bodyid_matrix.csv,morph_bodyid_scores.csv,null_baseline.json}`,
 per pair `<SRC>_to_<TGT>/visualization/heatmap_morph_<SRC>_to_<TGT>_{type,bodyid}.html`
-(VisPath interactive, shared report_kit), and `plot-3d_*/` overlay scenes in the
+(VisPath interactive, shared report_kit — open with square cells locked), and `plot-3d_*/` overlay scenes in the
 reference render space. `report.html` uses the same tabbed generator as the
-connectivity-profiling export (shared `comparison.report_kit`): pair tabs →
-Type/BodyId level tabs → Ward-clustered Plotly cards with CSV + VisPath editor
+connectivity-profiling export (shared `comparison.report_kit`): scrollable
+overview table with frame-asymmetry disclosure → pair tabs →
+Type/BodyId level tabs → Ward-clustered Plotly cards (square cells via
+explicit-width sizing for small matrices) with CSV + VisPath editor
 links; Plotly.js is embedded so it renders offline. The bodyId-level matrix
 carries the raw per-neuron scores under tree-legend axis labels
 (`{bodyId}_{instance}` / `{bodyId}_{type}_{L|R}`). vector_v2 renders on the
@@ -93,7 +95,10 @@ Semantics:
   one tree-legend leaf per member). Any scene failure fails soft and
   keeps the comparison.
 - Scores are comparable within a dataset pair (one render frame), not
-  across pairs; the report states each pair's frame.
+  across pairs; the report states each pair's frame. A→B and B→A are
+  **not symmetric** — each direction transforms into a different render
+  space and uses a different whitening basis, so scores and baselines
+  differ. The overview table includes a disclosure note.
 
 ## Morph qualification (Find Homolog)
 

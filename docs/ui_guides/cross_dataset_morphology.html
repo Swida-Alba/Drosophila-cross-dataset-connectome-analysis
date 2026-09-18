@@ -63,7 +63,10 @@
       so the report renders it on a diverging blue–white–red scale.</li>
     <li>Scores are comparable <i>within</i> a dataset pair (one frame), not
       across pairs — the report states each pair's frame (frame
-      disclosure).</li>
+      disclosure). In particular, A&rarr;B and B&rarr;A are <b>not
+      symmetric</b>: each direction transforms into a different render
+      space and uses a different whitening basis, so the numeric scores
+      and baselines differ. The overview table discloses this.</li>
     <li>Per type and dataset, at most <b>Max Members per Type</b> neurons
       (default 25) enter the scoring; the 3D scenes render at most
       <b>Scene Members per Type</b> (default 3) per dataset for

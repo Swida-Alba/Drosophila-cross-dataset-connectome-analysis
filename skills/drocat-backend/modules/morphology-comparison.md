@@ -75,7 +75,7 @@ NeuPrint datasets missing a token).
   profiling and cross-dataset morphology reports (hero header,
   Type/BodyId level tabs, Ward-clustered cards with CSV + VisPath editor
   links, compared-neuron/parameter details, scene link; Plotly embedded
-  so it renders offline). Scale per method: vector_v2 diverging [-1, 1]
+  so it renders offline; heatmaps open/render with square cells). Scale per method: vector_v2 diverging [-1, 1]
   (whitened cosine can be negative), NBLAST positive [0, 1].
   Completion log line: `[MorphologyProfileComparer] Output: <run folder>`
   (parsed by the UI runner).

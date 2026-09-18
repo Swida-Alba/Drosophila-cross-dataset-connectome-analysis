@@ -40,12 +40,21 @@ Detects whether local FAFB files or standalone BANC release files exist and whet
 available. FAFB needs converted local files; BANC uses its public release bucket and local prepared tables; a missing local file and
 a missing token are different failures.
 
-## Cache locations (no manager module)
+## Cache locations + storage utility (`src/storage_inventory.py`)
 
-There is no cache-manager helper to import; caches are plain paths under the
-project root. `cache/` holds downloaded data and is safe to clear (the app
-refetches); `neuron_indexes/` is a persistent "system files" directory never
-cleared by `cache/`-cleanup.
+`cache/` holds downloaded data and is safe to clear (the app refetches);
+`neuron_indexes/` is a persistent "system files" directory never cleared by
+`cache/`-cleanup. Programmatic scan/deletion goes through
+`src/storage_inventory.py` (`scan_caches`, `scan_run_folders`,
+`delete_paths`) — the same engine behind the Settings → Storage card.
+`delete_paths` refuses protected paths (`cache/user_mappings/` LabelMapper
+presets, availability/coverage snapshots, per-dataset
+`available_rois.json`, the storage audit) and anything it cannot
+classify; the incoming-connections class always removes
+`incoming_connections.parquet` together with its
+`incoming_complete.json` completion state. Run folders are identified by
+a tool prefix plus the embedded `_YYYYMMDD_HHMMSS` timestamp
+(`utils.naming_utils.is_run_folder_name`).
 
 ## roi_screening (`src/roi_screening.py`)
 

@@ -445,6 +445,11 @@ class TestCrossDatasetMorphComparer:
             null_k=25, visualize=False, project_root=str(tmp_path))
         result = comparer.run()
 
+        # mixed FAFB/Neuprint comparison: the FAFB annotation warning must
+        # surface (annotation inverted vs other datasets; nothing flipped).
+        assert any("FAFB L/R annotation is opposite" in w
+                   for w in result["warnings"])
+
         run_path = Path(result["output_folder"])
         assert run_path == tmp_path / "run1"
         names = {Path(f["path"]).name for f in result["files"]}
@@ -514,7 +519,12 @@ class TestCrossDatasetMorphComparer:
         assert "Open VisPath heatmap for editing" in report
         # Offline-capable: Plotly.js embedded inline, no CDN <script> tag.
         assert '<script src="https://cdn.plot.ly' not in report
-        assert "'scaleanchor':'x'" in report or '"scaleanchor":"x"' in report
+        # Square-cell strategy depends on matrix size: small matrices use
+        # the explicit-width wrapper (no scaleanchor), large matrices keep
+        # the scaleanchor path. Either marker proves square_cells is active.
+        assert ("'scaleanchor':'x'" in report
+                or '"scaleanchor":"x"' in report
+                or 'heatmap-square-fit' in report)
 
     def test_heatmaps_disabled_skips_visualization(self, monkeypatch,
                                                    tmp_path, fafb_mcns):

@@ -127,9 +127,18 @@ weighted_cosine_similarity` on the shared local connection cache).
 Caching: `SkeletonVectorCacheV2` shares the raw skeleton store with V1 but
 keeps separate files (`find_similar/morphology/skeleton__vectors_v2.parquet`,
 `meta_v2.json`, `whiten_v2.npy`), so V1 results are byte-for-byte unaffected.
-V2 vectors use the **simp90 basis**: locally stored skeletons are re-leveled to
-the canonical 90% level before vectorization, so the whole local population is
-usable offline. The V1 counterpart cache stays warm during online fetches.
+V2 vectors use the **raw basis** (plan-raw-basis-vectorization.md): the
+skeleton cache stores raw (level-0) skeletons — fetch pipelines default
+`simplification=0` — and the V2 builder vectorizes raw trees only
+(simplified files are skipped; their bodies are re-fetched raw on demand).
+Simplification is applied at visualization/render time only. The V1
+counterpart cache stays warm during online fetches. Legacy simp90 files
+(quarantine: `scripts/maintenance/purge_legacy_simp90_cache.py`) are never
+mixed into the cache basis; a basis/schema change bumps
+`VECTOR_CACHE_V2_VERSION`, which invalidates and rebuilds the cache on the
+next run.
+Standalone heatmaps open with square cells locked (all exported similarity
+heatmaps use square cells, matching the report cards).
 Block weights and basis are recorded in the run README. The legacy V1
 vector path is retired: both methods read the V2 skeleton-vector cache,
 online fetches no longer warm a V1 counterpart, and NBLAST dotprops are
