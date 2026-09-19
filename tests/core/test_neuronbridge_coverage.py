@@ -11,6 +11,7 @@ import json
 import sys
 import threading
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import polars as pl
@@ -27,6 +28,20 @@ import src.neuronbridge_coverage as nbc  # noqa: E402
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+FROZEN_NOW = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pin the module clock so TTL assertions cannot depend on the date."""
+    monkeypatch.setattr(nbc, "_utc_now", lambda: FROZEN_NOW)
+    return FROZEN_NOW
+
+
+def _stamp(now: datetime, days_ago: float) -> str:
+    return (now - timedelta(days=days_ago)).isoformat(timespec="seconds")
+
 
 class _Record:
     """Minimal stand-in for a by_body EMImage record."""
@@ -196,13 +211,15 @@ def _down_client():
 
 
 class TestRefresh:
-    def test_offline_never_invalidates_persisted_snapshot(self, fresh_root):
+    def test_offline_never_invalidates_persisted_snapshot(
+            self, fresh_root, frozen_clock):
+        checked = _stamp(frozen_clock, days_ago=1)
         _write_snapshot(fresh_root, {
             "nb_version": "v3_10_0",
-            "created_at": "2026-09-15T00:00:00+00:00",
+            "created_at": checked,
             "datasets": {
                 "hemibrain:v1.2.1": {"status": "exact",
-                                     "checked_at": "2026-09-15T00:00:00+00:00"},
+                                     "checked_at": checked},
             },
         })
         snapshot = nbc.refresh(
@@ -215,15 +232,18 @@ class TestRefresh:
         assert snapshot.coverage_of("hemibrain:v1.2.1").status == "exact"
         assert "banc_v626" not in snapshot.datasets
 
-    def test_fresh_snapshot_reuses_verdicts_without_probing(self, fresh_root):
+    def test_fresh_snapshot_reuses_verdicts_without_probing(
+            self, fresh_root, frozen_clock):
+        checked = _stamp(
+            frozen_clock, days_ago=nbc.DEFAULT_TTL_DAYS - 1)
         _write_snapshot(fresh_root, {
             "nb_version": "v3_10_0",
-            "created_at": "2026-09-15T00:00:00+00:00",
+            "created_at": checked,
             "datasets": {
                 "male-cns:v1.0": {
                     "status": "aligned",
                     "hosted_version": "male-cns:v0.9",
-                    "checked_at": "2026-09-15T00:00:00+00:00",
+                    "checked_at": checked,
                 },
             },
         })
@@ -235,14 +255,16 @@ class TestRefresh:
         assert snapshot.coverage_of("male-cns:v1.0").status == "aligned"
         assert client.calls == []
 
-    def test_version_change_invalidates_and_reprobes(self, fresh_root):
+    def test_version_change_invalidates_and_reprobes(
+            self, fresh_root, frozen_clock):
+        checked = _stamp(frozen_clock, days_ago=1)
         _write_snapshot(fresh_root, {
             "nb_version": "v3_9_0",
-            "created_at": "2026-09-15T00:00:00+00:00",
+            "created_at": checked,
             "datasets": {
                 "manc:v1.2.3": {
                     "status": "unavailable",
-                    "checked_at": "2026-09-15T00:00:00+00:00",
+                    "checked_at": checked,
                 },
             },
         })
@@ -259,14 +281,15 @@ class TestRefresh:
         persisted = nbc.load_snapshot(fresh_root)
         assert persisted.coverage_of("manc:v1.2.3").status == "aligned"
 
-    def test_ttl_expiry_reprobes_stale_verdicts(self, fresh_root):
+    def test_ttl_expiry_reprobes_stale_verdicts(self, fresh_root, frozen_clock):
+        checked = _stamp(frozen_clock, days_ago=nbc.DEFAULT_TTL_DAYS + 1)
         _write_snapshot(fresh_root, {
             "nb_version": "v3_10_0",
-            "created_at": "2026-01-01T00:00:00+00:00",
+            "created_at": checked,
             "datasets": {
                 "manc:v1.2.3": {
                     "status": "unavailable",
-                    "checked_at": "2026-01-01T00:00:00+00:00",
+                    "checked_at": checked,
                 },
             },
         })
@@ -277,6 +300,26 @@ class TestRefresh:
             cache_root=fresh_root, nb_version="v3_10_0",
         )
         assert snapshot.coverage_of("manc:v1.2.3").status == "aligned"
+
+    def test_probe_stamps_use_the_module_clock(
+            self, fresh_root, frozen_clock, monkeypatch):
+        monkeypatch.setattr(nbc, "sample_body_ids", lambda ds, **kw: ["1"])
+        client = StubClient(lambda url: _records_response(
+            _Record("FlyEM_Male_CNS_Brain_v0.9", "male-cns:v0.9:1")))
+        snapshot = nbc.refresh(
+            ["male-cns:v1.0"], client=client,
+            cache_root=fresh_root, nb_version="v3_10_0",
+        )
+        assert snapshot.created_at == frozen_clock.isoformat(
+            timespec="seconds")
+        assert snapshot.coverage_of("male-cns:v1.0").checked_at \
+            == snapshot.created_at
+
+    def test_age_days_honours_the_passed_now(self, frozen_clock):
+        stamp = _stamp(frozen_clock, days_ago=3)
+        assert nbc._age_days(stamp, now=frozen_clock) == pytest.approx(3.0)
+        assert nbc._age_days(None) == float("inf")
+        assert nbc._age_days("not a timestamp") == float("inf")
 
 
 # ---------------------------------------------------------------------------

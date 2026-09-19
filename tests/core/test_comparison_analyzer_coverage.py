@@ -755,6 +755,89 @@ def test_metadata_paths(analyzer):
     assert analyzer._load_cached_metadata("nonexistent_ds:v0") is None
 
 
+def test_error_metadata_is_never_persisted(tmp_path, monkeypatch):
+    """F9: a failed collection leaves no sidecar where installed data lives.
+
+    The error payload is in-memory only; nothing is written under
+    ``datasets/`` -- not even the folder -- so no later listing or count path
+    can read it as a half-installed release.
+    """
+    a = ComparisonAnalyzer(_params(), verbose=False)
+    monkeypatch.setattr(a, "_get_datasets_folder", lambda: str(tmp_path))
+    safe = a.parameters._sanitize_name(DS1)
+
+    a._save_metadata(DS1, a._create_empty_metadata(DS1, "no token"))
+
+    assert not (tmp_path / safe).exists()
+    assert list(tmp_path.glob("*/*_metadata.json")) == []
+    assert a._load_cached_metadata(DS1) is None
+
+    # A real payload is still cached as before.
+    a._save_metadata(DS1, _meta(DS1))
+    assert json.loads(
+        (tmp_path / safe / f"{safe}_metadata.json").read_text()
+    )["source"] == "stub"
+
+
+def test_transient_failure_retries_instead_of_replaying_error(
+        tmp_path, monkeypatch, analyzer):
+    """F9: with force_refresh=False the next run retries a failed fetch."""
+    monkeypatch.setattr(analyzer, "_get_datasets_folder", lambda: str(tmp_path))
+    calls = []
+
+    def failing_fetch(ds):
+        calls.append(ds)
+        return analyzer._create_empty_metadata(ds, "no token")
+
+    monkeypatch.setattr(analyzer, "_fetch_neuprint_metadata", failing_fetch)
+
+    md = analyzer.collect_dataset_metadata()
+    assert len(calls) == 2
+    assert md[DS1]["source"] == "error"  # still usable for THIS run's reporting
+    table = analyzer.generate_metadata_comparison_table()
+    assert set(table["dataset"]) == {DS1, DS2}
+    assert table.iloc[0]["total_neurons"] == 0
+
+    # Nothing landed on disk -> a second collection re-fetches instead of
+    # replaying the cached error.
+    analyzer.collect_dataset_metadata()
+    assert len(calls) == 4
+
+    # Once the failure clears, the real payload is cached.
+    monkeypatch.setattr(analyzer, "_fetch_neuprint_metadata", _meta)
+    md3 = analyzer.collect_dataset_metadata()
+    assert len(calls) == 4
+    assert md3[DS1]["source"] == "stub"
+    safe = analyzer.parameters._sanitize_name(DS1)
+    assert json.loads(
+        (tmp_path / safe / f"{safe}_metadata.json").read_text()
+    )["neuron_counts"]["total"] == 100
+
+
+def test_legacy_error_sidecar_is_not_reused(tmp_path, monkeypatch):
+    """Error sidecars written by older builds must not be served as data."""
+    a = ComparisonAnalyzer(_params(), verbose=False)
+    monkeypatch.setattr(a, "_get_datasets_folder", lambda: str(tmp_path))
+    safe = a.parameters._sanitize_name(DS1)
+    d = tmp_path / safe
+    d.mkdir()
+    meta_file = d / f"{safe}_metadata.json"
+    meta_file.write_text(json.dumps(
+        a._create_empty_metadata(DS1, "No local data found")), encoding="utf-8")
+
+    fetched = []
+    monkeypatch.setattr(a, "_fetch_neuprint_metadata",
+                        lambda ds: fetched.append(ds) or _meta(ds))
+
+    md = a.collect_dataset_metadata()
+    assert fetched == [DS1, DS2]
+    assert md[DS1]["source"] == "stub"
+    # The successful fetch overwrote the stale placeholder with real data.
+    on_disk = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert "error" not in on_disk
+    assert on_disk["neuron_counts"]["total"] == 100
+
+
 # ---------------------------------------------------------------------------
 # Comparison pipeline
 # ---------------------------------------------------------------------------

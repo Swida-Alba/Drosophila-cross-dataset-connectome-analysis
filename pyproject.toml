@@ -182,6 +182,8 @@ python_functions = "test_*"
 pythonpath = ["src"]
 markers = [
     "e2e: live-network end-to-end tests (real servers; run explicitly)",
+    "requires_data: needs real dataset tables (local datasets/ files or a pullable NeuPrint token); skips when neither is available",
+    "requires_token: needs a configured NeuPrint token (config.json, config_local.json, or the NEUPRINT_APPLICATION_CREDENTIALS/NEUPRINT_TOKEN env var); skips when absent",
 ]
 
 [tool.coverage.run]
