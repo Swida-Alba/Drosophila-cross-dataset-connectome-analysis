@@ -1118,6 +1118,10 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 output_dir=str(viz_dir),
                 saveas=f'branches_{src_type}',
                 verbose=False,
+                # a batch run renders up to max_scenes pages; opening each
+                # one in the browser is noise — the report's Scenes tab
+                # links them
+                show_fig=False,
             )
             viz._drocat_expand_roots = True   # Plan I §4: roots start expanded
             viz._drocat_legend_type_overrides = dict(type_overrides)
