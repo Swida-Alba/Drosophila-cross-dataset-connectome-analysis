@@ -12,10 +12,12 @@ every file-presence check, so cache-only runs must verify:
   ``cache_manifest.json`` baseline written at consolidation / first online
   run — the only detector for loss outside the flagged-neuron subset.
 
-Runs without any problem pass; on a problem the run is refused unless
-``allow_incomplete_cache`` opted in (warnings + INCOMPLETE_CACHE.txt
-stamping).  Mirrors the report's §2.3 experiment: pristine cache -> 0
-mismatches; truncated cache -> mismatches.
+Runs without any problem pass; on a problem the run is refused -- there is
+no opt-in to run against an incomplete cache (2026-09-18 retest).  The
+offline remedy for a manifest-less but self-consistent cache is the
+explicit ``record_cache_baseline()`` certification, also covered here.
+Mirrors the report's §2.3 experiment: pristine cache -> 0 mismatches;
+truncated cache -> mismatches.
 """
 
 import json
@@ -101,12 +103,11 @@ def _write_cache(tmp_path, connection_rows, index_rows, with_dataset=True):
     return dataset, dataset_safe
 
 
-def _make_fc(tmp_path, dataset, allow_incomplete_cache=False, notes=None):
+def _make_fc(tmp_path, dataset, notes=None):
     fc = object.__new__(coana.FindNeuronConnection)
     fc.script_path = str(tmp_path)
     fc.dataset = dataset
     fc._dataset_safe = coana.dataset_folder(dataset)
-    fc.allow_incomplete_cache = allow_incomplete_cache
     fc.use_cache = True
     fc._vprint = (lambda message, level='full', **k: notes.append(message)) \
         if notes is not None else (lambda *a, **k: None)
@@ -242,7 +243,8 @@ def test_enforce_refuses_on_manifest_loss(tmp_path):
         fc._enforce_cache_coverage('user_requested')
 
 
-def test_enforce_error_names_remediation(tmp_path):
+def test_server_failure_message_does_not_prescribe_the_failed_call(tmp_path):
+    """The 2026-09-18 F5 deadlock: the remedy must be reachable offline."""
     dataset, _ = _write_cache(
         tmp_path,
         connection_rows=[(100, 200 + i, 10) for i in range(12)],
@@ -252,24 +254,25 @@ def test_enforce_error_names_remediation(tmp_path):
     with pytest.raises(RuntimeError) as excinfo:
         fc._enforce_cache_coverage('server_unavailable')
     message = str(excinfo.value)
-    assert 'allow_incomplete_cache=True' in message
-    # The UI remedy is spelled out because the opt-in flag is library-only
-    # (re-test finding F4).
-    assert 'Cache Only' in message
+    assert 'allow_incomplete_cache' not in message
+    assert 'Restore' in message and 'backup' in message
 
 
-def test_enforce_allows_opted_in_partial_run(tmp_path):
+def test_missing_manifest_message_names_certification(tmp_path):
     dataset, _ = _write_cache(
         tmp_path,
-        connection_rows=[(100, 200 + i, 10) for i in range(12)],
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
         index_rows=[(100, True, 189)],
     )
-    notes = []
-    fc = _make_fc(tmp_path, dataset, allow_incomplete_cache=True, notes=notes)
-    fc._enforce_cache_coverage('user_requested')  # must not raise
-    assert any('allow_incomplete_cache=True' in n for n in notes)
-    # The summary is stored for the INCOMPLETE_CACHE.txt stamp.
-    assert 'flagged complete' in fc._cache_incomplete_summary
+    fc = _make_fc(tmp_path, dataset)
+    with pytest.raises(RuntimeError) as excinfo:
+        fc._enforce_cache_coverage('server_unavailable')
+    message = str(excinfo.value)
+    assert 'cannot be verified' in message
+    assert 'record_cache_baseline' in message
+    assert 'Certify local cache' in message
+    # Unverifiable is not the same as known-partial.
+    assert 'is incomplete' not in message
 
 
 def test_ensure_cache_manifest_writes_baseline_once(tmp_path):
@@ -291,45 +294,120 @@ def test_ensure_cache_manifest_writes_baseline_once(tmp_path):
     assert fc._load_cache_manifest()['built_at'] == built_at
 
 
-def test_incomplete_marker_carries_coverage_numbers(tmp_path):
-    """A stamped partial run documents HOW incomplete it was (F4)."""
-    dataset, _ = _write_cache(
-        tmp_path,
-        connection_rows=[(100, 200 + i, 10) for i in range(12)],
-        index_rows=[(100, True, 189)],
-    )
-    fc = _make_fc(tmp_path, dataset, allow_incomplete_cache=True)
-    fc.cache_only = True
-    fc._warn_notes = []
-    fc._enforce_cache_coverage('user_requested')
-    fc._handle_cache_only_miss([512925, 72227], has_cached=False)
+def test_cache_only_run_refuses_neurons_absent_from_cache(tmp_path):
+    """Mid-run discovery of uncached neurons refuses; no opt-in remains."""
+    fc = _make_fc(tmp_path, 'test:v1.0')
+    with pytest.raises(RuntimeError, match='not in the local cache') as e:
+        fc._handle_cache_only_miss([512925, 72227])
+    assert 'allow_incomplete_cache' not in str(e.value)
+
+
+def test_cache_only_miss_refusal_leaves_no_run_folder(tmp_path):
+    """Re-test finding F1 survives the policy change."""
     run_dir = tmp_path / 'run'
     run_dir.mkdir()
-    fc._write_user_warning_notes(str(run_dir))
-    marker = (run_dir / 'INCOMPLETE_CACHE.txt').read_text(encoding='utf-8')
-    assert 'Coverage:' in marker
-    assert 'flagged complete' in marker
-    assert '2 neuron(s) absent' in marker
-
-
-def test_handle_cache_only_miss_refuses_without_opt_in():
-    fc = _make_fc(tmp_path_factory(), 'test:v1.0')
-    with pytest.raises(RuntimeError, match='not in the local cache'):
-        fc._handle_cache_only_miss([512925, 72227], has_cached=False)
-
-
-def test_handle_cache_only_miss_warns_with_opt_in():
-    notes = []
-    fc = _make_fc(tmp_path_factory(), 'test:v1.0',
-                  allow_incomplete_cache=True, notes=notes)
-    fc._handle_cache_only_miss([512925], has_cached=False)
-    assert any('not in cache' in n for n in notes)
-    assert any('No cached connections' in n for n in notes)
+    fc = _make_fc(tmp_path, 'test:v1.0')
+    fc._run_created_folders = [str(run_dir)]
+    with pytest.raises(RuntimeError):
+        fc._handle_cache_only_miss([512925])
+    assert not run_dir.exists()
 
 
 def tmp_path_factory():
     import tempfile
     return tempfile.mkdtemp()
+
+
+# ---------------------------------------------------------------------------
+# Offline certification (2026-09-18 retest, F5)
+# ---------------------------------------------------------------------------
+
+def test_record_cache_baseline_certifies_and_unlocks(tmp_path):
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    fc = _make_fc(tmp_path, dataset)
+    manifest = fc.record_cache_baseline()
+    assert manifest['source'] == 'user_certified'
+    assert manifest['dataset'] == dataset
+    assert manifest['distinct_connections'] == 189
+    # The same cache-only run that refused now passes.
+    fc._enforce_cache_coverage('user_requested')
+
+
+def test_record_cache_baseline_refuses_a_truncated_cache(tmp_path):
+    """Certification is not self-certification: the per-neuron check has to
+    pass first, so the F2 hole stays shut."""
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 10) for i in range(12)],
+        index_rows=[(100, True, 189)],
+    )
+    fc = _make_fc(tmp_path, dataset)
+    with pytest.raises(RuntimeError, match='Refusing to certify'):
+        fc.record_cache_baseline()
+    assert fc._load_cache_manifest() is None
+
+
+def test_record_cache_baseline_refuses_to_overwrite(tmp_path):
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    fc = _make_fc(tmp_path, dataset)
+    fc.record_cache_baseline()
+    with pytest.raises(RuntimeError, match='already has a cache integrity'):
+        fc.record_cache_baseline()
+    fc.record_cache_baseline(force=True)   # an explicit re-baseline is allowed
+
+
+def test_record_cache_baseline_needs_something_to_check(tmp_path):
+    fc = _make_fc(tmp_path, 'test:v1.0')
+    with pytest.raises(RuntimeError, match='Nothing to certify'):
+        fc.record_cache_baseline()
+
+
+def test_record_cache_baseline_needs_a_comparable_index(tmp_path):
+    """An index that flags no neuron proves nothing about the cache."""
+    dataset, _ = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(10)],
+        index_rows=[(100, False, 999)],
+    )
+    fc = _make_fc(tmp_path, dataset)
+    with pytest.raises(RuntimeError, match='flags no neuron'):
+        fc.record_cache_baseline()
+
+
+def test_manifest_for_another_dataset_is_ignored(tmp_path):
+    dataset, dataset_safe = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    (tmp_path / 'cache' / dataset_safe / 'cache_manifest.json').write_text(
+        json.dumps({'schema': 1, 'dataset': 'other:v9.9',
+                    'distinct_connections': 189}))
+    fc = _make_fc(tmp_path, dataset)
+    assert fc._load_cache_manifest() is None
+    with pytest.raises(RuntimeError, match='no integrity manifest'):
+        fc._enforce_cache_coverage('user_requested')
+
+
+def test_manifest_with_unsupported_schema_is_ignored(tmp_path):
+    dataset, dataset_safe = _write_cache(
+        tmp_path,
+        connection_rows=[(100, 200 + i, 5) for i in range(189)],
+        index_rows=[(100, True, 189)],
+    )
+    (tmp_path / 'cache' / dataset_safe / 'cache_manifest.json').write_text(
+        json.dumps({'schema': 99, 'dataset': dataset,
+                    'distinct_connections': 189}))
+    fc = _make_fc(tmp_path, dataset)
+    assert fc._load_cache_manifest() is None
 
 
 # ---------------------------------------------------------------------------

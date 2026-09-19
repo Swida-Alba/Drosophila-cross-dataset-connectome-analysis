@@ -308,18 +308,19 @@ _FNC_CACHE = {}
 # ============================================================================
 # Module-level tracking for datasets operating in cache-only mode
 # Used to avoid repeated "fallback" warnings when the same dataset is used multiple times
-# Structure: {dataset: {'cache_only': bool, 'reason': str, 'warned': bool,
-#             'allow_incomplete': bool}}
+# Structure: {dataset: {'cache_only': bool, 'reason': str, 'warned': bool}}
 # ============================================================================
 _CACHE_ONLY_DATASETS = {}
 
 # Integrity manifest for the connection cache (re-test finding F2,
-# 2026-09-16): written at consolidation and at the first online baseline.
-# Cache-only runs refuse when the on-disk distinct connection count falls
-# materially below the manifest — the only whole-cache loss detector, since
-# the per-neuron index comparison covers the downstream_complete-flagged
-# subset of the index only.
+# 2026-09-16): written at consolidation, at the first online baseline, and
+# by an explicit offline certification (2026-09-18 retest, F5).  Cache-only
+# runs refuse when the on-disk distinct connection count falls materially
+# below the manifest — the only whole-cache loss detector, since the
+# per-neuron index comparison covers the downstream_complete-flagged subset
+# of the index only.
 CACHE_MANIFEST_FILENAME = 'cache_manifest.json'
+CACHE_MANIFEST_SCHEMA = 1
 CACHE_MANIFEST_LOSS_TOLERANCE = 0.99
 
 # Memoized cache-coverage integrity results, keyed by dataset folder:
@@ -2725,7 +2726,9 @@ class FindNeuronConnection:
                 print("   fnc = FindNeuronConnection(..., force_API_fetching=True)")
                 print("\n   ⚠️  WARNING: CAVE API is slow for large queries.")
                 print("   Downloading local data is strongly recommended.\n")
-            sys.exit(1)
+            raise RuntimeError(
+                f"{self.dataset} local data is not available and could not "
+                "be prepared; follow the download instructions above.")
 
     def _normalize_client_type(self):
         """Normalize ``client_type`` from the dataset (init-time).
@@ -2790,12 +2793,14 @@ class FindNeuronConnection:
                     from utils.flywire_readiness import \
                         print_download_instructions
                 print_download_instructions(self.dataset, dataset_dir)
-                sys.exit(1)
+                raise RuntimeError(
+                    f"BANC tables for {self.dataset} are not available "
+                    "locally; follow the download instructions above.")
             if not BANC_file_converter.build_connection_cache_from_tables(
                     dataset_dir, cache_dir):
-                print(f'  ⚠️ BANC connection cache could not be derived '
-                      f'from the restored tables in {dataset_dir}')
-                sys.exit(1)
+                raise RuntimeError(
+                    'BANC connection cache could not be derived from the '
+                    f'restored tables in {dataset_dir}')
 
     def _prepare_banc_data(self):
         """Prepare BANC's standalone local source (public bucket, no auth).
@@ -2834,7 +2839,9 @@ class FindNeuronConnection:
             except ImportError:
                 from utils.flywire_readiness import print_download_instructions
             print_download_instructions(self.dataset, dataset_dir)
-            sys.exit(1)
+            raise RuntimeError(
+                f"BANC tables for {self.dataset} are not available locally; "
+                "follow the download instructions above.")
         BANC_file_converter.build_connection_cache_from_tables(
             dataset_dir, cache_dir)
 
@@ -3353,20 +3360,6 @@ class FindNeuronConnection:
     AND cache appears sufficient.\n
     '''
 
-    allow_incomplete_cache: bool = False
-    '''
-    Explicit opt-in to partial results from an incomplete local cache.\n
-    When False (default), cache-only runs verify cache coverage before and
-    during the run (recorded per-neuron connection counts vs actually cached
-    rows; presence of every neuron discovery visits) and refuse with an
-    actionable error when the cache is missing data, so a partial analysis is
-    never silently presented as complete.\n
-    When True, an incomplete cache only produces warnings and the run's
-    output folders are stamped with an INCOMPLETE_CACHE.txt marker.\n
-    Only meaningful together with cache_only=True (or the automatic
-    cache-only fallback when the server is unavailable).\n
-    '''
-
     cache_folder: str = ''
     '''folder to store cached data, automatically set based on dataset'''
     
@@ -3586,7 +3579,7 @@ class FindNeuronConnection:
                     if self.dataset not in _CACHE_ONLY_DATASETS or not _CACHE_ONLY_DATASETS[self.dataset].get('warned', False):
                         self._vprint(f"🔌 Cache-only mode: Using local cache for {self.dataset}", level='always')
                         self._vprint(f"   📊 Cache contains {cache_status['neuron_count']:,} neurons, {cache_status['connection_count']:,} connections", level='always')
-                        _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'user_requested', 'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
+                        _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'user_requested', 'warned': True}
                     # Don't connect to server - will use cache only
                 else:
                     raise RuntimeError(
@@ -3657,7 +3650,7 @@ class FindNeuronConnection:
                             self._vprint(f"   📊 Cache contains {cache_status['neuron_count']:,} neurons, {cache_status['connection_count']:,} connections", level='always')
                             # Enable cache-only mode automatically and track it
                             self.cache_only = True
-                            _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'server_unavailable', 'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
+                            _CACHE_ONLY_DATASETS[self.dataset] = {'cache_only': True, 'reason': 'server_unavailable', 'warned': True}
                         else:
                             # No usable cache - must raise the original error
                             raise RuntimeError(
@@ -3800,7 +3793,7 @@ class FindNeuronConnection:
                 self.cache_only = True
                 _CACHE_ONLY_DATASETS[self.dataset] = {
                     'cache_only': True, 'reason': 'server_unavailable',
-                    'warned': True, 'allow_incomplete': self.allow_incomplete_cache}
+                    'warned': True}
             else:
                 raise
     
@@ -3831,14 +3824,11 @@ class FindNeuronConnection:
         # Create datasets folder if it doesn't exist
         datasets_folder = os.path.join(self.script_path, 'datasets')
         if not os.path.exists(datasets_folder):
-            os.makedirs(datasets_folder)
+            os.makedirs(datasets_folder, exist_ok=True)
             self._vprint(f'Created datasets folder: {datasets_folder}', level='full')
         
         dataset_safe = canonical_dataset_name(self.dataset).replace(':', '_').replace('.', '_')
         dataset_dir = os.path.join(datasets_folder, dataset_safe)
-        if not os.path.exists(dataset_dir):
-            os.makedirs(dataset_dir)
-            self._vprint(f'Created dataset folder: {dataset_dir}', level='full')
 
         dataset_path = os.path.join(
             dataset_dir, 
@@ -3992,6 +3982,20 @@ class FindNeuronConnection:
             distinct = manifest.get('distinct_connections')
             if not isinstance(distinct, (int, float)) or distinct <= 0:
                 return None
+            # A manifest is only evidence about the cache it describes: one
+            # copied from another dataset, hand-written, or from an older
+            # schema must not unlock the gate (F2/F5).
+            if int(manifest.get('schema') or 0) != CACHE_MANIFEST_SCHEMA:
+                self._vprint(
+                    f'  Warning: cache manifest has an unsupported schema '
+                    f'({manifest.get("schema")}); ignoring it.', level='full')
+                return None
+            if manifest.get('dataset') != self.dataset:
+                self._vprint(
+                    f'  Warning: cache manifest describes '
+                    f'{manifest.get("dataset")!r}, not {self.dataset!r}; '
+                    f'ignoring it.', level='full')
+                return None
             return manifest
         except Exception as e:
             self._vprint(f'  Warning: unreadable cache manifest ({e}); ignoring it.', level='full')
@@ -4049,7 +4053,7 @@ class FindNeuronConnection:
         '''(Re)write cache_manifest.json from the current on-disk cache.'''
         integrity = self._compute_cache_integrity()
         manifest = {
-            'schema': 1,
+            'schema': CACHE_MANIFEST_SCHEMA,
             'dataset': self.dataset,
             'distinct_connections': integrity['distinct_connections'],
             'built_at': datetime.now().isoformat(timespec='seconds'),
@@ -4057,8 +4061,19 @@ class FindNeuronConnection:
         }
         path = self._cache_manifest_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2)
+        # Temp + rename like every other sidecar: a crash mid-write must not
+        # leave the only certification record unreadable.
+        temporary = f'{path}.tmp-{os.getpid()}-{threading.get_ident()}'
+        try:
+            with open(temporary, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
         return manifest
 
     def _ensure_cache_manifest(self):
@@ -4076,6 +4091,54 @@ class FindNeuronConnection:
             f"  🔖 Recorded cache integrity manifest "
             f"({manifest['distinct_connections']:,} distinct connections).",
             level='full')
+
+    def record_cache_baseline(self, force=False):
+        '''Certify a local cache that arrived from somewhere else.
+
+        A cache restored from a backup or a colleague has no manifest, and
+        every automatic writer of one needs a live NeuPrint connection, so
+        without this action an offline machine cannot use a complete cache
+        at all (2026-09-18 retest, F5).  This is not a cache-only run
+        baselining itself: the per-neuron check must pass first, so a
+        truncated cache still cannot certify itself (finding F2), and the
+        manifest records that a person authorized the number.
+
+        Returns the written manifest.  Raises RuntimeError when the cache
+        cannot be checked or already carries a manifest (unless *force*).
+        '''
+        coverage = self._check_cache_coverage()
+        if coverage is None:
+            raise RuntimeError(
+                f"Nothing to certify for dataset '{self.dataset}': the "
+                f"connection cache or its neuron index is missing, so cache "
+                f"completeness cannot be checked at all.")
+        if os.path.exists(self._cache_manifest_path()) and not force:
+            raise RuntimeError(
+                f"Dataset '{self.dataset}' already has a cache integrity "
+                f"manifest; pass force=True to re-record it.")
+        mismatches = coverage['mismatches']
+        if mismatches:
+            sample = ', '.join(
+                f'bodyId {bid}: {recorded} recorded / {cached} cached'
+                for bid, recorded, cached in mismatches[:3])
+            raise RuntimeError(
+                f"Refusing to certify the local cache for dataset "
+                f"'{self.dataset}': {len(mismatches):,} of "
+                f"{coverage['complete_flagged']:,} neurons flagged complete "
+                f"in the neuron index hold fewer cached connections than "
+                f"recorded ({sample}). Restore the cache or refetch it "
+                f"online instead.")
+        if not coverage['complete_flagged']:
+            raise RuntimeError(
+                f"Refusing to certify the local cache for dataset "
+                f"'{self.dataset}': the neuron index flags no neuron as "
+                f"complete, so the cache cannot be checked against it.")
+        manifest = self._write_cache_manifest(source='user_certified')
+        self._vprint(
+            f"  🔖 Certified local cache integrity "
+            f"({manifest['distinct_connections']:,} distinct connections).",
+            level='always')
+        return manifest
 
     def _check_cache_coverage(self):
         '''Integrity-check the local cache against its index and manifest.
@@ -4137,9 +4200,8 @@ class FindNeuronConnection:
         - no manifest: a legacy cache cannot be verified at all;
         - per-neuron shortfall: complete-flagged neurons with fewer cached
           rows than recorded.
-        ``allow_incomplete_cache`` opts in: problems become warnings, the
-        run proceeds, and outputs are stamped (INCOMPLETE_CACHE.txt /
-        warning notes).
+        Every problem is a refusal: an incomplete cache is never run
+        against (2026-09-18 retest), so the message carries the whole remedy.
         '''
         coverage = self._check_cache_coverage()
         if coverage is None:
@@ -4171,62 +4233,57 @@ class FindNeuronConnection:
         if not problems:
             return
         detail = ' '.join(problems)
-        # Honor a decision already made for this dataset in this process
-        # (an earlier instance with the opt-in), like already_cache_only.
-        allowed = bool(getattr(self, 'allow_incomplete_cache', False)) or (
-            self.dataset in _CACHE_ONLY_DATASETS
-            and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False))
-        if allowed:
-            self._cache_incomplete_summary = detail
-            self._vprint(f'⚠️  Incomplete cache: {detail}', level='always')
-            self._vprint(
-                '   Continuing with allow_incomplete_cache=True — '
-                'results will be partial and outputs are stamped '
-                'INCOMPLETE_CACHE.txt.', level='always')
-            return
         self._cleanup_refused_run_folders()
-        prefix = (
-            'Cache-only mode requested but the local connection cache is incomplete'
-            if context == 'user_requested' else
-            'Server connection failed and the local connection cache is incomplete')
+        asked = context == 'user_requested'
+        # Certification only helps when nothing is actually missing; a
+        # per-neuron shortfall is real loss and needs restore-or-refetch.
+        if manifest is None and not mismatches:
+            # Unverifiable is not the same as known-incomplete: telling this
+            # user to re-run online is circular when the online attempt is
+            # what just failed (2026-09-18 retest, F5).
+            prefix = ('Cache-only mode requested but the local connection cache '
+                      'cannot be verified' if asked else
+                      'Server connection failed and the local connection cache '
+                      'cannot be verified')
+            remedy = ('   Certify this cache once with record_cache_baseline() '
+                      '(in the UI:\n'
+                      '   Settings -> Storage -> "Certify local cache"), or run '
+                      'online\n'
+                      '   against NeuPrint to rebuild the cache.')
+        else:
+            prefix = ('Cache-only mode requested but the local connection cache is incomplete'
+                      if asked else
+                      'Server connection failed and the local connection cache is incomplete')
+            remedy = ('   Restore this dataset\'s cache folder from your backup, or run '
+                      'online\n'
+                      '   against NeuPrint to refetch it (in the UI: uncheck "Cache '
+                      'Only\n'
+                      '   (Offline)").')
         raise RuntimeError(
             f"{prefix} for dataset '{self.dataset}'.\n"
             f"   {detail}\n"
-            f"   Run once with cache_only=False (in the UI: uncheck \"Cache Only\n"
-            f"   (Offline)\") to complete the cache, or pass allow_incomplete_cache=True\n"
-            f"   to accept partial results.")
+            f"{remedy}")
 
-    def _handle_cache_only_miss(self, uncached_upstream, has_cached):
+    def _handle_cache_only_miss(self, uncached_upstream):
         '''Cache-only discovery reached neurons absent from the cache.
 
-        Refuses the run — continuing would silently omit every connection of
-        these neurons while the analysis presents itself as complete —
-        unless ``allow_incomplete_cache`` opted in, which keeps the
-        historical warning and proceeds with cached data only.
+        Refuses the run: continuing would silently omit every connection of
+        these neurons while the analysis presented itself as complete, and
+        there is no opt-in to run against an incomplete cache (2026-09-18
+        retest).
         '''
-        allowed = bool(getattr(self, 'allow_incomplete_cache', False)) or (
-            self.dataset in _CACHE_ONLY_DATASETS
-            and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False))
-        if not allowed:
-            # This refusal fires mid-pipeline, after the run folder (and its
-            # bootstrap files) were created — remove what THIS run created
-            # so a refused run leaves no output behind (re-test finding F1).
-            self._cleanup_refused_run_folders()
-            sample = ', '.join(str(b) for b in list(uncached_upstream)[:5])
-            raise RuntimeError(
-                f"Cache-only run needs {len(uncached_upstream)} neuron(s) that are "
-                f"not in the local cache for '{self.dataset}' (e.g. {sample}).\n"
-                f"   Continuing would silently omit all of their connections "
-                f"from the results.\n"
-                f"   Run with cache_only=False (in the UI: uncheck \"Cache Only "
-                f"(Offline)\") to fetch them, or pass allow_incomplete_cache=True "
-                f"to accept partial results.")
-        self._cache_only_miss_total = (
-            getattr(self, '_cache_only_miss_total', 0) + len(uncached_upstream))
-        self._vprint(f'  ⚠️  {len(uncached_upstream)} neurons not in cache (cache-only mode - skipping API fetch)', level='full')
-        self._vprint(f'     Using only cached data. Results may be incomplete.', level='full')
-        if not has_cached:
-            self._vprint(f'     No cached connections found for these neurons.', level='full')
+        # This refusal fires mid-pipeline, after the run folder (and its
+        # bootstrap files) were created — remove what THIS run created
+        # so a refused run leaves no output behind (re-test finding F1).
+        self._cleanup_refused_run_folders()
+        sample = ', '.join(str(b) for b in list(uncached_upstream)[:5])
+        raise RuntimeError(
+            f"Cache-only run needs {len(uncached_upstream)} neuron(s) that are "
+            f"not in the local cache for '{self.dataset}' (e.g. {sample}).\n"
+            f"   Continuing would silently omit all of their connections "
+            f"from the results.\n"
+            f"   Run online against NeuPrint to fetch them (in the UI: uncheck "
+            f"\"Cache Only (Offline)\").")
 
     def _note_run_folder_created(self, folder):
         '''Track a folder this run created so a mid-run refusal can remove it.'''
@@ -8888,8 +8945,7 @@ class FindNeuronConnection:
             # local-table fetch instead of silently returning an empty
             # network.
             if cache_only_skips_local_fetch(self.dataset, self.cache_only):
-                self._handle_cache_only_miss(
-                    uncached_upstream, not self._is_empty_df(cached_conn))
+                self._handle_cache_only_miss(uncached_upstream)
                 # Continue without API fetch - api_conn stays empty
             else:
                 fetched = self._fetch_api_connections(
@@ -9057,8 +9113,7 @@ class FindNeuronConnection:
             # Cache-only skip does not apply to BANC: its connectivity IS
             # the local merged table (see the pandas twin above).
             if cache_only_skips_local_fetch(self.dataset, self.cache_only):
-                self._handle_cache_only_miss(
-                    uncached_upstream, not cached_conn.is_empty())
+                self._handle_cache_only_miss(uncached_upstream)
             else:
                 fetched = self._fetch_api_connections(
                     uncached_upstream, downstream_bodyIds
@@ -11980,7 +12035,7 @@ class FindNeuronConnection:
         
         # Initialize parameter.txt file
         self.parameter_txt = os.path.join(self.direct_folder, 'parameters.txt')
-        with open(self.parameter_txt, 'w') as f:
+        with open(self.parameter_txt, 'w', encoding='utf-8') as f:
             for key, value in self.parameter_dict.items():
                 f.write(f'{key}: {value}\n')
             f.write('\n')
@@ -12133,7 +12188,7 @@ class FindNeuronConnection:
         self.target_in_conn = self.target_in_conn.reset_index(drop=True)
         print(f'{len(self.source_in_conn)} / {len(self.source_df)} source neurons involved in connections')
         print(f'{len(self.target_in_conn)} / {len(self.target_df)} target neurons involved in connections')
-        with open(self.parameter_txt, 'a') as f:
+        with open(self.parameter_txt, 'a', encoding='utf-8') as f:
             f.write(f'{len(self.source_in_conn)} / {len(self.source_df)} source {self.source_fname} neurons involved in connections\n')
             f.write(f'{len(self.target_in_conn)} / {len(self.target_df)} target {self.target_fname} neurons involved in connections\n')
             f.write('\n')
@@ -12517,9 +12572,9 @@ class FindNeuronConnection:
         # Run metadata
         public_attrs = self._run_export_attributes()
         public_attrs['tool'] = 'findnetwork'
-        with open(os.path.join(network_folder, 'all_attributes.json'), 'w') as f:
+        with open(os.path.join(network_folder, 'all_attributes.json'), 'w', encoding='utf-8') as f:
             json.dump(public_attrs, f, indent=4, default=lambda o: '<not serializable>')
-        with open(os.path.join(network_folder, 'parameters.txt'), 'w') as f:
+        with open(os.path.join(network_folder, 'parameters.txt'), 'w', encoding='utf-8') as f:
             f.write(f'FindNetwork: mutual direct connections among {self.source_fname} neurons\n')
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
@@ -13508,24 +13563,11 @@ class FindNeuronConnection:
                 f'top {self.pathN_to_show} paths (by discovery order) were '
                 f'visualized/saved.'
             )
-        _cache_only_partial = False
         if getattr(self, 'cache_only', False):
-            _cache_only_partial = bool(getattr(self, 'allow_incomplete_cache', False) or (
-                self.dataset in _CACHE_ONLY_DATASETS
-                and _CACHE_ONLY_DATASETS[self.dataset].get('allow_incomplete', False)))
-            if _cache_only_partial:
-                notes.append(
-                    '- [data] cache_only=True with allow_incomplete_cache=True: the '
-                    'local cache was incomplete and missing neurons/connections are '
-                    'absent from the outputs. This run is PARTIAL — it was stamped '
-                    'INCOMPLETE_CACHE.txt and should not be compared with complete '
-                    'runs as if equivalent.'
-                )
-            else:
-                notes.append(
-                    '- [data] cache_only=True: results depend entirely on the local '
-                    'cache; missing neurons are absent from the outputs.'
-                )
+            notes.append(
+                '- [data] cache_only=True: results depend entirely on the local '
+                'cache; missing neurons are absent from the outputs.'
+            )
 
         if not notes:
             return
@@ -13546,32 +13588,6 @@ class FindNeuronConnection:
         except OSError as e:
             self._vprint(f'  Warning: could not write user_warning_notes.txt: {e}', level='full')
 
-        if _cache_only_partial:
-            # Unmistakable sidecar so a partial cache-only run can never pass
-            # for a complete analysis when folders are shared or archived.
-            # Carries the coverage evidence so the partial run documents HOW
-            # incomplete it was (re-test finding F4).
-            try:
-                with open(os.path.join(folder, 'INCOMPLETE_CACHE.txt'), 'w',
-                          encoding='utf-8') as f:
-                    f.write('PARTIAL RESULTS: this run executed in cache-only mode '
-                            'with allow_incomplete_cache=True while the local '
-                            'connection cache was incomplete.\n'
-                            'Neurons and connections missing from the cache are '
-                            'absent from every output file in this folder.\n')
-                    summary = getattr(self, '_cache_incomplete_summary', None)
-                    if summary:
-                        f.write(f'Coverage: {summary}\n')
-                    miss_total = getattr(self, '_cache_only_miss_total', 0)
-                    if miss_total:
-                        f.write(
-                            f'Discovery reached {miss_total} neuron(s) absent from '
-                            'the cache during the run; all of their connections '
-                            'were skipped.\n')
-                    f.write('Run once with cache_only=False to complete the cache, '
-                            'then re-run for complete results.\n')
-            except OSError as e:
-                self._vprint(f'  Warning: could not write INCOMPLETE_CACHE.txt: {e}', level='full')
 
     def _save_path_neuron_enrollment(self, folder):
         """Save resolved source/target enrollment metadata at run root.
@@ -14022,11 +14038,13 @@ class FindNeuronConnection:
         }
         
         # Save as JSON
-        with open(os.path.join(self.path_folder, 'all_attributes.json'), 'w') as f:
+        with open(os.path.join(self.path_folder,
+                               'all_attributes.json'), 'w',
+                  encoding='utf-8') as f:
             json.dump(self._sanitize_export_value(all_attributes_dict), f, indent=4)
         
         # Save as readable text
-        with open(os.path.join(self.path_folder, 'parameters.txt'), 'w') as f:
+        with open(os.path.join(self.path_folder, 'parameters.txt'), 'w', encoding='utf-8') as f:
             f.write(f"Analysis Parameters for FindPath\n")
             f.write(f"=" * 50 + "\n\n")
             f.write(
@@ -14848,10 +14866,10 @@ class FindNeuronConnection:
 
         public_attrs = self._run_export_attributes(path_mode='all')
         public_attrs['replay_source_threshold'] = base_threshold
-        with open(os.path.join(new_base, 'all_attributes.json'), 'w') as f:
+        with open(os.path.join(new_base, 'all_attributes.json'), 'w', encoding='utf-8') as f:
             json.dump(public_attrs, f, indent=4,
                       default=lambda o: '<not serializable>')
-        with open(os.path.join(new_base, 'parameters.txt'), 'w') as f:
+        with open(os.path.join(new_base, 'parameters.txt'), 'w', encoding='utf-8') as f:
             f.write(f'Parameters for processing {self.source_fname} to '
                     f'{self.target_fname}:\n')
             for key, value in self.parameter_dict.items():
@@ -15173,12 +15191,12 @@ class FindNeuronConnection:
         try:
             final_attrs = self._run_export_attributes(path_mode=path_mode)
             with open(os.path.join(self.allpath_folder,
-                                   'all_attributes.json'), 'w') as af:
+                                   'all_attributes.json'), 'w', encoding='utf-8') as af:
                 json.dump(final_attrs, af, indent=4,
                           default=lambda o: '<not serializable>')
             prov = getattr(self, '_last_provenance', None) or {}
             with open(os.path.join(self.allpath_folder,
-                                   'parameters.txt'), 'w') as f:
+                                   'parameters.txt'), 'w', encoding='utf-8') as f:
                 f.write(f'Parameters for processing {self.source_fname} '
                         f'to {self.target_fname}:\n')
                 for key, value in self.parameter_dict.items():
@@ -15704,10 +15722,12 @@ class FindNeuronConnection:
         # Save all attributes and parameters to the allpaths folder
         # Filter out internal/private attributes (starting with '_') and large cached data
         public_attrs = self._run_export_attributes(path_mode=path_mode)
-        with open(os.path.join(self.allpath_folder, 'all_attributes.json'), 'w') as f:
+        with open(os.path.join(self.allpath_folder,
+                               'all_attributes.json'), 'w',
+                  encoding='utf-8') as f:
             json.dump(public_attrs, f, indent=4, default=lambda o: '<not serializable>')
         
-        with open(os.path.join(self.allpath_folder, 'parameters.txt'), 'w') as f:
+        with open(os.path.join(self.allpath_folder, 'parameters.txt'), 'w', encoding='utf-8') as f:
             f.write(f'Parameters for processing {self.source_fname} to {self.target_fname}:\n')
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
@@ -19521,7 +19541,7 @@ class FindNeuronConnection:
             ipsi_df.to_csv(os.path.join(sym_dir, 'symmetry_ipsi.csv'), index=False)
         if not contra_df.empty:
             contra_df.to_csv(os.path.join(sym_dir, 'symmetry_contra.csv'), index=False)
-        with open(os.path.join(sym_dir, 'symmetry_summary.json'), 'w') as f:
+        with open(os.path.join(sym_dir, 'symmetry_summary.json'), 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2)
         
         self._vprint(f"  Saved to: {sym_dir}", level='full')

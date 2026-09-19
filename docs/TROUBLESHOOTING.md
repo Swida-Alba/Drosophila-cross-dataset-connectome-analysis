@@ -231,12 +231,22 @@ returned 9,469 paths where the full cache returns 49,871; in the 2026-09-16
 re-test a shallow query still completed with 63 vs 113 paths before the
 manifest layer was added).
 
-**Solution:** Run once with Cache-Only disabled (server reachable, token
-configured) so the cache is completed and its integrity manifest is written,
-then re-run offline. If you knowingly accept partial results, pass
-`allow_incomplete_cache=True` (library/CLI parameter): the run then warns
-and stamps its output folders with an `INCOMPLETE_CACHE.txt` marker
-including the coverage evidence.
+**Solution:** there is no way to run against an incomplete cache — the two
+cases have different fixes, and the refusal message names the right one.
+
+- *"cannot be verified ... no integrity manifest"* — the cache may well be
+  complete, but nothing on disk records what complete means for it. This is
+  every cache restored from a backup or a colleague. Certify it once,
+  offline: **Settings → Storage → "Certify local cache"**, or
+  `python scripts/maintenance/record_cache_baseline.py --dataset <id>`.
+  Certification checks the per-neuron counts against the neuron index first
+  and refuses a cache that fails, so it cannot wave at real loss.
+- *"rows were lost after the last consolidation"* — the manifest says the
+  cache has shrunk. Restore `cache/<dataset>/` from your backup, or run
+  once with Cache-Only disabled (server reachable, token configured) to
+  refetch.
+
+A refused run leaves no output folder behind.
 
 ---
 

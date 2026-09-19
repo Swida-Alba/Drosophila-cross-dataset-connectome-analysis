@@ -140,14 +140,14 @@ wait on the first real query:
   cache. The run verifies cache coverage two ways: per-neuron recorded vs
   actually-cached (deduplicated) connection counts, and the whole-cache
   distinct-connection count against `cache/<dataset>/cache_manifest.json`.
-  Caches built before this verification existed have no manifest yet —
-  their **first non-cache-only run** records the baseline; until then a
-  cache-only run is refused with instructions. An incomplete or
-  unverifiable cache is refused instead of silently returning partial
-  results. To accept partial results anyway, pass
-  `allow_incomplete_cache=True` (library/CLI): the run warns and stamps its
-  output folders with an `INCOMPLETE_CACHE.txt` marker including the
-  coverage evidence.
+  Caches built before this verification existed — and caches copied in from
+  a backup or a colleague — have no manifest, so the run cannot tell
+  "complete" from "truncated" and refuses. Fix it without a network:
+  **Settings → Storage → "Certify local cache"**, or
+  `python scripts/maintenance/record_cache_baseline.py --dataset <id>`.
+  Certification records the manifest only after the per-neuron check passes,
+  and an online run still records the baseline by itself. Nothing is ever
+  run against a cache that is known to be incomplete.
 
 ## 5. Agent-assisted install
 

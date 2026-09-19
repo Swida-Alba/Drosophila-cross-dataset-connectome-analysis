@@ -2389,7 +2389,7 @@ class TestPrepareFlywireData:
             idx_dir / "neuron_index.parquet", index=False)
         assert fc._prepare_flywire_data() is None
 
-    def test_invalid_cache_converter_failure_exits(self, monkeypatch, tmp_path):
+    def test_invalid_cache_converter_failure_raises(self, monkeypatch, tmp_path):
         fc, _ = _flywire_fc(tmp_path)
         cache_dir = tmp_path / "cache" / "FAFB_v1_0"
         (cache_dir / "connections.parquet").write_text("not parquet")
@@ -2403,8 +2403,99 @@ class TestPrepareFlywireData:
                 return False
 
         monkeypatch.setattr(coana, "FAFB_file_converter", FakeFAFB)
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError):
             fc._prepare_flywire_data()
+
+
+class TestBancLocalDataFailure:
+    """Missing local data is an error the caller can surface, never a
+    process exit."""
+
+    class _FakeBANC:
+        ensure_ok = False
+        build_ok = True
+
+        @classmethod
+        def ensure_banc_data(cls, dataset, dataset_dir):
+            return cls.ensure_ok
+
+        @classmethod
+        def build_connection_cache_from_tables(cls, dataset_dir, cache_dir):
+            return cls.build_ok
+
+    @staticmethod
+    def _banc_fc(tmp_path, monkeypatch, fake):
+        fc, _ = make_fc(
+            dataset="banc_v888", script_path=str(tmp_path),
+            client_type="banc", use_cache=True, force_API_fetching=False,
+            cache_folder=str(tmp_path / "cache" / "banc_v888"))
+        monkeypatch.setattr(coana, "BANC_file_converter", fake)
+        monkeypatch.setattr(coana, "HAS_BANC_CONVERTER", True)
+        return fc
+
+    def test_prepare_banc_data_raises(self, tmp_path, monkeypatch):
+        fc = self._banc_fc(tmp_path, monkeypatch, self._FakeBANC)
+        with pytest.raises(RuntimeError, match="banc_v888"):
+            fc._prepare_banc_data()
+
+    def test_connection_cache_absent_tables_raises(self, tmp_path, monkeypatch):
+        class Fake(self._FakeBANC):
+            build_ok = False
+
+        fc = self._banc_fc(tmp_path, monkeypatch, Fake)
+        with pytest.raises(RuntimeError, match="banc_v888"):
+            fc._ensure_banc_connection_cache()
+
+    def test_connection_cache_underived_raises(self, tmp_path, monkeypatch):
+        class Fake(self._FakeBANC):
+            ensure_ok = True
+            build_ok = False
+
+        fc = self._banc_fc(tmp_path, monkeypatch, Fake)
+        with pytest.raises(RuntimeError, match="connection cache"):
+            fc._ensure_banc_connection_cache()
+
+
+class TestEnsureCompleteDatasetFolder:
+    """A failed or skipped pull must not leave an empty dataset folder:
+    the directory is created by the pull itself, lazily."""
+
+    class _FakeSV:
+        DatasetPullCancelled = type("DatasetPullCancelled", (Exception,), {})
+
+        @staticmethod
+        def roi_count_table_path(prefix):
+            return prefix + "_roi_count_df.parquet"
+
+        @staticmethod
+        def pull_dataset(*args, **kwargs):
+            raise RuntimeError("no token")
+
+    def _fc(self, tmp_path):
+        return make_fc(
+            dataset="male-cns:v1.0", client_type="neuprint", cache_only=False,
+            use_cache=True, script_path=str(tmp_path))
+
+    def test_failed_pull_creates_no_dataset_folder(self, tmp_path, monkeypatch):
+        fc, _ = self._fc(tmp_path)
+        monkeypatch.setattr(coana, "sv", self._FakeSV)
+        fc._ensure_neuprint_client = lambda: None
+        fc._ensure_complete_dataset()
+        assert (tmp_path / "datasets").is_dir()
+        assert not (tmp_path / "datasets" / "male-cns_v1_0").exists()
+
+    def test_existing_tables_create_no_folder(self, tmp_path, monkeypatch):
+        fc, _ = self._fc(tmp_path)
+        ds_dir = tmp_path / "datasets" / "male-cns_v1_0"
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "male-cns_v1_0_allneurons_neuron_df.csv").write_text("x")
+        (ds_dir / "male-cns_v1_0_allneurons_roi_count_df.parquet").write_bytes(
+            b"x")
+        monkeypatch.setattr(coana, "sv", self._FakeSV)
+        fc._ensure_neuprint_client = lambda: None
+        fc._ensure_complete_dataset()
+        assert sorted(p.name for p in (tmp_path / "datasets").iterdir()) == [
+            "male-cns_v1_0"]
 
 
 # =============================================================================

@@ -20,11 +20,11 @@ regression value of every assertion stays clear.
   ``http.client.IncompleteRead`` (field: a BANC download died mid-body after
   67.8 MB despite ``attempts=3``).  Fix: ``http.client.HTTPException`` joined
   the retry except tuple.
-- F4 (low) — the refusal message now spells out the UI remedy (uncheck
-  "Cache Only (Offline)") because the opt-in flag is library-only by
-  decision (``allow_incomplete_cache`` appears nowhere under ``ui/`` — the
-  static check below documents that premise), and INCOMPLETE_CACHE.txt now
-  carries the coverage evidence (asserted in test_cache_coverage.py).
+- F4 (low) — the refusal message spells out the remedy instead of assuming
+  an opt-in: the 2026-09-18 round removed ``allow_incomplete_cache`` and its
+  INCOMPLETE_CACHE.txt stamping entirely, so no run can proceed on an
+  incomplete cache and every refusal has to name a reachable fix.  The
+  static check below pins that the bypass is gone from the whole tree.
 """
 
 import http.client
@@ -251,12 +251,11 @@ class TestF1RefusalCleansRunFolder:
         (run_dir / 'parameters.txt').write_text('params')
         fc = object.__new__(coana.FindNeuronConnection)
         fc.dataset = DATASET
-        fc.allow_incomplete_cache = False
         fc._vprint = lambda *a, **k: None
         fc._run_created_folders = [str(run_dir)]
 
         with pytest.raises(RuntimeError, match='not in the local cache'):
-            fc._handle_cache_only_miss([512925, 72227], has_cached=False)
+            fc._handle_cache_only_miss([512925, 72227])
 
         assert not run_dir.exists()
 
@@ -268,12 +267,11 @@ class TestF1RefusalCleansRunFolder:
         (user_dir / 'precious.csv').write_text('data')
         fc = object.__new__(coana.FindNeuronConnection)
         fc.dataset = DATASET
-        fc.allow_incomplete_cache = False
         fc._vprint = lambda *a, **k: None
         fc._run_created_folders = []
 
         with pytest.raises(RuntimeError):
-            fc._handle_cache_only_miss([1], has_cached=False)
+            fc._handle_cache_only_miss([1])
 
         assert (user_dir / 'precious.csv').exists()
 
@@ -364,16 +362,18 @@ class TestF3IncompleteRead:
 # F4 — the UI has no opt-in control; the refusal message carries the remedy
 # ---------------------------------------------------------------------------
 
-class TestF4UiSurface:
-    def test_ui_has_no_allow_incomplete_cache_control(self):
-        """Documents the premise of the F4 message fix: the opt-in flag is
-        library-only (maintainer decision), so the refusal message must
-        spell out the UI remedy instead — asserted via the 'Cache Only'
-        wording in tests/core/test_cache_coverage.py."""
+class TestF4NoIncompleteCacheBypass:
+    def test_incomplete_cache_bypass_is_gone_tree_wide(self):
+        """An incomplete cache is never runnable (2026-09-18 decision), so
+        neither the opt-in flag nor its PARTIAL-results marker may come
+        back — not in the product, and not as documented advice."""
         repo = Path(__file__).resolve().parents[2]
-        hits = [
-            str(path)
-            for path in (repo / 'ui').rglob('*.py')
-            if 'allow_incomplete_cache' in path.read_text(errors='ignore')
-        ]
+        hits = []
+        for folder in ('src', 'ui', 'scripts', 'docs', 'skills'):
+            for path in (repo / folder).rglob('*'):
+                if not path.is_file() or path.suffix not in {'.py', '.md'}:
+                    continue
+                text = path.read_text(errors='ignore')
+                if 'allow_incomplete_cache' in text or 'INCOMPLETE_CACHE' in text:
+                    hits.append(str(path.relative_to(repo)))
         assert hits == []

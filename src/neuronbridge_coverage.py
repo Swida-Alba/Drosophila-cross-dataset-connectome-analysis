@@ -76,8 +76,13 @@ def default_cache_root() -> Path:
     return PROJECT_ROOT / "cache" / "neuronbridge"
 
 
+def _utc_now() -> datetime:
+    """The single clock seam: stamps and TTL ages both derive from it."""
+    return datetime.now(timezone.utc)
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return _utc_now().isoformat(timespec="seconds")
 
 
 @dataclass
@@ -209,14 +214,14 @@ def _save_snapshot(
     return path
 
 
-def _age_days(stamp: Optional[str]) -> float:
+def _age_days(stamp: Optional[str], now: Optional[datetime] = None) -> float:
     if not stamp:
         return float("inf")
     try:
         created = datetime.fromisoformat(str(stamp))
     except ValueError:
         return float("inf")
-    delta = datetime.now(timezone.utc) - created
+    delta = (now if now is not None else _utc_now()) - created
     return max(delta.total_seconds(), 0.0) / 86400.0
 
 

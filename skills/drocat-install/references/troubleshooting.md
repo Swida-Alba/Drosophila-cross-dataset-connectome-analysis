@@ -58,13 +58,16 @@ symptoms.
   reconfigures its stdio to UTF-8 (errors="replace") at import and
   `windows_DROCAT.bat` sets `PYTHONIOENCODING=utf-8`. Older revisions: set
   the variable manually.
-- Cache-Only runs refuse an unverifiable cache instead of silently returning
-  partial results: per-neuron recorded-vs-cached (deduplicated) counts, and
-  the whole-cache distinct count against `cache/<dataset>/cache_manifest.json`
-  (baseline written by the first non-cache-only run and refreshed at every
-  consolidation — a legacy cache without a manifest is refused once). Pass
-  `allow_incomplete_cache=True` to accept stamped partial output; a refused
-  run removes the output folder it just created.
+- Cache-Only runs refuse an incomplete or unverifiable cache instead of
+  silently returning partial results: per-neuron recorded-vs-cached
+  (deduplicated) counts, and the whole-cache distinct count against
+  `cache/<dataset>/cache_manifest.json` (written by an online run, refreshed
+  at every consolidation, and cleaned together with the connection cache).
+  A restored cache with no manifest is certified once, offline, with
+  `python scripts/maintenance/record_cache_baseline.py --dataset <id>` (or
+  Settings → Storage → "Certify local cache"), which refuses a cache whose
+  per-neuron counts do not match its index. There is no opt-in to run on a
+  known-incomplete cache; a refused run removes the folder it created.
 
 ### Linux
 - Same flow as macOS (`bash archive/install/install.sh`, `./mac_DROCAT.command`).

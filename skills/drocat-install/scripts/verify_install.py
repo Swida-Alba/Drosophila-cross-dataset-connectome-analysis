@@ -110,10 +110,14 @@ print(json.dumps(results))
 # table converters and the lossless re-encoder all publish through
 # write_parquet_atomic, whose fsync used to open the temp file read-only and
 # abort with [Errno 9] on Windows — with the install still reporting PASS.
+# The re-encode leg is checked too: it returned False from an open-handle
+# WinError 32 on every Windows install while this probe still printed
+# `atomic-ok` (2026-09-18 retest, F6).
 ATOMIC_WRITE_PROBE = r"""
 import os, shutil, sys, tempfile
 sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-from utils.parquet_utils import write_parquet_atomic
+from utils.parquet_utils import (
+    parquet_lossless_marker, reencode_parquet_lossless, write_parquet_atomic)
 import polars as pl
 
 tmp = tempfile.mkdtemp(prefix="drocat_verify_atomic_")
@@ -123,6 +127,13 @@ try:
         target,
         lambda temp: pl.DataFrame({"v": [1, 2, 3]}).write_parquet(temp))
     assert pl.read_parquet(target)["v"].to_list() == [1, 2, 3]
+    reencoded = reencode_parquet_lossless(
+        target, {"compression": "zstd", "use_dictionary": False})
+    assert reencoded is True, "lossless re-encode did not run"
+    assert parquet_lossless_marker(target), "re-encode left no marker"
+    assert pl.read_parquet(target)["v"].to_list() == [1, 2, 3]
+    leftovers = [n for n in os.listdir(tmp) if n.endswith(".tmp")]
+    assert not leftovers, f"re-encode leaked temp files: {leftovers}"
     print("atomic-ok")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

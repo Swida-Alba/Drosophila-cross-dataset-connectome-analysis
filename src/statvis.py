@@ -157,6 +157,87 @@ _DATASET_DOWNLOAD_LOCKS = {}
 _FAILED_DATASET_DOWNLOADS = set()
 
 
+# Signature of a pull that failed because of the *environment* rather than
+# because the data itself could not be written: no NeuPrint client/token
+# configured, a rejected token, or a transport failure.  neuprint raises plain
+# RuntimeErrors with these words ("No token provided. Please provide one or set
+# NEUPRINT_APPLICATION_CREDENTIALS", "No default Client has been set ..."), and
+# this module wraps the no-client case in "no NeuPrint connection exists";
+# requests/urllib3/socket failures are OSError descendants but their server
+# text carries the status code.  Word boundaries keep a ``401`` inside a bodyId,
+# port or coordinate from reading as a rejected token (same guard as
+# ``visualize_skeleton._token_rejected``).
+_DATASET_PULL_ENV_ERROR_RE = re.compile(
+    r'no neuprint connection'
+    r'|not available locally and no'
+    r'|default client'
+    r'|\btoken\b'
+    r'|\bcredentials?\b'
+    r'|\b40[13]\b'
+    r'|unauthorized|forbidden'
+    r'|\bunreachable\b'
+    r'|connection \w*(?:refus|reset|abort|fail|clos|error)'
+    r'|\btimed? ?out\b|\btimeout\b'
+    r'|name resolution|getaddrinfo'
+    r'|\bssl\b|certificate'
+    r'|\bproxy\b',
+    re.IGNORECASE,
+)
+
+# OSError subclasses that describe the local filesystem, not the network: a
+# request that died because a path or permission was wrong is a genuine
+# "we could not write the files" outcome and stays memoized.
+_LOCAL_FILESYSTEM_ERRORS = (
+    FileNotFoundError, FileExistsError, PermissionError,
+    NotADirectoryError, IsADirectoryError,
+)
+
+
+def _is_environment_dataset_pull_error(exc: BaseException) -> bool:
+    """Whether a ``pull_dataset`` failure is an environment/access problem.
+
+    Environment failures (no token, rejected token, offline, refused or timed
+    out connection, user cancel) tell us nothing about whether a later attempt
+    would succeed — success depends on state outside this process.  They must
+    therefore propagate as if no attempt had been made; see
+    :func:`_ensure_local_dataset_files`.
+
+    Anything else — including an unclassifiable exception — returns False, so
+    the conservative "we tried and the files are still not there" memoization
+    is preserved.
+    """
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, DatasetPullCancelled):
+            return True
+        if isinstance(current, OSError) and not isinstance(
+                current, _LOCAL_FILESYSTEM_ERRORS):
+            # requests.RequestException/ConnectionError/Timeout, urllib3 and
+            # socket errors are all OSError descendants.
+            return True
+        if _DATASET_PULL_ENV_ERROR_RE.search(str(current)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def clear_failed_dataset_downloads(dataset: str = None) -> None:
+    """Drop the "do not pull this dataset again" memo (one dataset, or all).
+
+    Test hook: a fixture calls this between tests so a failed pull in one test
+    cannot change the outcome of the next one.  Production code does not need
+    it — a successful pull clears its own entry and an environment failure
+    never records one.
+    """
+    if dataset is None:
+        _FAILED_DATASET_DOWNLOADS.clear()
+        return
+    _FAILED_DATASET_DOWNLOADS.discard(
+        canonical_dataset_name(dataset).replace(':', '_').replace('.', '_'))
+
+
 def _flywire_neuron_table_path(dataset: str, project_root: str):
     """Resolve an exact FAFB/BANC local-release table without fallback."""
 
@@ -559,6 +640,18 @@ def _ensure_local_dataset_files(dataset: str, client=None, verbose: bool = True)
     This prevents repeated pull attempts when visualization requests the same
     dataset layer-by-layer and a previous pull failed or did not materialize
     the expected CSV files.
+
+    Only the outcomes that are genuinely stable inside a process are memoized:
+
+    * ``pull_dataset`` returned but the expected tables are still absent, or
+    * ``pull_dataset`` raised something that is *not* an environment failure
+      (see :func:`_is_environment_dataset_pull_error`).
+
+    An authentication/offline/network failure is *not* recorded: it says
+    nothing about the local files, and memoizing it turned one missing NeuPrint
+    token into every later call in the process failing with a misleading
+    "still missing local data files after a previous pull attempt".  Such a
+    failure propagates unchanged so each call site sees the real cause.
     """
     global _DATASET_DOWNLOAD_LOCKS, _FAILED_DATASET_DOWNLOADS
 
@@ -588,8 +681,9 @@ def _ensure_local_dataset_files(dataset: str, client=None, verbose: bool = True)
 
         try:
             pull_dataset(dataset, save_path=dataset_path_body, omitNoneType=False, client=client)
-        except Exception:
-            _FAILED_DATASET_DOWNLOADS.add(dataset_normalized)
+        except Exception as exc:
+            if not _is_environment_dataset_pull_error(exc):
+                _FAILED_DATASET_DOWNLOADS.add(dataset_normalized)
             raise
 
         if not os.path.exists(neuron_csv) or not os.path.exists(roi_count_table_path(dataset_path_body)):

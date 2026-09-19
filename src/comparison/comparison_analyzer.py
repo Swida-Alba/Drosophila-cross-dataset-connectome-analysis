@@ -4183,7 +4183,20 @@ class ComparisonAnalyzer:
         return None
     
     def _save_metadata(self, dataset_name: str, metadata: Dict) -> None:
-        """Save metadata to local cache file."""
+        """Save metadata to local cache file.
+
+        A failed collection (``source == 'error'``, i.e. the placeholder built
+        by :meth:`_create_empty_metadata`) is never written to disk: the file
+        lives inside ``datasets/<name>/``, so persisting it created a
+        metadata-only folder that the dataset listing reported as a
+        half-installed release, and a transient failure became sticky
+        (2026-09-18 retest, F9).  The error payload stays in-memory for this
+        call only, so the next run retries the fetch.
+        """
+        if (metadata or {}).get('source') == 'error':
+            self._log(f"Not caching error metadata for {dataset_name}; the "
+                      "next collection will retry the fetch")
+            return
         metadata_path = self._get_metadata_path(dataset_name)
         os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
         try:
@@ -4398,7 +4411,12 @@ class ComparisonAnalyzer:
         return metadata
     
     def _create_empty_metadata(self, dataset_name: str, error_msg: str) -> Dict:
-        """Create empty metadata structure with error message."""
+        """Create empty metadata structure with error message.
+
+        In-memory only: :meth:`_save_metadata` refuses to persist an error
+        payload, so a failed collection leaves no sidecar behind and the next
+        run retries (F9).
+        """
         return {
             'dataset': dataset_name,
             'source': 'error',
@@ -4433,7 +4451,9 @@ class ComparisonAnalyzer:
         Collect metadata for all datasets.
         
         Metadata is cached locally in datasets/{dataset}/{dataset}_metadata.json.
-        If cached file exists and force_refresh=False, uses cached data.
+        If cached file exists and force_refresh=False, uses cached data --
+        except a cached error placeholder (``source == 'error'``), which is
+        never terminal: the fetch is retried (F9).
         
         Args:
             force_refresh: If True, fetch fresh metadata even if cached exists
@@ -4449,10 +4469,13 @@ class ComparisonAnalyzer:
             # Try cached first
             if not force_refresh:
                 cached = self._load_cached_metadata(dataset_name)
-                if cached:
+                if cached and cached.get('source') != 'error':
                     self._log(f"Loaded cached metadata for {dataset_name}")
                     all_metadata[dataset_name] = cached
                     continue
+                if cached:
+                    self._log(f"Ignoring cached error metadata for "
+                              f"{dataset_name} (retrying the fetch)")
             
             # Fetch fresh metadata
             self._log(f"Fetching metadata for {dataset_name}...")

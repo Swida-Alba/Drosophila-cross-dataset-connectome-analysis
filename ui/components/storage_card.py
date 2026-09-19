@@ -25,6 +25,12 @@ Safety wiring (the core module enforces the hard guards):
 * Run folders that are an active run's output folder are locked.
 * Every removal is previewed (paths + bytes) and needs an explicit
   "Clean now"; folder deletion additionally needs a checkbox confirm.
+* "Certify local cache" is the offline remedy for a cache that arrived from
+  a backup or another machine (2026-09-18 retest, F5): it calls the
+  product's own ``record_cache_baseline()`` per selected dataset, so a cache
+  that fails the per-neuron check is refused and the refusal text is shown
+  verbatim. It writes nothing but ``cache_manifest.json`` and offers no way
+  around the check.
 """
 
 from __future__ import annotations
@@ -68,6 +74,19 @@ _BODY_SLOT = r"""
 """
 
 _CONNECTION_CLASSES = {"connections", "incoming"}
+
+# The integrity manifest describes the connection cache only, so that is the
+# single class a certification action applies to ('incoming' is a separate
+# cache with no manifest of its own).
+_CERTIFIABLE_CLASS = "connections"
+
+CERTIFY_LABEL = "Certify local cache"
+
+_CERTIFY_HELP = (
+    "Needed once for a cache copied from a backup or another machine: only "
+    "an online run writes a manifest by itself. Refuses a cache whose "
+    "connection counts do not match its neuron index, and writes only "
+    "cache_manifest.json.")
 
 _CACHES_COLUMNS = [
     {"name": "cls", "label": "Class", "field": "class", "align": "left",
@@ -123,6 +142,86 @@ def _truncate_lines(values: List[str], limit: int = 12) -> str:
     return head
 
 
+# ---------------------------------------------------------------------------
+# Offline cache certification (the product's own gate, no network)
+# ---------------------------------------------------------------------------
+
+
+def _offline_connection(dataset: str, script_path=None):
+    """A ``FindNeuronConnection`` that provably never connects.
+
+    The connected routes are all wrong here: ``cache_only=True`` runs
+    ``_enforce_cache_coverage()`` inside ``__post_init__``, which raises for
+    exactly the manifest-less cache this action exists to certify, and
+    anything that reaches the client block either opens a NeuPrint
+    connection (token, network) or rewrites the neuron index as an init
+    side effect.  What certification touches — ``record_cache_baseline`` ->
+    ``_check_cache_coverage`` and the manifest read/write — needs only the
+    attributes set below, so the instance is assembled directly (the same
+    shape ``tests/core/test_cache_coverage.py`` and
+    ``scripts/maintenance/record_cache_baseline.py`` use).
+    """
+    import coana
+
+    dataset_safe = coana.dataset_folder(dataset)
+    connection = object.__new__(coana.FindNeuronConnection)
+    connection.dataset = dataset
+    connection._dataset_safe = dataset_safe
+    connection.use_cache = True
+    connection.cache_only = True
+    # Keeps the product's level='always' line (the server log) and drops the
+    # verbose scan chatter nobody reads here.
+    connection.verbose_mode = 'silent'
+    if script_path:
+        root = Path(str(script_path))
+        connection.script_path = str(root)
+        connection.cache_folder = str(root / 'cache' / dataset_safe)
+    return connection
+
+
+def _manifest_state(dataset: str, script_path=None) -> Optional[dict]:
+    """The manifest this cache carries today (None when it has none)."""
+    return _offline_connection(dataset, script_path)._load_cache_manifest()
+
+
+def _certify_one(dataset: str, script_path=None) -> dict:
+    """Certify one dataset, turning every refusal into reported text.
+
+    The product raises ``RuntimeError`` with the user-facing remedy; that
+    string is passed on unchanged so the UI shows what the cache-only
+    refusal shows too.  Any other exception is summarized rather than
+    allowed to reach the browser as a traceback.
+    """
+    try:
+        connection = _offline_connection(dataset, script_path)
+        manifest = connection.record_cache_baseline()
+    except RuntimeError as refusal:
+        return {'dataset': dataset, 'manifest': None,
+                'path': '', 'error': str(refusal)}
+    except Exception as exc:  # noqa: BLE001 - the UI never shows a traceback
+        return {'dataset': dataset, 'manifest': None, 'path': '',
+                'error': f'Could not certify {dataset}: {exc}'}
+    return {'dataset': dataset, 'manifest': manifest,
+            'path': connection._cache_manifest_path(), 'error': None}
+
+
+def _certify_datasets(datasets: List[str], script_path=None) -> List[dict]:
+    """Certify every selected dataset; one outcome row per dataset."""
+    return [_certify_one(dataset, script_path) for dataset in datasets]
+
+
+def _read_states(datasets: List[str],
+                 script_path=None) -> List[Optional[dict]]:
+    """Manifest states for the preview, with unreadable ones as None."""
+    states: List[Optional[dict]] = []
+    for dataset in datasets:
+        try:
+            states.append(_manifest_state(dataset, script_path))
+        except Exception:  # noqa: BLE001 - a preview never fails the action
+            states.append(None)
+    return states
+
+
 class StorageCard:
     """State + UI for the Settings → Storage card."""
 
@@ -133,11 +232,13 @@ class StorageCard:
         self.run_items: List = []
         self._pull_active = False
         self._scanning = False
+        self._certifying = False
         self.extra_root: Optional[ui.input] = None
         self.caches_table: Optional[ui.table] = None
         self.runs_table: Optional[ui.table] = None
         self.scan_btn = None
         self.clear_btn = None
+        self.certify_btn = None
         self.prune_btn = None
         self.delete_btn = None
         self.status_label = None
@@ -203,8 +304,15 @@ class StorageCard:
                         "Clear Selected…", icon="delete_sweep",
                         on_click=self._confirm_clear,
                     ).props("outline color=negative").set_enabled(False)
+                    self.certify_btn = ui.button(
+                        CERTIFY_LABEL, icon="verified",
+                        on_click=self._confirm_certify,
+                    ).props("outline").set_enabled(False).tooltip(
+                        _CERTIFY_HELP)
                     ui.label("Selection is removed only after the preview "
-                             "is confirmed.").classes(
+                             "is confirmed. A cache copied from a backup "
+                             "needs one certification to be usable offline."
+                             ).classes(
                         "text-caption drocat-muted")
 
             with ui.expansion(
@@ -262,8 +370,8 @@ class StorageCard:
             return
         self._pull_active = active
         if self._pull_active:
-            for btn in (self.scan_btn, self.clear_btn, self.prune_btn,
-                        self.delete_btn):
+            for btn in (self.scan_btn, self.clear_btn, self.certify_btn,
+                        self.prune_btn, self.delete_btn):
                 if btn is not None:
                     btn.set_enabled(False)
             if self.status_label is not None:
@@ -283,6 +391,12 @@ class StorageCard:
             self.runs_table is not None else []
         if self.clear_btn is not None:
             self.clear_btn.set_enabled(bool(caches_sel))
+        if self.certify_btn is not None:
+            # Per-dataset action: it needs a selected connection-cache row,
+            # and a scan in flight would report on rows it is replacing.
+            self.certify_btn.set_enabled(
+                bool(self._certifiable_items())
+                and not self._pull_active and not self._scanning)
         if self.prune_btn is not None:
             self.prune_btn.set_enabled(any(
                 r.get("registered") and (r.get("source_bytes") or 0) > 0
@@ -519,6 +633,42 @@ class StorageCard:
                          (self.caches_table.selected or [])}
         return [i for i in self.cache_items if i.key in selected_keys]
 
+    def _certifiable_items(self) -> List:
+        """Selected rows that carry a connection cache (the manifest's
+        subject). App-level rows have no dataset to certify."""
+        return [i for i in self._selected_cache_items()
+                if i.cls == _CERTIFIABLE_CLASS and i.dataset]
+
+    def _certification_targets(self) -> List[str]:
+        """Dataset identifiers of the selected connection caches.
+
+        Cache rows carry the on-disk folder spelling; the manifest is keyed
+        by the identifier runs use, so the folder is translated back before
+        the product is asked to certify (otherwise it would write a manifest
+        no run recognizes).
+        """
+        from ..dataset_service import folder_to_dataset
+        targets = []
+        for item in self._certifiable_items():
+            dataset = folder_to_dataset(item.dataset)
+            if dataset not in targets:
+                targets.append(dataset)
+        return targets
+
+    def _active_run_running(self) -> bool:
+        """True while an analysis run is in flight (it may be writing this
+        very cache, and certification records what complete means for it)."""
+        try:
+            records = RUN_MANAGER.recent_runs(200)
+        except Exception:
+            return False
+        if not any(record.get("status") in ACTIVE_STATUSES
+                   for record in records):
+            return False
+        ui.notify("Finish or cancel the running analysis before certifying "
+                  "a cache", type="warning")
+        return True
+
     def _selected_run_rows(self, *, require_registered: bool) -> List[dict]:
         rows = [r for r in (self.runs_table.selected or [])
                 if not r.get("locked")]
@@ -586,6 +736,108 @@ class StorageCard:
             return
         result = await run.io_bound(si.delete_paths, paths)
         self._report(result, restart_note=True)
+        await self.start_scan()
+
+    # ------------------------------------------------------------------
+    # Cache certification flow (offline remedy, F5)
+    # ------------------------------------------------------------------
+
+    async def _confirm_certify(self, _event=None) -> None:
+        if self._interlocked() or self._active_run_running():
+            return
+        targets = self._certification_targets()
+        if not targets:
+            ui.notify("Select a connection cache row first", type="warning")
+            return
+        states = await run.io_bound(_read_states, targets)
+        lines = []
+        for dataset, state in zip(targets, states):
+            if state is None:
+                lines.append(f"{dataset} — no manifest (this is what "
+                             f"certification writes)")
+            else:
+                lines.append(
+                    f"{dataset} — already certified: "
+                    f"source={state.get('source')}, "
+                    f"distinct_connections="
+                    f"{int(state.get('distinct_connections') or 0):,}")
+        with ui.dialog() as dialog, ui.card().classes("w-full"):
+            ui.label(CERTIFY_LABEL).classes("text-subtitle1")
+            ui.label(f"{len(targets)} dataset(s) — counts are taken from the "
+                     f"cache on disk, nothing is downloaded.").classes(
+                "text-caption")
+            ui.label(_truncate_lines(lines)).classes(
+                "text-caption").style(
+                "font-family: monospace; white-space: pre-wrap; "
+                "max-height: 180px; overflow-y: auto")
+            ui.label(_CERTIFY_HELP).classes("text-caption drocat-muted")
+            ui.label(
+                "A dataset that already has a manifest is refused here; "
+                "re-recording one is the maintenance script's --force "
+                "job (scripts/maintenance/record_cache_baseline.py)."
+            ).classes("text-caption drocat-warn")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=dialog.close).props("outline")
+                ui.button("Certify", icon="verified",
+                          on_click=lambda: dialog.submit(True))
+        dialog.open()
+        confirmed = await dialog
+        if not confirmed:
+            return
+        await self._certify_now(targets)
+
+    async def _certify_now(self, datasets: List[str], *,
+                           script_path=None) -> None:
+        """Run the product's certification off the event loop and report.
+
+        Every outcome is text: refusals carry the product's wording
+        verbatim, and no exception is allowed to surface as a traceback.
+        *script_path* defaults to the project root the backend module
+        resolves itself; tests point it at a synthetic cache.
+        """
+        if self._certifying:
+            return
+        self._certifying = True
+        if self.certify_btn is not None:
+            self.certify_btn.set_enabled(False)
+        self.status_label.set_text("Certifying local cache…")
+        try:
+            # io_bound answers None when the app is shutting down / the call
+            # was cancelled: report that instead of iterating None.
+            outcomes = await run.io_bound(_certify_datasets, datasets,
+                                          script_path) or [
+                {"dataset": dataset, "manifest": None, "path": "",
+                 "error": f"Certification of {dataset} did not run "
+                          f"(cancelled)."}
+                for dataset in datasets]
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            self._certifying = False
+            self.status_label.set_text("")
+            self._report(None, restart_note=False,
+                         message=f"Certification failed: {exc}",
+                         notify_type="negative")
+            return
+        done = [o for o in outcomes if not o["error"]]
+        refused = [o for o in outcomes if o["error"]]
+        if done:
+            parts = []
+            for outcome in done[:3]:
+                distinct = int((outcome["manifest"] or {}).get(
+                    "distinct_connections") or 0)
+                parts.append(f"{outcome['dataset']}: {distinct:,} distinct")
+            message = (f"Certified {len(done)} cache(s) — "
+                       f"{'; '.join(parts)} connections now covered by "
+                       f"cache_manifest.json, so cache-only runs accept "
+                       f"them.")
+        else:
+            message = "\n".join(o["error"] for o in refused)
+        if done and refused:
+            message += f" | {len(refused)} refused: {refused[0]['error']}"
+        self._certifying = False
+        self.status_label.set_text("")
+        self._report(None, restart_note=False, message=message,
+                     notify_type="positive" if done and not refused
+                     else "warning")
         await self.start_scan()
 
     # ------------------------------------------------------------------
@@ -702,10 +954,22 @@ class StorageCard:
     # Reporting
     # ------------------------------------------------------------------
 
-    def _report(self, result: dict, *, restart_note: bool) -> None:
-        removed = result.get("removed", [])
-        refused = result.get("refused", [])
-        reclaimed = result.get("bytes_reclaimed", 0)
+    def _report(self, result: Optional[dict], *, restart_note: bool,
+                message: Optional[str] = None,
+                notify_type: str = "positive") -> None:
+        """The one outcome surface: a result line plus a notification.
+
+        Removal actions pass the ``delete_paths`` summary; certification
+        passes *message* because it writes a manifest instead of reclaiming
+        bytes (and a refusal's text is the product's, verbatim).
+        """
+        if message is not None:
+            self.result_label.set_text(message)
+            ui.notify(message, type=notify_type, multi_line=True)
+            return
+        removed = (result or {}).get("removed", [])
+        refused = (result or {}).get("refused", [])
+        reclaimed = (result or {}).get("bytes_reclaimed", 0)
         message = (f"Removed {len(removed)} item(s), reclaimed "
                    f"{si.format_bytes(reclaimed)}.")
         if refused:

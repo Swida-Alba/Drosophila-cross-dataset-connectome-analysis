@@ -172,6 +172,11 @@ _CLASS_MEMBERS = {
         "connections.parquet.src",
         "neuron_index_state.parquet",
         "dir:_batch_files",
+        # The integrity manifest describes exactly these bytes, so it is
+        # cleaned with them: a cache deleted around a surviving manifest
+        # leaves the gate comparing against a number nothing can produce
+        # again (2026-09-18 retest, F5).
+        "cache_manifest.json",
     ],
     "incoming": [
         "incoming_connections.parquet",
@@ -492,6 +497,17 @@ _RUN_TOOL_REGISTRY = {
         "source_dirs": ["line_labeled_neurons"],
         "deliverable_files": [
             "colabeling_matrix_*.csv", "colabeling_report.html",
+        ],
+    },
+    # TM VEV writes no re-downloadable source data — every member is a
+    # deliverable — so there is nothing to prune (Delete-folder-only).
+    # Patterns stay layout-agnostic ('*' crosses '/') so the category
+    # subfolders and legacy flat runs both classify.
+    "type-map-validation": {
+        "source_files": [],
+        "source_dirs": [],
+        "deliverable_files": [
+            "*.csv", "*.json", "*.jsonl", "*.html", "visualization/*",
         ],
     },
 }

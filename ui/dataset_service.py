@@ -76,6 +76,37 @@ CAP_MISSING = "missing"           # nothing available
 ACCESS_STREAMING = "streaming"            # NeuPrint: query on demand
 ACCESS_DOWNLOAD_REQUIRED = "download_required"  # BANC (never streamable)
 
+# ---------------------------------------------------------------------------
+# Data-table filename markers (disk-derived)
+#
+# One spelling of "this folder holds real data", shared by the per-dataset
+# readiness probes below and by :meth:`DatasetService.get_local_datasets`.  A
+# metadata sidecar alone is deliberately NOT data: a failed cross-dataset
+# metadata collection used to leave ``<name>_metadata.json`` behind in an
+# otherwise empty ``datasets/<name>/`` folder, which the listing then showed
+# as a half-installed release (2026-09-18 retest, F9).
+# ---------------------------------------------------------------------------
+
+NEURON_TABLE_PATTERNS = (
+    "*_allneurons_neuron_df.parquet", "*_allneurons_neuron_df.csv",
+    "*_neuron_df.parquet", "*_neuron_df.csv",
+)
+
+ROI_TABLE_PATTERNS = (
+    "*_allneurons_roi_count_df.parquet", "*_allneurons_roi_count_df.csv",
+    "*_roi_count_df.parquet", "*_roi_count_df.csv",
+)
+
+MERGED_CONNECTIONS_PATTERNS = (
+    "*_merged_connections.parquet", "*_merged_connections.csv",
+)
+
+ALLNEURONS_TABLE_PATTERNS = NEURON_TABLE_PATTERNS[:2]
+
+LOCAL_DATA_PATTERNS = (
+    NEURON_TABLE_PATTERNS + ROI_TABLE_PATTERNS + MERGED_CONNECTIONS_PATTERNS
+)
+
 
 @dataclass
 class DatasetInfo:
@@ -883,31 +914,25 @@ class DatasetService:
                    for matches in [list(dataset_path.glob(pattern))])
 
     def _neuron_table_present(self, dataset: str) -> bool:
-        return self._has_any(self._get_dataset_path(dataset), (
-            "*_allneurons_neuron_df.parquet", "*_allneurons_neuron_df.csv",
-            "*_neuron_df.parquet", "*_neuron_df.csv",
-        ))
+        return self._has_any(self._get_dataset_path(dataset),
+                             NEURON_TABLE_PATTERNS)
 
     def _allneurons_table_present(self, dataset: str) -> bool:
         """The strict converter output used by FAFB/BANC preparation."""
-        return self._has_any(self._get_dataset_path(dataset), (
-            "*_allneurons_neuron_df.parquet", "*_allneurons_neuron_df.csv",
-        ))
+        return self._has_any(self._get_dataset_path(dataset),
+                             ALLNEURONS_TABLE_PATTERNS)
 
     def _roi_table_present(self, dataset: str) -> bool:
-        return self._has_any(self._get_dataset_path(dataset), (
-            "*_allneurons_roi_count_df.parquet", "*_allneurons_roi_count_df.csv",
-            "*_roi_count_df.parquet", "*_roi_count_df.csv",
-        ))
+        return self._has_any(self._get_dataset_path(dataset),
+                             ROI_TABLE_PATTERNS)
 
     def _neuron_index_present(self, dataset: str) -> bool:
         index = self._index_dir / dataset_to_folder(dataset) / "neuron_index.parquet"
         return index.exists()
 
     def _merged_connections_present(self, dataset: str) -> bool:
-        return self._has_any(self._get_dataset_path(dataset), (
-            "*_merged_connections.parquet", "*_merged_connections.csv",
-        ))
+        return self._has_any(self._get_dataset_path(dataset),
+                             MERGED_CONNECTIONS_PATTERNS)
 
     def probe_metadata(self, dataset: str) -> str:
         """Metadata readiness — the basic-for-analysis state.
@@ -1166,6 +1191,12 @@ class DatasetService:
 
         Network-free: each row carries the disk-derived dimensions, so the
         catalog is correct on a fresh machine before any server refresh.
+
+        Only folders that hold data tables are listed (the same filename
+        markers the readiness probes use).  Before this, *any* subdirectory of
+        ``datasets/`` counted, so the metadata-only folder a failed
+        cross-dataset collection used to create showed up as a half-installed
+        local release (2026-09-18 retest, F9).
         """
         datasets = []
 
@@ -1174,6 +1205,8 @@ class DatasetService:
 
         for folder in self._datasets_dir.iterdir():
             if folder.is_dir() and not folder.name.startswith("."):
+                if not self._has_any(folder, LOCAL_DATA_PATTERNS):
+                    continue
                 name = folder_to_dataset(folder.name)
                 info = self._derive_local_fields(
                     DatasetInfo(name=name, source=self.source_of(name)))
