@@ -27,7 +27,9 @@ matches with per-type bodyId pools, but nothing verifies the pairing at
    bodyId by global cross-dataset connectivity evidence (§3);
 2. **expand** — from the homolog finding, add the examinee neurons the
    type mapping missed, cross-referenced against the mapping structure
-   and the morphology (§4, §6);
+   and the morphology (§4, §6); stage 5d then asks the same finding the
+   reverse question of the neurons it added, as advisory reciprocal
+   evidence (§4.6a);
 3. **visualize** — one 3D scene per parent mapping group with the full
    classification in the legend (§8).
 
@@ -244,6 +246,133 @@ surfaces in the scene as a ` (dup)` suffix on the category root (e.g.
 `candidates · CB4091 (no_source) (dup)`). The mapper already
 deduplicates each branch's in-map set; the dedup pass is a safeguard.
 
+### 4.6a Reciprocal homolog evidence (stage 5d, advisory)
+
+The forward pipeline answers "which target does each source neuron
+prefer?". **Stage 5d** asks the mirror question of the neurons the
+expansion proposed: each member of the `candidates` / `family` /
+`relative` bins — plus, by default, the UNMATCHED validated pool targets
+(matched / verified / borderline are already mapped; the symmetric
+forward score is their evidence) — is reverse-scanned against the
+**whole SOURCE
+universe** with the same homolog-finding scorer (§3's
+`expanded_vector` / `scan_source`), and asked "which SOURCE neuron do you
+prefer, and is it the one our branch claims?". It runs after
+`finalize_categories` (where `family`/`relative` are first enumerated)
+and before the coverage / layered-fill rollups, then rebuilds the
+bodyId-unique dedup so the labels reach `gap_fill/gap_fill_levels.csv`.
+
+Verdict vocabulary (`comparison/body_id_resolver.py`:
+`BACKWARD_EVIDENCE_VALUES`, `BACKWARD_COLUMNS`, `blank_backward_fields`,
+`classify_backward_scan`, `serialize_backward_topN`,
+`THIN_SHARED_TYPE_COUNT`, `reverse_source_column`), over
+`backward_evidence ∈ high | medium | low | not-checked`:
+
+The three scanned grades measure how prominently hits of the claiming
+branch's **OWN source type** rank in the reverse scan
+(`_grade_by_branch_type`) — pure rank evidence: no score bar, no
+pool-membership gate. Such a hit counts wherever it lives;
+`backward_top1_in_branch` records the separate pool-membership fact as
+context on the row, never as the verdict.
+
+- **`high`** — such a hit is the **top-1** by `rank_union_rank` or by
+  `jaccard_rank`.
+- **`medium`** — such a hit sits within the **top-3** of either ranking.
+- **`low`** — outside both top-3 windows, or nothing usable ranked at all.
+  There is no separate "nothing found" state: a scan that ranked nothing
+  grades `low`, so a `low` is a **graded negative, not silence**.
+- **`not-checked`** — not scanned: the pass is off, the neuron was over the
+  per-run / per-branch budget, it is not a gap-fill member, or it has no
+  usable profile (missing, untyped or skipped — that case is *never*
+  reported as `low`, which claims the scan ran).
+  `backward_scanned_at` records WHY (`disabled` / `cap` / `run` /
+  `no_profile` / `error`), so an unchecked row is never read as a negative
+  result.
+
+**Two hard invariants, both deliberate.**
+
+1. **Connectivity only** — no morphology is re-scored here: candidates
+   are already morph-qualified, and family/relative members are
+   morph-similar to the query or to those candidates. The pass counters
+   state it (`morph = 'not evaluated (connectivity-only)'`).
+2. **Advisory** — the pass never changes a `category`, any
+   `counts_toward_*` flag, or a fill `level`; the `high / medium / low /
+   type_gated / advice` ladder stays the morph-bar strength ordering
+   (§6). The reverse fact rides `gap_fill/gap_fill_levels.csv`'s
+   `evidence` column (as `backward_high` / `backward_medium` /
+   `backward_low`) beside its own `backward_evidence` column, so the
+   run's fill totals stay identical to a run without the pass. It is
+   fail-open like the other advisory layers: a failure leaves the rows
+   `not-checked`.
+
+**The evidence base is published, not inferred.** `rank_union` ranks the
+*union* of the two partner-type vectors and enters a type one side lacks as
+0.0, so the value alone cannot say whether it was computed over 1 shared
+partner type or 20 — and a high `rank_union` CAN rest on almost
+nothing (of 819 random source pairs above 0.1, 209 rest on ≤ 3 shared types;
+in the r9 run none of the 46 in-branch reverse hits did, median 16). The
+scorer already counts both numbers, so every backward row carries
+`backward_shared_type_count` / `backward_union_type_count` plus
+`backward_thin_evidence` (True at ≤ `THIN_SHARED_TYPE_COUNT` = 3). Nothing
+else moves: no score, no bar, no `backward_evidence` verdict, no fill total.
+Padding short vectors with placeholder partners was measured and rejected —
+per-neuron distinct pads leave cosine exactly unchanged, act as a crude
+length penalty that demotes nothing (0 of those 819 fall below 0.1), and
+shared-name pads inflate jaccard 0.30 → 0.80, while these two counts say the
+same thing directly (plan §17 / §17b).
+
+Knobs (all in `parameters.json`): `backward_evidence_enabled` (default
+**False**; CLI `--backward-evidence`), `backward_top_n` (5, the number of
+reverse hits serialized into `backward_topN`), `backward_max_neurons`
+(300 — the per-run budget of dataset-scale scans),
+`backward_per_branch_cap` (40), `backward_scan_pool_targets` (True; CLI
+`--no-backward-pool-targets`), `skip_backward_pass` (False; CLI
+`--skip-backward-pass`). One reverse scan costs what a forward source
+scan costs (§10), so a bodyId is scanned **once for all branches** and
+everything past the caps stays `not-checked`. The budget is spent in role
+order — `candidates` / `family` / `relative` members first, the unmatched
+pool targets only with what is left. (While the pool scan still included
+matched / verified / borderline controls, an unordered 120-scan run spent
+102 scans on them and capped out half of the three bins; since
+2026-09-19 those controls are not scanned at all — the symmetric forward
+score is their evidence.)
+
+Side effect that matters for §4.6b: reverse-scanning pool members (the
+unmatched ones since 2026-09-19) yields each scanned pool target's
+**column ranked over the whole source
+universe**, and that is fed back into `categorize_pool_sources` (new
+`reverse_columns` parameter). Before stage 5d, `n_competitors` was
+structurally 0 — a forward column can only ever contain the branch's own
+sources — so `source-borderline` / `source-unmatched` were unreachable;
+out-of-branch rivals above a source are now real.
+
+Precondition (P0, amended): a neuron's expanded vector must not depend on
+which ROLE it plays. It does not — measured, not assumed: rescoring every
+r9 + r11 pair straight from the cache parquet reproduced the stored forward
+`rank_union` on 272/272 pairs (`<1e-12`), no scored pair involved a sub-k row,
+and `score_one_candidate_fast(a, b) == score(b, a)` holds exactly. So
+`_preflight_target_profiles` guarantees only that a profile EXISTS (missing
+ids get built); rows whose `top_k_bodyid_used` is below the run's `top_k` are
+**counted, not rebuilt** (`_below_k_cache_ids`, pre-flight stats key
+`below_k`, and `source_vectors_below_k` in the stage-5d counters →
+`set_coverage.json` + a Reciprocal-tab line). It is a SPARSITY statement:
+3,897 of 139,255 FAFB and 5,265 of 176,422 MCNS rows hold fewer partner
+types than k=25, and 81% / 87% of those sit at ≤ 5 because
+`_process_connections` sets `k_used = min(max_k, n_rows)`. Rebuilding cannot
+converge (r9 rebuilt 6,883, r10 rebuilt the same 3,897 again, ~2,300 s per
+run for no change), which is why the refresh was cut back to a counter.
+
+Exported: `expansion/backward_matches.csv` (one row per (branch, member)
+with the reverse top-1, its metric values + ranks, the shared/union type
+counts, `backward_n_out_of_branch`, the advisory size-caliber pair, the
+`thin` flag and the serialized `backward_topN` neighbourhood) plus the
+`backward_*` columns riding
+`validation/examinees.csv`, `validation/deep_candidates.csv`,
+`expansion/family_candidates.csv`, `expansion/relatives.csv`,
+`gap_fill/gap_fill_dedup.csv` and `gap_fill/gap_fill_levels.csv`.
+Surfaces: the report's **Reciprocal** tab (§9) and the scenes' leaf
+suffixes (§8).
+
 ### 4.6b Backward source status (advisory)
 
 The same bodyId-bodyId pair scores power a **column view**: for each pool
@@ -265,7 +394,12 @@ convergence remains visible via the sibling category). **Advisory only** — the
 targets remain the validated entities; statuses never gate and never
 enter the dedup. Exported as `source_status.csv` +
 `set_coverage.fafb.source_status`; rendered in the report's Backward tab
-(plan `plan-backward-source-status.md`).
+(plan `plan-backward-source-status.md`).  When stage 5d ran (§4.6a) its
+reverse scans feed these columns (`categorize_pool_sources(reverse_columns=…)`):
+a forward-only column can hold just the branch's own sources, so
+`n_competitors` is structurally 0 there and `source-borderline` /
+`source-unmatched` become reachable only once the whole-source-universe
+columns are in play.
 
 ### 4.6c Same-name-first consumers (advisory)
 
@@ -435,7 +569,9 @@ target-vector build time.
   `medium` (Track-A backup `B_b − Δ`) / `low` (run null bar) for
   candidates, `type_gated` (family), `advice` (relative); hole-closing
   candidates are annotated. `set_coverage.json` mirrors the levels in
-  `gap_fill_by_level`.
+  `gap_fill_by_level`. The level stays the morph-bar strength ordering:
+  stage 5d's reverse label rides the row's `evidence` /
+  `backward_evidence` columns, never the level (§4.6a).
 - **Sibling layers start hidden**: in family/aggressive scenes the
   `sibling` group renders with its legend row present but the traces off —
   one eye click restores them (siblings are in-map members already shown
@@ -544,6 +680,14 @@ leaf:
   `{T}(no_source)` (foreign type, no route), else `untyped`.
 - `(dup)` is a **standalone trailing tag** (on any of the four) marking a
   bodyId that recurs across branches.
+- On a stage-5d run, a scanned `candidates` / `family` / `relative` leaf
+  additionally suffixes with its reciprocal grade: `· high` (the branch's
+  own source type is the top-1 by rank_union or jaccard) / `· medium`
+  (within a top-3 of either) / `· low` (outside both top-3 windows). A
+  not-checked member keeps a **bare leaf** — absence is never drawn as a
+  negative (§4.6a). The grade is pure rank evidence (user 2026-09-19): no
+  score bar, no pool-membership gate — `backward_top1_in_branch` and the
+  size-ratio caliber stay on the row as context.
 
 Leaves inside a root are sorted by `type + suffix` (not by bodyId), and
 each root always renders even when it holds a single leaf.
@@ -595,7 +739,8 @@ one ordered enum; a shared neuron's category is identical across modes
 
 The new taxonomy (§4) is exported additively: a primary `category` column
 plus the annotations, with the legacy `invader_class`/`invader_label`
-columns retained for compatibility.
+columns retained for compatibility. The table lists FILE NAMES; §9.1
+gives the subfolder each one lives in.
 
 | file | content |
 | --- | --- |
@@ -606,17 +751,51 @@ columns retained for compatibility.
 | `deep_candidates.csv` | deep-window `examinees` rows (aggressive only) with `candidate_source='deep_window'` |
 | `gap_fill_proposals.csv` | proposals with `fill_class` (in/out of pool), `category`, `counts_toward_restrictive_fill`, `counts_toward_family_fill` |
 | `family_candidates.csv` | the whole `family` bin — enumerated members ∪ evidence rows classified `family`, per branch+bodyId (family/aggressive modes) |
+| `backward_matches.csv` | stage 5d (`--backward-evidence` only): one row per (branch, scanned member) of `candidates`/`family`/`relative` (+ the pool-target control) — `member_bodyId`/`member_type`/`member_category`/`scan_role`, then `backward_evidence` with the reverse top-1 (`backward_top1_source_bodyId`/`_type`/`_in_branch`), the two metric values + ranks, the evidence base (`backward_shared_type_count`/`_union_type_count`, `backward_thin_evidence` at ≤3 shared), `backward_n_out_of_branch`, the caliber pair, and the serialized `backward_topN` neighbourhood; advisory, connectivity only (§4.6a) |
 | `gap_fill_dedup.csv` | query-level bodyId dedup with `dedup_category` (precedence §4.6) and `dup` |
 | `set_coverage.json` | set-level coverage: FAFB assigned/proposed/unpaired rollup, MCNS in-pool/candidates/holes per type, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) and `mapper_gap` (types with no backward mapping) |
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size` |
-| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, and the stage skip flags |
+| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches, fills, out-map expansion, morphology record, scenes, file index; hover-glossary on every term; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches, fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: top-1 in the cell, top-N on hover), out-map expansion, backward source status, morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
-| `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap) |
+| `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap, `[reciprocal]` own-source-type top-3 counts) — the `[reciprocal]` line is also quoted verbatim in `report.html`'s Warnings section as a derived advisory |
 | `visualization/*.html` | tree-legend scenes per parent group |
+
+### 9.1 Run-folder layout
+
+Since 2026-09-19 the evidence CSVs are grouped by pipeline stage; the run
+root keeps only the deliverables and the parameter/meta surface
+(`visualization/` was already a subfolder):
+
+```
+{run dir}/
+├── report.html / README.txt / _UserGuide_please_read_me.*
+├── parameters.json / set_coverage.json / morphology_calibration.json
+├── pipeline_progress.jsonl / user_warning_notes.txt
+├── validation/   validation_results · pair_summary · pool_categories
+│                 · examinees · deep_candidates · noise_filtered_candidates
+├── expansion/    family_candidates · relatives · out_map_expansion
+│                 · source_candidates · source_status · backward_matches
+├── gap_fill/     gap_fill_dedup · gap_fill_levels · gap_fill_proposals
+├── mapping/      mapping_export · same_name_excluded · suspects_verification
+└── visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/*.html
+```
+(CSV names shown without their `.csv` suffix; every evidence file lives
+in exactly ONE category subfolder, and the root holds ONLY the listed
+deliverables + parameter/meta.)
+
+`RUN_FILE_LAYOUT` + `run_file_path()` in `mapping_validation.py` are the
+ONE registry: writers resolve with `create_parent=True`, readers fall back
+to the pre-2026-09-19 FLAT path when only that exists, so an OLD run
+folder still regenerates its report untouched (a filename used to be
+hard-coded in six places). `utils/naming_utils.RUN_FOLDER_PREFIXES` lists
+`type-map-validation` as a run-folder prefix (the storage inventory had
+mistaken these folders for nested run folders), and `storage_inventory.py`
+registers the tool as all-deliverable (no re-downloadable source data, so
+nothing is prunable).
 
 ## 10. Performance (measured, FAFB → male-cns, warm caches)
 
@@ -630,6 +809,13 @@ Dominant costs: per-source global scans (~4–7 s/source scalar numpy),
 Track-A NBLAST (~0.2–1 s/pair), scene rendering (~1 s/neuron).
 Track B is near-free after the first vector-cache warm-up (computed
 vectors persist in `cache/{ds}/find_similar/morphology/`).
+Stage 5d costs about one forward source scan per member: the scorer and
+the universe size are the same on both axes (the r8 reference run's
+out-map expansion measured 207 s for 30 forward scans of the 172 k-neuron
+MCNS universe), and its equally large source universe builds once in ≈ 5
+s. That is why it is capped (`backward_max_neurons` /
+`backward_per_branch_cap`) and why a neuron is scanned ONCE for all the
+branches that claim it (§4.6a).
 
 ## 11. Known limitations
 

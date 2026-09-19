@@ -34,6 +34,7 @@ from comparison.mapping_validation import (  # noqa: E402
     compute_set_coverage,
     expanded_vector,
     prep_target_stats,
+    run_file_path,
     scan_source,
     _write_csv,
 )
@@ -247,7 +248,7 @@ def test_p2_same_name_excluded_csv_export(tmp_path):
         'rivals': 'ORN_DA1;ORN_DA4m', 'reason': 'same_name_fanout'}]
     MappingValidator._write_outputs(
         v, [], [], [], None, [], [], set_coverage={})
-    out = pd.read_csv(tmp_path / 'same_name_excluded.csv')
+    out = pd.read_csv(run_file_path(tmp_path, 'same_name_excluded.csv'))
     assert len(out) == 1
     assert out.iloc[0]['disposition'] == 'gated_held'
 
@@ -358,11 +359,13 @@ def test_p3_csv_only_written_when_enabled(tmp_path):
         {'source_type': 'T', 'target_type': 'R', 'verdict': 'unmatched'}]
     MappingValidator._write_outputs(
         v, [], [], [], None, [], [], set_coverage={})
-    assert not (tmp_path / 'suspects_verification.csv').exists()
+    assert not run_file_path(
+        tmp_path, 'suspects_verification.csv').exists()
     v.cfg.verify_suspects = True
     MappingValidator._write_outputs(
         v, [], [], [], None, [], [], set_coverage={})
-    assert (tmp_path / 'suspects_verification.csv').exists()
+    assert run_file_path(
+        tmp_path, 'suspects_verification.csv').exists()
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +490,7 @@ def test_source_candidates_csv_export(tmp_path):
     v._source_candidates_multi = set()
     MappingValidator._write_outputs(
         v, [], [], [], None, [], [], set_coverage={})
-    out = pd.read_csv(tmp_path / 'source_candidates.csv')
+    out = pd.read_csv(run_file_path(tmp_path, 'source_candidates.csv'))
     assert len(out) == 1
     assert out.iloc[0]['branch_source_type'] == 'sA'
     assert out.iloc[0]['branch_target_type'] == 'T1'
@@ -566,8 +569,10 @@ def test_empty_exports_are_header_only(tmp_path):
         v, [], [], [], None, [], [], set_coverage={})
     for name in ('deep_candidates.csv', 'same_name_excluded.csv',
                  'source_candidates.csv', 'out_map_expansion.csv',
-                 'examinees.csv', 'pair_summary.csv'):
-        df = pd.read_csv(tmp_path / name)  # must not raise
+                 'examinees.csv', 'pair_summary.csv',
+                 'backward_matches.csv'):
+        df = pd.read_csv(run_file_path(tmp_path, name))  # must not raise
         assert len(df) == 0, name
-    hdr = (tmp_path / 'same_name_excluded.csv').read_text().strip()
+    hdr = run_file_path(
+        tmp_path, 'same_name_excluded.csv').read_text().strip()
     assert hdr.startswith('query,source_type')

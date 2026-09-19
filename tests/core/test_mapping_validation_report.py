@@ -249,25 +249,25 @@ def test_warnings_and_notes_header_discipline(run_dir: Path, capsys):
 
     notes = run_dir / "user_warning_notes.txt"
     append_warning_notes(run_dir, warns)
-    first = notes.read_text()
+    first = notes.read_text(encoding="utf-8")
     assert first.startswith("User warning notes\n===\n") or \
         first.startswith("User warning notes\n==")
     append_warning_notes(run_dir, ["[x] second block"])
-    second = notes.read_text()
+    second = notes.read_text(encoding="utf-8")
     assert "[x] second block" in second and len(second) > len(first)
     # legacy headerless file is healed
     legacy = run_dir / "legacy"
     legacy.mkdir()
     (legacy / "user_warning_notes.txt").write_text("old scratch note\n")
     append_warning_notes(legacy, ["[y] healed"])
-    healed = (legacy / "user_warning_notes.txt").read_text()
+    healed = (legacy / "user_warning_notes.txt").read_text(encoding="utf-8")
     assert healed.startswith("User warning notes")
     assert "old scratch note" in healed and "[y] healed" in healed
 
     # regeneration idempotency: re-appending the same blocks is a no-op
-    before = notes.read_text()
+    before = notes.read_text(encoding="utf-8")
     append_warning_notes(run_dir, warns)
-    assert notes.read_text() == before
+    assert notes.read_text(encoding="utf-8") == before
 
 
 def test_mapper_gap_fallback_chain(run_dir: Path):
@@ -281,11 +281,11 @@ def test_mapper_gap_fallback_chain(run_dir: Path):
     assert d2["mapper_gap"] == {"OTHER": 3}
     assert d2["mapper_gap_untyped"] == 1
     # 3) set_coverage.json payload (new runs, slim README has no block)
-    sc = json.loads((run_dir / "set_coverage.json").read_text())
+    sc = json.loads((run_dir / "set_coverage.json").read_text(encoding="utf-8"))
     sc["mapper_gap"] = {"types": {"FROMJSON": 9}, "untyped_rows": 0}
     (run_dir / "set_coverage.json").write_text(json.dumps(sc))
     (run_dir / "README.txt").write_text(
-        (run_dir / "README.txt").read_text().replace(
+        (run_dir / "README.txt").read_text(encoding="utf-8").replace(
             "  SMP217: 44 row(s)\n  (untyped): 2 row(s) - no type "
             "annotation at all\n", ""))
     d3 = collect_run_data(run_dir)
@@ -329,7 +329,7 @@ def test_out_map_expansion_keeps_morph_columns(tmp_path: Path):
     import sys as _sys
     _sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
     from comparison.mapping_validation import MappingValidator, \
-        MappingValidationConfig
+        MappingValidationConfig, run_file_path
 
     v = MappingValidator.__new__(MappingValidator)
     v.cfg = MappingValidationConfig(
@@ -345,7 +345,10 @@ def test_out_map_expansion_keeps_morph_columns(tmp_path: Path):
            "morph_qualified": True}
     v._write_outputs([], [], [], [], None, None, [], [],
                      out_map_rows=[row])
-    text = (tmp_path / "out_map_expansion.csv").read_text()
+    # resolved through the layout registry (expansion/ since 2026-09-19) so
+    # this stays a morph-column regression test, not a path test
+    text = run_file_path(tmp_path, "out_map_expansion.csv").read_text(
+        encoding="utf-8")
     assert "morph_v2_similarity" in text and "morph_qualified" in text
 
 
@@ -355,7 +358,7 @@ def test_no_scene_run_display(run_dir: Path):
     import shutil
     shutil.rmtree(run_dir / "visualization")
     readme = run_dir / "README.txt"
-    kept = [ln for ln in readme.read_text().splitlines()
+    kept = [ln for ln in readme.read_text(encoding="utf-8").splitlines()
             if "self-check [A]" not in ln]
     readme.write_text("\n".join(kept) + "\n")
 
@@ -378,13 +381,14 @@ def test_slim_readme_contract(tmp_path: Path):
         target_dataset = "dsB"
         query_types = ["q1"]
         effective_mode = "family"
+        run_label = "stub"
 
     v = MappingValidator.__new__(MappingValidator)
     v.cfg = _Cfg()
     v.notes = ["[stage 1] ok", "    ! a failure line"]
     v.run_dir = tmp_path
     v._write_readme([], None, None)
-    text = (tmp_path / "README.txt").read_text()
+    text = (tmp_path / "README.txt").read_text(encoding="utf-8")
     assert "Start here:" in text
     assert "report.html" in text
     assert "Run log:" in text
@@ -407,18 +411,19 @@ def test_readme_refresh_contract(tmp_path: Path):
         target_dataset = "dsB"
         query_types = ["q1"]
         effective_mode = "family"
+        run_label = "stub"
 
     v = MappingValidator.__new__(MappingValidator)
     v.cfg = _Cfg()
     v.run_dir = tmp_path
     v.notes = ["[stage 1] ok"]
     v._write_readme([], None, None)
-    assert "done in" not in (tmp_path / "README.txt").read_text()
+    assert "done in" not in (tmp_path / "README.txt").read_text(encoding="utf-8")
     # the run() tail: closing lines are logged, then the refresh
     v.notes.append("[TMVEV] report written: …/report.html")
     v.notes.append("done in 3315s -> …/type-map_run")
     v._write_readme([], None, None)
-    text = (tmp_path / "README.txt").read_text()
+    text = (tmp_path / "README.txt").read_text(encoding="utf-8")
     assert "done in 3315s" in text
     assert text.index("Start here:") < text.index("done in 3315s")
 
@@ -428,7 +433,7 @@ def test_branch_bar_join_accepts_query_prefixed_keys(run_dir: Path):
     plain 'src->tgt' in v3r7-era runs — the Branches tab must resolve
     both (found via the 2026-09-17 real-run inspection)."""
     import json
-    cal = json.loads((run_dir / "morphology_calibration.json").read_text())
+    cal = json.loads((run_dir / "morphology_calibration.json").read_text(encoding="utf-8"))
     cal["branch_bars"] = {
         f"q1|{k}": v for k, v in cal["branch_bars"].items()}
     (run_dir / "morphology_calibration.json").write_text(json.dumps(cal))
@@ -442,7 +447,7 @@ def test_track_a_unavailable_run_surfaced(run_dir: Path):
     report must flag it loudly instead of rendering '—' bars and a
     'bar None' advisory."""
     import json
-    cal = json.loads((run_dir / "morphology_calibration.json").read_text())
+    cal = json.loads((run_dir / "morphology_calibration.json").read_text(encoding="utf-8"))
     cal.update({"n_verified_scored": 0, "n_suspicious_scored": 0,
                 "track_a_null_bar": None, "track_a_null_n": 0})
     for spec in cal["branch_bars"].values():

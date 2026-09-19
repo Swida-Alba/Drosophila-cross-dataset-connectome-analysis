@@ -45,6 +45,7 @@ from comparison.mapping_validation import (  # noqa: E402
     expanded_vector,
     passes_target_quality_gate,
     prep_target_stats,
+    run_file_path,
     scan_source,
 )
 from comparison.mapping_validation_visualize import (  # noqa: E402
@@ -2083,17 +2084,17 @@ def test_rev312_csv_invariants_acceptance(tmp_path):
                      per_pair[('s-CPDN3C', 'T1')]['pool_detail'],
                      dedup_rows=dedup)
     # examinees CSV: every in-scope row has a category; out-of-scope blank
-    sc = pd.read_csv(tmp_path / 'examinees.csv')
+    sc = pd.read_csv(run_file_path(tmp_path, 'examinees.csv'))
     insc = sc[sc['in_scope'].astype(bool)]
     assert (insc['category'].fillna('') != '').all()
     oos = sc[~sc['in_scope'].astype(bool)]
     assert (oos['morph_failed'].astype(bool)).all()
     # fill CSV: target-side rows are classified (not blank) — D1 fix
-    gf = pd.read_csv(tmp_path / 'gap_fill_proposals.csv')
+    gf = pd.read_csv(run_file_path(tmp_path, 'gap_fill_proposals.csv'))
     assert gf['category'].notna().all()
     assert (gf['category'].fillna('') != '').all()
     # dedup: bodyId-unique
-    dd = pd.read_csv(tmp_path / 'gap_fill_dedup.csv')
+    dd = pd.read_csv(run_file_path(tmp_path, 'gap_fill_dedup.csv'))
     assert dd['target_bodyId'].is_unique
     assert set(dd['dedup_category']) <= {
         'matched', 'verified', 'borderline', 'unmatched', 'sibling',

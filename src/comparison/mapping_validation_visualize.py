@@ -325,6 +325,16 @@ def build_category_buckets(res, validator, pair, suspicious_cap: int
     return buckets, bucket_order
 
 
+#: Stage 5d leaf suffix (plan-tmvev-backward-expansion-evidence D8): the
+#: reciprocal verdict rides the legend leaf so the picture and
+#: ``expansion/backward_matches.csv`` state the same thing.  ``not-checked``
+#: deliberately has NO entry: an unchecked member keeps a bare leaf rather
+#: than implying a negative.
+_BACKWARD_LEAF_TAG = {'high': '· high',
+                      'medium': '· medium',
+                      'low': '· low'}
+
+
 def _cat_of_key(key: str) -> str:
     return key.split(' · ')[0]
 
@@ -947,6 +957,31 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         rec['leaf_token'][bid] = token
                         rec['tags'][bid] = tag
                         rec['sort_key'][bid] = f'{token} {tag}'.strip()
+
+                # Stage 5d (plan-tmvev-backward-expansion-evidence): ride the
+                # reciprocal verdict on the leaf tag so the picture and
+                # expansion/backward_matches.csv cannot disagree.  Unscanned
+                # members (pass off, beyond cap) keep a bare leaf.
+                bev_labels = (getattr(validator, '_backward_label_by_bid',
+                                      None) or {})
+                if bev_labels:
+                    for key in bucket_order:
+                        cat_name = _cat_of_key(key)
+                        if cat_name not in ('candidates', 'family',
+                                            'relative'):
+                            continue
+                        rec = buckets[key]
+                        for bid in rec['ids']:
+                            suffix = _BACKWARD_LEAF_TAG.get(
+                                bev_labels.get(int(bid)) or '')
+                            if not suffix:
+                                continue
+                            tag = f"{rec['tags'].get(bid) or ''} " \
+                                  f"{suffix}".strip()
+                            rec['tags'][bid] = tag
+                            rec['sort_key'][bid] = (
+                                f"{rec['leaf_token'].get(bid, '')} "
+                                f"{tag}").strip()
 
                 def add_invader_layers():
                     for key in sorted(bucket_order, key=lambda k: (

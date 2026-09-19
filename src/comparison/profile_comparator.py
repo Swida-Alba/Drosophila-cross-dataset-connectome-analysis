@@ -3480,7 +3480,7 @@ class HomologFinder:
             ))
             json_filename = f'direct_comparison_{safe_neurons}_{timestamp}_params.json'
             json_filepath = os.path.join(out_dir, json_filename)
-            with open(json_filepath, 'w') as f:
+            with open(json_filepath, 'w', encoding='utf-8') as f:
                 json.dump(params, f, indent=2, default=str)
             self._log(f"Saved parameters to: {json_filepath}")
         
@@ -7388,7 +7388,7 @@ class HomologFinder:
                 'warnings': list(morph_state.warnings),
             }
             json_path.parent.mkdir(parents=True, exist_ok=True)
-            json_path.write_text(json.dumps(payload, indent=2))
+            json_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
             self._log("Saved: results/morph_qualification.json")
         except Exception as exc:
             self._log(f"Warning: could not write morph-qualification "
@@ -7542,7 +7542,7 @@ class HomologFinder:
 
         # 4) README.txt summarizing all query types.
         readme = combined_path / 'README.txt'
-        with open(readme, 'w') as f:
+        with open(readme, 'w', encoding='utf-8') as f:
             f.write("=" * 70 + "\n")
             f.write("  HOMOLOG FINDING RESULTS (MULTI-QUERY)\n")
             f.write("=" * 70 + "\n\n")
@@ -7574,7 +7574,7 @@ class HomologFinder:
                 'per_type_metadata': 'by_type/<query_type>/auto_type_mapping.json',
             })
             (combined_path / 'auto_type_mapping.json').write_text(
-                json.dumps(mapping_meta, indent=2, default=str))
+                json.dumps(mapping_meta, indent=2, default=str), encoding='utf-8')
         except Exception as exc:
             self._log(f"Warning: could not write combined mapping metadata: {exc}")
 
@@ -7754,7 +7754,9 @@ class HomologFinder:
                 'target_dataset': target_dataset,
             })
             mapping_path = output_path / 'auto_type_mapping.json'
-            mapping_path.write_text(json.dumps(mapping_meta, indent=2, default=str))
+            mapping_path.write_text(
+                json.dumps(mapping_meta, indent=2, default=str),
+                encoding='utf-8')
             files_saved.append(str(mapping_path))
         except Exception:
             pass
@@ -7763,7 +7765,7 @@ class HomologFinder:
         
         # 1. Save README.txt with parameters, summary, and shuffle test results
         readme_file = output_path / 'README.txt'
-        with open(readme_file, 'w') as f:
+        with open(readme_file, 'w', encoding='utf-8') as f:
             f.write("=" * 70 + "\n")
             f.write("  HOMOLOG FINDING RESULTS\n")
             f.write("=" * 70 + "\n\n")
@@ -7950,7 +7952,7 @@ class HomologFinder:
         # 3. Save shuffle test results as JSON
         if shuffle_stats:
             shuffle_file = results_dir / 'shuffle_test.json'
-            with open(shuffle_file, 'w') as f:
+            with open(shuffle_file, 'w', encoding='utf-8') as f:
                 # Convert to JSON-serializable format, excluding DataFrames and complex objects
                 serializable_stats = {}
                 exclude_keys = ['real_results', 'shuffled_results']  # These are DataFrames
@@ -7990,7 +7992,7 @@ class HomologFinder:
         # This provides detailed breakdown of source neuron connectivity status
         if source_status_summary is not None:
             status_summary_file = results_dir / 'source_status_summary.json'
-            with open(status_summary_file, 'w') as f:
+            with open(status_summary_file, 'w', encoding='utf-8') as f:
                 json.dump(source_status_summary, f, indent=2)
             files_saved.append('results/source_status_summary.json')
             self._log("Saved: results/source_status_summary.json")
@@ -9859,7 +9861,10 @@ class HomologFinder:
             shuffle_dist_df.to_csv(output_path / 'shuffled_score_distribution.csv', index=False)
             
             # Save summary
-            with open(output_path / 'summary.txt', 'w') as f:
+            # The summary carries ± → ✓ ✗, none of which exist in the GBK
+            # code page used by default on zh-CN Windows hosts; without an
+            # explicit encoding the write raises UnicodeEncodeError there.
+            with open(output_path / 'summary.txt', 'w', encoding='utf-8') as f:
                 f.write(summary)
             
             self._log(f"\nResults saved to: {output_path}")
@@ -12423,7 +12428,7 @@ class ConnectivityProfileComparer:
             type_mapper=self._type_mapper,
         ))
 
-        with open(output_path / 'parameters.json', 'w') as f:
+        with open(output_path / 'parameters.json', 'w', encoding='utf-8') as f:
             json.dump(params, f, indent=2, default=str)
         
         # Save README
@@ -12468,7 +12473,7 @@ class ConnectivityProfileComparer:
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ]
         
-        with open(output_path / 'README.txt', 'w') as f:
+        with open(output_path / 'README.txt', 'w', encoding='utf-8') as f:
             f.write('\n'.join(readme_lines))
         
         # === Save Type-Level Results ===
@@ -12521,7 +12526,7 @@ class ConnectivityProfileComparer:
             }
             
             profile_path = individual_dir / f'{safe_label}_profile.json'
-            with open(profile_path, 'w') as f:
+            with open(profile_path, 'w', encoding='utf-8') as f:
                 json.dump(profile_data, f, indent=2)
             saved_files['profiles_saved'].append(str(profile_path))
         
@@ -12542,7 +12547,7 @@ class ConnectivityProfileComparer:
             }
             
             profile_path = aggregated_dir / f'{safe_label}_profile.json'
-            with open(profile_path, 'w') as f:
+            with open(profile_path, 'w', encoding='utf-8') as f:
                 json.dump(profile_data, f, indent=2)
             saved_files['profiles_saved'].append(str(profile_path))
         
@@ -13162,7 +13167,7 @@ class ConnectivityProfileComparer:
             for label, profile in profiles.items():
                 safe_label = self._safe_folder_name(label)
                 profile_path = ds_dir / f'{safe_label}_profile.json'
-                with open(profile_path, 'w') as f:
+                with open(profile_path, 'w', encoding='utf-8') as f:
                     json.dump(profile.to_dict(), f, indent=2)
                 saved['profiles_saved'].append(str(profile_path))
 
@@ -13178,7 +13183,7 @@ class ConnectivityProfileComparer:
                 if not str(profile_data.get('instance') or '').strip():
                     profile_data['instance'] = _body_id_instance_name(
                         profile.dataset, bid)
-                with open(profile_path, 'w') as f:
+                with open(profile_path, 'w', encoding='utf-8') as f:
                     json.dump(profile_data, f, indent=2)
                 saved['profiles_saved'].append(str(profile_path))
 
@@ -13243,7 +13248,7 @@ class ConnectivityProfileComparer:
             partner_resolution_counts=dict(self._expansion_status_counts),
             raw_fallback_used=self.mapping_raw_fallback_used,
         ))
-        with open(output_path / 'parameters.json', 'w') as f:
+        with open(output_path / 'parameters.json', 'w', encoding='utf-8') as f:
             json.dump(params, f, indent=2, default=str)
         
         # --- README.txt ---
@@ -13893,7 +13898,7 @@ class ConnectivityProfileComparer:
                 if not str(profile_data.get('instance') or '').strip():
                     profile_data['instance'] = _body_id_instance_name(
                         profile.dataset, profile.neuron_id)
-                with open(profile_path, 'w') as f:
+                with open(profile_path, 'w', encoding='utf-8') as f:
                     json.dump(profile_data, f, indent=2)
         
         # Save metadata
@@ -13921,7 +13926,7 @@ class ConnectivityProfileComparer:
             self._log(f"Warning: could not build mapping metadata: {exc}")
         
         metadata_path = os.path.join(base_dir, "metadata.json")
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2)
         
         return {

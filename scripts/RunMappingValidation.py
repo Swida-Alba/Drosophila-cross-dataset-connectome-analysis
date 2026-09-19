@@ -16,7 +16,16 @@ Examples
         --source flywire_FAFB_v783 --target male-cns:v1.0 \
         --types circadian_clock --label circadian_full
 
-Results land in local_data/mapping_validation/<src>_to_<tgt>_<label>_<ts>/
+    # review the proposed fill with the advisory reciprocal evidence
+    python scripts/RunMappingValidation.py \
+        --source flywire_FAFB_v783 --target male-cns:v1.0 \
+        --types s-CPDN3C,s-CPDN3D --mode family --backward-evidence
+
+Results land in {--output-dir}/type-map-validation_{SRC}_to_{TGT}_{ts}/
+(short dataset nicknames, YYYYMMDD_HHMMSS stamp; --label is recorded in
+parameters.json and README.txt, not in the folder name). The evidence
+CSVs are grouped into validation/, expansion/, gap_fill/ and mapping/;
+the root keeps report.html, the run guide and the parameter/meta files.
 """
 
 import argparse
@@ -44,7 +53,10 @@ def parse_args(argv=None):
     p.add_argument('--types', required=True,
                    help='comma-separated source types or coarse '
                         'categories (e.g. APDN3,s-CPDN3A or circadian_clock)')
-    p.add_argument('--label', default='run', help='run folder label')
+    p.add_argument('--label', default='run',
+                   help='run label recorded in parameters.json and the '
+                        'report (the folder name keeps prefix + datasets '
+                        '+ timestamp)')
     p.add_argument('--output-dir', default=None,
                    help='base output dir (default: local_data/'
                         'mapping_validation)')
@@ -123,6 +135,29 @@ def parse_args(argv=None):
     p.add_argument('--deep-cap', type=int, default=10,
                    help='max deep-window candidates kept per source '
                         'neuron (Rev 3.8; default 10)')
+    p.add_argument('--backward-evidence', action='store_true',
+                   help='stage 5d: reverse (target -> source) scans label '
+                        'the expansion bins — ADVISORY only, never gates '
+                        'nor relabels a row; connectivity only, no '
+                        'morphology re-scored (default OFF)')
+    p.add_argument('--skip-backward-pass', action='store_true',
+                   help='stage 5d: force-skip the backward pass even when '
+                        '--backward-evidence is set')
+    p.add_argument('--backward-top-n', type=int, default=5,
+                   help='stage 5d: reverse hits kept per neuron (the '
+                        'report hover label; default 5)')
+    p.add_argument('--backward-max-neurons', type=int, default=300,
+                   help='stage 5d: hard budget on dataset-scale reverse '
+                        'scans per run (default 300)')
+    p.add_argument('--backward-per-branch-cap', type=int, default=40,
+                   help='stage 5d: max expansion members labeled per '
+                        'branch (default 40)')
+    p.add_argument('--no-backward-pool-targets', action='store_true',
+                   help='stage 5d: do not reverse-scan the unmatched pool '
+                        'targets (matched / verified / borderline pool '
+                        'members are never scanned — the symmetric '
+                        'forward score is their evidence); the source-side '
+                        'columns then see fewer out-of-branch competitors')
     p.add_argument('--scene-selfcheck', action='store_true',
                    help='debug: verify each legend leaf geometry against '
                         'its neuron bbox after rendering (Revision 3.5 '
@@ -178,6 +213,12 @@ def main(argv=None):
         pool_widen=False,
         candidate_window=args.candidate_window,
         deep_cap=args.deep_cap,
+        backward_evidence_enabled=args.backward_evidence,
+        skip_backward_pass=args.skip_backward_pass,
+        backward_top_n=args.backward_top_n,
+        backward_max_neurons=args.backward_max_neurons,
+        backward_per_branch_cap=args.backward_per_branch_cap,
+        backward_scan_pool_targets=not args.no_backward_pool_targets,
         scene_selfcheck=args.scene_selfcheck,
         morph_enabled=not args.no_morphology,
         morph_auc_floor=args.morph_auc_floor,
@@ -208,6 +249,8 @@ def main(argv=None):
                 'top_k': cfg.top_k, 'top_m': cfg.top_m,
                 'min_synapse_threshold': cfg.min_synapse_threshold,
                 'rank_top_k': cfg.rank_top_k,
+                'backward_evidence_enabled': cfg.backward_evidence_enabled,
+                'backward_max_neurons': cfg.backward_max_neurons,
             })
         if guide:
             print(f'Run guide: {guide.name}')

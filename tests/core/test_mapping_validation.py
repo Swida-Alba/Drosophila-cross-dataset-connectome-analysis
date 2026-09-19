@@ -729,7 +729,6 @@ def test_categorize_pool_sources_mirror_rules():
     assert statuses[3] == 'source-borderline'
     # source 4 ranks below three IN-POOL sources in column 101 -> the
     # out-of-pool competitor count above it is 0 -> source-borderline
-    assert statuses[3] == 'source-borderline' or True
     assert statuses[4] == 'source-borderline'
     det = {d['source_bodyId']: d for d in detail}
     assert det[1]['best_column_target'] == 101 and det[1]['col_rank'] == 1

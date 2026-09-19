@@ -222,20 +222,80 @@ TERM_DEFS: Dict[str, str] = {
         'Non-pool neurons ranked ahead of the best pool member (the '
         'aggressive deep window adds more). Exported in examinees.csv; '
         "renamed from 'suspicious' 2026-09-18.",
+    'reciprocal':
+        'Stage 5d evidence (advisory): a candidates / family / relative '
+        'member is scanned BACK in the source universe — the same '
+        'homolog-finding scorer, run on the member\'s own target profile. '
+        'Connectivity only; morphology is not re-evaluated (candidates '
+        'are already morph-qualified, and family / relative members are '
+        'morph-similar to the query or to those candidates). It never '
+        'moves a neuron between bins and never counts toward a fill. Not '
+        'the Backward tab: that one is the type-level mapping direction, '
+        'this one is per-neuron reverse connectivity.',
+    'reciprocal top-1':
+        'The single best source-side hit for one member: its bodyId, '
+        'source type, and where it lives (this branch\'s pool, another '
+        'branch, or out-of-map) plus rank_union. Hover for the full '
+        'top-N list.',
+    'rank_union':
+        'Rank agreement between the two partner-strength vectors over the '
+        'UNION of their partner types: each side is average-tie ranked, a '
+        'type one neuron lacks is ranked as weight 0, and the score is the '
+        'Pearson correlation of the two rank lists. Symmetric by '
+        'construction, so a forward and a reverse pass cannot disagree about '
+        'one pair. It reads blank when the union holds fewer than 3 types or '
+        'one side is constant — no monotone information, not a zero score. '
+        'A disjoint pair sits near -0.8, not 0, so 0 is mid-scale rather than '
+        '"nothing"; see the shared/union column for what it rests on.',
+    'high':
+        'Reciprocal grade: a hit of the member\'s OWN branch source type '
+        'is the top-1 reverse hit by rank_union or by jaccard — wherever '
+        'that hit lives. Pure rank evidence, no score bar; advisory only.',
+    'medium':
+        'Reciprocal grade: the branch\'s own source type appears within '
+        'the top-3 of the rank_union or the jaccard ranking (but is not a '
+        'top-1). Advisory only — it never gates anything.',
+    'low':
+        'Reciprocal grade: scanned, but the branch\'s own source type '
+        'ranked outside the top-3 of both rankings (or nothing usable '
+        'ranked at all). A graded negative, not an error.',
+    'not-checked':
+        'Reciprocal label for members the pass did not scan: the pass is '
+        'off, the neuron was over the per-run / per-branch caps, or it '
+        'sits in a bin that is not part of the gap-fill ladder. Displayed '
+        'as an explicit dash so absence is never read as failure.',
+    'shared partner types':
+        'How many partner types the two compared vectors have in common — '
+        'the denominator a rank_union or jaccard is actually built on. '
+        'The union (the second number) is what rank_union ranks; the '
+        'shared count is the part carrying real evidence, since a type one '
+        'side lacks is scored 0.0. Same neurons, ~12+ shared types, is a '
+        'different claim from 2.',
+    'thin evidence':
+        'A reciprocal hit whose two vectors share at most 3 partner types. '
+        'rank_union can be high on such a pair simply because there was '
+        'almost nothing to rank — an incompletely traced neuron scores well '
+        'against another short one. Advisory marker only: it never changes '
+        'the reciprocal verdict, a bar, or a fill count.',
 }
 
 # per-file column/term notes for §12 expanders
 FILE_GLOSSARY: Dict[str, List[str]] = {
-    'validation_results.csv': [
+    'validation/validation_results.csv': [
         'verdict', 'matched', 'verified', 'borderline', 'unmatched'],
-    'examinees.csv': [
+    'validation/examinees.csv': [
         'category', 'sibling', 'candidates', 'family', 'relative',
-        'out of scope', 'candidate_annotation'],
-    'gap_fill_dedup.csv': ['dup', 'restrictive fill', 'family fill'],
-    'gap_fill_levels.csv': ['fill levels'],
-    'out_map_expansion.csv': ['out-map expansion', 'null bar'],
-    'pair_summary.csv': ['gap', 'verdict'],
-    'pool_categories.csv': ['pool_ref tier'],
+        'out of scope', 'candidate_annotation', 'reciprocal',
+        'shared partner types', 'thin evidence'],
+    'expansion/backward_matches.csv': [
+        'reciprocal', 'reciprocal top-1', 'high', 'medium', 'low',
+        'not-checked', 'shared partner types', 'thin evidence'],
+    'gap_fill/gap_fill_dedup.csv': [
+        'dup', 'restrictive fill', 'family fill', 'thin evidence'],
+    'gap_fill/gap_fill_levels.csv': ['fill levels'],
+    'expansion/out_map_expansion.csv': ['out-map expansion', 'null bar'],
+    'validation/pair_summary.csv': ['gap', 'verdict'],
+    'validation/pool_categories.csv': ['pool_ref tier'],
     'morphology_calibration.json': [
         'branch bar', 'native floor', 'Track-A backup floor', 'null bar',
         'AUC gate', 'score frames'],
@@ -244,31 +304,39 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
 }
 
 ARTIFACT_LINES: List[Tuple[str, str]] = [
-    ('mapping_export.csv',
+    ('mapping/mapping_export.csv',
      'branch-level mapping (chains, linker values, bodyId pools)'),
-    ('pair_summary.csv', 'per-branch pools / gap / verdicts (§3)'),
-    ('pool_categories.csv', 'per in-map target tier + best evidence'),
-    ('validation_results.csv', 'source×branch verdict rows (§1)'),
-    ('examinees.csv',
+    ('validation/pair_summary.csv', 'per-branch pools / gap / verdicts (§3)'),
+    ('validation/pool_categories.csv',
+     'per in-map target tier + best evidence'),
+    ('validation/validation_results.csv',
+     'source×branch verdict rows (§1)'),
+    ('validation/examinees.csv',
      'expansion bins, Revision 3.12 categories (§5); renamed from '
      'suspicious_candidates.csv'),
-    ('noise_filtered_candidates.csv', 'dropped rows + noise_reason'),
-    ('deep_candidates.csv', 'aggressive-only deep window'),
-    ('gap_fill_proposals.csv', 'proposals, side × fill_class (§6)'),
-    ('gap_fill_levels.csv', 'branch-level fill level (§6)'),
-    ('gap_fill_dedup.csv', 'bodyId-unique fill (§6)'),
-    ('family_candidates.csv', 'the family bin (§5)'),
-    ('relatives.csv', 'the relative bin (§5)'),
-    ('out_map_expansion.csv', 'unclaimed-source expansion (§7)'),
-    ('source_status.csv',
+    ('validation/noise_filtered_candidates.csv',
+     'dropped rows + noise_reason'),
+    ('validation/deep_candidates.csv', 'aggressive-only deep window'),
+    ('gap_fill/gap_fill_proposals.csv',
+     'proposals, side × fill_class (§6)'),
+    ('gap_fill/gap_fill_levels.csv', 'branch-level fill level (§6)'),
+    ('gap_fill/gap_fill_dedup.csv', 'bodyId-unique fill (§6)'),
+    ('expansion/family_candidates.csv', 'the family bin (§5)'),
+    ('expansion/relatives.csv', 'the relative bin (§5)'),
+    ('expansion/out_map_expansion.csv',
+     'unclaimed-source expansion (§7)'),
+    ('expansion/backward_matches.csv',
+     'reciprocal homolog evidence per candidates/family/relative member '
+     '(§5d, advisory)'),
+    ('expansion/source_status.csv',
      'backward `source-` status per in-branch source (advisory)'),
-    ('source_candidates.csv',
+    ('expansion/source_candidates.csv',
      'out-of-branch sources pointing into each branch pool, tagged '
      'in-map/out-map (advisory)'),
-    ('same_name_excluded.csv',
+    ('mapping/same_name_excluded.csv',
      'queried types held/excluded by the same-name-first rule, or '
      'multi-value cells (advisory accounting)'),
-    ('suspects_verification.csv',
+    ('mapping/suspects_verification.csv',
      'rival-suspect connectivity verification (opt-in, advisory)'),
     ('set_coverage.json', 'set-level coverage (§1, §4)'),
     ('morphology_calibration.json',
@@ -288,9 +356,42 @@ def _read_json(path: Path):
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding='utf-8'))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _run_file(run_dir, name: str) -> Path:
+    """Locate one exported artifact inside a run folder.
+
+    The writer files evidence CSVs under category subfolders
+    (``validation/`` / ``expansion/`` / ``gap_fill/`` / ``mapping/``) and
+    keeps the report, guide and parameter/meta at the root; older runs are
+    flat.  File names are unique across the layout, so a one-level search
+    resolves both without this module importing the pipeline's layout
+    registry — which keeps the report standalone and able to regenerate any
+    past run from its folder alone."""
+    root = Path(run_dir)
+    flat = root / name
+    if flat.exists():
+        return flat
+    try:
+        for sub in sorted(p for p in root.iterdir() if p.is_dir()):
+            cand = sub / name
+            if cand.exists():
+                return cand
+    except OSError:
+        pass
+    return flat
+
+
+def _run_file_rel(run_dir, name: str) -> str:
+    """The run-relative display path of an artifact (``gap_fill/x.csv``)."""
+    p = _run_file(run_dir, name)
+    try:
+        return p.relative_to(Path(run_dir)).as_posix()
+    except ValueError:
+        return name
 
 
 def _read_csv_rows(path: Path) -> List[Dict]:
@@ -307,9 +408,9 @@ def _read_examinees(run_dir: Path) -> List[Dict]:
     """The expansion-bin rows: examinees.csv, falling back to the
     pre-rename suspicious_candidates.csv so older run folders keep
     regenerating (rename 2026-09-18)."""
-    p = run_dir / 'examinees.csv'
+    p = _run_file(run_dir, 'examinees.csv')
     if not p.exists():
-        p = run_dir / 'suspicious_candidates.csv'
+        p = _run_file(run_dir, 'suspicious_candidates.csv')
     return _read_csv_rows(p)
 
 
@@ -435,11 +536,12 @@ def collect_run_data(run_dir: Path,
                      mapper_gap_types: Optional[Dict[str, int]] = None,
                      mapper_gap_untyped: int = 0) -> Dict:
     run_dir = Path(run_dir)
-    params = _read_json(run_dir / 'parameters.json') or {}
-    calib = _read_json(run_dir / 'morphology_calibration.json') or {}
-    coverage = _read_json(run_dir / 'set_coverage.json') or {}
+    params = _read_json(_run_file(run_dir, 'parameters.json')) or {}
+    calib = _read_json(
+        _run_file(run_dir, 'morphology_calibration.json')) or {}
+    coverage = _read_json(_run_file(run_dir, 'set_coverage.json')) or {}
     progress: List[Dict] = []
-    pp = run_dir / 'pipeline_progress.jsonl'
+    pp = _run_file(run_dir, 'pipeline_progress.jsonl')
     if pp.exists():
         try:
             for ln in pp.read_text(encoding='utf-8').splitlines():
@@ -464,19 +566,61 @@ def collect_run_data(run_dir: Path,
                           .get('untyped_rows') or 0)
                    or readme['mapper_gap_untyped'] or 0)
 
-    val_rows = _read_csv_rows(run_dir / 'validation_results.csv')
+    val_rows = _read_csv_rows(_run_file(run_dir, 'validation_results.csv'))
     sus_rows = _read_examinees(run_dir)
-    dedup_rows = _read_csv_rows(run_dir / 'gap_fill_dedup.csv')
-    levels_rows = _read_csv_rows(run_dir / 'gap_fill_levels.csv')
-    prop_rows = _read_csv_rows(run_dir / 'gap_fill_proposals.csv')
-    pair_rows = _read_csv_rows(run_dir / 'pair_summary.csv')
-    out_rows = _read_csv_rows(run_dir / 'out_map_expansion.csv')
-    fam_rows = _read_csv_rows(run_dir / 'family_candidates.csv')
-    rel_rows = _read_csv_rows(run_dir / 'relatives.csv')
+    dedup_rows = _read_csv_rows(
+        _run_file(run_dir, 'gap_fill_dedup.csv'))
+    levels_rows = _read_csv_rows(
+        _run_file(run_dir, 'gap_fill_levels.csv'))
+    prop_rows = _read_csv_rows(
+        _run_file(run_dir, 'gap_fill_proposals.csv'))
+    pair_rows = _read_csv_rows(_run_file(run_dir, 'pair_summary.csv'))
+    out_rows = _read_csv_rows(_run_file(run_dir, 'out_map_expansion.csv'))
+    fam_rows = _read_csv_rows(
+        _run_file(run_dir, 'family_candidates.csv'))
+    rel_rows = _read_csv_rows(_run_file(run_dir, 'relatives.csv'))
     same_name_excluded = _read_csv_rows(
-        run_dir / 'same_name_excluded.csv')
+        _run_file(run_dir, 'same_name_excluded.csv'))
     suspects_rows = _read_csv_rows(
-        run_dir / 'suspects_verification.csv')
+        _run_file(run_dir, 'suspects_verification.csv'))
+
+    # -- stage 5d backward homolog evidence (advisory; connectivity only) --
+    backward_rows = _read_csv_rows(_run_file(run_dir, 'backward_matches.csv'))
+    _bev_rank = {'low': 1, 'medium': 2, 'high': 3}
+
+    def _member_row_key(r: Dict) -> Tuple[int, int]:
+        # a bodyId scanned under several branches reads ONCE: the
+        # strongest grade wins, ties go to the higher dedup rank (the
+        # gap_fill_dedup precedence) so a candidates+family member has
+        # one home bin
+        return (-_bev_rank.get(
+                    str(r.get('backward_evidence') or 'not-checked'), 0),
+                -_DEDUP_DISPLAY_RANK.get(
+                    str(r.get('member_category') or ''), 0))
+
+    _DEDUP_DISPLAY_RANK = {'matched': 9, 'verified': 8, 'borderline': 7,
+                           'unmatched': 6, 'sibling': 5, 'candidates': 4,
+                           'family': 3, 'relative': 2, 'examinees': 1}
+    backward_by_bid: Dict[str, Dict] = {}
+    rows_by_bid: Dict[str, List[Dict]] = collections.defaultdict(list)
+    for r in backward_rows:
+        bid = str(r.get('member_bodyId') or '')
+        if not bid:
+            continue
+        rows_by_bid[bid].append(r)
+        cur = backward_by_bid.get(bid)
+        if cur is None or _member_row_key(r) < _member_row_key(cur):
+            backward_by_bid[bid] = r
+    backward_bins: Dict[str, Dict[str, int]] = {}
+    for bid, best in backward_by_bid.items():
+        cat = str(best.get('member_category') or 'unknown')
+        lab = str(best.get('backward_evidence') or 'not-checked')
+        b = backward_bins.setdefault(cat, {'high': 0, 'medium': 0,
+                                           'low': 0, 'not-checked': 0,
+                                           'neurons': 0})
+        b['neurons'] += 1
+        if lab in b:
+            b[lab] += 1
 
     # -- source side -------------------------------------------------------
     scanned_sources = sorted({r.get('source_bodyId', '')
@@ -603,7 +747,7 @@ def collect_run_data(run_dir: Path,
     null_used = any(k.startswith('null')
                     for k in list(bar_kind_counts) + list(susp_kind_counts))
 
-    ss_rows = _read_csv_rows(run_dir / 'source_status.csv')
+    ss_rows = _read_csv_rows(_run_file(run_dir, 'source_status.csv'))
     ss_counts = collections.Counter(r['status'] for r in ss_rows)
     per_type_status: Dict[str, Dict[str, int]] = {}
     for r in ss_rows:
@@ -621,7 +765,7 @@ def collect_run_data(run_dir: Path,
     basis_branches: Dict[str, int] = {}
     try:
         import ast as _ast
-        for r in _read_csv_rows(run_dir / 'mapping_export.csv'):
+        for r in _read_csv_rows(_run_file(run_dir, 'mapping_export.csv')):
             if not _truthy(r.get('is_selected')):
                 continue
             basis = r.get('pool_basis', '?')
@@ -663,6 +807,13 @@ def collect_run_data(run_dir: Path,
         advisories.append('null-sample')
     if selfcheck['fail'] or readme['bang_lines']:
         advisories.append('run warnings')
+    n_top_bev = sum(b['high'] + b['medium']
+                    for k, b in backward_bins.items()
+                    if k in ('candidates', 'family', 'relative'))
+    if n_top_bev:
+        advisories.append(
+            f'reciprocal: {n_top_bev} member(s) rank their own branch '
+            'source type top-3')
 
     return {
         'run_dir': run_dir,
@@ -695,6 +846,12 @@ def collect_run_data(run_dir: Path,
         'pair_rows': pair_rows,
         'same_name_excluded': same_name_excluded,
         'suspects_verification': suspects_rows,
+        'backward_rows': backward_rows,
+        'backward_bins': backward_bins,
+        'backward_by_bid': backward_by_bid,
+        'backward_rows_by_bid': rows_by_bid,
+        'backward_counters': (coverage.get('mcns') or {}).get(
+            'backward_evidence') or {},
         'out_sources': out_sources,
         'out_morph_pass': out_morph_pass,
         'out_rows_total': len(out_rows),
@@ -726,6 +883,27 @@ def collect_run_data(run_dir: Path,
 # ---------------------------------------------------------------------------
 # warning notes (user_warning_notes.txt, bracketed-tag convention)
 # ---------------------------------------------------------------------------
+
+def _reciprocal_warning_line(d: Dict) -> Optional[str]:
+    """The stage-5d advisory summary, built once so ``report.html`` and
+    ``user_warning_notes.txt`` cannot drift apart."""
+    if not d.get('backward_bins'):
+        return None
+    gap_bins = {k: v for k, v in d['backward_bins'].items()
+                if k in ('candidates', 'family', 'relative')}
+    if not gap_bins:
+        return None
+    n_fgn = sum(v['high'] + v['medium'] for v in gap_bins.values())
+    n_scan = sum(v['neurons'] for v in gap_bins.values())
+    capped = _as_num((d.get('backward_counters') or {}).get('beyond_cap'))
+    note = (f'[reciprocal] {n_fgn}/{n_scan} scanned gap-fill member(s) '
+            'rank their own branch source type in a top-3 — advisory '
+            'provenance to review, never a rejection (Reciprocal tab)')
+    if capped:
+        note += f'; {int(capped)} member(s) beyond the scan cap are ' \
+                'unchecked'
+    return note
+
 
 def collect_warnings(d: Dict) -> List[str]:
     lines = []
@@ -772,6 +950,9 @@ def collect_warnings(d: Dict) -> List[str]:
     if d['mapper_gap_untyped']:
         lines.append(f"[mapper-gap] (untyped): {d['mapper_gap_untyped']} "
                      'row(s) with no type annotation at all')
+    recip = _reciprocal_warning_line(d)
+    if recip:
+        lines.append(recip)
     return lines
 
 
@@ -825,6 +1006,17 @@ def _esc(v) -> str:
     return escape(str(v))
 
 
+def _th(label: str, tip: str = '') -> str:
+    """A table header whose text carries the standard hover definition.
+    The JS hover layer lifts the tip above every card grid and scroll
+    wrapper; without JS the inline CSS tooltip still works."""
+    if not tip:
+        return f'<th>{_esc(label)}</th>'
+    return (f"<th><span class='term'>{_esc(label)}"
+            f"<span class='tip'><b>{_esc(label)}</b>{_esc(tip)}"
+            '</span></span></th>')
+
+
 def _term(key: str, label: Optional[str] = None) -> str:
     """Hoverable term: dotted underline + CSS-only tooltip."""
     definition = TERM_DEFS.get(key)
@@ -834,6 +1026,17 @@ def _term(key: str, label: Optional[str] = None) -> str:
     return (f"<span class='term'>{_esc(text)}"
             f"<span class='tip'><b>{_esc(text)}</b>"
             f'{_esc(definition)}</span></span>')
+
+
+def _hover(label_html: str, tip_html: str) -> str:
+    """A ``.term`` whose tooltip carries rendered HTML instead of a
+    definition string — used where the payload is a table (the top-N
+    homolog list), which ``_term`` cannot express.  ``label_html`` is
+    markup the caller already escaped."""
+    if not tip_html:
+        return label_html
+    return (f"<span class='term'>{label_html}"
+            f"<span class='tip mv-tip-wide'>{tip_html}</span></span>")
 
 
 def _defs_block(keys: List[str]) -> str:
@@ -1113,7 +1316,13 @@ def _coverage_tab(d: Dict) -> str:
                 f'{_esc(unclaimed)} unclaimed</td></tr>',
             ]
         wf = ("<div style='overflow-x:auto'><table class='mv-table'>"
-              '<thead><tr><th>bucket</th><th>meaning</th></tr></thead>'
+              '<thead><tr>'
+              + _th('bucket', 'Which side of the mapper-consistent '
+                    'accounting the row counts: queried, assigned, '
+                    'fill-proposed, or unpaired.')
+              + _th('meaning', 'What lands in the bucket and where the '
+                    'residue goes.')
+              + '</tr></thead>'
               "<tbody>" + ''.join(wf_rows) + '</tbody></table></div>'
               "<p class='mv-note'>Consistent with the type mapper: its "
               'mapped set is the map-covered '
@@ -1143,8 +1352,15 @@ def _coverage_tab(d: Dict) -> str:
                 f'<td>{_esc(v.get("unpaired_unproposed", 0))}</td></tr>')
         body = _viewport(
             rows,
-            '<th>source type</th><th>pool</th><th>assigned</th>'
-            '<th>fill-proposed</th><th>unpaired</th>')
+            _th('source type', 'The queried source-side (FAFB) type.')
+            + _th('pool', 'Source neurons of this type in the query '
+                  'set.')
+            + _th('assigned', 'Neurons with a mutual-best pair onto a '
+                  'branch pool — the ASSERTED tier.')
+            + _th('fill-proposed', 'Neurons carried only as tiered '
+                  'fill proposals — evidence, never an assignment.')
+            + _th('unpaired', 'No pair and no proposal: in-pool '
+                  'residue plus unclaimed neurons.'))
         cards.append(_section_card(
             'Per-type pools (source)',
             'Feeds from set_coverage.json fafb.per_type.', body))
@@ -1272,37 +1488,40 @@ def _branches_tab(d: Dict) -> str:
     entries.sort(key=lambda e: (e['key'][1], e['key'][2]))
     rows = [e['html'] for e in entries]
     headers = (
-        "<th title='One row per branch: a (source type, target type) "
-        "validation pair of the query. Sorted by branch.'>Branch "
-        "(source → target)</th>"
-        "<th title='Mapper decision status (mapped / evidence_only / …) "
-        'and how the source pool was resolved: linker rows = the '
-        'bridging-evidence subset; full population = no supported '
-        "chain, the whole type population.'>Mapping status / pool "
-        'basis</th>'
-        "<th title='Validated pool sizes: source neurons of the source "
-        'type total → target neurons of the target type total.'
-        "'>Pools (source of total → target of total)</th>"
-        "<th title='Mutual-best (assigned) source–target pairs — the "
-        "only ASSERTED tier.'>Matched (M)</th>"
-        "<th title='min(|source pool|, |target pool|) − M, with its "
-        'pool ratio. Informational — proposals only, the mapping is '
-        "never rewritten.'>Gap</th>"
-        "<th title='● = the branch fired the gap rule (advisory; the "
-        'trigger no longer gates anything); ⚠ marks hemisphere '
-        "asymmetry.'>Gap triggered</th>"
-        "<th title='Per-branch source-side verdict counts: "
-        'verified_strong (v★) / verified (v) / borderline (b) / '
-        "unmatched (u).'>Verdicts v★ / v / b / u</th>"
-        "<th title='Examinee rows (non-pool neurons ranked ahead of the "
-        'pool) / rows dropped by the noise gates (spatial caliber, '
-        "negative rank_union, jaccard sanity, tie margin).'>Examinee "
-        'rows / noise filtered</th>'
-        "<th title='The branch morph admission bar and its kind: native "
-        "floor / track_a_backup / null (run-sensitive).'>Morph bar "
-        '(kind)</th>'
-        "<th title='Link to the branch 3D scene, when rendered."
-        "'>Scene</th>")
+        _th('Branch (source → target)',
+            'One row per branch: a (source type, target type) '
+            'validation pair of the query. Sorted by branch.')
+        + _th('Mapping status / pool basis',
+              'Mapper decision status (mapped / evidence_only / …) and '
+              'how the source pool was resolved: linker rows = the '
+              'bridging-evidence subset; full population = no '
+              'supported chain, the whole type population.')
+        + _th('Pools (source of total → target of total)',
+              'Validated pool sizes: source neurons of the source type '
+              'total → target neurons of the target type total.')
+        + _th('Matched (M)',
+              'Mutual-best (assigned) source–target pairs — the only '
+              'ASSERTED tier.')
+        + _th('Gap',
+              'min(|source pool|, |target pool|) − M, with its pool '
+              'ratio. Informational — proposals only, the mapping is '
+              'never rewritten.')
+        + _th('Gap triggered',
+              '● = the branch fired the gap rule (advisory; the '
+              'trigger no longer gates anything); ⚠ marks hemisphere '
+              'asymmetry.')
+        + _th('Verdicts v★ / v / b / u',
+              'Per-branch source-side verdict counts: verified_strong '
+              '(v★) / verified (v) / borderline (b) / unmatched (u).')
+        + _th('Examinee rows / noise filtered',
+              'Examinee rows (non-pool neurons ranked ahead of the '
+              'pool) / rows dropped by the noise gates (spatial '
+              'caliber, negative rank_union, jaccard sanity, tie '
+              'margin).')
+        + _th('Morph bar (kind)',
+              'The branch morph admission bar and its kind: native '
+              'floor / track_a_backup / null (run-sensitive).')
+        + _th('Scene', 'Link to the branch 3D scene, when rendered.'))
     table = _scroll_viewport(rows, headers, visible=50) \
         if rows else _empty('pair_summary.csv absent or empty.')
     detail_cols = ('selected_chain', 'branch_linker_values',
@@ -1315,10 +1534,25 @@ def _branches_tab(d: Dict) -> str:
             f"{_esc(s.get('target_type'))}</td>"
             + ''.join(f"<td>{_esc(s.get(c, ''))}</td>"
                       for c in detail_cols) + '</tr>')
+    detail_tips = {
+        'selected_chain': 'The linker chain the mapper selected for '
+                          'this branch.',
+        'branch_linker_values': 'Linker evidence values along the '
+                                'selected chain.',
+        'branch_annotation': 'Branch annotation text from '
+                             'mapping_export.csv.',
+        'branches_disjoint': 'Whether this branch pool is disjoint '
+                             'from its sibling branches.',
+        'pool_widen_added': 'bodyIds added by pool widening (off by '
+                            'default).',
+        'deep_candidates': 'Aggressive-mode deep-window candidates '
+                           '(aggressive_expansion only).',
+        'null_sample': 'Null sample size scored for the branch bar.',
+    }
     details = _scroll_viewport(
         det_rows,
-        '<th>branch</th>'
-        + ''.join(f'<th>{_esc(c)}</th>' for c in detail_cols))
+        _th('branch', 'The branch as source type → target type.')
+        + ''.join(_th(c, detail_tips[c]) for c in detail_cols))
     body = table + (
         '<details class="detail-block"><summary>Per-branch chain &amp; '
         'linker details</summary>' + details + '</details>')
@@ -1355,9 +1589,18 @@ def _targets_tab(d: Dict) -> str:
                 f"<td>{_esc(', '.join(str(b) for b in holes))}</td></tr>")
         body = _viewport(
             rows,
-            '<th>target type</th><th>mapped pop</th>'
-            '<th>map-covered</th><th>tier m / v / b</th>'
-            '<th>cand-only</th><th>holes</th>')
+            _th('target type', 'The target-side (male-cns) type.')
+            + _th('mapped pop', 'Target neurons annotated with this '
+                  'type in the target dataset.')
+            + _th('map-covered', 'How many of them the type mapper '
+                  'covers (its mapped set).')
+            + _th('tier m / v / b', 'In-pool members by validation '
+                  'tier: matched / verified / borderline.')
+            + _th('cand-only', 'Neurons reached only as fill '
+                  'candidates, never in a branch pool.')
+            + _th('holes', 'Annotated in-map neurons absent from every '
+                  'branch pool — the actionable output; bodyIds '
+                  'inline.'))
         summary = (
             f"Mapped target population "
             f"{_esc(m.get('mapped_target_set', '—'))} neurons across "
@@ -1426,8 +1669,14 @@ def _fill_tab(d: Dict) -> str:
         '<td>aggressive-only deep window</td></tr>',
     ]
     bins = ("<div style='overflow-x:auto'><table class='mv-table'>"
-            '<thead><tr><th>bin</th><th>branch-level rows</th>'
-            '<th>dedup</th></tr></thead><tbody>'
+            '<thead><tr>'
+            + _th('bin', 'The Rev 3.12 examinee category the branch '
+                  'rows landed in.')
+            + _th('branch-level rows', 'Rows in examinees.csv before '
+                  'bodyId dedup.')
+            + _th('dedup', 'Distinct bodyIds after cross-branch dedup '
+                  '(family claims outrank candidates).')
+            + '</tr></thead><tbody>'
             + ''.join(bin_rows) + '</tbody></table></div>')
     cb = d['cand_break']
     n_cross = len([r for r in d['restrictive']
@@ -1466,8 +1715,14 @@ def _fill_tab(d: Dict) -> str:
            'fill proposals; provenance per row below — decided D8)'
            if n_cross else ')') + ':</p>'
         "<div style='overflow-x:auto'><table class='mv-table'>"
-        '<thead><tr><th>class</th><th>rows</th><th>bodyIds</th>'
-        '<th>meaning</th></tr></thead><tbody>' + br_html_rows
+        '<thead><tr>'
+        + _th('class', 'The candidate leaf class: {T}(out-map), '
+              'no_source, backward mapped, or untyped.')
+        + _th('rows', 'Branch-level candidate rows.')
+        + _th('bodyIds', 'Distinct target bodyIds behind those rows.')
+        + _th('meaning', 'What the class says about the backward '
+              'route, with the type composition.')
+        + '</tr></thead><tbody>' + br_html_rows
         + '</tbody></table></div>')
     # family-material reconciliation (user 2026-09-17): the bin's dedup
     # count is NOT the family-material total — family outranks candidates
@@ -1512,11 +1767,34 @@ def _fill_tab(d: Dict) -> str:
         c = r.get('dedup_category', '?')
         ff_split[c] = ff_split.get(c, 0) + 1
     ff_txt = ' + '.join(f'{k} {v}' for k, v in sorted(ff_split.items()))
+    n_bev = sum(b['high'] for b in d['backward_bins'].values())
+    n_thin = sum(1 for r in d['backward_rows'] if _is_thin(r))
+    # D7: the reverse fact splits each gap-fill bin WITHOUT joining the level
+    # ladder, so the split reads as its own axis next to the level counts.
+    bins = d['backward_bins']
+    bev_parts = []
+    for c in _BEV_BIN_ORDER:
+        b = bins.get(c) or {}
+        if not b.get('neurons'):
+            continue
+        parts = [f'{_esc(_BEV_TEXT[v])} {b[v]}'
+                 for v in ('high', 'medium', 'low') if b.get(v)]
+        if b.get('not-checked'):
+            parts.append(f'not checked {b["not-checked"]}')
+        bev_parts.append(f'{_esc(c)} {b["neurons"]} scanned → '
+                         + (' · '.join(parts) if parts else 'nothing ranked'))
     summ = _kv_block('Fill accounting', [
         (_term('fill levels', 'Fill by level (branch-level)'), lv_txt),
         (_term('restrictive fill', 'Fill, bodyId-unique (dedup)'),
          f'{len(d["restrictive"])} restrictive · family-fill '
          f'+{len(d["family_fill"])} ({ff_txt})'),
+        (_term('reciprocal', 'Reciprocal (stage 5d)'),
+         f'{n_bev} members whose reverse scan points back into their own '
+         'branch — advisory; it never changes a level or a fill'
+         + (f' · {n_thin} hit(s) rest on ≤3 shared partner types '
+            '(<b>thin</b>)' if n_thin else '')),
+        *([(_term('reciprocal', 'Reverse evidence by bin'),
+            ' · '.join(bev_parts))] if bev_parts else []),
         ('Proposals exported',
          f'{sum(d["fill_class_counts"].values())} rows ('
          + ' / '.join(f'{k} {v}' for k, v in
@@ -1545,18 +1823,33 @@ def _fill_tab(d: Dict) -> str:
                          f"{prop.get('target_type')}, source verdict "
                          f"{prop.get('source_verdict')})")
         lvl = d['levels_by_bid'].get(bid) or {}
+        brec = d['backward_by_bid'].get(str(bid)) or {}
+        bev = str(brec.get('backward_evidence') or '')
         rows.append(
             f'<tr><td>{_esc(bid)}</td>'
             f"<td>{_esc(r.get('target_type'))}</td>"
             f'<td>{_esc(tok)}</td><td>{_esc(bar_txt)}</td>'
             f"<td>{_esc(lvl.get('level', '—'))}</td>"
             f"<td>{_esc(lvl.get('dup', r.get('dup', '')))}</td>"
+            f'<td>{_bev_badge(bev, _is_thin(brec))}</td>'
             f'<td>{_esc(prov)}</td></tr>')
     table = _viewport(
         rows,
-        '<th>target bodyId</th><th>type</th><th>leaf token</th>'
-        '<th>bar (kind)</th><th>level</th><th>dup</th>'
-        '<th>provenance</th>') \
+        _th('target bodyId', 'The proposed fill neuron (bodyId-unique '
+            'across branches).')
+        + _th('type', 'Its target-side type.')
+        + _th('leaf token', 'Per-bodyId provenance token: '
+              '{T}(out-map) / >src / (no_source) / untyped.')
+        + _th('bar (kind)', 'Branch morph admission bar and its kind: '
+              'native / track_a_backup / null.')
+        + _th('level', 'Fill level the bodyId lands at: high / '
+              'type_gated / advice.')
+        + _th('dup', 'Whether another branch also proposes this '
+              'bodyId (the dedup keeps one row).')
+        + _th('reciprocal', 'Reverse-scan grade of this member: high '
+              '/ medium / low — details in the Reciprocal tab.')
+        + _th('provenance', 'Which branch proposed it and on what '
+              'evidence.')) \
         if rows else _empty('No restrictive fill proposed this run.')
     footer = ("<p class='mv-note'><b>Proposals only</b> — fills are "
               'ranked evidence, not deterministic assignments; '
@@ -1568,7 +1861,8 @@ def _fill_tab(d: Dict) -> str:
         'reviewer acts on.',
         summ + table + footer,
         ['restrictive fill', 'family fill', 'fill levels', 'dup',
-         '{T}(out-map)'])
+         '{T}(out-map)', 'reciprocal', 'high', 'medium', 'low',
+         'not-checked', 'thin evidence'])
     return sec5 + sec6
 
 
@@ -1628,8 +1922,17 @@ def _outmap_tab(d: Dict) -> str:
             f"<td>{item['n_q']}/{item['n_total']}</td></tr>")
     table = _viewport(
         rows,
-        '<th>source</th><th>best candidate</th><th>rank_union</th>'
-        '<th>jaccard</th><th>morph ✓/✗</th><th>qualified</th>')
+        _th('source', 'The unclaimed source neuron (type + bodyId).')
+        + _th('best candidate', 'Its best-ranked typed non-in-map '
+              'target candidate.')
+        + _th('rank_union', 'Rank-agreement score of the pair — near '
+              '-0.8 means disjoint partner vectors, so 0 is mid-scale, '
+              'not nothing.')
+        + _th('jaccard', 'Shared-partner jaccard of the pair.')
+        + _th('morph ✓/✗', 'morph_v2_similarity against the run null '
+              'bar: ✓ passes, ✗ does not.')
+        + _th('qualified', "Of the source's top-k candidates, how many "
+              'pass the null bar over how many were scored.'))
     return _section_card(
         f'Out-map expansion (the {len(d["out_sources"])} unclaimed '
         'sources)',
@@ -1691,9 +1994,11 @@ def _backward_tab(d: Dict) -> str:
                 f"<td>{_esc(c.get('source-unmatched', 0))}</td></tr>")
         pt_table = _viewport(
             pt_rows,
-            '<th>source type</th><th>source-matched</th>'
-            '<th>source-verified</th><th>source-borderline</th>'
-            '<th>source-unmatched</th>')
+            _th('source type', 'The queried source-side type.')
+            + ''.join(_th(k, TERM_DEFS[k])
+                      for k in ('source-matched', 'source-verified',
+                                'source-borderline',
+                                'source-unmatched')))
         cards.append(_section_card(
             'Advisory `source-` status distribution',
             'The column view of the same pair scores: is this source the '
@@ -1712,7 +2017,8 @@ def _backward_tab(d: Dict) -> str:
     # back to the sibling-row re-derivation (cross-branch convergence
     # view; those rows are other branches' query neurons by
     # construction).
-    sc_export = _read_csv_rows(Path(d['run_dir']) / 'source_candidates.csv')
+    sc_export = _read_csv_rows(
+        _run_file(Path(d['run_dir']), 'source_candidates.csv'))
     sib = ([r for r in _read_examinees(Path(d['run_dir']))
             if r.get('category') == 'sibling']
            if not sc_export else [])
@@ -1739,10 +2045,15 @@ def _backward_tab(d: Dict) -> str:
                     f'<td>{tc}</td></tr>')
             sc_table = (
                 "<div style='overflow-x:auto'><table class='mv-table'>"
-                '<thead><tr><th>target branch</th>'
-                '<th>distinct out-of-map sources</th>'
-                '<th>their types</th></tr>'
-                '</thead><tbody>' + ''.join(rows)
+                '<thead><tr>'
+                + _th('target branch', 'The branch pool the sources '
+                      'reach, as source type → target type.')
+                + _th('distinct out-of-map sources', 'Source neurons '
+                      'claimed by NO branch whose best-ranked scan hits '
+                      'land in this pool (null-bar morph-checked).')
+                + _th('their types', 'Type composition of those '
+                      'sources.')
+                + '</tr></thead><tbody>' + ''.join(rows)
                 + '</tbody></table></div>')
             cards.append(_section_card(
                 'Source-candidates — out-of-map sources reaching this '
@@ -1759,7 +2070,7 @@ def _backward_tab(d: Dict) -> str:
         try:
             import ast as _ast
             for r in _read_csv_rows(
-                    Path(d['run_dir']) / 'mapping_export.csv'):
+                    _run_file(Path(d['run_dir']), 'mapping_export.csv')):
                 if not _truthy(r.get('is_selected')):
                     continue
                 try:
@@ -1796,10 +2107,15 @@ def _backward_tab(d: Dict) -> str:
                     f'<td>{tc}</td></tr>')
             sc_table = (
                 "<div style='overflow-x:auto'><table class='mv-table'>"
-                '<thead><tr><th>target branch</th>'
-                '<th>distinct out-of-branch sources</th>'
-                '<th>their types (sibling rows)</th></tr>'
-                '</thead><tbody>' + ''.join(rows)
+                '<thead><tr>'
+                + _th('target branch', 'The branch pool the sources '
+                      'rank ahead of, as source type → target type.')
+                + _th('distinct out-of-branch sources', 'Source neurons '
+                      'of OTHER branches that rank ahead of this '
+                      "branch's pool members (sibling rows).")
+                + _th('their types (sibling rows)', 'Type composition '
+                      'of those out-of-branch sources.')
+                + '</tr></thead><tbody>' + ''.join(rows)
                 + '</tbody></table></div>')
             cards.append(_section_card(
                 'Source-candidates — out-of-branch sources connecting '
@@ -1825,18 +2141,333 @@ def _backward_tab(d: Dict) -> str:
     return ''.join(cards)
 
 
+_BEV_TEXT = {'high': 'high', 'medium': 'medium', 'low': 'low'}
+_BEV_CSS = {'high': 'bev-high', 'medium': 'bev-medium',
+            'low': 'bev-low'}
+#: the gap-fill bins the pass exists for, then the unmatched pool members.
+#: matched / verified / borderline are NOT scanned (already mapped — the
+#: symmetric forward score is their evidence); legacy run folders that
+#: still carry those rows fall through to the idx-99 ordering below.
+_BEV_BIN_ORDER = ('candidates', 'family', 'relative', 'unmatched')
+
+
+def _bev_badge(lab: str, thin: bool = False) -> str:
+    out = ("<span class='bev "
+           f"{_BEV_CSS.get(lab, 'bev-off')}'>"
+           f"{_esc(_BEV_TEXT.get(lab, 'not checked'))}</span>")
+    if thin:
+        out += " <span class='bev bev-thin'>thin</span>"
+    return out
+
+
+def _cnt(v) -> str:
+    """A type count as an integer, or an em dash when never scored."""
+    n = _as_num(v)
+    return '—' if n is None else str(int(n))
+
+
+def _evidence_cell(r: Dict) -> str:
+    """``shared/union`` partner types behind this row's rank_union — the
+    denominator a rank similarity is actually built on."""
+    return _term('shared partner types',
+                 f'{_cnt(r.get("backward_shared_type_count"))}'
+                 f'/{_cnt(r.get("backward_union_type_count"))}')
+
+
+def _is_thin(r: Dict) -> bool:
+    return _truthy(r.get('backward_thin_evidence'))
+
+
+def _topn_hover(raw) -> str:
+    """Render a ``backward_topN`` cell as the hover's mini table."""
+    recs = [r for r in str(raw or '').split(';') if r.strip()]
+    if not recs:
+        return ''
+    rows = []
+    for rec in recs:
+        f = (rec.split('|') + ['', '', '', '', '', ''])[:6]
+        rows.append(
+            f'<tr><td>{_esc(f[0] or "—")}</td>'
+            f'<td>{_esc(f[1] or "—")}</td>'
+            f'<td>{_esc(f[2] or "(untyped)")}</td>'
+            f'<td>{_esc(f[3] or "—")}</td>'
+            f'<td>{_esc(f[4] or "—")}</td>'
+            f'<td>{"this branch" if f[5] == "1" else "elsewhere"}</td></tr>')
+    return ('<b>top-N reverse hits</b>'
+            '<table><thead><tr>'
+            "<th title='Rank position in the scan.'>#</th>"
+            "<th title='Source-side bodyId of the hit.'>source</th>"
+            "<th title='Its source type; (untyped) when blank.'>type</th>"
+            "<th title='Rank-agreement score of the pair.'>rank_union</th>"
+            "<th title='Shared-partner jaccard of the pair.'>jaccard</th>"
+            "<th title='Hits inside the claiming branch pool read "
+            "this branch; all other hits read elsewhere.'>where</th>"
+            '</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>')
+
+
+def _as_num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def _reciprocal_tab(d: Dict) -> str:
+    """Stage 5d (plan-tmvev-backward-expansion-evidence): the candidates /
+    family / relative members scanned BACK against the whole SOURCE
+    universe — the homolog finding run in the reverse direction, one row
+    per neuron, grouped by type.  Connectivity only, advisory only."""
+    rows = d['backward_rows']
+    params = d['params']
+    bins = d['backward_bins']
+    ctr = d['backward_counters']
+    if not rows:
+        return _section_card(
+            'Reciprocal homolog evidence',
+            'What each gap-fill member prefers when IT is scanned back '
+            'against the whole source universe.',
+            _empty('backward_matches.csv absent — the pass is opt-in '
+                   '(--backward-evidence) and was not run, or no member '
+                   'of the three bins was scanned.'),
+            ['reciprocal', 'not-checked'])
+
+    def _bin_rows():
+        out = []
+        order = ([b for b in _BEV_BIN_ORDER if b in bins]
+                 + sorted(k for k in bins if k not in _BEV_BIN_ORDER))
+        for cat in order:
+            b = bins[cat]
+            label = (cat if cat in _BEV_BIN_ORDER
+                     else f'{cat} (in-map control)')
+            out.append(
+                f'<tr><td>{_esc(label)}</td>'
+                f'<td>{b["neurons"]:,}</td>'
+                f'<td>{b["high"]:,}</td>'
+                f'<td>{b["medium"]:,}</td>'
+                f'<td>{b["low"]:,}</td>'
+                f'<td>{_pct(b["high"], b["neurons"])}</td></tr>')
+        return out
+    scanned = _as_num(ctr.get('distinct_scanned'))
+    beyond = _as_num(ctr.get('beyond_cap'))
+    eligible = ('—' if scanned is None or beyond is None
+                else f'{int(scanned + beyond):,}')
+    budget = (
+        f"<p class='mv-note'>Budget: "
+        f"{_esc(ctr.get('distinct_scanned', '—'))} of {eligible} eligible "
+        f"members scanned (cap "
+        f"{_esc(params.get('backward_max_neurons', '—'))} per run, "
+        f"{_esc(params.get('backward_per_branch_cap', '—'))} per branch); "
+        'the rest carry no row and read as <b>not checked</b>. '
+        'Morphology: not evaluated (connectivity-only pass).</p>')
+    below_k = _as_num(ctr.get('source_vectors_below_k'))
+    if below_k:
+        # sparsity, not staleness: the scorer is symmetric and both vector
+        # paths were verified identical, so this only says how much of the
+        # scanned universe carries a short partner vector
+        budget += (
+            f"<p class='mv-note'>Source sparsity: {int(below_k):,} of the "
+            "scanned universe neurons hold fewer partner types than this "
+            "run's top_k, so their rank_union sits nearer the "
+            "disjoint-vector floor (about -0.8). Ranking within a scan is "
+            'unaffected; read an absolute rank_union bar against that '
+            'floor.</p>')
+    cards = [_section_card(
+        f'Reciprocal scan — {len(d["backward_by_bid"]):,} neurons',
+        f'The {", ".join(_BEV_BIN_ORDER)} bins asked the reverse question '
+        'with the same scorer: which source does this member prefer, and '
+        'is it the one our branch claims? Matched / verified / borderline '
+        'pool members are not scanned — they are already mapped, and the '
+        'symmetric forward score is their evidence. Morphology is '
+        'deliberately not re-run (candidates are already morph-qualified; '
+        'family and relative members are morph-similar to the query or to '
+        'those candidates), so this is connectivity evidence and nothing '
+        'here moves a neuron between bins or counts toward a fill.',
+        _viewport(
+            _bin_rows(),
+            _th('bin', 'The bin scanned back: the gap-fill bins '
+                'candidates / family / relative, plus unmatched pool '
+                'members. Matched / verified / borderline members are '
+                'not scanned — the symmetric forward score is their '
+                'evidence.')
+            + _th('neurons', 'Distinct members of the bin that were '
+                  'reverse-scanned.')
+            + _th('high', 'Members whose own branch source type is the '
+                  'top-1 reverse hit of a rank window.')
+            + _th('medium', 'Members whose branch source type sits in '
+                  'a top-3 but not at rank 1.')
+            + _th('low', 'Members whose branch source type is outside '
+                  'both top-3 windows.')
+            + _th('top-3 share', 'high + medium as a share of the '
+                  'scanned neurons.'))
+        + budget,
+        ['reciprocal', 'reciprocal top-1', 'high', 'medium', 'low',
+         'not-checked'])]
+
+    # per-neuron rows, grouped by (bin, member type) — the display
+    # contract: ONE row per neuron (a member claimed by several branches
+    # was scanned once and graded per branch; the strongest branch
+    # verdict is shown and every claiming branch is listed), top-1 in
+    # the cell, the full top-N on hover.
+    groups: Dict[Tuple[str, str], List[Dict]] = collections.defaultdict(list)
+    for best in (d.get('backward_by_bid') or {}).values():
+        groups[(str(best.get('member_category') or '?'),
+                str(best.get('member_type') or '(untyped)'))].append(best)
+    all_rows_by_bid = d.get('backward_rows_by_bid') or {}
+
+    def _branch_rows(bid: str) -> List[Dict]:
+        return all_rows_by_bid.get(bid) or []
+
+    def _branch_cell(bid: str, best: Dict) -> str:
+        branch_recs = _branch_rows(bid)
+        if len(branch_recs) <= 1:
+            return (f"{_esc(best.get('branch_source_type') or '?')} → "
+                    f"{_esc(best.get('branch_target_type') or '?')}")
+        parts = []
+        for rr in sorted(branch_recs, key=_member_row_sort):
+            parts.append(
+                f"{_esc(rr.get('branch_source_type') or '?')} → "
+                f"{_esc(rr.get('branch_target_type') or '?')} "
+                f"({_esc(str(rr.get('backward_evidence') or '?'))})")
+        return ' · '.join(parts)
+
+    def _role_cell(bid: str, best: Dict) -> str:
+        cats: List[str] = []
+        for rr in _branch_rows(bid):
+            c = str(rr.get('member_category') or '?')
+            if c not in cats:
+                cats.append(c)
+        return _esc(', '.join(cats) or str(best.get('scan_role') or '?'))
+
+    def _group_order(key):
+        cat, tpe = key
+        idx = _BEV_BIN_ORDER.index(cat) if cat in _BEV_BIN_ORDER else 99
+        return (idx, cat, -len(groups[key]), tpe)
+
+    def _ru_desc(r):
+        v = _as_num(r.get('backward_rank_union'))
+        return -(v if v is not None else -1e9)
+
+    _grade_rank = {'low': 1, 'medium': 2, 'high': 3}
+
+    def _member_row_sort(rr):
+        # strongest branch verdict first, then branch name for stability
+        return (-_grade_rank.get(str(rr.get('backward_evidence') or ''), 0),
+                str(rr.get('branch_target_type') or ''),
+                str(rr.get('branch_source_type') or ''))
+
+    blocks = []
+    for key in sorted(groups, key=_group_order):
+        cat, tpe = key
+        members = sorted(groups[key], key=_ru_desc)
+        trs = []
+        for r in members:
+            lab = str(r.get('backward_evidence') or 'not-checked')
+            bid = str(r.get('backward_top1_source_bodyId') or '')
+            t1_type = str(r.get('backward_top1_source_type') or '')
+            if bid:
+                where = ('this branch' if _truthy(
+                    r.get('backward_top1_in_branch')) else 'elsewhere')
+                cell = (f'{_esc(bid)} · {_esc(t1_type or "(untyped)")}'
+                        f"<span class='mv-note'> · {where} · "
+                        f'{_esc(_f(r.get("backward_rank_union"), 4))}'
+                        '</span>')
+            else:
+                cell = "<span class='missing'>—</span>"
+            cell = _hover(cell, _topn_hover(r.get('backward_topN')))
+            n_out = r.get('backward_n_out_of_branch')
+            size = r.get('backward_size_filtered')
+            bid_key = str(r.get('member_bodyId') or '?')
+            trs.append(
+                f'<tr><td>{_esc(r.get("member_bodyId") or "?")}</td>'
+                f'<td>{_bev_badge(lab, _is_thin(r))}</td>'
+                f'<td>{cell}</td>'
+                f'<td>{_evidence_cell(r)}</td>'
+                f'<td>{_branch_cell(bid_key, r)}</td>'
+                f'<td>{_role_cell(bid_key, r)}</td>'
+                f'<td>{_esc(n_out if n_out not in ("", None) else "—")}'
+                '</td>'
+                f'<td>{"size-filtered" if _truthy(size) else "—"}</td>'
+                '</tr>')
+        blocks.append(
+            '<details class="detail-block"><summary>'
+            f'{_esc(cat)} · {_esc(tpe)} — {len(members)} neuron'
+            f'{"s" if len(members) != 1 else ""}</summary>'
+            "<div style='overflow-x:auto'><table class='mv-table'>"
+            '<thead><tr>'
+            + _th('member bodyId',
+                  'The scanned neuron: one reverse scan per bodyId and '
+                  'one display row per bodyId, however many branches '
+                  'claim it.')
+            + _th('reciprocal',
+                  'How prominently this member prefers its OWN branch: '
+                  'an advisory reverse-scan verdict that labels the row, '
+                  'never a gate, never a fill count. For a multi-branch '
+                  'member this is the strongest branch verdict.')
+            + _th('top-1 source (hover: top-N)',
+                  'The single best source-side hit and whether it sits in '
+                  'the claiming branch. Hover for the full top-N '
+                  'neighbourhood with both scores.')
+            + _th('shared/union types',
+                  'How many partner types the score was computed over — '
+                  'the denominator a rank_union or jaccard rests on; the '
+                  'thin marker flags the few-shared cases.')
+            + _th('branch',
+                  'The claiming branch (source type → target type) whose '
+                  'pool was reversed against. A member claimed by several '
+                  'branches lists each with its grade; the badge is the '
+                  'strongest.')
+            + _th('role',
+                  'Which bin the member was scanned for: candidates, '
+                  'family, relative, or an unmatched pool member. '
+                  'Matched / verified / borderline members are not '
+                  'scanned — the symmetric forward score is their '
+                  'evidence.')
+            + _th('out-of-branch ahead',
+                  'How many source neurons OUTSIDE the branch pool rank '
+                  'above the branch\'s own best source in this column.')
+            + _th('caliber',
+                  'Size ratio of the top-1 source against the branch '
+                  'pool\'s best; below target_min_size_ratio the '
+                  'comparison is flagged as an artifact.')
+            + f'</tr></thead><tbody>{"".join(trs)}</tbody></table>'
+            '</div></details>')
+    cards.append(_section_card(
+        'Per-neuron evidence, grouped by type',
+        'One row per scanned neuron — a neuron claimed by several '
+        'branches is graded per branch and shown once, with its '
+        'strongest verdict and every claiming branch listed. The cell '
+        'holds only the top-1 reverse hit; hover it for the full top-N '
+        'neighbourhood with rank_union, jaccard and which hits sit in '
+        'the claiming branch. The shared/union column says how many '
+        'partner types the score was actually computed over — a '
+        'rank_union from 2 shared types and one from 20 are not the same '
+        'claim, and the <b>thin</b> marker only says which is which.',
+        ''.join(blocks),
+        ['reciprocal top-1', 'rank_union', 'shared partner types',
+         'thin evidence']))
+    return ''.join(cards)
+
+
 def _suspects_tab(d: Dict) -> str:
     """P3 (opt-in): advisory verification of the mapper's rival
     suspects — per rival, the ordinary tier machinery applied to the
     rival's own target pool."""
     rows = d.get('suspects_verification') or []
     if not rows:
+        if (d.get('params') or {}).get('verify_suspects'):
+            empty = ('suspects_verification.csv has no rows — the pass ran '
+                     'and no same-name rival was withheld for the query '
+                     'set, so there was nothing to verify.')
+        else:
+            empty = ('suspects_verification.csv absent — the pass is '
+                     'opt-in (--verify-suspects) and was not run.')
         return _section_card(
             'Suspects (same-name rivals)',
             'Connectivity check of the rival candidates the mapper '
             'withheld when the same-name-first rule fired.',
-            _empty('suspects_verification.csv absent — the pass is '
-                   'opt-in (--verify-suspects) and was not run.'),
+            _empty(empty),
             ['suspects', 'same-name-first'])
     groups: Dict[Tuple[str, str], Dict] = {}
     for r in rows:
@@ -1878,11 +2509,24 @@ def _suspects_tab(d: Dict) -> str:
             f'<td>{dist}</td></tr>')
     table = (
         "<div style='overflow-x:auto'><table class='mv-table'>"
-        '<thead><tr><th>source type</th><th>rival (selection)</th>'
-        '<th>disposition</th><th>mapper evidence</th><th>votes</th>'
-        '<th>pop src→tgt</th>'
-        '<th>sources</th><th>verdicts vS / v / b / u</th></tr></thead>'
-        '<tbody>' + ''.join(trs) + '</tbody></table></div>')
+        '<thead><tr>'
+        + _th('source type', 'The source type whose same-name rivals '
+              'the mapper withheld.')
+        + _th('rival (selection)', 'The rival type and, in italics, '
+              'the selection basis that held it back.')
+        + _th('disposition', 'How the mapper disposed of the rival '
+              '(e.g. gated_held).')
+        + _th('mapper evidence', 'Whether the rival itself has a '
+              'clean mapped pair of its own.')
+        + _th('votes', 'Same-name rival votes recorded by the mapper.')
+        + _th('pop src→tgt', "The rival's own population sizes, "
+              'source → target.')
+        + _th('sources', 'Source neurons behind this rival relation.')
+        + _th('verdicts vS / v / b / u', 'Rival-pool validation tier '
+              'counts: verified_strong / verified / borderline / '
+              'unmatched.')
+        + '</tr></thead><tbody>' + ''.join(trs)
+        + '</tbody></table></div>')
     n_types = len({k[0] for k in groups})
     return _section_card(
         f'Suspects — {len(groups)} rival relation(s) across '
@@ -2031,6 +2675,14 @@ def _log_tab(d: Dict) -> str:
     if d['advisories']:
         warn_body += ("<p class='mv-note'>Advisories carried: "
                       + _esc(', '.join(d['advisories'])) + '.</p>')
+    # The advisory summaries written to user_warning_notes.txt are derived
+    # from the exports rather than the log, so without this they would live
+    # only in a side file a reader never opens.
+    recip = _reciprocal_warning_line(d)
+    if recip:
+        warn_body += ("<p class='mv-note'>Derived advisories (also in "
+                      'user_warning_notes.txt):</p>'
+                      "<pre class='mv-log'>" + _esc(recip) + '</pre>')
     sec10 = _section_card('Warnings & anomalies', '', warn_body)
 
     # §11 provenance
@@ -2039,7 +2691,10 @@ def _log_tab(d: Dict) -> str:
              'rank_top_k', 'gap_min', 'suspicious_jaccard_factor',
              'morph_enabled', 'morph_auc_floor', 'morph_track_a_offset',
              'morph_suspicious_level', 'suspicious_per_source_cap',
-             'scene_selfcheck', 'aggressive_expansion', 'pool_widen']
+             'scene_selfcheck', 'aggressive_expansion', 'pool_widen',
+             'backward_evidence_enabled', 'backward_top_n',
+             'backward_max_neurons', 'backward_per_branch_cap',
+             'backward_scan_pool_targets', 'skip_backward_pass']
     pl = ' · '.join(f'{_esc(k)}={_esc(params[k])}'
                     for k in order if k in params)
     timeline: List[str] = []
@@ -2071,6 +2726,14 @@ def _log_tab(d: Dict) -> str:
                                 f"{p.get('total', '?')}")
             elif p.get('note'):
                 timeline.append(f"out-map {p['note']}")
+        elif ev == 'backward_progress':
+            if 'done' in p:
+                timeline.append(f"reciprocal scan {p.get('done')}/"
+                                f"{p.get('total', '?')}"
+                                + (f" ({p['note']})"
+                                   if p.get('note') else ''))
+            elif p.get('note'):
+                timeline.append(f"reciprocal {p['note']}")
     elapsed = next((p.get('elapsed_s') for p in d['progress']
                     if p.get('event') == 'run_done'), None)
     if isinstance(elapsed, (int, float)):
@@ -2092,9 +2755,13 @@ def _log_tab(d: Dict) -> str:
     # §12 file index + glossary
     idx_rows = []
     for name, blurb in ARTIFACT_LINES:
-        n = _n_rows(d['run_dir'] / name)
+        # Print the path THIS run actually wrote: a pre-layout folder has no
+        # subfolders, and a phantom `expansion/…` line sends the reader
+        # hunting for a file that is one level up.
+        shown = _run_file_rel(d['run_dir'], Path(name).name)
+        n = _n_rows(_run_file(d['run_dir'], Path(name).name))
         idx_rows.append(
-            f'<tr><td>{_esc(name)}</td><td>'
+            f'<tr><td>{_esc(shown)}</td><td>'
             + ('—' if n is None else f'<span class="missing">{n:,}</span>')
             + f'</td><td>{_esc(blurb)}</td></tr>')
     idx_rows.append(
@@ -2104,8 +2771,13 @@ def _log_tab(d: Dict) -> str:
         '<tr><td>README.txt</td><td>—</td><td>slim directions + raw run '
         'log (the analysis lives here in report.html)</td></tr>')
     idx = ("<div style='overflow-x:auto'><table class='mv-table'>"
-           '<thead><tr><th>artifact</th><th>rows</th><th>one-liner>'
-           '</th></tr></thead><tbody>' + ''.join(idx_rows)
+           '<thead><tr>'
+           + _th('artifact', 'The run-folder file, relative to the '
+                 'run root.')
+           + _th('rows', 'CSV data rows; — marks a file absent from '
+                 'this run.')
+           + _th('one-liner', 'What the artifact is for.')
+           + '</tr></thead><tbody>' + ''.join(idx_rows)
            + '</tbody></table></div>')
     gloss = []
     for fname, terms in FILE_GLOSSARY.items():
@@ -2141,6 +2813,23 @@ _EXTRA_CSS = """<style>
              font-weight: 400; }
 .term .tip b { display: block; margin-bottom: 3px; }
 .term:hover .tip { display: block; }
+.term .tip.mv-tip-wide { width: 460px; }
+.term .tip.mv-tip-wide table { border-collapse: collapse; width: 100%;
+       font-size: 11.5px; margin-top: 4px; }
+.term .tip.mv-tip-wide th, .term .tip.mv-tip-wide td {
+       border: 0; border-bottom: 1px solid rgba(244, 247, 251, .18);
+       padding: 3px 5px; text-align: left; }
+.term .tip.mv-tip-wide th { color: #a9bcd9; font-weight: 700;
+       text-transform: uppercase; letter-spacing: .03em; }
+.bev { display: inline-block; padding: 1px 7px; border-radius: 999px;
+       font-size: 11px; font-weight: 800; white-space: nowrap; }
+.bev-high { background: #e2f4e6; color: #1f6b32; }
+.bev-medium { background: #fdf0d8; color: #8a5a06; }
+.bev-low { background: #eceff5; color: #55617a; }
+.bev-off { background: #f6f7fa; color: #97a2b5;
+           border: 1px dashed #c4ccdb; }
+.bev-thin { background: #fdeef1; color: #96324a;
+            border: 1px dashed #d9a3b3; }
 .mv-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .mv-table th, .mv-table td { border: 1px solid var(--line);
     padding: 6px 9px; text-align: left; vertical-align: top; }
@@ -2193,10 +2882,67 @@ _EXTRA_CSS = """<style>
 
 _TABS: List[Tuple[str, str]] = [
     ('coverage', 'Coverage'), ('branches', 'Branches'),
-    ('targets', 'Targets'), ('fill', 'Fill'), ('outmap', 'Out-map'),
+    ('targets', 'Targets'), ('fill', 'Fill'),
+    ('reciprocal', 'Reciprocal'), ('outmap', 'Out-map'),
     ('backward', 'Backward'), ('suspects', 'Suspects'),
     ('morph', 'Morph'), ('scenes', 'Scenes'), ('log', 'Log'),
 ]
+
+
+# A single fixed-position layer that mirrors the hovered term's tip.
+# The inline CSS tooltip is clipped by every `overflow-x:auto` table
+# wrapper and painted under later section cards (r13 review); a fixed
+# layer at z-index 9999 escapes both, and works for <th> terms too.
+# Without JS the inline CSS tooltip remains the fallback.
+_HOVER_LAYER_CSS = """<style>
+#mv-hover-layer { position: fixed; display: none; z-index: 9999;
+  pointer-events: none; max-width: 480px; padding: 10px 12px;
+  background: #152238; color: #f4f7fb; font-size: 12px;
+  line-height: 1.45; border-radius: 9px;
+  box-shadow: 0 10px 26px rgba(21, 34, 56, .45); font-weight: 400; }
+#mv-hover-layer b { display: block; margin-bottom: 3px; }
+#mv-hover-layer table { border-collapse: collapse; width: 100%;
+  font-size: 11.5px; margin-top: 4px; }
+#mv-hover-layer th, #mv-hover-layer td { border: 0;
+  border-bottom: 1px solid rgba(244, 247, 251, .18); padding: 3px 5px;
+  text-align: left; }
+#mv-hover-layer th { color: #a9bcd9; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .03em; }
+html.js .term .tip { display: none !important; }
+</style>"""
+
+_HOVER_LAYER_JS = """<script>
+(function () {
+  document.documentElement.className += ' js';
+  var layer = document.createElement('div');
+  layer.id = 'mv-hover-layer';
+  document.body.appendChild(layer);
+  var cur = null;
+  function show(term) {
+    var tip = term.querySelector('.tip');
+    if (!tip) { hide(); return; }
+    layer.innerHTML = tip.innerHTML;
+    layer.style.display = 'block';
+    layer.style.width = Math.min(480, window.innerWidth - 16) + 'px';
+    var r = term.getBoundingClientRect();
+    var top = r.bottom + 8;
+    if (top + layer.offsetHeight > window.innerHeight - 8)
+      top = Math.max(8, r.top - layer.offsetHeight - 8);
+    layer.style.top = top + 'px';
+    layer.style.left = Math.min(Math.max(8, r.left),
+                                window.innerWidth - layer.offsetWidth
+                                - 8) + 'px';
+  }
+  function hide() { layer.style.display = 'none'; cur = null; }
+  document.addEventListener('mouseover', function (e) {
+    var t = e.target.closest ? e.target.closest('.term') : null;
+    if (t === cur) return;
+    cur = t;
+    if (t) show(t); else hide();
+  });
+  document.addEventListener('scroll', hide, true);
+})();
+</script>"""
 
 
 def build_report_document(d: Dict) -> str:
@@ -2207,6 +2953,7 @@ def build_report_document(d: Dict) -> str:
         'branches': lambda: _branches_tab(d),
         'targets': lambda: _targets_tab(d),
         'fill': lambda: _fill_tab(d),
+        'reciprocal': lambda: _reciprocal_tab(d),
         'outmap': lambda: _outmap_tab(d),
         'backward': lambda: _backward_tab(d),
         'suspects': lambda: _suspects_tab(d),
@@ -2221,6 +2968,7 @@ def build_report_document(d: Dict) -> str:
         f"{_esc(Path(d['run_dir']).name)}</title>",
         report_kit.report_css(),
         _EXTRA_CSS,
+        _HOVER_LAYER_CSS,
         '</head><body><main class="report-shell">',
         _hero(d),
         "<div class='tab-list' role='tablist' data-tab-list='tmvev'>",
@@ -2245,7 +2993,7 @@ def build_report_document(d: Dict) -> str:
         lines.append(renderers[key]())
         lines.append('</section>')
     lines.extend(['</main>', report_kit.report_script(),
-                  '</body></html>'])
+                  _HOVER_LAYER_JS, '</body></html>'])
     return '\n'.join(lines)
 
 

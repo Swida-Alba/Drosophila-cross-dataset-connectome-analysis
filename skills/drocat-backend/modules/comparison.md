@@ -195,6 +195,17 @@ mapper layer (plan
   `_SideStats`, `scan_source`, `build_target_vectors`, `prep_target_stats`,
   quality gate, caliber/hemisphere loaders); `mapping_validation` imports them
   back — never re-implement bodyId scoring elsewhere.
+- Stage-5d reverse-scan services (TM VEV's reciprocal evidence, see below):
+  `BACKWARD_EVIDENCE_VALUES` / `BACKWARD_COLUMNS` / `blank_backward_fields`
+  (the verdict vocabulary + the row shape), `classify_backward_scan` (one
+  reverse scan → `high` / `medium` / `low` for the scanned neuron, graded on
+  how prominently the branch's own source type ranks),
+  `serialize_backward_topN` (the `rank|bid|type|ru|jaccard|in_branch`
+  list-in-cell the report hovers), `THIN_SHARED_TYPE_COUNT` (3 — the backward
+  rows publish `backward_shared_type_count` / `backward_union_type_count` with
+  a non-gating `backward_thin_evidence` flag), `reverse_source_column` (a pool
+  target's column over the whole source universe — the only real competitor set
+  a `source-` status can rank against).
 - Connectivity API (verification only, accessed directly by
   `mapping_validation` — NOT via the mapper):
   `BodyIdResolver.assign_bodyids(body_ids, source_ds, groups,
@@ -237,8 +248,59 @@ BodyId-level validation of an auto type mapping (CLI
   > `untyped`; `(dup)` is a standalone tag.
 - **Out-of-scope** (connectivity-qualified but morph-failed) rows are
   exported with `in_scope=False` / `morph_failed=True`, never rendered.
+- **Stage 5d — reciprocal homolog evidence** (opt-in
+  `backward_evidence_enabled` / CLI `--backward-evidence`, default OFF;
+  `MappingValidator._backward_expansion_pass`, run after
+  `finalize_categories`): every `candidates` / `family` / `relative`
+  member — plus, by default, the UNMATCHED validated pool targets
+  (`backward_scan_pool_targets`; matched / verified / borderline are
+  never scanned — the symmetric forward score is their evidence) — is
+  reverse-scanned against the
+  WHOLE source universe with the same scorer and labeled `backward_evidence`
+  ∈ `high` (a hit of the claiming branch's OWN source type is the reverse
+  top-1 by `rank_union_rank` or `jaccard_rank`) | `medium` (such a hit
+  within a top-3 of either) | `low` (outside both top-3 windows, or nothing
+  usable ranked — a graded negative, not silence) | `not-checked` (pass off
+  / over `backward_max_neurons` 300 or `backward_per_branch_cap` 40 / no
+  usable profile; `backward_scanned_at` records why). Pure rank evidence:
+  no score bar, no pool-membership gate — `backward_top1_in_branch` and the
+  size pair are row context. **Two invariants:** connectivity
+  only (morphology is never re-scored) and advisory (never a `category`,
+  a `counts_toward_*` flag, or a fill `level` — the reverse fact rides
+  `gap_fill_levels.csv`'s `evidence` column as `backward_high` etc.).
+  Writes `expansion/backward_matches.csv` + `backward_*` columns onto the
+  bins, the dedup and the levels; surfaced as the report's Reciprocal tab
+  (top-1 per row, top-N on hover) and the scenes'
+  `· high` / `· medium` / `· low` leaf suffixes (branch-source-type rank grade; token = label).
+  Side effect: the pool-member reverse columns (unmatched pool targets
+  since 2026-09-19) replace the columns
+  `categorize_pool_sources(reverse_columns=…)` ranks, so `n_competitors`
+  stops being structurally 0 and `source-borderline` /
+  `source-unmatched` become reachable. Precondition:
+  `_preflight_target_profiles` builds MISSING profiles and merely COUNTS
+  cached ones whose `top_k_bodyid_used` is below the run's `top_k`
+  (`_below_k_cache_ids`, pre-flight stats key `below_k`, counter
+  `source_vectors_below_k`) — a sparsity note, never a parity risk:
+  `score_one_candidate_fast(a, b) == score(b, a)` exactly and both vector
+  paths were verified identical on real runs (272/272 pairs rescored from
+  the cache reproduced the stored `rank_union`). Note the scale: with
+  missing keys entering the union as 0.0, two DISJOINT partner-type vectors
+  score ≈ -0.8, so `rank_union` compares within one scan, never across pairs.
+  One scan ≈ one forward
+  source scan (r8 measured 207 s for 30 forward scans of the 172 k-neuron
+  MCNS universe), hence the caps and the scanned-once-per-bodyId dedup.
 - Outputs live in `local_data/mapping_validation/…` (see
-  `docs/OUTPUT_FILES.md` §9).
+  `docs/OUTPUT_FILES.md` §9). Since 2026-09-19 the evidence CSVs are
+  grouped by stage into `validation/`, `expansion/`, `gap_fill/` and
+  `mapping/`; the root keeps only `report.html`, `README.txt`,
+  `_UserGuide_please_read_me.*`, `parameters.json`, `set_coverage.json`,
+  `morphology_calibration.json`, `pipeline_progress.jsonl` and
+  `user_warning_notes.txt`. `RUN_FILE_LAYOUT` + `run_file_path()` in
+  `mapping_validation.py` are the ONE registry both writers and readers
+  consult — readers fall back to the pre-2026-09-19 flat layout, so an
+  OLD run folder still regenerates. `utils/naming_utils` lists
+  `type-map-validation` as a run-folder prefix and `storage_inventory`
+  registers the tool (all-deliverable, nothing prunable).
 
 ## Untyped-neuron drop (drop_untyped)
 

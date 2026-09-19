@@ -225,6 +225,7 @@ RUN_FOLDER_PREFIXES = (
     "find-paths-shortest",
     "find-network",
     "cross-dataset",
+    "type-map-validation",
     "plot-3d",
     "plot-network",
     "homologs",

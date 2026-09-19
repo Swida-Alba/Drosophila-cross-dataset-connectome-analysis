@@ -1,6 +1,6 @@
 ---
 name: type-mapping-validation
-description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now) and per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), nested modes (restrictive / family / aggressive), two-track morphology, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\"."
+description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now), per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), the opt-in stage-5d reciprocal homolog evidence (high / medium / low / not-checked — advisory, connectivity-only, graded on how prominently the member's own branch source type ranks), nested modes (restrictive / family / aggressive), two-track morphology, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\", \"reciprocal homolog evidence\", \"backward evidence\"."
 ---
 
 # DROCAT Type-Mapping Validation
@@ -39,6 +39,7 @@ $PY scripts/RunMappingValidation.py \
     --types <TYPE_A,TYPE_B | coarse_cell_type> \
     --label <short_label> \
     [--mode restrictive|family|aggressive] \
+    [--backward-evidence] \
     [--scene-selfcheck]
 ```
 
@@ -46,28 +47,49 @@ $PY scripts/RunMappingValidation.py \
   coarse `cell_type` (`circadian_clock`).
 - ALWAYS pass `--scene-selfcheck` (verifies legend-leaf geometry against
   the neuron bbox; flags mislabeled renders).
+- Add `--backward-evidence` when the **fill** is the question (§3): it
+  runs the homolog finding in reverse over the `candidates` / `family` /
+  `relative` members. Advisory only, connectivity only, default OFF.
 - Long runs: launch in the background and poll the log. Expected wall
   times (warm caches): small pair ~2–3 min; 50-neuron family ~6 min;
-  `circadian_clock` (242 sources) ~35–40 min.
-- Results land in
-  `local_data/mapping_validation/{src}_to_{tgt}_{label}_{ts}/`.
+  `circadian_clock` (242 sources) ~35–40 min. A stage-5d run adds roughly
+  one forward scan's worth of work per member it actually scans (~7 s at
+  FAFB↔MCNS scale; the r8 out-map expansion measured 207 s / 30 forward
+  scans against the same-size universe) — the same price as a forward
+  source scan, which is why the caps exist.
+- Results land in `{output_dir}/type-map-validation_{SRC}_to_{TGT}_{ts}/`
+  with SHORT dataset nicknames (`FAFB`, `MCNS`, `BANC`) and a
+  `YYYYMMDD_HHMMSS` stamp — the `--label` is recorded in
+  `parameters.json` / the report, not in the folder name. Default
+  `output_dir` is `local_data/mapping_validation/`. Since
+  2026-09-19 the evidence CSVs sit in stage subfolders — `validation/`,
+  `expansion/`, `gap_fill/`, `mapping/` — and the root keeps only
+  `report.html`, `README.txt`, `_UserGuide_please_read_me.*`,
+  `parameters.json`, `set_coverage.json`, `morphology_calibration.json`,
+  `pipeline_progress.jsonl`, `user_warning_notes.txt` (`visualization/`
+  was already a subfolder). Readers fall back to the old FLAT layout, so
+  pre-2026-09-19 folders still open and regenerate.
 
 ## 2. Read the outputs (always in this order)
 
 1. `report.html` — the per-run report: headline + the three coverage
-   levels (L1 claim / L2 provenance / L3 validation), branches, fills,
-   out-map expansion, morphology record, scenes, file index. Hover any
+   levels (L1 claim / L2 provenance / L3 validation), branches, fills
+   (with their per-row `reciprocal` column), the Reciprocal tab (stage
+   5d, opt-in runs), out-map expansion, morphology record, scenes, file
+   index. Hover any
    dotted term for its definition; every `!` log line is reproduced
-   verbatim in its Warnings section. Regenerable for any past run:
+   verbatim in its Warnings section, which also quotes the stage-5d
+   `[reciprocal]` advisory (the Fill tab's `Reverse evidence by bin` line
+   is its per-bin form). Regenerable for any past run:
    `python -m comparison.mapping_validation_report <run_dir>`.
 2. `README.txt` — slim directions (what file is what) + the raw run log
    (scan the log lines starting with `!` for self-check failures or
    gate warnings). The old glossary / pair-summaries / coverage
    sections moved into `report.html`; `user_warning_notes.txt` mirrors
    the warnings in bracketed-tag lines.
-3. `pair_summary.csv` — per branch: pools, matched `M`, `gap`
+3. `validation/pair_summary.csv` — per branch: pools, matched `M`, `gap`
    (informational), verdict/noise counters.
-4. `examinees.csv` (renamed from `suspicious_candidates.csv`) — the
+4. `validation/examinees.csv` (renamed from `suspicious_candidates.csv`) — the
    expansion rows. Key columns:
    `category` (the Rev 3.12 bin — see §3), `in_scope` / `morph_failed`
    (out-of-scope rows are connectivity-only, kept for reconciliation),
@@ -76,33 +98,48 @@ $PY scripts/RunMappingValidation.py \
    `counts_toward_restrictive_fill` / `counts_toward_family_fill`,
    `ahead_size` / `pool_best_size` / `size_ratio`,
    `morph_v2_similarity` (Track A, query-based), `morph_pool_ref`
-   (Track B, native pool reference), `pool_ref_tier`. The legacy
+   (Track B, native pool reference), `pool_ref_tier`, and on a stage-5d
+   run the `backward_*` columns (§3). The legacy
    `invader_class` / `invader_label` columns are retained for
    compatibility.
-5. `noise_filtered_candidates.csv` — dropped rows with `noise_reason`.
-6. `deep_candidates.csv` — only when `--mode aggressive`.
-7. `gap_fill_proposals.csv` — proposals with `fill_class`
+5. `validation/noise_filtered_candidates.csv` — dropped rows with `noise_reason`.
+6. `validation/deep_candidates.csv` — only when `--mode aggressive`.
+7. `gap_fill/gap_fill_proposals.csv` — proposals with `fill_class`
    (`in_pool`/`out_of_pool`), `category`, and the fill-count columns.
-8. `gap_fill_dedup.csv` — query-level, one row per target bodyId:
-   `dedup_category`, `n_branches`, `dup`. This is the deduplicated fill
-   (the real gap-fill list).
-9. `family_candidates.csv` / `relatives.csv` — the whole `family` /
+8. `gap_fill/gap_fill_dedup.csv` — query-level, one row per target bodyId:
+   `dedup_category`, `n_branches`, `dup`, and the reverse verdict
+   (`backward_evidence` + top-1). This is the deduplicated fill
+   (the real gap-fill list). `gap_fill/gap_fill_levels.csv` is the same
+   fill per branch with its confidence `level`; on a stage-5d run the
+   reverse fact rides its `evidence` column (`backward_high` /
+   `backward_medium` / `backward_low`) — never the level.
+9. `expansion/family_candidates.csv` / `expansion/relatives.csv` — the whole `family` /
    `relative` bin (family/aggressive modes): enumerated members ∪
    evidence rows classified into those bins.
 10. `morphology_calibration.json` — per-branch `candidate_thresholds`,
     `pool_ref_tiers`/`baselines`/`floors`, `track_a_null_bar`,
     `score_frame`, AUC gate record.
-11. `source_status.csv` — backward `source-` status (matched / verified /
+11. `expansion/source_status.csv` — backward `source-` status (matched / verified /
     borderline / unmatched, `source-` prefixed) per in-branch source,
     with its column rank and best pair. ADVISORY: column view of the same
     pair scores, for user reading only — never a gate.
-11b. `source_candidates.csv` — OUT-OF-MAP sources (claimed by no
+11b. `expansion/source_candidates.csv` — OUT-OF-MAP sources (claimed by no
     branch) whose best-ranked hits land in a branch pool and pass the
     run null bar — the backward mirror of candidate admission.
     Advisory; renders as the scenes' `source-candidates` roots
     (re-aimed 2026-09-18: the earlier sibling-row derivation showed
     other branches' query neurons, which the sibling category already
     covers).
+11c. `expansion/backward_matches.csv` — only with `--backward-evidence`:
+    one row per (branch, scanned neuron) — the `candidates` / `family` /
+    `relative` members first, then the UNMATCHED validated pool targets
+    (`scan_role=pool_target`; matched / verified / borderline are never
+    scanned — the symmetric forward score is their evidence) —
+    with the reverse top-1 (`backward_top1_source_bodyId` / `_type` /
+    `_in_branch`), the metrics + ranks, the evidence base
+    (`backward_shared_type_count` / `_union_type_count` +
+    `backward_thin_evidence`, see below), `backward_n_out_of_branch`, and
+    the serialized `backward_topN` neighbourhood the report hovers (§3).
 12. `visualization/*.html` — one 3D scene per parent type.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
@@ -159,6 +196,66 @@ $PY scripts/RunMappingValidation.py \
   foreign-candidate mirror; in-branch sources never appear (they carry
   the `source-` statuses), and cross-branch convergence lives in the
   sibling category.
+- **Stage 5d reciprocal evidence is ADVISORY and connectivity-only**
+  (`--backward-evidence`, default OFF): every `candidates` / `family` /
+  `relative` member — plus, by default, the UNMATCHED validated pool
+  targets (matched / verified / borderline are never scanned; the
+  symmetric forward score is their evidence) — is reverse-scanned against
+  the WHOLE source
+  universe with the same homolog scorer (`_backward_expansion_pass`, run
+  AFTER `finalize_categories`). The CSV token IS the display label, and
+  the three scanned grades measure how prominently the member's OWN
+  branch source type ranks in the reverse scan (pure rank evidence — no
+  score bar, no pool gate): `high` = top-1 by rank_union or jaccard;
+  `medium` = within a top-3 of either; `low` = outside both top-3
+  windows (a graded negative); `not-checked` = in-scope member not
+  scanned — pass off, or beyond `backward_max_neurons` (300) /
+  `backward_per_branch_cap` (40), with `backward_scanned_at`
+  saying why (`disabled` / `cap` / `run` / `no_profile` / `error`). No
+  morphology is re-scored — the counters state
+  `morph = 'not evaluated (connectivity-only)'` — and the pass never
+  changes `category`, any `counts_toward_*` flag, or a fill `level` (the
+  reverse fact rides `gap_fill_levels.csv`'s `evidence` column; the
+  `high/medium/low/type_gated/advice` ladder stays the morph-bar
+  ordering). Scenes suffix a scanned leaf
+  with `· high` / `· medium` / `· low`; a
+  not-checked member keeps a bare leaf. Report: the **Reciprocal** tab
+  shows ONLY the top-1 per member, with the full top-N in the hover.
+- **Stage 5d changes the backward `source-` columns, not the fill**: the
+  pool-member reverse scans (unmatched pool targets since 2026-09-19)
+  yield each scanned pool target's column ranked over
+  the whole source universe and are fed into `categorize_pool_sources`
+  (`reverse_columns`). Before the pass, a forward column could only ever
+  contain the branch's own sources, so `n_competitors` was structurally 0
+  and `source-borderline` / `source-unmatched` were unreachable; an ON
+  run therefore ranks a wider competitor set than an OFF run.
+- **Direction cannot change a pair's score**: `score_one_candidate_fast(a, b)
+  == score(b, a)` exactly (set + rank operations over the union), and the
+  query path (`get_profile`) and the universe path (`build_target_vectors`)
+  hand back identical vectors — rescoring every r9 + r11 pair from the cache
+  parquet reproduced the stored forward `rank_union` on 272/272 pairs. So the
+  pre-flight only builds MISSING profiles; rows whose cached
+  `top_k_bodyid_used` is below the run's `top_k` are counted, not rebuilt
+  (stats key `below_k`, counter `source_vectors_below_k` →
+  `set_coverage.json` + a Reciprocal-tab line). That count is a **sparsity**
+  note (81% of the FAFB and 87% of the MCNS below-k rows hold ≤ 5 partner
+  types: `k_used = min(max_k, n_rows)`); refreshing them cost ~2,300 s per run
+  and changed nothing, so never re-add the rebuild.
+- **`rank_union` has a floor, not a zero point**: two vectors that share NO
+  partner type score ≈ **-0.79 … -0.86** (measured; the floor rises with
+  `|len(a) - len(b)|`), because missing keys enter the union as 0.0. A random
+  FAFB×MCNS pair therefore sits at median ≈ -0.78, so `matched_ru_min = 0.1`
+  is a "far above the disjoint floor" bar, not "10% correlated". Ranking
+  *within* one scan is unaffected (the query vector is fixed, so the floor is
+  near-constant across candidates); comparing `rank_union` ACROSS pairs is
+  not meaningful without the correction `(ru - floor) / (1 - floor)`.
+- **Every backward row states its evidence base**: `backward_shared_type_count` /
+  `backward_union_type_count` plus `backward_thin_evidence` (top-1 resting on
+  ≤ `THIN_SHARED_TYPE_COUNT` = 3 shared types — a reader's note, it gates
+  nothing; not-checked rows carry `None` counts / False). Measured 2026-09-19:
+  209 of 819 random pairs with `rank_union` above 0.1 rest on ≤3 shared types,
+  0 of r9's 46 real in-branch hits. Padding short vectors was tested and
+  rejected (cosine unchanged, shared-name pads inflate mean jaccard 0.30 → 0.80).
 - **Frames**: scenes render in the source dataset's RENDER coordinates
   (FAFB/BANC native; male-cns/hemibrain raw→render bridged — sources
   AND targets share one frame); both morph tracks
@@ -199,6 +296,22 @@ admits more neurons.
   `same_name_excluded.csv` (always written, advisory accounting).
 - `--no-morphology`: fast structural pass (skips Track A/B); admission
   then falls back to connectivity-only.
+- **Stage-5d switches** (all inert without `--backward-evidence`;
+  defaults in `parameters.json`): `--backward-top-n` (5 — hits kept per
+  neuron, the report's hover list), `--backward-max-neurons` (300 — the
+  per-run budget of dataset-scale reverse scans),
+  `--backward-per-branch-cap` (40), `--no-backward-pool-targets` (skip
+  the unmatched pool targets — matched / verified / borderline are never
+  scanned — which also leaves the `source-` statuses without
+  pool-derived out-of-branch competitors), `--skip-backward-pass`
+  (force-off).
+  A neuron is scanned ONCE for all the branches that claim it, and the
+  budget goes to the `candidates` / `family` / `relative` members FIRST —
+  the pool-target control only gets what is left (unordered, a real run
+  spent 102 of 120 scans on the control and capped out half the bins).
+  Default
+  OFF costs nothing and keeps the CSV headers stable (rows read
+  `not-checked`).
 
 Note (Rev 3.12): chain-aware POOL widening is RETIRED — family mode no
 longer touches the tier; the former widening members are the `family`
@@ -218,17 +331,21 @@ When presenting results to the user:
    value counts), the out-of-scope count, and what it says
    (sibling-dominated = cross-branch convergence; a `candidates ...
    (no_source)` cluster = source-annotation gap).
-4. Gap-fill coverage: the `gap_fill_dedup.csv` bodyId-unique fill by
+4. Gap-fill coverage: the `gap_fill/gap_fill_dedup.csv` bodyId-unique fill by
    `dedup_category`, how many dedup rows are `dup`, and the
-   `set_coverage.json` holes.
+   `set_coverage.json` holes. On a stage-5d run also report the
+   Reciprocal tab's per-bin `high` / `medium` / `low` counts WITH
+   the budget line (scanned of eligible) — never present `not checked`
+   as a negative result.
 5. Morphology record: AUC (expect INACTIVE below 0.65), per-branch
    thresholds/floors/tiers, null bar.
-6. Any `! self-check` or `! scene` log lines verbatim.
+6. Any `! self-check` or `! scene` log lines verbatim, plus the
+   `[reciprocal]` own-branch-source-type top-3 line when the pass ran.
 
 ## 6. Tests and references
 
 - Unit tests:
-  `$PY -m pytest tests/core/test_mapping_validation.py tests/core/test_mapping_validation_r35.py tests/core/test_visualize_skeleton_legend_tree.py -q`
+  `$PY -m pytest tests/core/test_mapping_validation.py tests/core/test_mapping_validation_r35.py tests/core/test_mapping_validation_backward_evidence.py tests/core/test_visualize_skeleton_legend_tree.py -q`
 - Normative design: `_plan/plan-mapping-validation-rev311-chain-aware-pool-widening.md`
   §2b (the **Rev 3.12 category model**). Earlier revisions:
   `_plan/plan-type-mapping-validation-pipeline.md` (Rev 1–3.5),
@@ -250,3 +367,4 @@ When presenting results to the user:
 | `track B (native pool reference) unavailable` | vector cache failure | Track B skipped; candidates fall back to the Track-A bar (thinner evidence — note it in the report) |
 | type lookups return 0 for a NeuPrint dataset | API unreachable | `get_bodyids_for_type` / `get_types_for_bodyids` are offline-first — ensure the dataset has a repo-local neuron table under `datasets/` |
 | self-check `!` lines | legend/render mismatch | treat as a bug: capture the lines verbatim and investigate before trusting the scene |
+| `[stage 5d] backward evidence failed (advisory, skipped)` / `source-universe vectors unavailable` | the reverse pass could not build or scan the source universe | advisory layer only — bins, fills and levels are unaffected; every row stays `not-checked`. Re-run with `--skip-backward-pass` if only the tier is needed |

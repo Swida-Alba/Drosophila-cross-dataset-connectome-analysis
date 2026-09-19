@@ -284,7 +284,9 @@ def test_preflight_builds_only_missing_and_emits_jsonl(tmp_path):
     universe = [11, 12, 13, 14, 15]
     stats = v._preflight_target_profiles('banc_v888', universe=universe,
                                          cached_ids={11, 12})
-    assert stats == {'universe': 5, 'cached': 2, 'built': 3}
+    # 'below_k' (2026-09-19): cached rows below the run's top_k are counted,
+    # not rebuilt — see test_preflight_measures_below_k_rows_without_rebuilding
+    assert stats == {'universe': 5, 'cached': 2, 'built': 3, 'below_k': 0}
     assert built == [13, 14, 15]                    # only the missing
     events = [json.loads(l) for l in
               (run_dir / 'pipeline_progress.jsonl').read_text().splitlines()]
@@ -297,6 +299,66 @@ def test_preflight_builds_only_missing_and_emits_jsonl(tmp_path):
     stats2 = v._preflight_target_profiles('banc_v888', universe=universe,
                                           cached_ids=set(universe))
     assert stats2['built'] == 0
+
+
+def test_preflight_measures_below_k_rows_without_rebuilding(tmp_path):
+    """Stage 5d precondition (plan-tmvev-backward-expansion-evidence P0):
+    missing profiles are built, sub-``top_k`` ones are only counted.
+
+    Rebuilding the sub-k population was tried and rejected: measured on the
+    real caches, 87% of those rows hold <=5 partners, so a rebuild cannot
+    raise their k and ``get_profile`` rejects the cached row again next run —
+    the cost recurs without converging.  The count survives as the parity
+    caveat ``source_vectors_below_k``."""
+    from comparison.mapping_validation import (MappingValidationConfig,
+                                               MappingValidator,
+                                               ProgressReporter)
+    import pandas as pd
+
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(source_dataset='flywire_FAFB_v783',
+                                    target_dataset='banc_v888',
+                                    query_types=['T'], visualize=False,
+                                    top_k=25)
+    v.notes = []
+    touched = []
+
+    class FakeProfile:
+        top_k_bodyid_used = 25
+
+    class FakeProfiler:
+        def get_profile(self, bid, dataset, force_refresh=False):
+            touched.append(int(bid))
+            return FakeProfile()
+
+        def _load_cache_dataframe(self, dataset):
+            return pd.DataFrame({'neuron_id': [11, 12, 13],
+                                 'top_k_bodyid_used': [25, 5, None]})
+
+        def _save_profiles_to_cache_batch(self, profiles, dataset,
+                                          silent=True):
+            pass
+
+        def consolidate_profile_cache(self, dataset):
+            pass
+
+    v.profiler = FakeProfiler()
+    v.progress = ProgressReporter(tmp_path / 'run')
+    stats = v._preflight_target_profiles('banc_v888',
+                                         universe=[11, 12, 13, 14])
+    # only 14 is missing; 12 is below k and left alone, 11 is fresh and
+    # 13's blank k reads as "not below the bar"
+    assert touched == [14]
+    assert stats == {'universe': 4, 'cached': 3, 'built': 1, 'below_k': 1}
+
+    # a cache without the k column simply reports none below k — measurement,
+    # never a gate
+    assert v._below_k_cache_ids(None, [1, 2]) == []
+    assert v._below_k_cache_ids(pd.DataFrame({'neuron_id': [1]}), [1]) == []
+    assert v._below_k_cache_ids(
+        pd.DataFrame({'neuron_id': [1, 2],
+                      'top_k_bodyid_used': [25, 3]}), [1, 2, 3]) == [2]
+
 
 import json
 

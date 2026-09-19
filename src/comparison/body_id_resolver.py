@@ -301,6 +301,286 @@ def prep_target_stats(vectors: Dict[int, Dict[str, float]]
 
 
 # ---------------------------------------------------------------------------
+# Reverse (target -> source) scan services — the TM VEV backward evidence
+# ---------------------------------------------------------------------------
+
+#: The four states of a backward label — the CSV token IS the display
+#: label (user 2026-09-19: no token↔label translation layer).  The three
+#: scanned verdicts grade HOW PROMINENTLY the member's own branch source
+#: type ranks in the reverse scan; ``not-checked`` is the default so a run
+#: with the pass disabled keeps byte-stable CSV headers.
+BACKWARD_EVIDENCE_VALUES = ('high', 'medium', 'low', 'not-checked')
+
+#: Columns the backward pass adds to an expansion row.  Connectivity only:
+#: morphology is deliberately not re-scored here — the candidate bins already
+#: carry their stage-5 morph columns and family/relative inherit theirs from
+#: the branch's matched pool.
+BACKWARD_COLUMNS = [
+    'backward_evidence', 'backward_top1_source_bodyId',
+    'backward_top1_source_type', 'backward_top1_in_branch',
+    'backward_rank_union', 'backward_jaccard',
+    'backward_shared_type_count', 'backward_union_type_count',
+    'backward_rank_union_rank', 'backward_jaccard_rank',
+    'backward_n_out_of_branch', 'backward_size_ratio',
+    'backward_size_filtered', 'backward_thin_evidence', 'backward_topN',
+    'backward_scanned_at',
+]
+
+_ORDER = ['rank_union_rank', 'jaccard_rank', 'rank_union']
+
+#: A reverse hit whose two vectors share at most this many partner types.
+#: ``rank_union`` ranks the union with missing types scored 0.0, so a
+#: 2-shared-type pair CAN clear ``matched_ru_min`` on almost no evidence
+#: (measured 2026-09-19: 209/819 random source pairs above 0.1 rest on <= 3
+#: shared types).  The scorer already counts them
+#: (:func:`score_one_candidate_fast`); this only publishes the count and
+#: flags it.  NEVER a gate — see :data:`BACKWARD_COLUMNS`.
+THIN_SHARED_TYPE_COUNT = 3
+
+
+def _clean_num(v):
+    """float or None (NaN/None collapse to None so CSVs stay readable)."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) else f
+
+
+def _clean_int(v):
+    f = _clean_num(v)
+    return None if f is None else int(f)
+
+
+def _clean_type(v) -> str:
+    s = '' if v is None else str(v)
+    return '' if s in ('?', 'nan', 'None', 'Unknown') else s
+
+
+def blank_backward_fields(scanned_at: str = 'disabled') -> Dict:
+    """The no-evidence state for every :data:`BACKWARD_COLUMNS` field.
+
+    ``scanned_at`` records WHY nothing was scored so a ``not-checked`` row
+    is never mistaken for a negative result: ``disabled`` (the pass is off,
+    the per-row default), ``cap`` (over ``backward_max_neurons`` /
+    ``backward_per_branch_cap``), ``no_profile`` (no usable connectivity
+    profile — absent, or a status the scan skips), ``error`` (the scan
+    universe was unavailable, or this member's scan raised).  ``run`` is
+    set by :func:`classify_backward_scan` when a grade was produced —
+    including ``low``, which IS a graded negative: scanned, and the
+    branch's own source type ranked outside every top-3."""
+    out: Dict = {c: None for c in BACKWARD_COLUMNS}
+    out['backward_evidence'] = 'not-checked'
+    out['backward_size_filtered'] = False
+    # advisory flags read "no warning", not "unknown", when nothing ran
+    out['backward_thin_evidence'] = False
+    out['backward_topN'] = ''
+    out['backward_scanned_at'] = scanned_at
+    return out
+
+
+def _best_row(df: pd.DataFrame) -> Optional[pd.Series]:
+    """The globally best-ranked row, forward ordering (rank_union first,
+    jaccard as the tie-break, NaN last)."""
+    usable = df[df[_ORDER[0]].notna() | df['jaccard_rank'].notna()]
+    if usable.empty:
+        return None
+    return usable.sort_values(_ORDER, ascending=[True, True, False],
+                              na_position='last').iloc[0]
+
+
+def serialize_backward_topN(df: Optional[pd.DataFrame], id2type=None,
+                            top_n: int = 5, branch_pool=None) -> str:
+    """The reverse neighbourhood as ``rank|bid|type|ru|jaccard|in_branch``
+    records joined by ``;``.
+
+    The report shows the top-1 in the cell and this list in the hover, so the
+    whole neighbourhood travels in one CSV column (the same list-in-cell
+    convention as ``same_name_rivals``)."""
+    if df is None or df.empty or int(top_n or 0) <= 0:
+        return ''
+    pool = {int(b) for b in (branch_pool or [])}
+    parts: List[str] = []
+    head = df.sort_values(_ORDER, ascending=[True, True, False],
+                          na_position='last').head(int(top_n))
+    for r in head.itertuples(index=False):
+        try:
+            bid = int(r.target_bid)
+        except (TypeError, ValueError):
+            continue
+        ru = _clean_num(getattr(r, 'rank_union', None))
+        jac = _clean_num(getattr(r, 'jaccard', None))
+        parts.append('|'.join([
+            str(_clean_int(getattr(r, 'rank_union_rank', None)) or ''),
+            str(bid),
+            _clean_type((id2type or {}).get(bid)),
+            '' if ru is None else f'{ru:.4f}',
+            '' if jac is None else f'{jac:.4f}',
+            '1' if bid in pool else '0',
+        ]))
+    return ';'.join(parts)
+
+
+def _grade_by_branch_type(usable: pd.DataFrame, id2type: Optional[Dict],
+                          branch_source_type: str, top_k: int = 3) -> str:
+    """The evidence grade: how prominently hits of the claiming branch's
+    OWN source type rank (user 2026-09-19).  ``high`` = top-1 by
+    rank_union or by jaccard; ``medium`` = within the top-3 of either;
+    ``low`` = outside both top-3 windows, or nothing usable ranked.  A
+    same-type hit counts wherever it lives — pool membership is context
+    (``backward_top1_in_branch``), never a verdict, and there is NO score
+    bar: the raw rankings speak for themselves."""
+    if not branch_source_type or usable is None or usable.empty:
+        return 'low'
+    best = None
+    for col in _ORDER[:2]:                 # the two rank columns
+        sub = usable[usable[col].notna()]
+        if sub.empty:
+            continue
+        for r in sub.nsmallest(top_k, col).itertuples(index=False):
+            try:
+                bid = int(getattr(r, 'target_bid'))
+            except (TypeError, ValueError):
+                continue
+            if (id2type or {}).get(bid) == branch_source_type:
+                rk = _clean_num(getattr(r, col))
+                if rk is not None and (best is None or rk < best):
+                    best = rk
+    if best is None:
+        return 'low'
+    return 'high' if best <= 1 else 'medium'
+
+
+def classify_backward_scan(df: Optional[pd.DataFrame], *,
+                           branch_pool=None, id2type=None,
+                           sizes=None, pool_best_size: float = 0.0,
+                           branch_source_type: str = '',
+                           min_size_ratio: float = 0.1,
+                           top_n: int = 5) -> Dict:
+    """One reverse scan's grade for the scanned (target-dataset) neuron.
+
+    The homolog-finding question, asked from the other side: "which source
+    does this target prefer, and how prominently does its OWN branch's
+    source type rank there?"  The grade is pure rank evidence — no score
+    bar, no pool-membership gate (user 2026-09-19):
+
+    * ``high``   — a hit of the branch's own source type is the top-1 by
+      rank_union or by jaccard.
+    * ``medium`` — such a hit sits within the top-3 of either ranking.
+    * ``low``    — scanned, but the branch's source type ranked outside
+      both top-3 windows (or nothing usable ranked at all).
+
+    Pool membership and the spatial caliber are recorded as CONTEXT on the
+    row (``backward_top1_in_branch``, ``backward_size_ratio`` /
+    ``backward_size_filtered``) — advisory hints that never change the
+    grade.  Alongside it the row publishes
+    ``backward_shared_type_count`` / ``backward_union_type_count`` and a
+    ``backward_thin_evidence`` flag (:data:`THIN_SHARED_TYPE_COUNT`) so a
+    reader can see how much of the union a rank_union actually rests on —
+    the flag never changes ``backward_evidence`` and never gates anything.
+    """
+    out = blank_backward_fields('run')
+    pool = {int(b) for b in (branch_pool or [])}
+    if df is None or df.empty:
+        out['backward_evidence'] = 'low'
+        return out
+    usable = df[df[_ORDER[0]].notna() | df['jaccard_rank'].notna()]
+    best = _best_row(usable)
+    if best is None:
+        out['backward_evidence'] = 'low'
+        return out
+    try:
+        top1 = int(best['target_bid'])
+    except (TypeError, ValueError):
+        out['backward_evidence'] = 'low'
+        return out
+    ru = _clean_num(best.get('rank_union'))
+    jac = _clean_num(best.get('jaccard'))
+    shared = _clean_int(best.get('shared_type_count'))
+    union = _clean_int(best.get('union_type_count'))
+    in_branch = top1 in pool
+    bid_size = _clean_num((sizes or {}).get(top1))
+    pbs = _clean_num(pool_best_size) or 0.0
+    ratio = None
+    size_filtered = False
+    if bid_size is not None and pbs > 0:
+        ratio = bid_size / pbs
+        size_filtered = ratio < float(min_size_ratio)
+    # Out-of-branch competitors above the branch's OWN best-ranked source.
+    n_out = 0
+    if pool:
+        pool_rows = usable[usable['target_bid'].astype(int).isin(pool)]
+        own = _best_row(pool_rows)
+        if own is not None:
+            for rank_col in ('rank_union_rank', 'jaccard_rank'):
+                own_rank = _clean_num(own.get(rank_col))
+                if own_rank is None:
+                    continue
+                above = usable[usable[rank_col].notna()
+                               & (usable[rank_col] < own_rank)
+                               & (~usable['target_bid'].astype(int)
+                                  .isin(pool))]
+                n_out = int(len(above))
+                break
+    # The grade is pure rank evidence: how prominently hits of the branch's
+    # OWN source type rank.  Caliber and pool membership stay context —
+    # advisory hints on the row, never a verdict (user 2026-09-19).
+    evidence = _grade_by_branch_type(usable, id2type, branch_source_type)
+    out.update({
+        'backward_evidence': evidence,
+        'backward_top1_source_bodyId': top1,
+        'backward_top1_source_type': _clean_type(
+            (id2type or {}).get(top1)),
+        'backward_top1_in_branch': bool(in_branch),
+        'backward_rank_union': ru,
+        'backward_jaccard': jac,
+        # how much evidence the numbers above rest on — the scorer counts
+        # them anyway, publishing them is what lets a reader discount a
+        # high rank_union built from 2 shared partners
+        'backward_shared_type_count': shared,
+        'backward_union_type_count': union,
+        'backward_rank_union_rank': _clean_int(best.get('rank_union_rank')),
+        'backward_jaccard_rank': _clean_int(best.get('jaccard_rank')),
+        'backward_n_out_of_branch': n_out,
+        'backward_size_ratio': ratio,
+        'backward_size_filtered': bool(size_filtered),
+        'backward_thin_evidence': bool(
+            shared is not None and shared <= THIN_SHARED_TYPE_COUNT),
+        'backward_topN': serialize_backward_topN(
+            usable, id2type=id2type, top_n=top_n, branch_pool=pool),
+    })
+    return out
+
+
+def reverse_source_column(df: Optional[pd.DataFrame], source_pool,
+                          top_rows: int = 50) -> List[Dict]:
+    """A pool target's column ranked over the WHOLE source universe.
+
+    The true competitor set for ``categorize_pool_sources``: the forward scans
+    can only ever see the branch's own sources, so out-of-branch rivals above a
+    source are invisible there.  Returns entries in the shape
+    ``{'source', 'ru', 'jac', 'in_pool'}`` ordered best-first."""
+    if df is None or df.empty:
+        return []
+    pool = {int(b) for b in (source_pool or [])}
+    rows = df.sort_values(_ORDER, ascending=[True, True, False],
+                          na_position='last').head(int(top_rows))
+    out: List[Dict] = []
+    for r in rows.itertuples(index=False):
+        try:
+            bid = int(r.target_bid)
+        except (TypeError, ValueError):
+            continue
+        out.append({'source': bid,
+                    'ru': _clean_num(getattr(r, 'rank_union', None)),
+                    'jac': _clean_num(getattr(r, 'jaccard', None)),
+                    'in_pool': bid in pool})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Evidence loaders (moved verbatim from mapping_validation)
 # ---------------------------------------------------------------------------
 

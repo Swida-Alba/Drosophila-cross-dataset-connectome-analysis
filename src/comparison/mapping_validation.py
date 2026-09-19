@@ -103,12 +103,17 @@ from comparison.body_id_resolver import (  # noqa: E402
     _SideStats,
     _pearson,
     _rankdata_average,
+    BACKWARD_COLUMNS,
+    BACKWARD_EVIDENCE_VALUES,
+    blank_backward_fields,
     build_target_vectors,
+    classify_backward_scan,
     expanded_vector,
     load_caliber_map,
     load_hemisphere_map,
     passes_target_quality_gate,
     prep_target_stats,
+    reverse_source_column,
     scan_source,
     score_one_candidate,
     score_one_candidate_fast,
@@ -208,9 +213,29 @@ class MappingValidationConfig:
     validation_mode: str = 'restrictive'
     aggressive_expansion: bool = False
     pool_widen: bool = False
-    relatives_cap: int = 12
     candidate_window: int = 25
     deep_cap: int = 10
+    # ------------------------------------------------------------------
+    # Stage 5d: backward (target -> source) homolog evidence for the
+    # expansion bins.  ADVISORY ONLY — `backward_evidence` labels a row, it
+    # never gates, never changes `category`, and never touches the
+    # counts_toward_* flags.  Connectivity only: morphology is deliberately
+    # not re-scored here (plan-tmvev-backward-expansion-evidence.md D5).
+    # ------------------------------------------------------------------
+    backward_evidence_enabled: bool = False
+    #: Reverse hits kept per neuron (the report's hover label; the table
+    #: cell always shows the top-1 only).
+    backward_top_n: int = 5
+    #: Hard budget on dataset-scale reverse scans per run — one scan costs as
+    #: much as a forward source scan (~4-7 s against a 140-180k universe).
+    backward_max_neurons: int = 300
+    #: Per-branch budget on labeled expansion members (a branch can still be
+    #: labeled from a scan another branch paid for).
+    backward_per_branch_cap: int = 40
+    #: Reverse-scan the validated pool targets too, so the `source-` status
+    #: columns see out-of-branch competitors (they cannot from forward scans).
+    backward_scan_pool_targets: bool = True
+    skip_backward_pass: bool = False
     # Rev 3.9 Track-A bar calibration: the query-based morph threshold
     # is NULL-CALIBRATED per run — the p95 of the Track-A morph over
     # window rows with jaccard <= `null_jaccard_max` (provably unrelated
@@ -554,6 +579,7 @@ def build_gap_fill_levels(dedup_rows, evidence_rows, family_material=()):
         if cat not in GAP_FILL_LEVEL_BY_CATEGORY:
             continue          # tier rows are claims, not fills
         bid = int(d['target_bodyId'])
+        bev = str(d.get('backward_evidence') or '')
         if cat == 'candidates':
             kind, value = bars.get(bid, ('null', None))
             level = BAR_KIND_TO_LEVEL.get(kind, 'low')
@@ -561,8 +587,13 @@ def build_gap_fill_levels(dedup_rows, evidence_rows, family_material=()):
             evidence, bar_value = kind, value
         else:
             level = GAP_FILL_LEVEL_BY_CATEGORY[cat]
-            evidence = ('type_membership' if cat == 'family'
-                        else 'candidate_type_mate')
+            # The reverse finding is a second-direction CONNECTIVITY fact, so
+            # it replaces the annotation-only provenance rather than joining
+            # the morph-bar `level` ladder (plan D7).
+            evidence = (f'backward_{bev}'
+                        if bev and bev != 'not-checked'
+                        else ('type_membership' if cat == 'family'
+                              else 'candidate_type_mate'))
             bar_value, note = None, ''
         counts[level] += 1
         rows.append({
@@ -572,6 +603,7 @@ def build_gap_fill_levels(dedup_rows, evidence_rows, family_material=()):
             'dedup_category': cat,
             'evidence': evidence,
             'bar_value': bar_value,
+            'backward_evidence': bev,
             'dup': bool(d.get('dup')),
             'note': note,
         })
@@ -723,6 +755,69 @@ def _short_name(dataset: str) -> str:
         return _abbrev(dataset)
 
 
+# ---------------------------------------------------------------------------
+# Run-folder layout (plan-tmvev-backward-expansion-evidence.md Part II)
+# ---------------------------------------------------------------------------
+#: Exported file -> subfolder inside the run dir (``''`` = root).  Root keeps
+#: only the deliverables (report, user guide, README) and the parameter/meta
+#: surface; the evidence CSVs are grouped by pipeline stage.  This is the ONE
+#: registry writers and readers consult — a filename used to be hard-coded in
+#: six places (the writer, the schema registry, the report readers,
+#: ``ARTIFACT_LINES``, the run-guide patterns and the README start-here list).
+RUN_FILE_LAYOUT: Dict[str, str] = {
+    # stage-2/3 validation evidence
+    'validation_results.csv': 'validation',
+    'pair_summary.csv': 'validation',
+    'pool_categories.csv': 'validation',
+    'examinees.csv': 'validation',
+    'deep_candidates.csv': 'validation',
+    'noise_filtered_candidates.csv': 'validation',
+    # expansion bins + their reverse evidence
+    'family_candidates.csv': 'expansion',
+    'relatives.csv': 'expansion',
+    'out_map_expansion.csv': 'expansion',
+    'source_candidates.csv': 'expansion',
+    'source_status.csv': 'expansion',
+    'backward_matches.csv': 'expansion',
+    # gap-fill accounting
+    'gap_fill_dedup.csv': 'gap_fill',
+    'gap_fill_levels.csv': 'gap_fill',
+    'gap_fill_proposals.csv': 'gap_fill',
+    # mapping provenance
+    'mapping_export.csv': 'mapping',
+    'same_name_excluded.csv': 'mapping',
+    'suspects_verification.csv': 'mapping',
+    # root: deliverables + parameter/meta
+    'README.txt': '',
+    'report.html': '',
+    'parameters.json': '',
+    'set_coverage.json': '',
+    'morphology_calibration.json': '',
+    'pipeline_progress.jsonl': '',
+    'user_warning_notes.txt': '',
+}
+
+
+def run_file_path(run_dir, name: str, *, create_parent: bool = False) -> Path:
+    """Resolve one run-dir file through :data:`RUN_FILE_LAYOUT`.
+
+    Writers pass ``create_parent=True`` and always get the registry location.
+    Readers get the LEGACY flat path when only that exists, so run folders
+    written before the layout change keep reporting and regenerating — the
+    same two-name fallback ``_read_examinees`` already applies to the
+    pre-rename CSV."""
+    sub = RUN_FILE_LAYOUT.get(name, '')
+    new = Path(run_dir) / sub / name if sub else Path(run_dir) / name
+    if create_parent:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        return new
+    if sub and not new.exists():
+        flat = Path(run_dir) / name
+        if flat.exists():
+            return flat
+    return new
+
+
 # Header-only empty exports (user 2026-09-18): a run folder should never
 # contain zero-byte CSVs — pd.read_csv raises EmptyDataError on them.  When
 # `_write_outputs` has no rows for one of these files it writes the header
@@ -867,13 +962,46 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'target_type', 'rank_union', 'rank_union_rank', 'jaccard',
         'jaccard_rank', 'in_map', 'morph_v2_similarity',
         'morph_qualified'],
+    'backward_matches.csv': [
+        'query', 'branch_source_type', 'branch_target_type',
+        'member_bodyId', 'member_type', 'member_category', 'scan_role'],
 }
+
+# The backward (target -> source) evidence columns ride the three expansion
+# bins, the reverse-scan ledger and the bodyId-unique rollup.  ``BACKWARD_
+# COLUMNS`` is the single source of truth for their order, so adding one there
+# cannot desync an empty export's header from a populated one.  Connectivity
+# only — no morphology is added here (plan-tmvev-backward-expansion-evidence.md
+# D5).
+for _bin_schema in ('examinees.csv', 'deep_candidates.csv', 'relatives.csv',
+                    'family_candidates.csv', 'backward_matches.csv'):
+    _RUN_CSV_SCHEMAS[_bin_schema] = (
+        _RUN_CSV_SCHEMAS[_bin_schema] + BACKWARD_COLUMNS)
+_RUN_CSV_SCHEMAS['gap_fill_dedup.csv'] = _RUN_CSV_SCHEMAS[
+    'gap_fill_dedup.csv'] + [
+        'backward_evidence', 'backward_top1_source_bodyId',
+        'backward_top1_source_type', 'backward_top1_in_branch',
+        'backward_shared_type_count', 'backward_n_out_of_branch',
+        'backward_thin_evidence']
+_RUN_CSV_SCHEMAS['gap_fill_levels.csv'] = _RUN_CSV_SCHEMAS[
+    'gap_fill_levels.csv'] + ['backward_evidence']
+# the opt-in rivals ledger rides the ordinary verdict-row shape plus the
+# rival provenance columns added by the suspects pass.  Without a schema
+# here an empty export is a bare newline (columns=None) — found on the
+# r13 real-data run, where --verify-suspects had zero rivals to verify.
+_RUN_CSV_SCHEMAS['suspects_verification.csv'] = (
+    _RUN_CSV_SCHEMAS['validation_results.csv'] + [
+        'rival_of', 'disposition', 'rival_has_own_clean_pair',
+        'rival_reverse_target', 'rival_votes',
+        'rival_population_source', 'rival_population_target'])
+del _bin_schema
 
 
 def _write_run_csv(run_dir: Path, name: str, rows: List[Dict]) -> None:
-    """Write one run CSV with the registry's columns so an empty export
-    is a header-only file, never zero bytes."""
-    _write_csv(run_dir / name, rows,
+    """Write one run CSV at its :data:`RUN_FILE_LAYOUT` location with the
+    registry's columns, so an empty export is a header-only file, never
+    zero bytes."""
+    _write_csv(run_file_path(run_dir, name, create_parent=True), rows,
                columns=_RUN_CSV_SCHEMAS.get(name))
 
 
@@ -882,11 +1010,37 @@ def _write_csv(path: Path, rows: List[Dict],
     # An empty rows list with known columns still writes the header —
     # a zero-byte file makes pd.read_csv raise EmptyDataError instead of
     # yielding an empty frame (review 2026-09-16).
+    rows = rows or []
     df = pd.DataFrame(rows, columns=columns)
     for col in df.columns:
-        if col.endswith('bodyId'):
-            df[col] = df[col].astype('Int64')
+        if not col.endswith('bodyId'):
+            continue
+        # FAFB bodyIds are ~2**59, and a column that mixes them with blanks
+        # has already been promoted to float64 by the DataFrame ctor — which
+        # silently rounds (720575940623474019 -> ...474048).  Rebuild the
+        # column from the raw row values so the int never sees a float.
+        df[col] = pd.array([_int_or_na(r.get(col)) for r in rows],
+                           dtype='Int64')
     df.to_csv(path, index=False)
+
+
+def _int_or_na(v):
+    """Raw row value as an ``Int64`` member, or NA for blank/NaN/garbage.
+
+    Python ints, numpy ints and digit strings go through UNTOUCHED — routing
+    a 2**59 bodyId through ``float`` is exactly the loss this guard exists to
+    prevent, and a float64 that arrives here is already rounded upstream."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return pd.NA
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, str) and v.strip().lstrip('-').isdigit():
+        return int(v.strip())
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return pd.NA
+    return pd.NA if f != f else int(f)
 
 
 def _counter_text(key: str, rows: List[Dict]) -> str:
@@ -1340,7 +1494,9 @@ def categorize_pool_targets(per_source: Dict[int, pd.DataFrame],
 def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
                             target_pool: set, source_pool: set,
                             top_n: int = 2, invader_max: int = 3,
-                            matched_ru_min: float = 0.1
+                            matched_ru_min: float = 0.1,
+                            reverse_columns: Optional[Dict[int, List[Dict]]]
+                            = None
                             ) -> Tuple[Dict[int, str], List[Dict]]:
     """Backward mirror of `categorize_pool_targets` (plan
     plan-backward-source-status.md): read-only `source-` status per
@@ -1350,7 +1506,11 @@ def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
 
     ``target_pool`` defines the columns; ``source_pool`` defines WHO gets
     a status (the branch's own source pool — D-B7, in-branch sources
-    only).
+    only).  ``reverse_columns`` replaces a column with the ranking produced
+    by a stage-5d REVERSE scan (target -> whole source universe): without it
+    a column can only ever contain the branch's own sources, so no
+    out-of-branch competitor can appear above one and ``n_competitors`` is
+    structurally 0.
 
     source-matched    column-top-1 (either metric) of its own row-best
                       pool target AND pair rank_union > matched_ru_min
@@ -1385,6 +1545,10 @@ def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
                 'jac': None if jac_nan else float(jac),
                 'in_pool': sbid in source_pool,
             })
+    for t, entries in (reverse_columns or {}).items():
+        t = int(t)
+        if t in columns and entries:
+            columns[t] = list(entries)
 
     def _order(entries, key):
         # deterministic: higher score first (both metrics: higher is
@@ -1515,7 +1679,7 @@ class ProgressReporter:
         rec = {'ts': time.strftime('%Y-%m-%dT%H:%M:%S'), 'event': event}
         rec.update(fields)
         try:
-            with open(self.path, 'a') as fh:
+            with open(self.path, 'a', encoding='utf-8') as fh:
                 fh.write(json.dumps(rec, default=str) + '\n')
         except OSError:
             pass
@@ -2948,6 +3112,15 @@ class MappingValidator:
         # per-branch rows (the plan's bodyId-level `(dup)` tag), so the
         # CSVs and the scene both show which expansion neurons recur across
         # branches.  Siblings are excluded by construction (never `dup`).
+        # Stash the partition inputs so stage 5d can relabel rows and REBUILD
+        # this rollup without re-enumerating anything (`_backward_expansion_
+        # pass`); the row dicts are shared, so an in-place label update is
+        # picked up by the family/relative exports and the scenes.
+        self._cat_evidence = evidence
+        self._cat_pool_detail = pool_detail
+        self._cat_family_rows = family_rows
+        self._cat_relative_rows = relative_rows
+        self._cat_per_pair_res = per_pair_res
         dedup_rows = self._build_dedup_rows(evidence, pool_detail,
                                             family_rows, relative_rows)
         dup_by_bid = {int(r['target_bodyId']): bool(r['dup'])
@@ -2990,6 +3163,9 @@ class MappingValidator:
             'counts_toward_restrictive_fill': False,
             'counts_toward_family_fill': True,
             'candidate_source': category,
+            # Connectivity-only placeholders; stage 5d overwrites them when
+            # the backward pass is enabled (D5: no morphology here).
+            **blank_backward_fields(),
         }
 
     def _build_dedup_rows(self, evidence, pool_detail, family_rows,
@@ -3028,6 +3204,29 @@ class MappingValidator:
             consider(int(r['ahead_target_bodyId']), r['category'],
                      r['ahead_target_type'], r['source_type'],
                      r['target_type'])
+
+        # Stage 5d carries the reverse grade onto the rollup so the layered
+        # gap-fill report can split a bin by it.  The strongest label on a
+        # bodyId wins (high > medium > low); `not-checked` never wins.
+        rank_bev = {'low': 1, 'medium': 2, 'high': 3}
+        bev_by_bid: Dict[int, Dict] = {}
+
+        def note_bev(bid, row):
+            lab = str(row.get('backward_evidence') or '')
+            if lab not in rank_bev:
+                return
+            cur = bev_by_bid.get(int(bid))
+            if cur is None or rank_bev[lab] > rank_bev.get(
+                    str(cur.get('backward_evidence') or ''), 0):
+                bev_by_bid[int(bid)] = row
+
+        for row, bid, _t in evidence:
+            note_bev(bid, row)
+        for r in list(family_rows) + list(relative_rows):
+            note_bev(r['ahead_target_bodyId'], r)
+        for d in pool_detail:
+            note_bev(d['target_bodyId'], d)
+
         rows = []
         for bid, rec in per_bid.items():
             cat = rec['dedup_category'] or ''
@@ -3040,6 +3239,7 @@ class MappingValidator:
             # always dup, so don't tag them").
             dup = n_branches > 1 and cat in (
                 'candidates', 'family', 'relative', 'examinees')
+            bev = bev_by_bid.get(bid) or {}
             rows.append({
                 'target_bodyId': bid,
                 'target_type': rec['target_type_name'],
@@ -3049,6 +3249,19 @@ class MappingValidator:
                 'counts_toward_restrictive_fill': cat == 'candidates',
                 'counts_toward_family_fill': cat in
                 ('candidates', 'family', 'relative'),
+                'backward_evidence': bev.get('backward_evidence') or '',
+                'backward_top1_source_bodyId':
+                    bev.get('backward_top1_source_bodyId'),
+                'backward_top1_source_type':
+                    bev.get('backward_top1_source_type') or '',
+                'backward_top1_in_branch':
+                    bool(bev.get('backward_top1_in_branch')),
+                'backward_shared_type_count':
+                    bev.get('backward_shared_type_count'),
+                'backward_n_out_of_branch':
+                    bev.get('backward_n_out_of_branch'),
+                'backward_thin_evidence':
+                    bool(bev.get('backward_thin_evidence')),
             })
         rows.sort(key=lambda r: (-dedup_category_rank(r['dedup_category']),
                                  r['target_bodyId']))
@@ -3613,6 +3826,15 @@ class MappingValidator:
             payload['mapper_gap'] = {
                 'types': dict(gap_types),
                 'untyped_rows': getattr(self, '_mapper_gap_untyped', 0)}
+        # Stage 5d counters.  This is a NEW input, not a derivation: the
+        # coverage block's `family_material` is a pool overhang
+        # (parent_target_pool minus the branch pools), so it never sees the
+        # enumerated family/relative rows the backward labels belong to.
+        bev = getattr(self, '_backward_counters', None)
+        if bev:
+            mcns = dict(payload.get('mcns') or {})
+            mcns['backward_evidence'] = dict(bev)
+            payload['mcns'] = mcns
         return payload
 
     # -- driver -----------------------------------------------------------
@@ -3660,41 +3882,54 @@ class MappingValidator:
 
     def _preflight_target_profiles(self, dataset: str, universe=None,
                                    cached_ids=None) -> Dict[str, int]:
-        """Build missing target-side bodyId profiles through the profiler
-        backend (cache-first per bid, resumable; batch-save + consolidate).
+        """Build the MISSING bodyId profiles for a dataset through the
+        profiler backend — cache-first per bid, resumable, batch-save +
+        consolidate.
 
-        Returns ``{'universe', 'cached', 'built'}``.  Any failure is
-        fail-open: the run continues against whatever the cache holds
-        (the historical cache-only behavior)."""
+        Returns ``{'universe', 'cached', 'built', 'below_k'}``.  Rows that
+        exist but hold fewer partners than this run's ``top_k`` are counted,
+        NOT rebuilt — 81% (FAFB) / 87% (MCNS) of them sit at k ≤ 5, where the
+        profiler's ``k_used = min(max_k, n_rows)`` means the neuron simply has
+        fewer partners than k, so a rebuild reproduces the same vector.  It is
+        a sparsity note only, never a parity risk: the query path
+        (:meth:`get_profile`) and the universe path (``build_target_vectors``)
+        were verified to hand back identical vectors, and the scorer is exactly
+        symmetric.  Any failure is fail-open: the run continues against
+        whatever the cache holds (the historical cache-only behavior)."""
         cfg = self.cfg
         if universe is None:
             universe = self._typed_target_universe(dataset)
         if not universe:
             self.log('[TMVEV] profile pre-flight: no typed universe '
                      f'resolvable for {dataset}; staying cache-only')
-            return {'universe': 0, 'cached': 0, 'built': 0}
+            return {'universe': 0, 'cached': 0, 'built': 0, 'below_k': 0}
+        cache_df = None
         if cached_ids is None:
             cache_df = self.profiler._load_cache_dataframe(dataset)
             cached_ids = set()
             if cache_df is not None and 'neuron_id' in cache_df.columns:
                 cached_ids = {int(x) for x in cache_df['neuron_id']}
         missing = [b for b in universe if b not in set(cached_ids)]
+        below_k = self._below_k_cache_ids(cache_df, universe)
+        todo = sorted(set(missing))
         stats = {'universe': len(universe), 'cached': len(universe)
-                 - len(missing), 'built': 0}
+                 - len(todo), 'built': 0, 'below_k': len(below_k)}
         self.log(f'[TMVEV] profile pre-flight ({dataset}): universe '
                  f'{len(universe)}, cached {stats["cached"]}, '
-                 f'building {len(missing)}')
+                 f'building {len(todo)} ({len(below_k)} cached below k='
+                 f'{cfg.top_k}, not rebuilt: degree-limited)')
         self.progress.emit('profiles_progress', stage='2', dataset=dataset,
-                           done=0, total=len(missing))
-        if not missing:
+                           done=0, total=len(todo))
+        if not todo:
             self.progress.emit('profiles_progress', stage='2',
                                dataset=dataset, done=0, total=0,
+                               below_k=stats['below_k'],
                                note='cache complete')
             return stats
         t0 = time.time()
         batch = {}
         built = 0
-        for i, bid in enumerate(missing, 1):
+        for i, bid in enumerate(todo, 1):
             try:
                 prof = self.profiler.get_profile(bid, dataset)
                 if prof is not None:
@@ -3706,13 +3941,13 @@ class MappingValidator:
                 self.profiler._save_profiles_to_cache_batch(
                     batch, dataset, silent=True)
                 batch.clear()
-            if i % 500 == 0 or i == len(missing):
-                self.log(f'[TMVEV] profile pre-flight: {i}/{len(missing)} '
-                         f'({100 * i / len(missing):.1f}%) elapsed '
+            if i % 500 == 0 or i == len(todo):
+                self.log(f'[TMVEV] profile pre-flight: {i}/{len(todo)} '
+                         f'({100 * i / len(todo):.1f}%) elapsed '
                          f'{time.time() - t0:.0f}s')
                 self.progress.emit('profiles_progress', stage='2',
                                    dataset=dataset, done=i,
-                                   total=len(missing))
+                                   total=len(todo))
         if batch:
             self.profiler._save_profiles_to_cache_batch(batch, dataset,
                                                         silent=True)
@@ -3722,11 +3957,45 @@ class MappingValidator:
             self.log(f'[TMVEV] profile consolidation failed: {exc}')
         stats['built'] = built
         self.progress.emit('profiles_progress', stage='2', dataset=dataset,
-                           done=len(missing), total=len(missing),
+                           done=len(todo), total=len(todo),
+                           built=built, below_k=stats['below_k'],
                            note='complete')
         self.log(f'[TMVEV] profile pre-flight done: built {built} in '
                  f'{time.time() - t0:.0f}s')
         return stats
+
+    def _below_k_cache_ids(self, cache_df, universe) -> List[int]:
+        """Universe bodyIds whose cached profile holds fewer partners than
+        the run's ``top_k`` — a SPARSITY DIAGNOSTIC, not a work list.
+
+        This is NOT a parity risk.  ``get_profile`` (the query side) and
+        ``build_target_vectors`` (the universe side) were checked against each
+        other on real runs and hand back byte-identical vectors: rescoring
+        every pair from the cache parquet reproduced the stored forward
+        ``rank_union`` on 272/272 pairs (r9 + r11) with zero sub-k rows
+        involved, and ``score_one_candidate_fast(a, b) == score(b, a)`` holds
+        exactly, so direction cannot change a pair's score.
+
+        Why the rows sit below k: 81% of the FAFB and 87% of the MCNS ones
+        hold ``top_k_bodyid_used`` ≤ 5, where ``_process_connections`` sets
+        ``k_used = min(max_k, n_rows)`` — the neuron has fewer partners than k.
+        Rebuilding cannot raise that (measured: r9 rebuilt 6,883 rows in 903 s
+        and r10 rebuilt the same 3,897 again in 512 s, both for no change), so
+        the population is counted and reported
+        (``source_vectors_below_k``) as a note on how much of the universe
+        carries a short vector."""
+        if cache_df is None or 'top_k_bodyid_used' not in cache_df.columns \
+                or 'neuron_id' not in cache_df.columns:
+            return []
+        try:
+            k = int(self.cfg.top_k)
+            got = pd.to_numeric(
+                cache_df.set_index('neuron_id')['top_k_bodyid_used'],
+                errors='coerce')
+            below = {int(b) for b in got.index[got.fillna(k) < k]}
+            return sorted(b for b in set(universe) if b in below)
+        except Exception:  # noqa: BLE001
+            return []
 
     # -- Plan I follow-up: out-map expansion -----------------------------
 
@@ -3873,8 +4142,321 @@ class MappingValidator:
                 self.log(traceback.format_exc())
         return rows, cand_rows
 
+    # -- stage 5d: backward (target -> source) homolog evidence ------------
+
+    def _backward_expansion_pass(self):
+        """Reverse-scan the expansion bins so each labeled neuron answers
+        "which SOURCE neuron do you prefer, and is it ours?".
+
+        Runs after :meth:`finalize_categories` (that is where the family and
+        relative members are first enumerated) and before the coverage /
+        layered-fill rollups, then rebuilds the bodyId-unique dedup so the
+        labels reach ``gap_fill_levels.csv``.
+
+        Additive and ADVISORY: it writes ``backward_*`` columns and never
+        touches ``category`` or any ``counts_toward_*`` flag, so the fill
+        totals are identical to a run without it.  Connectivity only — no
+        morphology is scored (plan D5).  It is not mode-gated: in restrictive
+        mode the family / relative bins are simply empty, so the pass checks
+        the ``candidates`` rows.  Fail-open like the other
+        advisory layers: a failure leaves the rows ``unscanned`` (``error`` /
+        ``no_profile`` in ``backward_scanned_at``) and never raises into
+        :meth:`run`.
+
+        The scanned set is the gap-fill bins (candidates / family /
+        relative) plus the UNMATCHED pool members.  Matched / verified /
+        borderline pool members are already mapped — the symmetric
+        forward score is their evidence — so a reverse scan would only
+        restate it (user 2026-09-19).
+        """
+        cfg = self.cfg
+        if not cfg.backward_evidence_enabled or cfg.skip_backward_pass:
+            return None
+        evidence = getattr(self, '_cat_evidence', None)
+        pool_detail = getattr(self, '_cat_pool_detail', None)
+        family_rows = getattr(self, '_cat_family_rows', None) or []
+        relative_rows = getattr(self, '_cat_relative_rows', None) or []
+        per_pair_res = getattr(self, '_cat_per_pair_res', None) or {}
+        if evidence is None or pool_detail is None:
+            self.log('[stage 5d] backward evidence skipped: the category '
+                     'partition stashed no inputs (finalize_categories '
+                     'failed?)')
+            return None
+
+        pairs_by_key = {}
+        for p in self.pairs:
+            pairs_by_key[(p.query, p.source_type, p.target_type)] = p
+            pairs_by_key.setdefault((p.source_type, p.target_type), p)
+
+        def branch_key(row):
+            k3 = (str(row.get('query') or ''), str(row['source_type']),
+                  str(row['target_type']))
+            return k3 if k3 in pairs_by_key else k3[1:]
+
+        def branch_source_pool(key):
+            p = pairs_by_key.get(tuple(key))
+            return {int(b) for b in (p.source_pool if p else [])}
+
+        target_branch = {}
+        for key, res in per_pair_res.items():
+            for t in (res.get('_pool_set') or []):
+                target_branch[int(t)] = key
+
+        members = {}
+
+        def add(bid, key, role, rows, mtype, mcat):
+            rec = members.setdefault(int(bid), {
+                'roles': set(), 'rows_by_key': {},
+                'member_type': '' if mtype is None else str(mtype),
+                'member_category': '' if mcat is None else str(mcat)})
+            rec['roles'].add(role)
+            if key is not None:
+                rec['rows_by_key'].setdefault(tuple(key), []).extend(
+                    rows or [])
+
+        # The bins the user asked to reverse-check: the gap-fill ladder
+        # (candidates / family / relative) plus the unmatched pool
+        # members below.  `sibling` / `examinees` / out-of-scope rows are
+        # skipped — already mapped or noise — and so are matched /
+        # verified / borderline pool members: they are already mapped,
+        # and the symmetric forward score is their evidence (user
+        # 2026-09-19).
+        for row, bid, tname in evidence:
+            cat = str(row.get('category') or '')
+            if cat not in GAP_FILL_LEVEL_BY_CATEGORY:
+                continue
+            add(bid, branch_key(row), cat, [row], tname, cat)
+        for r in list(family_rows) + list(relative_rows):
+            add(r['ahead_target_bodyId'],
+                (str(r.get('query') or ''), str(r['source_type']),
+                 str(r['target_type'])),
+                str(r['category']), [r], r.get('ahead_target_type'),
+                r.get('category'))
+        if cfg.backward_scan_pool_targets:
+            for d in pool_detail:
+                if str(d.get('category') or '') != 'unmatched':
+                    continue
+                add(int(d['target_bodyId']),
+                    target_branch.get(int(d['target_bodyId'])),
+                    'pool_target', None,
+                    d.get('target_type'), d.get('category'))
+
+        # Budget: one reverse scan costs what a forward source scan costs
+        # (~4-7 s against a 140-180k universe), so a bodyId is scanned ONCE
+        # for all branches and the caps are enforced on distinct bodyIds.
+        # The gap-fill bins go first — they are what this pass exists to
+        # label; the unmatched pool members follow (measured on a real
+        # run, an unordered budget spent 102 of 120 scans on the control
+        # and capped out half the bin members).
+        bids = sorted(members, key=lambda b: (
+            0 if members[b]['roles'] - {'pool_target'} else 1, b))
+        order, per_branch = [], Counter()
+        budget = int(cfg.backward_max_neurons or 0) or len(bids)
+        per_branch_cap = int(cfg.backward_per_branch_cap or 0) or len(bids)
+        for bid in bids:
+            if len(order) >= budget:
+                break
+            keys = list(members[bid]['rows_by_key']) or [None]
+            if not any(per_branch[k] < per_branch_cap for k in keys):
+                continue
+            order.append(bid)
+            for k in keys:
+                per_branch[k] += 1
+        order_set = set(order)
+        for bid, rec in members.items():
+            if bid in order_set:
+                continue
+            for rows in rec['rows_by_key'].values():
+                for r in rows:
+                    r.update(blank_backward_fields('cap'))
+        self.log(f'[stage 5d] backward homolog evidence: {len(order)} '
+                 f'distinct member(s) to reverse-scan, '
+                 f'{len(bids) - len(order)} beyond the caps')
+        if not order:
+            return self._rebuild_dedup_rows()
+
+        self.progress.emit('backward_progress', stage='backward',
+                           done=0, total=len(order))
+        refresh_stats = None
+        if not cfg.skip_profile_build:
+            # D9 of the plan: make sure every source neuron HAS a profile
+            # before the universe can act as a scan target, and measure how
+            # many of them are vector-truncated (counted, not rebuilt).
+            try:
+                refresh_stats = self._preflight_target_profiles(
+                    cfg.source_dataset)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[stage 5d] source profile pre-flight failed '
+                         f'(continuing cache-only): {exc}')
+        try:
+            vectors = build_target_vectors(
+                self.profiler, cfg.source_dataset, self.mapper, cfg.verbose,
+                min_weight=cfg.target_min_weight,
+                min_partner_types=cfg.target_min_partner_types)
+            source_stats = prep_target_stats(vectors)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'[stage 5d] source-universe vectors unavailable, '
+                     f'backward evidence skipped: {exc}')
+            # the pass WAS asked to run, so the in-budget rows must say
+            # `error`, not inherit the disabled-run default `disabled`
+            for bid in order:
+                for rows in members[bid]['rows_by_key'].values():
+                    for r in rows:
+                        r.update(blank_backward_fields('error'))
+            return self._rebuild_dedup_rows()
+        del vectors
+        source_bids = list(source_stats)
+
+        scanned = {}
+        # why a member was never scanned — 'no_profile' (absent or a status
+        # the scan skips) is silence; 'error' means the scan itself failed.
+        # Both are `unscanned`; a scan that ranked nothing is `none`, which
+        # is a negative result and must not be conflated with them.
+        unscanned = {}
+        t0 = time.time()
+        for i, bid in enumerate(order, 1):
+            try:
+                sp = self.profiler.get_profile(bid, cfg.target_dataset)
+                if sp is None or sp.connectivity_status.name \
+                        in SOURCE_STATUS_SKIP:
+                    unscanned[bid] = 'no_profile'
+                    continue
+                df = scan_source(expanded_vector(sp, self.mapper),
+                                 source_stats, source_bids)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[TMVEV] backward scan {bid}: {exc}')
+                unscanned[bid] = 'error'
+                continue
+            scanned[bid] = df
+            if i % 25 == 0 or i == len(order):
+                self.log(f'[stage 5d] backward scan {i}/{len(order)} '
+                         f'({time.time() - t0:.0f}s)')
+                self.progress.emit('backward_progress', stage='backward',
+                                   done=i, total=len(order))
+        del source_stats, source_bids
+
+        # Source type names, resolved once for the recorded hits only —
+        # the top-N by rank_union (the serialized payload) PLUS the top-3
+        # by jaccard, both needed by the branch-type grade.
+        wanted = set()
+        for df in scanned.values():
+            if df is None or df.empty:
+                continue
+            for col in ('rank_union_rank', 'jaccard_rank'):
+                for r in df.sort_values(col, na_position='last').head(
+                        max(cfg.backward_top_n, 3)).itertuples(index=False):
+                    wanted.add(int(r.target_bid))
+        src_id2type = self._bodyid_types(sorted(wanted), cfg.source_dataset)
+
+        match_rows = []
+        best_label = {}
+        label_rank = {'low': 1, 'medium': 2, 'high': 3}
+        reverse_columns = {}
+        for bid in order:
+            rec = members[bid]
+            df = scanned.get(bid)
+            for key, rows in rec['rows_by_key'].items():
+                pool = branch_source_pool(key)
+                verdict = classify_backward_scan(
+                    df, branch_pool=pool, id2type=src_id2type,
+                    sizes=self._source_sizes,
+                    pool_best_size=max(
+                        ((self._source_sizes or {}).get(b, 0.0)
+                         for b in pool), default=0.0),
+                    branch_source_type=key[-2],
+                    min_size_ratio=cfg.target_min_size_ratio,
+                    top_n=cfg.backward_top_n)
+                if bid in unscanned:
+                    # never scanned is not the same claim as a graded low
+                    verdict['backward_scanned_at'] = unscanned[bid]
+                    verdict['backward_evidence'] = 'not-checked'
+                for r in rows:
+                    r.update(verdict)
+                lab = str(verdict.get('backward_evidence') or '')
+                if lab not in label_rank:
+                    continue
+                cur = best_label.get(bid)
+                if cur is None or label_rank[lab] > label_rank.get(cur, 0):
+                    best_label[bid] = lab
+                match_rows.append({
+                    'query': key[0] if len(key) == 3 else '',
+                    'branch_source_type': key[-2],
+                    'branch_target_type': key[-1],
+                    'member_bodyId': bid,
+                    'member_type': rec['member_type'],
+                    'member_category': rec['member_category'],
+                    'scan_role': ','.join(sorted(rec['roles'])),
+                    **verdict})
+            if 'pool_target' in rec['roles'] and df is not None \
+                    and not df.empty:
+                key = next(iter(rec['rows_by_key']), None)
+                col = reverse_source_column(
+                    df, branch_source_pool(key) if key else set(),
+                    top_rows=max(cfg.verified_top_n
+                                 + cfg.invader_borderline_max + 2, 10))
+                if col:
+                    reverse_columns[bid] = col
+
+        counts = Counter(best_label.values())
+        self._backward_matches_rows = match_rows
+        # the scene layer reads this to suffix a leaf with its reciprocal
+        # verdict (mapping_validation_visualize._BACKWARD_LEAF_TAG)
+        self._backward_label_by_bid = dict(best_label)
+        self._backward_counters = {
+            k: int(counts.get(k, 0)) for k in BACKWARD_EVIDENCE_VALUES}
+        self._backward_counters['distinct_scanned'] = len(scanned)
+        self._backward_counters['beyond_cap'] = len(bids) - len(order)
+        if refresh_stats:
+            # D9: how many source rows carry a vector built below this run's
+            # k — counted, not rebuilt (see _below_k_cache_ids)
+            self._backward_counters['source_vectors_below_k'] = int(
+                refresh_stats.get('below_k') or 0)
+        self._backward_counters['morph'] = 'not evaluated (connectivity-only)'
+        self.log('[stage 5d] backward evidence: '
+                 + ', '.join(f'{k}={v}' for k, v in
+                             sorted(self._backward_counters.items()))
+                 + f' in {time.time() - t0:.0f}s')
+        self.progress.emit('backward_progress', stage='backward',
+                           done=len(order), total=len(order),
+                           note=f'{len(scanned)} scanned')
+        if reverse_columns:
+            self._reverse_columns = reverse_columns
+            try:
+                self._backward_source_pass(per_pair_res, [],
+                                           reverse=reverse_columns)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[stage 5d] reverse-column refresh skipped: {exc}')
+        return self._rebuild_dedup_rows()
+
+    def _rebuild_dedup_rows(self) -> List[Dict]:
+        """Re-run the bodyId-unique rollup after a label change (it is a pure
+        function of the stashed partition inputs)."""
+        return self._build_dedup_rows(
+            getattr(self, '_cat_evidence', None) or [],
+            getattr(self, '_cat_pool_detail', None) or [],
+            getattr(self, '_cat_family_rows', None) or [],
+            getattr(self, '_cat_relative_rows', None) or [])
+
+    def _bodyid_types(self, bids: List[int],
+                      dataset: str) -> Dict[int, str]:
+        """Type label per bodyId of ANY dataset (``_target_types`` is the
+        target-side convenience wrapper over this)."""
+        out: Dict[int, str] = {}
+        if not bids:
+            return out
+        try:
+            got = self.profiler.get_types_for_bodyids(
+                list(bids), dataset) or {}
+            for k, v in got.items():
+                out[int(k)] = v
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'    ! type labels unavailable for {dataset}: {exc}')
+        return out
+
     def _backward_source_pass(self, per_pair_res: Dict,
-                              all_sus_rows: List[Dict]) -> None:
+                              all_sus_rows: List[Dict],
+                              reverse: Optional[Dict[int, List[Dict]]] = None
+                              ) -> None:
         """Populate the advisory backward view (plan-
         backward-source-status.md): `source-` statuses per in-branch
         source (column view of the same pair scores) and the
@@ -3902,7 +4484,10 @@ class MappingValidator:
                 per_src, pool_set, set(per_src.keys()),
                 top_n=self.cfg.verified_top_n,
                 invader_max=self.cfg.invader_borderline_max,
-                matched_ru_min=self.cfg.matched_ru_min)
+                matched_ru_min=self.cfg.matched_ru_min,
+                reverse_columns=(
+                    {int(t): e for t, e in reverse.items()
+                     if int(t) in pool_set} if reverse else None))
             for d in detail:
                 sbid = int(d['source_bodyId'])
                 if sbid in seen_status:
@@ -4405,6 +4990,20 @@ class MappingValidator:
             self.log(f'[categories] failed: {exc}')
             self.log(traceback.format_exc())
 
+        # Stage 5d: backward (target -> source) homolog evidence for the
+        # candidates / family / relative bins.  ADVISORY — it labels rows and
+        # rebuilds the dedup rollup; no category or counts_toward_* flag
+        # changes, so the fill totals stay identical to a run without it.
+        # FAIL-OPEN: an advisory layer must never kill a run.
+        try:
+            rebuilt = self._backward_expansion_pass()
+            if rebuilt:
+                dedup_rows = rebuilt
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            self.log(f'[stage 5d] backward evidence failed '
+                     f'(advisory, skipped): {exc}')
+            self.log(traceback.format_exc())
 
         # Revision 3.10: set-level coverage — the deliverable for
         # "how much of the source→target mapping is validated, proposed,
@@ -4523,6 +5122,10 @@ class MappingValidator:
                             family_rows=family_rows_out,
                             gap_levels=gap_levels,
                             out_map_rows=out_map_rows)
+        # stage '2' opens right after stage 1 and spans every scan through
+        # the exports; without this close the Log-tab timeline carries a
+        # stage that never ends (found on the r13 real-data run)
+        self.progress.emit('stage_done', stage='2')
         self.progress.emit('run_done',
                            run_dir=str(self.run_dir),
                            elapsed_s=round(time.time() - t_start, 1))
@@ -4599,6 +5202,10 @@ class MappingValidator:
                     getattr(self, '_source_candidates_multi', set()) or set())
                 _sc_rows.append(_row)
         _write_run_csv(rd, 'source_candidates.csv', _sc_rows)
+        # stage 5d: one row per (branch, member neuron) with the reverse
+        # top-1 + the serialized top-N neighbourhood (advisory label only).
+        _write_run_csv(rd, 'backward_matches.csv',
+                       getattr(self, '_backward_matches_rows', None) or [])
         _write_run_csv(rd, 'same_name_excluded.csv',
                        getattr(self, '_same_name_excluded', None) or [])
         if getattr(self.cfg, 'verify_suspects', False):
@@ -4610,10 +5217,14 @@ class MappingValidator:
         _write_run_csv(rd, 'gap_fill_proposals.csv', fills)
         _write_run_csv(rd, 'pool_categories.csv', pool_detail)
         _write_run_csv(rd, 'mapping_export.csv', self._mapping_export_rows())
-        (rd / 'parameters.json').write_text(json.dumps({
+        run_file_path(rd, 'parameters.json',
+                      create_parent=True).write_text(json.dumps({
             'source_dataset': self.cfg.source_dataset,
             'target_dataset': self.cfg.target_dataset,
             'query_types': self.cfg.query_types,
+            # the folder name carries only the dataset nicknames + the
+            # timestamp, so this is where a --label survives
+            'run_label': self.cfg.run_label,
             'top_k': self.cfg.top_k, 'top_m': self.cfg.top_m,
             'min_synapse_threshold': self.cfg.min_synapse_threshold,
             'include_untyped_partners': self.cfg.include_untyped_partners,
@@ -4648,14 +5259,27 @@ class MappingValidator:
             'morph_enabled': self.cfg.morph_enabled,
             'morph_auc_floor': self.cfg.morph_auc_floor,
             'suspicious_per_source_cap': self.cfg.suspicious_per_source_cap,
-        }, indent=2))
+            # stage 5d (advisory; connectivity only — no morphology)
+            'backward_evidence_enabled': self.cfg.backward_evidence_enabled,
+            'skip_backward_pass': self.cfg.skip_backward_pass,
+            'backward_top_n': self.cfg.backward_top_n,
+            'backward_max_neurons': self.cfg.backward_max_neurons,
+            'backward_per_branch_cap': self.cfg.backward_per_branch_cap,
+            'backward_scan_pool_targets':
+                self.cfg.backward_scan_pool_targets,
+            'backward_evidence': dict(
+                getattr(self, '_backward_counters', None) or {}),
+        }, indent=2), encoding='utf-8')
         if morph_info:
-            (rd / 'morphology_calibration.json').write_text(
-                json.dumps(morph_info, indent=2, default=str))
+            run_file_path(rd, 'morphology_calibration.json',
+                          create_parent=True).write_text(
+                json.dumps(morph_info, indent=2, default=str),
+                encoding='utf-8')
         if set_coverage:
-            (rd / 'set_coverage.json').write_text(
+            run_file_path(rd, 'set_coverage.json',
+                          create_parent=True).write_text(
                 json.dumps(self._set_coverage_payload(set_coverage),
-                           indent=2, default=str))
+                           indent=2, default=str), encoding='utf-8')
         self._write_readme(summaries, morph_info, set_coverage)
         # per-run HTML report (report.html) + user warning notes —
         # fail-open, never blocks the run
@@ -4693,43 +5317,55 @@ class MappingValidator:
             f'{self.cfg.target_dataset}',
             f'queries: {", ".join(self.cfg.query_types)}',
             f'mode: {self.cfg.effective_mode}',
+            f'label: {self.cfg.run_label}',
             '',
             'Start here:',
             '- report.html — the run report: headline + coverage levels '
             '(L1 claim / L2 provenance / L3 validation), branches,',
-            '  fills, out-map expansion, morphology record, scenes; '
-            'hover any term for its definition.',
+            '  fills, the Reciprocal tab (on --backward-evidence runs), '
+            'out-map expansion, morphology record, scenes; hover any '
+            'term for its definition.',
             '- set_coverage.json — set-level coverage (per-type '
             'rollups, hole bodyIds, family_material).',
-            '- gap_fill_dedup.csv — the bodyId-unique fill; '
-            'gap_fill_levels.csv ranks it per branch.',
-            '- examinees.csv — expansion bins (Revision '
+            '- gap_fill/gap_fill_dedup.csv — the bodyId-unique fill; '
+            'gap_fill/gap_fill_levels.csv ranks it per branch.',
+            '- validation/examinees.csv — expansion bins (Revision '
             '3.12 categories; the aggressive deep-window leaf was '
             'renamed from suspicious_candidates.csv); '
-            'noise_filtered_candidates.csv holds the '
+            'validation/noise_filtered_candidates.csv holds the '
             'gated rows.',
-            '- same_name_excluded.csv — queried types whose same-name '
-            'fan-out was held/excluded by the mapper, or multi-value '
-            'type cells (kept atomic); advisory accounting, never a '
-            'gate.',
-            '- suspects_verification.csv (only with --verify-suspects) '
-            '— advisory connectivity verification of the rivals listed '
-            'in auto_type_mapping_suspects.csv, one row per source × '
-            'rival with the ordinary verdict tiers; never merged into '
-            'the validation counts.',
-            '- source_status.csv — backward `source-` status per '
-            'in-branch source (column view of the same pair scores); '
-            'advisory, never a gate.',
-            '- source_candidates.csv — out-of-map sources whose '
-            'best-ranked hits reach a branch pool (null-bar '
+            '- mapping/same_name_excluded.csv — queried types whose '
+            'same-name fan-out was held/excluded by the mapper, or '
+            'multi-value type cells (kept atomic); advisory accounting, '
+            'never a gate.',
+            '- mapping/suspects_verification.csv (only with '
+            '--verify-suspects) — advisory connectivity verification of '
+            'the rivals listed in auto_type_mapping_suspects.csv, one '
+            'row per source × rival with the ordinary verdict tiers; '
+            'never merged into the validation counts.',
+            '- expansion/source_status.csv — backward `source-` status '
+            'per in-branch source (column view of the same pair '
+            'scores); advisory, never a gate.',
+            '- expansion/source_candidates.csv — out-of-map sources '
+            'whose best-ranked hits reach a branch pool (null-bar '
             'morph-qualified); the scenes\' source-candidates roots '
             '(hidden by default).',
-            '- out_map_expansion.csv — each unclaimed source\'s top-k '
-            'typed non-in-map expansion candidates, morph-checked '
-            'against the run null bar.',
-            '- pair_summary.csv — per-branch pools / gap / verdicts; '
-            'mapping_export.csv — the branch mapping with bodyId '
-            'pools.',
+            '- expansion/backward_matches.csv (only with '
+            '--backward-evidence) — each candidates/family/relative '
+            'member scanned in REVERSE against the whole source '
+            'universe: its top-1 source, whether that source is in the '
+            'branch, how much of the union the score rests on '
+            '(backward_shared_type_count / _union_type_count, with '
+            'backward_thin_evidence at <= 3 shared types), and the '
+            'serialized top-N. Connectivity-only (morphology is never '
+            're-scored here) and advisory: it labels the bins, it never '
+            'changes a fill count.',
+            '- expansion/out_map_expansion.csv — each unclaimed '
+            'source\'s top-k typed non-in-map expansion candidates, '
+            'morph-checked against the run null bar.',
+            '- validation/pair_summary.csv — per-branch pools / gap / '
+            'verdicts; mapping/mapping_export.csv — the branch mapping '
+            'with bodyId pools.',
             '- morphology_calibration.json — branch bars, run null '
             'bar, AUC gate, score frames.',
             '- visualization/ — one 3D scene per parent type (rendered '
@@ -4739,7 +5375,9 @@ class MappingValidator:
             '',
             'Run log:', *self.notes, '',
         ]
-        (self.run_dir / 'README.txt').write_text('\n'.join(lines) + '\n')
+        run_file_path(self.run_dir, 'README.txt',
+                      create_parent=True).write_text(
+            '\n'.join(lines) + '\n', encoding='utf-8')
 
     def _mapping_export_rows(self) -> List[Dict]:
         """Per-bridge mapping export (schema aligned with the per-bridge
