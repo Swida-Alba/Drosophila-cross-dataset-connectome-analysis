@@ -1175,6 +1175,54 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "*.mp4",
              "description": "Exported rotating video (when Export Video is "
                             "on)."},
+            {"pattern": "*_simplified.html",
+             "description": "Degraded copy of the interactive scene, written "
+                            "only when the full page was too large for the "
+                            "browser export. Re-export from the main page."},
+            {"pattern": "visualization_manifest.json",
+             "description": "Machine-readable record of the run: dataset, "
+                            "canonical viewer page, degraded pages, the frozen "
+                            "3D ranges, profile levels, and per-view cameras. "
+                            "The re-exporter reads its cameras from here."},
+            {"pattern": "individual_profiles/*",
+             "description": "One PNG per profile group (per legend entry, "
+                            "layer, type, or bodyId leaf, per Profile "
+                            "Granularity), plus the PDF/PPTX summary."},
+            {"pattern": "exported_views/*",
+             "description": "Fixed-camera PNGs of the whole scene (when Export "
+                            "Views is on), and the temporary pages the browser "
+                            "export drives."},
+            {"pattern": "pics_*fps_*/*",
+             "description": "The individual frames behind a rotating video, "
+                            "reused when the same settings are exported again."},
+        ],
+    },
+    "plot3d_reexport": {
+        "title": "Skeleton Re-export",
+        "summary": "Re-render individual profiles and the rotating video from a "
+                   "stored 3D skeleton HTML page, without querying the dataset.",
+        "files": [
+            {"pattern": "individual_profiles/*",
+             "description": "One PNG per profile group at the chosen "
+                            "granularity, grouped from the page's own traces "
+                            "(its drocatTrace tags; a pre-manifest page falls "
+                            "back to its legend groups). Capped at 300 renders "
+                            "per run (groups x views) - the groups that fit "
+                            "still render and the rest are named in the log, so "
+                            "separate the plots into smaller runs if a page "
+                            "asks for more."},
+            {"pattern": "*_reexport/*",
+             "description": "The whole output folder, written beside the source "
+                            "page: profiles, frames, videos and GIFs. The run's "
+                            "own files are never modified."},
+            {"pattern": "pics_*fps_*/*",
+             "description": "Frames of the rotating video, captured through one "
+                            "Chrome session (webdriver method) or rendered per "
+                            "frame (kaleido)."},
+            {"pattern": "*.mp4",
+             "description": "Forward and backward rotating videos."},
+            {"pattern": "*.gif",
+             "description": "Small GIF conversions of those videos."},
         ],
     },
     "plot_path": {
@@ -2010,64 +2058,98 @@ TOOL_GUIDE_SPECS = {
                             "assigned / fill-proposed / unpaired, MCNS "
                             "in-pool by tier, holes with bodyIds, "
                             "family_material, and mapper_gap."},
-            {"pattern": "pair_summary.csv",
+            {"pattern": "validation/pair_summary.csv",
              "description": "Per branch: pools, matched M, gap, "
                             "gap_triggered, verdict/noise counters, "
                             "hemisphere symmetry."},
-            {"pattern": "mapping_export.csv",
+            {"pattern": "mapping/mapping_export.csv",
              "description": "Branch-level mapping: chains, linker values, "
                             "refined bodyId pools (the mapper-facing "
                             "export)."},
-            {"pattern": "validation_results.csv",
+            {"pattern": "validation/validation_results.csv",
              "description": "Source×branch verdict rows: verdict tier, "
                             "ranks + scores, connectivity flags, source "
                             "size."},
-            {"pattern": "pool_categories.csv",
+            {"pattern": "validation/pool_categories.csv",
              "description": "Per in-map target: tier (matched / verified / "
                             "borderline / unmatched) with best evidence."},
-            {"pattern": "examinees.csv",
+            {"pattern": "validation/examinees.csv",
              "description": "Expansion rows with the Revision 3.12 "
                             "category partition (tier / sibling / "
                             "candidates / family / relative / examinees "
                             "- renamed from suspicious_candidates.csv), "
                             "leaf tokens, bars, and out-of-scope flags."},
-            {"pattern": "same_name_excluded.csv",
+            {"pattern": "mapping/same_name_excluded.csv",
              "description": "Queried types whose same-name fan-out was "
                             "held/excluded by the mapper, or multi-value "
                             "type cells (kept atomic) - advisory "
                             "accounting, never a gate."},
-            {"pattern": "suspects_verification.csv",
+            {"pattern": "mapping/suspects_verification.csv",
              "description": "Opt-in (--verify-suspects): advisory "
                             "connectivity verification of the mapper's "
                             "rival suspects - never merged into the "
                             "validation counts."},
-            {"pattern": "noise_filtered_candidates.csv",
+            {"pattern": "validation/noise_filtered_candidates.csv",
              "description": "Gate-dropped expansion rows with "
                             "noise_reason."},
-            {"pattern": "deep_candidates.csv",
+            {"pattern": "validation/deep_candidates.csv",
              "description": "Aggressive-mode-only deep window (empty in "
                             "family/restrictive modes)."},
-            {"pattern": "gap_fill_proposals.csv",
+            {"pattern": "gap_fill/gap_fill_proposals.csv",
              "description": "Fill proposals (in_pool / out_of_pool) for "
                             "every unpaired neuron — proposals only."},
-            {"pattern": "gap_fill_levels.csv",
+            {"pattern": "gap_fill/gap_fill_levels.csv",
              "description": "Branch-level fill level: high / medium / low / "
                             "type_gated / advice."},
-            {"pattern": "gap_fill_dedup.csv",
+            {"pattern": "gap_fill/gap_fill_dedup.csv",
              "description": "The bodyId-unique fill (one row per target "
                             "bodyId, dedup precedence + dup flag) — the "
                             "real gap-fill list."},
-            {"pattern": "family_candidates.csv",
+            {"pattern": "expansion/family_candidates.csv",
              "description": "The whole family bin (out-map bodyIds of each "
                             "branch's target type)."},
-            {"pattern": "relatives.csv",
+            {"pattern": "expansion/relatives.csv",
              "description": "The whole relative bin (type-mates of "
                             "candidate types outside the map)."},
-            {"pattern": "out_map_expansion.csv",
+            {"pattern": "expansion/backward_matches.csv",
+             "description": "Opt-in (--backward-evidence): the reverse "
+                            "target -> source homolog evidence per scanned "
+                            "neuron - the candidates / family / relative "
+                            "members first, then the validated pool "
+                            "targets as an internal control "
+                            "(scan_role=pool_target) (member_bodyId, "
+                            "member_type, "
+                            "member_category, scan_role): backward_evidence "
+                            "with the backward_top1_source_bodyId / "
+                            "backward_top1_source_type and the "
+                            "backward_top1_in_branch flag, plus the "
+                            "serialized backward_topN list. Each row also "
+                            "states the "
+                            "evidence base the score was computed over "
+                            "(backward_shared_type_count / "
+                            "backward_union_type_count) and "
+                            "backward_thin_evidence (a top-1 resting on "
+                            "<= 3 shared partner types - a reader's note "
+                            "that never gates a verdict or a fill count). "
+                            "Connectivity "
+                            "only — morphology is never re-scored here — "
+                            "and advisory: it labels the bins, it never "
+                            "changes a fill count."},
+            {"pattern": "expansion/out_map_expansion.csv",
              "description": "Top-k typed non-in-map candidates per "
                             "UNCLAIMED source, morph-checked against the "
                             "run null bar — mapper-gap evidence, not "
                             "fills."},
+            {"pattern": "expansion/source_status.csv",
+             "description": "Advisory backward (`source-`) status per "
+                            "in-branch source: the column view of the same "
+                            "pair scores. Never gates, never rewrites the "
+                            "mapping."},
+            {"pattern": "expansion/source_candidates.csv",
+             "description": "Out-of-map sources whose best-ranked hits "
+                            "reach a branch pool (null-bar "
+                            "morph-qualified) — the scenes' "
+                            "source-candidates roots. Advisory."},
             {"pattern": "morphology_calibration.json",
              "description": "Per-branch qualification bars (floors v3), "
                             "the run null bar, AUC gate record, and score "
@@ -2076,7 +2158,8 @@ TOOL_GUIDE_SPECS = {
              "description": "Every knob incl. validation_mode / mode_rank."},
             {"pattern": "pipeline_progress.jsonl",
              "description": "Stage timeline events (pre-flight, scans, "
-                            "out-map expansion, run_done)."},
+                            "out-map expansion, the stage-5d reciprocal "
+                            "scan, run_done)."},
             {"pattern": "visualization/*/branches_*.html",
              "description": "One 3D review scene per parent type with "
                             "expansion content (source coordinates; a PNG "

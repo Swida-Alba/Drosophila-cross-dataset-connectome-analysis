@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import ui.config as cfg
 import ui.output_guide as guide
@@ -60,6 +61,26 @@ class TestSpecIntegrity:
         for column, entry in guide.COLUMN_GLOSSARY.items():
             assert isinstance(entry, tuple) and len(entry) == 2, column
             assert entry[0], f"empty description for {column}"
+
+    def test_type_mapping_run_folder_is_fully_described(self, tmp_path):
+        """The TM VEV writer resolves every export through RUN_FILE_LAYOUT, so
+        the guide must carry a folder-qualified entry for each: an uncovered
+        file drops into the generic "Tabular data file." fallback."""
+        from comparison.mapping_validation import RUN_FILE_LAYOUT
+
+        run = tmp_path / "type-map-validation_dsA_to_dsB_20260919_000000"
+        for name, folder in RUN_FILE_LAYOUT.items():
+            path = run / folder / name if folder else run / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        content = guide.assemble_run_content(run, "type_mapping_validation",
+                                             {})
+        assert [x["path"] for x in content["leftovers"]] == []
+        patterns = {entry["pattern"] for entry in
+                    guide.TOOL_GUIDE_SPECS["type_mapping_validation"]["files"]}
+        for name, folder in RUN_FILE_LAYOUT.items():
+            want = f"{folder}/{name}" if folder else name
+            assert want in patterns, want
 
 
 class TestPreviewRegistry:

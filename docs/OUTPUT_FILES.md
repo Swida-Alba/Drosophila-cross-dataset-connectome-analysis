@@ -252,9 +252,41 @@ Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined
     holds the paired inter-layer connections (`viz_layer` like `0->1`); in
     pre/post-site mode (`synapse_mode=pre_post`) it instead holds the per-site
     rows (`viz_layer` like `0:pre` / `0:post`) rendered by that mode.
-*   **`parameters.txt`**: Visualization parameters (colors, alphas, modes, backend, etc.)
+*   **`parameters.txt`**: Visualization parameters (colors, alphas, modes, backend, etc.), including the `Legend Mode`, `Freeze View`, `Viewer Page`, `Run Manifest` and `Profile Levels` lines
 *   **`user_warning_notes.txt`**: Notes/warnings collected during rendering
 *   When `export_views=True` (or a view list) or `export_video=True` is requested, PNG screenshots and/or videos/GIFs are written into the same folder.
+
+#### Viewer Pages
+`{saveas}` below is the run's page stem — the same name as `{layer_names}` in the two files above.
+
+*   **`{saveas}.html`**: The **canonical** interactive viewer page (`plot_individuals()` and the video re-exporters must open this one, never a copy). It carries the full scene and every viewer extra: the collapsible tree-legend panel (when `legend_mode='tree'`), the light/dark theme switch, and — with `freeze_view=True` (the default) — the script that pins the scene axes to the padded extents of *all* traces so showing or hiding a legend row cannot rescale the view (a Freeze/Fit button and the `F` key toggle it; the script no-ops under WebDriver, so static exports still autoscale).
+*   **`{saveas}_simplified.html`**: Size-reduced copy of the viewer page, written by the export paths that decimate the scene to fit the renderer's HTML size cap (the WebDriver view-retry writes it inside `exported_views/`). It carries the same three extras as the canonical page, over the decimated scene. The WebDriver session reuses it as its rendering input, so it is both a viewer and an intermediate; the manifest lists it under `degraded_pages`.
+*   **`visualization_manifest.json`**: What the page *means*, so a stored run can be re-exported without its source data: `schema_version`, `dataset` / `client_type` / `version` / `brain_mesh` / `mesh_roi` / `background_color` / `saveas`, `canonical_page` and `degraded_pages`, `legend_mode` (`single` | `type` | `tree` | `layer`), `freeze_view` plus the `frozen_ranges` it pinned, `export_method`, `export_scale`, `neuron_alpha`, `layer_names`, per-view `views` cameras (`eye`/`up`/`center`), and a `traces` table of `{index, kind, rule, label, group, type, item, body_id, visible}` roles.
+
+Internal intermediates, deleted when the export finishes (listed only to explain a half-written run): `_temp_export.html` (WebDriver view session, in `exported_views/`), `_temp_main_figure.html` (`individual_profiles/`), `_temp_video.html` (video frame folder).
+
+#### Export Folders
+*   **`exported_views/`**: The preset camera PNGs — `{saveas}_{view}.png` for every view in `export_views` (default all six: `front`, `back`, `top`, `bottom`, `left`, `right`). The `front` PNG is also copied to the run root as `{saveas}.png`.
+*   **`individual_profiles/`**: `plot_individuals()` output — `{view}_{profile}.png` per profile per requested view, plus a `{profile}.html` page per profile when `output_format` includes `'html'`. Profiles are grouped by `granularity` (`legend` | `layer` | `type` | `body`). The grid collections land beside the folder in the run root: `individual_profiles_summary.pdf` / `.pptx` for a single view, `individual_profiles_summary_by_view.*` + `individual_profiles_summary_by_name.*` for several views.
+*   **`pics_{fps}fps_{plane}/`**: Rotating-video frames (`deg_*.jpeg`, `plane` = `xz` horizontal / `yz` vertical). The **frame engine joins the folder name** — the WebDriver engine writes `pics_{fps}fps_{plane}_webdriver/` — so one engine never resumes or reuses the other's frames; kaleido keeps the legacy name. Frames are **kept** after the video encodes so `use_existing_images=True` can reuse or resume them; delete the folder to force a re-render. The MP4/GIF outputs sit in the run root (`{saveas}_video_{h|v}_{forward|backward}.mp4` / `.gif`).
+
+#### Re-export Folder (`<page stem>_reexport/`)
+Re-exporting a **stored** page (`export_individuals_from_html()` /
+`export_video_from_html()`, or the Skeleton tab's *Re-export from a Stored Page*
+card) writes into a sibling of that page — `reexport_output_dir()` derives
+`<stem>_reexport/` from the canonical `{saveas}.html` — and **never modifies the
+source run**: no page, CSV, manifest or `parameters.txt` of the run is rewritten,
+and re-running the same settings reuses the frames already in this folder.
+
+*   **`individual_profiles/{view}_{profile}.png`**: the re-exported profile grid
+    (PNGs only; the PDF/PPTX summaries are written by the live
+    `plot_individuals()` run). Profiles are grouped by the `granularity` chosen
+    in the card, from the page's own stamped trace identity.
+*   **`pics_{fps}fps_{plane}/`**: re-exported video frames, with the same reuse
+    rule and the same engine-suffixed name (`…_webdriver/`) as the run
+    folder's.
+*   **`{saveas}_video_{h|v}_{forward|backward}.mp4`** and the matching `.gif`
+    files: the assembled rotations.
 
 ---
 
@@ -617,29 +649,43 @@ the mapping missed, and renders one 3D review scene per parent type.
 ### Folder Structure
 
 ```
-mapping_validation/type-map_{src}_to_{tgt}_{label}_{ts}/
-    README.txt
+mapping_validation/type-map-validation_{SRC}_to_{TGT}_{ts}/
+    README.txt                          ← report + guide + parameter meta
+    report.html
     parameters.json
-    validation_results.csv
-    pair_summary.csv
-    pool_categories.csv
-    examinees.csv
-    same_name_excluded.csv
-    source_candidates.csv
-    deep_candidates.csv
-    noise_filtered_candidates.csv
-    gap_fill_proposals.csv
-    gap_fill_dedup.csv
-    gap_fill_levels.csv
-    out_map_expansion.csv
-    pipeline_progress.jsonl
-    family_candidates.csv
-    relatives.csv
-    mapping_export.csv
     set_coverage.json
     morphology_calibration.json
+    pipeline_progress.jsonl
+    user_warning_notes.txt
+    validation/                         ← stage 2/3 validation evidence
+        validation_results.csv
+        pair_summary.csv
+        pool_categories.csv
+        examinees.csv
+        deep_candidates.csv
+        noise_filtered_candidates.csv
+    expansion/                          ← expansion bins + their reverse evidence
+        family_candidates.csv
+        relatives.csv
+        out_map_expansion.csv
+        backward_matches.csv
+        source_status.csv
+        source_candidates.csv
+    gap_fill/                           ← gap-fill accounting
+        gap_fill_proposals.csv
+        gap_fill_dedup.csv
+        gap_fill_levels.csv
+    mapping/                            ← mapping provenance
+        mapping_export.csv
+        same_name_excluded.csv
+        suspects_verification.csv
     visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/
 ```
+
+Every evidence file lives in exactly one category subfolder; the root holds
+only the report, the user guide, the README and the parameter/meta set. Readers
+(including `report.html` regeneration over an OLD run folder) fall back to the
+pre-2026-09-19 flat layout, so existing folders keep working untouched.
 
 ### Category model (Revision 3.12)
 
@@ -679,6 +725,42 @@ connectivity-qualified suspect that FAILS the morph rule is **out of
 scope**: exported with `in_scope=False` / `morph_failed=True` and never
 rendered (this is the connectivity-only homolog-finding result, kept for
 reconciliation).
+
+### Reciprocal homolog evidence (stage 5d, opt-in `--backward-evidence`)
+
+The forward pipeline answers "which target does each source neuron prefer?".
+Stage 5d asks the reverse question of the neurons the mapping did NOT assert:
+each `candidates` / `family` / `relative` member is scanned back against the
+**whole source universe** with the same homolog-finding scorer, and labelled
+`backward_evidence`. The grade measures how prominently hits of the claiming
+branch's OWN source type rank — pure rank evidence, with no score bar and no
+pool-membership gate; `backward_top1_in_branch` and the size pair stay on the
+row as context.
+
+*   `high` — such a hit is the top-1 reverse hit by `rank_union_rank` or by
+    `jaccard_rank`, wherever it lives.
+*   `medium` — such a hit sits within the top-3 of either ranking.
+*   `low` — the scan ran, but the branch's own source type ranked outside
+    both top-3 windows (or nothing usable ranked at all). There is no
+    separate "nothing found" state: a graded negative, not an error.
+*   `not-checked` — not scanned: the pass is off, the neuron was over the
+    per-run / per-branch budget, or it has no usable profile
+    (`backward_scanned_at` says which: `disabled` / `cap` / `no_profile` /
+    `error`).
+*   *(blank)* — rows that are not reverse-scan material at all (`sibling`,
+    the aggressive-window leaf, non-member rows) leave every `backward_*`
+    cell empty. Only the three gap-fill bins and the pool-target control are
+    enumerated. The report renders blank and `not-checked` alike as
+    **not checked**, so filter `backward_evidence.notna()` when counting
+    members this pass was asked about.
+
+Two rules keep this advisory. **Connectivity only** — morphology is never
+re-scored here, because candidates already carry their morph qualification
+and family/relative members are morph-similar to the query or to those
+candidates. **Additive columns** — the pass never changes a `category`, a
+`counts_toward_*` flag, or a fill `level`; the reverse fact rides the `evidence`
+column of `gap_fill/gap_fill_levels.csv` (as `backward_high` etc.) and a
+`backward_evidence` column beside it.
 
 ### Key Output Files
 
@@ -729,6 +811,33 @@ reconciliation).
     and `relative` bins (family/aggressive modes) — the enumerated members
     unioned with any evidence row classified into those bins, deduplicated
     per branch+bodyId.
+*   **`backward_matches.csv`** (only with `--backward-evidence`): one row
+    per (branch, scanned neuron) — the `candidates` / `family` /
+    `relative` bin members, plus the UNMATCHED validated pool targets
+    when `backward_scan_pool_targets` is on (those carry
+    `scan_role=pool_target`). Matched / verified / borderline pool
+    members are never scanned — the symmetric forward score is their
+    evidence. The Reciprocal tab shows one row per neuron (strongest
+    branch verdict); this CSV keeps one row per branch. `member_bodyId` /
+    `member_type` /
+    `member_category` /
+    `scan_role`, then `backward_evidence`
+    (`high` / `medium` / `low`, and `not-checked` for a member the pass
+    did not scan), with `backward_top1_source_bodyId`,
+    `backward_top1_source_type`, `backward_top1_in_branch`, the two metric
+    values + ranks, `backward_shared_type_count` /
+    `backward_union_type_count` (how many partner types the score was
+    actually computed over — `rank_union` ranks the union and scores an
+    absent type 0.0, so the count is what tells a 1-partner coincidence
+    from a 20-partner match), `backward_n_out_of_branch`, the
+    size pair (`backward_size_ratio` /
+    `backward_size_filtered`, row context — never part of the
+    grade), `backward_thin_evidence` (True at ≤ 3
+    shared types — a reader's note, never a gate), and
+    `backward_topN` — the reverse neighbourhood as
+    `rank|bid|type|rank_union|jaccard|in_branch` records joined by `;`
+    (the report shows the top-1 and hovers this list). Advisory: it labels
+    the bins, it never changes a fill count, and no morphology is scored.
 *   **`mapping_export.csv`**: per-bridge mapping record (refined pools +
     linkers).
 *   **`set_coverage.json`**: set-level coverage — FAFB
@@ -791,7 +900,10 @@ reconciliation).
     `python -m comparison.mapping_validation_report <run_dir>`.
 *   **`user_warning_notes.txt`**: bracketed-tag warning lines appended by
     the report writer (scene self-check status, the null-sample
-    run-sensitivity advisory, mapper-gap evidence).
+    run-sensitivity advisory, mapper-gap evidence, and the `[reciprocal]`
+    top-3 count). The reciprocal line is the one advisory stage 5d
+    adds, so `report.html`'s Warnings section quotes the same sentence
+    verbatim rather than leaving it in a side file.
 *   **`README.txt`**: slim directions (what file is what, where to start)
     + the full raw run log — the analysis content moved into
     `report.html`.

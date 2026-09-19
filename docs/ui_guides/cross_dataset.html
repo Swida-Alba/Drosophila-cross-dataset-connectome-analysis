@@ -415,7 +415,11 @@
       the fill.</li>
     <li><b>Scene notes</b>: root groups start expanded one layer;
       <code>sibling</code> layers start hidden (one eye click restores);
-      the run root folder carries the <code>type-map_</code> prefix.</li>
+      the run root folder carries the <code>type-map-validation_</code>
+      prefix and sorts its exports into <code>validation/</code>,
+      <code>expansion/</code>, <code>gap_fill/</code> and
+      <code>mapping/</code> (folders written before that change keep every
+      CSV at the root).</li>
     <li>Machine-readable progress lands in
       <code>pipeline_progress.jsonl</code>; full export contract in
       <code>docs/OUTPUT_FILES.md</code> §9.</li>
