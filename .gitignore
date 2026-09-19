@@ -107,3 +107,10 @@ morphology_benchmark_NBLAST_vector/
 # Bug artifact: a cleanup pass that received a None path mkdir'd a literal
 # "None/" directory (cleanup_audit.json only). Ignored until removed.
 /None/
+
+# Background research collection (literature notes + downloaded PDFs).
+# Local reference material only — third-party PDFs are not redistributed here.
+background_research/
+
+# Local agent session notes (same class of tool state as .zcode/, .mimosa/).
+.workbuddy/
