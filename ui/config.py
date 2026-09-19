@@ -526,6 +526,12 @@ DEFAULTS = {
     "show_fig_skeleton": False,
     "export_views": True,
     "legend_mode": "tree",
+    # Individual profiles group per native legend entry (the historical
+    # behaviour); 'layer'/'type'/'body' follow the tree legend's own levels.
+    "profile_granularity": "legend",
+    # The exported HTML viewer pins its 3D axes so legend show/hide cannot
+    # rescale the scene (a Freeze/Fit button and the 'F' key restore it).
+    "freeze_view": True,
     "background": "white",
     "brain_mesh": "native",
     "synapse_size": "1",
@@ -590,6 +596,19 @@ PATH_MODES = ["all", "shortest"]
 
 # Skeleton modes
 SKELETON_MODES = ["tube", "line"]
+
+# Individual-profile granularity levels (mirrors
+# visualize_skeleton.PROFILE_GRANULARITIES): 'legend' keeps the historical
+# one-profile-per-legend-entry behaviour, 'layer' / 'type' / 'body' follow the
+# tree legend's own levels instead. The Settings registry stores the backend
+# values; the Skeleton tab shows them through NiceGUI's value -> label dict.
+PROFILE_GRANULARITIES = ["legend", "layer", "type", "body"]
+PROFILE_GRANULARITY_CHOICES = {
+    "legend": "Per legend entry",
+    "layer": "Per layer",
+    "type": "Per neuron type",
+    "body": "Per bodyId",
+}
 
 # Synapse rendering modes (mirrors VisualizeSkeleton.synapse_mode).
 # 'pre_post' renders the input/output SITES of the queried neurons rather
@@ -907,7 +926,26 @@ DEFAULT_SETTING_SPECS = {
         "options": ["layer", "type", "tree", "single"],
         "hint": "One legend entry per layer, type, or individual neuron. "
                 "'tree' adds an expandable type -> neuron legend panel "
-                "to the exported interactive HTML.",
+                "to the exported interactive HTML. Independent of the "
+                "individual-profile granularity below.",
+    },
+    "profile_granularity": {
+        "label": "Individual Profile Granularity",
+        "group": "skeleton_render",
+        "kind": "select",
+        "options": PROFILE_GRANULARITIES,
+        "hint": "Grouping for the exported individual profiles: 'legend' = "
+                "one profile per legend entry (the historical behaviour), "
+                "'layer' = per layer, 'type' = per neuron type, 'body' = per "
+                "bodyId leaf (one profile per neuron; can be many files).",
+    },
+    "freeze_view": {
+        "label": "Freeze 3D View",
+        "group": "skeleton_render",
+        "kind": "bool",
+        "hint": "Pin the exported HTML viewer's 3D axes so showing or "
+                "hiding traces in the legend cannot rescale the scene. A "
+                "Freeze/Fit button and the 'F' key restore autoscaling.",
     },
     "background": {
         "label": "Background",

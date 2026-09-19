@@ -92,6 +92,7 @@ See Also
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -253,6 +254,47 @@ DEFAULT_BRAIN_VNC_MESH_ALPHA = 0.04
 # interactive HTML can embed a collapsible type -> neuron legend panel;
 # neuron hovers read like their bodyId leaf rows in both hierarchies.
 LEGEND_MODES = ('single', 'type', 'tree', 'layer')
+# Grouping levels an individual profile can cover. 'legend' reproduces the
+# pre-granularity behaviour (one profile per native legend entry); the others
+# follow the tree legend's own levels so the HTML panel and the PDF/PPTX set
+# describe the same groups.
+PROFILE_GRANULARITIES = ('legend', 'layer', 'type', 'body')
+
+#: One profile is one full-scene browser render, so a whole-brain ``body``-level
+#: export is thousands of them (a real 1,779-neuron page measures ~45 min for a
+#: single view). Past this budget the grid is unopenable and the run is hours
+#: long, so the export renders what fits and says what to split.
+MAX_INDIVIDUAL_PROFILES = 300
+
+
+def profile_budget(entries, views, granularity='legend'):
+    """Clamp a profile export to ``MAX_INDIVIDUAL_PROFILES`` renders.
+
+    Returns ``(kept_entries, warning)`` -- the leading groups that fit the
+    budget in render order, plus the text naming how many were dropped and how
+    to get the rest. ``warning`` is ``None`` when nothing was dropped. One
+    profile is one full-scene render, so the count that matters is groups x
+    views, not groups alone.
+    """
+    n_views = max(len(views), 1)
+    fits = MAX_INDIVIDUAL_PROFILES // n_views
+    names = list(entries)
+    if len(names) <= fits:
+        return entries, None
+    warning = (
+        f'{len(names)} profile group(s) x {n_views} view(s) = '
+        f'{len(names) * n_views} renders, over the '
+        f'{MAX_INDIVIDUAL_PROFILES}-render cap: rendered the first {fits} '
+        f'group(s) and skipped {len(names) - fits}. Separate the plots to get '
+        f'the rest -- render fewer neurons/layers per run, drop back to a '
+        f'coarser granularity than {granularity!r}, or request fewer views.')
+    return {name: entries[name] for name in names[:fits]}, warning
+
+
+# Name of the per-run JSON that records what a viewer page means, and the
+# suffix of the size-reduced copy that must never be re-exported from.
+VISUALIZATION_MANIFEST_NAME = 'visualization_manifest.json'
+SIMPLIFIED_HTML_SUFFIX = '_simplified'
 # Plotly 6.4.0's native ``config.doubleClickDelay`` default is 300 ms. The
 # tree panel owns its row events, so keep its manual detector in sync with
 # Plotly rather than using a more permissive, platform-specific window.
@@ -274,6 +316,500 @@ def _configure_roi_mesh_traces(mesh_traces, roi_name, legend_rank=None):
             trace.legendrank = legend_rank
 
     return mesh_traces
+
+
+# Roles a rendered trace can play in the scene. The individual-profile
+# exporter and the HTML re-exporters need to tell neurons apart from meshes,
+# synapses, connector sites and legend-only swatches, and they must do it
+# without reading trace names: a neuron type can legitimately contain an ROI
+# acronym ('LHPD1L' vs ROI 'LH') or a dataset acronym
+# ('query_transformed_SMP227_fafb'), which the earlier name-substring test
+# silently filed away as background so those neurons never got a profile.
+TRACE_ROLES = ('neuron', 'companion', 'site', 'synapse', 'mesh', 'legend_swatch')
+
+# Last-resort tier for traces with no structural signal at all (third-party or
+# hand-built figures). Multi-word phrases are safe as substrings; the acronyms
+# and any user ROI name must match a whole word, which is what keeps the F3
+# collision from reappearing here.
+_MESH_NAME_PHRASES = ('mesh', 'brain region', 'template', 'vnc')
+_MESH_NAME_ACRONYMS = ('JRCFIB', 'JRC2018', 'MANC', 'FLYWIRE', 'FAFB',
+                       'jrcfib', 'flywire', 'fafb', 'manc')
+
+
+@dataclass
+class TraceRole:
+    """One trace's resolved role plus the legend identity it belongs to."""
+
+    index: int
+    role: str
+    rule: str
+    label: str | None = None
+    group: str | None = None
+    type: str | None = None
+    item: str | None = None
+    body_id: object = None
+    owner: str | None = None
+    owner_body_id: object = None
+    layer_index: object = None
+
+
+def _trace_field(trace, key, default=None):
+    """Read one trace attribute from a Plotly object or a parsed HTML dict."""
+    if isinstance(trace, dict):
+        value = trace.get(key, default)
+    else:
+        value = getattr(trace, key, default)
+    return default if value is None else value
+
+
+def _trace_meta(trace):
+    """``trace.meta`` as a plain dict, or ``{}`` when it carries nothing."""
+    meta = trace.get('meta') if isinstance(trace, dict) else getattr(trace, 'meta', None)
+    if meta is None:
+        return {}
+    if isinstance(meta, dict):
+        return meta
+    to_json = getattr(meta, 'to_plotly_json', None)
+    if callable(to_json):
+        try:
+            value = to_json()
+        except (TypeError, ValueError, AttributeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _trace_has_geometry(trace):
+    """False for the legend-only swatches, which carry all-None coords."""
+    for key in ('x', 'y', 'z'):
+        values = _trace_field(trace, key)
+        if values is None or isinstance(values, (int, float)):
+            return False
+        try:
+            live = [v for v in values if v is not None]
+        except TypeError:
+            return False
+        if not live:
+            return False
+    return True
+
+
+def _finite_coordinates(values):
+    """Numeric coordinates only: pages can carry None, NaN or text columns."""
+    out = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isnan(number) and not math.isinf(number):
+            out.append(number)
+    return out
+
+
+def _mesh_name_hit(trace_name, roi_names=()):
+    """Name tier of the classifier, kept for structurally bare traces."""
+    name = str(trace_name or '')
+    lowered = name.lower()
+    if any(phrase in lowered for phrase in _MESH_NAME_PHRASES):
+        return True
+    for acronym in _MESH_NAME_ACRONYMS:
+        if re.search(rf'(?<!\w){re.escape(acronym)}(?!\w)', name):
+            return True
+    for roi in roi_names:
+        roi = str(roi or '')
+        if roi and re.search(rf'(?<!\w){re.escape(roi.lower())}(?!\w)', lowered):
+            return True
+    return False
+
+
+def _identity_from_meta(trace):
+    """Legend identity stamped by the renderer (``drocatTrace`` wins)."""
+    meta = _trace_meta(trace)
+    for key in ('drocatTrace', 'drocatLegend'):
+        stamped = meta.get(key)
+        if isinstance(stamped, dict) and stamped.get('kind'):
+            group = stamped.get('group')
+            return {
+                'kind': stamped['kind'],
+                'group': group,
+                'type': stamped.get('type') or group,
+                'item': stamped.get('item'),
+                'body_id': stamped.get('body_id'),
+                'owner': stamped.get('owner') or stamped.get('owner_item') or group,
+                'owner_body_id': stamped.get('owner_body_id'),
+                'layer_index': stamped.get('layer_index'),
+            }
+    return None
+
+
+def classify_traces(traces, mesh_roi_names=()):
+    """Resolve every trace's role and legend identity in render order.
+
+    Ordered rules, structural first: ROI mesh group, mesh legend-rank band,
+    synapse group, connector-site group, stamped identity (neuron/companion/
+    site), coordinate-less legend swatch, unnamed companion mesh inheriting
+    the preceding named neuron, mesh-name fallback, then neuron. Mirrors the
+    client-side ``buildModel`` grouping of the tree legend so the Python
+    profile plan and the HTML panel cannot disagree.
+    """
+    roles = []
+    last_named_neuron = None
+    for index, trace in enumerate(traces or []):
+        group_name = str(_trace_field(trace, 'legendgroup', '') or '')
+        name = _trace_field(trace, 'name', '')
+        rank = _trace_field(trace, 'legendrank')
+        trace_type = str(_trace_field(trace, 'type', '') or '')
+        identity = _identity_from_meta(trace)
+
+        def _make(role, rule, **overrides):
+            payload = {
+                'index': index, 'role': role, 'rule': rule,
+                'label': str(group_name or name or '') or None,
+                'group': group_name or None, 'type': None, 'item': None,
+                'body_id': None, 'owner': None, 'owner_body_id': None,
+                'layer_index': None,
+            }
+            payload.update(overrides)
+            return TraceRole(**payload)
+
+        if group_name.startswith('roi_mesh:'):
+            roles.append(_make('mesh', 'roi_mesh_group'))
+            continue
+        if isinstance(rank, (int, float)) and not isinstance(rank, bool) \
+                and rank >= ROI_MESH_LEGEND_RANK_BASE:
+            roles.append(_make('mesh', 'mesh_rank_band'))
+            continue
+        if group_name.startswith('synapses '):
+            roles.append(_make('synapse', 'synapse_group'))
+            continue
+        if group_name.startswith('pre_post:'):
+            parts = group_name.split(':', 2)
+            owner = parts[2] if len(parts) == 3 else None
+            roles.append(_make('site', 'site_group', owner=owner,
+                               **({'group': identity['group'],
+                                   'type': identity['type'],
+                                   'item': identity['item'],
+                                   'owner_body_id': identity['owner_body_id']}
+                                  if identity and identity['kind'] == 'site'
+                                  else {})))
+            continue
+        if identity and identity['kind'] in ('neuron', 'companion', 'site'):
+            kind = identity['kind']
+            roles.append(_make(
+                kind, 'stamped_identity',
+                # The legend label stays the legend's own group: the stamped
+                # group is the *layer* root, and letting it win here would
+                # collapse every legend entry of a layer into one profile.
+                label=str(group_name or name or identity['group'] or '') or None,
+                group=identity['group'], type=identity['type'],
+                item=identity['item'], body_id=identity['body_id'],
+                owner=identity['owner'],
+                owner_body_id=identity['owner_body_id'],
+                layer_index=identity['layer_index']))
+            if kind == 'neuron':
+                last_named_neuron = roles[-1]
+            continue
+        if not _trace_has_geometry(trace):
+            roles.append(_make('legend_swatch', 'no_geometry'))
+            continue
+        if trace_type == 'mesh3d' and not group_name and not name:
+            # Unnamed companion (navis emits each skeleton before its soma
+            # meshes): it belongs to the neuron it follows, never to the
+            # global background, or it vanishes from every profile.
+            if last_named_neuron is not None:
+                roles.append(_make(
+                    'companion', 'inherited_companion',
+                    label=last_named_neuron.label,
+                    group=last_named_neuron.group,
+                    type=last_named_neuron.type,
+                    item=last_named_neuron.item,
+                    body_id=last_named_neuron.body_id,
+                    layer_index=last_named_neuron.layer_index))
+            else:
+                roles.append(_make('mesh', 'unnamed_mesh_without_owner'))
+            continue
+        if _mesh_name_hit(name, mesh_roi_names) or \
+                _mesh_name_hit(group_name, mesh_roi_names):
+            roles.append(_make('mesh', 'mesh_name_fallback'))
+            continue
+        role = _make('neuron', 'default_neuron')
+        roles.append(role)
+        if name or group_name:
+            last_named_neuron = role
+    return roles
+
+
+_PLOTLY_NEW_PLOT = 'Plotly.newPlot('
+_NEW_PLOT_ARG_SKIP = set(' \t\r\n,')
+
+
+def _parse_new_plot_call(payload):
+    """``(data, layout, config)`` from the argument text of one newPlot call.
+
+    ``payload`` starts right after the ``Plotly.newPlot(`` marker, so it opens
+    with the graph-div id string and continues with the trace list, the layout
+    object and the config object. Returns ``None`` unless the first three
+    arguments parse with the shapes a figure needs.
+    """
+    decoder = json.JSONDecoder()
+    position = 0
+    values = []
+    try:
+        for _ in range(3):
+            # write_html indents the arguments, so whitespace can precede any
+            # of them as well as the separators between them.
+            while (position < len(payload)
+                   and payload[position] in _NEW_PLOT_ARG_SKIP):
+                position += 1
+            value, position = decoder.raw_decode(payload, position)
+            values.append(value)
+    except ValueError:
+        return None
+    _div_id, data, layout = values
+    if not isinstance(data, list) or not isinstance(layout, dict):
+        return None
+    config = None
+    while position < len(payload) and payload[position] in _NEW_PLOT_ARG_SKIP:
+        position += 1
+    try:
+        config, _ = decoder.raw_decode(payload, position)
+    except ValueError:
+        # Pages that pass the bare `plotly_default` sentinel have no
+        # serialized config to read, which is not an error.
+        pass
+    if not isinstance(config, dict):
+        config = None
+    return data, layout, config
+
+
+def figure_payload_from_html(html_path):
+    """Read ``(data, layout, config)`` back out of an exported plotly page.
+
+    ``plotly.io.read_html`` does not exist in the pinned plotly release, so
+    DROCAT's own re-exporters parse the page here. A self-contained page
+    contains the literal ``Plotly.newPlot(`` twice because the embedded
+    plotly.js bundle mentions it too, so occurrences are scanned from the end
+    of the file and each candidate is validated by parsing before it is kept.
+    """
+    with open(html_path, 'r', encoding='utf-8') as handle:
+        text = handle.read()
+    search = len(text)
+    attempts = 0
+    while True:
+        start = text.rfind(_PLOTLY_NEW_PLOT, 0, search)
+        if start < 0:
+            break
+        attempts += 1
+        parsed = _parse_new_plot_call(text[start + len(_PLOTLY_NEW_PLOT):])
+        if parsed is not None:
+            data, layout, config = parsed
+            return data, layout, config or {}
+        search = start
+    raise ValueError(
+        f'No Plotly.newPlot figure payload could be read from {html_path} '
+        f'({attempts} candidate(s) examined). Expected a page written by '
+        f'plotly with full_html=True.'
+    )
+
+
+def figure_from_plotly_html(html_path):
+    """Rebuild a :class:`plotly.graph_objects.Figure` from an exported page.
+
+    Measured lossless on the fields DROCAT cares about (trace types, colors,
+    coordinates, ``legendgroup``/``legendrank``/``showlegend`` and the
+    ``meta`` identity tags), so a stored page can be re-exported without the
+    original run.
+    """
+    data, layout, _config = figure_payload_from_html(html_path)
+    return go.Figure(data=data, layout=layout)
+
+
+def read_visualization_manifest(path):
+    """Manifest of the run that produced ``path``, or ``{}`` for a legacy run.
+
+    Accepts a page, a run folder, or a manifest path; a run written before the
+    manifest existed simply has none, which callers treat as "identity
+    inferred from the page alone".
+    """
+    candidate = os.path.abspath(path)
+    if os.path.isdir(candidate):
+        run_dir = candidate
+    elif os.path.basename(candidate) == VISUALIZATION_MANIFEST_NAME:
+        run_dir = os.path.dirname(candidate)
+    else:
+        run_dir = os.path.dirname(candidate)
+    manifest_path = os.path.join(run_dir, VISUALIZATION_MANIFEST_NAME)
+    if not os.path.exists(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def resolve_viewer_page(path):
+    """The interactive page a re-export should open, never a degraded copy.
+
+    ``{saveas}_simplified.html`` is a size-reduced duplicate that the export
+    session reuses, and re-rendering from it silently loses geometry. A folder
+    is resolved through the run manifest's ``canonical_page`` when present,
+    otherwise by picking the widest non-``_simplified`` HTML in it.
+    """
+    candidate = os.path.abspath(path)
+    if os.path.isfile(candidate):
+        if candidate.lower().endswith('.html') and SIMPLIFIED_HTML_SUFFIX in \
+                os.path.basename(candidate).lower():
+            parent = os.path.dirname(candidate)
+            manifest = read_visualization_manifest(parent)
+            canonical = manifest.get('canonical_page')
+            replacement = os.path.join(parent, canonical) if canonical else ''
+            if os.path.exists(replacement):
+                return replacement
+            raise ValueError(
+                f'{os.path.basename(candidate)} is a simplified copy, not the '
+                f'canonical viewer page. Pass the run folder, or the '
+                f'{os.path.basename(replacement) if canonical else "original"}'
+                f' .html file next to it.'
+            )
+        return candidate
+    if not os.path.isdir(candidate):
+        raise FileNotFoundError(f'No such file or folder: {path}')
+    manifest = read_visualization_manifest(candidate)
+    canonical = manifest.get('canonical_page')
+    if canonical and os.path.exists(os.path.join(candidate, canonical)):
+        return os.path.join(candidate, canonical)
+    pages = sorted(
+        name for name in os.listdir(candidate)
+        if name.lower().endswith('.html')
+        and SIMPLIFIED_HTML_SUFFIX not in name.lower()
+        and not name.startswith('_'))
+    if not pages:
+        raise FileNotFoundError(
+            f'{path} holds no viewer HTML page to re-export')
+    return os.path.join(candidate, pages[0])
+
+
+def reexport_output_dir(path):
+    """Default destination for everything re-exported from ``path``.
+
+    A sibling of the source page named after it: the run's own files are never
+    rewritten, and re-running the same settings lands in the same folder, so
+    already-rendered frames get reused instead of recomputed.
+    """
+    page = resolve_viewer_page(path)
+    stem = os.path.splitext(os.path.basename(page))[0]
+    return os.path.join(os.path.dirname(page), f'{stem}_reexport')
+
+
+def profile_plan_from_html(html_path, granularity='legend'):
+    """Classify a stored page and group it into profile levels.
+
+    Returns ``((entries, background, unlabeled), roles)`` -- the same plan
+    ``plot_individuals`` builds live, plus the ``TraceRole`` rows behind it, so
+    a re-export of a stored page offers exactly the profile levels that run
+    would have produced. The two are read through the same
+    ``classify_traces`` + ``_build_profile_plan`` pair the renderer uses.
+    """
+    data, _layout, _config = figure_payload_from_html(html_path)
+    manifest = read_visualization_manifest(html_path)
+    roles = classify_traces(data, mesh_roi_names=manifest.get('mesh_roi') or ())
+    return (VisualizeSkeleton._build_profile_plan(roles, granularity), roles)
+
+
+def export_individuals_from_html(
+    html_path, output_dir=None, granularity='legend', views=None,
+    scale=2, width=900, height=900, timeout=60, auto_crop=True,
+    crop_margin=30, background_color=None, verbose=True,
+):
+    """Re-export individual profiles from an existing skeleton HTML page.
+
+    Takes a page or a whole run folder, reads the figure payload back, groups
+    the traces at the requested ``granularity``, and renders the PNG grid with
+    the same WebDriver session the live pipeline uses -- no skeleton fetching,
+    no original script. Cameras come from the run manifest when it exists and
+    from the page's own dataset otherwise. ``views`` accepts one name or a
+    list, and ``background_color=None`` composites on the background the run
+    recorded.
+
+    A page that holds no neuron traces (a pure ROI/mesh scene) is a valid run,
+    not an error: it reports the reason and returns an empty result, leaving any
+    sibling video export of the same run to proceed.
+    """
+    if granularity not in PROFILE_GRANULARITIES:
+        raise ValueError(
+            f"granularity must be one of: {', '.join(PROFILE_GRANULARITIES)}")
+    page = resolve_viewer_page(html_path)
+    manifest = read_visualization_manifest(page)
+    data, _layout, _config = figure_payload_from_html(page)
+    roles = classify_traces(
+        data, mesh_roi_names=manifest.get('mesh_roi') or ())
+    entries, background, unlabeled = VisualizeSkeleton._build_profile_plan(
+        roles, granularity)
+    if not entries:
+        # A mesh-only scene is a legitimate run, not a bad request: report and
+        # render nothing, exactly like plot_individuals() does live, so a
+        # combined re-export still gets its video.
+        if verbose:
+            print(f'⚠️  {os.path.basename(page)} holds no neuron traces to '
+                  f'profile; its {len(roles)} trace(s) are all background or '
+                  f'legend swatches. Nothing written.')
+        return {'success': True, 'files': {}, 'failed': [], 'error': None}
+    if unlabeled and verbose:
+        print(f'⚠️  {len(unlabeled)} trace(s) carry no identity and were '
+              f'skipped; this page predates the drocatTrace stamp.')
+    dataset = manifest.get('dataset') or 'hemibrain:v1.2.1'
+    cameras = {}
+    for name, camera in (manifest.get('views') or {}).items():
+        cameras[str(name).lower()] = camera
+    if not cameras:
+        # lowercase=True because export_individuals_webdriver() looks a view up
+        # by its filename-style key; the 'Front'-style keys silently resolve to
+        # no camera and every view then re-renders the page's own framing.
+        cameras = dataset_view_cameras(
+            dataset, manifest.get('brain_mesh'), lowercase=True)
+    views = normalize_profile_views(views, cameras)
+    unknown = [v for v in views if v not in cameras]
+    if unknown:
+        if verbose:
+            print(f'⚠️  Unknown view(s) {unknown}; this page offers '
+                  f'{sorted(cameras)}. Skipping the unknown ones.')
+        views = [v for v in views if v in cameras]
+    if not views:
+        raise ValueError(
+            f'no renderable view left for {os.path.basename(page)}; '
+            f'pick one of {sorted(cameras)}')
+    entries, capped = profile_budget(entries, views, granularity)
+    if capped and verbose:
+        print(f'⚠️  Individual profiles capped: {capped}')
+    if not entries:
+        # Even one group would not fit (more views than the whole budget).
+        # Not fatal: a re-export that also asked for the video still gets it.
+        return {'success': True, 'files': {}, 'failed': [], 'error': None}
+    stem = os.path.splitext(os.path.basename(page))[0]
+    output_dir = output_dir or os.path.join(os.path.dirname(page),
+                                            f'{stem}_profiles')
+    os.makedirs(output_dir, exist_ok=True)
+    return export_individuals_webdriver(
+        html_path=page,
+        output_dir=output_dir,
+        legend_entries=entries,
+        background_indices=background,
+        total_traces=len(data),
+        views=views,
+        view_cameras=cameras,
+        scale=scale,
+        width=width,
+        height=height,
+        timeout=timeout,
+        verbose=verbose,
+        auto_crop=auto_crop,
+        crop_margin=crop_margin,
+        background_color=background_color or manifest.get(
+            'background_color', 'white'),
+    )
 
 
 # Timeout exception for PNG export
@@ -1101,7 +1637,9 @@ class WebDriverExportSession:
                 img.save(output_path, 'PNG')
             else:
                 # No processing needed, just rename
-                os.rename(temp_png, output_path)
+                os.makedirs(os.path.dirname(os.path.abspath(output_path)),
+                            exist_ok=True)
+                os.replace(temp_png, output_path)
                 return
         
         # Clean up temp file if it still exists
@@ -1279,6 +1817,28 @@ class WebDriverExportSession:
         self.driver.execute_script(js_code)
         time.sleep(0.1)
 
+    def hide_modebar(self):
+        """Hide the plotly toolbar before a screenshot is taken.
+
+        ``displayModeBar`` is page *config*, so relayout cannot remove it, and
+        plotly 6.4's bundle exposes no ``Plotly.reconfig``. A stored viewer page
+        therefore bakes the icons into anything re-exported from it unless the
+        stylesheet says otherwise. Cosmetic only, so a failure here must never
+        cost the caller its export.
+        """
+        try:
+            self.driver.execute_script("""
+            if (!document.getElementById('drocat-hide-modebar')) {
+                var style = document.createElement('style');
+                style.id = 'drocat-hide-modebar';
+                style.textContent = '.modebar{display:none!important}';
+                document.head.appendChild(style);
+            }
+            """)
+        except Exception as exc:                       # toolbar stays, pixels don't care
+            logging.getLogger(__name__).debug(
+                'Could not hide the plotly modebar: %s', exc)
+
 
 def export_individuals_webdriver(
     html_path: str,
@@ -1391,6 +1951,10 @@ def export_individuals_webdriver(
             ) as session:
                 # Load HTML once with background color support
                 session.load_html(html_path, wait_for_render=True, render_wait=2, background_color=background_color)
+
+                # The stored page's own config shows the plotly toolbar; it is
+                # part of the captured image unless reconfig'd away first.
+                session.hide_modebar()
                 
                 # Hide legend and clean up layout for export
                 # Remove interactive UI elements (view selector, controls hint)
@@ -1678,6 +2242,24 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
     return table
 
 
+def normalize_profile_views(views, cameras=None):
+    """Canonical lowercase view names for an individual-profile export.
+
+    The exported file names and the camera lookup share these keys, so a name
+    the camera table does not carry would render a profile from the page's own
+    framing and look like a real second view. ``'all'`` expands to every view
+    the caller's camera table actually offers.
+    """
+    names = []
+    for view in ([views] if isinstance(views, str) else (views or ['front'])):
+        name = str(view).strip().lower()
+        wanted = list(cameras) if name == 'all' else [name]
+        for candidate in wanted:
+            if candidate and candidate not in names:
+                names.append(candidate)
+    return names
+
+
 def transform_neurons_to_space(
         neurons, source_space: str, target_space: str,
         validate_bounds: bool = True, verbose: bool = False) -> list:
@@ -1892,6 +2474,13 @@ class VisualizeSkeleton:
                   unique neuron items rather than raw Plotly trace count.
         - 'layer': Merge all neurons in a layer into one legend entry.
                    Auto-named as {type1}_{type2}_etc if 3+ types present.
+
+    freeze_view : bool, default=True
+        Keep the 3D framing constant when the viewer shows or hides traces.
+        The permanent HTML pages pin their scene axes to the extents of the
+        whole scene (hidden layers included) so a legend or tree-panel toggle
+        cannot rescale it; a Freeze/Fit button and the 'F' key hand
+        autoscaling back. Static exports are unaffected.
     
     expand_colors : str, default='interpolation'
         Method for generating extra colors when more layers than colors available.
@@ -2296,6 +2885,35 @@ class VisualizeSkeleton:
     - Simpler HTML file (slightly smaller)
     
     Note: Mouse controls (drag to rotate, scroll to zoom) always work regardless of this setting.
+    '''
+
+    freeze_view: bool = True
+    '''
+    Keep the 3D framing stable when traces are shown or hidden in the viewer.
+
+    Plotly autoranges the three scene axes over the *visible* traces on every
+    redraw, so toggling a legend row (or the tree panel's eye) re-scales the
+    whole scene: the camera never moves, the axis ranges do. When enabled the
+    exported HTML fixes the scene axes to the extents of the full scene on
+    first render, so show/hide changes nothing but the drawn traces.
+
+    The ranges cover every trace with geometry, including layers that start
+    hidden, so revealing one cannot clip it. They are padded by 1/32 of each
+    axis span, which is what Plotly's own 3D autorange adds; Plotly, however,
+    autoranges over the *visible* traces only, so a scene whose hidden content
+    lies far away (a hidden ventral-nerve-cord layer in a brain view) opens
+    slightly wider than it used to. Set freeze_view=False to keep the old
+    framing exactly.
+
+    The pin is applied by page JavaScript that exits early under
+    ``navigator.webdriver``, so WebDriver/kaleido still exports per-neuron
+    profiles that fit the frame, and a frozen page's own camera presets keep
+    working. A Freeze/Fit button in the page's top-left corner (also bound to
+    'F') restores Plotly's autoscaling for anyone who wants the previous
+    behaviour.
+
+    Applies to {saveas}.html and its {saveas}_simplified.html viewer copies,
+    which are the only pages that carry the script.
     '''
 
     background_color: str = 'white'
@@ -3509,6 +4127,173 @@ class VisualizeSkeleton:
             f'{paragraphs}</div>'
         )
 
+    @staticmethod
+    def _scene_data_ranges(figure):
+        """Scene axis ranges that reproduce Plotly's own 3D first-frame extents.
+
+        Returns ``{'x': [lo, hi], 'y': [...], 'z': [...]}`` or ``None`` when no
+        trace carries usable coordinates. Traces that start hidden are
+        included so revealing one cannot clip it -- Plotly itself autoranges
+        over the visible traces only, which is the difference this closes.
+        Legend-only swatches are skipped. Each axis is padded by 1/32 of its
+        own span, which is the fraction Plotly.js adds when it autoranges a 3D
+        scene.
+        """
+        lo = [math.inf, math.inf, math.inf]
+        hi = [-math.inf, -math.inf, -math.inf]
+        for trace in getattr(figure, 'data', None) or []:
+            if not _trace_has_geometry(trace):
+                continue
+            for axis, key in enumerate(('x', 'y', 'z')):
+                live = _finite_coordinates(_trace_field(trace, key))
+                if not live:
+                    continue
+                lo[axis] = min(lo[axis], min(live))
+                hi[axis] = max(hi[axis], max(live))
+        if any(math.isinf(v) for v in lo) or any(math.isinf(v) for v in hi):
+            return None
+        ranges = {}
+        for axis, name in enumerate(('x', 'y', 'z')):
+            span = hi[axis] - lo[axis]
+            pad = span / 32.0 if span > 0 else 1.0
+            ranges[name] = [lo[axis] - pad, hi[axis] + pad]
+        return ranges
+
+    def _freeze_view_html(self, ranges):
+        """Build the script that pins the 3D scene framing for human viewers.
+
+        Injected next to the theme switch and the tree legend whenever the page
+        is written with computed scene ranges. Applies the ranges once Plotly
+        has a full layout, so legend and tree-panel toggles redraw the same
+        neurons at the same scale instead of re-autoranging the box. A small
+        Freeze/Fit button (also the 'F' key) hands the autoscaling back for
+        anyone who wants the framing to follow the visible traces again.
+        Everything exits early under ``navigator.webdriver``: the WebDriver
+        export path shares these pages with the viewer, and its per-profile
+        shots must keep fitting the frame.
+        """
+        baked = {'ranges': ranges}
+        button_html = (
+            '<button id="drocat-freeze-toggle" type="button"'
+            ' aria-label="Freeze or fit the 3D view"'
+            ' title="Freeze the scene framing across legend toggles (F)">'
+            '</button>'
+        )
+        style_html = (
+            '<style>'
+            '#drocat-freeze-toggle{position:fixed;left:14px;top:14px;'
+            'z-index:9999;width:36px;height:30px;border-radius:6px;'
+            'font-size:13px;line-height:1;display:none;align-items:center;'
+            'justify-content:center;cursor:pointer;opacity:.85;'
+            'background:rgba(255,255,255,0.85);color:#000;'
+            'border:1px solid rgba(0,0,0,0.3);}'
+            '#drocat-freeze-toggle:hover{opacity:1;}'
+            'body.drocat-theme-dark #drocat-freeze-toggle{'
+            'background:rgba(50,50,50,0.85);color:#fff;'
+            'border-color:rgba(255,255,255,0.35);}'
+            '</style>'
+        )
+        script_html = """
+<script>
+(function(){
+  if (window.__drocatFreezeView) { return; }
+  window.__drocatFreezeView = true;
+  var CONFIG = __DROCAT_FREEZE_CONFIG__;
+  if (navigator.webdriver) { return; }
+  if (!CONFIG || !CONFIG.ranges) { return; }
+  var button = document.getElementById('drocat-freeze-toggle');
+  var frozen = false;
+
+  function graphDiv() {
+    return document.querySelector('.js-plotly-plot')
+      || document.querySelector('.plotly-graph-div');
+  }
+  function update(updateObj) {
+    var gd = graphDiv();
+    if (!gd || !window.Plotly) { return false; }
+    try {
+      Plotly.relayout(gd, updateObj);
+      return true;
+    } catch (err) { return false; }
+  }
+  function pinUpdate() {
+    var r = CONFIG.ranges;
+    return {
+      'scene.xaxis.autorange': false, 'scene.xaxis.range': r.x,
+      'scene.yaxis.autorange': false, 'scene.yaxis.range': r.y,
+      'scene.zaxis.autorange': false, 'scene.zaxis.range': r.z
+    };
+  }
+  function fitUpdate() {
+    // Switching autorange back on is not enough: a 3D axis keeps honouring a
+    // manual range until the range itself is cleared.
+    return {'scene.xaxis.autorange': true, 'scene.xaxis.range': null,
+            'scene.yaxis.autorange': true, 'scene.yaxis.range': null,
+            'scene.zaxis.autorange': true, 'scene.zaxis.range': null};
+  }
+  function decorate() {
+    if (!button) { return; }
+    button.style.display = 'flex';
+    button.textContent = frozen ? '\\uD83D\\uDD12' : '\\u26F6';
+    button.title = frozen
+      ? 'View is frozen: legend toggles keep the framing (F to fit)'
+      : 'Fit the view to the visible traces (F to freeze)';
+  }
+  function setFrozen(next) {
+    var applied = update(next ? pinUpdate() : fitUpdate());
+    if (!applied) { return; }
+    frozen = next;
+    decorate();
+  }
+  function toggle() { setFrozen(!frozen); }
+
+  var tries = 0;
+  (function whenPlotly() {
+    var gd = graphDiv();
+    if (gd && window.Plotly && gd._fullLayout && gd._fullLayout.scene) {
+      setFrozen(true);
+      if (button) {
+        button.addEventListener('click', toggle);
+      }
+      document.addEventListener('keydown', function(e){
+        var tag = (e.target && e.target.tagName) || '';
+        if (/input|textarea|select/i.test(tag)) { return; }
+        if (e.key === 'f' || e.key === 'F') { toggle(); }
+      });
+      // Warning banners sit above the plot in normal flow, so a fixed corner
+      // widget has to move down with them.
+      function reposition() {
+        if (!button) { return; }
+        var top = 14;
+        var banner = document.querySelector('.drocat-warning-container');
+        if (banner) {
+          var bottom = banner.getBoundingClientRect().bottom;
+          if (bottom > 0) { top += Math.round(bottom); }
+        }
+        button.style.top = top + 'px';
+      }
+      reposition();
+      window.addEventListener('resize', reposition);
+      window.addEventListener('load', reposition);
+      // A double-click on the scene is Plotly's own reset-to-autorange gesture;
+      // re-pin so a frozen page stays frozen after the user zooms.
+      try {
+        gd.on('plotly_doubleclick', function() {
+          if (frozen) { update(pinUpdate()); }
+        });
+      } catch (err) { /* older plotly builds expose no such hook */ }
+      return;
+    }
+    if (++tries < 300) { setTimeout(whenPlotly, 200); }
+  })();
+})();
+</script>
+"""
+        script_html = script_html.replace(
+            '__DROCAT_FREEZE_CONFIG__', json.dumps(baked, ensure_ascii=True)
+        )
+        return button_html + style_html + script_html
+
     def _collect_adaptive_mesh_trace_indices(self, figure):
         """Find Mesh3d traces carrying an auto brain/VNC mesh color.
 
@@ -3850,6 +4635,47 @@ class VisualizeSkeleton:
             trace.customdata = [hover_bid]
         return VisualizeSkeleton._apply_tree_leaf_hover(
             trace, tree_label, hover_bid)
+
+    def _stamp_trace_identity(self, trace, *, kind, group, type_label=None,
+                              item=None, body_id=None, owner=None,
+                              owner_body_id=None, layer_index=None):
+        """Record what a trace *is* in ``meta.drocatTrace``.
+
+        ``classify_traces`` reads this before any structural signal, so the
+        profile granularity levels and the HTML re-exporters resolve a trace
+        the same way in a freshly rendered figure and in a page read back from
+        disk, and never have to infer identity from a trace name (which can
+        collide with an ROI acronym).
+        """
+        meta = dict(getattr(trace, 'meta', None) or {})
+        meta['drocatTrace'] = {
+            'kind': kind,
+            'group': group,
+            'type': type_label,
+            'item': item,
+            'body_id': None if body_id is None else str(body_id),
+            'owner': owner,
+            'owner_body_id': (
+                None if owner_body_id is None else str(owner_body_id)),
+            'layer_index': layer_index,
+        }
+        trace.meta = meta
+
+    def _stamp_site_identity(self, trace, *, group_layer, item, owner,
+                             owner_body_id):
+        """Stamp one pre/post site trace with the skeleton it belongs to.
+
+        ``owner`` is the owning neuron's own legend label and ``owner_body_id``
+        its bodyId when the group collapsed to a single owner, which is what
+        lets a bodyId-level profile keep its sites in every legend mode rather
+        than only in ``legend_mode='tree'``.
+        """
+        layers = getattr(self, 'layer_names', None) or []
+        group = (str(layers[group_layer]).split(' :: ')[0]
+                 if group_layer < len(layers) else None)
+        self._stamp_trace_identity(
+            trace, kind='site', group=group, item=item, owner=owner,
+            owner_body_id=owner_body_id, layer_index=group_layer)
 
     def _tree_uses_custom_groups(self):
         """Whether tree mode organizes the legend by custom group first.
@@ -4611,7 +5437,8 @@ class VisualizeSkeleton:
         return panel_html + style_html + script_html
 
     def _inject_page_extras(self, html_path, theme_toggle=False,
-                            mesh_indices=None, legend_tree=False):
+                            mesh_indices=None, legend_tree=False,
+                            freeze_ranges=None):
         """Insert the warning banner and/or viewer extras at the top of a page.
 
         All extras share one read/insert/write pass so large HTML files are
@@ -4626,7 +5453,10 @@ class VisualizeSkeleton:
             self._theme_toggle_html(mesh_indices) if theme_toggle else ''
         )
         legend_html = self._legend_tree_html() if legend_tree else ''
-        if not warning_html and not theme_html and not legend_html:
+        freeze_html = (
+            self._freeze_view_html(freeze_ranges) if freeze_ranges else ''
+        )
+        if not (warning_html or theme_html or legend_html or freeze_html):
             return
 
         try:
@@ -4668,6 +5498,8 @@ class VisualizeSkeleton:
                 blocks.append(theme_html)
             if legend_html and 'drocat-legend-tree' not in html:
                 blocks.append(legend_html)
+            if freeze_html and 'drocat-freeze-toggle' not in html:
+                blocks.append(freeze_html)
             if not blocks:
                 return
 
@@ -4685,18 +5517,105 @@ class VisualizeSkeleton:
                 level='full',
             )
 
+    def visualization_manifest(self):
+        """Describe this scene so a later re-export needs no source data.
+
+        A stored HTML page knows *what is drawn* but not what the drawing
+        meant: which page is the canonical one, which traces are neurons
+        versus background, which camera belongs to the 'front' view, or what
+        neuron alpha the scene was built with. ``visualization_manifest.json``
+        records exactly that, so the individual/video re-exporters can work on
+        a run from days ago without re-fetching skeletons, and so
+        ``*_simplified.html`` (a size-reduced copy) is never mistaken for the
+        page to re-open.
+        """
+        figure = getattr(self, 'fig_3d', None)
+        if figure is None:
+            return None
+        roles = classify_traces(
+            figure.data, mesh_roi_names=[str(r) for r in (self.mesh_roi or [])])
+        canonical_page = os.path.basename(self.fig_path) + '.html'
+        try:
+            cameras = dataset_view_cameras(self.dataset, self.brain_mesh)
+        except Exception:
+            cameras = {}
+        return {
+            'schema_version': 1,
+            'dataset': self.dataset,
+            'client_type': self.client_type,
+            'version': self.version,
+            'brain_mesh': self.brain_mesh,
+            'mesh_roi': [str(r) for r in (self.mesh_roi or [])],
+            'background_color': self.background_color,
+            'saveas': self.saveas,
+            'canonical_page': canonical_page,
+            'degraded_pages': [f'{self.saveas}_simplified.html'],
+            'legend_mode': self.legend_mode,
+            'freeze_view': bool(self.freeze_view),
+            'frozen_ranges': self._scene_data_ranges(figure),
+            'export_method': self.export_method,
+            'export_scale': self.export_scale,
+            'neuron_alpha': self.neuron_alpha,
+            'layer_names': [str(n) for n in (self.layer_names or [])],
+            'views': {
+                name: {
+                    'eye': dict(camera.get('eye', {})),
+                    'up': dict(camera.get('up', {})),
+                    'center': dict(camera.get('center', {})),
+                }
+                for name, camera in (cameras or {}).items()
+            },
+            'traces': [
+                {
+                    'index': role.index,
+                    'kind': role.role,
+                    'rule': role.rule,
+                    'label': role.label,
+                    'group': role.group,
+                    'type': role.type,
+                    'item': role.item,
+                    'body_id': role.body_id,
+                    'visible': _trace_field(figure.data[role.index],
+                                            'visible', True),
+                }
+                for role in roles
+            ],
+        }
+
+    def write_visualization_manifest(self):
+        """Write ``visualization_manifest.json`` next to the viewer HTML."""
+        try:
+            manifest = self.visualization_manifest()
+            if manifest is None or not self.save_folder:
+                return None
+            path = os.path.join(self.save_folder,
+                                'visualization_manifest.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(manifest, handle, indent=2, ensure_ascii=False)
+            self._manifest_path = path
+            self._vprint(f'   ✓ Run manifest: {os.path.basename(path)}',
+                         level='full')
+            return path
+        except Exception as exc:
+            # The manifest is a convenience for re-exporting, never a reason
+            # to fail a rendering run.
+            self._vprint(f'  Warning: could not write run manifest: {exc}',
+                         level='full')
+            return None
+
     def _write_plotly_html(self, figure, html_path, theme_toggle=False,
-                           legend_tree=False, **kwargs):
+                           legend_tree=False, freeze_view=False, **kwargs):
         """Write a self-contained visualization HTML.
 
         Plotly's JavaScript runtime is embedded in every page so an HTML file
         remains portable when copied without its output directory.  A warning
         banner is added after Plotly has generated the document so it remains
         visible in both the main and per-neuron pages, and permanent viewer
-        copies can additionally carry the light/dark theme switch and the
-        collapsible tree legend panel. In that panel, custom singleton
-        bodyId groups are direct rows with unique-neuron counts; companion
-        skeleton/soma traces do not create extra child leaves.
+        copies can additionally carry the light/dark theme switch, the
+        collapsible tree legend panel, and the frozen-view script. In that
+        panel, custom singleton bodyId groups are direct rows with
+        unique-neuron counts; companion skeleton/soma traces do not create
+        extra child leaves.
         """
         kwargs.setdefault('auto_open', False)
         kwargs.setdefault('full_html', True)
@@ -4706,9 +5625,12 @@ class VisualizeSkeleton:
             self._collect_adaptive_mesh_trace_indices(figure)
             if theme_toggle else None
         )
+        freeze_ranges = (
+            self._scene_data_ranges(figure) if freeze_view else None
+        )
         self._inject_page_extras(
             html_path, theme_toggle=theme_toggle, mesh_indices=mesh_indices,
-            legend_tree=legend_tree,
+            legend_tree=legend_tree, freeze_ranges=freeze_ranges,
         )
         self._record_large_html_warning(html_path)
 
@@ -5205,6 +6127,7 @@ class VisualizeSkeleton:
                                 simplified_html_path,
                                 theme_toggle=self.html_theme_toggle,
                                 legend_tree=(self.legend_mode == 'tree'),
+                                freeze_view=self.freeze_view,
                                 auto_open=False,
                                 include_plotlyjs=True,
                                 config={'displayModeBar': False},
@@ -7029,7 +7952,10 @@ class VisualizeSkeleton:
                 source_name = "BANC" if is_banc_dataset(self.dataset) else "FAFB"
                 print(f"\\n\033[31mCRITICAL ERROR: {source_name} data preparation failed.\033[0m")
                 print("Please follow the instructions above to download the required files.")
-                sys.exit(1)
+                raise RuntimeError(
+                    f'{source_name} data preparation failed for '
+                    f'{self.dataset}; follow the instructions above to '
+                    'download the required files.')
             
 
         if self.synapse_mode not in ['scatter', 'sphere', 'cone', 'tetrahedron', 'pre_post']:
@@ -7407,7 +8333,7 @@ class VisualizeSkeleton:
         
         # Save parameters to text file with comprehensive formatting
         param_file = os.path.join(self.save_folder, 'parameters.txt')
-        with open(param_file, 'w') as f:
+        with open(param_file, 'w', encoding='utf-8') as f:
             f.write("=" * 70 + "\n")
             f.write("VisualizeSkeleton Parameters - Complete Configuration\n")
             f.write("=" * 70 + "\n\n")
@@ -7474,6 +8400,13 @@ class VisualizeSkeleton:
             f.write(f"  Legend Mode:      {self.legend_mode}\n")
             f.write(f"  Expand Colors:    {self.expand_colors}\n")
             f.write(f"  Show Soma:        {self.show_soma}\n")
+            f.write(f"  Freeze View:      {self.freeze_view}\n")
+            # What a re-export of this run should open (see the manifest).
+            f.write(f"  Viewer Page:      {self.saveas}.html\n")
+            f.write("  Run Manifest:     visualization_manifest.json\n")
+            f.write("  Profile Levels:   "
+                    + ', '.join(PROFILE_GRANULARITIES) + "\n")
+            f.write(f"  Re-export Folder: {self.saveas}_reexport/\n")
             f.write("\n")
             
             # Synapse Settings
@@ -12042,7 +12975,12 @@ class VisualizeSkeleton:
                             )
 
                         for trace in fig_layer.data:
-                            trace_entries.append((trace, neuron_id, unit_index, neuron_color))
+                            # navis leaves soma/connector companions unnamed,
+                            # so an unnamed trace is never a profile of its own.
+                            trace_entries.append(
+                                (trace, neuron_id, unit_index, neuron_color,
+                                 not getattr(trace, 'name', None))
+                            )
                 else:
                     # Convert rgba color to hex for navis compatibility
                     layer_color_hex = self._rgba_to_hex(self.neuron_colors[i])
@@ -12069,12 +13007,15 @@ class VisualizeSkeleton:
                             fig_traces, identities):
                         neuron_color = self._resolve_neuron_color(neuron_id, i)
                         trace_entries.append(
-                            (trace, neuron_id, source_index, neuron_color)
+                            (trace, neuron_id, source_index, neuron_color,
+                             not getattr(trace, 'name', None))
                         )
 
-                # Build a mapping of neuron ID to type for 'type' legend mode
+                # Neuron ID -> type. 'type'/'tree' need it for the legend; the
+                # identity stamp needs it in every mode so a layer-mode scene
+                # can still be profiled type-by-type.
                 neuron_type_map = {}
-                if self.legend_mode in ('type', 'tree') and self.neuron_dfs[i] is not None:
+                if self.neuron_dfs[i] is not None:
                     ndf = self.neuron_dfs[i]
                     type_col = None
                     for col in ['type', 'cell_type', 'neuronType']:
@@ -12097,7 +13038,26 @@ class VisualizeSkeleton:
                 # Track legend info for fixing opacity later
                 legend_color_map = {}  # legend_group -> (color, should_show)
 
-                for trace, neuron_id, source_index, neuron_color in trace_entries:
+                def _overlay_dataset(index):
+                    """Source dataset of a cross-dataset overlay neuron."""
+                    holders = ([custom_layer_neurons] if is_custom_layer
+                               else []) + [neuron_vols]
+                    for holder in holders:
+                        if holder is None or index >= len(holder):
+                            continue
+                        try:
+                            value = getattr(holder[index],
+                                            '_drocat_source_dataset', None)
+                        except (TypeError, IndexError):
+                            continue
+                        if value is not None:
+                            return value
+                    return None
+
+                for (trace, neuron_id, source_index, neuron_color,
+                     is_companion) in trace_entries:
+                    identity_type = None
+                    identity_item = None
                     # When custom colors forced one-neuron-at-a-time plotting,
                     # ``neuron_color`` is already the bodyId-resolved value
                     # passed to navis. Re-resolving from a generic trace name
@@ -12180,6 +13140,7 @@ class VisualizeSkeleton:
                         if override_type:
                             neuron_type = str(override_type)
 
+                        identity_type = neuron_type
                         if neuron_type:
                             legend_group = f"{neuron_type}"
                         else:
@@ -12292,6 +13253,7 @@ class VisualizeSkeleton:
                                 neuron_id, source_row, overlay_source_dataset,
                                 type_override=leaf_type_override,
                                 tag=leaf_tag)
+                            identity_item = tree_label
                             try:
                                 display_color = self._get_opaque_color(
                                     neuron_color)
@@ -12370,6 +13332,25 @@ class VisualizeSkeleton:
                         self.fig_3d.add_trace(trace)
                     else:
                         raise ValueError(f'legend_mode {self.legend_mode} not supported')
+
+                    if identity_item is None:
+                        identity_item = self._tree_neuron_label(
+                            neuron_id,
+                            (self.neuron_dfs[i].iloc[source_index]
+                             if (self.neuron_dfs[i] is not None
+                                 and source_index < len(self.neuron_dfs[i]))
+                             else None),
+                            _overlay_dataset(source_index))
+                    self._stamp_trace_identity(
+                        trace,
+                        kind='companion' if is_companion else 'neuron',
+                        group=str(self.layer_names[i]).split(' :: ')[0],
+                        type_label=identity_type,
+                        item=identity_item,
+                        body_id=self._tree_hover_body_id(
+                            neuron_vols, source_index, neuron_id),
+                        layer_index=i,
+                    )
 
                     # Connector site rows normally identify the owner by
                     # bodyId while navis may identify the skeleton trace by
@@ -14135,6 +15116,7 @@ class VisualizeSkeleton:
         # Group by resolved color and legend identity so each Mesh3d (single
         # color) stays valid while all legend levels remain distinct.
         color_groups = {}
+        group_owner_ids = {}
         for _, row in site_df.iterrows():
             neuron_id = row['neuron_id']
             if site_type == 'pre':
@@ -14144,13 +15126,20 @@ class VisualizeSkeleton:
             legend_group, legend_name, legend_rank = self._pre_post_site_legend(
                 site_type, layer_idx, layer_name, neuron_id,
             )
-            color_groups.setdefault(
-                (str(color), legend_group, legend_name, legend_rank), []
-            ).append((row['x'], row['y'], row['z']))
+            key = (str(color), legend_group, legend_name, legend_rank)
+            color_groups.setdefault(key, []).append(
+                (row['x'], row['y'], row['z']))
+            # A group that collapses to exactly one owner can carry that
+            # bodyId, which is how a bodyId-level profile keeps its sites.
+            group_owner_ids.setdefault(key, set()).add(str(neuron_id))
 
         for (
             color_key, legend_group, legend_name, legend_rank
         ), pts in color_groups.items():
+            owners = group_owner_ids.get(
+                (color_key, legend_group, legend_name, legend_rank), set())
+            owner_body_id = next(iter(owners)) if len(owners) == 1 else None
+            owner_identity = legend_name[:-(len(site_type) + 1)]
             coords = np.array(pts, dtype=float)
             base_color = color_key
             base_alpha = self._extract_alpha_from_color(base_color)
@@ -14169,7 +15158,6 @@ class VisualizeSkeleton:
             # under its owner's custom group and type.
             tree_meta = None
             if self.legend_mode == 'tree':
-                owner_identity = legend_name[:-(len(site_type) + 1)]
                 try:
                     site_display = self._get_opaque_color(base_color)
                 except Exception:
@@ -14201,7 +15189,7 @@ class VisualizeSkeleton:
                     site_meta = {'drocat_scatter_size_role': 'pre_post_site'}
                     if tree_meta is not None:
                         site_meta['drocatLegend'] = tree_meta
-                    self.fig_3d.add_trace(go.Scatter3d(
+                    site_trace = go.Scatter3d(
                         x=coords[:, 0], y=coords[:, 1], z=coords[:, 2],
                         mode='markers',
                         name=legend_name,
@@ -14212,7 +15200,11 @@ class VisualizeSkeleton:
                         hovertemplate=hover,
                         hoverinfo='name',
                         meta=site_meta,
-                    ))
+                    )
+                    self._stamp_site_identity(
+                        site_trace, group_layer=layer_idx, item=legend_name,
+                        owner=owner_identity, owner_body_id=owner_body_id)
+                    self.fig_3d.add_trace(site_trace)
                     continue
 
                 # Solid sphere (post) / cone (pre) site markers.
@@ -14230,6 +15222,9 @@ class VisualizeSkeleton:
                     mesh_meta = dict(getattr(mesh, 'meta', None) or {})
                     mesh_meta['drocatLegend'] = tree_meta
                     mesh.meta = mesh_meta
+                self._stamp_site_identity(
+                    mesh, group_layer=layer_idx, item=legend_name,
+                    owner=owner_identity, owner_body_id=owner_body_id)
                 self.fig_3d.add_trace(mesh)
                 self._append_exportable_mesh(
                     mesh, color=base_color, alpha=opacity,
@@ -15596,7 +16591,7 @@ class VisualizeSkeleton:
                 if roi_list:
                     try:
                         os.makedirs(cache_dir, exist_ok=True)
-                        with open(cache_file, 'w') as f:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
                             _json.dump(roi_list, f, indent=2)
                     except Exception as e:
                         self._vprint(f'⚠️ Failed to cache ROI list: {e}',
@@ -15633,7 +16628,7 @@ class VisualizeSkeleton:
                     try:
                         import json
                         os.makedirs(cache_dir, exist_ok=True)
-                        with open(cache_file, 'w') as f:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
                             json.dump(roi_list, f, indent=2)
                     except Exception as e:
                         self._vprint(f'⚠️ Failed to cache ROI list: {e}', level='full')
@@ -15690,7 +16685,7 @@ class VisualizeSkeleton:
                     try:
                         import json
                         os.makedirs(cache_dir, exist_ok=True)
-                        with open(cache_file, 'w') as f:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
                             json.dump(roi_list, f, indent=2)
                         self._vprint(f'✓ Cached {len(roi_list)} available ROIs to {cache_file}', level='full')
                     except Exception as e:
@@ -15715,7 +16710,7 @@ class VisualizeSkeleton:
                 try:
                     import json
                     os.makedirs(cache_dir, exist_ok=True)
-                    with open(cache_file, 'w') as f:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
                         json.dump(roi_list, f, indent=2)
                     self._vprint(f'✓ Cached {len(roi_list)} available ROIs to {cache_file}', level='full')
                 except Exception as e:
@@ -16034,7 +17029,7 @@ class VisualizeSkeleton:
                 'vertices': np.asarray(vertices).tolist(),
                 'faces': np.asarray(faces).tolist(),
             }
-            with open(mesh_file, 'w') as handle:
+            with open(mesh_file, 'w', encoding='utf-8') as handle:
                 _json.dump(payload, handle)
             return True
         except Exception as exc:
@@ -16172,7 +17167,7 @@ class VisualizeSkeleton:
             for segid, name in names_by_segid.items():
                 region_map[name] = int(segid)
             os.makedirs(cache_dir, exist_ok=True)
-            with open(map_file, 'w') as handle:
+            with open(map_file, 'w', encoding='utf-8') as handle:
                 _json.dump(region_map, handle, indent=2)
             return region_map
         except Exception as exc:
@@ -17425,10 +18420,15 @@ class VisualizeSkeleton:
                 self.fig_path + '.html',
                 theme_toggle=self.html_theme_toggle,
                 legend_tree=(self.legend_mode == 'tree'),
+                freeze_view=self.freeze_view,
                 auto_open=False,
                 include_plotlyjs=True,
                 config=html_config,
             )
+
+            # Record what the page means, for the individual/video
+            # re-exporters; after the HTML exists so a failure there is visible.
+            self.write_visualization_manifest()
             
             if self.show_fig:
                 try:
@@ -17529,6 +18529,7 @@ class VisualizeSkeleton:
                                 simplified_html_path,
                                 theme_toggle=self.html_theme_toggle,
                                 legend_tree=(self.legend_mode == 'tree'),
+                                freeze_view=self.freeze_view,
                                 auto_open=False,
                                 include_plotlyjs=True,
                                 config={'displayModeBar': False},
@@ -17707,6 +18708,94 @@ class VisualizeSkeleton:
         taken.add(candidate)
         return candidate
 
+    @staticmethod
+    def _profile_key(role, granularity, colliding=()):
+        """Profile label one classified trace belongs to, or None.
+
+        ``colliding`` holds the group names whose members span more than one
+        ``layer_index``; those split into ``{group}__L{index}`` profiles so
+        two layers whose smart names collide never merge. Roles without a
+        stamped index in a colliding group keep the plain group name and so
+        form their own profile rather than joining the wrong layer.
+        """
+        if granularity == 'legend':
+            return role.label or None
+        if granularity == 'layer':
+            key = role.group or role.label or None
+            if key and key in colliding and role.layer_index is not None:
+                return f'{key}__L{role.layer_index}'
+            return key
+        if granularity == 'type':
+            return role.type or role.group or role.label or None
+        group = role.group or role.label or ''
+        item = role.item or ''
+        if not item:
+            return role.label or None
+        leaf = f'{group}__{role.type or group}__{item}' if role.type \
+            else f'{group}__{item}'
+        return leaf
+
+    @staticmethod
+    def _build_profile_plan(trace_roles, granularity='legend'):
+        """Group classified traces into ``{profile label: [trace index]}``.
+
+        Companion meshes share their owner's label by construction, and
+        pre/post site rows follow their owner: by bodyId when the renderer
+        stamped one, otherwise by the owning legend label. Meshes, synapses
+        and the legend-only swatches are background; a trace with no identity
+        at all is reported separately instead of silently disappearing.
+        """
+        if granularity not in PROFILE_GRANULARITIES:
+            raise ValueError(
+                'granularity must be one of: ' + ', '.join(PROFILE_GRANULARITIES))
+
+        entries = {}
+        background = []
+        unlabeled = []
+        sites = []
+        key_by_body = {}
+
+        colliding = set()
+        if granularity == 'layer':
+            # Group names are smart-layer names, which can repeat across
+            # layers; the stamped layer_index is what actually tells them
+            # apart, so colliding names split into one profile per layer.
+            seen = {}
+            for role in trace_roles:
+                if role.role in ('neuron', 'companion') and role.group:
+                    seen.setdefault(role.group, set()).add(role.layer_index)
+            colliding = {g for g, idxs in seen.items() if len(idxs) > 1}
+
+        for role in trace_roles:
+            if role.role in ('mesh', 'synapse', 'legend_swatch'):
+                background.append(role.index)
+                continue
+            if role.role == 'site':
+                sites.append(role)
+                continue
+            key = VisualizeSkeleton._profile_key(role, granularity, colliding)
+            if not key:
+                unlabeled.append(role.index)
+                continue
+            entries.setdefault(key, []).append(role.index)
+            if role.body_id is not None:
+                key_by_body.setdefault(str(role.body_id), key)
+
+        for site in sites:
+            key = key_by_body.get(str(site.owner_body_id)) \
+                if site.owner_body_id is not None else None
+            if key is None:
+                for candidate in (site.owner, site.type, site.group, site.label):
+                    if candidate and candidate in entries:
+                        key = candidate
+                        break
+            if key is None:
+                background.append(site.index)
+            else:
+                entries[key].append(site.index)
+
+        return entries, background, unlabeled
+
     def plot_neurons(self):
         import time
         start_time = time.time()
@@ -17755,19 +18844,27 @@ class VisualizeSkeleton:
         auto_crop: bool = True,
         crop_margin: int = 30,
         export_method: str = None,
+        granularity: str = 'legend',
     ):
         """
-        Plot individual neurons/types independently based on the main figure's legend entries.
-        
-        This method should be called AFTER plot_neurons() to ensure all necessary data is available.
-        It iterates through the legend entries in the main figure and generates separate plots
-        for each individual legend item by hiding other neuron traces (efficient, no duplication).
-        
-        Behavior varies by legend_mode:
-        - 'single': plots individual neurons (each neuron separate)
-        - 'type': plots by neuron type (grouped by type within layers)
-        - 'layer': plots by layer (all neurons in a layer grouped)
-        
+        Plot individual neurons/types/layers independently from the main figure.
+
+        This method should be called AFTER plot_neurons() to ensure all necessary data is
+        available. It builds one profile per group of traces at the requested
+        ``granularity`` and renders it by hiding every other morphology trace, so no
+        geometry is duplicated.
+
+        Granularity levels (``granularity``):
+        - 'legend': one profile per native legend entry, i.e. per ``legendgroup``
+          (fallback: trace name). This is the historical behaviour.
+        - 'layer': one profile per visualization layer / custom group.
+        - 'type': one profile per neuron type.
+        - 'body': one profile per bodyId leaf -- the same rows the ``legend_mode='tree'``
+          HTML panel exposes. Companion soma meshes and pre/post sites follow their
+          owner either way, so a leaf profile is never missing its soma or its sites.
+        The layer/type/body levels need the identity the renderer stamps on every trace
+        (``meta.drocatTrace``), which is why they are independent of ``legend_mode``.
+
         Parameters
         ----------
         output_format : str or list, default 'png'
@@ -17776,7 +18873,11 @@ class VisualizeSkeleton:
         views : str or list, default 'front'
             View angle(s) for PNG exports.
             Options: 'front', 'back', 'top', 'bottom', 'left', 'right'
-            Can be a single string or list like ['front', 'top']
+            Can be a single string or list like ['front', 'top'].
+            'all' expands to every view the scene's camera table offers. The
+            job is capped at MAX_INDIVIDUAL_PROFILES renders (groups x views):
+            over budget the groups that fit still render and the log names the
+            ones skipped and how to split the request to get them.
         scale : int, default None (uses self.export_scale)
             Scale factor for PNG export resolution. Overrides self.export_scale if provided.
             Higher values produce larger, higher-quality images.
@@ -17786,7 +18887,8 @@ class VisualizeSkeleton:
             Custom title for PDF/PPTX pages. If None, uses the layer/neuron name.
         neuron_alpha : float, optional
             Opacity for neuron traces in individual plots (0.0-1.0).
-            If None, defaults to 0.8 for better visibility in individual views.
+            If None, defaults to 0.2: profiles isolate one group at a time, and the
+            application-wide alpha saturates dense dendrites at that density.
         summary_format : str or list, default 'pdf'
             Format(s) for summary file generation.
             Options: 'pdf', 'pptx', or list like ['pdf', 'pptx']
@@ -17800,18 +18902,33 @@ class VisualizeSkeleton:
             If None, uses self.export_method (default from class initialization).
             - 'webdriver': Uses Selenium Chrome for rendering (better for large figures)
             - 'kaleido': Uses kaleido for rendering (faster for small figures)
-            
+        granularity : str, default 'legend'
+            One of 'legend', 'layer', 'type', 'body' (see above).
+
         Returns
         -------
         str or None
             Path to the output folder containing individual plots,
             or None if no plots were generated.
-            
+
+        Notes
+        -----
+        The WebDriver path renders from the permanent ``{saveas}_simplified.html``
+        when a previous export left one. That page is a user-facing viewer as well as
+        this export's input, which is why the interactive-only page extras (tree legend,
+        theme switch, frozen view) all no-op under ``navigator.webdriver``.
+
+        An already-generated page can be re-profiled without re-running the fetches:
+        the module-level ``export_individuals_from_html`` reads the page back, classifies
+        its traces and renders at any ``granularity``; ``export_video_from_html`` does
+        the same for rotations.
+
         Example
         -------
         >>> vs = VisualizeSkeleton(...)
         >>> vs.plot_neurons()
         >>> vs.plot_individuals(output_format=['png', 'html'], views=['front', 'top'])
+        >>> vs.plot_individuals(granularity='body')  # one profile per bodyId leaf
         >>> vs.plot_individuals(summary_format=['pdf', 'pptx'])  # Generate both PDF and PPTX
         >>> vs.plot_individuals(export_method='webdriver')  # Force webdriver for large figures
         """
@@ -17850,12 +18967,14 @@ class VisualizeSkeleton:
                 self._vprint(f'⚠️  Invalid output format: {fmt}. Use "png" or "html".')
                 return None
                 
-        valid_views = {'front', 'back', 'top', 'bottom', 'left', 'right'}
-        views = [v.lower() for v in views]
-        for view in views:
-            if view not in valid_views:
-                self._vprint(f'⚠️  Invalid view: {view}. Use one of {valid_views}.')
-                return None
+        valid_views = set(dataset_view_cameras(
+            self.dataset, self.brain_mesh, lowercase=True))
+        views = normalize_profile_views(views, valid_views)
+        invalid = [view for view in views if view not in valid_views]
+        if invalid:
+            self._vprint(f'⚠️  Invalid view: {invalid}. '
+                         f'Use one of {sorted(valid_views)}.')
+            return None
         
         # Create output directory
         output_dir = os.path.join(self.save_folder, 'individual_profiles')
@@ -17929,89 +19048,47 @@ class VisualizeSkeleton:
         # Store original camera and layout settings
         original_layout = copy.deepcopy(self.fig_3d.layout)
         
-        # Identify unique legend entries (excluding hidden legends and mesh/synapse traces)
-        legend_entries = {}  # {legend_name: [trace_indices]}
-        background_indices = []  # mesh/synapse traces to always show
-        pre_post_site_entries = []  # [(trace_index, owning_skeleton_legend)]
-        
-        # Get mesh_roi names for matching
-        mesh_roi_names = [r.lower() for r in self.mesh_roi] if self.mesh_roi else []
-        
-        # Template/mesh names to always include as background
-        mesh_keywords = ['mesh', 'brain region', 'template', 'vnc']
-        template_names = ['JRCFIB', 'MANC', 'JRC2018', 'FLYWIRE', 'FAFB', 'jrcfib', 'flywire', 'fafb']
-        
-        for idx, trace in enumerate(all_traces):
-            trace_name = getattr(trace, 'name', '')
-            show_legend = getattr(trace, 'showlegend', True)
-            legend_group = getattr(trace, 'legendgroup', None)
-            trace_name_lower = trace_name.lower() if trace_name else ''
-            
-            # Identify mesh/roi traces (keep visible as background)
-            # Include brain-region traces, standard templates, and user-specified mesh_roi
-            is_background = False
-            
-            if trace_name:
-                # Check for mesh-related keywords
-                if any(kw in trace_name_lower for kw in mesh_keywords):
-                    is_background = True
-                # Check for template names (case-insensitive for most, case-sensitive for acronyms)
-                elif any(tn in trace_name for tn in template_names):
-                    is_background = True
-                # Check for user-specified ROI meshes
-                elif any(roi_name in trace_name_lower for roi_name in mesh_roi_names):
-                    is_background = True
-            
-            if is_background:
-                background_indices.append(idx)
-                continue
+        # Resolve every trace's role and legend identity structurally. Name
+        # matching alone filed neurons whose type contains an ROI or dataset
+        # acronym ('LHPD1L' vs ROI 'LH') away as background, so those profiles
+        # silently never existed.
+        trace_roles = classify_traces(
+            all_traces, mesh_roi_names=[str(r) for r in (self.mesh_roi or [])])
+        self._trace_roles = trace_roles
+        legend_entries, background_indices, unlabeled_indices = \
+            self._build_profile_plan(trace_roles, granularity=granularity)
+        self._profile_entries = legend_entries
 
-            # Pre/post site traces intentionally use a distinct legend group
-            # (``pre_post:{role}:{owner}``) so their pre/post entries remain
-            # separate in the main figure.  For individual profiles they
-            # belong with the owning morphology trace, rather than being
-            # treated as global synapse background or dropped as hidden
-            # legend entries.
-            site_group = str(legend_group or '')
-            if site_group.startswith('pre_post:'):
-                parts = site_group.split(':', 2)
-                owner = parts[2] if len(parts) == 3 else ''
-                pre_post_site_entries.append((idx, owner))
-                continue
-                
-            # Identify synapse traces (keep visible as background)
-            if trace_name and ('synapse' in trace_name_lower or 'pre-syn' in trace_name_lower or 'post-syn' in trace_name_lower):
-                background_indices.append(idx)
-                continue
-            
-            # Use legendgroup as key if available (for merged traces), else use name
-            key = legend_group if legend_group else trace_name
-            if key and show_legend:
-                if key not in legend_entries:
-                    legend_entries[key] = []
-                legend_entries[key].append(idx)
-            elif key and not show_legend and legend_group:
-                # Traces with same legendgroup but showlegend=False
-                if key not in legend_entries:
-                    legend_entries[key] = []
-                legend_entries[key].append(idx)
-
-        # Attach each pre/post site trace to the same profile as its owner.
-        # Exact matching is expected because the site renderer resolves its
-        # owner identity from ``_neuron_legend_labels_by_layer``.  Keep an
-        # unmatched site visible as background as a defensive fallback for a
-        # partially rendered skeleton, rather than silently omitting it from
-        # every exported profile.
-        for trace_index, owner in pre_post_site_entries:
-            if owner in legend_entries:
-                legend_entries[owner].append(trace_index)
-            else:
-                background_indices.append(trace_index)
+        role_counts = {}
+        for role in trace_roles:
+            role_counts[role.role] = role_counts.get(role.role, 0) + 1
+        self._vprint('   Trace roles: ' + ', '.join(
+            f'{count} {role}' for role, count in sorted(role_counts.items())))
+        if unlabeled_indices:
+            self._vprint(
+                f'   \u26a0\ufe0f  {len(unlabeled_indices)} trace(s) carry no legend '
+                f'identity and got no profile: {unlabeled_indices[:10]}')
+        planned = {idx for indices in legend_entries.values() for idx in indices}
+        orphaned = [role.index for role in trace_roles
+                    if role.role in ('neuron', 'companion', 'site')
+                    and role.index not in planned
+                    and role.index not in background_indices]
+        if orphaned:
+            self._vprint(
+                f'   \u26a0\ufe0f  {len(orphaned)} neuron/site trace(s) got no '
+                f'profile at granularity={granularity!r}: {orphaned[:10]}')
         
         if not legend_entries:
             self._vprint('⚠️  No legend entries found to plot individually.')
             return None
-        
+
+        legend_entries, capped = profile_budget(
+            legend_entries, views, granularity)
+        if capped:
+            self._vprint(f'⚠️  Individual profiles capped: {capped}')
+        if not legend_entries:
+            return None
+
         self._vprint(f'   Found {len(legend_entries)} individual legend entries')
         
         # Generate individual plots by hiding/showing traces
@@ -19069,6 +20146,8 @@ class VisualizeSkeleton:
         Output Files
         ------------
         - {output_dir}/pics_{fps}fps_{rotate_plane}/ : Cached frame images
+          (the webdriver engine writes pics_{fps}fps_{rotate_plane}_webdriver/,
+          so one engine never resumes the other's frames)
         - {output_dir}/{name}_video_h_forward.mp4 : Forward rotation video (horizontal)
         - {output_dir}/{name}_video_h_backward.mp4 : Reverse rotation video (horizontal)
         - {output_dir}/{name}_video_v_forward.mp4 : Forward rotation video (vertical)
@@ -19160,6 +20239,11 @@ class VisualizeSkeleton:
         # Use explicit degree_per_frame instead of calculating from fps
         step = degree_per_frame
         
+        # Resolve the page first: a run folder or a simplified copy routes to
+        # the canonical page, and the folder/name pair below is derived from it.
+        if html_file is not None:
+            html_file = resolve_viewer_page(html_file)
+
         # Determine output directory and filename
         if output_dir is not None:
             save_folder = output_dir
@@ -19191,9 +20275,8 @@ class VisualizeSkeleton:
                 raise FileNotFoundError(f'HTML file not found: {html_file}')
             
             # Read and parse the HTML file to extract figure data
-            import plotly.io as pio
             try:
-                fig_loaded = pio.read_html(html_file)
+                fig_loaded = figure_from_plotly_html(html_file)
                 fig_traces = fig_loaded.data
                 self._vprint(f'✓ Loaded {len(fig_traces)} traces from HTML file')
             except Exception as e:
@@ -19266,7 +20349,8 @@ class VisualizeSkeleton:
         )
         
         # Set up image folder
-        pic_folder = os.path.join(save_folder, f'pics_{fps}fps_{rotate_plane}')
+        pic_folder = os.path.join(save_folder, _video_frame_folder_name(
+            fps, rotate_plane, actual_export_method))
         
         # Calculate rotation steps
         if step > 0:
@@ -19346,11 +20430,23 @@ class VisualizeSkeleton:
                 # Check if _simplified_export_fig exists AND was used for this export
                 simplified_fig = getattr(self, '_simplified_export_fig', None)
                 if simplified_fig is not None:
-                    html_size_mb = os.path.getsize(temp_html) / 1024 / 1024
                     simplified_html_path = os.path.join(save_folder, f"{saveas}_simplified.html")
                     if not os.path.exists(simplified_html_path):
-                        import shutil
-                        shutil.copy(temp_html, simplified_html_path)
+                        # Write it as a viewer page, not as a copy of the
+                        # frame-driving temp page: that temp page carries no
+                        # freeze/tree/theme extras, and this path is the only
+                        # page some runs keep.
+                        self._write_plotly_html(
+                            simplified_fig,
+                            simplified_html_path,
+                            theme_toggle=self.html_theme_toggle,
+                            legend_tree=(self.legend_mode == 'tree'),
+                            freeze_view=self.freeze_view,
+                            auto_open=False,
+                            include_plotlyjs=True,
+                            config={'displayModeBar': False},
+                        )
+                        html_size_mb = os.path.getsize(simplified_html_path) / 1024 / 1024
                         self._vprint(f'   ✓ Saved simplified HTML: {os.path.basename(simplified_html_path)} ({html_size_mb:.1f}MB)')
                 
                 # Retry logic for Chrome crashes - with RESUME capability
@@ -19553,6 +20649,14 @@ class VisualizeSkeleton:
                     self._vprint(f'      💡 Tip: Set export_method="kaleido" for future use if WebDriver continues to fail.')
                     use_kaleido_fallback = True
                     frame_export_failed = False  # Reset to try kaleido
+                    # Kaleido now renders the frames, so they belong in the
+                    # kaleido-named cache; leaving them in the webdriver one
+                    # would let a later webdriver run resume from foreign
+                    # frames.
+                    pic_folder = os.path.join(
+                        save_folder, _video_frame_folder_name(
+                            fps, rotate_plane, 'kaleido'))
+                    os.makedirs(pic_folder, exist_ok=True)
                     # Reset timer for kaleido attempt
                     t0 = time.time()
                 
@@ -19612,6 +20716,7 @@ class VisualizeSkeleton:
                             simplified_html_path,
                             theme_toggle=self.html_theme_toggle,
                             legend_tree=(self.legend_mode == 'tree'),
+                            freeze_view=self.freeze_view,
                             auto_open=False,
                             include_plotlyjs=True,
                             config={'displayModeBar': False},
@@ -19996,10 +21101,116 @@ def _apply_consistent_crop_standalone(pic_folder, margin=20, background_color=(2
     return (final_width, final_height)
 
 
+def _page_z_sign(html_path):
+    """Horizontal-rotation handedness of the page's own dataset.
+
+    ``export_video`` flips the sign of the orbit's z component for the
+    male-central-complex datasets; the re-exporter has no dataset argument, so
+    it inherits the handedness from the run manifest written next to the page.
+    A legacy page with no manifest keeps the historical ``-1``.
+    """
+    dataset = str(read_visualization_manifest(html_path).get('dataset') or '')
+    return 1 if 'manc' in dataset.lower() else -1
+
+
+def _rotation_camera(deg, rotate_plane, distance, z_sign=-1):
+    """``(eye, up)`` camera for one frame of a turntable rotation.
+
+    Mirrors ``VisualizeSkeleton.export_video``'s WebDriver branch so both
+    entrances orbit identically: the 1% off-axis offset keeps Plotly from
+    hitting gimbal lock on the axis-aligned frames, and the vertical plane has
+    to carry its ``up`` vector along with the eye.
+    """
+    rad = np.deg2rad(deg)
+    sin_val = distance * np.sin(rad)
+    cos_val = distance * np.cos(rad)
+    offset = distance * 0.01
+    if rotate_plane == 'xy':
+        return ({'x': sin_val, 'y': cos_val, 'z': offset},
+                {'x': 0, 'y': 0, 'z': 1})
+    if rotate_plane == 'yz':
+        return ({'x': offset, 'y': sin_val, 'z': -cos_val},
+                {'x': 0, 'y': -np.cos(rad), 'z': -np.sin(rad)})
+    return ({'x': sin_val, 'y': offset, 'z': z_sign * cos_val},
+            {'x': 0, 'y': -1, 'z': 0})
+
+
+def _render_video_frames_via_session(figure, pic_folder, degrees, *,
+                                     rotate_plane, view_distance, width,
+                                     height, scale, timeout, background_color,
+                                     z_sign=-1):
+    """Capture rotating frames through one long-lived Chrome session.
+
+    The page loads once and the camera then rotates in JavaScript, so a full
+    turn costs a single page load instead of a kaleido render per frame -- and
+    a scene too large for kaleido can only be re-exported this way. Raises on
+    any browser or capture failure so the caller can fall back.
+    """
+    temp_html = os.path.join(pic_folder, '_temp_video.html')
+    figure.write_html(temp_html, include_plotlyjs=True, auto_open=False,
+                      config={'displayModeBar': False})
+    try:
+        with WebDriverExportSession(width=width, height=height, scale=scale,
+                                    timeout=timeout) as session:
+            session.load_html(temp_html, wait_for_render=True, render_wait=3,
+                              background_color=background_color)
+            eye = (session.get_current_camera() or {}).get('eye') or {}
+            distance = float(np.sqrt(sum(
+                float(eye.get(axis) or 0.0) ** 2 for axis in 'xyz')))
+            if distance < 0.1:
+                # An unreadable camera (or a page that never baked one) falls
+                # back to the configured orbit radius.
+                distance = view_distance
+            try:
+                bg_rgb = extract_rgb_tuple(background_color)
+            except (TypeError, ValueError):
+                bg_rgb = (255, 255, 255)
+
+            t0 = time.time()
+            for i, deg in enumerate(degrees):
+                frame_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
+                cam_eye, cam_up = _rotation_camera(
+                    deg, rotate_plane, distance, z_sign)
+                session.set_camera(eye=cam_eye, up=cam_up)
+                session.screenshot(frame_path, convert_to_jpeg=True,
+                                   jpeg_quality=95, auto_crop=False,
+                                   background_color=bg_rgb)
+                if (not os.path.exists(frame_path)
+                        or os.path.getsize(frame_path) < 1024):
+                    raise RuntimeError(
+                        f'no frame captured at {deg:.1f} degrees')
+                elapsed = time.time() - t0
+                avg_time = elapsed / (i + 1)
+                remaining = avg_time * (len(degrees) - i - 1)
+                print(f'\r  Frame {i + 1}/{len(degrees)} | '
+                      f'Elapsed: {elapsed:.1f}s | ETA: {remaining:.1f}s',
+                      end='  ', flush=True)
+            print('\n✓ Image rendering complete')
+    finally:
+        try:
+            os.remove(temp_html)
+        except OSError:
+            pass
+
+
+def _video_frame_folder_name(fps, rotate_plane, engine):
+    """Frame-cache folder name for one video render engine.
+
+    The engine joins the name so one engine's ``use_existing_images`` can
+    never resume from another engine's frames (they differ in geometry and
+    quality). Kaleido keeps the legacy name, so folders written before the
+    suffix existed still reuse.
+    """
+    name = f'pics_{fps}fps_{rotate_plane}'
+    return name if engine == 'kaleido' else f'{name}_webdriver'
+
+
 def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='horizontal',
                            output_dir=None, use_existing_images=True, 
                            export_gif=True, gif_scale=0.2, gif_optimize=True,
-                           auto_crop=False, crop_margin=30, **kwargs):
+                           auto_crop=False, crop_margin=30,
+                           export_method='kaleido', timeout=120,
+                           background_color=None, **kwargs):
     '''
     Standalone function to export a rotating video from an existing Plotly HTML file.
     
@@ -20033,6 +21244,17 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         This ensures uniform frame dimensions during rotation for smooth video playback.
     crop_margin : int, default 30
         Margin in pixels around content when auto_crop is enabled.
+    export_method : str, default 'kaleido'
+        'webdriver' captures the frames through one Chrome session -- the page
+        loads once and only the camera moves afterwards, which is what makes a
+        scene too large for kaleido exportable at all. It falls back to
+        kaleido when no browser can be started. 'kaleido' renders every frame
+        in-process.
+    timeout : int, default 120
+        WebDriver page-load timeout in seconds (unused by kaleido).
+    background_color : str, optional
+        Page background the WebDriver engine composites frames onto. Defaults
+        to the value the run recorded in its manifest, then to white.
     **kwargs : dict
         Additional arguments for plotly write_image():
         - scale : int, default 2
@@ -20065,23 +21287,23 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         output_dir='/path/to/output/'
     )
     '''
-    import plotly.io as pio
     import plotly.graph_objects as go
     import cv2
     import shutil
     import time
     
-    # Validate input
-    if not os.path.exists(html_file):
-        raise FileNotFoundError(f'HTML file not found: {html_file}')
-    
+    # Resolve before anything is derived from the path: a run folder or a
+    # simplified copy must yield the canonical page, otherwise the artifacts
+    # below are named after the folder and land one level above it.
+    html_file = resolve_viewer_page(html_file)
+
     # Determine output directory
     if output_dir is None:
         save_folder = os.path.dirname(os.path.abspath(html_file))
     else:
         save_folder = output_dir
         os.makedirs(save_folder, exist_ok=True)
-    
+
     saveas = os.path.splitext(os.path.basename(html_file))[0]
     
     # Handle rotate parameter
@@ -20100,10 +21322,14 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
     if kwargs.get('scale') is None and kwargs.get('width') is None and kwargs.get('height') is None:
         kwargs['scale'] = 2
     
-    # Load figure from HTML
     print(f'📂 Loading figure from: {html_file}')
+    if background_color is None:
+        # A re-export should composite on the background the run itself used.
+        background_color = (
+            read_visualization_manifest(html_file).get('background_color')
+            or 'white')
     try:
-        fig_loaded = pio.read_html(html_file)
+        fig_loaded = figure_from_plotly_html(html_file)
         fig_traces = fig_loaded.data
         print(f'✓ Loaded {len(fig_traces)} traces from HTML file')
     except Exception as e:
@@ -20133,7 +21359,8 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
     )
     
     # Set up image folder
-    pic_folder = os.path.join(save_folder, f'pics_{fps}fps_{rotate_plane}')
+    pic_folder = os.path.join(save_folder, _video_frame_folder_name(
+        fps, rotate_plane, export_method))
     
     # Calculate rotation steps
     step = degree_per_frame
@@ -20161,37 +21388,58 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         if 'height' not in kwargs:
             kwargs['height'] = 900
         
-        print(f'🎬 Rendering {len(steps_to_write)} frames at {fps} fps...')
-        t0 = time.time()
-        
-        for i, deg in enumerate(steps_to_write):
-            rad_i = np.deg2rad(deg)
-            x = view_distance * np.sin(rad_i) * view_direction[0]
-            y = view_distance * np.cos(rad_i) * view_direction[1]
-            
-            if rotate_plane == 'xy':
-                fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=y, z=0)))
-            elif rotate_plane == 'yz':
-                fig_new.update_layout(scene_camera=dict(eye=dict(x=0, y=x, z=y)))
-            elif rotate_plane == 'xz':
-                fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=0, z=y)))
-            
-            fig_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
-            
+        frames_rendered = False
+        if export_method == 'webdriver':
+            print(f'🎬 Rendering {len(steps_to_write)} frames at {fps} fps '
+                  f'(webdriver)...')
             try:
-                fig_new.write_image(fig_path, **kwargs)
+                _render_video_frames_via_session(
+                    fig_new, pic_folder, steps_to_write,
+                    rotate_plane=rotate_plane,
+                    view_distance=view_distance,
+                    width=kwargs['width'], height=kwargs['height'],
+                    scale=kwargs.get('scale') or 2,
+                    timeout=timeout,
+                    background_color=background_color,
+                    z_sign=_page_z_sign(html_file),
+                )
+                frames_rendered = True
             except Exception as e:
-                print(f'\n⚠️  Frame {i+1} failed: {e}')
-                if i == 0:
-                    print('   Try reducing "scale" (e.g. scale=1)')
-                    return 1
-            
-            elapsed = time.time() - t0
-            avg_time = elapsed / (i + 1)
-            remaining = avg_time * (len(steps_to_write) - i - 1)
-            print(f'\r  Frame {i+1}/{len(steps_to_write)} | Elapsed: {elapsed:.1f}s | ETA: {remaining:.1f}s', end='  ', flush=True)
+                print(f'   ⚠️  WebDriver frame export failed: {e}')
+                print('   Falling back to kaleido (one render per frame)')
         
-        print('\n✓ Image rendering complete')
+        if not frames_rendered:
+            print(f'🎬 Rendering {len(steps_to_write)} frames at {fps} fps...')
+            t0 = time.time()
+            
+            for i, deg in enumerate(steps_to_write):
+                rad_i = np.deg2rad(deg)
+                x = view_distance * np.sin(rad_i) * view_direction[0]
+                y = view_distance * np.cos(rad_i) * view_direction[1]
+                
+                if rotate_plane == 'xy':
+                    fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=y, z=0)))
+                elif rotate_plane == 'yz':
+                    fig_new.update_layout(scene_camera=dict(eye=dict(x=0, y=x, z=y)))
+                elif rotate_plane == 'xz':
+                    fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=0, z=y)))
+                
+                fig_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
+                
+                try:
+                    fig_new.write_image(fig_path, **kwargs)
+                except Exception as e:
+                    print(f'\n⚠️  Frame {i+1} failed: {e}')
+                    if i == 0:
+                        print('   Try reducing "scale" (e.g. scale=1)')
+                        return 1
+                
+                elapsed = time.time() - t0
+                avg_time = elapsed / (i + 1)
+                remaining = avg_time * (len(steps_to_write) - i - 1)
+                print(f'\r  Frame {i+1}/{len(steps_to_write)} | Elapsed: {elapsed:.1f}s | ETA: {remaining:.1f}s', end='  ', flush=True)
+            
+            print('\n✓ Image rendering complete')
         
         # Apply consistent cropping if auto_crop is enabled
         if auto_crop:
@@ -20226,345 +21474,6 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
     # Backward video
     video_path_backward = os.path.join(save_folder, f'{saveas}_video_{rotation_suffix}_backward.mp4')
     out = cv2.VideoWriter(video_path_backward, fourcc, fps, frameSize=(width, height))
-    for deg in steps_to_write[::-1]:
-        img = cv2.imread(os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg'))
-        out.write(img)
-    out.release()
-    print(f'✓ Backward video: {video_path_backward}')
-    
-    print(f'\n✅ Video export complete!')
-    
-    # Convert to GIF if requested
-    if export_gif:
-        print(f'\n🎞️  Converting videos to GIF format...')
-        print(f'   Scale: {gif_scale} | Optimize: {gif_optimize}')
-        
-        # Convert forward video to GIF
-        gif_path_forward = video_path_forward.replace('.mp4', '.gif')
-        try:
-            video2gif(
-                video_path_forward,
-                gif_path_forward,
-                fps=fps,
-                scale=gif_scale,
-                optimize=gif_optimize
-            )
-            print(f'   ✓ Forward GIF: {gif_path_forward}')
-        except Exception as e:
-            print(f'   ⚠️  Forward GIF conversion failed: {e}')
-        
-        # Convert backward video to GIF
-        gif_path_backward = video_path_backward.replace('.mp4', '.gif')
-        try:
-            video2gif(
-                video_path_backward,
-                gif_path_backward,
-                fps=fps,
-                scale=gif_scale,
-                optimize=gif_optimize
-            )
-            print(f'   ✓ Backward GIF: {gif_path_backward}')
-        except Exception as e:
-            print(f'   ⚠️  Backward GIF conversion failed: {e}')
-    
-    return 0
-
-
-def export_video_webdriver(
-    html_file: str,
-    fps: int = 30,
-    degree_per_frame: float = 1.0,
-    rotate: str = 'horizontal',
-    output_dir: str = None,
-    width: int = 1200,
-    height: int = 900,
-    scale: int = 2,
-    view_distance: float = 2.2,
-    export_gif: bool = True,
-    gif_scale: float = 0.2,
-    gif_optimize: bool = True,
-    timeout: int = 120,
-    auto_crop: bool = False,
-    crop_margin: int = 30,
-) -> int:
-    """
-    Export a rotating video from an existing Plotly HTML file using WebDriver.
-    
-    This is an EFFICIENT alternative to export_video_from_html() that:
-    - Opens the browser ONCE and keeps it open
-    - Rotates the camera using JavaScript (no figure regeneration)
-    - Takes screenshots in series without reopening the browser
-    
-    This method is significantly faster for large/complex 3D figures because:
-    1. The HTML only needs to load once (not per-frame)
-    2. Camera rotation uses JavaScript instead of Python figure update + kaleido export
-    3. Works with WebGL for smooth rendering
-    
-    Parameters
-    ----------
-    html_file : str
-        Path to existing Plotly HTML file to load.
-    fps : int, default 30
-        Frames per second for the output video.
-    degree_per_frame : float, default 1.0
-        Rotation angle in degrees per frame.
-        - 1.0 → 360 frames for full rotation (12 sec video at 30 fps)
-        - 2.0 → 180 frames for full rotation (6 sec video at 30 fps)
-    rotate : str, default 'horizontal'
-        Rotation direction: 'horizontal' or 'vertical'.
-    output_dir : str, optional
-        Directory to save video output. If None, uses the directory containing html_file.
-    width : int, default 1200
-        Browser viewport width.
-    height : int, default 900
-        Browser viewport height.
-    scale : int, default 2
-        Scale factor for screenshot resolution (actual size = width*scale x height*scale).
-    view_distance : float, default 2.2
-        Camera distance from the center (affects zoom level).
-    export_gif : bool, default True
-        If True, automatically convert videos to GIF format after export.
-    gif_scale : float, default 0.2
-        Scale factor for GIF resolution (0.1-1.0).
-    gif_optimize : bool, default True
-        Enable GIF compression optimization.
-    timeout : int, default 120
-        Maximum time in seconds to wait for page load.
-    auto_crop : bool, default False
-        If True, auto-crop frames to content bounds with consistent sizing across all frames.
-        This ensures uniform frame dimensions during rotation for smooth video playback.
-    crop_margin : int, default 30
-        Margin in pixels around content when auto_crop is enabled.
-    
-    Returns
-    -------
-    int
-        0 on success, 1 on failure
-    
-    Notes
-    -----
-    Requires: selenium, webdriver-manager
-    
-    On macOS, headless Chrome doesn't support WebGL, so we use an offscreen
-    window (positioned at -10000,-10000) instead of true headless mode.
-    
-    Examples
-    --------
-    # Basic usage
-    from visualize_skeleton import export_video_webdriver
-    export_video_webdriver('/path/to/my_neurons.html')
-    
-    # Faster rotation, higher quality
-    export_video_webdriver(
-        '/path/to/my_neurons.html',
-        fps=60,
-        degree_per_frame=2.0,  # Faster rotation
-        scale=3  # Higher quality
-    )
-    
-    # Vertical rotation
-    export_video_webdriver(
-        '/path/to/my_neurons.html',
-        rotate='vertical',
-        view_distance=2.5
-    )
-    """
-    try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service as ChromeService
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.common.by import By
-    except ImportError:
-        print("❌ Error: selenium is required for export_video_webdriver()")
-        print("   Install with: pip install selenium webdriver-manager")
-        return 1
-    
-    import shutil
-    import time
-    
-    # Validate input
-    if not os.path.exists(html_file):
-        raise FileNotFoundError(f'HTML file not found: {html_file}')
-    
-    # Determine output directory
-    if output_dir is None:
-        save_folder = os.path.dirname(os.path.abspath(html_file))
-    else:
-        save_folder = output_dir
-        os.makedirs(save_folder, exist_ok=True)
-    
-    saveas = os.path.splitext(os.path.basename(html_file))[0]
-    
-    # Handle rotate parameter
-    if rotate == 'horizontal':
-        rotate_plane = 'xz'
-    elif rotate == 'vertical':
-        rotate_plane = 'yz'
-    else:
-        rotate_plane = 'xz'
-    
-    # Calculate rotation steps
-    step = degree_per_frame
-    steps_to_write = np.linspace(0, 360, int(360/step), endpoint=False)
-    
-    # Set up image folder
-    pic_folder = os.path.join(save_folder, f'pics_{fps}fps_{rotate_plane}_webdriver')
-    if os.path.exists(pic_folder):
-        shutil.rmtree(pic_folder)
-    os.makedirs(pic_folder)
-    
-    # Calculate actual browser dimensions
-    actual_width = width * scale
-    actual_height = height * scale
-    
-    # Set up Chrome options
-    # Use --headless=new (Chrome 109+) for WebGL support in headless mode
-    chrome_options = ChromeOptions()
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument(f'--window-size={actual_width},{actual_height}')
-    chrome_options.add_argument('--headless=new')  # Modern headless with WebGL support
-    
-    # Initialize ChromeDriver using webdriver-manager (cross-platform)
-    driver = None
-    try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        service = ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-    except ImportError:
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-        except Exception as e:
-            print(f"❌ Error: Could not initialize Chrome WebDriver: {e}")
-            print(f"   Install dependencies: pip install selenium webdriver-manager")
-            return 1
-    except Exception as e:
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-        except Exception as e2:
-            print(f"❌ Error: Could not initialize Chrome WebDriver: {e2}")
-            print(f"   Ensure Chrome 109+ is installed and webdriver-manager is up to date")
-            return 1
-    
-    try:
-        print(f'📂 Loading HTML file: {html_file}')
-        file_url = f'file://{os.path.abspath(html_file)}'
-        driver.get(file_url)
-        
-        # Wait for Plotly to render
-        print(f'   Waiting for Plotly to render...')
-        wait = WebDriverWait(driver, timeout)
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "plotly")))
-        
-        # Additional wait for WebGL rendering
-        time.sleep(3)
-        print(f'✓ Page loaded and rendered')
-        
-        # JavaScript to update camera position
-        # Plotly stores camera in layout.scene.camera.eye
-        js_set_camera = """
-        var gd = document.querySelector('.js-plotly-plot');
-        if (gd && gd.layout && gd.layout.scene) {
-            Plotly.relayout(gd, {
-                'scene.camera.eye': {x: %f, y: %f, z: %f},
-                'scene.camera.up': {x: 0, y: -1, z: 0}
-            });
-        }
-        """
-        
-        print(f'🎬 Rendering {len(steps_to_write)} frames at {fps} fps...')
-        t0 = time.time()
-        
-        for i, deg in enumerate(steps_to_write):
-            rad_i = np.deg2rad(deg)
-            
-            # Add small offset to avoid gimbal lock at axis-aligned positions
-            # This prevents camera flipping at 90, 180, 270 degrees
-            offset = view_distance * 0.01  # 1% offset
-            
-            # Use view_direction (1, -1) to match original export_video_from_html behavior
-            # The -1 for cos component ensures consistent rotation direction
-            sin_component = view_distance * np.sin(rad_i)  # * 1
-            cos_component = view_distance * np.cos(rad_i) * (-1)  # * -1
-            
-            if rotate_plane == 'xz':  # Horizontal rotation
-                eye_x = sin_component
-                eye_y = offset  # Small offset instead of 0
-                eye_z = cos_component
-            elif rotate_plane == 'yz':  # Vertical rotation
-                eye_x = offset  # Small offset instead of 0
-                eye_y = sin_component
-                eye_z = cos_component
-            else:  # xy plane
-                eye_x = sin_component
-                eye_y = cos_component
-                eye_z = offset  # Small offset instead of 0
-            
-            # Update camera via JavaScript
-            driver.execute_script(js_set_camera % (eye_x, eye_y, eye_z))
-            
-            # Brief wait for rendering
-            time.sleep(0.1)
-            
-            # Take screenshot
-            frame_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
-            
-            # Get screenshot as PNG, then convert to JPEG
-            screenshot_png = os.path.join(pic_folder, f'temp_{deg:.1f}.png')
-            driver.save_screenshot(screenshot_png)
-            
-            # Convert PNG to JPEG for consistency with existing code
-            from PIL import Image
-            img = Image.open(screenshot_png)
-            img = img.convert('RGB')
-            img.save(frame_path, 'JPEG', quality=95)
-            os.remove(screenshot_png)
-            
-            # Progress update
-            elapsed = time.time() - t0
-            avg_time = elapsed / (i + 1)
-            remaining = avg_time * (len(steps_to_write) - i - 1)
-            print(f'\r   Frame {i+1}/{len(steps_to_write)} | Elapsed: {elapsed:.1f}s | ETA: {remaining:.1f}s', end='  ', flush=True)
-        
-        print('\n✓ Image rendering complete')
-        
-        # Apply consistent cropping if auto_crop is enabled
-        if auto_crop:
-            print(f'   Applying consistent auto-crop across all frames...')
-            crop_result = _apply_consistent_crop_standalone(pic_folder, margin=crop_margin)
-            if crop_result:
-                crop_w, crop_h = crop_result
-                print(f'   ✓ All frames cropped consistently to {crop_w}x{crop_h}')
-            else:
-                print(f'   ⚠️  Auto-crop failed, using original frame sizes')
-        
-    finally:
-        driver.quit()
-    
-    # Generate videos
-    print(f'\nGenerating videos...')
-    imglist = os.listdir(pic_folder)
-    imglist = [f for f in imglist if f.endswith('.jpeg')]
-    
-    img_eg = cv2.imread(os.path.join(pic_folder, imglist[0]))
-    frame_height, frame_width, layers = img_eg.shape
-    
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    
-    # Forward video
-    video_path_forward = os.path.join(save_folder, f'{saveas}_video_forward_webdriver.mp4')
-    out = cv2.VideoWriter(video_path_forward, fourcc, fps, frameSize=(frame_width, frame_height))
-    for deg in steps_to_write:
-        img = cv2.imread(os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg'))
-        out.write(img)
-    out.release()
-    print(f'✓ Forward video: {video_path_forward}')
-    
-    # Backward video
-    video_path_backward = os.path.join(save_folder, f'{saveas}_video_backward_webdriver.mp4')
-    out = cv2.VideoWriter(video_path_backward, fourcc, fps, frameSize=(frame_width, frame_height))
     for deg in steps_to_write[::-1]:
         img = cv2.imread(os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg'))
         out.write(img)

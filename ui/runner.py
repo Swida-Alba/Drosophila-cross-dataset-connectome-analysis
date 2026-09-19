@@ -268,6 +268,21 @@ TOOL_REGISTRY: Dict[str, dict] = {
             "plot": "vs.plot_neurons()",
         },
     },
+    "plot3d_reexport": {
+        "label": "Skeleton Re-export",
+        # No tool class is instantiated: both re-exporters are module-level
+        # functions that read the figure back out of a stored page, so
+        # _generate_script dispatches to _generate_skeleton_reexport_script
+        # before any of the keys below are used.
+        "import": (
+            "from visualize_skeleton import (export_individuals_from_html, "
+            "export_video_from_html, reexport_output_dir)"
+        ),
+        "class": None,
+        "var": None,
+        "init_method": None,
+        "methods": {"reexport": ""},
+    },
     "plot_path": {
         "label": "Path Network Visualization",
         "import": "from vispath_pkg import VisualizePath",
@@ -583,6 +598,9 @@ class ScriptRunner:
             return self._generate_flylight_script(constructor_params, method_params)
         elif tool_name == "plot3d_skeleton":
             return self._generate_plot3d_script(constructor_params, method_params)
+        elif tool_name == "plot3d_reexport":
+            return self._generate_skeleton_reexport_script(
+                constructor_params, method_params)
 
         # Standard script generation
         if tool_name == "plot_path":
@@ -666,6 +684,12 @@ print("[DROCAT] Done.")
         total_steps = 3 + int(export_individuals) + int(export_video)
         # _format_params already comma-terminates its last line.
         params_str += f"\n    progress_total={total_steps},"
+        # The exported HTML viewers pin their scene axes so legend show/hide
+        # cannot rescale the 3D framing; the Skeleton tab sends the switch
+        # value, and every other caller keeps the VisualizeSkeleton default
+        # (True) spelled out here.
+        if "freeze_view" not in constructor_params:
+            params_str += f"\n    freeze_view={_format_value(True)},"
 
         extra_calls = ""
         if export_individuals:
@@ -677,6 +701,7 @@ vs.plot_individuals(
     pdf_images_per_page={_format_value(mp.get('pdf_images_per_page', (3, 2)))},
     views={_format_value(mp.get('views', ['front']))},
     summary_format={_format_value(mp.get('summary_format', ['pdf']))},
+    granularity={_format_value(mp.get('granularity', 'legend'))},
 )
 """
         if export_video:
@@ -716,6 +741,90 @@ vs.plot_neurons()
 print("[DROCAT] Done.")
 '''
         return script
+
+    def _generate_skeleton_reexport_script(
+        self, constructor_params: dict, method_params: Optional[dict]
+    ) -> str:
+        """Generate the script that re-exports from an already-stored page.
+
+        No tool class is constructed: the two module-level re-exporters read
+        the figure back out of the page, so the run needs no dataset, cache or
+        client. Artifacts land beside the source page in its own
+        ``<stem>_reexport/`` folder — announced through the standard output
+        marker — and one ``[DROCAT][progress]`` line is emitted per enabled
+        phase so the panel's step bar matches the work actually done.
+        """
+        mp = method_params or {}
+        export_profiles = bool(mp.get("export_individual_profiles"))
+        export_video = bool(mp.get("export_video"))
+        total_steps = int(export_profiles) + int(export_video)
+
+        calls = ""
+        step = 0
+        if export_profiles:
+            step += 1
+            calls += f'''print("[DROCAT][progress] {step}/{total_steps} Export individual profiles", flush=True)
+_profiles = export_individuals_from_html(
+    html_file,
+    output_dir=os.path.join(output_dir, "individual_profiles"),
+    granularity={_format_value(mp.get("granularity", "legend"))},
+    views={_format_value(mp.get("views", ["front"]))},
+    scale={_format_value(int(mp.get("export_scale", 3)))},
+    auto_crop={_format_value(bool(mp.get("auto_crop", True)))},
+)
+# The re-exporter reports failure in its result dict instead of raising, so a
+# failed phase has to set the exit code or the panel reads it as Completed.
+if not _profiles.get("success"):
+    print(f"[DROCAT] Profile export failed: {{_profiles.get('error')}}",
+          flush=True)
+    sys.exit(1)
+'''
+        if export_video:
+            step += 1
+            calls += f'''print("[DROCAT][progress] {step}/{total_steps} Export rotating video", flush=True)
+_video_rc = export_video_from_html(
+    html_file,
+    output_dir=output_dir,
+    fps={_format_value(int(mp.get("fps", 30)))},
+    degree_per_frame={_format_value(mp.get("degree_per_frame", 2.0))},
+    rotate={_format_value(mp.get("rotate", "horizontal"))},
+    export_gif={_format_value(bool(mp.get("export_gif", True)))},
+    gif_scale={_format_value(mp.get("gif_scale", 0.2))},
+    auto_crop={_format_value(bool(mp.get("auto_crop", True)))},
+    export_method={_format_value(mp.get("export_method", "webdriver"))},
+    scale={_format_value(int(mp.get("export_scale", 3)))},
+)
+if _video_rc:
+    sys.exit(_video_rc)
+'''
+
+        return f'''#!/usr/bin/env python
+"""Auto-generated DROCAT runner script for plot3d_reexport."""
+import os
+import sys
+import warnings
+
+sys.path.insert(0, r"{SRC_DIR}")
+sys.path.insert(0, r"{PROJECT_ROOT}")
+sys.path.insert(0, r"{VISPATH_DIR}")
+
+warnings.filterwarnings("ignore")
+
+from visualize_skeleton import (
+    export_individuals_from_html,
+    export_video_from_html,
+    reexport_output_dir,
+)
+
+# The stored page is the only input; a run folder or a page both resolve to
+# the canonical viewer HTML, and its manifest supplies the cameras.
+html_file = {_format_value(constructor_params.get("html_file"))}
+output_dir = reexport_output_dir(html_file)
+os.makedirs(output_dir, exist_ok=True)
+print(f"[DROCAT] Output will be saved to: {{output_dir}}", flush=True)
+{calls}
+print("[DROCAT] Done.")
+'''
 
     def _generate_inter_dataset_script(
         self, constructor_params: dict, method_params: Optional[dict]

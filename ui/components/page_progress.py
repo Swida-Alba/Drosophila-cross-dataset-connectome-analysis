@@ -115,6 +115,10 @@ TOOL_PROGRESS_STEPS: Dict[str, Sequence[str]] = {
         "Render and save the 3D scene",
         "Export individual profiles and video",
     ),
+    "plot3d_reexport": (
+        "Export individual profiles",
+        "Export rotating video",
+    ),
     "plot_path": (
         "Load and normalize path data",
         "Build the pathway graph",
@@ -240,6 +244,15 @@ def progress_steps_for(
             "Load synapses and meshes",
             "Render and save the 3D scene",
         ]
+        if context.get("export_individual_profiles"):
+            steps.append("Export individual profiles")
+        if context.get("export_video"):
+            steps.append("Export rotating video")
+        return steps
+    if tool_name == "plot3d_reexport":
+        # A re-export has no rendering phase at all: the two export phases
+        # are independent toggles, so the bar counts only the enabled ones.
+        steps = []
         if context.get("export_individual_profiles"):
             steps.append("Export individual profiles")
         if context.get("export_video"):

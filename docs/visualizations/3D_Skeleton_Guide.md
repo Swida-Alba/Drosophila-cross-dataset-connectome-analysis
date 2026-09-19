@@ -97,6 +97,7 @@ vs = VisualizeSkeleton(
     synapse_size=3,                     # Synapse marker size
     skeleton_mode='tube',               # 'tube' or 'line'
     legend_mode='layer',                # 'layer', 'type', 'tree', or 'single'
+    freeze_view=True,                   # Viewer pages keep their 3D framing on legend toggles
     expand_colors='interpolation',      # Color expansion: 'interpolation' or 'darken'
     show_fig=True
 )
@@ -168,6 +169,46 @@ export_video_from_html(
 )
 ```
 
+**Re-exporting a stored page:** reading a page back is supported and is how
+an old run is re-exported without re-fetching skeletons. Pass an existing page
+to `vs.export_video(html_file='/path/to/my_neurons.html')`, or use the
+standalone `export_video_from_html()` above. Both rebuild a
+`plotly.graph_objects.Figure` through `figure_from_plotly_html()`, which reads
+the trace data, layout and config out of the page's own `Plotly.newPlot(...)`
+call via `figure_payload_from_html()` — the pinned plotly 6.4 has no
+`plotly.io.read_html()`, so DROCAT parses the page itself (from the end of the
+file, because the embedded plotly.js bundle contains the same literal). Point at
+the run folder or the canonical `{saveas}.html`: a `{saveas}_simplified.html`
+copy is resolved back to the canonical page (`resolve_viewer_page`), and the
+profile re-exporter reads `visualization_manifest.json` for the cameras and
+trace roles the page itself does not carry.
+
+`export_video_from_html()` also takes `export_method`:
+
+```python
+# One Chrome session for the whole turn instead of one kaleido render per frame
+export_video_from_html('.../scene.html', export_method='webdriver', timeout=120)
+
+# Everything re-exported lands beside the page, in its own folder
+from visualize_skeleton import reexport_output_dir
+reexport_output_dir('.../scene.html')      # '.../scene_reexport'
+```
+
+With `export_method='webdriver'` the frames are rendered by
+`_render_video_frames_via_session`, which loads the page once into a single
+`WebDriverExportSession` and then only moves the camera (`_rotation_camera`,
+using the orbit radius the page itself baked and the handedness its manifest
+recorded, `+1` for MANC scenes via `_page_z_sign`), so a scene too large for
+kaleido can be re-exported at all; if no browser can be started it prints a
+warning and falls back to kaleido, rendering one frame per `write_image()` call.
+`background_color=None` composites the frames on the
+background the run recorded in its manifest (white when there is none), and
+`timeout` is the WebDriver page-load timeout (ignored by kaleido).
+`reexport_output_dir()` names the default destination for a re-export: the
+`<page stem>_reexport/` folder beside the source page, so the run itself is
+never rewritten and re-running the same settings reuses the frames already on
+disk.
+
 **Video Export Parameters:**
 
 | Parameter             | Default      | Description                                    |
@@ -177,11 +218,44 @@ export_video_from_html(
 | `rotate`              | 'horizontal' | Rotation direction: 'horizontal' or 'vertical' |
 | `scale`               | 2            | Resolution multiplier                          |
 | `use_existing_images` | True         | Reuse cached frame images if available         |
+| `export_method`       | class attribute / `'kaleido'` for `export_video_from_html()` | Frame engine: `'webdriver'` (one session) or `'kaleido'` |
+| `timeout`             | 120 (`export_video_from_html()` only) | WebDriver page-load timeout in seconds |
+| `background_color`    | run manifest, else `'white'` (`export_video_from_html()` / `export_individuals_from_html()`) | Background the webdriver frames are composited on |
 
 **Output Files:**
 - `{folder}/pics_{fps}fps_{plane}/` - Cached frame images
-- `{folder}/{name}_video_forward.mp4` - Forward rotation
-- `{folder}/{name}_video_backward.mp4` - Reverse rotation
+- `{folder}/{name}_video_{h|v}_forward.mp4` - Forward rotation
+- `{folder}/{name}_video_{h|v}_backward.mp4` - Reverse rotation
+- `{folder}/{name}_video_{h|v}_{forward|backward}.gif` - GIF copies, when `export_gif=True`
+
+### Re-export from the UI
+
+The Skeleton tab carries a **Re-export from a Stored Page** card below the
+render controls, for re-profiling or re-filming a run without touching the
+dataset again (`ui/components/skeleton_reexport.py`, run as the
+`plot3d_reexport` tool). The **Stored 3D Skeleton Page** picker lists the
+top-level viewer HTML of every `plot-3d_*` run folder under the configured
+output roots and recent runs (newest first, capped at 40 entries,
+`_simplified.html` copies never offered); **Refresh list** rescans. A run from
+before `visualization_manifest.json` existed still re-exports — its profiles are
+grouped from the page's own stamped identity, but its cameras then come from the
+built-in default view set rather than the run's own dataset.
+
+| Knob | Effect |
+| --- | --- |
+| **Re-export Profiles** | Renders one PNG per profile group into `<stem>_reexport/individual_profiles/`. |
+| **Re-export Granularity** | The same `granularity` the renderer offers (`legend` / `layer` / `type` / `body`); a page can only be split as finely as its own legend identity allows. |
+| **Re-export Views** | Camera views rendered per profile group. |
+| **Re-export Video** | Adds a full turn to `<stem>_reexport/`: `pics_{fps}fps_{plane}/`, `{stem}_video_{h\|v}_{forward\|backward}.mp4` and GIFs. Existing frames are reused when the settings match. |
+| **Video FPS / Degrees / Frame / Rotate / Also GIF / GIF Scale** | Frame rate, rotation step per frame, rotation plane, GIF conversion and GIF downscale — the same values `export_video_from_html()` takes. |
+| **Frame Method** | `webdriver` (default here) renders the whole turn in one Chrome session; `kaleido` renders frame by frame. A `webdriver` run that cannot start a browser falls back to kaleido by itself. |
+| **Frame Scale** | Resolution multiplier for the profile PNGs and the video frames. |
+| **Frame Auto-crop** | Trims the background off profiles and, for the video, applies one consistent crop across all frames. |
+
+**Re-export from Page** runs it as an ordinary subprocess, so the output panel,
+progress steps and log behave exactly as during a render. Nothing in the source
+run folder is modified: every artifact is written into the sibling
+`<stem>_reexport/` folder.
 
 ---
 
@@ -191,8 +265,8 @@ VisualizeSkeleton supports two export engines for PNG/video generation, each wit
 
 ### Method Comparison
 
-| Feature           | **Kaleido** (default)           | **WebDriver**                      |
-| ----------------- | ------------------------------- | ---------------------------------- |
+| Feature           | **Kaleido**                       | **WebDriver** (default)             |
+| ----------------- | --------------------------------- | ----------------------------------- |
 | **Speed**         | 🐢 Slower (one-by-one rendering) | ⚡ Fast (browser-based screenshot ) |
 | **Quality**       | ✅ Excellent                     | ✅ Excellent                        |
 | **Max HTML Size** | ~100 MB                         | ~200 MB+                           |
@@ -203,10 +277,16 @@ VisualizeSkeleton supports two export engines for PNG/video generation, each wit
 
 ### When to Use Each Method
 
-**Use `export_method='kaleido'` (default) when:**
+`VisualizeSkeleton.export_method` defaults to `'webdriver'` (the UI agrees), and
+an export that cannot start a browser falls back to kaleido automatically. The
+standalone `export_video_from_html()` re-exporter is the exception: it defaults
+to `'kaleido'` and only uses the browser when asked (see
+[Re-export from the UI](#re-export-from-the-ui)).
+
+**Use `export_method='kaleido'` when:**
 - HTML file size < 100 MB
 - You want minimal dependencies
-- Fast export is priority
+- Chrome or Selenium is unavailable
 - Simple 3D scenes without complex WebGL
 
 **Use `export_method='webdriver'` when:**
@@ -309,6 +389,27 @@ For a cross-dataset overlay, such as a homolog search's
 and comparison, not as a replacement display label. Thus an MCNS `SMP227`
 query whose mapped `flywireType` is `CB1449,CB2843` remains labeled `SMP227`
 in the target FAFB scene.
+
+### Freeze view / autoscale
+
+`freeze_view=True` (the default) keeps the viewer's 3D framing constant when
+traces are shown or hidden. Plotly autoranges the three scene axes over the
+*visible* traces on every redraw, so toggling a native legend row or a
+tree-panel eye moved the axes, not the camera. The permanent pages
+(`{saveas}.html` and its `{saveas}_simplified.html` copy) therefore pin the
+axes to the padded extents of **every** trace — hidden layers included, each
+axis padded by 1/32 of its span, which is Plotly's own 3D autorange margin —
+so a toggle only changes what is drawn.
+
+- **Freeze/Fit button** in the page's top-left corner, or the **`F`** key,
+  switches between the frozen framing and Plotly's autoscaling; double-clicking
+  the scene (Plotly's reset gesture) re-applies the freeze.
+- The pin is injected page JavaScript only. It exits early under
+  `navigator.webdriver`, so PNG / video / individual-profile exports still
+  autoscale, and the frozen page's own camera presets keep working.
+- Because Plotly's own autorange sees only the visible traces, a scene with a
+  far-away hidden layer (a VNC layer inside a brain view) now opens slightly
+  wider than before. Set `freeze_view=False` to restore the old framing exactly.
 
 ### Per-Neuron Colors via CSV
 
@@ -947,6 +1048,53 @@ plot_navis_3d(
     rotation_axis='z'     # Rotate around z-axis
 )
 ```
+
+#### Individual Profiles
+
+`vs.plot_individuals(...)` renders every group on its own (all other
+morphology traces hidden) into `individual_profiles/`, plus the PDF/PPTX grid
+in the run folder. `granularity` picks how finely the scene is cut up:
+
+| Granularity | One profile per                              | Notes                                                    |
+| ----------- | -------------------------------------------- | -------------------------------------------------------- |
+| `'legend'`  | Native legend entry (`legendgroup`)          | Default; the historical behaviour                        |
+| `'layer'`   | Visualization layer / custom group           | Coarsest level; one row per `neuron_layers` entry        |
+| `'type'`    | Neuron type                                  | Matches the tree legend's type level                     |
+| `'body'`    | bodyId leaf                                  | The same rows the `legend_mode='tree'` panel exposes     |
+
+At the `'layer'` level, two layers whose smart names collide are split by
+their stamped `layer_index` into `{name}__L{index}` profiles rather than
+merging; traces without the stamp (pre-stamp pages) stay under the plain
+name.
+
+The levels read the identity the renderer stamps on every trace
+(`meta.drocatTrace`), so they work in any `legend_mode`. Companion soma meshes
+and pre/post connector sites follow their owner's profile; brain/VNC/ROI
+meshes, synapse markers and the legend-only swatches stay background in every
+profile. The accepted values are the module constant `PROFILE_GRANULARITIES`
+(`('legend', 'layer', 'type', 'body')`); anything else raises, and a trace the
+classifier cannot place is reported in the run log instead of disappearing.
+
+```python
+vs.plot_individuals(output_format=['png', 'html'], granularity='body')
+```
+
+`views` takes the canonical camera names (`front` / `back` / `top` / `bottom` /
+`left` / `right`) — the same list both UI dropdowns offer — plus `all` for every
+view the scene's own camera table offers. A view name the camera table does not
+carry is reported instead of being rendered from the page's current framing.
+
+Every profile is one full-scene render, so the job is capped at
+`MAX_INDIVIDUAL_PROFILES` (300) renders — profile groups × views. A scene over
+budget renders the groups that fit and logs which ones were skipped rather than
+grinding away for hours; to get the rest, separate the plots into smaller runs
+(fewer neurons or layers per render), drop to a coarser `granularity`, or
+request fewer views. The same cap covers `export_individuals_from_html()`.
+
+The same page can be re-profiled later at another level, without re-running the
+fetches: `export_individuals_from_html(page, granularity='body')` reads the
+stored page back, classifies its traces and renders the PNGs through one
+WebDriver session — see [Re-export from the UI](#re-export-from-the-ui).
 
 ### 8. Performance Options
 

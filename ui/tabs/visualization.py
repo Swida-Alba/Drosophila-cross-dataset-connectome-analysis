@@ -15,6 +15,7 @@ from ..config import (
     SKELETON_MODES,
     BRAIN_MESH_OPTIONS,
     NETWORK_LAYOUTS,
+    PROFILE_GRANULARITY_CHOICES,
     SEARCH_COLUMNS,
     SYNAPSE_SIZE_OPTIONS,
     SYNAPSE_MODE_OPTIONS,
@@ -36,6 +37,8 @@ from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner
 from ..components.layer_tree_editor import layer_tree_editor
 from ..components.layer_style_editor import layer_style_editor
+from ..components.skeleton_reexport import (
+    PROFILE_VIEWS, create_skeleton_reexport)
 from ..components.palette_picker import (
     palette_picker,
     palette_editor,
@@ -453,7 +456,9 @@ def create_skeleton_tab():
                              "'type': per neuron type. 'tree': per type with an "
                              "expandable type -> neuron panel in the exported HTML. "
                              "'single': every neuron. "
-                             "ROI meshes always remain separate.",
+                             "This only sets the LEGEND levels; the individual-profile "
+                             "levels are chosen by Profile Granularity in the export "
+                             "block. ROI meshes always remain separate.",
                     )
                     bg_color = select_input(
                         "Background", ["white", "black"], get_user_default("background"),
@@ -823,7 +828,8 @@ def create_skeleton_tab():
                     with ui.row().classes("gap-4"):
                         export_individual_profiles = checkbox_input(
                             "Export Individual Profiles", False,
-                            hint="After rendering, generate a PDF/PPTX with per-neuron profile plots.",
+                            hint="After rendering, generate a PDF/PPTX with one "
+                                 "profile plot per group (see Profile Granularity).",
                         )
                         summary_format = multi_select_input(
                             "Summary Format", ["pdf", "pptx"], ["pdf"],
@@ -833,13 +839,26 @@ def create_skeleton_tab():
                         profile_cols = number_input("Images Per Page (cols)", 3, 1, 6)
                         profile_rows = number_input("Images Per Page (rows)", 2, 1, 6)
                         profile_views = multi_select_input(
-                            "Profile Views", ["front", "side", "top", "back", "bottom"], ["front"],
+                            "Profile Views", PROFILE_VIEWS, ["front"],
                             hint="Camera views included in each individual profile.",
                         )
+                        profile_granularity = select_input(
+                            "Profile Granularity", PROFILE_GRANULARITY_CHOICES,
+                            get_user_default("profile_granularity"),
+                            hint="How far the tree is walked to form one profile group. "
+                                 "'Per legend entry' keeps the historical behaviour; the "
+                                 "other levels group independently of the Neuron Legend "
+                                 "Mode. 'Per bodyId' produces one profile per neuron "
+                                 "leaf, which can be many files: past 300 renders "
+                                 "(groups x views) only the first ones are exported.",
+                        )
                     ui.label(
-                        "Each individual profile follows the Neuron Legend Mode: "
+                        "Each individual profile follows the Neuron Legend Mode only "
+                        "while Profile Granularity is 'Per legend entry': then "
                         "'single' = one profile per neuron, 'type' = one profile per type "
-                        "(all layers combined), 'layer' = one profile per layer / custom group."
+                        "(all layers combined), 'layer' = one profile per layer / custom group. "
+                        "The other granularities ('Per layer', 'Per neuron type', "
+                        "'Per bodyId') group by that tree level whatever the legend mode is."
                     ).classes("text-caption drocat-muted")
 
             # ------------------------------------------------------------------
@@ -933,6 +952,18 @@ def create_skeleton_tab():
                         export_views = checkbox_input(
                             "Export Views", get_user_default("export_views"),
                             hint="Export PNG screenshots from 6 angles.",
+                        )
+                        # HTML-viewer knob (the viewer itself is always the
+                        # interactive HTML the figure opens as): pinned axes
+                        # keep the scene framed while traces are toggled.
+                        freeze_view = checkbox_input(
+                            "Freeze 3D view when toggling the legend",
+                            get_user_default("freeze_view"),
+                            hint="Pin the exported HTML viewer's scene axes so "
+                                 "showing or hiding traces in the legend cannot "
+                                 "rescale the scene. A Freeze/Fit button in the "
+                                 "page's top-left corner (also the 'F' key) "
+                                 "restores Plotly's autoscaling.",
                         )
 
         def _sync_simplification_controls():
@@ -1051,6 +1082,11 @@ def create_skeleton_tab():
 
     with results_col:
         skeleton_output.create(run_label="Generate 3D Skeleton", run_icon="view_in_ar")
+
+    # The re-export controls ride along at the bottom of the same form column
+    # because the pages they offer are exactly the ones this tab produced; its
+    # own output panel lands under the render panel in the results column.
+    create_skeleton_reexport(form_col, results_col)
 
     async def run_panel(
         output_panel,
@@ -1240,6 +1276,7 @@ def create_skeleton_tab():
             "brain_mesh": brain_mesh.value,
             "vnc_mesh": vnc_mesh.value,
             "legend_mode": legend_mode.value,
+            "freeze_view": bool(freeze_view.value),
             "neuron_alpha": float(neuron_alpha.value),
             "neuron_colors": neuron_colors,
             "synapse_colors": synapse_colors,
@@ -1278,6 +1315,7 @@ def create_skeleton_tab():
             ),
             "views": profile_views.value or ["front"],
             "summary_format": summary_format.value or ["pdf"],
+            "granularity": profile_granularity.value,
             "export_video": export_video.value,
             "fps": int(fps.value),
             "degree_per_frame": float(degree_per_frame.value),

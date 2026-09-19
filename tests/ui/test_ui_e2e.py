@@ -34,6 +34,10 @@ class TestConfig:
         from ui.config import DEFAULTS
         assert DEFAULTS["min_synapse_num"] == 3
         assert DEFAULTS["max_interlayer"] == 2
+        # Skeleton viewer knobs keep the backend's own defaults: the exported
+        # HTML pins its 3D axes and individual profiles follow legend entries.
+        assert DEFAULTS["freeze_view"] is True
+        assert DEFAULTS["profile_granularity"] == "legend"
 
     def test_config_paths(self):
         from ui.config import PROJECT_ROOT, SCRIPTS_DIR, SRC_DIR
@@ -494,8 +498,44 @@ class TestRunner:
         assert "vs.plot_neurons()" in script
         assert "vs.plot_individuals(" in script
         assert "vs.export_video(" in script
+        # The viewer pin and the profile grouping are always spelled out so
+        # the generated script states the framing/grouping it relies on.
+        assert "freeze_view=" in script
+        assert "granularity=" in script
         # Optional export keys must not leak into the VisualizeSkeleton constructor
         assert "export_individual_profiles" not in script.split("VisualizeSkeleton(")[1].split(")")[0]
+
+    def test_generate_plot3d_script_threads_freeze_view_and_granularity(self):
+        """freeze_view reaches the VisualizeSkeleton constructor and the
+        chosen profile granularity reaches plot_individuals; the tab's values
+        win over the generated-script defaults and are emitted once."""
+        from ui.runner import ScriptRunner
+        sr = ScriptRunner()
+        script = sr._generate_script(
+            "plot3d_skeleton",
+            {
+                "dataset": "male-cns:v0.9",
+                "neuron_layers": ["aMe12"],
+                "legend_mode": "tree",
+                "freeze_view": False,
+            },
+            "plot",
+            {
+                "export_individual_profiles": True,
+                "pdf_images_per_page": (3, 2),
+                "views": ["front"],
+                "summary_format": ["pdf"],
+                "granularity": "body",
+            },
+        )
+        constructor = script.split("VisualizeSkeleton(")[1].split(")")[0]
+        assert "freeze_view=False" in constructor
+        assert script.count("freeze_view=") == 1, "the pin must appear exactly once"
+        profiles = script.split("vs.plot_individuals(")[1].split("\n)")[0]
+        assert "granularity='body'" in profiles
+        assert "granularity" not in constructor
+        # The emitted call must stay valid Python (no duplicated keywords).
+        compile(script, "generated_plot3d_skeleton.py", "exec")
 
     def test_homologs_ui_params_match_signature(self):
         """Regression: the UI used to send expand_untyped_2hop, which does not exist."""
@@ -3251,6 +3291,55 @@ class TestDatasetService:
         listed = service.get_local_datasets()
         assert listed[0].local_prepared is True
         assert listed[0].available is True
+
+    def test_local_dataset_listing_ignores_metadata_only_folders(self, tmp_path):
+        """F9: ``datasets/<name>/`` must hold real tables to be listed.
+
+        A failed cross-dataset metadata collection used to persist an error
+        sidecar into an otherwise empty folder; combined with the bundled
+        neuron-index seed the chip rendered it as a half-installed local
+        dataset ("metadata: partial").  A metadata-only folder — and an empty
+        one — is not data.
+        """
+        import json
+        from ui.dataset_service import DatasetService
+
+        service = DatasetService()
+        service._datasets_dir = tmp_path / "datasets"
+        service._cache_dir = tmp_path / "cache"
+        service._index_dir = tmp_path / "neuron_indexes"
+
+        error_only = service._datasets_dir / "hemibrain_v1_2_1"
+        error_only.mkdir(parents=True)
+        (error_only / "hemibrain_v1_2_1_metadata.json").write_text(
+            json.dumps({
+                "dataset": "hemibrain:v1.2.1",
+                "source": "error",
+                "error": "No NeuPrint token configured",
+                "neuron_counts": {"total": 0, "typed": 0},
+            }),
+            encoding="utf-8",
+        )
+        # The bundled seed index that used to make the chip read "partial".
+        seed = service._index_dir / "hemibrain_v1_2_1"
+        seed.mkdir(parents=True)
+        (seed / "neuron_index.parquet").touch()
+        assert service.probe_metadata("hemibrain:v1.2.1") == "partial"
+        (service._datasets_dir / "half_written_download").mkdir()
+
+        assert service.get_local_datasets() == []
+
+        real = service._datasets_dir / "manc_v1_0"
+        real.mkdir(parents=True)
+        (real / "manc_v1_0_allneurons_neuron_df.parquet").touch()
+        (real / "manc_v1_0_metadata.json").write_text(
+            json.dumps({"source": "neuprint",
+                        "neuron_counts": {"total": 3}}),
+            encoding="utf-8",
+        )
+        listed = service.get_local_datasets()
+        assert [info.name for info in listed] == ["manc:v1.0"]
+        assert listed[0].metadata["neuron_counts"]["total"] == 3
 
     def test_flywire_prepared_requires_neurons_and_connections(self, tmp_path):
         from ui.dataset_service import DatasetService

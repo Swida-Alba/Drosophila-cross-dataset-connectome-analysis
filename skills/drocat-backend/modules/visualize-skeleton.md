@@ -21,7 +21,8 @@ vs = VisualizeSkeleton(
     skeleton_mode="line",               # "line" | "tube" (start with line)
     brain_mesh="native",                # "native" | "BANC" | "FAFB" | "male-cns" | "none" ("template" is a legacy alias for "native")
     vnc_mesh=None,
-    legend_mode="layer",                # "single" | "type" | "layer"
+    legend_mode="layer",                # "single" | "type" | "tree" | "layer"
+    freeze_view=True,                   # viewer pages pin the 3D framing on legend toggles
     neuron_alpha=1.0,
     neuron_colors=["#1f77b4", "#ff7f0e", "#2ca02c"],
     synapse_colors=["#50E3C2"],
@@ -55,8 +56,9 @@ vs = VisualizeSkeleton(
 | Method | Purpose |
 | --- | --- |
 | `plot_neurons()` | Build the interactive HTML (main entry). |
-| `plot_individuals(pdf_images_per_page=(3,2), views=["front"], summary_format=["pdf"])` | Per-neuron PDF/PPTX profile export. |
-| `export_video(fps=30, degree_per_frame=1.0, rotate="horizontal", export_gif=True, gif_scale=0.2, ...)` | Rotating video/GIF export. |
+| `plot_individuals(pdf_images_per_page=(3,2), views=["front"], summary_format=["pdf"], granularity="legend", neuron_alpha=None)` | Profile export, one profile per `granularity` level: `"legend"` \| `"layer"` \| `"type"` \| `"body"` (bodyId leaf). Companion soma meshes and pre/post sites follow their owner; meshes, synapse markers and legend swatches are background. `views` are the lowercase camera names (`front` / `back` / `top` / `bottom` / `left` / `right`; `all` expands to the scene's table); capped at `MAX_INDIVIDUAL_PROFILES` (300) renders = groups × views, over which it renders the leading groups that fit and logs the skipped ones. |
+| `export_video(fps=30, degree_per_frame=1.0, rotate="horizontal", export_gif=True, gif_scale=0.2, html_file=None, ...)` | Rotating video/GIF export; `html_file` re-exports a stored page. |
+| `visualization_manifest()` / `write_visualization_manifest()` | Describe the scene for later re-export (`visualization_manifest.json` in the run folder: `canonical_page`, `degraded_pages`, `legend_mode`, `freeze_view`, `frozen_ranges`, render settings, `views` cameras, per-trace role table). |
 | `list_available_rois(refresh=False, fetch_online=True)` | List available ROI meshes for the dataset. |
 
 ```python
@@ -66,8 +68,64 @@ vs = VisualizeSkeleton(dataset="male-cns:v0.9", neuron_layers=[["aMe12", "aMe10"
 vs.plot_neurons()
 # optional, after the base HTML succeeds:
 vs.plot_individuals(pdf_images_per_page=(3, 2), views=["front"], summary_format=["pdf"])
+vs.plot_individuals(granularity="body")   # one profile per bodyId leaf
 vs.export_video(fps=30, export_gif=True, gif_scale=0.2)
+vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export a stored page
 ```
+
+## Supporting functions
+
+- `figure_payload_from_html(html_path)` — read `(data, layout, config)` back out
+  of an exported page. plotly 6.4 has no `plotly.io.read_html`, so DROCAT parses
+  the page's own `Plotly.newPlot(...)` call, scanning from the end of the file
+  because the embedded plotly.js bundle contains the same literal.
+- `figure_from_plotly_html(html_path)` — rebuild a `go.Figure` from a stored
+  page (used by both `export_video(html_file=...)` and
+  `export_video_from_html(...)`).
+- `classify_traces(traces, mesh_roi_names=())` — resolve each trace's role
+  (`neuron` / `companion` / `site` / `synapse` / `mesh` / `legend_swatch`) and
+  legend identity, `meta.drocatTrace` first (written by `_stamp_trace_identity`
+  / `_stamp_site_identity`, with `meta.drocatLegend` as the tree-legend tag),
+  then structural signals, then names. Never decide a trace's role from its
+  name alone: a neuron type can contain an ROI acronym (`LHPD1L` vs `LH`).
+- `PROFILE_GRANULARITIES` — `('legend', 'layer', 'type', 'body')`, the levels
+  `plot_individuals(granularity=...)` accepts (anything else raises). `layer` /
+  `type` / `body` read the stamped identity, so they work in any `legend_mode`.
+- `read_visualization_manifest(path)` — the run's `visualization_manifest.json`
+  as a dict, or `{}` for a run written before the manifest existed (page, folder
+  or manifest path all accepted).
+- `resolve_viewer_page(path)` — the canonical viewer page of a run folder or
+  page; a `_simplified.html` copy is resolved back to the canonical page
+  (`visualization_manifest.json` → `canonical_page`, else the first
+  non-`_simplified`, non-`_`-prefixed HTML in the folder sorted by name), and
+  raises rather than silently re-exporting degraded geometry when none exists.
+- `profile_plan_from_html(html_path, granularity='legend')` —
+  `(entries, roles)` for a stored page: the same `classify_traces` +
+  `VisualizeSkeleton._build_profile_plan` pair the live renderer uses, so a
+  re-export offers exactly the levels that run would have produced.
+- `export_individuals_from_html(html_path, output_dir=None, granularity='legend',
+  views=None, scale=2, auto_crop=True, crop_margin=30, background_color=None,
+  timeout=60)` — re-export a stored page's profiles with no dataset access:
+  reads the page, classifies it, and renders one PNG per profile group through
+  one `export_individuals_webdriver` session (cameras from the manifest's
+  `views`, else `dataset_view_cameras(dataset, brain_mesh)`). Returns that
+  helper's `{success, files, failed, error}` dict; PNGs only, no PDF/PPTX
+  summary (those are built by `plot_individuals`).
+- `export_video_from_html(html_file, fps=30, degree_per_frame=1.0,
+  rotate='horizontal', export_gif=True, gif_scale=0.2, auto_crop=False,
+  export_method='kaleido', timeout=120, background_color=None, scale=2)` —
+  rotating mp4/gif from a stored page. `export_method='webdriver'` renders every
+  frame through a single `WebDriverExportSession`
+  (`_render_video_frames_via_session`, one page load plus `_rotation_camera`
+  per frame, orbit handedness from `_page_z_sign`) and falls back to kaleido
+  when no browser can be started; `background_color=None` takes the value the
+  run recorded. Writes `pics_{fps}fps_{plane}/`,
+  `{stem}_video_{h|v}_{forward|backward}.mp4` and the matching GIFs.
+- `reexport_output_dir(path)` — the default destination for everything
+  re-exported from a page: `<page stem>_reexport/` beside it, so the source run
+  is never rewritten and a second run with the same settings reuses the frames
+  already on disk. The UI's re-export card runs these helpers as the
+  `plot3d_reexport` tool (`ui/runner.py`).
 
 ## Notes
 
@@ -94,6 +152,17 @@ vs.export_video(fps=30, export_gif=True, gif_scale=0.2)
   changing transforms.
 - `export_method="webdriver"` needs Chrome + WebDriver (Kaleido is the slower
   fallback). Use `skeleton_mode="line"` and no exports for a first smoke test.
+- `legend_mode="tree"` renders like `"type"` for static exports and adds the
+  collapsible group/type/bodyId panel to the permanent HTML pages only; counts
+  are unique neuron items, not Plotly traces.
+- `freeze_view=True` pins the permanent viewer pages' scene axes to the padded
+  extents of every trace (hidden ones included, span/32 per axis) so legend and
+  tree toggles cannot rescale the scene; a Freeze/Fit button and the `F` key
+  hand autoscaling back. The pin is injected page JS that exits early under
+  `navigator.webdriver`, so PNG/video/profile exports are unaffected. Because
+  Plotly itself autoranges over visible traces only, a scene with a far-away
+  hidden layer opens slightly wider than before — `freeze_view=False` restores
+  the old framing exactly.
 - `synapse_size` accepts `"real"` or a numeric value; uniform sizing uses the
   `uniform_synapse_size` bool. Invalid/empty values fall back to `"real"`.
 - `cache_neurons`/`cache_synapses` persist raw skeletons/synapses, reused by the

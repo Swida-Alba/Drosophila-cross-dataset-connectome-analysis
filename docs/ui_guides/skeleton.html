@@ -169,6 +169,23 @@
           The panel also shows the
           double-click interval: a second click on the same row under 300 ms
           isolates that row; repeat the double-click to restore all rows.</li>
+        <li><b>Freeze 3D view when toggling the legend</b> (checkbox in
+          <b>Advanced</b> → Export, on by default): Plotly re-autoranges the
+          three scene axes over the <i>visible</i> traces on every redraw, so
+          hiding a legend row or a tree-panel eye moved the framing instead of
+          just the drawn traces. When checked, the exported viewer HTML (and its
+          <code>_simplified.html</code> copy) pins its axes on first render to
+          the extents of <b>every</b> trace — hidden layers included, each axis
+          padded by 1/32 of its span, which is Plotly's own 3D margin — so a
+          toggle only changes what is drawn. A 🔒/⛶ <b>Freeze/Fit</b> button in
+          the page's top-left corner (or the <code>F</code> key) switches the
+          autoscaling back on, and double-clicking the scene re-applies the
+          freeze. The pin is injected page script that exits early under
+          <code>navigator.webdriver</code>, so view PNGs, individual profiles
+          and video frames still autoscale exactly as before. Because Plotly
+          itself sees only the visible traces, a scene with a far-away hidden
+          layer (a VNC layer in a brain view) now opens slightly wider; untick
+          the box to restore the old framing bit for bit.</li>
         <li><b>Background</b>: white or black. The default neuron palette
           follows it — <b>Category10</b> on white, <b>Set3</b> on black —
           until you pick a palette manually.</li>
@@ -295,10 +312,77 @@
     <li><b>Export Method</b>: webdriver (fast, needs Chrome 109+) or kaleido
       (stable fallback). <b>Export Scale</b> and <b>Export Views</b>.</li>
     <li><b>Individual Profiles</b>: PDF/PPTX per neuron, with images per page
-      and camera views.</li>
+      and camera views. <b>Profile Granularity</b> decides how far the legend
+      tree is walked to form one profile group: <i>Per legend entry</i>
+      (<code>legend</code>, the default and the historical behaviour) follows
+      the <b>Neuron Legend Mode</b>; <i>Per layer</i> (<code>layer</code>),
+      <i>Per neuron type</i> (<code>type</code>) and <i>Per bodyId</i>
+      (<code>body</code>) group by that tree level whatever the legend mode is,
+      because they read the identity every trace carries (<code>body</code>
+      gives one profile per neuron leaf, so it can be many files). Companion
+      soma meshes and pre/post sites always follow their owner's profile.</li>
     <li><b>Rotating Video / GIF</b>: fps, degrees per frame, rotation axis,
       GIF scale.</li>
   </ul>
+
+  <h2 id="reexport">Re-export from a stored page</h2>
+  <p>The card at the bottom of the form re-renders the outputs of a page that is
+    already on disk — no dataset query, no skeleton cache, no original script.
+    It reads the figure back out of the page's own <code>Plotly.newPlot(...)</code>
+    payload and, when the run wrote one, takes its cameras and background from
+    <code>visualization_manifest.json</code>. Pick a page from <b>Stored 3D
+    Skeleton Page</b> (the viewer HTML of every <code>plot-3d_*</code> run folder
+    under the configured output directories and your recent runs, newest first;
+    the degraded <code>_simplified.html</code> copies are never offered), set
+    the knobs below, and press <b>Re-export from Page</b>. It runs as an ordinary
+    background job, so the progress steps, log and file list behave like a normal
+    render; internally that job is the <code>plot3d_reexport</code> tool, whose
+    two re-exporters are documented in the 3D Skeleton guide.</p>
+  <table>
+    <tr><th>Control</th><th>Effect</th></tr>
+    <tr><td><b>Re-export Profiles</b></td><td>One PNG per profile group into
+      <code>&lt;page stem&gt;_reexport/individual_profiles/</code>. Capped at
+      300 renders per run (groups × views): the groups that fit render first
+      and the log names the skipped ones.</td></tr>
+    <tr><td><b>Re-export Granularity</b></td><td>The same levels as
+      <b>Profile Granularity</b> above (<code>legend</code> / <code>layer</code>
+      / <code>type</code> / <code>body</code>). A page can only be split as
+      finely as its own legend identity allows — a page rendered in
+      <i>layer</i> legend mode has no finer types to separate.</td></tr>
+    <tr><td><b>Re-export Views</b></td><td>Camera views rendered for each
+      profile group.</td></tr>
+    <tr><td><b>Re-export Video</b></td><td>Adds a full turn: frames in
+      <code>&lt;stem&gt;_reexport/pics_&lt;fps&gt;fps_&lt;plane&gt;/</code>,
+      then forward and backward MP4s (plus GIFs). Frames already on disk are
+      reused when the settings match.</td></tr>
+    <tr><td><b>Video FPS / Degrees / Frame / Rotate / Also GIF / GIF Scale</b>
+      </td><td>Frame rate, rotation step per frame (2° = 180 frames per turn),
+      horizontal vs vertical orbit, GIF conversion and GIF downscale.</td></tr>
+    <tr><td><b>Frame Method</b></td><td><code>webdriver</code> (default) loads
+      the page once in one Chrome session and only moves the camera per frame —
+      also the only engine that handles a scene too large for kaleido;
+      <code>kaleido</code> renders frame by frame. If no browser can be started
+      it warns and falls back to kaleido on its own.</td></tr>
+    <tr><td><b>Frame Scale</b></td><td>Resolution multiplier for the profile
+      PNGs and the video frames.</td></tr>
+    <tr><td><b>Frame Auto-crop</b></td><td>Trims the background off profiles,
+      and applies one consistent crop across all video frames so the video does
+      not jitter.</td></tr>
+  </table>
+  <p>With a manifest, the video's horizontal orbit inherits the run's own
+    handedness (a MANC scene turns the other way), and the profile cameras are
+    the ones the run used. A page from <b>before</b>
+    <code>visualization_manifest.json</code> still re-exports — its profiles are
+    grouped from the identity stamped on its own traces — but its cameras then
+    come from the built-in default view set, and the orbit keeps the historical
+    handedness.</p>
+  <div class="callout info">
+    <b>Nothing in the source run is touched.</b> Every re-exported file is
+    written next to the chosen page in its own
+    <code>&lt;page stem&gt;_reexport/</code> folder, so re-running the same
+    settings with the same knobs reuses the frames already rendered instead of
+    recomputing them.
+  </div>
 
   <h2>Output</h2>
   <p>One timestamped folder per run, named after the dataset abbreviation
@@ -311,14 +395,24 @@
     viz_layer_info.csv                  - reusable input layer assignments and
                                           readable colors; only the active
                                           synapse color family is populated
+    visualization_manifest.json         - what the scene means (dataset, view
+                                          cameras, legend mode, freeze ranges,
+                                          per-trace roles), so the page can be
+                                          re-exported later without its source
     parameters.txt                      - exact parameters of the run
     user_warning_notes.txt              - notes/warnings of the run</code></pre>
   <p class="small">With <b>Export Views</b> on, PNG screenshots
-    (<code>{view}_{name}.png</code>) are written into the same folder; the
-    rotating <b>Export Video</b> adds videos/GIFs. In pre-post site mode the
+    (<code>{name}_{view}.png</code> in <code>exported_views/</code>) are written
+    into the run folder; the
+    rotating <b>Export Video</b> adds videos/GIFs plus their
+    <code>pics_&lt;fps&gt;fps_&lt;plane&gt;/</code> frames, and <b>Individual
+    Profiles</b> adds <code>individual_profiles/</code> plus its PDF/PPTX
+    summary. In pre-post site mode the
     merged synapse export (and the in-page banner, plus the
     <code>user_warning_notes.txt</code> entry) describes the per-site rows
-    rather than paired inter-layer synapses.</p>
+    rather than paired inter-layer synapses. A
+    <a href="#reexport">re-export</a> never writes here: its results go into a
+    sibling <code>&lt;page stem&gt;_reexport/</code> folder.</p>
 
   <div class="callout warn">
     <b>3D export needs Chrome</b> when Export Method = webdriver and

@@ -325,16 +325,16 @@ class TestWarningBanners:
         page = tmp_path / 'page.html'
         page.write_text('<html><body><div>plot</div></body></html>')
         vis._inject_page_extras(str(page))
-        content = page.read_text()
+        content = page.read_text(encoding='utf-8')
         assert 'drocat-in-page-warning' in content
         # second injection must be a no-op
         vis._inject_page_extras(str(page))
-        assert content == page.read_text()
+        assert content == page.read_text(encoding='utf-8')
         # no body tag -> untouched; missing file -> untouched
         page2 = tmp_path / 'nobody.html'
         page2.write_text('<html></html>')
         vis._inject_page_extras(str(page2))
-        assert page2.read_text() == '<html></html>'
+        assert page2.read_text(encoding='utf-8') == '<html></html>'
         vis._inject_page_extras(str(tmp_path / 'absent.html'))
 
     def test_layer_sampling_warning_html(self):
@@ -361,12 +361,12 @@ class TestWarningBanners:
         page = tmp_path / 'page.html'
         page.write_text('<html><body><div>plot</div></body></html>')
         vis._inject_page_extras(str(page))
-        content = page.read_text()
+        content = page.read_text(encoding='utf-8')
         assert 'drocat-in-page-warning' in content
         assert 'Truncated type layers.' in content
         # second injection must be a no-op
         vis._inject_page_extras(str(page))
-        assert content == page.read_text()
+        assert content == page.read_text(encoding='utf-8')
 
     def test_write_plotly_html(self, tmp_path):
         vis = make_vis(skeleton_mode='line', save_folder=str(tmp_path))
@@ -390,18 +390,18 @@ class TestWarningBanners:
         with open(big, 'wb') as handle:
             handle.truncate(51 * 1024 * 1024)  # sparse 51 MB file
         assert vis._record_large_html_warning(str(big)) is True
-        note = (tmp_path / 'user_warning_notes.txt').read_text()
+        note = (tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
         assert 'render warning' in note and 'big.html' in note
         # duplicate marker is not appended twice
         assert vis._record_large_html_warning(str(big)) is True
-        assert note == (tmp_path / 'user_warning_notes.txt').read_text()
+        assert note == (tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
 
     def test_write_user_warning_notes(self, tmp_path):
         vis = make_vis(save_folder=str(tmp_path), skeleton_mode='tube',
                        skeleton_mesh_simplification=0.99,
                        neuprint_skeleton_pipeline='fine_opt')
         vis._write_user_warning_notes()
-        text = (tmp_path / 'user_warning_notes.txt').read_text()
+        text = (tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
         assert 'skeleton_mesh_simplification=0.99' in text
         assert 'neuprint_skeleton_pipeline=fine' in text
         assert '>0.95' in text
@@ -409,7 +409,7 @@ class TestWarningBanners:
         vis.dataset = 'flywire_FAFB_v783'
         vis.skeleton_mesh_simplification = None
         vis._write_user_warning_notes()
-        text = (tmp_path / 'user_warning_notes.txt').read_text()
+        text = (tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
         assert "not set" in text and 'not applied' in text
 
     def test_write_user_warning_notes_truncation_details(self, tmp_path):
@@ -419,7 +419,7 @@ class TestWarningBanners:
             "r2_T2: showing 20 of 80 members of type 'T2'",
         ])
         vis._write_user_warning_notes()
-        text = (tmp_path / 'user_warning_notes.txt').read_text()
+        text = (tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
         assert '[truncated type layers]' in text
         assert '2 type layers show' in text
         assert "r1_T1: showing 20 of 25 members of type 'T1'" in text
@@ -428,7 +428,7 @@ class TestWarningBanners:
         vis2 = make_vis(save_folder=str(tmp_path))
         vis2._write_user_warning_notes()
         assert '[truncated type layers]' not in (
-            tmp_path / 'user_warning_notes.txt').read_text()
+            tmp_path / 'user_warning_notes.txt').read_text(encoding='utf-8')
 
 
 # ---------------------------------------------------------------------------
@@ -1507,7 +1507,7 @@ class TestRealConstructor:
         assert os.path.isdir(vis.save_folder)
         params = Path(vis.save_folder) / 'parameters.txt'
         assert params.exists()
-        text = params.read_text()
+        text = params.read_text(encoding='utf-8')
         assert 'Dataset:          hemibrain:v1.2.1' in text
         assert vis.saveas == 'DA1_lPN'
         assert vis.layer_names == ['DA1_lPN']
@@ -1575,6 +1575,18 @@ class TestRealConstructor:
             **self.ctor_kwargs(tmp_path))
         assert visualizer.banc_skeleton_resolution == 'l2'
         assert visualizer._flywire_skeleton_access['ready'] is True
+
+    def test_banc_local_data_missing_raises_instead_of_exiting(
+            self, tmp_path, hermetic_ctor, monkeypatch):
+        # A library path must not terminate the host process: missing local
+        # data surfaces as an error the caller can render.
+        monkeypatch.setattr(
+            vs_module.BANC_file_converter, 'ensure_banc_data',
+            lambda dataset, dataset_dir: False)
+        with pytest.raises(RuntimeError, match='banc_v888'):
+            VisualizeSkeleton(
+                dataset='banc_v888', neuron_layers=['A00c'],
+                **self.ctor_kwargs(tmp_path))
 
     def test_invalid_synapse_mode_raises(self, tmp_path, hermetic_ctor):
         with pytest.raises(ValueError, match='synapse_mode'):
@@ -4576,29 +4588,13 @@ def make_real_mp4(path, n_frames=5, size=(32, 32), fps=10):
 
 
 def make_plotly_html(path, traces=None):
-    """Small plotly HTML parseable by pio.read_html."""
+    """Small plotly HTML that ``figure_from_plotly_html`` can parse."""
     if traces is None:
         traces = [go.Scatter3d(x=[0, 1, 2], y=[0, 1, 0], z=[0, 0, 1],
                                mode='lines', name='t1')]
     fig = go.Figure(data=traces)
     fig.write_html(str(path), include_plotlyjs=False, auto_open=False)
     return str(path)
-
-
-def patch_read_html(monkeypatch):
-    """The installed plotly lacks plotly.io.read_html; provide a stand-in.
-
-    Exercises the surrounding HTML-loading logic without real parsing.
-    """
-    import plotly.io as pio
-
-    def fake_read_html(path):
-        return go.Figure(data=[go.Scatter3d(
-            x=[0, 1, 2], y=[0, 1, 0], z=[0, 0, 1], mode='lines',
-            name='loaded')])
-
-    monkeypatch.setattr(pio, 'read_html', fake_read_html, raising=False)
-    return fake_read_html
 
 
 def make_individuals_vis(tmp_path, fig=None, **over):
@@ -4884,6 +4880,9 @@ class IndividualsFakeSession:
     def update_layout(self, updates):
         self.layout_updates = updates
 
+    def hide_modebar(self):
+        self.modebar_hidden = True
+
     def set_trace_visibility(self, visible_indices, total_traces):
         self.last_visibility = (list(visible_indices), total_traces)
 
@@ -4906,7 +4905,7 @@ class TestExportIndividualsWebdriver:
         IndividualsFakeSession.error_msg = 'chrome not reachable'
         IndividualsFakeSession.screenshot_bytes = 'noise'
         for key, value in cls_attrs.items():
-            setattr(IndividualsFakeSession, key, value)
+            monkeypatch.setattr(IndividualsFakeSession, key, value)
         monkeypatch.setattr(vs_module, 'WebDriverExportSession',
                             IndividualsFakeSession)
 
@@ -5035,7 +5034,7 @@ class TestExportVideo:
             'eye': {'x': 0, 'y': 0, 'z': -2.5},
             'up': {'x': 0, 'y': -1, 'z': 0}}
         for key, value in cls_attrs.items():
-            setattr(VideoFakeSession, key, value)
+            monkeypatch.setattr(VideoFakeSession, key, value)
         monkeypatch.setattr(vs_module, 'WebDriverExportSession',
                             VideoFakeSession)
 
@@ -5076,7 +5075,6 @@ class TestExportVideo:
 
     def test_html_file_mode_with_output_dir(self, tmp_path, monkeypatch):
         self._patch_frames(monkeypatch)
-        patch_read_html(monkeypatch)
         vis = make_video_vis(tmp_path)
         html = make_plotly_html(tmp_path / 'src_plot.html')
         out_dir = tmp_path / 'videos'
@@ -5085,12 +5083,14 @@ class TestExportVideo:
         assert rc == 0
         assert (out_dir / 'pics_30fps_xz').exists()
 
-    def test_html_file_unparseable_raises(self, tmp_path):
-        # Without the read_html stand-in the load fails -> RuntimeError
+    def test_html_file_without_payload_raises(self, tmp_path):
+        # The page parser is real now, so only a payload-free page fails,
+        # and it still surfaces as a RuntimeError from export_video.
         vis = make_video_vis(tmp_path)
-        html = make_plotly_html(tmp_path / 'src_plot.html')
+        html = tmp_path / 'empty_plot.html'
+        html.write_text('<html><body>no figure here</body></html>')
         with pytest.raises(RuntimeError):
-            vis.export_video(html_file=html,
+            vis.export_video(html_file=str(html),
                              output_dir=str(tmp_path / 'videos'))
 
     def test_error_paths(self, tmp_path):
@@ -5151,7 +5151,7 @@ class TestExportVideo:
         assert rc == 0
         # simplified HTML copy persisted next to the save folder
         assert (tmp_path / 'vid_simplified.html').exists()
-        frames = [f for f in os.listdir(str(tmp_path / 'pics_30fps_xz'))
+        frames = [f for f in os.listdir(str(tmp_path / 'pics_30fps_xz_webdriver'))
                   if f.startswith('deg_')]
         assert len(frames) == 3
 
@@ -5203,7 +5203,6 @@ class TestExportVideo:
 class TestExportVideoFromHtml:
     def test_success_with_autocrop(self, tmp_path, monkeypatch):
         patch_write_image(monkeypatch, mode='ok')
-        patch_read_html(monkeypatch)
         html = make_plotly_html(tmp_path / 'plot.html')
         rc = vs_module.export_video_from_html(
             html, degree_per_frame=120, export_gif=False, auto_crop=True,
@@ -5211,10 +5210,12 @@ class TestExportVideoFromHtml:
         assert rc == 0
         assert (tmp_path / 'out' / 'pics_30fps_xz').exists()
 
-    def test_unparseable_html_raises(self, tmp_path):
-        html = make_plotly_html(tmp_path / 'plot.html')
+    def test_payload_free_html_raises(self, tmp_path):
+        html = tmp_path / 'plot.html'
+        html.write_text('<html><body>no figure here</body></html>')
         with pytest.raises(RuntimeError):
-            vs_module.export_video_from_html(html, degree_per_frame=120)
+            vs_module.export_video_from_html(str(html),
+                                             degree_per_frame=120)
 
     def test_missing_html_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -5222,7 +5223,6 @@ class TestExportVideoFromHtml:
 
     def test_first_frame_failure_returns_one(self, tmp_path, monkeypatch):
         patch_write_image(monkeypatch, mode='raise')
-        patch_read_html(monkeypatch)
         html = make_plotly_html(tmp_path / 'plot.html')
         rc = vs_module.export_video_from_html(
             html, degree_per_frame=120, export_gif=False)
@@ -5230,7 +5230,6 @@ class TestExportVideoFromHtml:
 
     def test_reuses_existing_images(self, tmp_path, monkeypatch):
         calls = patch_write_image(monkeypatch, mode='raise')
-        patch_read_html(monkeypatch)
         html = make_plotly_html(tmp_path / 'plot.html')
         pic_folder = tmp_path / 'pics_30fps_xz'
         os.makedirs(str(pic_folder))
@@ -5282,36 +5281,115 @@ def patch_selenium(monkeypatch, chrome_raises=False):
     monkeypatch.setattr(swd, 'Chrome', chrome_factory)
 
 
-class TestExportVideoWebdriver:
-    def test_success(self, tmp_path, monkeypatch):
-        patch_selenium(monkeypatch)
+class TestExportVideoWebdriverEngine:
+    """``export_method='webdriver'`` renders the frames through one session.
+
+    This engine replaces the retired ``export_video_webdriver()``: the page
+    loads once, only the camera moves per frame, kaleido is never called, and
+    a machine without Chrome falls back to the kaleido loop instead of losing
+    the export.
+    """
+
+    def _patch_session(self, monkeypatch, cls_attrs=None, session_class=None):
+        VideoFakeSession.attempts = 0
+        VideoFakeSession.fail_opens = 0
+        VideoFakeSession.error_msg = 'chrome not reachable'
+        VideoFakeSession.camera_return = {
+            'eye': {'x': 0, 'y': 0, 'z': -2.5},
+            'up': {'x': 0, 'y': -1, 'z': 0}}
+        for key, value in (cls_attrs or {}).items():
+            monkeypatch.setattr(VideoFakeSession, key, value)
+        monkeypatch.setattr(vs_module, 'WebDriverExportSession',
+                            session_class or VideoFakeSession)
+
+    @staticmethod
+    def _frames(pic_folder):
+        return [f for f in os.listdir(str(pic_folder))
+                if f.endswith('.jpeg')]
+
+    @staticmethod
+    def _write_manifest(run_dir, dataset):
+        """Record which dataset the page came from, as Phase 4 does."""
+        import json
+        (run_dir / vs_module.VISUALIZATION_MANIFEST_NAME).write_text(
+            json.dumps({'dataset': dataset}), encoding='utf-8')
+
+    def test_success_uses_one_session_and_no_kaleido(self, tmp_path,
+                                                    monkeypatch):
+        self._patch_session(monkeypatch)
+        kaleido_calls = patch_write_image(monkeypatch, mode='raise')
         html = make_plotly_html(tmp_path / 'plot.html')
-        rc = vs_module.export_video_webdriver(
+        out = tmp_path / 'out'
+        rc = vs_module.export_video_from_html(
             html, degree_per_frame=90, export_gif=False, auto_crop=True,
-            output_dir=str(tmp_path / 'out'))
+            output_dir=str(out), export_method='webdriver')
         assert rc == 0
-        pic_folder = tmp_path / 'out' / 'pics_30fps_xz_webdriver'
-        frames = [f for f in os.listdir(str(pic_folder))
-                  if f.endswith('.jpeg')]
-        assert len(frames) == 4
+        assert VideoFakeSession.attempts == 1, 'the browser must open once'
+        assert kaleido_calls == [], 'kaleido must stay out of the webdriver path'
+        pic_folder = out / 'pics_30fps_xz_webdriver'
+        assert len(self._frames(pic_folder)) == 4
+        # The engine joins the folder name, so a kaleido cache can never be
+        # resumed by the webdriver engine (or vice versa).
+        assert not (out / 'pics_30fps_xz').exists()
+        # The page the session drove is not a frame; leaving it behind would
+        # make the video assembly pick it up as imglist[0].
+        assert '_temp_video.html' not in os.listdir(str(pic_folder))
 
-    def test_vertical_rotation(self, tmp_path, monkeypatch):
-        patch_selenium(monkeypatch)
+    def test_rotation_matches_the_live_pipeline_orbit(self, tmp_path,
+                                                     monkeypatch):
+        """Eye/up per frame come from the page's own camera distance."""
+        seen = []
+
+        class RecordingSession(VideoFakeSession):
+            def set_camera(self, eye=None, up=None, center=None):
+                seen.append((dict(eye), dict(up)))
+
+        self._patch_session(monkeypatch, session_class=RecordingSession)
         html = make_plotly_html(tmp_path / 'plot.html')
-        rc = vs_module.export_video_webdriver(
-            html, degree_per_frame=90, rotate='vertical',
-            export_gif=False)
+        rc = vs_module.export_video_from_html(
+            html, degree_per_frame=180, export_gif=False,
+            output_dir=str(tmp_path / 'out'), export_method='webdriver')
         assert rc == 0
+        # eye z=-2.5 => orbit radius 2.5, with the 1% off-axis gimbal offset.
+        assert len(seen) == 2
+        eye_front, up_front = seen[0]
+        assert eye_front == pytest.approx({'x': 0.0, 'y': 0.025, 'z': -2.5})
+        assert up_front == {'x': 0, 'y': -1, 'z': 0}
+        eye_back, _up_back = seen[1]
+        assert eye_back == pytest.approx({'x': 0.0, 'y': 0.025, 'z': 2.5})
 
-    def test_driver_init_failure_returns_one(self, tmp_path, monkeypatch):
-        patch_selenium(monkeypatch, chrome_raises=True)
+    def test_manifest_dataset_selects_the_manc_orbit_handedness(self, tmp_path,
+                                                               monkeypatch):
+        """``manc`` pages rotate the other way, exactly like export_video."""
+        seen = []
+
+        class RecordingSession(VideoFakeSession):
+            def set_camera(self, eye=None, up=None, center=None):
+                seen.append(dict(eye))
+
+        self._patch_session(monkeypatch, session_class=RecordingSession)
         html = make_plotly_html(tmp_path / 'plot.html')
-        rc = vs_module.export_video_webdriver(html, degree_per_frame=90)
-        assert rc == 1
+        self._write_manifest(tmp_path, dataset='manc:v1.0')
+        rc = vs_module.export_video_from_html(
+            html, degree_per_frame=360, export_gif=False,
+            output_dir=str(tmp_path / 'out'), export_method='webdriver')
+        assert rc == 0
+        assert seen[0] == pytest.approx({'x': 0.0, 'y': 0.025, 'z': 2.5})
+
+    def test_browser_failure_falls_back_to_kaleido(self, tmp_path, monkeypatch):
+        self._patch_session(monkeypatch, {'fail_opens': 99})
+        kaleido_calls = patch_write_image(monkeypatch, mode='ok')
+        html = make_plotly_html(tmp_path / 'plot.html')
+        rc = vs_module.export_video_from_html(
+            html, degree_per_frame=120, export_gif=False,
+            output_dir=str(tmp_path / 'out'), export_method='webdriver')
+        assert rc == 0
+        assert len(kaleido_calls) == 3
 
     def test_missing_html_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            vs_module.export_video_webdriver(str(tmp_path / 'nope.html'))
+            vs_module.export_video_from_html(
+                str(tmp_path / 'nope.html'), export_method='webdriver')
 
 
 class TestExportPngWebdriver:
@@ -5863,7 +5941,6 @@ class TestWebDriverExportSessionEnterFallbacks:
 class TestVideoGifBranches:
     def test_from_html_export_gif(self, tmp_path, monkeypatch):
         patch_write_image(monkeypatch, mode='ok')
-        patch_read_html(monkeypatch)
         calls = []
 
         def fake_video2gif(video, gif, fps=30, scale=0.2, optimize=True, **kw):
@@ -5883,7 +5960,6 @@ class TestVideoGifBranches:
             assert os.path.exists(gif)
 
     def test_webdriver_export_gif(self, tmp_path, monkeypatch):
-        patch_selenium(monkeypatch)
         calls = []
 
         def fake_video2gif(video, gif, fps=30, scale=0.2, optimize=True, **kw):
@@ -5892,10 +5968,11 @@ class TestVideoGifBranches:
                 f.write(b'GIF89a')
 
         monkeypatch.setattr(vs_module, 'video2gif', fake_video2gif)
+        monkeypatch.setattr(vs_module, 'WebDriverExportSession', VideoFakeSession)
         html = make_plotly_html(tmp_path / 'plot.html')
-        rc = vs_module.export_video_webdriver(
+        rc = vs_module.export_video_from_html(
             html, degree_per_frame=90, export_gif=True, gif_optimize=False,
-            output_dir=str(tmp_path / 'out'))
+            output_dir=str(tmp_path / 'out'), export_method='webdriver')
         assert rc == 0
         assert len(calls) == 2
         for video, gif in calls:
