@@ -333,7 +333,7 @@ class LabelMapper:
         Args:
             filepath: Path to save the JSON file
         """
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.to_dict(), f, indent=2)
 
     def _load_source_from_file(self, filepath: str) -> None:

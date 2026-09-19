@@ -124,12 +124,13 @@ def test_reconcile_renames_and_marks(tmp_path):
     for t in (3, 5, 10):
         marker = os.path.join(base, f'minsyn_{t}_skipped')
         assert os.path.isdir(marker), t
-        readme = open(os.path.join(marker, 'README.txt')).read()
+        readme = open(os.path.join(marker, 'README.txt'), encoding='utf-8').read()
         assert 'Applied threshold' in readme
         assert '19' in readme
 
     # Note file lists data folders and markers.
-    note = open(os.path.join(base, 'APPLIED_THRESHOLDS.md')).read()
+    note = open(os.path.join(base, 'APPLIED_THRESHOLDS.md'),
+                encoding='utf-8').read()
     assert 'minsyn_19_applied_floor' in note
     assert 'minsyn_3_skipped' in note
 
@@ -217,7 +218,8 @@ def test_reconcile_normalizes_reenumerated_run_to_applied_folder(tmp_path):
     row5 = a._path_provenance_row(ds, 5)
     assert row5['applied_threshold'] == 19
     # Note reflects the alias (marker) and references the real folder.
-    note = open(os.path.join(base, 'APPLIED_THRESHOLDS.md')).read()
+    note = open(os.path.join(base, 'APPLIED_THRESHOLDS.md'),
+                encoding='utf-8').read()
     assert 'minsyn_5_skipped' in note
     assert 'data folders on disk' in note
 

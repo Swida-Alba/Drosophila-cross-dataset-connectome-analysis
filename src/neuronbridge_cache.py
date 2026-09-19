@@ -124,7 +124,7 @@ class NeuronBridgeParquetCache:
             temporary = self.manifest_path.with_name(
                 f".{self.manifest_path.name}.{os.getpid()}.tmp"
             )
-            temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
             os.replace(temporary, self.manifest_path)
         return self.manifest_path
 

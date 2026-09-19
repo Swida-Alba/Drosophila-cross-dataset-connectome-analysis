@@ -320,7 +320,7 @@ def main():
         comparison_points=points,
     )
     out = os.path.join(out_dir, 'comparison_report.html')
-    with open(out, 'w') as fh:
+    with open(out, 'w', encoding='utf-8') as fh:
         fh.write(report)
     print('WROTE', out, len(report))
     checks = {

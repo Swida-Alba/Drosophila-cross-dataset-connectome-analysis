@@ -1972,7 +1972,7 @@ def _write_skeleton_level_marker(dataset: str,
     try:
         if not marker.exists():
             marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(SKELETON_CACHE_LEVEL + "\n")
+            marker.write_text(SKELETON_CACHE_LEVEL + "\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -2445,7 +2445,7 @@ class SkeletonVectorCache:
         temporary = self.skeleton_manifest_path.with_name(
             f".{self.skeleton_manifest_path.name}.{os.getpid()}.tmp")
         try:
-            temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
             os.replace(temporary, self.skeleton_manifest_path)
         finally:
             try:
@@ -2500,7 +2500,7 @@ class SkeletonVectorCache:
         if meta.get("pending_appends"):
             meta["pending_appends"] = 0
             try:
-                self.meta_path.write_text(json.dumps(meta, indent=2))
+                self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
             except OSError:
                 pass
 
@@ -2565,7 +2565,7 @@ class SkeletonVectorCache:
             meta["vector_basis"] = VECTOR_BASIS_RAW
         if self.raw_only and "raw_format" not in meta:
             meta["raw_format"] = self.raw_format
-        self.meta_path.write_text(json.dumps(meta, indent=2))
+        self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         self._clear_pending()
         return len(merged)
 
@@ -2895,7 +2895,7 @@ class SkeletonVectorCache:
             "mean": stats["mean"],
             "std": stats["std"],
         }
-        self.meta_path.write_text(json.dumps(meta, indent=2))
+        self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def _load_meta(self) -> Optional[dict]:
         if not self.meta_path.exists():
@@ -3508,7 +3508,7 @@ class SkeletonVectorCache:
                 meta["vector_basis"] = vector_basis
             if self.raw_only and "raw_format" not in meta:
                 meta["raw_format"] = self.raw_format
-            self.meta_path.write_text(json.dumps(meta, indent=2))
+            self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
             # Amortized merge checkpoint: fold pending into main once either
             # threshold is crossed (read-modify-write of the whole main file
@@ -3829,7 +3829,7 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             meta.setdefault("version", self._cache_version())
             meta["lateral_normalize"] = True
             self.meta_path.parent.mkdir(parents=True, exist_ok=True)
-            self.meta_path.write_text(json.dumps(meta, indent=2))
+            self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except OSError:
             pass
         return self._spatial_bounds
@@ -3854,7 +3854,7 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             "mean": stats["mean"],
             "std": stats["std"],
         }
-        self.meta_path.write_text(json.dumps(meta, indent=2))
+        self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # ---------------------------------------------------------- whitening
     def _whitener(self, X_std: np.ndarray) -> np.ndarray:
@@ -4510,7 +4510,7 @@ def population_stats(dataset: str, project_root: Optional[str] = None,
                     stats_file.write_text(json.dumps({
                         "dataset": dataset, "dim": VECTOR_DIM,
                         "n": len(vecs), "sample_cap": max_sample,
-                        "mean": mu.tolist(), "std": sd.tolist()}))
+                        "mean": mu.tolist(), "std": sd.tolist()}), encoding="utf-8")
                 except Exception:
                     pass
                 return mu, sd
@@ -4575,7 +4575,7 @@ def population_stats(dataset: str, project_root: Optional[str] = None,
             "sample_cap": max_sample,
             "mean": mu.tolist(),
             "std": sd.tolist(),
-        }))
+        }), encoding="utf-8")
     except Exception:
         pass
     return mu, sd
@@ -8659,7 +8659,7 @@ class MorphologyComparer:
                   ""]
         for k, v in params.items():
             readme.append(f"{k}: {v}")
-        (run_dir / "README.txt").write_text("\n".join(readme))
+        (run_dir / "README.txt").write_text("\n".join(readme), encoding="utf-8")
         # The run-folder marker line must carry the path ONLY (the UI parses
         # the folder by splitting after the marker and checking isdir).
         self._log(f"Results saved to: {run_dir}")
@@ -9166,7 +9166,7 @@ def render_v2_artifacts(dataset: str, project_root: Optional[str] = None,
                 "mean": mean.tolist(),
                 "std": std.tolist(),
             }
-            meta_path.write_text(json.dumps(meta_out, indent=2))
+            meta_path.write_text(json.dumps(meta_out, indent=2), encoding="utf-8")
             with open(whiten_path, "wb") as fh:
                 np.savez(fh, W=W, fit_version=WHITEN_FIT_VERSION)
         except Exception:

@@ -133,7 +133,7 @@ def _atomic_json(data: Mapping, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        temporary.write_text(json.dumps(data, indent=2, sort_keys=True))
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, path)
     finally:
         try:

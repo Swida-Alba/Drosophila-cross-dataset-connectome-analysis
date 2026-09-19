@@ -253,7 +253,7 @@ class TestRun:
 
         # The run summary preserves the ORIGINAL selection and routing.
         summary = json.loads(
-            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text())
+            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
         assert summary["selected_datasets"] == ["male-cns:v1.0", "banc_v626"]
         assert summary["covered_datasets"] == {
             "male-cns:v1.0": "male-cns:v0.9"}
@@ -262,7 +262,7 @@ class TestRun:
         # Full (default): the simulated match tables survive; the coverage
         # warning lands in the unified user_warning_notes.txt.
         assert (run_root / "chip_DNp01" / "DNp01_lines.csv").exists()
-        notes = (run_root / nqe.WARNINGS_FILENAME).read_text()
+        notes = (run_root / nqe.WARNINGS_FILENAME).read_text(encoding="utf-8")
         assert "coverage: banc_v626" in notes
         assert registry["calls"] == [("DNp01", "male-cns:v0.9")]
 
@@ -297,10 +297,10 @@ class TestRun:
         assert run_root.name.startswith("NB-find-lines-expanded_")
         assert (run_root / "line_summary.csv").exists()
         assert not (run_root / "DNp01_lines.csv").exists()
-        audit = json.loads((run_root / "cleanup_audit.json").read_text())
+        audit = json.loads((run_root / "cleanup_audit.json").read_text(encoding="utf-8"))
         assert len(audit["removed"]) == 1
         summary = json.loads(
-            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text())
+            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
         assert summary["output_detail"] == {
             "keep_per_match_csv": False, "cleanup_source_images": True,
             "compact_keep_last_n": 0}
@@ -342,10 +342,10 @@ class TestRun:
         assert (run_root / "DNp01_lines.csv").exists()
         # The older Compact run was swept.
         assert not (old_run / "OLD_lines.csv").exists()
-        audit = json.loads((old_run / "cleanup_audit.json").read_text())
+        audit = json.loads((old_run / "cleanup_audit.json").read_text(encoding="utf-8"))
         assert len(audit["removed"]) == 1
         summary = json.loads(
-            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text())
+            (run_root / nqe.EXPANSION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
         assert summary["retention"]["pruned_runs"] == [old_run.name]
         assert summary["output_detail"]["compact_keep_last_n"] == 1
 

@@ -1295,7 +1295,7 @@ class CAVEDataFetcher:
                     continue
                 seen.add(mesh_dir)
                 shutil.rmtree(mesh_dir)
-                os.makedirs(mesh_dir)
+                os.makedirs(mesh_dir, exist_ok=True)
                 print(f"✓ Cleared mesh cache: {mesh_dir}")
     
     def get_cache_stats(self) -> Dict[str, int]:

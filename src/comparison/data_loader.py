@@ -89,7 +89,7 @@ class DataLoader:
         
         # Save
         filepath = os.path.join(self.base_path, 'parameters.json')
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(params_dict, f, indent=2, default=str)
         
         return filepath
@@ -400,7 +400,7 @@ class DataLoader:
         """
         filepath = os.path.join(self.comparison_results_path, 'summary_report.md')
         
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             f.write("# Cross-Dataset Comparison Summary Report\n\n")
             f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             

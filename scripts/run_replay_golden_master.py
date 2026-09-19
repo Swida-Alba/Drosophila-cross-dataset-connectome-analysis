@@ -197,7 +197,7 @@ def main() -> int:
               f"semantic differences: {len(diffs)}\n"
               + "\n".join(f"  - {d}" for d in diffs[:200]))
     print(report)
-    (base / f"{stamp}_report.txt").write_text(report)
+    (base / f"{stamp}_report.txt").write_text(report, encoding="utf-8")
     return 0 if not diffs else 1
 
 

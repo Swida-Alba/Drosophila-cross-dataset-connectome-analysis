@@ -245,7 +245,7 @@ def test_skeleton_visualizer_banc_preparation_runs(tmp_path, capsys, monkeypatch
     monkeypatch.setattr(
         banc_public_data, "download_connections_product", lambda *a, **k: None)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError):
         VisualizeSkeleton(
             dataset="banc_v626",
             neuron_layers=["1"],

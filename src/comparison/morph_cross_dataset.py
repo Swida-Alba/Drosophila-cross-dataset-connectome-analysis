@@ -1964,7 +1964,7 @@ class CrossDatasetMorphComparer:
                                       (info.get('baseline') or {}).items()},
                         }
             (pair_dir / 'null_baseline.json').write_text(
-                json.dumps(baseline, indent=2))
+                json.dumps(baseline, indent=2), encoding='utf-8')
             for path in pair_dir.iterdir():
                 if path.is_file():
                     files.append(path)
@@ -1999,10 +1999,10 @@ class CrossDatasetMorphComparer:
             'resolution_notes': list(notes),
         }
         (run_path / 'parameters.json').write_text(
-            json.dumps(parameters, indent=2))
+            json.dumps(parameters, indent=2), encoding='utf-8')
         files.append(run_path / 'parameters.json')
         (run_path / 'README.txt').write_text(self._readme_text(
-            tokens, datasets, pairs, notes))
+            tokens, datasets, pairs, notes), encoding='utf-8')
         files.append(run_path / 'README.txt')
         return files
 

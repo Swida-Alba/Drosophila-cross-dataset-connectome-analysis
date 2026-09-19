@@ -4502,7 +4502,7 @@ class NeuronBridgeFinder:
         temporary = f"{mapping_path}.{os.getpid()}.tmp"
         try:
             os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
-            with open(temporary, 'w') as f:
+            with open(temporary, 'w', encoding='utf-8') as f:
                 json.dump(mapping, f, indent=2)
             os.replace(temporary, mapping_path)
         except Exception as e:
@@ -8566,6 +8566,7 @@ class NeuronBridgeFinder:
         html_content = f'''<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <title>Co-Labeling Analysis Report</title>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }}
@@ -8705,7 +8706,7 @@ class NeuronBridgeFinder:
         html_content += '''
         </table>
         
-        <h2>� Visualizations</h2>
+        <h2>📈 Visualizations</h2>
         
         <h3>Expression Matrix Heatmap</h3>
         <p>Interactive heatmap showing which neuron types each line labels. Types prefixed with dataset abbreviations (HEMI_, MCNS_, FAFB_).</p>
@@ -8782,7 +8783,9 @@ class NeuronBridgeFinder:
 </html>
 '''
         
-        with open(report_path, 'w') as f:
+        # The report embeds emoji and ↔/≤/≥/× glyphs that the platform default
+        # code page (GBK on zh-CN Windows) cannot represent, so pin UTF-8.
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
         self._vprint(f"   📝 Report: {report_path}")

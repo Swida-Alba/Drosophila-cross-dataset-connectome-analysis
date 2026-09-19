@@ -118,6 +118,149 @@ class TestTempSibling:
         assert not os.path.exists(old)
         assert os.path.exists(recent)
 
+    def test_live_writer_temp_is_never_aged_out(self, tmp_path, monkeypatch):
+        """Age only decides when liveness is unknowable: an in-progress
+        compaction keeps its temp however long it takes (retest F8)."""
+        monkeypatch.setattr(pu, "_process_alive", lambda pid: True)
+        monkeypatch.setattr(pu, "_pid_recycled", lambda pid, path: False)
+        target = str(tmp_path / "synapse.parquet")
+        live = os.path.join(str(tmp_path), ".synapse.parquet.build.999997.tmp")
+        Path(live).write_bytes(b"being written")
+        ancient = time.time() - pu.DEFAULT_TEMP_MAX_AGE_SECONDS - 60
+        os.utime(live, (ancient, ancient))
+
+        remove_stale_temp_files(target, "build")
+        assert os.path.exists(live)
+
+    def test_recycled_pid_temp_is_reclaimed(self, tmp_path, monkeypatch):
+        """A live PID is not proof of a live writer — after reuse the
+        leftover would otherwise stay protected forever."""
+        monkeypatch.setattr(pu, "_process_alive", lambda pid: True)
+        monkeypatch.setattr(pu, "_pid_recycled", lambda pid, path: True)
+        target = str(tmp_path / "synapse.parquet")
+        reused = os.path.join(str(tmp_path), ".synapse.parquet.build.999996.tmp")
+        Path(reused).write_bytes(b"orphan")
+
+        remove_stale_temp_files(target, "build")
+        assert not os.path.exists(reused)
+
+
+def _fake_psutil(monkeypatch, *, alive, started_at):
+    """Stand in for psutil so the Windows liveness path runs on any host."""
+    class _Process:
+        def __init__(self, pid):
+            pass
+
+        def create_time(self):
+            return started_at
+
+    module = type(sys)("psutil")
+    module.Error = OSError
+    module.pid_exists = lambda pid: alive
+    module.Process = _Process
+    monkeypatch.setitem(sys.modules, "psutil", module)
+
+
+class TestWindowsTempLifecycle:
+    """Windows has no ``kill(pid, 0)``, so psutil answers the same question;
+    before that the 6-hour age rule was the only rule on that platform
+    (retest F8)."""
+
+    @pytest.fixture(autouse=True)
+    def _as_windows(self, monkeypatch):
+        monkeypatch.setattr(pu, "_POSIX", False)
+
+    def test_dead_writer_temp_is_reclaimed_without_waiting(self, tmp_path,
+                                                           monkeypatch):
+        _fake_psutil(monkeypatch, alive=False, started_at=0.0)
+        target = str(tmp_path / "synapse.parquet")
+        stale = os.path.join(str(tmp_path), ".synapse.parquet.build.999995.tmp")
+        Path(stale).write_bytes(b"from a dead process")   # freshly orphaned
+
+        remove_stale_temp_files(target, "build")
+        assert not os.path.exists(stale)
+
+    def test_live_writer_temp_is_kept(self, tmp_path, monkeypatch):
+        _fake_psutil(monkeypatch, alive=True, started_at=0.0)
+        target = str(tmp_path / "synapse.parquet")
+        live = os.path.join(str(tmp_path), ".synapse.parquet.build.999994.tmp")
+        Path(live).write_bytes(b"being written")
+
+        remove_stale_temp_files(target, "build")
+        assert os.path.exists(live)
+
+    def test_recycled_pid_is_still_reclaimed(self, tmp_path, monkeypatch):
+        """The writer's PID now belongs to a process born after the file."""
+        now = time.time()
+        _fake_psutil(monkeypatch, alive=True, started_at=now)
+        target = str(tmp_path / "synapse.parquet")
+        reused = os.path.join(str(tmp_path), ".synapse.parquet.build.999993.tmp")
+        Path(reused).write_bytes(b"orphan")
+        os.utime(reused, (now - 600, now - 600))
+
+        remove_stale_temp_files(target, "build")
+        assert not os.path.exists(reused)
+
+    def test_missing_psutil_falls_back_to_the_age_rule(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        target = str(tmp_path / "synapse.parquet")
+        old = os.path.join(str(tmp_path), ".synapse.parquet.build.999992.tmp")
+        recent = os.path.join(str(tmp_path), ".synapse.parquet.build.999991.tmp")
+        Path(old).write_bytes(b"old")
+        Path(recent).write_bytes(b"recent")
+        stale_time = time.time() - pu.DEFAULT_TEMP_MAX_AGE_SECONDS - 60
+        os.utime(old, (stale_time, stale_time))
+
+        remove_stale_temp_files(target, "build")
+        assert not os.path.exists(old)
+        assert os.path.exists(recent)
+
+
+class TestReencodeHandleLifetime:
+    def test_readers_are_closed_before_the_swap(self, tmp_path, monkeypatch):
+        """On Windows an open reader on either swap operand makes
+        ``os.replace`` fail with WinError 32, so the re-encode silently did
+        nothing while leaking its temp (retest F6).  Assertable anywhere:
+        no reader may still be open at the moment of the rename."""
+        path = tmp_path / "t.parquet"
+        _write_table(path, pd.DataFrame({"v": [1, 2, 3]}))
+
+        real_parquet_file = pq.ParquetFile
+        readers = []
+
+        class TrackedParquetFile:
+            def __init__(self, target, *args, **kwargs):
+                self._inner = real_parquet_file(target, *args, **kwargs)
+                self._closed = False
+                readers.append(self)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def __enter__(self):
+                self._inner.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                self._closed = True
+                return self._inner.__exit__(*exc)
+
+        monkeypatch.setattr(pq, "ParquetFile", TrackedParquetFile)
+        open_at_swap = []
+        real_replace = pu.atomic_replace
+
+        def spy_replace(temp, final):
+            open_at_swap.extend(r for r in readers if not r._closed)
+            return real_replace(temp, final)
+
+        monkeypatch.setattr(pu, "atomic_replace", spy_replace)
+
+        profile = {"compression": "zstd", "use_dictionary": False}
+        assert reencode_parquet_lossless(path, profile) is True
+        assert open_at_swap == []
+        assert not list(tmp_path.glob(".*.compact.*.tmp"))
+
 
 class TestAtomicWrite:
     def test_write_parquet_atomic_fsyncs_and_replaces(self, tmp_path, monkeypatch):

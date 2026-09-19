@@ -209,7 +209,7 @@ def test_banc_prepare_failure_does_not_suggest_cave(
     fnc.client_type = "flywire"
     monkeypatch.setattr(bfc, "ensure_banc_data",
                         lambda dataset, dataset_dir: False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError):
         fnc._prepare_flywire_data()
     out = capsys.readouterr().out
     assert "use CAVE API" not in out

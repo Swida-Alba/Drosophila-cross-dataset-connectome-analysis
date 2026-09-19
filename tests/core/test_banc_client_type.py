@@ -208,5 +208,6 @@ def test_cache_refresh_absent_tables_exit_with_instructions(monkeypatch):
     monkeypatch.setattr(coana, 'print_download_instructions',
                         lambda ds, d: None, raising=False)
     fc = _make_fc(client_type='banc', use_cache=False)
-    with pytest.raises(SystemExit):
+    # A library failure raises; it must not kill the host process.
+    with pytest.raises(RuntimeError):
         fc._ensure_banc_connection_cache()

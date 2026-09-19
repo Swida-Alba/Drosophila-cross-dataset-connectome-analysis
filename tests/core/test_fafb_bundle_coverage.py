@@ -278,7 +278,9 @@ def test_file_lock_enter_falls_back_without_fcntl(tmp_path, monkeypatch):
 
 def test_file_lock_exit_swallows_unlock_and_close_errors(
         tmp_path, monkeypatch):
-    import fcntl
+    # flock is POSIX-only: on Windows ``_bundle_file_lock`` deliberately
+    # degrades to a no-op, so there is nothing to unlock here.
+    fcntl = pytest.importorskip("fcntl")
     lock = fb._bundle_file_lock(tmp_path / "bundle.zst")
     lock.__enter__()
     assert lock._fd is not None

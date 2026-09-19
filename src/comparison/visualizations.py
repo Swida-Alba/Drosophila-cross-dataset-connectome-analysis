@@ -2436,7 +2436,11 @@ class ComparisonVisualizer:
                         nickname_map=nickname_map,
                         path_presence_matrix=path_presence_matrix
                     )
-                    with open(os.path.join(vis_data_dir, "conservation_across_thresholds.json"), 'w') as f:
+                    with open(
+                            os.path.join(
+                                vis_data_dir,
+                                "conservation_across_thresholds.json"),
+                            'w', encoding='utf-8') as f:
                         f.write(plotly_json)
                 except Exception as e:
                     self._vprint(f"Warning: Could not create Plotly conservation plot: {e}")

@@ -209,7 +209,7 @@ def backfill_dataset_metadata(dataset: str,
         meta = _build_dataset_metadata(dataset, neuron_df, roi_count_df, client)
         meta_path = metadata_json_path(dataset, str(root))
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta, indent=2, default=str))
+        meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
         if log:
             log(f"ROI screening: metadata sidecar saved to {meta_path}.")
         return meta

@@ -16,9 +16,11 @@ the source; a footer key-value marker makes the pass idempotent.
 
 The atomic write is centralized in ``write_parquet_atomic`` (write temp →
 fsync → ``os.replace`` → fsync the directory) so every caller shares one
-implementation, and stale temps are reclaimed only when their writer is
-provably gone or the file is older than a grace period — a concurrent
-preparation never has its in-progress temp deleted.
+implementation, and stale temps are reclaimed when their writer is provably
+gone — on every platform, including Windows — so an interrupted run's
+leftovers do not sit around until a grace period expires.  A writer that is
+still alive is never touched, however old its temp looks; only a temp whose
+PID has demonstrably been recycled is reclaimed that way.
 """
 
 import os
@@ -27,9 +29,13 @@ import time
 LOSSLESS_MARKER_KEY = b"DROCAT.lossless"
 LOSSLESS_MARKER_VALUE = b"v1"
 
-# Temp files older than this are reclaimed regardless of writer liveness:
-# covers crash leftovers on platforms without process checks and guards
-# against PID reuse.
+# Only read at call time by `_process_alive`; a module constant so the
+# Windows branch is testable without mutating `os.name` process-wide.
+_POSIX = os.name == "posix"
+
+# When writer liveness cannot be determined at all, a temp older than this is
+# reclaimed as a crash leftover.  A *live* writer is exempt (see
+# ``_temp_is_stale``), so this only ever decides about unanswerable cases.
 DEFAULT_TEMP_MAX_AGE_SECONDS = 6 * 60 * 60
 
 # Hard integer bounds for the stats guard of `casts`.
@@ -70,20 +76,46 @@ def _process_alive(pid):
 
     POSIX ``kill(pid, 0)`` probes without signalling: a missing process
     raises ``ProcessLookupError`` and a foreign owner raises
-    ``PermissionError``.  Non-POSIX (Windows) has no portable equivalent,
-    so liveness is reported as unknown and the age rule decides.
+    ``PermissionError``.  Windows has no ``kill``, so ``psutil`` answers the
+    same question; without it (or off-platform) liveness is unknown and the
+    age rule decides.
     """
-    if os.name != "posix":
+    if _POSIX:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return None
+        return True
+    try:
+        import psutil
+    except ImportError:
         return None
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        return psutil.pid_exists(pid)
     except OSError:
         return None
-    return True
+
+
+def _pid_recycled(pid, path):
+    """True when process *pid* was born after *path* was last written.
+
+    A live PID is not proof of a live *writer*: reuse hands a dead writer's
+    temp to an unrelated process, which would otherwise protect the garbage
+    forever now that age alone no longer reclaims it.  False when psutil is
+    missing or the question cannot be answered, which keeps the temp.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        return psutil.Process(pid).create_time() > os.path.getmtime(path)
+    except (ValueError, OSError, psutil.Error):
+        return False
 
 
 def _temp_is_stale(path, entry_pid, max_age_seconds):
@@ -92,6 +124,10 @@ def _temp_is_stale(path, entry_pid, max_age_seconds):
     alive = _process_alive(entry_pid)
     if alive is False:
         return True
+    if alive is True:
+        # Live, but only when it can be the writer: an in-progress temp is
+        # never aged out, so PID recycling is the one way to release it.
+        return _pid_recycled(entry_pid, path)
     if max_age_seconds is not None:
         try:
             age = time.time() - os.path.getmtime(path)
@@ -99,7 +135,7 @@ def _temp_is_stale(path, entry_pid, max_age_seconds):
             return False
         if age > max_age_seconds:
             return True
-    # Alive, or liveness unknown with no age evidence: keep it.
+    # Liveness unknown with no age evidence: keep it.
     return False
 
 
@@ -174,7 +210,8 @@ def parquet_readable(path):
     try:
         import pyarrow.parquet as pq
 
-        metadata = pq.ParquetFile(path).metadata
+        with pq.ParquetFile(path) as reader:
+            metadata = reader.metadata
         if metadata.num_row_groups < 1 or metadata.num_rows <= 0:
             return False
         extent = _declared_data_extent(metadata)
@@ -377,58 +414,64 @@ def reencode_parquet_lossless(path, profile, progress_callback=None):
         if not keep:
             return False
 
-        parquet_file = pq.ParquetFile(path)
-        source_rows = parquet_file.metadata.num_rows
-        resolved_casts = _resolved_casts(
-            parquet_file, schema, keep, profile.get("casts"))
-
-        writer_fields = [schema.field(n) for n in keep]
-        for column, target in resolved_casts.items():
-            writer_fields[keep.index(column)] = pa.field(
-                column, pa.type_for_alias(target))
-        writer_schema = pa.schema(
-            writer_fields, metadata={
-                **(schema.metadata or {}),
-                LOSSLESS_MARKER_KEY: LOSSLESS_MARKER_VALUE,
-            })
-
-        writer_kwargs = {
-            key: profile[key]
-            for key in ("compression", "compression_level", "use_dictionary",
-                        "column_encoding")
-            if key in profile
-        }
-        if "column_encoding" in writer_kwargs:
-            # Drop entries for absent columns and encodings that do not
-            # fit the column's type (either aborts the whole write).
-            writer_kwargs["column_encoding"] = _resolved_encodings(
-                schema, keep, writer_kwargs["column_encoding"])
-            if not writer_kwargs["column_encoding"]:
-                writer_kwargs.pop("column_encoding")
-
         original_size = os.path.getsize(path)
         temp = temp_sibling(path, "compact")
         try:
-            n_groups = parquet_file.metadata.num_row_groups
-            with pq.ParquetWriter(temp, writer_schema,
-                                  **writer_kwargs) as writer:
-                for group in range(n_groups):
-                    table = parquet_file.read_row_group(group, columns=keep)
-                    for column, target in resolved_casts.items():
-                        index = table.schema.get_field_index(column)
-                        table = table.set_column(
-                            index, table.schema.field(index).name,
-                            table.column(index).cast(pa.type_for_alias(target)))
-                    writer.write_table(table)
-                    if progress_callback is not None:
-                        progress_callback(group + 1, n_groups)
+            # Both readers are scoped, not just tidy: on Windows an open
+            # handle on the swap destination makes ``os.replace`` fail with
+            # WinError 32, and one on the temp makes the failure-path unlink
+            # fail too, so a silently skipped re-encode also leaked a temp.
+            with pq.ParquetFile(path) as parquet_file:
+                source_rows = parquet_file.metadata.num_rows
+                resolved_casts = _resolved_casts(
+                    parquet_file, schema, keep, profile.get("casts"))
+
+                writer_fields = [schema.field(n) for n in keep]
+                for column, target in resolved_casts.items():
+                    writer_fields[keep.index(column)] = pa.field(
+                        column, pa.type_for_alias(target))
+                writer_schema = pa.schema(
+                    writer_fields, metadata={
+                        **(schema.metadata or {}),
+                        LOSSLESS_MARKER_KEY: LOSSLESS_MARKER_VALUE,
+                    })
+
+                writer_kwargs = {
+                    key: profile[key]
+                    for key in ("compression", "compression_level",
+                                "use_dictionary", "column_encoding")
+                    if key in profile
+                }
+                if "column_encoding" in writer_kwargs:
+                    # Drop entries for absent columns and encodings that do
+                    # not fit the column's type (either aborts the whole write).
+                    writer_kwargs["column_encoding"] = _resolved_encodings(
+                        schema, keep, writer_kwargs["column_encoding"])
+                    if not writer_kwargs["column_encoding"]:
+                        writer_kwargs.pop("column_encoding")
+
+                n_groups = parquet_file.metadata.num_row_groups
+                with pq.ParquetWriter(temp, writer_schema,
+                                      **writer_kwargs) as writer:
+                    for group in range(n_groups):
+                        table = parquet_file.read_row_group(
+                            group, columns=keep)
+                        for column, target in resolved_casts.items():
+                            index = table.schema.get_field_index(column)
+                            table = table.set_column(
+                                index, table.schema.field(index).name,
+                                table.column(index).cast(
+                                    pa.type_for_alias(target)))
+                        writer.write_table(table)
+                        if progress_callback is not None:
+                            progress_callback(group + 1, n_groups)
             # Gate before the swap: the copy must parse and carry every
             # source row.
-            written = pq.ParquetFile(temp)
-            if written.metadata.num_rows != source_rows:
-                raise OSError(
-                    f"row count mismatch after re-encode "
-                    f"({written.metadata.num_rows} != {source_rows})")
+            with pq.ParquetFile(temp) as written:
+                if written.metadata.num_rows != source_rows:
+                    raise OSError(
+                        f"row count mismatch after re-encode "
+                        f"({written.metadata.num_rows} != {source_rows})")
             atomic_replace(temp, path)
         except Exception:
             try:

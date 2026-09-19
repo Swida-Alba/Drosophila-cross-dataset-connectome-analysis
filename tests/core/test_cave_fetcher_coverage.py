@@ -962,6 +962,19 @@ class TestCacheMaintenance:
         f.clear_cache('all')
         assert not list(api_skel.iterdir())
 
+    def test_clear_mesh_cache_tolerates_surviving_dir(
+            self, tmp_path, monkeypatch):
+        # Windows keeps an indexer-held directory alive through rmtree, so
+        # the recreate must tolerate the path already existing.
+        import shutil
+
+        f = make_fetcher(tmp_path)
+        api_mesh = Path(f.get_cache_path('meshes'))
+        api_mesh.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(shutil, 'rmtree', lambda path, **kwargs: None)
+        f.clear_cache('meshes')
+        assert api_mesh.is_dir()
+
     def test_stats_with_missing_dirs(self, tmp_path):
         f = make_fetcher(tmp_path)
         stats = f.get_cache_stats()

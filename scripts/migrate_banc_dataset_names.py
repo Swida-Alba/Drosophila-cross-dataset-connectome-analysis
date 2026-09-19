@@ -76,7 +76,7 @@ def patch_json_values(path: Path, dry_run: bool) -> bool:
     if dry_run:
         print(f"  -> would patch values: {path}")
         return True
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     print(f"  patched values: {path}")
     return True
 
@@ -94,7 +94,7 @@ def patch_metadata_json(dataset_dir: Path, dry_run: bool) -> bool:
             print(f"  -> would set dataset={dataset_dir.name} in {meta.name}")
             return True
         data["dataset"] = dataset_dir.name
-        meta.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        meta.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"  patched: {meta.name} (dataset={dataset_dir.name})")
     return True
 

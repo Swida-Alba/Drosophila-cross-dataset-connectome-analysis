@@ -356,6 +356,31 @@ def update_neuron_post_counts(neuron_path, conn_path, save_csv_path=None):
         print(f"  ⚠️ Error updating post counts: {e}")
         return False
 
+
+# Fields of the failure placeholder a cross-dataset metadata collection used
+# to persist (``comparison_analyzer._create_empty_metadata``): none of them
+# describe real data, so they must never be merged forward into a prepared
+# sidecar (2026-09-18 retest, F9).
+_ERROR_PLACEHOLDER_KEYS = ("source", "error", "fetched_at", "neuron_counts",
+                           "synapse_counts", "roi_coverage", "coverage_notes")
+
+
+def _strip_error_placeholder(data):
+    """Drop a stale error placeholder from an existing sidecar payload.
+
+    Returns *data* untouched when it carries no error marker; otherwise the
+    placeholder fields (``source='error'``, its ``error`` text and the
+    all-zero stat blocks written with them) are removed so the real
+    provenance and table-derived stats replace them instead of sitting
+    beside them.
+    """
+    if not isinstance(data, dict):
+        return {}
+    if data.get("source") != "error" and "error" not in data:
+        return data
+    return {k: v for k, v in data.items() if k not in _ERROR_PLACEHOLDER_KEYS}
+
+
 def _patch_dataset_metadata(dataset_dir, dataset_name, source, notes=None):
     """Record the preparation provenance in the dataset metadata.json."""
     dataset_name = dataset_folder(dataset_name)
@@ -363,7 +388,7 @@ def _patch_dataset_metadata(dataset_dir, dataset_name, source, notes=None):
     try:
         if os.path.exists(meta_path):
             with open(meta_path, 'r', encoding='utf-8-sig') as handle:
-                data = json.load(handle)
+                data = _strip_error_placeholder(json.load(handle))
         else:
             data = {"dataset": dataset_name, "fetched_at": None}
         data["dataset"] = dataset_name
@@ -534,7 +559,7 @@ def _regenerate_banc_metadata(dataset_name, dataset_dir,
     if os.path.exists(meta_path):
         try:
             with open(meta_path, "r", encoding="utf-8-sig") as handle:
-                data = json.load(handle)
+                data = _strip_error_placeholder(json.load(handle))
         except Exception:
             data = {}
 

@@ -214,7 +214,7 @@ _, big_total = export_matched_rows(MCNS, search="")
 check("cap guard returns nothing over 100k", big_total > 100_000,
       f"total={big_total:,}")
 csv_path = OUT / f"verify_matched_rows_{STAMP}.csv"
-csv_path.write_text(csv_text)
+csv_path.write_text(csv_text, encoding="utf-8")
 check("matched-rows csv written", csv_path.exists(),
       f"{csv_path.stat().st_size:,} bytes")
 

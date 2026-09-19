@@ -629,15 +629,27 @@ class ExpandedLineFinder:
         if not os.path.isdir(inner) or not children[0].startswith("NB-find-lines"):
             return
         for name in os.listdir(inner):
-            os.rename(os.path.join(inner, name), os.path.join(chip_dir, name))
-        os.rmdir(inner)
+            try:
+                os.rename(os.path.join(inner, name), os.path.join(chip_dir, name))
+            except FileExistsError:
+                continue
+        try:
+            os.rmdir(inner)
+        except OSError:
+            pass
 
     @staticmethod
     def _hoist_folder(src: str, dst: str) -> None:
         """Move every child of ``src`` into ``dst`` and drop ``src``."""
         for name in os.listdir(src):
-            os.rename(os.path.join(src, name), os.path.join(dst, name))
-        os.rmdir(src)
+            try:
+                os.rename(os.path.join(src, name), os.path.join(dst, name))
+            except FileExistsError:
+                continue
+        try:
+            os.rmdir(src)
+        except OSError:
+            pass
 
     def _make_run_root(
         self,

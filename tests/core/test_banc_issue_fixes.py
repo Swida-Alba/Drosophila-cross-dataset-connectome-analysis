@@ -125,6 +125,86 @@ def test_regenerate_metadata_records_codex_manual_source(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# F9 (2026-09-18 retest) — stale error sidecars are never merged forward
+# ---------------------------------------------------------------------------
+
+def _error_sidecar():
+    """The payload comparison_analyzer used to persist for a failed pull."""
+    return {
+        "dataset": "banc_v999",
+        "source": "error",
+        "error": "No local data found",
+        "fetched_at": "2026-09-18T17:26:14.881245",
+        "neuron_counts": {"total": 0, "typed": 0, "untyped": 0,
+                          "type_coverage": 0},
+        "synapse_counts": {"total_presynaptic": 0, "total_postsynaptic": 0,
+                           "total": 0},
+        "roi_coverage": {"roi_list": [], "roi_count": 0,
+                         "neuron_counts_per_roi": {}},
+        "coverage_notes": "Coverage information not available.",
+        "preparation_notes": ["written by the bucket pull"],
+    }
+
+
+def test_patch_metadata_drops_stale_error_placeholder(tmp_path):
+    """Preparing a dataset overwrites a stale error marker instead of
+    preserving it next to the real provenance."""
+    dataset_dir = _make_dataset(tmp_path)
+    meta = dataset_dir / "banc_v999_metadata.json"
+    meta.write_text(json.dumps(_error_sidecar()), encoding="utf-8")
+
+    bfc._patch_dataset_metadata(
+        str(dataset_dir), "banc_v999", source="banc_codex_manual",
+        notes="prepared")
+
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert data["source"] == "banc_codex_manual"
+    assert "error" not in data
+    # The placeholder's zero stat blocks are gone, not merged forward.
+    assert "neuron_counts" not in data
+    assert "synapse_counts" not in data
+    # Real keys already in the sidecar survive the merge.
+    assert data["preparation_notes"] == ["written by the bucket pull",
+                                         "prepared"]
+
+
+def test_regenerate_metadata_drops_stale_error_placeholder(tmp_path):
+    """Table-derived stats replace the placeholder; its error text does not
+    ride along in the regenerated sidecar."""
+    dataset_dir = _make_dataset(tmp_path)
+    meta = dataset_dir / "banc_v999_metadata.json"
+    meta.write_text(json.dumps(_error_sidecar()), encoding="utf-8")
+
+    assert bfc._regenerate_banc_metadata("banc_v999", str(dataset_dir)) is True
+
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert "error" not in data
+    assert data["source"] == "banc_public_gcs"
+    assert data["neuron_counts"]["total"] == 3
+    assert data["synapse_counts"]["total"] == 15
+    assert data["coverage_notes"] == "Full brain and VNC connectome."
+
+
+def test_metadata_merge_keeps_a_real_sidecar_intact(tmp_path):
+    """The strip only fires on an error placeholder — a real sidecar's stats
+    are merged forward as before."""
+    dataset_dir = _make_dataset(tmp_path)
+    meta = dataset_dir / "banc_v999_metadata.json"
+    meta.write_text(json.dumps({
+        "dataset": "banc_v999",
+        "source": "banc_public_gcs",
+        "synapse_density": {"per_neuron_median": 4.5},
+    }), encoding="utf-8")
+
+    bfc._patch_dataset_metadata(
+        str(dataset_dir), "banc_v999", source="banc_codex_manual")
+
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert data["source"] == "banc_codex_manual"
+    assert data["synapse_density"] == {"per_neuron_median": 4.5}
+
+
+# ---------------------------------------------------------------------------
 # BANC-07 / BANC-08 — crosswalk memo hygiene
 # ---------------------------------------------------------------------------
 

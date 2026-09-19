@@ -1100,7 +1100,9 @@ def test_flywire_cave_skeletons_uses_cached_replacement_without_token(
 
 
 def test_append_vectors_branches(tmp_path, monkeypatch):
-    import fcntl
+    # The unlock-failure branch this test drives needs flock(), which is
+    # POSIX-only; on Windows the append lock degrades to a no-op.
+    fcntl = pytest.importorskip("fcntl")
     cache = _raw_cache(tmp_path)
     vec = np.arange(M.VECTOR_DIM, dtype=float)
     assert cache.append_vectors([]) == 0
