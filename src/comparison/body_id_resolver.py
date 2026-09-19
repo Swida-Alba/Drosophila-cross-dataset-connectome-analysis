@@ -565,18 +565,26 @@ def reverse_source_column(df: Optional[pd.DataFrame], source_pool,
     if df is None or df.empty:
         return []
     pool = {int(b) for b in (source_pool or [])}
-    rows = df.sort_values(_ORDER, ascending=[True, True, False],
-                          na_position='last').head(int(top_rows))
+    ranked = df.sort_values(_ORDER, ascending=[True, True, False],
+                            na_position='last')
+    cut = int(top_rows)
     out: List[Dict] = []
-    for r in rows.itertuples(index=False):
+    for r in ranked.itertuples(index=False):
         try:
             bid = int(r.target_bid)
         except (TypeError, ValueError):
             continue
+        in_pool = bid in pool
+        # Out-of-branch rivals past the cut are dropped, the branch's own pool
+        # is not: a pool source ranked below it would otherwise lose its whole
+        # column, which the caller reads as "no reverse evidence" rather than
+        # "ranked low" -- and its competitor count would be wrong too.
+        if len(out) >= cut and not in_pool:
+            continue
         out.append({'source': bid,
                     'ru': _clean_num(getattr(r, 'rank_union', None)),
                     'jac': _clean_num(getattr(r, 'jaccard', None)),
-                    'in_pool': bid in pool})
+                    'in_pool': in_pool})
     return out
 
 

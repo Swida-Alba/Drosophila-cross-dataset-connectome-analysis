@@ -922,3 +922,23 @@ def test_the_file_index_prints_paths_that_exist(tmp_path):
     # the file-glossary panel still documents the canonical layout path; the
     # index of what THIS run wrote must not
     assert '<td>expansion/backward_matches.csv</td>' not in flat
+
+
+# ---------------------------------------------------------------------------
+# a scope a real run measured wrong
+# ---------------------------------------------------------------------------
+
+def test_reverse_column_keeps_pool_members_below_the_cut():
+    """An in-pool source ranked past the cap must not vanish from its own
+    column: the caller reads a missing row as `no reverse evidence`, not as
+    `ranked low`, and silently downgrades the source's status."""
+    m = _resolver()
+    df = _scan_df([
+        (10, 0.9, 0.8, 1, 1),
+        (11, 0.8, 0.7, 2, 2),
+        (12, 0.7, 0.6, 3, 3),
+        (99, 0.1, 0.1, 4, 4),     # the branch's own source, ranked last
+    ])
+    col = m.reverse_source_column(df, [99], top_rows=3)
+    assert [e['source'] for e in col] == [10, 11, 12, 99]
+    assert [e['in_pool'] for e in col] == [False, False, False, True]

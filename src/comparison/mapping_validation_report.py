@@ -890,7 +890,7 @@ def _reciprocal_warning_line(d: Dict) -> Optional[str]:
     if not d.get('backward_bins'):
         return None
     gap_bins = {k: v for k, v in d['backward_bins'].items()
-                if k in ('candidates', 'family', 'relative')}
+                if k in _BEV_GAP_BINS}
     if not gap_bins:
         return None
     n_fgn = sum(v['high'] + v['medium'] for v in gap_bins.values())
@@ -1767,7 +1767,11 @@ def _fill_tab(d: Dict) -> str:
         c = r.get('dedup_category', '?')
         ff_split[c] = ff_split.get(c, 0) + 1
     ff_txt = ' + '.join(f'{k} {v}' for k, v in sorted(ff_split.items()))
-    n_bev = sum(b['high'] for b in d['backward_bins'].values())
+    # Gap bins only: the unmatched pool control is graded the same way, and
+    # counting it here would state a far larger reciprocal figure than the
+    # per-bin breakdown beside it.
+    n_bev = sum((d['backward_bins'].get(k) or {}).get('high', 0)
+                for k in _BEV_GAP_BINS)
     n_thin = sum(1 for r in d['backward_rows'] if _is_thin(r))
     # D7: the reverse fact splits each gap-fill bin WITHOUT joining the level
     # ladder, so the split reads as its own axis next to the level counts.
@@ -1789,8 +1793,8 @@ def _fill_tab(d: Dict) -> str:
          f'{len(d["restrictive"])} restrictive · family-fill '
          f'+{len(d["family_fill"])} ({ff_txt})'),
         (_term('reciprocal', 'Reciprocal (stage 5d)'),
-         f'{n_bev} members whose reverse scan points back into their own '
-         'branch — advisory; it never changes a level or a fill'
+         f'{n_bev} gap-fill members rank their own branch source type in the '
+         'reverse top-1 — advisory; it never changes a level or a fill'
          + (f' · {n_thin} hit(s) rest on ≤3 shared partner types '
             '(<b>thin</b>)' if n_thin else '')),
         *([(_term('reciprocal', 'Reverse evidence by bin'),
@@ -2149,6 +2153,10 @@ _BEV_CSS = {'high': 'bev-high', 'medium': 'bev-medium',
 #: symmetric forward score is their evidence); legacy run folders that
 #: still carry those rows fall through to the idx-99 ordering below.
 _BEV_BIN_ORDER = ('candidates', 'family', 'relative', 'unmatched')
+#: the bins the pass exists for; `unmatched` is the in-map control and is
+#: counted per bin for display, but it is not reciprocal *evidence* about a
+#: gap, so the headline counts and the warning line stay inside this subset.
+_BEV_GAP_BINS = ('candidates', 'family', 'relative')
 
 
 def _bev_badge(lab: str, thin: bool = False) -> str:

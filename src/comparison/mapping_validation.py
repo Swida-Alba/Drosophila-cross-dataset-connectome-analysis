@@ -4238,7 +4238,7 @@ class MappingValidator:
                     continue
                 add(int(d['target_bodyId']),
                     target_branch.get(int(d['target_bodyId'])),
-                    'pool_target', None,
+                    'pool_target', [d],
                     d.get('target_type'), d.get('category'))
 
         # Budget: one reverse scan costs what a forward source scan costs
