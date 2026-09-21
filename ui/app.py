@@ -2513,6 +2513,12 @@ html, body {
 .drocat-suggest-menu .q-item.drocat-suggest-active {
     background: var(--drocat-row-hover) !important;
 }
+/* A suggestion whose value is already in the query stays listed so the rows
+   never move under the pointer mid-pick; it is tinted (and ticked) instead of
+   removed. The gray column hint keeps its own muted color. */
+.drocat-suggest-menu .q-item.drocat-suggest-added {
+    color: var(--drocat-cobalt) !important;
+}
 /* Dataset provenance tags on history rows. */
 .drocat-suggest-menu .drocat-history-dataset-badge {
     font-size: 10px;

@@ -5244,9 +5244,10 @@ class TestComponents:
         texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
         assert "APL" in texts and "APL2" in texts and "type" in texts
 
-        # Clicking the first suggestion commits it as a chip and keeps the menu
-        # open (re-offering Recent for the still-focused field) — mirroring the
-        # standard query box, where a pick does not close the list.
+        # Clicking a suggestion commits it as a chip and HOLDS the query's rows
+        # on screen — every row stays listed and the picked one is ticked — so
+        # the next entry can be added without retyping (mirrors the standard
+        # query box, where a pick does not close the list).
         def _subtree_texts(el):
             """Flatten the element subtree texts (labels live inside a row)."""
             out = [getattr(el, "text", "")]
@@ -5264,8 +5265,26 @@ class TestComponents:
         assert container.get_value() == ("exact", ["APL"])
 
         assert menu.value is True
+        held_texts = [
+            el.text for el in client.elements.values() if getattr(el, "text", "")
+        ]
+        assert "APL2" in held_texts and "Recent" not in held_texts
+        assert "type" in held_texts  # held rows keep their category hints
+        added = [
+            el for el in client.elements.values()
+            if type(el).__name__ == "Item"
+            and any(c == "drocat-suggest-added" for c in el._classes)
+        ]
+        assert len(added) == 1 and "APL" in _subtree_texts(added[0])
 
-        # An empty focused field offers the persisted query history.
+        # A closing click (focus leaving the field) ends the held query, so the
+        # next focus opens the persisted query history instead.
+        blur = next(l for l in chip._event_listeners.values() if l.type == "blur")
+        chip._handle_event({
+            "listener_id": blur.id,
+            "args": {"still_inside": False},
+        })
+        assert menu.value is False
         focus = next(l for l in chip._event_listeners.values() if l.type == "focus")
         chip._handle_event({"listener_id": focus.id, "args": None})
         assert menu.value is True
@@ -5511,14 +5530,17 @@ class TestComponents:
         assert "'Enter', 'Tab'" in _SUGGEST_KEYNAV_SCRIPT
         assert "event.key === 'Enter' || event.key === 'Tab'" in \
             _SUGGEST_KEYNAV_SCRIPT
-        # After a pick the highlight stays on the list: the handler advances
-        # it locally and a MutationObserver re-applies it once the server
-        # rebuilds the rows.
+        # After a pick the highlight stays on the list: the handler advances it
+        # locally and a MutationObserver re-applies it once the server rebuilds
+        # the rows (a held query re-renders the same rows, ticked).
         assert "MutationObserver" in _SUGGEST_KEYNAV_SCRIPT
         assert "pending = current + 1" in _SUGGEST_KEYNAV_SCRIPT
-        # The editor is wiped WITHOUT dispatching input events: an early
-        # empty-input event would rebuild the suggestion list before the
-        # pick's click lands and drop the pick.
+        # The pick never wipes the editor text locally: blanking the field
+        # while the pick is still on the wire is what reads as the text being
+        # cleared before the chip is added. The server clears it in the same
+        # pass that adds the chip, and no input event is dispatched, so the
+        # in-flight pick cannot be displaced by a rebuilt list.
+        assert "clearEditor" not in _SUGGEST_KEYNAV_SCRIPT
         assert "dispatchEvent" not in _SUGGEST_KEYNAV_SCRIPT
 
     def test_history_body_id_has_instance_hint_and_removable_entry(self, tmp_path, monkeypatch):
@@ -5845,8 +5867,9 @@ class TestComponents:
         assert "aMe12" not in texts and "aMap" not in texts
 
     def test_neuron_list_input_suggestions_finish_and_focus(self, tmp_path, monkeypatch):
-        """Graceful lifecycle: a finished input (suggestion pick) falls back
-        to the Recent list, and a focus change hides the list automatically."""
+        """Graceful lifecycle: a finished input (suggestion pick) holds the
+        query's rows for the next pick, and a focus change hides the list
+        automatically and ends the hold."""
         from nicegui import Client
         from nicegui.page import page
         import ui.config as cfg_mod
@@ -5861,7 +5884,7 @@ class TestComponents:
             if text == "ap":
                 return [("APL", "type")]
             if text == "apl":
-                return [("APL_clock", "type")]
+                return [("APL_clock", "type"), ("APL_13", "type")]
             return []
 
         client = Client(page("/neuron-input-suggest-lifecycle"))
@@ -5897,8 +5920,8 @@ class TestComponents:
         texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
         assert "APL_clock" in texts and "APL" not in texts
 
-        # Pick the suggestion -> exactly one chip, and the finished input
-        # falls back to the Recent list (field still in use).
+        # Pick the suggestion -> exactly one chip, and the finished input holds
+        # the 'apl' rows (minus the picked one) for the next pick.
         def _subtree_texts(el):
             out = [getattr(el, "text", "")]
             for child in el.default_slot.children:
@@ -5913,13 +5936,14 @@ class TestComponents:
         from types import SimpleNamespace
         click.handler(SimpleNamespace())
         assert container.get_value() == ("exact", ["APL_clock"])
-        assert menu.value is True  # back to Recent
+        assert menu.value is True  # held on the same query
         texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
-        assert "Recent" in texts
-        assert "aMe12" in texts and "aMe10" in texts
+        assert "APL_13" in texts
+        assert "Recent" not in texts
+        assert "aMe12" not in texts
 
-        # Focus change (no pointer in the menu) hides the list automatically
-        # and does not commit anything extra.
+        # Focus change (no pointer in the menu) hides the list automatically,
+        # commits nothing extra, and ends the hold.
         blur = next(l for l in chip._event_listeners.values() if l.type == "blur")
         chip._handle_event({
             "listener_id": blur.id,
@@ -5927,6 +5951,13 @@ class TestComponents:
         })
         assert menu.value is False
         assert container.get_value() == ("exact", ["APL_clock"])
+
+        # Re-focusing now offers the history list, not the old query.
+        focus = next(l for l in chip._event_listeners.values() if l.type == "focus")
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        assert menu.value is True
+        texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
+        assert "Recent" in texts and "APL_13" not in texts
 
         # A blur with pending text commits it like a plain blur (and hides).
         # Real typing fires both input listeners: the suggestion driver and
@@ -6030,6 +6061,270 @@ class TestComponents:
         texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
         assert "APL" in texts
         assert menu.value is True
+
+    @staticmethod
+    def _ppl_pool(text):
+        """One held-list provider: three names behind the 'PPL1' prefix."""
+        if str(text).startswith("PPL1"):
+            return [("PPL101", "type"), ("PPL102", "type"), ("PPL103", "type")]
+        return []
+
+    def _build_held_box(self, tmp_path, monkeypatch, route, provider,
+                        show_history=True):
+        """A standard query box over a persisted history, plus its listeners.
+
+        ``show_history`` is applied only AFTER the config path is redirected:
+        the toggles persist to ``ui/local_config.json``, and writing the
+        developer's real settings from a test would silently disable the
+        history list for every later run.
+        """
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.config as cfg_mod
+        from ui.components.common import neuron_list_input
+
+        monkeypatch.setattr(cfg_mod, "LOCAL_CONFIG_FILE", tmp_path / "local_config.json")
+        cfg_mod.set_show_history_enabled(show_history)
+        import ui.history_store as hs
+        monkeypatch.setattr(hs, "_HISTORY_PATH", tmp_path / "neuron_history.json")
+        hs.record(["aMe12"], now="2026-08-11T10:00:00")
+
+        client = Client(page(route))
+        with client:
+            container = neuron_list_input(
+                label="Source Neurons", suggestions=provider)
+        chip = container.chip_input
+
+        def listener(kind, index=0):
+            return [
+                l for l in chip._event_listeners.values() if l.type == kind
+            ][index]
+
+        return client, container, chip, container.suggest_menu, listener
+
+    def test_neuron_list_input_holds_suggestions_across_consecutive_picks(
+        self, tmp_path, monkeypatch
+    ):
+        """Typing 'PPL1' and picking two rows adds two chips from one list.
+
+        The pick clears the editor text but keeps every row of the query listed
+        in the same order, ticking the names that are already in the query
+        rather than dropping them, so the list never shifts under the pointer.
+        The candidate pool is reused, so the provider is never asked again for
+        a held query.
+        """
+        from types import SimpleNamespace
+
+        calls = []
+
+        def provider(text):
+            calls.append(str(text))
+            return TestComponents._ppl_pool(text)
+
+        client, box, chip, menu, listener = self._build_held_box(
+            tmp_path, monkeypatch, "/neuron-input-held-suggestions", provider)
+        focus, typing, editor_click = (
+            listener("focus"), listener("input"), listener("click"))
+        wipes = []
+        real_run_method = chip.run_method
+        chip.run_method = lambda name, *args, **kwargs: (
+            wipes.append((name, args)), real_run_method(name, *args, **kwargs))[1]
+
+        def subtree_texts(el):
+            out = [getattr(el, "text", "")]
+            for child in el.default_slot.children:
+                out.extend(subtree_texts(child))
+            return out
+
+        def visible():
+            return [el.text for el in client.elements.values()
+                    if getattr(el, "text", "")]
+
+        def pick(value):
+            item = next(
+                el for el in client.elements.values()
+                if type(el).__name__ == "Item" and value in subtree_texts(el)
+            )
+            next(l for l in item._event_listeners.values()
+                 if l.type == "click").handler(SimpleNamespace())
+
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        # The click that caused the focus is swallowed (focus opened the list).
+        chip._handle_event({"listener_id": editor_click.id, "args": True})
+        chip._handle_event({"listener_id": typing.id, "args": "PPL1"})
+        assert menu.value is True
+        assert calls == ["PPL1"]
+
+        def ticked():
+            """Values whose row carries the already-in-the-query marker."""
+            out = []
+            for el in client.elements.values():
+                if type(el).__name__ != "Item":
+                    continue
+                if not any(c == "drocat-suggest-added" for c in el._classes):
+                    continue
+                texts = [t for t in subtree_texts(el) if t]
+                out.append(texts[0])
+            return sorted(out)
+
+        pick("PPL101")
+        assert box.get_value() == ("exact", ["PPL101"])
+        assert menu.value is True
+        texts = visible()
+        assert "PPL101" in texts and "PPL102" in texts and "PPL103" in texts
+        assert "Recent" not in texts
+        assert ticked() == ["PPL101"]
+        # The chip is in the model by the time the wipe is issued, and
+        # NiceGUI's outbox always sends element updates ahead of run_method
+        # messages: the browser paints the chip first, then empties the field.
+        assert chip.value == ["PPL101"]
+        assert ("updateInputValue", ("",)) in wipes
+        assert calls == ["PPL1"]  # held rows re-render from the cached pool
+
+        # The list stayed put, so the second pick needs no new text.
+        pick("PPL102")
+        assert box.get_value() == ("exact", ["PPL101", "PPL102"])
+        assert ticked() == ["PPL101", "PPL102"]
+
+        # Re-picking a ticked row changes nothing about the query: the chip is
+        # already there, and the list simply stays.
+        pick("PPL101")
+        assert box.get_value() == ("exact", ["PPL101", "PPL102"])
+        assert menu.value is True and ticked() == ["PPL101", "PPL102"]
+
+        # Dropping a chip clears its tick; the row was never gone.
+        chip.set_value(["PPL102"])
+        assert "PPL101" in visible()
+        assert ticked() == ["PPL102"]
+
+        # A fully ticked list still holds — only a closing click ends the
+        # held query, and the next focus then offers the history again.
+        pick("PPL101")
+        assert menu.value is True and ticked() == ["PPL101", "PPL102"]
+        blur = listener("blur")
+        chip._handle_event({
+            "listener_id": blur.id,
+            "args": {"still_inside": False},
+        })
+        assert menu.value is False
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        assert "Recent" in visible()
+
+    def test_neuron_list_input_editor_click_dismisses_the_held_list(
+        self, tmp_path, monkeypatch
+    ):
+        """A click on the query box closes the held list and resets it.
+
+        The dismissal click does not open the history list in the same
+        breath; the next click shows Recent, so the held query never leaks
+        back into a fresh round.
+        """
+        from types import SimpleNamespace
+
+        client, box, chip, menu, listener = self._build_held_box(
+            tmp_path, monkeypatch, "/neuron-input-held-dismiss",
+            TestComponents._ppl_pool)
+        focus, typing, editor_click = (
+            listener("focus"), listener("input"), listener("click"))
+
+        def subtree_texts(el):
+            out = [getattr(el, "text", "")]
+            for child in el.default_slot.children:
+                out.extend(subtree_texts(child))
+            return out
+
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        chip._handle_event({"listener_id": editor_click.id, "args": True})
+        chip._handle_event({"listener_id": typing.id, "args": "PPL1"})
+        item = next(
+            el for el in client.elements.values()
+            if type(el).__name__ == "Item" and "PPL101" in subtree_texts(el)
+        )
+        next(l for l in item._event_listeners.values()
+             if l.type == "click").handler(SimpleNamespace())
+        assert menu.value is True and "PPL102" in [
+            el.text for el in client.elements.values() if getattr(el, "text", "")]
+
+        # Click one: the held list closes and the query is dropped.
+        chip._handle_event({"listener_id": editor_click.id, "args": True})
+        assert menu.value is False
+        # Click two: the ordinary history toggle takes over from there.
+        chip._handle_event({"listener_id": editor_click.id, "args": True})
+        assert menu.value is True
+        texts = [el.text for el in client.elements.values()
+                 if getattr(el, "text", "")]
+        assert "Recent" in texts and "PPL102" not in texts
+
+    def test_neuron_list_input_history_pick_does_not_hold_suggestions(
+        self, tmp_path, monkeypatch
+    ):
+        """Picking from the Recent list re-offers the Recent list, not a
+        leftover type-ahead query."""
+        from types import SimpleNamespace
+
+        client, box, chip, menu, listener = self._build_held_box(
+            tmp_path, monkeypatch, "/neuron-input-history-pick",
+            TestComponents._ppl_pool)
+        focus, typing = listener("focus"), listener("input")
+
+        def subtree_texts(el):
+            out = [getattr(el, "text", "")]
+            for child in el.default_slot.children:
+                out.extend(subtree_texts(child))
+            return out
+
+        # A blank focused editor shows the history; a pick from it must keep
+        # showing the history even though a suggestion provider exists.
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        item = next(
+            el for el in client.elements.values()
+            if type(el).__name__ == "Item" and "aMe12" in subtree_texts(el)
+        )
+        next(l for l in item._event_listeners.values()
+             if l.type == "click").handler(SimpleNamespace())
+        assert box.get_value() == ("exact", ["aMe12"])
+        assert menu.value is True
+        texts = [el.text for el in client.elements.values()
+                 if getattr(el, "text", "")]
+        assert "Recent" in texts and "PPL101" not in texts
+
+        # New typed text starts its own round: the suggestions for it show.
+        chip._handle_event({"listener_id": typing.id, "args": "PPL1"})
+        texts = [el.text for el in client.elements.values()
+                 if getattr(el, "text", "")]
+        assert "PPL101" in texts and "Recent" not in texts
+
+    def test_neuron_list_input_held_list_survives_history_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        """With the history list switched off, a pick keeps the suggestions
+        open instead of closing the menu."""
+        from types import SimpleNamespace
+
+        client, box, chip, menu, listener = self._build_held_box(
+            tmp_path, monkeypatch, "/neuron-input-held-no-history",
+            TestComponents._ppl_pool, show_history=False)
+        typing = listener("input")
+
+        def subtree_texts(el):
+            out = [getattr(el, "text", "")]
+            for child in el.default_slot.children:
+                out.extend(subtree_texts(child))
+            return out
+
+        chip._handle_event({"listener_id": typing.id, "args": "PPL1"})
+        assert menu.value is True
+        item = next(
+            el for el in client.elements.values()
+            if type(el).__name__ == "Item" and "PPL101" in subtree_texts(el)
+        )
+        next(l for l in item._event_listeners.values()
+             if l.type == "click").handler(SimpleNamespace())
+        assert box.get_value() == ("exact", ["PPL101"])
+        assert menu.value is True
+        texts = [el.text for el in client.elements.values()
+                 if getattr(el, "text", "")]
+        assert "PPL102" in texts
 
     def test_neuron_list_input_suggestions_settings_toggle(self, tmp_path, monkeypatch):
         """The Settings toggle switches the auto-suggest off/on at runtime."""

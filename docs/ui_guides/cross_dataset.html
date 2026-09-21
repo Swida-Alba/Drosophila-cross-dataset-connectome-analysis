@@ -45,11 +45,20 @@
     query per chip (exact / starts with / contains / ends with / regex) and
     help while you type: dataset-aware suggestions list matching type /
     instance / bodyId names with a gray hint naming the matched column and
-    dataset (<code>type &middot; male-cns:v1.0</code>). With the field empty,
+    dataset (<code>type &middot; male-cns:v1.0</code>). Picking a row adds the
+    chip and only then clears what you typed, while that query's rows stay
+    listed in the same order: a name you already added is tinted and ticked
+    rather than dropped, so the list never shifts under the cursor and you can
+    keep clicking through it without retyping — type <code>PPL1</code>, pick
+    <code>PPL101</code>, then <code>PPL102</code>. Clicking a ticked row
+    changes nothing but the list. With the field empty,
     the <b>Recent/Frequent</b> history lists your previously run queries, and
     the list is click-to-toggle: clicking the focused field again hides it,
     clicking once more brings it back (clicking a row still commits it, and
-    clicks on chips or their &times; buttons never toggle the list).
+    clicks on chips or their &times; buttons never toggle the list). A click
+    that closes a held suggestion list ends that query too, so the next
+    opening shows the history instead; clicking outside the box, pressing ESC
+    or typing new text do the same.
     Long chip lists collapse into a scrollable view; <b>Expand</b> shows every
     chip and <b>Collapse</b> restores the compact view &mdash; in both states
     the chips scroll <i>inside</i> the field border and never render outside

@@ -384,9 +384,12 @@ class TestEditorHandle:
     ):
         """Picking a suggestion adds the chip and keeps the list open.
 
-        Mirrors the standard query box: the overlay is re-offered for the still-
-        focused cell instead of being closed (no suppression window is armed), so
-        subsequent focus/typing on the same cell continues to show the list.
+        Like the standard query box, the overlay is re-offered for the
+        still-focused cell instead of being closed (no suppression window is
+        armed), so subsequent focus/typing on the same cell continues to show
+        the list. Deliberate divergence: this per-cell overlay re-offers the
+        Recent/history list, while the shared query box holds the picked
+        query's own rows for the next entry.
         """
         from ui.components import layer_style_editor as editor_module
 

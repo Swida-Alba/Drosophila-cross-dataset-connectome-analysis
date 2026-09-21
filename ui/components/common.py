@@ -92,10 +92,10 @@ _CHIP_LIST_TOGGLE_JS = (
 # The menu never takes focus (no-focus), so keystrokes land in the QSelect
 # editor; this document-level capture handler moves a highlight between the
 # menu rows: ArrowDown enters the list from the input box, ArrowUp leaves it
-# from the first row, and Enter or Tab picks the highlighted row. After a
-# pick the highlight stays ON the list (it advances to the next row and is
-# re-applied after the server rebuilds the menu), so repeated Enter/Tab
-# presses keep selecting entries.
+# from the first row, and Enter or Tab picks the highlighted row. A pick
+# leaves the editor text alone (the server clears it in the same pass that
+# adds the chip) and keeps the highlight ON the list, advancing to the next
+# row, so repeated presses keep selecting entries.
 _SUGGEST_KEYNAV_SCRIPT = """
 <script>
 (function () {
@@ -123,10 +123,10 @@ _SUGGEST_KEYNAV_SCRIPT = """
   }
 
   function observeMenu(menu) {
-    // After a keyboard pick the server rebuilds the list (the picked value
-    // moves to the top of Recent). Re-apply the pending highlight to the
-    // rebuilt rows so the cursor stays on the list; closing the menu drops
-    // any pending highlight.
+    // After a keyboard pick the server rebuilds the list (a held suggestion
+    // query re-renders its own rows, a history pick re-offers Recent).
+    // Re-apply the pending highlight to the rebuilt rows so the cursor stays
+    // on the list; closing the menu drops any pending highlight.
     if (menu.__drocatNav) return;
     var state = { pending: -1 };
     menu.__drocatNav = state;
@@ -170,19 +170,6 @@ _SUGGEST_KEYNAV_SCRIPT = """
     rows.forEach(function (row, i) {
       if (row.classList.contains('drocat-suggest-active')) current = i;
     });
-    function clearEditor() {
-      // Wipe the pending editor text WITHOUT dispatching input events: the
-      // pick below makes the server rebuild the menu, and an early
-      // empty-input event would replace the suggestion rows before the
-      // pick's click message arrives — dropping the pick. The server clears
-      // Quasar's inputValue itself after the pick lands.
-      var input = shell.querySelector('input');
-      if (!input) return;
-      var setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value'
-      ).set;
-      setter.call(input, '');
-    }
     if (event.key === 'ArrowDown') {
       // Enter the list from the input box, or move down one row.
       if (current < rows.length - 1) {
@@ -205,7 +192,12 @@ _SUGGEST_KEYNAV_SCRIPT = """
       if (current === -1) return;
       event.preventDefault();
       event.stopPropagation();
-      clearEditor();
+      // The editor text is deliberately NOT wiped here. A local wipe blanks
+      // the field while the pick is still on the wire, which reads as the
+      // text vanishing before the chip arrives; the server clears it in the
+      // same pass that adds the chip. preventDefault/stopPropagation keep
+      // Quasar from seeing this keystroke, so the leftover text cannot be
+      // committed as an extra chip.
       window.__drocatSuggestEnterPick = true;
       // Keep the cursor ON the list: advance the highlight locally and let
       // the mutation observer re-apply it once the server rebuilds the
@@ -955,9 +947,21 @@ def neuron_list_input(
       from the editor, ArrowUp returns to the editor from the first row, and
       Enter or Tab picks the highlighted row — the highlight then advances
       to the next entry and stays on the list, so repeated presses keep
-      selecting. At most ``suggestion_limit`` entries are shown. With a
-      provider, the native QSelect popup is replaced by the custom
-      suggestion menu.
+      selecting. At most ``suggestion_limit`` entries
+      are shown. With a provider, the native QSelect popup is replaced by
+      the custom suggestion menu.
+
+    Picking a row adds the chip first and clears the editor text after it, and
+    the query's rows stay listed in the same order — a value that is already in
+    the query is tinted and ticked rather than dropped, so the list never
+    shifts under the pointer while several entries are picked in a row (type
+    ``PPL1``, click ``PPL101``, then ``PPL102``; clicking the ticked
+    ``PPL101`` again changes nothing but the list). Any click that closes the
+    list ends the held query: clicking in the query box dismisses it, and so
+    does an outside click, ESC or focusing another input, after which the next
+    opening shows the history list. New typed text starts its own round, and
+    picking from the history list keeps showing that list.
+
     - ``available_neurons``: optional zero-argument dataset getter. When
       supplied, a ``See available neurons`` link opens the rendered,
       searchable cached neuron-index viewer for the current dataset.
@@ -974,8 +978,11 @@ def neuron_list_input(
     The Recent/Frequent history list is click-to-toggle on the focused,
     empty editor: the click that focuses the field opens it, clicking the
     editor again hides it, and clicking once more shows it again. While
-    typed text shows the suggestion list, clicks never hide it; clicks on
-    chips or their remove buttons never toggle anything.
+    typed text shows the suggestion list, clicks never hide it; a HELD
+    suggestion list (still showing after a pick, editor already cleared)
+    closes on its own dismissal click, and the click after that opens the
+    history list. Clicks on chips or their remove buttons never toggle
+    anything.
 
     Returns container with .get_value() -> (filter_mode, neuron_list).
     """
@@ -1239,6 +1246,12 @@ def neuron_list_input(
     # Programmatic list changes (uploads, viewer selections, and clear) must
     # not pop the Recent list open.
     _suppress_history_popup = {"value": False}
+    # The suggestion query whose rows are currently held on screen. A pick
+    # keeps it so the next entry can be added without retyping; any click that
+    # closes the list, or new typed text, drops it back to the history list.
+    # Defined here (not inside the menu block) because the value-commit
+    # handlers below run even when no suggestion menu exists.
+    _sticky = {"query": None}
 
     def normalize_neuron(item):
         return _normalize_neuron_value(item)
@@ -1304,6 +1317,7 @@ def neuron_list_input(
         # flash back over the expanded editor.
         if history_enabled and suggest_menu is not None:
             _suppress_history_popup["value"] = True
+            _sticky["query"] = None
             _close_suggest()
         _apply_chip_list_state(not chip_list_expanded["value"])
 
@@ -1340,6 +1354,7 @@ def neuron_list_input(
         ]
         sync_options(remaining)
         _suppress_history_popup["value"] = True
+        _sticky["query"] = None
         chip_input.set_value(remaining)
         pending_input["value"] = target
         chip_input.run_method("focus")
@@ -1352,6 +1367,7 @@ def neuron_list_input(
         viewer_selected_values.clear()
         viewer_owned_body_ids.clear()
         _suppress_history_popup["value"] = True
+        _sticky["query"] = None
         chip_input.set_value([])
         if chip_list_expanded["value"]:
             _apply_chip_list_state(False)
@@ -1392,6 +1408,9 @@ def neuron_list_input(
         # suggestion — the click commits the picked value, not the typed text.
         if history_enabled and suggest_menu.value:
             return
+        # Committing typed text is a finished query round, so a held suggestion
+        # list must not survive into the next render.
+        _sticky["query"] = None
         args = getattr(event, "args", None) if event is not None else None
         text = str(args or "") or pending_input["value"]
         pending_input["value"] = ""
@@ -1507,7 +1526,8 @@ def neuron_list_input(
         # Whether the open menu currently shows the Recent/Frequent history
         # (as opposed to type-ahead suggestions). Drives the editor
         # click-to-toggle: click shows the history, the next click hides it,
-        # the next shows it again — but never dismisses a suggestion list.
+        # the next shows it again. A held suggestion query (``_sticky``) is
+        # dismissed by its own closing click, which also drops the hold.
         _menu_showing_history = {"value": False}
         # Set by the focus handler: the click that caused the focus must not
         # also toggle the history it just opened. Cleared by the next editor
@@ -1582,77 +1602,123 @@ def neuron_list_input(
             _menu_showing_history["value"] = False
             _close_guard["value"] = False
 
+        def _clear_editor_text():
+            """Drop the typed text so it cannot be committed as an extra chip.
+
+            The wipe is enqueued before the model update on purpose. NiceGUI's
+            outbox flushes coalesced element updates ahead of any run_method
+            message, so the chip still reaches the browser first and the field
+            empties after it, while Quasar's new-value-mode never sees leftover
+            text alongside a foreign model change. The empty input-value event
+            that the wipe produces is pre-empted too: unguarded it would
+            rebuild the menu a second time and drop the highlight the client
+            re-applied after the pick.
+            """
+            _last_suggest_text["value"] = ""
+            chip_input.run_method("updateInputValue", "")
+
         def _commit_suggestion(value):
-            """Commit a picked suggestion/history value as a chip."""
+            """Commit a picked suggestion/history value as a chip.
+
+            The held query (``_sticky``) decides what the finished-input
+            handler renders afterwards: a suggestion pick keeps its own rows so
+            the next entry can be added without retyping, while a history pick
+            re-offers the Recent/Frequent list.
+            """
             current = list(chip_input.value or [])
             if max_items is not None and len(current) >= max_items:
+                # No room for another chip: holding rows that cannot be added
+                # would only leave a list that answers to nothing.
+                _sticky["query"] = None
+                _clear_editor_text()
+                _close_suggest()
                 return
-            if value not in current:
-                merged = current + [value]
-                if max_items is not None:
-                    merged = merged[:max_items]
-                # Quasar's new-value-mode re-adds the leftover editor text as
-                # a chip when the model changes externally; wipe it first so
-                # only the picked value lands in the list. Pre-empt the
-                # resulting empty input-value event: without this it would
-                # rebuild the menu a second time and drop the keyboard
-                # highlight the client just re-applied after the pick.
-                _last_suggest_text["value"] = ""
-                chip_input.run_method("updateInputValue", "")
-                # Quasar's new-value-mode re-adds leftover editor text (e.g. 'MTe')
-                # as a chip when the model is set externally, and the managed
-                # updateInputValue can be racy on the first pick. Synchronously
-                # clear the native input (same approach as the keyboard pick) so
-                # only the picked value lands in the list.
-                try:
-                    chip_input.client.run_javascript(
-                        "(function(){"
-                        f"var s=document.querySelector('.drocat-suggest-anchor-{_suggest_token} .q-field__input');"
-                        "if(s){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
-                        "d.call(s,'');}"
-                        "})()"
-                    )
-                except Exception:
-                    pass
-                # The field is still in use after a pick: keep it marked focused so
-                # the finished-input handler re-offers the Recent list instead of
-                # closing it. Without this the very FIRST pick (before the field is
-                # already flagged focused) could close the menu while later picks
-                # keep it open.
-                _focused["value"] = True
-                sync_options(merged)
-                chip_input.set_value(merged)
-                # Keep the editor focused after a pick so focus does not escape to
-                # <body> (the menu is portaled); the finished-input handler then
-                # re-offers the Recent list instead of closing it.
-                chip_input.run_method("focus")
+            # Only a suggestion row holds its query; a history row must not keep
+            # the type-ahead list alive under a blank editor.
+            held = None if _menu_showing_history["value"] else _sticky["query"]
             pending_input["value"] = ""
-            _reset_candidate_state()
+            if value in current:
+                # A ticked row: it is already in the query, so clicking it must
+                # not disturb the list. No model change means no finished-input
+                # pass, so clear the editor and re-render the held rows here.
+                _sticky["query"] = held
+                _focused["value"] = True
+                _clear_editor_text()
+                if held and _suggestions_enabled():
+                    _show_suggestions(_get_suggestions(held), held)
+                update_status()
+                return
+            merged = current + [value]
+            if max_items is not None:
+                merged = merged[:max_items]
+            _clear_editor_text()
+            # The field is still in use after a pick: keep it marked focused so
+            # the finished-input handler re-offers a list instead of closing
+            # it. Without this the very FIRST pick (before the field is already
+            # flagged focused) could close the menu while later picks keep it
+            # open.
+            _focused["value"] = True
+            sync_options(merged)
+            _sticky["query"] = held
+            if max_items is not None and len(merged) >= max_items:
+                _sticky["query"] = None
+            # A held query keeps its candidate pool: the re-render narrows the
+            # cached rows instead of asking the provider again.
+            if _sticky["query"] is None:
+                _reset_candidate_state()
+            chip_input.set_value(merged)
+            # Keep the editor focused after a pick so focus does not escape to
+            # <body> (the menu is portaled); the finished-input handler then
+            # re-offers the held list instead of closing it.
+            chip_input.run_method("focus")
             update_status()
-            # The menu state is managed by the finished-input handler: an
-            # empty editor falls back to the Recent list.
 
-        def _show_suggestions(entries):
+        def _show_suggestions(entries, query=None):
+            """Render type-ahead rows and hold them for the next pick.
+
+            ``query`` is recorded as the held suggestion, so a pick re-renders
+            the same rows instead of falling back to the history list. The list
+            never shrinks under the pointer: a value that is already in the
+            query keeps its row and is marked (tinted, with a tick) so it reads
+            as done rather than missing.
+            """
             # Always discard the previous query before handling the new one.
             # This matters when a narrower query has no candidates: the menu
             # is hidden, but its old rows must not survive into a later reopen.
             _menu_showing_history["value"] = False
+            _sticky["query"] = query
+            chipped = {str(item) for item in (chip_input.value or [])}
             suggest_menu.clear()
             if not entries:
+                # Nothing left to offer for this query: close and let the next
+                # focus re-offer the history list.
+                _sticky["query"] = None
                 _close_suggest()
                 return
             with suggest_menu:
                 for value, hint in entries[:suggestion_limit]:
-                    with ui.item().props("dense").on_click(
-                            lambda v=value: _commit_suggestion(v)):
+                    added = str(value) in chipped
+                    row = ui.item().props("dense")
+                    if added:
+                        row.classes("drocat-suggest-added")
+                    with row.on_click(lambda v=value: _commit_suggestion(v)):
                         with ui.row().classes("items-center gap-2 no-wrap"):
                             ui.label(str(value)).classes("text-body2")
                             if hint:
                                 ui.label(str(hint)).classes(
                                     "text-caption drocat-muted")
+                            if added:
+                                # Stays listed so the rows never move under the
+                                # pointer; the tick says it is already in the
+                                # query, so clicking it again changes nothing.
+                                ui.icon("check").classes(
+                                    "text-caption drocat-muted")
             _refresh_menu()
 
         def _show_history(query: str = ""):
+            # Rendering the history list replaces any held suggestion query,
+            # so a later pick has nothing to hold on to.
+            _sticky["query"] = None
             if history_kind == "line":
                 from ..line_history_store import (
                     datasets_of as _datasets_of,
@@ -1972,6 +2038,7 @@ def neuron_list_input(
                 if _focused["value"] and _history_enabled():
                     _show_history(text.strip())
                 else:
+                    _sticky["query"] = None
                     _close_suggest()
                     # Nothing was shown for this text: clear the dedup key so a
                     # later re-enable (or re-focus) of the feature re-processes
@@ -1979,8 +2046,10 @@ def neuron_list_input(
                     _last_suggest_text["value"] = None
                 return
             if _suggestions_enabled():
-                _show_suggestions(_get_suggestions(text.strip()))
+                typed = text.strip()
+                _show_suggestions(_get_suggestions(typed), typed)
             else:
+                _sticky["query"] = None
                 _close_suggest()
                 # Suggestions are toggled off: forget this text so re-enabling
                 # the toggle lets the very next keystroke reopen the list.
@@ -2035,6 +2104,7 @@ def neuron_list_input(
                 # menu is open. Treat the next focus change as a real blur
                 # even in that disabled state so no stale popup survives.
                 _focused["value"] = False
+                _sticky["query"] = None
                 _reset_candidate_state()
                 _close_suggest()
                 return
@@ -2043,6 +2113,9 @@ def neuron_list_input(
             if _pointer_in_menu["value"]:
                 return
             _focused["value"] = False
+            # Leaving the field is a closing click: the next focus re-offers
+            # the history list rather than the query that was left behind.
+            _sticky["query"] = None
             _reset_candidate_state()
             # Focus left the field: hide the list automatically, then commit
             # the pending text like a plain blur.
@@ -2053,6 +2126,7 @@ def neuron_list_input(
             """Hide this menu when another neuron input receives focus."""
             _focused["value"] = False
             _pointer_in_menu["value"] = False
+            _sticky["query"] = None
             _reset_candidate_state()
             _close_suggest()
             # If Quasar skipped the old field's blur event, preserve the
@@ -2077,18 +2151,31 @@ def neuron_list_input(
 
         def _on_menu_hide(_event):
             _pointer_in_menu["value"] = False
-            # The menu closed without a suggestion pick and NOT via a
-            # server-side rebuild/close: the typed text is still pending —
-            # commit it like a plain blur. Suggestion commits clear
-            # pending_input first, so they no-op.
-            if (not suggest_menu.value and pending_input["value"]
-                    and not _close_guard["value"]):
+            if suggest_menu.value or _close_guard["value"]:
+                # Reopened, or closed by a server rebuild (_refresh_menu):
+                # neither ends the held suggestion query.
+                return
+            # The browser closed the list (ESC or an outside click) without a
+            # pick: the held query is finished so the next focus offers the
+            # history list, and any text still in the editor commits like a
+            # plain blur. Suggestion commits clear pending_input first.
+            _sticky["query"] = None
+            if pending_input["value"]:
                 commit_pending_text()
 
         def _finished_input(_event):
             # A chip was added or removed (Enter / pick / x): the input
-            # finished. With an empty editor and the field still in use,
-            # offer the Recent list again; otherwise hide the menu.
+            # finished. A held suggestion query keeps its own rows on screen so
+            # the next entry can be picked without retyping (a removed chip
+            # returns to the list, since the render drops only current chips).
+            # Otherwise an empty editor in a still-used field re-offers the
+            # Recent list, and anything else hides the menu.
+            held = _sticky["query"]
+            if (held and _focused["value"] and _suggestions_enabled()
+                    and not _suppress_history_popup["value"]
+                    and _feature_enabled()):
+                _show_suggestions(_get_suggestions(held), held)
+                return
             _reset_candidate_state()
             if not _feature_enabled():
                 _close_suggest()
@@ -2117,6 +2204,14 @@ def neuron_list_input(
             if not getattr(event, "args", False):
                 return
             if not _focused["value"] or pending_input["value"]:
+                return
+            if suggest_menu.value and _sticky["query"]:
+                # A held suggestion list is closed by the click that dismisses
+                # it; the held query goes with it, so the next click opens the
+                # history list instead of the query left behind by a pick.
+                _sticky["query"] = None
+                _reset_candidate_state()
+                _close_suggest()
                 return
             if not _history_enabled():
                 return
@@ -2271,6 +2366,7 @@ def neuron_list_input(
         if max_items is not None:
             current = current[:max_items]
         _suppress_history_popup["value"] = True
+        _sticky["query"] = None
         sync_options(current)
         chip_input.set_value(current)
         update_status()

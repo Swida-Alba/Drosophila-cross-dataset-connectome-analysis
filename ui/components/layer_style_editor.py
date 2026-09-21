@@ -522,7 +522,7 @@ class LayerStyleEditorHandle:
         self._suggest_suppress_until: float = 0.0
         # Post-pick hold: a refreshed table can emit a synthetic blur right after a
         # suggestion pick; within this window on_inline_commit keeps the overlay
-        # open (matching the query box, where a pick does not close the list).
+        # open (matching the query box, where a pick never closes the list).
         self._suggest_keep_open_until: float = 0.0
         self._suggest_pick_listener_id: Optional[str] = None
         self._suggest_remove_listener_id: Optional[str] = None
@@ -1064,11 +1064,15 @@ class LayerStyleEditorHandle:
     def _commit_neuron_suggestion(self, row_id: int, value: str) -> None:
         """Append a picked suggestion as a chip, keeping the list open.
 
-        Mirroring the standard query box, picking an entry does not close the
-        overlay: the chip is committed and the Recent/history list is re-offered
-        for the still-focused cell (the existing-chip filter drops the value just
-        added). The overlay is a plain div, so the cell is re-focused explicitly
-        in case the table refresh remounts the q-select and drops focus.
+        Like the standard query box, picking an entry does not close the
+        overlay; unlike it, this overlay re-offers the Recent/history list
+        rather than holding the typed query's rows (the existing-chip filter
+        drops the value just added). The per-cell overlay is a plain div
+        rendered from the client, so holding a query across picks would need
+        its own filter state here — deliberately out of scope while the shared
+        ``neuron_list_input`` owns that behavior. The cell is re-focused
+        explicitly in case the table refresh remounts the q-select and drops
+        focus.
         """
         if not 0 <= row_id < len(self.rows):
             return
