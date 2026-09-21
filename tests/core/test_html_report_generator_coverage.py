@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import types
 
 import matplotlib
 
@@ -1871,6 +1872,104 @@ def test_density_curve_card_has_vh_guides():
     assert 'vertical (per-threshold) row' in html
     assert 'horizontal (density-matched) row' in html
     assert 'vguides' in html and 'hguides' in html
+
+
+# ---------------------------------------------------------------------------
+# Auto-mode resolution banner + the aligned-rows card's advisory labelling
+# (plan auto-mode-density-regression P4)
+# ---------------------------------------------------------------------------
+
+def _status_banner(status):
+    return hrg._auto_mode_resolution_banner(
+        types.SimpleNamespace(_auto_bootstrap_status=status))
+
+
+def test_auto_mode_resolution_banner_tracks_the_outcome():
+    """The banner appears for exactly the two outcomes a reader can misread."""
+    degraded = _status_banner({
+        'outcome': 'degraded',
+        'uncaptured': ['ds_one', 'ds_two'],
+        'failures': {'ds_one': 'MemoryError: out of memory'},
+        'reason': 'no density capture was measured for any dataset'})
+    assert 'did not resolve' in degraded
+    assert '#ef4444' in degraded          # red: nothing density-aligned ran
+    assert 'ds_one bootstrap failed: MemoryError' in degraded
+    assert 'no density capture: ds_one, ds_two' in degraded
+    assert 'user_warning_notes.txt' in degraded
+
+    partial = _status_banner({
+        'outcome': 'verticals_only', 'vertical_rows': 6,
+        'uncaptured': ['ds_two'], 'failures': {}})
+    assert 'resolved partially' in partial
+    assert '#b45309' in partial           # amber: a spine ran, not the envelope
+    assert '6 vertical' in partial
+
+    for installed in ({'outcome': 'installed'}, None, {}, {'outcome': ''}):
+        assert hrg._auto_mode_resolution_banner(
+            types.SimpleNamespace(_auto_bootstrap_status=installed)) == ''
+
+
+def _alignment_section(tmp_path, status, combinations, aligned_rows):
+    curves = pd.DataFrame([
+        {'dataset': ds, 'threshold': t, 'path_count': 10 * (i + 1),
+         'edge_count': 20 * (i + 1), 'density': 0.5 / t,
+         'is_materialized': t == 3}
+        for i, ds in enumerate(['ds_one', 'ds_two']) for t in (3, 5)])
+    analyzer = types.SimpleNamespace(
+        parameters=types.SimpleNamespace(
+            full_output_path=str(tmp_path),
+            threshold_combinations=combinations),
+        _density_curves_df=curves,
+        _density_windows_df=None,
+        _density_alignment_df=pd.DataFrame(aligned_rows),
+        _auto_bootstrap_status=status)
+    return hrg._generate_auto_density_alignment_section(
+        analyzer, ['ds_one', 'ds_two'], {'ds_one': 'D1', 'ds_two': 'D2'})
+
+
+def _alignment_rows():
+    return [
+        {'id': 'threshold=3', 'label': 'threshold=3', 'mode': 'vertical',
+         'ds_one': 3, 'ds_two': 3},
+        {'id': 'aligned_density=0.6',
+         'label': 'aligned_density=0.6 (ds_one 6, ds_two 2)',
+         'mode': 'horizontal', 'ds_one': 6, 'ds_two': 2},
+    ]
+
+
+def test_aligned_rows_card_labels_rows_the_run_never_installed(tmp_path):
+    """A partially-resolved auto run must not claim its advisory rows ran.
+
+    Export keeps publishing the horizontal rows of the captured datasets
+    (the 2026-09-15 "exclude, don't veto" decision), so the card is the only
+    place that can tell a reader which rows are actually queries.
+    """
+    vertical_only = [{'id': 'threshold=3',
+                      'thresholds': {'ds_one': 3, 'ds_two': 3}}]
+    html = _alignment_section(
+        tmp_path,
+        {'outcome': 'verticals_only', 'vertical_rows': 1,
+         'horizontal_rows': 0, 'uncaptured': ['ds_three'], 'failures': {}},
+        vertical_only, _alignment_rows())
+    assert "installed as this run's queries except the advisory row(s): " \
+        "aligned_density=0.6." in html
+    assert 'resolved partially' in html
+
+
+def test_aligned_rows_card_says_all_rows_ran_when_none_are_advisory(tmp_path):
+    html = _alignment_section(
+        tmp_path,
+        {'outcome': 'installed', 'vertical_rows': 1, 'horizontal_rows': 1,
+         'uncaptured': [], 'failures': {}},
+        [
+            {'id': 'threshold=3', 'thresholds': {'ds_one': 3, 'ds_two': 3}},
+            {'id': 'aligned_density=0.6',
+             'thresholds': {'ds_one': 6, 'ds_two': 2}},
+        ],
+        _alignment_rows())
+    assert 'These rows are also runnable as a combination query.' in html
+    assert 'advisory' not in html
+    assert _status_banner({'outcome': 'installed'}) == ''
 
 
 def test_neuron_counts_per_role_axes_and_shared_legend():

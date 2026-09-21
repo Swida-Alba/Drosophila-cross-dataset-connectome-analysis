@@ -1215,6 +1215,21 @@ the static export of the same figure. The run guide
 `[auto threshold]` / `[density]` warning appended to
 `user_warning_notes.txt`.
 
+**When auto mode cannot fully resolve:** a dataset that fails its bootstrap
+enumeration (after one retry) costs only itself. The measured datasets still
+install their **vertical** spine, because a vertical row is one shared integer
+threshold for every dataset; the **horizontal** rows need every dataset's
+curve, so they are computed for the report as advisory and not installed as
+queries — the aligned-rows card names which ids those are. Nothing degrades
+silently: `user_warning_notes.txt` carries an
+`[auto threshold] auto mode did NOT resolve` / `resolved PARTIALLY` block with
+the per-dataset reason, `run_manifest.json` records it as `auto_mode_status`,
+and the report's density section opens with a matching banner. A failure
+anywhere in the post-fetch cache bookkeeping — the per-neuron slice over the
+fetched frame, or the neuron-index marker write that follows it, both running
+over an already saved connection database — no longer aborts the delegated run
+behind it.
+
 ### Density curves in every mode
 
 The curves are not exclusive to auto mode: **every pathfinding comparison**

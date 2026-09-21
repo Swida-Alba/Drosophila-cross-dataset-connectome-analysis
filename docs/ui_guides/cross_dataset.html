@@ -142,6 +142,17 @@
     <code>density_windows.csv</code>, and
     <code>density_alignment_best_matches.csv</code>; the run guide
     (<code>_UserGuide_please_read_me</code>) mirrors the auto warnings.</p>
+  <p>Auto mode resolves in one of three ways, and never quietly:
+    <b>installed</b> (every dataset measured — vertical spine plus the
+    density-matched rows), <b>verticals_only</b> (a dataset could not be
+    measured, so the horizontal rows are exported for reference but not run;
+    the aligned-rows card names those advisory ids), or <b>degraded</b> (no
+    schedule could be measured, so the requested thresholds run as-is and the
+    density section is bannered red). The outcome and its per-dataset reasons
+    are written to <code>user_warning_notes.txt</code> and to
+    <code>run_manifest.json → auto_mode_status</code>, and a failed neuron
+    cache marker no longer costs the measurement behind it — it costs a later
+    re-fetch of those neurons only.</p>
   <p>Density curves are not exclusive to auto mode: <b>every pathfinding
     comparison</b> exports <code>density_curves.csv</code> and
     <code>density_windows.csv</code> for every queried dataset, spanning its

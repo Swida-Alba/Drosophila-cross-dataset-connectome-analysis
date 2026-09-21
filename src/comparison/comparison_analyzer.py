@@ -3168,8 +3168,12 @@ class ComparisonAnalyzer:
             total_rows += s["rows"]
             provenance = self._path_provenance_row(ds, t)
             refs = query_refs.get((ds, int(t)), [])
+            # The same join the CSV's `query_id` column uses, so a note names
+            # a cell that exists there rather than a third id scheme. The
+            # embedded ';' carries no following space, so it cannot be read
+            # as this line's '; ' field separator.
             query_text = (
-                f"; query_id={','.join(refs)}" if refs else "")
+                f"; query_id={';'.join(refs)}" if refs else "")
             # 'n/a' when the frame carries no bodyId columns — a literal 0
             # would read as "no untyped neurons were involved", which is
             # unknowable there.
@@ -6026,6 +6030,11 @@ class ComparisonAnalyzer:
                 'suggested_combinations': getattr(
                     self, '_suggested_combinations', None) or [],
             },
+            # Present only on auto-mode runs: how the density-aligned schedule
+            # resolved ('installed' | 'verticals_only' | 'degraded'), which
+            # datasets yielded no capture, and why.
+            **({'auto_mode_status': self._auto_bootstrap_status}
+               if getattr(self, '_auto_bootstrap_status', None) else {}),
             'provenance_file': 'comparison_results/pathfinding_provenance.csv',
             'code_version': getattr(self, '_code_version', None),
         }
@@ -7506,6 +7515,10 @@ class ComparisonAnalyzer:
             self._log("Saved: density_windows.csv")
             self._density_windows_df = windows_df
 
+        status = getattr(self, '_auto_bootstrap_status', None)
+        if status:
+            self._append_auto_mode_status_notes(status)
+
         if not is_auto:
             # Aligned rows are the auto mode's measured product; other modes
             # get the curves/windows diagnostics only.
@@ -7618,6 +7631,54 @@ class ComparisonAnalyzer:
         self._append_density_warnings(
             curves, windows, metas, aligned, normalizer, comparison_results_dir)
 
+    def _append_auto_mode_status_notes(self, status: Dict[str, Any]) -> None:
+        """Record how auto mode resolved in the run folder, not just stdout.
+
+        The bootstrap's diagnostics go through ``_log`` (a ``tqdm.write``), so a
+        degraded schedule used to leave no trace in the outputs and a Standard
+        report read as if it were the intended one (plan
+        §auto-mode-density-regression P4, 2026-09-21).
+        """
+        outcome = str(status.get('outcome') or '')
+        if outcome not in ('degraded', 'verticals_only'):
+            return
+        uncaptured = [str(ds) for ds in (status.get('uncaptured') or [])]
+        failures = status.get('failures') or {}
+        if outcome == 'degraded':
+            head = (
+                '- [auto threshold] auto mode did NOT resolve: no '
+                'density-aligned schedule could be measured, so the run '
+                'compared the requested thresholds as-is. The aligned-rows '
+                'table, the per-density analysis sections and the alignment '
+                'guides are absent for this reason, not by design.')
+        else:
+            head = (
+                f'- [auto threshold] auto mode resolved PARTIALLY: the '
+                f'{status.get("vertical_rows", 0)} installed '
+                'vertical (same-threshold) row(s) run as queries, but the '
+                'horizontal (density-matched) rows need every dataset\'s '
+                'density curve and were not installed; any horizontal row in '
+                'the aligned-rows table is advisory only.')
+        lines = [head]
+        if uncaptured:
+            lines.append('  • no density capture: ' + ', '.join(uncaptured))
+        for ds in sorted(failures):
+            lines.append(f'  • {ds} bootstrap measurement failed: '
+                         f'{failures[ds]}')
+        if status.get('reason'):
+            lines.append(f'  • reason: {status["reason"]}')
+        lines.append('  • machine-readable copy: run_manifest.json → '
+                     'auto_mode_status')
+        if failures:
+            lines.append(
+                '  • the traceback is in '
+                'dataset_data/<dataset>/run_log.txt')
+        try:
+            self._append_user_warning_notes(
+                self.parameters.full_output_path, ['\n'.join(lines)])
+        except Exception as e:
+            self._log(f"Warning: could not append auto-mode notes: {e}")
+
     def _append_density_warnings(self, curves, windows, metas, aligned,
                                  normalizer, comparison_results_dir) -> None:
         """Append the auto-mode ``[auto threshold]`` / ``[density]`` notes."""
@@ -7702,16 +7763,39 @@ class ComparisonAnalyzer:
         except Exception as e:
             self._log(f"Warning: could not append density notes: {e}")
 
+    def _bootstrap_measure_floor(self, dataset: str, boot_t: int) -> None:
+        """Enumerate one dataset's floor cone for the auto-mode bootstrap.
+
+        Raises whatever the delegated run raised: the caller scopes the damage
+        to this dataset rather than abandoning the whole measurement (plan
+        §auto-mode-density-regression P3, 2026-09-21 — one dataset's failed
+        cache bookkeeping used to discard every dataset's density capture).
+        """
+        if boot_t in self.raw_results.get(dataset, {}):
+            return
+        if self.parameters.output_folder:
+            cached = self._try_load_cached(dataset, boot_t)
+            if cached is not None:
+                self.raw_results.setdefault(dataset, {})[boot_t] = \
+                    self._finalize_loaded_result(dataset, boot_t, cached)
+                return
+        df = self.run_path_analysis(dataset, boot_t, verbose_mode='simple')
+        self.raw_results.setdefault(dataset, {})[boot_t] = df
+        if self.parameters.output_folder:
+            self._save_result(dataset, boot_t, df)
+
     def _bootstrap_auto_mode(self) -> bool:
         """Measure per-dataset density, then install aligned combinations.
 
         Plan §5 Phase D. Runs ONE enumeration per dataset at the requested
         floor (``min(thresholds)``, defaulting to 3 when no threshold chips
         were given — auto mode never requires them) with density capture on,
-        builds the
-        curves/windows from the persisted artifacts, and installs the
-        aligned rows as the run's combination schedule. Returns True when
-        the bootstrap succeeded; False leaves the caller to fall back.
+        builds the curves/windows from the persisted artifacts, and installs the
+        aligned rows as the run's combination schedule. A dataset that cannot
+        be measured costs only itself: its absence narrows the vertical spine's
+        window and drops the horizontal rows, and is reported through
+        ``_auto_bootstrap_status``. Returns True when rows were installed;
+        False leaves the caller to fall back to the requested thresholds.
         """
         from .threshold_density import align_horizontal, align_vertical
         datasets = self.parameters.get_dataset_names()
@@ -7721,40 +7805,71 @@ class ComparisonAnalyzer:
                   f"for {len(datasets)} dataset(s)")
         saved_thresholds = list(self.parameters.thresholds)
         self.parameters.thresholds = [boot_t]
-        bootstrap_failed = False
+
+        def _status(outcome: str, *, vertical_rows: int = 0,
+                    horizontal_rows: int = 0, uncaptured=(),
+                    failures=None, reason: Optional[str] = None) -> Dict[str, Any]:
+            """One key set for every outcome, so the manifest stays stable.
+
+            ``reason`` explains a schedule that failed for a reason the
+            per-dataset failures do not cover (no capture at all, no aligned
+            row in range, a rejected install) and is None otherwise — present
+            either way, because readers are told to find this block by key
+            rather than by outcome.
+            """
+            return {
+                'outcome': outcome,
+                'floor_threshold': boot_t,
+                'requested_thresholds': list(saved_thresholds),
+                'vertical_rows': vertical_rows,
+                'horizontal_rows': horizontal_rows,
+                'uncaptured': [str(ds) for ds in (uncaptured or ())],
+                'failures': dict(failures or {}),
+                'reason': reason,
+            }
+        failures: Dict[str, str] = {}
         try:
             for ds in datasets:
-                if boot_t in self.raw_results.get(ds, {}):
-                    continue
-                if self.parameters.output_folder:
-                    cached = self._try_load_cached(ds, boot_t)
-                    if cached is not None:
-                        self.raw_results.setdefault(ds, {})[boot_t] = \
-                            self._finalize_loaded_result(ds, boot_t, cached)
-                        continue
-                df = self.run_path_analysis(ds, boot_t, verbose_mode='simple')
-                self.raw_results.setdefault(ds, {})[boot_t] = df
-                if self.parameters.output_folder:
-                    self._save_result(ds, boot_t, df)
-        except Exception as e:
-            self._log(f"Auto threshold bootstrap failed: {e}")
-            bootstrap_failed = True
+                error = None
+                for attempt in (1, 2):
+                    try:
+                        self._bootstrap_measure_floor(ds, boot_t)
+                        error = None
+                        break
+                    except Exception as e:
+                        import traceback
+                        error = e
+                        self._log(
+                            f"Auto threshold bootstrap: {ds} measurement "
+                            f"attempt {attempt} failed "
+                            f"({type(e).__name__}: {e})", level='warn')
+                        self._log(f"  {traceback.format_exc()}")
+                if error is not None:
+                    failures[str(ds)] = f'{type(error).__name__}: {error}'
         finally:
             self.parameters.thresholds = saved_thresholds
-        if bootstrap_failed:
-            # Applied after the restore: without the measured rows the run
-            # still needs a schedule — default to the physical-minimum
-            # floor when no chips were set (the finally above would
-            # otherwise overwrite this fallback with the empty list).
-            self.parameters.thresholds = saved_thresholds or [3]
-            return False
 
         curves, windows, metas = self._build_density_curves()
         if not curves:
             self._log("Auto threshold mode: no density capture produced — "
                       "falling back to the requested thresholds.")
+            # Applied after the restore above: without the measured rows the
+            # run still needs a schedule — default to the physical-minimum
+            # floor when no chips were set (the finally would otherwise
+            # overwrite this fallback with the empty list).
+            self.parameters.thresholds = saved_thresholds or [3]
+            self._auto_bootstrap_status = _status(
+                'degraded', uncaptured=datasets, failures=failures,
+                reason='no density capture was measured for any dataset')
             return False
         order = list(datasets)
+        uncaptured = [str(ds) for ds in order if not curves.get(ds)]
+        if uncaptured:
+            self._log(
+                "Auto threshold mode: no density capture for "
+                + ', '.join(uncaptured) + " — installing the vertical "
+                "(same-threshold) spine only; the density-matched horizontal "
+                "rows need every dataset's curve.", level='warn')
         nick_by_ds = {}
         try:
             _nicks = self.parameters.get_dataset_nicknames()
@@ -7787,7 +7902,13 @@ class ComparisonAnalyzer:
             rows.append({'id': v_id, 'label': v_id,
                          'row_mode': 'vertical',
                          'thresholds': {ds: int(r) for ds in order}})
-        for i, r in enumerate(align_horizontal(curves, levels=4), start=1):
+        # Density-matched rows need every dataset's curve: a row built without
+        # one would silently omit a column while its label still promises the
+        # full dataset set (and the schedule validator rejects a row missing a
+        # dataset), so a partial measurement installs the vertical spine only.
+        horizontal_rows = [] if uncaptured else list(
+            align_horizontal(curves, levels=4))
+        for i, r in enumerate(horizontal_rows, start=1):
             if len(r.get('thresholds', {})) != len(order):
                 continue
             # Horizontal rows are per-dataset by construction: carry the
@@ -7810,13 +7931,32 @@ class ComparisonAnalyzer:
         if not unique:
             self._log("Auto threshold mode: no aligned rows in range — "
                       "falling back to the requested thresholds.")
+            self.parameters.thresholds = saved_thresholds or [3]
+            self._auto_bootstrap_status = _status(
+                'degraded', uncaptured=uncaptured, failures=failures,
+                reason='the measured windows admit no aligned row')
             return False
         try:
             self.parameters.install_auto_combinations(unique)
         except Exception as e:
-            self._log(f"Auto threshold mode: could not install rows: {e}")
+            import traceback
+            self._log(f"Auto threshold mode: could not install rows: "
+                      f"{type(e).__name__}: {e}")
+            self._log(f"  {traceback.format_exc()}")
+            self.parameters.thresholds = saved_thresholds or [3]
+            self._auto_bootstrap_status = _status(
+                'degraded', uncaptured=uncaptured, failures=failures,
+                reason=f'could not install the aligned rows: '
+                       f'{type(e).__name__}: {e}')
             return False
         self._auto_alignment_rows = unique
+        self._auto_bootstrap_status = _status(
+            'installed' if not uncaptured else 'verticals_only',
+            vertical_rows=sum(
+                1 for r in unique if 'vertical' in (r.get('row_mode') or '')),
+            horizontal_rows=sum(
+                1 for r in unique if 'horizontal' in (r.get('row_mode') or '')),
+            uncaptured=uncaptured, failures=failures)
         self._log(f"Auto threshold mode: installed {len(unique)} aligned "
                   f"query row(s) across {len(order)} dataset(s)")
         return True

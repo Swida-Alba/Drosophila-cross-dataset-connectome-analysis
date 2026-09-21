@@ -2058,6 +2058,48 @@ def _generate_threshold_alignment_section(analyzer, dataset_names,
     return ''.join(parts)
 
 
+def _auto_mode_resolution_banner(analyzer) -> str:
+    """Callout when auto mode did not install its full aligned schedule.
+
+    A degraded bootstrap used to leave the report reading like a deliberate
+    Standard run (plan §auto-mode-density-regression P4, 2026-09-21), so the
+    reason now appears in the section it affects.
+    """
+    status = getattr(analyzer, '_auto_bootstrap_status', None) or {}
+    outcome = str(status.get('outcome') or '')
+    if outcome not in ('degraded', 'verticals_only'):
+        return ''
+    bits = []
+    uncaptured = [str(ds) for ds in (status.get('uncaptured') or [])]
+    if uncaptured:
+        bits.append('no density capture: ' + ', '.join(uncaptured))
+    failures = status.get('failures') or {}
+    for ds in sorted(failures):
+        bits.append(f'{ds} bootstrap failed: {failures[ds]}')
+    if status.get('reason'):
+        bits.append(str(status['reason']))
+    detail = html.escape(' · '.join(bits))
+    if outcome == 'degraded':
+        style = 'background:#fee2e2;border-left:4px solid #ef4444;'
+        head = ('<strong>⚠️ Auto (density-aligned) mode did not resolve.'
+                '</strong> No aligned schedule could be measured, so this run '
+                'compared the requested thresholds as-is. The aligned-rows '
+                'table, the per-density analysis sections and the alignment '
+                'guides are absent for that reason, not by design.')
+    else:
+        style = 'background:#fff7ed;border-left:4px solid #b45309;'
+        head = ('<strong>⚠️ Auto mode resolved partially.</strong> Only the '
+                f'{status.get("vertical_rows", 0)} vertical (same-threshold) '
+                'row(s) run as queries; the density-matched horizontal rows '
+                'need every dataset’s curve and were not installed.')
+    return ('<div style="' + style + 'padding:12px 16px;margin:8px 0;'
+            'border-radius:0 6px 6px 0;">' + head
+            + (f' <span style="color:#666;">{detail}</span>' if detail else '')
+            + ' <span style="color:#666;">Also recorded in '
+              'user_warning_notes.txt and run_manifest.json '
+              '(auto_mode_status).</span></div>')
+
+
 def _generate_auto_density_alignment_section(analyzer, dataset_names,
                                              nickname_map) -> str:
     """Density window/coverage table + two-panel curve (all modes, Phase E).
@@ -2096,6 +2138,7 @@ def _generate_auto_density_alignment_section(analyzer, dataset_names,
              'are <strong>type-level</strong> projections of the same search. '
              'A threshold here is a per-connection synapse count '
              '(Min Synapse Count).</p>']
+    parts.append(_auto_mode_resolution_banner(analyzer))
     if windows is not None and not getattr(windows, 'empty', True):
         cols = [c for c in ('dataset', 'applied', 'w_start',
                             'w_star_stored', 'w_star_measured',
@@ -2149,6 +2192,36 @@ def _generate_auto_density_alignment_section(analyzer, dataset_names,
         if has_partial:
             cols.append('partial_datasets')
 
+        # Which aligned rows this run actually installed as queries. Export
+        # computes horizontal rows over the captured datasets only, so a
+        # partially-resolved auto mode can publish density-matched rows that
+        # were never run; the card must not claim otherwise (plan
+        # §auto-mode-density-regression P3, 2026-09-21).
+        installed_cells = set()
+        for _q in (getattr(analyzer.parameters, 'threshold_combinations',
+                           None) or []):
+            _cells = (_q.get('thresholds') or {}) if isinstance(_q, dict) else {}
+            try:
+                installed_cells.add(tuple(sorted(
+                    (str(ds), int(v)) for ds, v in _cells.items())))
+            except (TypeError, ValueError):
+                continue
+
+        def _row_key(row):
+            try:
+                return tuple(sorted(
+                    (str(ds), int(row[ds])) for ds in dataset_names))
+            except (TypeError, ValueError, KeyError):
+                return None
+
+        advisory_ids = []
+        if 'id' in aligned.columns:
+            for _, _row in aligned.iterrows():
+                if pd.isna(_row['id']):
+                    continue
+                if _row_key(_row) not in installed_cells:
+                    advisory_ids.append(html.escape(str(_row['id'])))
+
         def _cell(row, c):
             v = row[c]
             try:
@@ -2181,7 +2254,12 @@ def _generate_auto_density_alignment_section(analyzer, dataset_names,
                      'the density-matched envelope</strong> (per-dataset '
                      'thresholds equalizing E(t)/N, meaningful even where '
                      'no shared complete threshold exists). These rows are '
-                     'also runnable as a combination query.</p></div>')
+                     + ('also runnable as a combination query.'
+                      if not advisory_ids else
+                      'installed as this run\'s queries except the advisory '
+                      'row(s): ' + ', '.join(advisory_ids[:12])
+                      + ('…' if len(advisory_ids) > 12 else '') + '.')
+                     + '</p></div>')
     parts.append('</div></div>')
     return ''.join(parts)
 

@@ -244,7 +244,14 @@ writes both files.
   diagnosable from the run folder alone. In
   auto mode, `comparison_results/density_alignment_best_matches.csv`
   additionally holds the measured vertical/horizontal aligned rows, and
-  `[auto threshold]` / `[density]` warnings mirror into the run guide. When
+  `[auto threshold]` / `[density]` warnings mirror into the run guide. A
+  partially-resolved auto mode says so instead of quietly returning a
+  Standard report: an `[auto threshold] auto mode did NOT resolve` /
+  `resolved PARTIALLY` block in the run notes, `auto_mode_status` in
+  `run_manifest.json`, and a banner in the report's density section. In
+  that case the density-matched rows are still exported but only the
+  vertical spine runs as queries, and the aligned-rows card names the
+  advisory ids. When
   both row modes coexist, read the vertical rows as the like-for-like spine
   (one identical threshold for every dataset) and the horizontal rows as
   the density-matched envelope (per-dataset thresholds equalizing E(t)/N,

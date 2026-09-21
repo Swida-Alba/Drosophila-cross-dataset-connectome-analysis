@@ -250,6 +250,28 @@ A refused run leaves no output folder behind.
 
 ---
 
+#### Neuron-Index Cache Marker Notes
+
+**Symptom:** a run prints
+`⚠️  Neuron-index cache slice failed for N neurons (...)` or
+`⚠️  Neuron-index cache markers failed for N neurons (...)`, and the run
+folder's `user_warning_notes.txt` carries a matching
+`- [cache markers] <dataset>: …` line.
+
+**Cause:** both are post-fetch bookkeeping failures. The connection rows were
+already saved and are used; what failed is either the per-neuron slice over
+the fetched frame (`slice`) or the neuron-index completion-marker write
+(`markers`). The traceback is in `dataset_data/<dataset>/run_log.txt`.
+
+**Solution:** usually none needed — the cost is that those neurons are
+re-fetched on the next run, and the analysis in hand is complete. Re-run with
+a quieter machine if the note names `MemoryError`, which is the shape these
+failures take when a wide cone is being materialized. A
+`⚠️ N fetched neurons returned 0 connections EACH — NOT marking them complete`
+line beside it is the deliberate poisoning guard, not a failure: those neurons
+genuinely have no cached rows, so they are re-verified by the zero-marker
+revalidation instead of being stamped as verified zeros.
+
 #### Missing tkinter (Linux)
 
 **Symptom:**

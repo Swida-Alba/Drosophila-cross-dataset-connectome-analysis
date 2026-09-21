@@ -398,7 +398,17 @@ Budget is ignored and `edge_weight_floor` remains empty.
   `[density partial]`) instead of vetoing them. The report embeds the
   curves as an interactive Plotly card with V/H guides (vertical = the
   per-threshold rows' thresholds, horizontal = the density levels; hover
-  shows the owning row id). Zero-outdegree index markers are revalidated
+  shows the owning row id). A dataset whose bootstrap enumeration fails is
+  retried once and then costs only itself: the vertical spine still installs
+  from the captured datasets, the horizontal rows drop out of the schedule,
+  and the outcome lands in `user_warning_notes.txt` plus
+  `run_manifest.json` → `auto_mode_status` (`installed` / `verticals_only` /
+  `degraded`) — a degraded auto run never renders as a deliberate Standard
+  report. A raising mark block — the per-neuron slice over the fetched frame
+  and the neuron-index marker write that follows it (connection rows are
+  already saved by then) — is caught, costs only a later re-fetch, and names
+  the failed stage in the `[cache markers]` note; it can no
+  longer abort the delegated run. Zero-outdegree index markers are revalidated
   against the server (batched count query, once per process) before being
   trusted — poisoned markers from a failed fetch self-heal on the next
   run. Per-dataset console traces persist to

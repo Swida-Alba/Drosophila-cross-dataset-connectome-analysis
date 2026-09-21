@@ -6198,6 +6198,98 @@ class FindNeuronConnection:
         
         # All neurons can be marked as complete - no validation needed for type/instance
         self._update_neuron_index_after_fetch(connections, upstream_bodyIds, downstream_bodyIds)
+
+    def _report_cache_marker_failure(self, neurons_to_mark, error, stage):
+        '''Log a failed cache-marker step without failing the run around it.
+
+        ``stage`` names which half of the mark block broke ('slice' for the
+        per-neuron frame slice, 'markers' for the index update) so the run log
+        and the warning note say what was lost, not just that something was.
+        '''
+        import traceback
+        label = ('the per-neuron slice behind' if stage == 'slice'
+                 else 'completion')
+        self._vprint(
+            f'  ⚠️  Neuron-index cache {stage} failed for '
+            f'{len(neurons_to_mark):,} neurons '
+            f'({type(error).__name__}: {error}); their saved connections '
+            'stand, but a later run re-fetches them.', level='always')
+        self._vprint(f'     {traceback.format_exc()}', level='full')
+        self._warn_notes.append(
+            f'- [cache markers] {self.dataset}: {label} cache markers failed '
+            f'for {len(neurons_to_mark):,} fetched neurons '
+            f'({type(error).__name__}: {error}). Their cached connection rows '
+            'are saved and used; only the marker is missing, so a later run '
+            're-fetches these neurons.')
+
+    def _mark_fetched_neurons_quietly(self, combined, neurons_to_mark,
+                                      downstream_bodyIds=None):
+        '''Slice, guard, and mark the neurons a fetch just added to the cache.
+
+        Every step here is bookkeeping that runs AFTER the connection rows are
+        saved, so none of it may cost the analysis that earned those rows: an
+        unguarded raise in this block discarded a whole cross-dataset
+        auto-mode measurement run (plan §auto-mode-density-regression). The
+        slice is the step that touches the entire connection frame, and the
+        one a frame-shaped failure lands on, so the guard has to cover it and
+        not just the index update. A skipped marker only means a later run
+        re-fetches these neurons.
+
+        Returns the number of neurons marked, 0 when the all-empty poisoning
+        guard skipped them, or None when the block failed.
+        '''
+        self._vprint(
+            f'  ⏳ Preparing to mark {len(neurons_to_mark):,} neurons as '
+            'cached...', level='full')
+        try:
+            if isinstance(combined, pl.DataFrame):
+                neurons_conn = combined.filter(
+                    pl.col('bodyId_pre').is_in([str(b) for b in neurons_to_mark])
+                ).to_pandas()
+            else:
+                neurons_conn = combined[
+                    combined['bodyId_pre'].isin(neurons_to_mark)
+                ]
+            # Compared as strings either way: bodyId_pre is Utf8 on the Polars
+            # path and whatever the caller passed on the pandas one.
+            neurons_with_conns = {str(b) for b in
+                                  neurons_conn['bodyId_pre'].unique()}
+        except Exception as e:
+            self._report_cache_marker_failure(neurons_to_mark, e, 'slice')
+            return None
+
+        neurons_without_conns = (
+            {str(b) for b in neurons_to_mark} - neurons_with_conns)
+        # Guard against the poisoning vector (plan R3-a, 2026-09-15): a fetch
+        # that returned ZERO rows for every neuron in a large batch is the
+        # signature of a failed/transient pull — marking the batch complete
+        # would stamp every neuron as a verified 0-outdegree neuron (the
+        # hemibrain index spent months in that state; 360k stale markers).
+        # Skip the marking; the zero-marker revalidation re-checks these
+        # neurons on the next encounter.
+        if len(neurons_without_conns) == len(neurons_to_mark) \
+                and len(neurons_to_mark) >= 50:
+            self._vprint(
+                f'  ⚠️  {len(neurons_to_mark):,} fetched neurons returned '
+                '0 connections EACH — NOT marking them complete '
+                '(suspect empty pull). Genuinely isolated neurons are '
+                're-verified by the zero-marker revalidation; see '
+                'dataset_data/<dataset>/run_log.txt.', level='always')
+            return 0
+        if neurons_without_conns:
+            self._vprint(
+                f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 '
+                'connections (will still be marked as complete)', level='full')
+        try:
+            self._mark_neurons_as_cached(
+                neurons_to_mark, neurons_conn, downstream_bodyIds)
+        except Exception as e:
+            self._report_cache_marker_failure(neurons_to_mark, e, 'markers')
+            return None
+        self._vprint(
+            f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons '
+            'marked as fetched', level='full')
+        return len(neurons_to_mark)
     
     def _update_neuron_index_after_fetch(self, connections, upstream_bodyIds, downstream_bodyIds=None):
         '''
@@ -8985,34 +9077,8 @@ class FindNeuronConnection:
         # no-cache mode there is no persistent state to update.
         neurons_to_mark = list(set(uncached_upstream + partially_cached)) if self.use_cache else []
         if len(neurons_to_mark) > 0:
-            self._vprint(f'  ⏳ Preparing to mark {len(neurons_to_mark):,} neurons as cached...', level='full')
-            # Get the connections for these neurons from the combined dataframe
-            neurons_conn = combined[combined['bodyId_pre'].isin(neurons_to_mark)]
-
-            # Debug: Check if some neurons have no connections
-            neurons_with_conns = set(neurons_conn['bodyId_pre'].unique())
-            neurons_without_conns = set(neurons_to_mark) - neurons_with_conns
-            # Guard against the poisoning vector (plan R3-a, 2026-09-15):
-            # a fetch that returned ZERO rows for every neuron in a large
-            # batch is the signature of a failed/transient pull — marking
-            # the batch complete would stamp every neuron as a verified
-            # 0-outdegree neuron (the hemibrain index spent months in that
-            # state; 360k stale markers). Skip the marking; the zero-marker
-            # revalidation re-checks these neurons on the next encounter.
-            if len(neurons_without_conns) == len(neurons_to_mark) \
-                    and len(neurons_to_mark) >= 50:
-                self._vprint(
-                    f'  ⚠️  {len(neurons_to_mark):,} fetched neurons returned '
-                    '0 connections EACH — NOT marking them complete '
-                    '(suspect empty pull). Genuinely isolated neurons are '
-                    're-verified by the zero-marker revalidation; see '
-                    'dataset_data/<dataset>/run_log.txt.', level='always')
-            else:
-                if neurons_without_conns:
-                    self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
-
-                self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
-                self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
+            self._mark_fetched_neurons_quietly(
+                combined, neurons_to_mark, downstream_bodyIds)
         
         # Apply label mapping if available (AFTER caching, so cache keeps original types)
         if self.label_mapper and not combined.empty:
@@ -9151,29 +9217,11 @@ class FindNeuronConnection:
         combined = self._enrich_connections_with_neuron_info_polars(combined)
 
         # Mark neurons as cached (after successful enrichment, like the
-        # pandas path) using only the small per-neuron slice in pandas.
+        # pandas path).
         neurons_to_mark = list(set(uncached_upstream + partially_cached)) if self.use_cache else []
         if len(neurons_to_mark) > 0:
-            self._vprint(f'  ⏳ Preparing to mark {len(neurons_to_mark):,} neurons as cached...', level='full')
-            neurons_conn = combined.filter(
-                pl.col('bodyId_pre').is_in([str(b) for b in neurons_to_mark])
-            ).to_pandas()
-            neurons_with_conns = set(neurons_conn['bodyId_pre'].unique())
-            neurons_without_conns = set(str(b) for b in neurons_to_mark) - neurons_with_conns
-            # Same all-empty poisoning guard as the pandas path (plan R3-a).
-            if len(neurons_without_conns) == len(neurons_to_mark) \
-                    and len(neurons_to_mark) >= 50:
-                self._vprint(
-                    f'  ⚠️  {len(neurons_to_mark):,} fetched neurons returned '
-                    '0 connections EACH — NOT marking them complete '
-                    '(suspect empty pull). Genuinely isolated neurons are '
-                    're-verified by the zero-marker revalidation; see '
-                    'dataset_data/<dataset>/run_log.txt.', level='always')
-            else:
-                if neurons_without_conns:
-                    self._vprint(f'  ℹ️  Note: {len(neurons_without_conns)} neurons have 0 connections (will still be marked as complete)', level='full')
-                self._mark_neurons_as_cached(neurons_to_mark, neurons_conn, downstream_bodyIds)
-                self._vprint(f'  ✓ Cache update complete - {len(neurons_to_mark)} neurons marked as fetched', level='full')
+            self._mark_fetched_neurons_quietly(
+                combined, neurons_to_mark, downstream_bodyIds)
 
         # Label mapping has no Polars port; fall back to a guarded pandas
         # round trip on this optional configuration.

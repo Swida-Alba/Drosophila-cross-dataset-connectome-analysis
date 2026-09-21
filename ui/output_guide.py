@@ -1460,6 +1460,22 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "label_map.json",
              "description": "Label mappings for source/target neurons across "
                             "datasets (incl. auto type mapping)."},
+            {"pattern": "run_manifest.json",
+             "description": "Self-describing manifest of the whole run: the "
+                            "parameters dump, dataset nicknames, applied "
+                            "thresholds and query views per dataset, "
+                            "threshold comparability, per-dataset coverage, "
+                            "untyped-drop stats, alignment suggestions, and — "
+                            "on auto threshold runs — auto_mode_status, the "
+                            "machine-readable record of how the density-aligned "
+                            "schedule resolved (outcome installed / "
+                            "verticals_only / degraded, the bootstrap floor, "
+                            "the installed row counts, the datasets that "
+                            "produced no density capture, their failure "
+                            "reasons, and any schedule-level reason). A "
+                            "partially resolved auto run is also described in "
+                            "user_warning_notes.txt and bannered in the "
+                            "report's density section."},
             {"pattern": "dataset_metadata_comparison.csv",
              "description": "Per-dataset metadata comparison.",
              "preview": True,
@@ -1717,9 +1733,13 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "comparison_results/density_alignment_best_matches.csv",
              "description": "Auto threshold mode: vertical (same-threshold) and "
                             "horizontal (same-density) aligned threshold rows, "
-                            "one integer per dataset. These rows are runnable as "
-                            "a combination query. When both modes coexist, read "
-                            "vertical rows as the like-for-like spine and "
+                            "one integer per dataset. The rows this run "
+                            "installed are its queries (see "
+                            "threshold_combinations.csv); when auto mode "
+                            "resolved only partially, the remaining rows are "
+                            "advisory — the report names them and the density "
+                            "section carries a banner. When both modes coexist, "
+                            "read vertical rows as the like-for-like spine and "
                             "horizontal rows as the density-matched envelope. "
                             "Horizontal rows also carry "
                             "density_at_<dataset> columns (the achieved density "

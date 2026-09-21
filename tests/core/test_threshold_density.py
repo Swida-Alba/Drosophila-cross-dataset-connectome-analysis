@@ -369,6 +369,273 @@ def test_bootstrap_falls_back_without_capture(monkeypatch):
                         lambda: ({}, {}, {}))
     assert analyzer._bootstrap_auto_mode() is False
     assert params.thresholds == [3]  # restored
+    status = analyzer._auto_bootstrap_status
+    assert status['outcome'] == 'degraded'
+    assert sorted(status['uncaptured']) == ['ds_a', 'ds_b']
+
+
+# --- Auto-mode resilience: one failed dataset must not veto the schedule ---
+
+def _three_ds_params(tmp):
+    from comparison.comparison_parameters import ComparisonParameters
+    return ComparisonParameters(
+        datasets=['ds_a', 'ds_b', 'ds_c'], source_neurons=['L2'],
+        target_neurons=['clock'], thresholds=[3], threshold_mode='auto',
+        threshold_dataset_order=['ds_a', 'ds_b', 'ds_c'],
+        output_folder=str(tmp), verbose=False)
+
+
+def _two_point_curve(lo, hi, dense, sparse):
+    return {'thresholds': [lo, hi], 'path_count': [10, 1],
+            'edge_count': [10, 1], 'density': [dense, sparse]}
+
+
+def _two_ds_curves():
+    return ({'ds_a': _two_point_curve(3, 20, 2.0, 0.2),
+             'ds_b': _two_point_curve(3, 18, 1.6, 0.16)},
+            {'ds_a': (3, 20), 'ds_b': (3, 18)},
+            {'ds_a': {}, 'ds_b': {}})
+
+
+def _three_ds_curves():
+    curves, windows, metas = _two_ds_curves()
+    curves['ds_c'] = _two_point_curve(3, 16, 1.2, 0.12)
+    windows['ds_c'] = (3, 16)
+    metas['ds_c'] = {}
+    return curves, windows, metas
+
+
+def test_bootstrap_installs_verticals_when_one_dataset_fails(monkeypatch,
+                                                             tmp_path):
+    """A dataset that cannot be measured costs only itself (plan P3).
+
+    The per-dataset loop used to share one try/except, so a raise in ANY
+    dataset discarded the captures the others had already produced and the
+    run silently degraded to the Standard schedule (the 2026-09-21
+    regression: hemibrain's cache-marker write raised, three good
+    measurements were thrown away, and nothing said so in the outputs).
+    """
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    params = _three_ds_params(tmp_path)
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+    calls = []
+
+    def _fake(ds, boot_t):
+        calls.append((ds, boot_t))
+        if ds == 'ds_c':
+            raise RuntimeError('cache marker exploded')
+
+    monkeypatch.setattr(analyzer, '_bootstrap_measure_floor', _fake)
+    # ds_c yields no capture: the curve dict carries only ds_a / ds_b.
+    curves, windows, metas = _two_ds_curves()
+    monkeypatch.setattr(analyzer, '_build_density_curves',
+                        lambda: (curves, windows, metas))
+
+    assert analyzer._bootstrap_auto_mode() is True
+    assert params.threshold_auto is True
+    assert params.threshold_mode == 'combinations'
+    queries = params.get_threshold_queries()
+    assert queries
+    # Vertical spine only — no density-matched row without every curve.
+    assert all(str(q['id']).startswith('threshold=') for q in queries)
+    # The schedule validator rejects a row missing a dataset, so the failed
+    # one still carries a cell.
+    for q in queries:
+        assert set(q['thresholds']) == {'ds_a', 'ds_b', 'ds_c'}
+    status = analyzer._auto_bootstrap_status
+    assert status['outcome'] == 'verticals_only'
+    assert status['uncaptured'] == ['ds_c']
+    assert status['horizontal_rows'] == 0
+    assert 'cache marker exploded' in status['failures']['ds_c']
+    # The failure is retried once before the dataset is given up on.
+    assert calls.count(('ds_c', 3)) == 2
+
+
+def test_bootstrap_keeps_horizontals_when_every_dataset_captures(monkeypatch,
+                                                                tmp_path):
+    """The full-capture path is unchanged: density-matched rows still install."""
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    params = _three_ds_params(tmp_path)
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+    monkeypatch.setattr(analyzer, '_bootstrap_measure_floor',
+                        lambda ds, boot_t: None)
+    curves, windows, metas = _two_ds_curves()
+    curves['ds_c'] = _two_point_curve(3, 16, 1.4, 0.14)
+    windows['ds_c'] = (3, 16)
+    metas['ds_c'] = {}
+    monkeypatch.setattr(analyzer, '_build_density_curves',
+                        lambda: (curves, windows, metas))
+
+    assert analyzer._bootstrap_auto_mode() is True
+    ids = [str(q['id']) for q in params.get_threshold_queries()]
+    assert any(i.startswith('aligned_density=') for i in ids)
+    status = analyzer._auto_bootstrap_status
+    assert status['outcome'] == 'installed'
+    assert status['uncaptured'] == []
+    assert status['horizontal_rows'] >= 1
+
+
+def test_auto_mode_degradation_reaches_user_warning_notes(tmp_path):
+    """A degraded auto mode must be visible in the run folder (plan P4)."""
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    import pathlib
+    params = _three_ds_params(tmp_path)
+    run_dir = pathlib.Path(params.full_output_path)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+    analyzer._append_auto_mode_status_notes({
+        'outcome': 'degraded',
+        'uncaptured': ['ds_c'],
+        'failures': {'ds_c': 'RuntimeError: cache marker exploded'},
+    })
+    text = (run_dir / 'user_warning_notes.txt').read_text(encoding='utf-8')
+    assert 'auto mode did NOT resolve' in text
+    assert 'ds_c bootstrap measurement failed: RuntimeError' in text
+    assert 'run_manifest.json' in text
+    # An installed run writes nothing.
+    analyzer._append_auto_mode_status_notes({'outcome': 'installed'})
+    assert (run_dir / 'user_warning_notes.txt').read_text(
+        encoding='utf-8') == text
+
+
+def _bootstrap_with(monkeypatch, out_dir, failures=(), curves=None):
+    """Run the real bootstrap with the per-dataset measurement stubbed out."""
+    import pathlib
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
+    params = _three_ds_params(out_dir)
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+
+    def _fake(ds, boot_t):
+        if ds in failures:
+            raise RuntimeError(f'{ds} exploded')
+
+    monkeypatch.setattr(analyzer, '_bootstrap_measure_floor', _fake)
+    monkeypatch.setattr(analyzer, '_build_density_curves',
+                        lambda: curves if curves is not None
+                        else ({}, {}, {}))
+    analyzer._bootstrap_auto_mode()
+    return analyzer
+
+
+def test_auto_mode_status_uses_one_schema_and_reaches_the_manifest(monkeypatch,
+                                                                  tmp_path):
+    """Every outcome publishes the same keys, and the manifest carries them.
+
+    The warning note sends a reader to ``run_manifest.json ->
+    auto_mode_status``, so a key that exists only for some outcomes breaks
+    anything that reads the block generically; and without a bootstrap the
+    key must be absent rather than null, because its presence is what marks a
+    run as an auto-mode run.
+    """
+    import json
+    import pathlib
+    core = {'outcome', 'floor_threshold', 'requested_thresholds',
+            'vertical_rows', 'horizontal_rows', 'uncaptured', 'failures',
+            'reason'}
+    degraded = _bootstrap_with(monkeypatch, tmp_path / 'degraded',
+                               failures={'ds_a', 'ds_b', 'ds_c'})
+    partial = _bootstrap_with(monkeypatch, tmp_path / 'partial',
+                              failures={'ds_c'}, curves=_two_ds_curves())
+    installed = _bootstrap_with(monkeypatch, tmp_path / 'installed',
+                                curves=_three_ds_curves())
+    statuses = [degraded._auto_bootstrap_status,
+                partial._auto_bootstrap_status,
+                installed._auto_bootstrap_status]
+    assert [s['outcome'] for s in statuses] == [
+        'degraded', 'verticals_only', 'installed']
+    for status in statuses:
+        assert set(status) == core
+        assert status['floor_threshold'] == 3
+    # `reason` carries the explanation the per-dataset failures cannot give.
+    assert degraded._auto_bootstrap_status['reason']
+    assert installed._auto_bootstrap_status['reason'] is None
+
+    # A run that never bootstrapped (standard / custom-combination mode)
+    # publishes no block at all: its presence is what marks an auto run.
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    out_dir = tmp_path / 'never-bootstrapped'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plain = ComparisonAnalyzer(_three_ds_params(out_dir), verbose=False)
+    def _manifest_of(analyzer):
+        out = pathlib.Path(analyzer.parameters.full_output_path)
+        out.mkdir(parents=True, exist_ok=True)
+        analyzer._write_run_manifest(str(out))
+        return json.loads((out / 'run_manifest.json').read_text(
+            encoding='utf-8'))
+
+    assert 'auto_mode_status' not in _manifest_of(plain)
+    manifest = _manifest_of(partial)
+    assert manifest['auto_mode_status'] == partial._auto_bootstrap_status
+
+
+def _marker_target(**overrides):
+    """A bare FindNeuronConnection with the marker's collaborators stubbed."""
+    import coana
+
+    obj = coana.FindNeuronConnection.__new__(coana.FindNeuronConnection)
+    obj.dataset = 'ds_x'
+    obj._warn_notes = []
+    obj.prints = []
+    obj._vprint = lambda *a, **k: obj.prints.append(a)
+    obj.calls = []
+    obj._mark_neurons_as_cached = lambda *a, **k: obj.calls.append(a)
+    for key, value in overrides.items():
+        setattr(obj, key, value)
+    return obj
+
+
+def _printed(obj, fragment):
+    return any(fragment in str(arg) for args in obj.prints for arg in args)
+
+
+def test_cache_marker_failure_does_not_escape_the_fetch_path():
+    """A marker write costs a later re-fetch, never the run in hand (P1)."""
+    import inspect
+    import pandas as pd
+    import coana
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError('neuron index write failed')
+
+    obj = _marker_target(_mark_neurons_as_cached=_boom)
+    frame = pd.DataFrame({'bodyId_pre': ['1', '2', '3'], 'weight': [1, 2, 3]})
+    assert obj._mark_fetched_neurons_quietly(frame, ['1', '2', '3']) is None
+    assert any('[cache markers]' in note for note in obj._warn_notes)
+    assert 'completion cache markers failed' in obj._warn_notes[0]
+    assert 'neuron index write failed' in obj._warn_notes[0]
+    assert _printed(obj, 'Neuron-index cache markers failed')
+
+    # The 2026-09-21 failure window was the slice itself, which the frame's
+    # shape can break before any marker code runs (plan §6a item 6).
+    obj = _marker_target()
+    broken = pd.DataFrame({'bodyId_post': [1, 2, 3]})   # no bodyId_pre
+    assert obj._mark_fetched_neurons_quietly(broken, ['1', '2']) is None
+    assert obj.calls == []
+    assert 'per-neuron slice behind cache markers failed' in obj._warn_notes[0]
+    assert _printed(obj, 'Neuron-index cache slice failed')
+
+    # Success marks exactly the sliced rows, on both engines.
+    import polars as pl
+    obj = _marker_target()
+    pl_frame = pl.DataFrame({'bodyId_pre': ['1', '2', '9'], 'weight': [1, 2, 3]})
+    assert obj._mark_fetched_neurons_quietly(pl_frame, ['1', '2', '3']) == 3
+    marked_ids, marked_frame = obj.calls[0][0], obj.calls[0][1]
+    assert marked_ids == ['1', '2', '3']
+    assert sorted(marked_frame['bodyId_pre']) == ['1', '2']
+
+    # The all-empty poisoning guard still skips rather than marks.
+    obj = _marker_target()
+    ids = [str(i) for i in range(60)]
+    empty = pd.DataFrame({'bodyId_pre': pd.Series([], dtype=object)})
+    assert obj._mark_fetched_neurons_quietly(empty, ids) == 0
+    assert obj.calls == []
+    assert obj._warn_notes == []
+
+    src = inspect.getsource(coana.FindNeuronConnection)
+    assert src.count(
+        'self._mark_fetched_neurons_quietly(') == 2
+    assert 'self._mark_neurons_as_cached(neurons_to_mark' not in src
 
 
 # --- Regression guard: denominator is the PRUNED searched cone ------------
@@ -602,3 +869,52 @@ def test_density_aligned_rows_partial_capture_emits_horizontal():
     rows_full = ComparisonAnalyzer._density_aligned_rows(
         fake, curves3, windows3, metas3)
     assert not any(r.get('partial_datasets') for r in rows_full)
+
+
+def test_untyped_drop_note_names_the_query_cell_the_csv_uses(tmp_path):
+    """The note's ``query_id=`` is the CSV cell, not a third id scheme.
+
+    One threshold can serve both a vertical and a horizontal row, so the
+    shared drop cell belongs to several queries. The CSV renders that as
+    ``a;b``; the note joined with ``,``, which reads as one id containing a
+    comma and cannot be matched back to a row of the file it points at.
+    """
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    import pathlib
+    params = _three_ds_params(tmp_path)
+    params.threshold_mode = 'combinations'
+    params.threshold_combinations = [
+        {'id': 'threshold=3', 'label': 'threshold=3',
+         'thresholds': {'ds_a': 3, 'ds_b': 3, 'ds_c': 3}},
+        {'id': 'aligned_density=1.6', 'label': 'aligned_density=1.6',
+         'thresholds': {'ds_a': 3, 'ds_b': 5, 'ds_c': 7}},
+    ]
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+    out_dir = pathlib.Path(analyzer.parameters.full_output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    analyzer._untyped_drop_stats = {
+        ('ds_a', 3): {'rows': 12, 'neurons': 4, 'untyped_pre': 7,
+                      'untyped_post': 5, 'total_rows': 100,
+                      'fraction': 0.12},
+    }
+    analyzer._untyped_dropped_records = [pd.DataFrame({
+        'dataset': ['ds_a', 'ds_a'], 'threshold': [3, 3],
+        'type_pre': ['U', 'L2'], 'type_post': ['C', 'U'],
+        'untyped_side': ['pre', 'post']})]
+    analyzer._export_untyped_drop_records()
+
+    csv_id = pd.read_csv(
+        out_dir / 'comparison_results' / 'untyped_dropped_records.csv',
+        dtype=str)['query_id'].unique().tolist()
+    assert csv_id == ['threshold=3;aligned_density=1.6']
+
+    lines = [ln for ln in (out_dir / 'user_warning_notes.txt').read_text(
+        encoding='utf-8').splitlines() if '[untyped dropped]' in ln]
+    # One drop cell -> one line, however many queries reuse it (the counts
+    # are cell-level, so repeating them per query would read as double).
+    assert len(lines) == 1
+    assert 'query_id=threshold=3;aligned_density=1.6' in lines[0]
+    # The embedded ';' carries no following space, so this line's own '; '
+    # field separator still yields the whole id list as its last field.
+    assert lines[0].split('; ')[-1] == (
+        'query_id=threshold=3;aligned_density=1.6)')
