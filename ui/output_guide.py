@@ -2054,15 +2054,17 @@ TOOL_GUIDE_SPECS = {
                    "the mapping is never rewritten.",
         "files": [
             {"pattern": "report.html",
-             "description": "The per-run report: headline + the three "
-                            "coverage levels (L1 claim / L2 provenance / "
-                            "L3 validation), branches (marks same-name-"
-                            "first selections), targets, fills, out-map "
-                            "expansion, backward source status, suspects "
-                            "verification (opt-in runs), morphology "
-                            "record, scenes, file index. Hover any dotted "
-                            "term for its definition. Regenerable for any "
-                            "past run: python -m "
+             "description": "The per-run report's 11 tabs: Coverage "
+                            "(headline + the three coverage levels L1 claim "
+                            "/ L2 provenance / L3 validation), Branches "
+                            "(marks same-name-first selections), Targets, "
+                            "Fill, Reciprocal (stage-5d reverse evidence, "
+                            "one row per scanned neuron), Out-map, Backward "
+                            "source status, Suspects verification (opt-in "
+                            "runs), Morph, Scenes and Log. Hover any dotted "
+                            "term — or any table header, which explains its "
+                            "own column — for its definition. Regenerable "
+                            "for any past run: python -m "
                             "comparison.mapping_validation_report <run_dir>"},
             {"pattern": "README.txt",
              "description": "Slim directions (what file is what, where to "
@@ -2071,17 +2073,27 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "user_warning_notes.txt",
              "description": "Bracketed-tag warning lines: scene self-check "
                             "status, the null-sample run-sensitivity "
-                            "advisory, and mapper-gap evidence (types with "
+                            "advisory, the [reciprocal] share of scanned "
+                            "gap-fill members whose own branch source type "
+                            "reaches a reverse top-3, and mapper-gap "
+                            "evidence (types with "
                             "no backward mapping)."},
             {"pattern": "set_coverage.json",
-             "description": "Set-level coverage (the deliverable): FAFB "
-                            "assigned / fill-proposed / unpaired, MCNS "
-                            "in-pool by tier, holes with bodyIds, "
-                            "family_material, and mapper_gap."},
-            {"pattern": "validation/pair_summary.csv",
-             "description": "Per branch: pools, matched M, gap, "
+             "description": "Set-level coverage (the deliverable), in two "
+                            "role-named blocks — `source` (assigned / "
+                            "fill-proposed / unpaired) and `target` (in-pool "
+                            "by tier, holes with bodyIds, family_material) — "
+                            "labelled by source_dataset / target_dataset, "
+                            "plus mapper_gap."},
+            {"pattern": "validation/pair_summary.csv", "preview": True,
+             "description": "Per branch: pools, matched M (mutual-best 1:1 "
+                            "pairs), gap = smaller pool − M, "
                             "gap_triggered, verdict/noise counters, "
-                            "hemisphere symmetry."},
+                            "hemisphere symmetry. The report's Branches tab "
+                            "shows Mapped (verified_strong+verified+"
+                            "borderline) and measures its own gap against "
+                            "that, because a source can carry a verdict "
+                            "without being paired — both numbers hover."},
             {"pattern": "mapping/mapping_export.csv",
              "description": "Branch-level mapping: chains, linker values, "
                             "refined bodyId pools (the mapper-facing "
@@ -2089,10 +2101,15 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "validation/validation_results.csv",
              "description": "Source×branch verdict rows: verdict tier, "
                             "ranks + scores, connectivity flags, source "
-                            "size."},
+                            "size. The published target is the ordering-"
+                            "chain best (jaccard first, rank_union "
+                            "breaking a jaccard tie); "
+                            "ru_top_target_bodyId names the rank_union "
+                            "claimant when the two differ."},
             {"pattern": "validation/pool_categories.csv",
              "description": "Per in-map target: tier (matched / verified / "
-                            "borderline / unmatched) with best evidence."},
+                            "borderline / unmatched) with the chain "
+                            "claimant's best evidence."},
             {"pattern": "validation/examinees.csv",
              "description": "Expansion rows with the Revision 3.12 "
                             "category partition (tier / sibling / "
@@ -2113,18 +2130,26 @@ TOOL_GUIDE_SPECS = {
              "description": "Gate-dropped expansion rows with "
                             "noise_reason."},
             {"pattern": "validation/deep_candidates.csv",
-             "description": "Aggressive-mode-only deep window (empty in "
-                            "family/restrictive modes)."},
+             "description": "Candidate-window rows below the pool best: the "
+                            "top-rank_top_k band in family/aggressive "
+                            "modes, the wider band in aggressive only."},
             {"pattern": "gap_fill/gap_fill_proposals.csv",
              "description": "Fill proposals (in_pool / out_of_pool) for "
                             "every unpaired neuron — proposals only."},
             {"pattern": "gap_fill/gap_fill_levels.csv",
              "description": "Branch-level fill level: high / medium / low / "
                             "type_gated / advice."},
-            {"pattern": "gap_fill/gap_fill_dedup.csv",
+            {"pattern": "gap_fill/gap_fill_dedup.csv", "preview": True,
              "description": "The bodyId-unique fill (one row per target "
                             "bodyId, dedup precedence + dup flag) — the "
-                            "real gap-fill list."},
+                            "real gap-fill list. On --backward-evidence "
+                            "runs it also carries each neuron's reciprocal "
+                            "ledger from its strongest branch: the grade, "
+                            "the top-1 triple, and the branch-type hit the "
+                            "grade rests on (with backward_own_type_via). "
+                            "A rollup, not a scan record — the scores, "
+                            "ranks and top-N live in "
+                            "expansion/backward_matches.csv."},
             {"pattern": "expansion/family_candidates.csv",
              "description": "The whole family bin (out-map bodyIds of each "
                             "branch's target type)."},
@@ -2135,16 +2160,24 @@ TOOL_GUIDE_SPECS = {
              "description": "Opt-in (--backward-evidence): the reverse "
                             "target -> source homolog evidence per scanned "
                             "neuron - the candidates / family / relative "
-                            "members first, then the validated pool "
-                            "targets as an internal control "
-                            "(scan_role=pool_target) (member_bodyId, "
+                            "members first, then the UNMATCHED validated "
+                            "pool members "
+                            "(scan_role=pool_target); matched / verified / "
+                            "borderline are not scanned - the symmetric "
+                            "forward score is their evidence "
+                            "(member_bodyId, "
                             "member_type, "
                             "member_category, scan_role): backward_evidence "
                             "with the backward_top1_source_bodyId / "
                             "backward_top1_source_type and the "
-                            "backward_top1_in_branch flag, plus the "
-                            "serialized backward_topN list. Each row also "
-                            "states the "
+                            "backward_top1_in_branch flag, the "
+                            "backward_own_type_* columns naming the "
+                            "branch-type hit the grade actually rests on "
+                            "(its bodyId, type, scores, ranks, thin flag "
+                            "and backward_own_type_via = which ranking "
+                            "placed it there), plus the serialized "
+                            "backward_topN list in jaccard order. Each row "
+                            "also states the "
                             "evidence base the score was computed over "
                             "(backward_shared_type_count / "
                             "backward_union_type_count) and "
@@ -2185,7 +2218,11 @@ TOOL_GUIDE_SPECS = {
                             "expansion content (source coordinates; a PNG "
                             "preview sits next to it). The legend tree is "
                             "one root per expansion category with ordered "
-                            "leaf tokens on every bodyId."},
+                            "leaf tokens on every bodyId; on "
+                            "--backward-evidence runs a scanned gap-fill "
+                            "leaf carries its reciprocal grade as a "
+                            "trailing · high / · medium / · low tag "
+                            "(an unscanned member keeps a bare leaf)."},
         ],
     },
 }

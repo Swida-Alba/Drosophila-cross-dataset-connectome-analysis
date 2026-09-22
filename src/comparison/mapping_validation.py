@@ -15,16 +15,23 @@ Stages
    target-dataset neurons on standardized expanded-type vectors (exact
    production formulas: ``ProfileComparator._get_expanded_types_standardized``
    + the ``batch_compare_cross_dataset`` metric block), rank every target
-   globally under ``rank_union`` and ``jaccard``, apply the tiered verdict
-   rule, assign 1:1 partners by mutual-best greedy, and report every
-   non-pool neuron ranked ahead of the mapped partners.
+   globally on BOTH metrics (``jaccard``, ``rank_union``) and order them by
+   the bodyId chain — Jaccard first, rank_union as the tie-break
+   (:func:`comparison.body_id_resolver.order_by_chain`); the two rank
+   columns are published evidence, not the row order.  Apply the tiered
+   verdict rule, assign 1:1 partners by mutual-best greedy on the same
+   chain, and report every non-pool neuron ranked ahead of the mapped
+   partners.
 3. Category partition (Revision 3.12 — :func:`classify_category` +
    :meth:`MappingValidator.finalize_categories`): every in-scope target
    gets EXACTLY ONE category by one ordered first-match —
    ``matched``/``verified``/``borderline``/``unmatched`` (the branch's
    in-map targets) > ``sibling`` (in-map target of another branch of the
    query) > ``candidates`` (out-of-map, connectivity- AND morph-qualified;
-   the restrictive fill) > ``family`` (out-map bodyIds of the branch's
+   the restrictive fill.  Connectivity is either an invader beating the
+   pool's best, a gap-fire proposal, or — family MODE and up — a neuron
+   inside the candidate-discovery window, the top-``rank_top_k`` of each
+   metric) > ``family`` (out-map bodyIds of the branch's
    target type) > ``relative`` (candidate-type mates outside the map) >
    ``examinees`` (the aggressive-only deep window; renamed from
    'suspicious' 2026-09-18 — the mapper's rival-suspects concept now owns
@@ -107,8 +114,10 @@ from comparison.body_id_resolver import (  # noqa: E402
     BACKWARD_EVIDENCE_VALUES,
     blank_backward_fields,
     build_target_vectors,
+    chain_key,
     classify_backward_scan,
     expanded_vector,
+    order_by_chain,
     load_caliber_map,
     load_hemisphere_map,
     passes_target_quality_gate,
@@ -201,11 +210,15 @@ class MappingValidationConfig:
     # source of truth; it is an ordered enum
     # restrictive < family < aggressive, and the modes NEST (a neuron's
     # category is mode-independent; later modes only admit more neurons):
-    #   restrictive (default) - tier + sibling + candidates; minimal.
-    #   family                - adds the family/relative bins (out-map
-    #                           bodyIds of the in-map types, and the
-    #                           type-mates of candidate types).
-    #   aggressive            - adds the deep-window `examinees` bin.
+    #   restrictive (default) - tier + sibling + candidates; minimal, and
+    #                           candidates come only from the invader bar.
+    #   family                - adds the candidate-DISCOVERY window (the
+    #                           top-`rank_top_k` of each metric) and the
+    #                           family/relative bins (out-map bodyIds of
+    #                           the in-map types, and the type-mates of
+    #                           candidate types).
+    #   aggressive            - widens the window to `candidate_window` and
+    #                           adds the deep-window `examinees` bin.
     # `aggressive_expansion` and `pool_widen` are legacy boolean aliases
     # resolved by `normalize_mode` (pool_widen -> family).  Pool widening
     # itself is RETIRED (Revision 3.12): family mode no longer touches the
@@ -224,7 +237,7 @@ class MappingValidationConfig:
     # ------------------------------------------------------------------
     backward_evidence_enabled: bool = False
     #: Reverse hits kept per neuron (the report's hover label; the table
-    #: cell always shows the top-1 only).
+    #: cells show the top-1 and the branch-type hit, never the whole list).
     backward_top_n: int = 5
     #: Hard budget on dataset-scale reverse scans per run — one scan costs as
     #: much as a forward source scan (~4-7 s against a 140-180k universe).
@@ -232,8 +245,10 @@ class MappingValidationConfig:
     #: Per-branch budget on labeled expansion members (a branch can still be
     #: labeled from a scan another branch paid for).
     backward_per_branch_cap: int = 40
-    #: Reverse-scan the validated pool targets too, so the `source-` status
-    #: columns see out-of-branch competitors (they cannot from forward scans).
+    #: Reverse-scan the UNMATCHED validated pool targets too, so the
+    #: `source-` status columns see out-of-branch competitors (they cannot
+    #: from forward scans).  The matched/verified/borderline members are
+    #: skipped: their forward pair already IS the symmetric evidence.
     backward_scan_pool_targets: bool = True
     skip_backward_pass: bool = False
     # Rev 3.9 Track-A bar calibration: the query-based morph threshold
@@ -295,6 +310,13 @@ class MappingValidationConfig:
         return self.mode_rank >= MODE_RANK[str(mode).lower()]
 
 
+#: The per-side pool states that name actual neurons rather than falling
+#: back to a whole type population (`ui.neuron_index._side_basis`).  A side
+#: whose basis is NOT here is validated wide, and the per-side basis in
+#: `_refine_pair_branch` looks for a chain that does narrow it (§15.3).
+_SOURCE_REFINING_BASES = ('linker rows', 'release relation participants')
+
+
 @dataclass
 class TypePair:
     source_dataset: str
@@ -308,6 +330,11 @@ class TypePair:
     query: str = ''
     # Revision 2: bridge-resolved branch context
     selected_chain: List[Dict[str, str]] = field(default_factory=list)
+    # Which chain actually supplied the SOURCE pool.  Equal to
+    # `selected_chain` except under the per-side basis below, where a
+    # different supported chain for the same endpoint narrowed the source
+    # side (plan-tmvev-jaccard-primary-bodyid-ranking.md §15.3).
+    source_chain: List[Dict[str, str]] = field(default_factory=list)
     linkers: List[Dict[str, str]] = field(default_factory=list)
     pool_basis: str = 'full population'
     target_pool_basis: str = 'full population'
@@ -344,6 +371,15 @@ class TypePair:
         return ' -> '.join(
             f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
             for h in self.selected_chain) if self.selected_chain else ''
+
+    @property
+    def source_chain_text(self) -> str:
+        """The chain that supplied the SOURCE pool — equal to `chain_text`
+        unless the per-side basis (§15.3) took the source side from another
+        supported chain of the same endpoint."""
+        return ' -> '.join(
+            f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+            for h in self.source_chain) if self.source_chain else ''
 
 
 def measure_branch_disjointness(pairs: List["TypePair"]) -> Optional[bool]:
@@ -397,11 +433,11 @@ def compute_set_coverage(pairs: List["TypePair"],
     Per-branch gaps are diagnostics (they double-count cross-branch
     convergence); this answers the deliverable question directly:
 
-    - FAFB side: of the queried source population
+    - source side: of the queried source population
       (union of parent_source_pool), how many neurons are assigned
       (verified/borderline with a target), fill-proposed, or still
       unpaired — per type and in total.
-    - MCNS side: of the mapped target set (union of
+    - target side: of the mapped target set (union of
       parent_target_pool), how many neurons sit in a branch pool with
       which best category, how many are reached ONLY as out-of-pool
       candidates/proposals, and which are never claimed anywhere
@@ -411,6 +447,12 @@ def compute_set_coverage(pairs: List["TypePair"],
       ``candidates`` (pass the post-finalization sus/deep rows as
       ``evidence_rows``) — a bodyId the run claimed as a candidate is
       not a hole.
+
+    The two blocks are named ``source``/``target``, never after a
+    concrete dataset: the same writer serves FAFB->male-cns and
+    FAFB->BANC, and a `mcns` key on a BANC run is a lie the report
+    then repeats. The dataset names are read from the pairs into
+    ``source_dataset``/``target_dataset``.
     """
     assigned_src: set = set()
     src_type_of: Dict[int, str] = {}
@@ -467,21 +509,21 @@ def compute_set_coverage(pairs: List["TypePair"],
             reached_tgt.setdefault(
                 pbid, str(r.get('ahead_target_type') or '?'))
 
-    fafb_types = {}
+    src_types = {}
     for ptype, members in sorted(parent_src.items()):
         a = sum(1 for b in members if b in assigned_src)
         p = sum(1 for b in members
                 if b not in assigned_src and b in proposed_src)
-        fafb_types[ptype] = {
+        src_types[ptype] = {
             'pool': len(members), 'assigned': a,
             'fill_proposed': p, 'unpaired_unproposed': len(members) - a - p}
-    mcns_types = {}
+    tgt_types = {}
     for ttype, members in sorted(parent_tgt.items()):
         in_pool = {b: pool_cat[b] for b in members if b in pool_cat}
         reached = {b for b in members if b in reached_tgt}
         holes = sorted(b for b in members
                        if b not in pool_cat and b not in reached)
-        mcns_types[ttype] = {
+        tgt_types[ttype] = {
             'mapped_population': len(members),
             'in_pool': len(in_pool),
             'in_pool_matched': sum(1 for c in in_pool.values()
@@ -498,15 +540,17 @@ def compute_set_coverage(pairs: List["TypePair"],
     all_src = set().union(*parent_src.values()) if parent_src else set()
     all_tgt = set().union(*parent_tgt.values()) if parent_tgt else set()
     out = {
-        'fafb': {
+        'source_dataset': pairs[0].source_dataset if pairs else '',
+        'target_dataset': pairs[0].target_dataset if pairs else '',
+        'source': {
             'total_queried': len(all_src),
             'assigned': len(assigned_src),
             'fill_proposed_only': len(set(proposed_src) - assigned_src),
             'unpaired_unproposed': len(
                 all_src - assigned_src - set(proposed_src)),
-            'per_type': fafb_types,
+            'per_type': src_types,
         },
-        'mcns': {
+        'target': {
             'mapped_target_set': len(all_tgt),
             'in_branch_pool': len(pool_cat),
             # family material (plan-same-name-fidelity-and-three-level-
@@ -518,7 +562,7 @@ def compute_set_coverage(pairs: List["TypePair"],
             'reached_as_candidates_only': len(
                 set(reached_tgt) - set(pool_cat)),
             'holes': len(all_tgt - set(pool_cat) - set(reached_tgt)),
-            'per_type': mcns_types,
+            'per_type': tgt_types,
         },
         'branch_gap_note': ('per-branch gaps double-count cross-branch '
                             'convergence; the set-level numbers here '
@@ -729,13 +773,6 @@ def _rank_or_inf(rank) -> float:
     return float(rank) if rank is not None and not pd.isna(rank) else np.inf
 
 
-def _pair_sort_key(row) -> Tuple[float, float, float]:
-    return (_rank_or_inf(row.get('rank_union_rank')),
-            _rank_or_inf(row.get('jaccard_rank')),
-            -(row['rank_union'] if row.get('rank_union') is not None
-              and not pd.isna(row.get('rank_union')) else -9.0))
-
-
 def _abbrev(dataset: str) -> str:
     return (dataset or 'ds').replace(':', '_').replace('.', '_')
 
@@ -834,7 +871,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'source_connectivity_status', 'verdict', 'metric_top1', 'flags',
         'suspicious_count', 'suspicious_noise_filtered',
         'suspicious_size_filtered', 'suspicious_tie_filtered',
-        'target_bodyId', 'rank_union', 'rank_union_rank', 'jaccard',
+        'target_bodyId', 'ru_top_target_bodyId',
+        'rank_union', 'rank_union_rank', 'jaccard',
         'jaccard_rank', 'cosine', 'weighted_jaccard', 'morph_v2_similarity',
         'morph_nblast', 'source_size'],
     'examinees.csv': [
@@ -918,7 +956,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'pair_summary.csv': [
         'query', 'source_type', 'target_type', 'mapping_status',
         'relationship', 'same_name_first', 'same_name_rivals',
-        'pool_basis', 'selected_chain', 'branch_linker_values',
+        'pool_basis', 'selected_chain', 'source_chain',
+        'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_pool',
         'target_pool', 'pool_widen_added', 'source_type_total',
         'target_type_total', 'matched', 'verdict_verified_strong',
@@ -939,7 +978,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'source_dataset', 'source_type', 'target_dataset', 'target_type',
         'relationship', 'mapping_status', 'same_name_first',
         'same_name_rivals', 'query', 'is_selected', 'chain_rank',
-        'selected_bridge', 'bridge_linkers', 'selected_linker_values',
+        'selected_bridge', 'source_bridge', 'bridge_linkers',
+        'selected_linker_values',
         'pool_basis', 'target_pool_basis', 'pool_widen_sources',
         'pool_widen_targets', 'source_neurons', 'target_neurons',
         'source_type_total', 'target_type_total', 'source_body_ids',
@@ -982,7 +1022,11 @@ _RUN_CSV_SCHEMAS['gap_fill_dedup.csv'] = _RUN_CSV_SCHEMAS[
         'backward_evidence', 'backward_top1_source_bodyId',
         'backward_top1_source_type', 'backward_top1_in_branch',
         'backward_shared_type_count', 'backward_n_out_of_branch',
-        'backward_thin_evidence']
+        'backward_thin_evidence',
+        'backward_own_type_rank_source_bodyId',
+        'backward_own_type_rank_source_type', 'backward_own_type_via',
+        'backward_own_type_shared_type_count',
+        'backward_own_type_thin_evidence']
 _RUN_CSV_SCHEMAS['gap_fill_levels.csv'] = _RUN_CSV_SCHEMAS[
     'gap_fill_levels.csv'] + ['backward_evidence']
 # the opt-in rivals ledger rides the ordinary verdict-row shape plus the
@@ -1120,9 +1164,9 @@ def mutual_best_assignment(pool_set: set,
 
     Only sources with a confident verdict (verified_strong / verified /
     borderline by default — unmatched sources are NOT assigned; they flow
-    into gap fill) participate.  Each side's best partner is decided by
-    (rank_union rank, jaccard rank, rank_union score); a pair is assigned
-    only when both sides agree.
+    into gap fill) participate.  Each side's best partner is decided by the
+    bodyId ordering chain (Jaccard first, rank_union as the tie-break); a
+    pair is assigned only when both sides agree.
     """
     allowed = allowed_verdicts or ASSIGN_VERDICTS
     verdict_by_src = {}
@@ -1133,9 +1177,7 @@ def mutual_best_assignment(pool_set: set,
         pool_df = df[df['target_bid'].isin(pool_set)]
         if pool_df.empty:
             return None
-        return pool_df.sort_values(
-            ['rank_union_rank', 'jaccard_rank', 'rank_union'],
-            ascending=[True, True, False], na_position='last').iloc[0]
+        return order_by_chain(pool_df).iloc[0]
 
     src_best: Dict[int, pd.Series] = {}
     for sbid, df in per_source.items():
@@ -1149,7 +1191,7 @@ def mutual_best_assignment(pool_set: set,
     for sbid, row in src_best.items():
         t = int(row['target_bid'])
         cur = tgt_best.get(t)
-        if cur is None or _pair_sort_key(row) < _pair_sort_key(cur[1]):
+        if cur is None or chain_key(row) < chain_key(cur[1]):
             tgt_best[t] = (sbid, row)
     assigned = []
     for t, (sbid, row) in tgt_best.items():
@@ -1427,21 +1469,20 @@ def categorize_pool_targets(per_source: Dict[int, pd.DataFrame],
             if len(head_ids) == top_n and all(
                     b in pool_set for b in head_ids):
                 verified.update(head_ids)
-        # best (lowest rank_union rank) row per pool target
+        # best (chain-first) row per pool target: the source that carries
+        # this target highest, Jaccard leading and rank_union as the
+        # tie-break — the same key the assignment and gap fill use, so a
+        # target's `best_source_bodyId` cannot disagree with its pair.
         for tbid in pool_set:
             r = pool_df[pool_df['target_bid'] == tbid]
             if r.empty:
                 continue
-            row = r.sort_values('rank_union_rank',
-                                na_position='last').iloc[0]
+            row = order_by_chain(r).iloc[0]
             cur = best.get(tbid)
-            if cur is None or (row['rank_union_rank'] is not None
-                               and not pd.isna(row['rank_union_rank'])
-                               and (cur['ru_rank'] is None
-                                    or pd.isna(cur['ru_rank'])
-                                    or row['rank_union_rank']
-                                    < cur['ru_rank'])):
-                best[tbid] = {'source': sbid,
+            key = chain_key(row)
+            if cur is None or key < cur['key']:
+                best[tbid] = {'key': key,
+                              'source': sbid,
                               'ru': _f(row['rank_union']),
                               'ru_rank': _f(row['rank_union_rank']),
                               'ja_rank': _f(row['jaccard_rank'])}
@@ -1550,6 +1591,14 @@ def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
         if t in columns and entries:
             columns[t] = list(entries)
 
+    def _or_min(v):
+        """Score as a "higher is better" number; blank/NaN sinks."""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return -np.inf
+        return f if f == f else -np.inf
+
     def _order(entries, key):
         # deterministic: higher score first (both metrics: higher is
         # better; NaN sinks), then bodyId
@@ -1557,6 +1606,13 @@ def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
                       key=lambda e: (e[key] is None,
                                      -(e[key] if e[key] is not None
                                        else 0.0),
+                                     e['source']))
+
+    def _order_chain(entries):
+        """The column in :data:`_CHAIN` order — Jaccard first, rank_union
+        breaking the tie (J3), source bodyId last."""
+        return sorted(entries,
+                      key=lambda e: (-_or_min(e['jac']), -_or_min(e['ru']),
                                      e['source']))
 
     col_top1_ru: set = set()
@@ -1581,26 +1637,25 @@ def categorize_pool_sources(per_source: Dict[int, pd.DataFrame],
     statuses: Dict[int, str] = {}
     detail: List[Dict] = []
     for s in sorted(source_pool):
-        # row-best pool target: the target this source ranks #1
-        # (highest rank_union; rank_union_rank 1)
+        # row-best pool target: the target this source prefers, read off the
+        # chain (Jaccard first, rank_union breaking the tie)
         own_rows = [(t, e) for t, entries in columns.items()
                     for e in entries if e['source'] == s]
-        row_best = (max(own_rows, key=lambda te: (
-            te[1]['ru'] is not None,
-            te[1]['ru'] if te[1]['ru'] is not None else -1.0,
-            -te[0]))[0] if own_rows else None)
+        row_best = (min(own_rows, key=lambda te: (
+            -_or_min(te[1]['jac']), -_or_min(te[1]['ru']), te[0]))[0]
+            if own_rows else None)
         best_col = None
         best_rank = None
         competitors = None
         best_ru = None
         for t, e in own_rows:
-            by_ru = _order(columns[t], 'ru')
-            pos = next(i for i, x in enumerate(by_ru, start=1)
+            by_chain = _order_chain(columns[t])
+            pos = next(i for i, x in enumerate(by_chain, start=1)
                        if x['source'] == s)
             if best_rank is None or pos < best_rank:
                 best_col = t
                 best_rank = pos
-                competitors = sum(1 for e2 in by_ru[:pos - 1]
+                competitors = sum(1 for e2 in by_chain[:pos - 1]
                                   if not e2['in_pool'])
                 best_ru = e['ru']
         if s in verified_sources and row_best is not None \
@@ -1741,7 +1796,10 @@ class MappingValidator:
         (``ui.neuron_index.resolve_prioritized_bridge_pool``): the source
         pool is the selected chain's linker-refined subset, falling back
         to the full endpoint populations when no supported chain exists
-        (same-name passes; basis flagged 'full population').  Branch
+        (same-name passes; basis flagged 'full population').  Per side, the
+        source pool prefers ANY supported chain of the same endpoint that
+        narrows it — the selected chain is the best single DERIVATION,
+        which on FAFB->BANC is a target-side-only hop (§15.3).  Branch
         pairs of one parent source type are then annotated with their
         disjointness and the shared plan vocabulary.
         """
@@ -1781,19 +1839,29 @@ class MappingValidator:
         for (query, src_type), group in by_parent.items():
             annotate_pair_branches(group)
             for pair in group:
-                if pair.pool_basis == 'linker rows':
+                if pair.pool_basis in _SOURCE_REFINING_BASES:
                     self.log(
                         f'  branch {src_type} -> {pair.target_type}: '
                         f'pool {len(pair.source_pool)} of '
                         f'{pair.source_type_total} via '
-                        f'[{pair.linker_values or "chain"}] '
-                        f'(target {len(pair.target_pool)} of '
+                        f'[{pair.linker_values or "chain"}]'
+                        + (' [source side from an alternative chain]'
+                           if pair.source_chain != pair.selected_chain else
+                           '')
+                        + f' (target {len(pair.target_pool)} of '
                         f'{pair.target_type_total})')
                 else:
+                    # `full population` here is NOT always a missing chain:
+                    # a supported chain can carry no linker column on the
+                    # SOURCE side (the r22 FAFB->BANC chains resolve through
+                    # the target-side `fafb_cell_type` hop only), so the
+                    # target pool refines while the source pool stays wide.
                     self.log(
                         f'  branch {src_type} -> {pair.target_type}: '
-                        f'full population pool {len(pair.source_pool)} '
-                        f'(no supported bridge chain)')
+                        f'{pair.pool_basis} pool {len(pair.source_pool)} '
+                        + ('(no supported bridge chain)'
+                           if not pair.selected_chain else
+                           '(no supported chain narrows the source side)'))
         return pairs
 
     def _refine_pair_branch(self, pair: TypePair) -> bool:
@@ -1822,6 +1890,47 @@ class MappingValidator:
         tgt_ids = [int(b) for b in (pool.get('target_body_ids') or [])]
         if not src_ids:
             return False
+        per_linker = list(pool.get('per_linker') or [])
+        pair.pool_basis = pool.get('source_basis') or 'linker rows'
+        pair.target_pool_basis = pool.get('target_basis') or 'linker rows'
+        pair.source_chain = [dict(h) for h in pool['selected_chain']]
+        # PER-SIDE BASIS (plan-tmvev-jaccard-primary-bodyid-ranking.md
+        # §15.3): `selected_chain` is the best single DERIVATION, and the
+        # prioritizer ranks by fewest linkers.  On FAFB->BANC that winner is
+        # the 1-linker target-side hop `banc_v888/fafb_cell_type`, which
+        # names the target neurons exactly but leaves the source pool at the
+        # WHOLE source type (r22: 756 pool slots for 242 neurons, 39/39
+        # branches wide), while 7 of that type's 13 supported chains carry
+        # source-side `additional_type(s)` rows for the same endpoint.  Take
+        # the source pool from the first chain that narrows it.  NARROWING
+        # ONLY, never a union — the retired Rev 3.11 pool widening merged
+        # alternative-chain members into the tier; this leaves every member
+        # outside the pool to `compute_out_map_by_type` (the out-map
+        # residue), so the tier stays mode-invariant as required.
+        if pair.pool_basis not in _SOURCE_REFINING_BASES:
+            cand = pool.get('source_side_refinement') or {}
+            cand_chain = [dict(h) for h in (cand.get('chain') or [])]
+            cand_ids = [int(b) for b in (cand.get('source_body_ids') or [])]
+            parent = {int(b) for b in pair.parent_source_pool}
+            same_endpoint = bool(cand_chain) and \
+                str(cand_chain[-1].get('value') or '') == pair.target_type
+            if same_endpoint:
+                if parent:
+                    cand_ids = [b for b in cand_ids if b in parent]
+                # A SUBSET only: the rule may narrow the source pool or
+                # re-describe the same neurons with better evidence
+                # (`linker rows` instead of `full population`), and may
+                # never widen or replace membership.
+                if cand_ids and set(cand_ids) <= set(src_ids):
+                    src_ids = cand_ids
+                    pair.pool_basis = (cand.get('source_basis')
+                                       or 'linker rows')
+                    pair.source_chain = cand_chain
+                    per_linker = [
+                        l for l in per_linker
+                        if l.get('home') != pair.source_dataset] + [
+                        l for l in (cand.get('per_linker') or [])
+                        if l.get('home') == pair.source_dataset]
         pair.source_pool = src_ids
         pair.target_pool = tgt_ids or pair.target_pool
         # Revision 3.12 (user 2026-09-13): chain-aware POOL WIDENING is
@@ -1841,11 +1950,9 @@ class MappingValidator:
                                          l.get('value', '')),
                 'home': l.get('home', ''),
             }
-            for l in (pool.get('per_linker') or [])
+            for l in per_linker
             if l.get('home') and l.get('column')
         ]
-        pair.pool_basis = pool.get('source_basis') or 'linker rows'
-        pair.target_pool_basis = pool.get('target_basis') or 'linker rows'
         if pair.pool_widen_added_sources or pair.pool_widen_added_targets:
             if pair.pool_basis == 'linker rows':
                 pair.pool_basis = 'linker rows + alternative chains'
@@ -2030,33 +2137,73 @@ class MappingValidator:
                     pair, sbid, 'unmatched', status=status_name,
                     flags='no_pool_member_in_cache'))
                 continue
-            best = pool_df.sort_values(
-                ['rank_union_rank', 'jaccard_rank', 'rank_union'],
-                ascending=[True, True, False], na_position='last').iloc[0]
+            # J1/chain: the published row is the CHAIN-best pool member
+            best = order_by_chain(pool_df).iloc[0]
             best_by_src[sbid] = best
             k = cfg.rank_top_k
-            # Positivity policy (user 2026-09-11): only a POSITIVE
-            # rank_union is strong evidence — a top-1 rank earned by a
-            # less-negative score on a weak/incomplete profile carries no
-            # weight (see suspicious_noise_diagnostic).  Jaccard is
-            # sign-free and unaffected.
-            best_ru = best.get('rank_union')
-            ru_positive = (best_ru is not None
-                           and not pd.isna(best_ru) and best_ru > 0)
-            ru1 = best['rank_union_rank'] == 1 and ru_positive
-            ja1 = best['jaccard_rank'] == 1
+            # D-A (plan-tmvev-jaccard-primary-bodyid-ranking): the ladder
+            # asks the POOL, not one chosen row — "rank 1 by either metric"
+            # is a set property, so switching the ordering key cannot move a
+            # verdict.  Positivity stays a LABEL rule (J2): a non-positive
+            # rank_union cannot carry the rank_union claim, but it never
+            # drops the row (user 2026-09-11: only a POSITIVE rank_union is
+            # strong evidence; jaccard is sign-free and unaffected).
+            ru_tied = pool_df[pool_df['rank_union_rank'] == 1]
+            ru_top = order_by_chain(ru_tied[ru_tied['rank_union'] > 0])
+            ru1 = not ru_top.empty
+            # r17's correction (plan §11, user 2026-09-20): the STRONG tier
+            # additionally requires BOTH claims on the SAME pool member.
+            # `*_rank == 1` is a competition (min) rank, so "∃ a rank_union
+            # top-1" and "∃ a jaccard top-1" are satisfied by two different
+            # neurons on 46 of r17's rows — which read verified_strong while
+            # no single partner was agreed by both metrics.  Quantifying over
+            # the members keeps the property ordering-invariant; requiring
+            # one member to satisfy both keeps the tier's meaning.  A member
+            # holding both claims is necessarily the chain best, so `best`
+            # needs no second lookup: `verified_strong` always publishes the
+            # record it rests on.
+            strong = not pool_df[(pool_df['rank_union_rank'] == 1)
+                                 & (pool_df['rank_union'] > 0)
+                                 & (pool_df['jaccard_rank'] == 1)].empty
+            # The same rule one tier down (user 2026-09-21): a rank-1 claim
+            # lifts the row only when the PUBLISHED partner holds it.  The
+            # jaccard side is equivalent either way (`best` is the pool's max
+            # jaccard, so it shares any member's rank 1); the rank_union side
+            # is not, and that is the point — a rank_union top-1 sitting on a
+            # different neuron stays visible as `ru_top_target_bodyId`
+            # evidence instead of becoming this row's verdict.  r18 measured
+            # the effect on real data: 2 of 223 rows (the only two reading
+            # `verified` on a rank_union claim their published partner does
+            # not hold).  Ordering-invariance survives because the published
+            # row is a function of the pool, not of a tie's accident (the
+            # chain resolves ties on the scores).
+            pub_ru1 = (float(best['rank_union_rank'] or 0) == 1
+                       and float(best['rank_union'] or -1) > 0)
+            pub_ja1 = float(best['jaccard_rank'] or 0) == 1
+            # the pool's best position on each metric — what a rival has to
+            # beat (D-B), and the row carrying the rank_union claim when
+            # that is a different neuron from the published one
+            pool_ru_rank = pool_df['rank_union_rank'].min()
+            pool_ja_rank = pool_df['jaccard_rank'].min()
+            # the same pool-wide reference for the tie-margin noise gate: a
+            # rival "ties" the pool when it nearly beats the pool's BEST
+            # rank_union, not the published row's
+            pool_best_ru = pool_df['rank_union'].max()
+            ru_claim_bid = (int(ru_top.iloc[0]['target_bid'])
+                            if ru1 and not strong else None)
             flags = []
-            if best['rank_union_rank'] == 1 and not ru_positive:
+            if not ru1 and not ru_tied.empty:
                 flags.append('negative_rank_union_top1')
-            if ru1 and ja1:
+            if strong:
                 verdict, which = 'verified_strong', 'both'
-            elif ru1 or ja1:
+            elif pub_ru1 or pub_ja1:
                 verdict = 'verified'
                 which = '+'.join(n for n, top in
-                                 (('rank_union', ru1), ('jaccard', ja1))
+                                 (('rank_union', pub_ru1),
+                                  ('jaccard', pub_ja1))
                                  if top)
-            elif min(_rank_or_inf(best['rank_union_rank']),
-                     _rank_or_inf(best['jaccard_rank'])) <= k:
+            elif min(_rank_or_inf(pool_ru_rank),
+                     _rank_or_inf(pool_ja_rank)) <= k:
                 verdict, which = 'borderline', ''
             else:
                 verdict, which = 'unmatched', ''
@@ -2082,7 +2229,12 @@ class MappingValidator:
             size_count = 0
             best_pool_jaccard = best.get('jaccard')
             for metric in ('rank_union', 'jaccard'):
-                best_rank = best[f'{metric}_rank']
+                # D-A/D-B: a rival is "ahead of the pool" when it beats the
+                # pool's BEST position on that metric, not the published
+                # row's — the published row is the chain (Jaccard) best and
+                # its rank_union_rank can sit well below the pool's own best.
+                best_rank = (pool_ru_rank if metric == 'rank_union'
+                             else pool_ja_rank)
                 if pd.isna(best_rank):
                     continue
                 ahead = df[(~df['target_bid'].isin(pool_set))
@@ -2109,10 +2261,10 @@ class MappingValidator:
                                     * float(best_pool_jaccard):
                             reasons.append('jaccard_below_pool')
                         # 3. tie margin (Rev 3.6).
-                        elif not pd.isna(best_ru) \
+                        elif not pd.isna(pool_best_ru) \
                                 and not pd.isna(r.rank_union) \
                                 and (float(r.rank_union)
-                                     - float(best_ru)) \
+                                     - float(pool_best_ru)) \
                                 < cfg.suspicious_ru_margin:
                             reasons.append('tie_margin')
                     # 4. spatial caliber (Rev 3.6, both metrics).
@@ -2182,7 +2334,7 @@ class MappingValidator:
                 suspicious_count=len(ahead_ids),
                 noise_filtered=noise_count,
                 size_filtered=size_count,
-                tie_filtered=tie_count))
+                tie_filtered=tie_count, ru_top=ru_claim_bid))
 
             # bounded per-source retention for gap fill + assignment
             keep = set(pool_set)
@@ -2192,30 +2344,52 @@ class MappingValidator:
                 keep.update(int(b) for b in ranked['target_bid'])
             per_source[sbid] = df[df['target_bid'].isin(keep)]
 
-        # Revision 3.9 deep-window candidates: aggressive MODE only
-        # (Rev 3.12 enum; the default restrictive run stays
-        # invader-only + gap-fire-only).  Out-of-pool neurons
-        # within the retained top-`candidate_window` per metric that are
-        # NOT ahead of the pool best — the homologs a strong pool member
-        # can hide just below it.  Same spatial-caliber gate; structural
-        # + morph qualification happen later (annotate_invaders + 5).
+        # Revision 3.9 deep window, widened into a candidate-DISCOVERY
+        # window that family MODE reads too (user 2026-09-21).  Out-of-pool
+        # neurons within the retained top-`k` of EACH metric that are not
+        # ahead of the pool best — the homologs a strong pool member can
+        # hide just below it.  Same spatial-caliber gate; structural + morph
+        # qualification happen later (annotate_invaders + 5).
+        #
+        # Why a window and not the invader bar: the bar above answers "does
+        # a non-pool neuron beat the pool's BEST position?", and for a
+        # well-validated pool the answer is structurally NO — r18 published
+        # global jaccard rank 1 on 190 of 223 rows, so `pool_ja_rank` = 1
+        # closed that window on ~85% of source neurons.  Candidate TYPES rode
+        # on that bar, and rule 5 of `classify_category` seeds the whole
+        # `relative` bin from them, so the better a branch validated the less
+        # it reported: r16 -> r18 examinees 168 -> 118, candidate types
+        # 5 -> 3 (CB4091 and SMP223 dropped out), `relatives.csv` 39 rows
+        # -> 1.  A window reads the top-k of jaccard AND of rank_union, so
+        # one metric's top-1 cannot hide the other's candidates.
+        # `--candidate-window` stays the aggressive window; family reads the
+        # borderline window `--rank-top-k`; restrictive keeps its documented
+        # invader-only feed.
         deep_rows: List[Dict] = []
         deep_per_src: Dict[int, int] = {}
         null_rows: List[Dict] = []
         deep_cap_null = 0
         seen_deep = {int(r['ahead_target_bodyId']) for r in sus_rows}
-        if cfg.mode_at_least('aggressive'):
+        wide = cfg.mode_at_least('aggressive')
+        window_k = cfg.candidate_window if wide else cfg.rank_top_k
+        if cfg.mode_at_least('family'):
             for sbid, df in per_source.items():
                 src_best = best_by_src.get(sbid)
                 if src_best is None:
                     continue
-                for metric in ('rank_union', 'jaccard'):
+                # The chain's leading metric fills the shared per-source cap
+                # first (J1): rank_union-first here let it consume the budget
+                # before the Jaccard window was ever read.
+                for metric in ('jaccard', 'rank_union'):
                     if deep_per_src.get(sbid, 0) >= cfg.deep_cap:
                         break
                     window = df[(~df['target_bid'].isin(pool_set))
                                 & df[f'{metric}_rank'].notna()
-                                & (df[f'{metric}_rank']
-                                   <= cfg.candidate_window)]
+                                & (df[f'{metric}_rank'] <= window_k)]
+                    # Read the window in chain order so WHICH rows survive
+                    # the shared per-source cap never moves with the
+                    # incoming frame order.
+                    window = order_by_chain(window)
                     for r in window.itertuples(index=False):
                         bid = int(r.target_bid)
                         if bid in seen_deep or bid in pool_set:
@@ -2240,13 +2414,20 @@ class MappingValidator:
                             pair, sbid, r, src_best, metric,
                             getattr(r, 'rank_union_rank', None),
                             getattr(r, 'jaccard_rank', None), target_id2type)
+                        # Tagged by the ROW's own rank, not the mode, so a
+                        # tight-window neuron is a candidate in aggressive
+                        # MODE too (modes nest; a shared neuron keeps its
+                        # category).
+                        tight = (float(getattr(r, f'{metric}_rank'))
+                                 <= cfg.rank_top_k)
                         row.update({
                             'ahead_size': (sizes.get(bid) if sizes else None),
                             'pool_best_size': pool_best_size,
                             'size_ratio': (_f(size_ratio)
                                            if size_ratio is not None else None),
                             'size_filtered': False,
-                            'candidate_source': 'deep_window',
+                            'candidate_source': ('top_window' if tight
+                                                 else 'deep_window'),
                         })
                         deep_rows.append(row)
         # Rev 3.9 null sample for the Track-A bar calibration: window
@@ -2328,7 +2509,8 @@ class MappingValidator:
                  best: Optional[pd.Series] = None, metric: str = '',
                  flags: str = '', suspicious_count: int = 0,
                  noise_filtered: int = 0, size_filtered: int = 0,
-                 tie_filtered: int = 0) -> Dict:
+                 tie_filtered: int = 0,
+                 ru_top: Optional[int] = None) -> Dict:
         row = {
             'query': pair.query,
             'source_dataset': pair.source_dataset,
@@ -2355,6 +2537,11 @@ class MappingValidator:
             'suspicious_size_filtered': size_filtered,
             'suspicious_tie_filtered': tie_filtered,
             'target_bodyId': None,
+            # D-A traceability: `target_bodyId` is the CHAIN-best pool member
+            # (Jaccard first), so when the verdict's rank_union claim is
+            # carried by a DIFFERENT pool member it is named here rather than
+            # left implicit — a verdict never rests on an unpublished record.
+            'ru_top_target_bodyId': ru_top,
             'rank_union': None, 'rank_union_rank': None,
             'jaccard': None, 'jaccard_rank': None,
             'cosine': None, 'weighted_jaccard': None,
@@ -2414,6 +2601,7 @@ class MappingValidator:
             if pair.same_name_first else '',
             'pool_basis': pair.pool_basis,
             'selected_chain': pair.chain_text,
+            'source_chain': pair.source_chain_text,
             'branch_linker_values': pair.linker_values,
             'branch_annotation': pair.branch_annotation,
             'branches_disjoint': pair.branches_disjoint,
@@ -2497,9 +2685,7 @@ class MappingValidator:
             cand = df[~df['target_bid'].isin(assigned_tgt)]
             if cand.empty:
                 continue
-            best = cand.sort_values(
-                ['rank_union_rank', 'jaccard_rank', 'rank_union'],
-                ascending=[True, True, False], na_position='last').iloc[0]
+            best = order_by_chain(cand).iloc[0]
             tbid = int(best['target_bid'])
             in_pool = tbid in pool_set
             # spatial-caliber gate on out-of-pool candidates: fall through
@@ -2510,10 +2696,7 @@ class MappingValidator:
                     or caliber_ok(int(b)))]
                 if cand.empty:
                     continue
-                best = cand.sort_values(
-                    ['rank_union_rank', 'jaccard_rank', 'rank_union'],
-                    ascending=[True, True, False],
-                    na_position='last').iloc[0]
+                best = order_by_chain(cand).iloc[0]
                 tbid = int(best['target_bid'])
                 in_pool = tbid in pool_set
             proposals.append({
@@ -2544,7 +2727,7 @@ class MappingValidator:
                     cands.append((sbid, rows.iloc[0]))
             if not cands:
                 continue
-            sbid, r = min(cands, key=lambda cr: _pair_sort_key(cr[1]))
+            sbid, r = min(cands, key=lambda cr: chain_key(cr[1]))
             proposals.append({
                 'query': pair.query,
                 'source_type': pair.source_type,
@@ -2922,6 +3105,15 @@ class MappingValidator:
         deep_ids: Dict[Tuple[str, str], set] = defaultdict(set)
         for r in deep_rows:
             deep_ids[key_of(r)].add(int(r['ahead_target_bodyId']))
+        # The candidate-discovery window (top-`rank_top_k` of each metric)
+        # is connectivity evidence the same way an invader is: a real scan
+        # row inside the review window.  It seeds `candidates`, and through
+        # rule 5 of `classify_category` the whole `relative` bin — so these
+        # rows must be qualified on connectivity, not merely residual.
+        window_ids: Dict[Tuple[str, str], set] = defaultdict(set)
+        for r in deep_rows:
+            if str(r.get('candidate_source') or '') == 'top_window':
+                window_ids[key_of(r)].add(int(r['ahead_target_bodyId']))
 
         # Every connectivity-qualified evidence row (target-side view).
         evidence = []
@@ -2942,7 +3134,8 @@ class MappingValidator:
         for row, bid, ttype in evidence:
             k = key_of(row)
             cq = (bid in invader_ids.get(k, set())
-                  or bid in gapfire_ids.get(k, set()))
+                  or bid in gapfire_ids.get(k, set())
+                  or bid in window_ids.get(k, set()))
             tt = None if ttype in (None, '', '?') else str(ttype)
             cat, in_scope, mfail = classify_category(
                 target_bid=bid, branch_pool=branch_pools.get(k),
@@ -2982,7 +3175,8 @@ class MappingValidator:
                 in_map=in_map, target_type=tt,
                 branch_target_type=k[-1], in_map_types=in_map_types,
                 candidate_types=candidate_types.get(k),
-                connectivity_qualified=False, morph_ok=mq(row),
+                connectivity_qualified=(bid in window_ids.get(k, set())),
+                morph_ok=mq(row),
                 suspicious_morph_ok=mq_suspicious(row),
                 is_deep=True, tier=None, mode=mode)
             row['category'] = cat
@@ -3262,6 +3456,18 @@ class MappingValidator:
                     bev.get('backward_n_out_of_branch'),
                 'backward_thin_evidence':
                     bool(bev.get('backward_thin_evidence')),
+                # the hit the winning grade rests on (D4: rides the rollup so
+                # the gap-fill reader sees WHY a bodyId reads high)
+                'backward_own_type_rank_source_bodyId':
+                    bev.get('backward_own_type_rank_source_bodyId'),
+                'backward_own_type_rank_source_type':
+                    bev.get('backward_own_type_rank_source_type') or '',
+                'backward_own_type_via':
+                    bev.get('backward_own_type_via') or '',
+                'backward_own_type_shared_type_count':
+                    bev.get('backward_own_type_shared_type_count'),
+                'backward_own_type_thin_evidence':
+                    bool(bev.get('backward_own_type_thin_evidence')),
             })
         rows.sort(key=lambda r: (-dedup_category_rank(r['dedup_category']),
                                  r['target_bodyId']))
@@ -3818,9 +4024,9 @@ class MappingValidator:
         payload = dict(coverage)
         counts = getattr(self, '_source_status_counts', None)
         if counts:
-            fafb = dict(payload.get('fafb') or {})
-            fafb['source_status'] = dict(counts)
-            payload['fafb'] = fafb
+            src = dict(payload.get('source') or {})
+            src['source_status'] = dict(counts)
+            payload['source'] = src
         gap_types = getattr(self, '_mapper_gap_types', None)
         if gap_types:
             payload['mapper_gap'] = {
@@ -3832,9 +4038,9 @@ class MappingValidator:
         # enumerated family/relative rows the backward labels belong to.
         bev = getattr(self, '_backward_counters', None)
         if bev:
-            mcns = dict(payload.get('mcns') or {})
-            mcns['backward_evidence'] = dict(bev)
-            payload['mcns'] = mcns
+            tgt = dict(payload.get('target') or {})
+            tgt['backward_evidence'] = dict(bev)
+            payload['target'] = tgt
         return payload
 
     # -- driver -----------------------------------------------------------
@@ -4039,8 +4245,7 @@ class MappingValidator:
                     continue
                 if df is None or df.empty:
                     continue
-                df = df.sort_values(['rank_union_rank', 'jaccard_rank'],
-                                    na_position='last')
+                df = order_by_chain(df)
                 kept = 0
                 kept_pool = 0
                 for r in df.itertuples(index=False):
@@ -4335,16 +4540,20 @@ class MappingValidator:
                                    done=i, total=len(order))
         del source_stats, source_bids
 
-        # Source type names, resolved once for the recorded hits only —
-        # the top-N by rank_union (the serialized payload) PLUS the top-3
-        # by jaccard, both needed by the branch-type grade.
+        # Source type names, resolved once for the recorded hits only — the
+        # chain's top-N (what `serialize_backward_topN` publishes) PLUS the
+        # top-3 of each rank column (what the branch-type grade reads), both
+        # needed to name a hit.
         wanted = set()
         for df in scanned.values():
             if df is None or df.empty:
                 continue
-            for col in ('rank_union_rank', 'jaccard_rank'):
+            head_n = max(cfg.backward_top_n, 3)
+            for r in order_by_chain(df).head(head_n).itertuples(index=False):
+                wanted.add(int(r.target_bid))
+            for col in ('jaccard_rank', 'rank_union_rank'):
                 for r in df.sort_values(col, na_position='last').head(
-                        max(cfg.backward_top_n, 3)).itertuples(index=False):
+                        head_n).itertuples(index=False):
                     wanted.add(int(r.target_bid))
         src_id2type = self._bodyid_types(sorted(wanted), cfg.source_dataset)
 
@@ -5051,7 +5260,7 @@ class MappingValidator:
             gap_levels, gap_by_level = build_gap_fill_levels(
                 dedup_rows,
                 list(all_sus_rows) + list(all_deep_rows) + list(all_fills),
-                (coverage or {}).get('mcns', {}).get('family_material', []))
+                (coverage or {}).get('target', {}).get('family_material', []))
             if coverage is not None:
                 coverage['gap_fill_by_level'] = dict(gap_by_level)
         except Exception as exc:  # noqa: BLE001
@@ -5352,14 +5561,21 @@ class MappingValidator:
             '(hidden by default).',
             '- expansion/backward_matches.csv (only with '
             '--backward-evidence) — each candidates/family/relative '
-            'member scanned in REVERSE against the whole source '
-            'universe: its top-1 source, whether that source is in the '
-            'branch, how much of the union the score rests on '
+            'member and each UNMATCHED pool member scanned in REVERSE '
+            'against the whole source universe: its top-1 source, '
+            'whether that source is in the branch, how much of the '
+            'union the score rests on '
             '(backward_shared_type_count / _union_type_count, with '
-            'backward_thin_evidence at <= 3 shared types), and the '
-            'serialized top-N. Connectivity-only (morphology is never '
-            're-scored here) and advisory: it labels the bins, it never '
-            'changes a fill count.',
+            'backward_thin_evidence at <= 3 shared types), the '
+            'backward_own_type_* block naming the hit of the branch\'s '
+            'OWN source type that the high/medium/low grade is actually '
+            'computed from (including which ranking surfaced it: '
+            '_via), and the serialized top-N listed in the report\'s '
+            'order (jaccard first). Already-mapped members '
+            '(matched/verified/borderline) are not re-scanned: their '
+            'forward pair is the symmetric evidence. Connectivity-only '
+            '(morphology is never re-scored here) and advisory: it '
+            'labels the bins, it never changes a fill count.',
             '- expansion/out_map_expansion.csv — each unclaimed '
             'source\'s top-k typed non-in-map expansion candidates, '
             'morph-checked against the run null bar.',
@@ -5408,6 +5624,7 @@ class MappingValidator:
                 'is_selected': True,
                 'chain_rank': p.branch_index,
                 'selected_bridge': p.chain_text,
+                'source_bridge': p.source_chain_text,
                 'bridge_linkers': (f'{linker_cols} = {linker_vals}'
                                    if linkers else ''),
                 'selected_linker_values': linker_vals,

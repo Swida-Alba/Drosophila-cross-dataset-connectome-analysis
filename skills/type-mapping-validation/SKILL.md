@@ -12,6 +12,14 @@ are shell commands executed from the **repo root**.
 
 ## 0. Quick start (from a fresh machine)
 
+> **Prefer the UI?** The same pipeline runs from the **Cross-Dataset › Type
+> Validation** tab (`ui/tabs/type_validation.py`, tool key
+> `type_mapping_validation`) — pick source/target, add type or coarse
+> `cell_type` chips, choose the mode, toggle the stages. It drives this exact
+> `MappingValidator` and writes the identical run folder. The tab speaks the
+> dataclass *field* names; the CLI↔UI mapping is documented in the user guide
+> §1b. Script usage is below.
+
 ```bash
 # 1. get the repo (the pipeline needs its datasets/ tables and cache/ stores)
 git clone https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis.git
@@ -77,7 +85,8 @@ $PY scripts/RunMappingValidation.py \
    (with their per-row `reciprocal` column), the Reciprocal tab (stage
    5d, opt-in runs), out-map expansion, morphology record, scenes, file
    index. Hover any
-   dotted term for its definition; every `!` log line is reproduced
+   dotted term — or any table header, which explains its own column — for
+   its definition; every `!` log line is reproduced
    verbatim in its Warnings section, which also quotes the stage-5d
    `[reciprocal]` advisory (the Fill tab's `Reverse evidence by bin` line
    is its per-bin form). Regenerable for any past run:
@@ -87,8 +96,12 @@ $PY scripts/RunMappingValidation.py \
    gate warnings). The old glossary / pair-summaries / coverage
    sections moved into `report.html`; `user_warning_notes.txt` mirrors
    the warnings in bracketed-tag lines.
-3. `validation/pair_summary.csv` — per branch: pools, matched `M`, `gap`
-   (informational), verdict/noise counters.
+3. `validation/pair_summary.csv` — per branch: pools, matched `M`
+   (mutual-best 1:1 pairs), `gap` = smaller pool − `M` (informational),
+   verdict/noise counters. The report's Branches tab shows **Mapped** =
+   verified_strong + verified + borderline and measures its own gap
+   against Mapped, since a source can carry a verdict without being
+   paired; hovering either cell gives both numbers.
 4. `validation/examinees.csv` (renamed from `suspicious_candidates.csv`) — the
    expansion rows. Key columns:
    `category` (the Rev 3.12 bin — see §3), `in_scope` / `morph_failed`
@@ -103,7 +116,10 @@ $PY scripts/RunMappingValidation.py \
    `invader_class` / `invader_label` columns are retained for
    compatibility.
 5. `validation/noise_filtered_candidates.csv` — dropped rows with `noise_reason`.
-6. `validation/deep_candidates.csv` — only when `--mode aggressive`.
+6. `validation/deep_candidates.csv` — candidate-window rows below the pool
+   best: the top-`rank_top_k` band in family/aggressive modes
+   (`candidate_source='top_window'`), the wider band in aggressive
+   (`'deep_window'`). Empty in restrictive.
 7. `gap_fill/gap_fill_proposals.csv` — proposals with `fill_class`
    (`in_pool`/`out_of_pool`), `category`, and the fill-count columns.
 8. `gap_fill/gap_fill_dedup.csv` — query-level, one row per target bodyId:
@@ -112,7 +128,9 @@ $PY scripts/RunMappingValidation.py \
    (the real gap-fill list). `gap_fill/gap_fill_levels.csv` is the same
    fill per branch with its confidence `level`; on a stage-5d run the
    reverse fact rides its `evidence` column (`backward_high` /
-   `backward_medium` / `backward_low`) — never the level.
+   `backward_medium` / `backward_low`) — never the level. Only on
+   `family` / `relative` / `unmatched` rows: a `candidates` row keeps its
+   bar-kind `evidence` and carries the grade in `backward_evidence` alone.
 9. `expansion/family_candidates.csv` / `expansion/relatives.csv` — the whole `family` /
    `relative` bin (family/aggressive modes): enumerated members ∪
    evidence rows classified into those bins.
@@ -138,8 +156,11 @@ $PY scripts/RunMappingValidation.py \
     with the reverse top-1 (`backward_top1_source_bodyId` / `_type` /
     `_in_branch`), the metrics + ranks, the evidence base
     (`backward_shared_type_count` / `_union_type_count` +
-    `backward_thin_evidence`, see below), `backward_n_out_of_branch`, and
-    the serialized `backward_topN` neighbourhood the report hovers (§3).
+    `backward_thin_evidence`, see below), `backward_n_out_of_branch`, the
+    `backward_own_type_*` block (the branch-type hit the grade rests on,
+    with `backward_own_type_via` naming the ranking that placed it there),
+    and the serialized `backward_topN` neighbourhood the report hovers,
+    listed in jaccard order (§3).
 12. `visualization/*.html` — one 3D scene per parent type.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
@@ -148,7 +169,8 @@ $PY scripts/RunMappingValidation.py \
   branch, mode-independent**: tier (`matched` > `verified` >
   `borderline` > `unmatched`) > `sibling` (in-map target of the query in
   another branch) > `candidates` (out-of-map, connectivity- AND
-  morph-qualified — the restrictive fill) > `family` (out-map bodyIds of
+  morph-qualified — connectivity being an invader, a gap fire, or in
+  family+ the top-`rank_top_k` discovery window; the restrictive fill) > `family` (out-map bodyIds of
   THIS branch's target type) > `relative` (candidate-type mates outside
   the map) > `examinees` (aggressive-only deep window). A target gets
   exactly one; the modes NEST.
@@ -163,10 +185,34 @@ $PY scripts/RunMappingValidation.py \
 - **Out-of-scope rows**: a connectivity-qualified suspect that fails the
   morph rule is `in_scope=False` / `morph_failed=True`, category blank,
   never rendered — it is the connectivity-only homolog-finding result.
+- **Pool basis is decided PER SIDE**: `selected_chain` is the best single
+  derivation and may be a target-side-only hop (FAFB->BANC resolves through
+  `banc_v888/fafb_cell_type`), which refines the target pool exactly while
+  the source pool would stay at the whole type population; the source pool
+  therefore takes any supported chain of the SAME endpoint that NARROWS it
+  (`source_chain` records which). Subset only — never a widening, never a
+  union, so the tier stays mode-invariant. Where no chain names the source
+  neurons (the name-asserted types: DN1a / DN1pA / DN1pB / l-LNv) the pool
+  legitimately stays `full population`.
 - **Every rendered member passed the morph rule**: binding native
   pool-ref floor (`pool_ref >= floor`) when the branch has one, else
   the null-calibrated Track-A bar (`track_a_null_bar` = p95 of
   jaccard<=0.05 rows). Failures stay in the CSVs.
+- **One ordering, one key**: every bodyId-level "best" and "top-N" — the
+  published target, the mutual-best pairing, a target's best source,
+  gap-fill proposals, the out-map list, the reverse top-1, and the
+  cross-dataset candidate tables — comes from the ordering chain
+  (`body_id_resolver.order_by_chain` / `chain_key`): jaccard first,
+  `rank_union` breaking a jaccard tie, bodyId last. The `*_rank` columns are
+  the EVIDENCE the verdicts read off (competition style, so a jaccard tie
+  block shares one rank), never the row order; each scan publishes a dense
+  `chain_pos` so "top-N" means N rows. A rank-1 claim lifts only the row that
+  PUBLISHES the winning partner: `verified_strong` needs one member with both
+  claims, `verified` needs one on the published member, and a `rank_union`
+  top-1 sitting on a different pool member stays evidence in
+  `ru_top_target_bodyId` (r17 measured 46 rows on two half-claims, r18 2 more
+  on an unpublished win). `rank_union` does not filter a bodyId candidate —
+  it keeps its own positivity / margin gates and the `matched` bar.
 - **Hemisphere asymmetry fires the gap**: an L != R imbalance in any
   pool fires fill review even at arithmetic gap 0. `sibling` never
   counts; only `candidates` count toward the restrictive fill
@@ -175,8 +221,10 @@ $PY scripts/RunMappingValidation.py \
 - **`sibling` is not a fill**: an in-map target of another branch of the
   query (connectivity + morph qualified), already mapped.
 - **`set_coverage.json` is the deliverable for "how much gap is
-  filled"** — set-level FAFB assigned/proposed/unpaired and MCNS
-  in-pool/candidates/holes (hole bodyIds listed per type); use
+  filled"** — set-level `source` assigned/proposed/unpaired and `target`
+  in-pool/candidates/holes. The two blocks are named by ROLE, never by a
+  hard-coded dataset; `source_dataset`/`target_dataset` say which (hole
+  bodyIds listed per type); use
   `gap_fill_dedup.csv` for the bodyId-unique fill.
 - **Fill accounting is query-scope-relative**: single-type queries
   report cross-type neighbors as expansion advice (never as fills);
@@ -220,7 +268,11 @@ $PY scripts/RunMappingValidation.py \
   ordering). Scenes suffix a scanned leaf
   with `· high` / `· medium` / `· low`; a
   not-checked member keeps a bare leaf. Report: the **Reciprocal** tab
-  shows ONLY the top-1 per member, with the full top-N in the hover.
+  shows ONE ROW PER NEURON, ordered by the branch-type hit's jaccard (a
+  row with no hit — every `low` — sinks below the rows that have one), with
+  the branch-type hit
+  (the grade's own evidence) beside the chain-best (Jaccard-first) top-1,
+  and the full top-N in the hover.
 - **Stage 5d changes the backward `source-` columns, not the fill**: the
   pool-member reverse scans (unmatched pool targets since 2026-09-19)
   yield each scanned pool target's column ranked over
@@ -282,9 +334,13 @@ admits more neurons.
 
 - **restrictive (DEFAULT)**: tier + `sibling` + `candidates`. Minimal
   expansion.
-- **`--mode family`**: adds `family` (out-map bodyIds of each branch's
-  target type) and `relative` (candidate-type mates). Expected: more of
-  the type population surfaces; the tier is unchanged.
+- **`--mode family`**: adds the candidate-discovery window (the top
+  `rank_top_k` of each metric, per source), `family` (out-map bodyIds of
+  each branch's target type) and `relative` (candidate-type mates).
+  Expected: more of the type population surfaces; the tier is unchanged.
+  The window is what keeps `candidates`/`relative` populated when the pool
+  already holds both global rank-1s — an invader cannot beat rank 1, so
+  the bar alone would empty the feed at the strongest branches.
 - **`--mode aggressive`** (legacy alias `--aggressive-expansion`): adds
   the deep-window `examinees` bin. Over-expansion prone (r36e review) —
   flag it clearly in any report.
@@ -307,8 +363,9 @@ admits more neurons.
   (force-off).
   A neuron is scanned ONCE for all the branches that claim it, and the
   budget goes to the `candidates` / `family` / `relative` members FIRST —
-  the pool-target control only gets what is left (unordered, a real run
-  spent 102 of 120 scans on the control and capped out half the bins).
+  the unmatched pool members only get what is left (that ordering is
+  enforced in code; measured before it existed, an unordered budget spent
+  102 of 120 scans on the control and capped out half the bins).
   Default
   OFF costs nothing and keeps the CSV headers stable (rows read
   `not-checked`).
@@ -326,7 +383,8 @@ When presenting results to the user:
    scrutiny.
 1. Run folder path + self-check status (must be "all legend leaves
    match their neuron geometry" per scene).
-2. Branch table: pools, M, gap, examinee/noise counts.
+2. Branch table: pools, Mapped (verdict-carrying sources) beside the
+   mutual-best pair count, gap, examinee/noise counts.
 3. Category distribution (`examinees.csv` → `category`
    value counts), the out-of-scope count, and what it says
    (sibling-dominated = cross-branch convergence; a `candidates ...

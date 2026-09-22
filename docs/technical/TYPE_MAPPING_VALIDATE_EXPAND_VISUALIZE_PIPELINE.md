@@ -50,6 +50,22 @@ source sub-pool ↔ target type), not the parent type pool:
   pools through the selected bridge chain: the source pool is the
   linker-refined subset (basis "linker rows"); no-chain (same-name)
   pairs keep full populations (basis "full population").
+  **Per-side basis (§15.3, r22):** the selected chain is the best single
+  DERIVATION and the prioritizer ranks by fewest linkers, so on
+  FAFB->BANC the winner is the 1-linker target-side hop
+  `banc_v888/fafb_cell_type` — exact on the target, silent on the source,
+  which left r22 validating every parent's WHOLE source population in
+  every branch (756 pool slots for 242 neurons) while 7 of the type's 13
+  supported chains carried source-side `additional_type(s)` rows. The
+  source pool therefore prefers any supported chain of the SAME endpoint
+  that narrows it (subset only — never a widening or a membership
+  replacement, and never a union: the Rev 3.12 widening retirement
+  stands), and `source_chain` records which one did. Measured on the
+  r21/r22 branch sets: MCNS unchanged on all 43 branches (223 slots,
+  residue 30 — byte-identical pools), BANC narrowed on 27 of 39 branches
+  to 223 slots with 19 neurons left in the out-map residue, and 7 more
+  keep their membership but are now honestly labelled "linker rows"
+  instead of "full population".
 - Only the highest-ranked chain per target type survives
   prioritization; the collapsed alternatives are recorded as expansion
   evidence (§4, the `family`/`relative` bins).
@@ -89,19 +105,46 @@ for the verification is this pipeline's own:**
   weighted_jaccard on the same union). Unit-tested to 1e-9/1e-12
   against production.
 - Ranks are competition-style (ties share the better rank, NaN last).
+- **The ordering chain** (`body_id_resolver._CHAIN`, surfaced as
+  `order_by_chain()` / `chain_key()`): Jaccard desc → rank_union desc as
+  the tie-break → bodyId, applied at bodyId level everywhere a "best" or a
+  "top-N" is taken — the published top-1, mutual-best assignment, a
+  target's best source, gap-fill proposals, the out-map list and every
+  hover. It sorts on the SCORES, not the rank columns, because a Jaccard
+  tie block (36% of r16 reverse scans had one inside the top-5; 0% for
+  rank_union) would otherwise delegate the choice to row order. Each scan
+  also publishes `chain_pos`, a dense 1-based position, so "top-N" means N
+  rows. The rank columns stay as verdict EVIDENCE; `rank_union` never
+  filters a bodyId-level candidate (it keeps its positivity/margin gates,
+  which are claims about rank_union's own scale).
 - Each source is scanned ONCE per run and the scan is shared by all its
   branches. Retention: top-100 per metric + pool (`FILL_KEEP_TOP`).
 
-**Source verdicts** (tiered, on the best pool member):
+**Source verdicts** (tiered, read off the POOL — quantified over its members,
+so a label cannot move when the ordering key moves; the tiers stay
+*nested*, verified ⊇ verified_strong):
 
-- `verified_strong` — global top-1 under BOTH rank_union and jaccard
-  (rank_union must be positive — positivity policy);
-- `verified` — top-1 under one metric (recorded; disagreement flagged);
-- `borderline` — best pool member in the global top-`rank_top_k` (5);
+- `verified_strong` — ONE pool member is global top-1 under BOTH rank_union
+  and jaccard (rank_union must be positive — positivity policy). Both claims
+  on one neuron is the whole point of the tier: an `∃ru-member` plus a separate
+  `∃jaccard-member` reading is satisfied by two different partners (46 of r17's
+  223 rows) and would say "agreed by both metrics" while naming nobody;
+- `verified` — the PUBLISHED member is global top-1 under at least one metric
+  (`metric_top1` records which). A rank-1 win sitting on a DIFFERENT pool
+  member does not lift this row: it stays evidence in
+  `ru_top_target_bodyId`. That published-partner rule is the second r17/r18
+  correction — ∃-over-pool on the ru side alone moved 2 of r18's 223 rows;
+- `borderline` — the pool's best member in the global top-`rank_top_k` (5);
 - `unmatched` — outside the window; `skipped` — no/RARE-profile.
 
-**1:1 assignment**: mutual-best greedy within the pool
-(rank_union rank → jaccard rank → ru score), confident verdicts only;
+The same Jaccard-first convention now governs every bodyId-level surface,
+including the cross-dataset ones: `ProfileComparator.direct_comparison` sorts
+its result frames `jaccard` → `rank_union`, `find_homologs` defaults to
+`similarity_metric='jaccard'`, and `ui/config.SIMILARITY_METRICS` lists
+Jaccard first. Type/pooled ranking keeps `rank_union` (J5).
+
+**1:1 assignment**: mutual-best greedy within the pool, confident verdicts
+only, on the bodyId ordering
 contest losers flow into gap fill.
 
 ## 4. The category model — one partition per branch
@@ -141,7 +184,7 @@ defined by an ordered first-match. The full derivation and proofs live in
 | --- | --- | --- | --- |
 | 1 | `matched` / `verified` / `borderline` / `unmatched` | `t ∈ IM_b` (nested tier; `unmatched` is the else) | all |
 | 2 | `sibling` | `t ∈ IM \ IM_b` AND admitted | all |
-| 3 | `candidates` | `t ∉ IM` AND connectivity-qualified AND morph-qualified | all |
+| 3 | `candidates` | `t ∉ IM` AND connectivity-qualified (invader ∪ gap fire ∪, family+, the top-`rank_top_k` discovery window) AND morph-qualified | all |
 | 4 | `family` | `type(t) == T_b` (THIS branch's target type) AND `t ∉ IM` AND not already labeled | family+ |
 | 5 | `relative` | `type(t)` is a candidate type of THIS branch AND `type(t) ∉ IMT` AND not already labeled | family+ |
 | 6 | `examinees` | deep-window AND morph-qualified AND not already labeled | aggressive |
@@ -190,7 +233,11 @@ neuron that clears the invader/gap bar is a candidate, never both.
   that word): out-of-pool homologs
   ranked **below** the pool best, within `candidate_window` (25) per
   metric and `deep_cap` (10) per source, morph-qualified, and neither an
-  invader nor a gap fire.
+  invader nor a gap fire. Rows inside `rank_top_k` (5) are tagged
+  `candidate_source='top_window'` instead, are connectivity-qualified, and
+  so land in `candidates` — the two bands are exactly the boundary between
+  "advisory" and "fill material", and the tag travels with the row's own
+  rank, never with the mode (modes nest).
 
 ### 4.4 BodyId-level annotation and legend suffixes
 
@@ -224,11 +271,13 @@ The label of an admitted neuron is **independent of the mode**; modes
 differ only in which expansion neurons are admitted. Hence, per branch:
 **restrictive ⊆ family ⊆ aggressive**, with shared neurons keeping the
 identical category, topology included. Restrictive admits the tier,
-`sibling`, and `candidates`; family adds `family` and `relative`;
-aggressive adds `examinees`. Two inspected interactions: a same-type
-out-map neuron in the deep window lands in `family` (rule 4 precedes rule
-6), and a gap-fired target ranked below the pool best is a `candidate`
-(rule 3 precedes rule 6).
+`sibling`, and `candidates`; family adds the discovery window and
+`family` and `relative`; aggressive adds `examinees`. Two inspected
+interactions: a same-type out-map neuron in the **deep band** (below
+`rank_top_k`) lands in `family` (rule 4 precedes rule 6 — inside the
+window it is connectivity-qualified, so rule 3 takes it as a
+`candidate`), and a gap-fired target ranked below the pool best is a
+`candidate` (rule 3 precedes rule 6).
 
 ### 4.6 Query-level dedup
 
@@ -264,13 +313,14 @@ bodyId-unique dedup so the labels reach `gap_fill/gap_fill_levels.csv`.
 
 Verdict vocabulary (`comparison/body_id_resolver.py`:
 `BACKWARD_EVIDENCE_VALUES`, `BACKWARD_COLUMNS`, `blank_backward_fields`,
-`classify_backward_scan`, `serialize_backward_topN`,
+`classify_backward_scan`, `_own_type_hit`, `serialize_backward_topN`,
 `THIN_SHARED_TYPE_COUNT`, `reverse_source_column`), over
 `backward_evidence ∈ high | medium | low | not-checked`:
 
 The three scanned grades measure how prominently hits of the claiming
 branch's **OWN source type** rank in the reverse scan
-(`_grade_by_branch_type`) — pure rank evidence: no score bar, no
+(`_own_type_hit`, which also publishes the `backward_own_type_*` block) —
+pure rank evidence: no score bar, no
 pool-membership gate. Such a hit counts wherever it lives;
 `backward_top1_in_branch` records the separate pool-membership fact as
 context on the row, never as the verdict.
@@ -282,7 +332,8 @@ context on the row, never as the verdict.
   There is no separate "nothing found" state: a scan that ranked nothing
   grades `low`, so a `low` is a **graded negative, not silence**.
 - **`not-checked`** — not scanned: the pass is off, the neuron was over the
-  per-run / per-branch budget, it is not a gap-fill member, or it has no
+  per-run / per-branch budget, it is an already-mapped (matched / verified /
+  borderline) pool member rather than gap-fill material, or it has no
   usable profile (missing, untyped or skipped — that case is *never*
   reported as `low`, which claims the scan ran).
   `backward_scanned_at` records WHY (`disabled` / `cap` / `run` /
@@ -300,7 +351,10 @@ context on the row, never as the verdict.
    type_gated / advice` ladder stays the morph-bar strength ordering
    (§6). The reverse fact rides `gap_fill/gap_fill_levels.csv`'s
    `evidence` column (as `backward_high` / `backward_medium` /
-   `backward_low`) beside its own `backward_evidence` column, so the
+   `backward_low`) beside its own `backward_evidence` column — on the
+   `family` / `relative` / `unmatched` rows, since a `candidates` row keeps
+   its morph-bar-kind evidence and carries the grade in `backward_evidence`
+   alone. The
    run's fill totals stay identical to a run without the pass. It is
    fail-open like the other advisory layers: a failure leaves the rows
    `not-checked`.
@@ -345,6 +399,14 @@ universe**, and that is fed back into `categorize_pool_sources` (new
 structurally 0 — a forward column can only ever contain the branch's own
 sources — so `source-borderline` / `source-unmatched` were unreachable;
 out-of-branch rivals above a source are now real.
+`reverse_source_column` lists that column in **jaccard order** since
+2026-09-20, matching the reciprocal list; the downstream top-1 judgements
+re-sort internally by each metric and so are unaffected, but the column is
+truncated to `max(verified_top_n + invader_borderline_max + 2, 10)` rows of
+out-of-pool rivals, and *that* cut now keeps the jaccard-strongest rivals
+rather than the rank_union-strongest. `n_competitors` counts can therefore
+shift across this boundary — read `source-` statuses as same-run evidence,
+not cross-run.
 
 Precondition (P0, amended): a neuron's expanded vector must not depend on
 which ROLE it plays. It does not — measured, not assumed: rescoring every
@@ -365,11 +427,18 @@ run for no change), which is why the refresh was cut back to a counter.
 Exported: `expansion/backward_matches.csv` (one row per (branch, member)
 with the reverse top-1, its metric values + ranks, the shared/union type
 counts, `backward_n_out_of_branch`, the advisory size-caliber pair, the
-`thin` flag and the serialized `backward_topN` neighbourhood) plus the
+`thin` flag, the `backward_own_type_*` block naming the branch-type hit the
+grade rests on (bodyId, type, `backward_own_type_via`, its scores/ranks and
+its own thin flag) and the serialized `backward_topN` neighbourhood listed
+in jaccard order) plus the
 `backward_*` columns riding
 `validation/examinees.csv`, `validation/deep_candidates.csv`,
-`expansion/family_candidates.csv`, `expansion/relatives.csv`,
-`gap_fill/gap_fill_dedup.csv` and `gap_fill/gap_fill_levels.csv`.
+`expansion/family_candidates.csv`, `expansion/relatives.csv` (the full
+`BACKWARD_COLUMNS`), `gap_fill/gap_fill_dedup.csv` (a 12-column rollup
+subset: the grade, the top-1 triple, the shared count, `n_out_of_branch`,
+the thin flag and the own-type explanation WITHOUT its scores, ranks or
+union count), and `gap_fill/gap_fill_levels.csv` (`backward_evidence`
+alone).
 Surfaces: the report's **Reciprocal** tab (§9) and the scenes' leaf
 suffixes (§8).
 
@@ -393,7 +462,7 @@ null bar). Exported as `source_candidates.csv` (cross-branch
 convergence remains visible via the sibling category). **Advisory only** — the
 targets remain the validated entities; statuses never gate and never
 enter the dedup. Exported as `source_status.csv` +
-`set_coverage.fafb.source_status`; rendered in the report's Backward tab
+`set_coverage.source.source_status`; rendered in the report's Backward tab
 (plan `plan-backward-source-status.md`).  When stage 5d ran (§4.6a) its
 reverse scans feed these columns (`categorize_pool_sources(reverse_columns=…)`):
 a forward-only column can hold just the branch's own sources, so
@@ -497,16 +566,39 @@ target-vector build time.
   identity, so pool neurons should be L/R symmetric — an `L != R`
   imbalance in either pool fires the gap even at arithmetic gap 0
   (`hemisphere` block in `pair_summary.csv`).
+- **Both physical gates read the neuron table by DATASET-SPIELING**, so the
+  column keys are matched on an alphanumeric-normalized name and read by
+  label: MCNS `size`, FAFB `size_nm`, BANC v888 `Volume (nm^3)` for caliber;
+  `hemisphere`/`sides`/`side` for sides, plus BANC's `Soma side`
+  ('left'/'right', 92% of rows).  Before that, a dataset whose columns were
+  spelled differently got `{}` / all-`'?'` back and BOTH gates ran silently
+  disabled — and `itertuples` + `getattr` could not have addressed a spaced
+  column name at all.  Cross-dataset medians differ by orders of magnitude
+  (BANC 4.6e9 vs MCNS 1.8e8 nm³) and that is harmless: the caliber test is a
+  ratio inside one dataset.
 - **Modes** (one nested enum `restrictive < family < aggressive`; §4.5):
   - **restrictive** (default): tier + `sibling` + `candidates`
     (invaders ∪ gap fires, morph-qualified). Minimal expansion.
-  - **family**: adds `family` (all out-map bodyIds of in-map types) and
-    `relative` (candidate-type mates outside the map). Both are ungated by
-    qualification and bounded by type membership.
-  - **aggressive**: adds the **deep-window** `examinees` rows —
-    out-of-pool neurons within the retained top-`candidate_window` (25)
-    per metric ranked BELOW the pool best, `deep_cap` (10) per source,
-    exported to `deep_candidates.csv`. Rolled back from default after the
+  - **family**: adds the **candidate-discovery window** — the retained
+    top-`rank_top_k` (5) of EACH metric, per source, `deep_cap` (10)
+    bound, spatial-caliber gated — which is connectivity evidence and so
+    admits `candidates` (rule 3), and adds `family` (all out-map bodyIds of
+    in-map types) and `relative` (candidate-type mates outside the map).
+    The last two are ungated by qualification and bounded by type
+    membership.
+    Why the window is not the invader bar: an invader must beat the pool's
+    BEST position on a metric, and a well-validated pool holds the global
+    rank 1 on both (r18: jaccard rank 1 published on 190 of 223 rows), so
+    that window is empty exactly where the branch looks strongest.
+    Candidate TYPES ride on the feed and rule 5 seeds `relative` from them,
+    so r16 → r18 the better a branch validated the less it reported:
+    examinees 168 → 118, candidate types 5 → 3 (CB4091, SMP223 dropped),
+    `relatives.csv` 39 rows → 1. Reading the top-k of both metrics is what
+    stops one metric's top-1 hiding the other's candidates.
+  - **aggressive**: widens that window to `candidate_window` (25) and adds
+    the **deep-window** `examinees` rows for the band beyond `rank_top_k` —
+    out-of-pool neurons ranked BELOW the pool best, exported to
+    `deep_candidates.csv`. Rolled back from default after the
     r36e review (pulls in other clock-neuron types plus R1-R6/marginal
     neurons).
 - **Fill accounting** (restrictive): only `candidates` count — they are
@@ -726,7 +818,7 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
 | --- | --- | --- | --- |
 | tier | linker-refined `IM_b` | identical | identical |
 | sibling | yes | yes | yes |
-| candidates | invaders ∪ gap fires | same | same |
+| candidates | invaders ∪ gap fires | + top-`rank_top_k` window | same |
 | family / relative | no | yes | yes |
 | deep-window examinees | no | no | yes |
 | nesting | ⊆ family | ⊆ aggressive | superset |
@@ -744,22 +836,22 @@ gives the subfolder each one lives in.
 
 | file | content |
 | --- | --- |
-| `mapping_export.csv` | per-bridge record: refined `{…}` pools, selected chain, linkers, pool basis, parent context |
+| `mapping_export.csv` | per-bridge record: refined `{…}` pools, selected chain (`selected_bridge`) and the chain that named the source neurons (`source_bridge`), linkers, per-side pool basis, parent context |
 | `validation_results.csv` | per source bodyId: verdict, ranks + scores, connectivity flags, `source_size`, per-source noise counters |
 | `examinees.csv` (was `suspicious_candidates.csv`) | expansion rows with metrics, caliber columns (`ahead_size`, `pool_best_size`, `size_ratio`), `category` + `candidate_annotation` + `dup`, legacy classification columns, Track-A/B morph, `pool_ref_tier` |
 | `noise_filtered_candidates.csv` | every gate-dropped row with `noise_reason` (spatial_caliber, tie_margin, negative_rank_union, jaccard_below_pool) |
-| `deep_candidates.csv` | deep-window `examinees` rows (aggressive only) with `candidate_source='deep_window'` |
+| `deep_candidates.csv` | candidate-window rows ranked below the pool best, tagged `candidate_source`: `'top_window'` (the `rank_top_k` band, family+ — connectivity evidence, so rule 3 admits them as `candidates`) or `'deep_window'` (the aggressive-only wider band, the `examinees` bin) |
 | `gap_fill_proposals.csv` | proposals with `fill_class` (in/out of pool), `category`, `counts_toward_restrictive_fill`, `counts_toward_family_fill` |
 | `family_candidates.csv` | the whole `family` bin — enumerated members ∪ evidence rows classified `family`, per branch+bodyId (family/aggressive modes) |
-| `backward_matches.csv` | stage 5d (`--backward-evidence` only): one row per (branch, scanned member) of `candidates`/`family`/`relative` (+ the pool-target control) — `member_bodyId`/`member_type`/`member_category`/`scan_role`, then `backward_evidence` with the reverse top-1 (`backward_top1_source_bodyId`/`_type`/`_in_branch`), the two metric values + ranks, the evidence base (`backward_shared_type_count`/`_union_type_count`, `backward_thin_evidence` at ≤3 shared), `backward_n_out_of_branch`, the caliber pair, and the serialized `backward_topN` neighbourhood; advisory, connectivity only (§4.6a) |
-| `gap_fill_dedup.csv` | query-level bodyId dedup with `dedup_category` (precedence §4.6) and `dup` |
-| `set_coverage.json` | set-level coverage: FAFB assigned/proposed/unpaired rollup, MCNS in-pool/candidates/holes per type, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) and `mapper_gap` (types with no backward mapping) |
+| `backward_matches.csv` | stage 5d (`--backward-evidence` only): one row per (branch, scanned member) of `candidates`/`family`/`relative` (+ the UNMATCHED pool members) — `member_bodyId`/`member_type`/`member_category`/`scan_role`, then `backward_evidence` with the reverse top-1 (`backward_top1_source_bodyId`/`_type`/`_in_branch`), the two metric values + ranks, the evidence base (`backward_shared_type_count`/`_union_type_count`, `backward_thin_evidence` at ≤3 shared), the `backward_own_type_*` block (the branch-type hit the grade rests on, with `backward_own_type_via`), `backward_n_out_of_branch`, the caliber pair, and the serialized `backward_topN` neighbourhood in jaccard order; advisory, connectivity only (§4.6a) |
+| `gap_fill_dedup.csv` | query-level bodyId dedup with `dedup_category` (precedence §4.6), `dup`, and on stage-5d runs the 12-column reciprocal rollup of the neuron's strongest branch (§4.6a) |
+| `set_coverage.json` | set-level coverage in two ROLE-named blocks — `source` (assigned/proposed/unpaired rollup) and `target` (in-pool/candidates/holes per type) — labelled by the top-level `source_dataset`/`target_dataset`, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) and `mapper_gap` (types with no backward mapping) |
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
-| `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size` |
+| `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size`, and the provenance pair `selected_chain` / `source_chain` (the chain that resolved the target pool vs the one that named the source neurons — equal except under the per-side basis) |
 | `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches, fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: top-1 in the cell, top-N on hover), out-map expansion, backward source status, morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
 | `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap, `[reciprocal]` own-source-type top-3 counts) — the `[reciprocal]` line is also quoted verbatim in `report.html`'s Warnings section as a derived advisory |
 | `visualization/*.html` | tree-legend scenes per parent group |
@@ -827,6 +919,7 @@ branches that claim it (§4.6a).
   OPEN.
 - Track B has no render-frame fallback (vector-cache path only) and no
   NBLAST variant (deferred).
-- The deep window is scan-noise-dominated in the small-FAFB-type regime
-  (cross-type neighbors outnumber same-type expansion ~25:1) — one more
-  reason it is opt-in.
+- The WIDE candidate window (6..`candidate_window`) is scan-noise-dominated in
+  the small-FAFB-type regime (cross-type neighbors outnumber same-type
+  expansion ~25:1) — one more reason that band stays opt-in, and why
+  family mode reads only the top-`rank_top_k` of it.

@@ -37,6 +37,45 @@ dataset nicknames, `YYYYMMDD_HHMMSS` stamp; the `--label` is recorded in
 Runtime: ~2 min for a small type pair, ~6 min for a 50-neuron family,
 ~35 min for the full circadian clock (warm caches).
 
+## 1b. Run from the UI
+
+The pipeline has a first-class UI tab: **Cross-Dataset › Type Validation**
+(`ui/tabs/type_validation.py`, tool key `type_mapping_validation`). Pick a
+Source and Target dataset, add one or more source types / coarse `cell_type`
+categories as chips, choose the mode, then toggle the optional stages. The tab
+produces the exact same run folder as the CLI (see §2.4b). A short offline pass
+is: **Cache-only profiles** checked + **Morphology** off + **3D scenes** off —
+that keeps the run on local tables (no NeuPrint/CAVE).
+
+The form speaks the **dataclass field names**, not the CLI flags, so the
+mapping below is the contract (UI control → `MappingValidationConfig` field →
+CLI flag). Several flags are renamed or negated, and some fields have no CLI
+flag at all — the tab is their only entrance.
+
+| UI control | Config field | CLI flag |
+|---|---|---|
+| Source / Target dataset | `source_dataset` / `target_dataset` | `--source` / `--target` |
+| Query chips | `query_types` (comma-split) | `--types` |
+| Run Label | `run_label` | `--label` |
+| Output directory | `output_dir` | `--output-dir` |
+| Validation Mode (Restrictive/Family/Aggressive) | `validation_mode` | `--mode` |
+| Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
+| 3D review scenes | `visualize` | `--no-visualize` (negated) |
+| Backward (reciprocal) evidence | `backward_evidence_enabled` | `--backward-evidence` |
+| Backward scans unmatched pool members | `backward_scan_pool_targets` | `--no-backward-pool-targets` (negated) |
+| Suspicious per-source cap | `suspicious_per_source_cap` | `--suspicious-cap` |
+| Cache-only profiles | `skip_profile_build` | `--skip-profile-build` |
+| Skip out-map expansion | `skip_out_map_expansion` | `--skip-out-map-expansion` |
+| (Advanced) various thresholds | see §5 | various `--…` flags |
+
+No CLI flag (tab / dataclass only): `top_k`, `top_m`, `min_synapse_threshold`,
+`include_untyped_partners`, `null_jaccard_max`, `null_per_source_cap`,
+`null_min_n`, `null_percentile`, `candidate_morph_cap`, `use_cache`. The first
+four plus `use_cache` are driven from the **Settings** defaults (`top_k`,
+`top_m`, `min_synapse_num`, `use_cache`); the `null_*` and
+`candidate_morph_cap` live in the tab's **Advanced** card. `verbose=True` is
+always sent so the report/README log carries every stage banner.
+
 ## 2. Reading the results
 
 ### 2.0 The per-run report (`report.html`)
@@ -50,7 +89,8 @@ target-side holes, the fill proposals with per-row provenance, the
 the out-map expansion, the backward `source-` view, the morphology record
 (with the null-sample advisory when null-kind bars are in play), the
 scene gallery, and a file index.
-Hover any dotted term for its definition; every `!` log line is
+Hover any dotted term — or any table header, which explains its own column
+and any tolerance it reads against — for its definition. Every `!` log line is
 reproduced verbatim in its Warnings section, and the same warnings are
 appended to `user_warning_notes.txt`. `README.txt` stays slim
 (directions + the raw run log). Any past run can be regenerated:
@@ -139,8 +179,8 @@ bar engine, two currencies; exact bars per branch in
   noise level — a percentile of provably-unrelated pairs
   (`track_a_null_bar`).
 
-In **aggressive mode** the deep window (neurons ranked below the pool
-best) gets a second, looser bar — the pool baseline minus
+In **aggressive mode** the wider window (neurons ranked below the pool
+best and beyond `rank_top_k`) gets a second, looser bar — the pool baseline minus
 `k × Δ` — between the candidate bar and noise; those rows are labeled
 `examinees`, never fills.
 
@@ -190,18 +230,34 @@ pool-membership gate:
 | `high` | a hit of the branch's own source type is the **top-1** reverse hit by rank_union or by jaccard — wherever that hit lives |
 | `medium` | the branch's own source type appears within the **top-3** of either ranking (but is not a top-1) |
 | `low` | scanned, but the branch's source type ranked outside both top-3 windows (or nothing usable ranked) — **a graded negative, not an error** |
-| `not-checked`, or a blank cell | `not-checked` = the pass is off, the member was over the per-run / per-branch budget, or it has no usable profile to scan (`backward_scanned_at` says which). A BLANK cell means the row is not reverse-scan material at all — only `candidates` / `family` / `relative` and the pool-target control are enumerated. Both display as an explicit dash so absence is never read as failure |
+| `not-checked`, or a blank cell | `not-checked` = the pass is off, the member was over the per-run / per-branch budget, or it has no usable profile to scan (`backward_scanned_at` says which). A BLANK cell means the row is not reverse-scan material at all — only `candidates` / `family` / `relative` and the UNMATCHED pool members (the in-map control) are enumerated, and matched / verified / borderline members never are. Both display as an explicit dash so absence is never read as failure |
 
-**Reading the Reciprocal tab.** One row per scanned member, grouped by
-bin and then by member type. The table cell shows ONLY the **top-1**
-reverse hit (source bodyId · its source type · `this branch` /
-`elsewhere` · rank_union); **hover it** for the top-N mini table (rank,
+**Reading the Reciprocal tab.** One row per scanned **neuron** (a member
+claimed by several branches is graded per branch and listed once, with
+every claiming branch and its grade in the `branch` cell), grouped by
+bin and then by member type, each group ordered by the **branch-type
+hit's jaccard** (descending) — the evidence the badge is about, so a neuron
+whose own type never ranks (every `low`) sinks below the rows that have a
+hit rather than floating up on some unrelated top-1's score. The badge is
+that neuron's STRONGEST branch grade. Two hit columns sit
+side by side, because they answer different questions:
+**branch-type hit** is the one the badge rests on — the best-ranked source
+of the claiming branch's OWN type, with the rank it reached and *which*
+ranking placed it there (`by rank_union` / `by jaccard`);
+**top-1 source** is the globally best hit on the ordering chain (Jaccard
+first, rank_union breaking a Jaccard tie, bodyId last)
+(source bodyId · its source type · `this branch` / `elsewhere` ·
+rank_union). They are different neurons whenever the branch's type wins on
+jaccard alone, which is why a row can read `high` while its top-1 sits
+`elsewhere`. **Hover the top-1** for the top-N mini table (both ranks,
 source bodyId, source type, rank_union, jaccard, in-branch flag). The
-**shared/union types** column says what that rank_union was computed
+**shared/union types** column says what the top-1's score was computed
 over: `rank_union` ranks the union of the two partner vectors and scores a
 type one side lacks as 0.0, so a `2/9` and a `20/40` score of 0.42 are not
 the same claim — the `thin` marker flags the ≤3-shared cases for the
-reader, and nothing else (it never changes the verdict, a bar or a fill).
+reader, and nothing else (it never changes the verdict, a bar or a fill;
+the branch-type hit carries its own marker, since that is the evidence the
+grade stands on).
 The tab
 header gives the per-bin counts and the budget note (how many members
 were scanned of how many eligible), and the **Fill** tab carries the same
@@ -261,20 +317,20 @@ pass on.
 
 | file | question it answers |
 | --- | --- |
-| `validation/pair_summary.csv` | per branch: pool sizes, matched count, gap (informational), verdict/noise counters |
+| `validation/pair_summary.csv` | per branch: pool sizes, `matched` (mutual-best 1:1 pairs), gap (informational), verdict/noise counters. The report's Branches tab reads **Mapped** = verified_strong+verified+borderline and measures its displayed gap against that, because a source can carry a verdict without being paired; both numbers hover side by side |
 | `validation/validation_results.csv` | per source neuron: verdict, global ranks, scores |
 | `validation/examinees.csv` (was `suspicious_candidates.csv`) | every expansion row with its `category` + `candidate_annotation`, both morph tracks, and the `backward_*` columns (§2.2c) |
 | `mapping/same_name_excluded.csv` | queried types whose same-name fan-out was held/excluded, or multi-value cells — advisory accounting |
 | `mapping/suspects_verification.csv` | opt-in (`--verify-suspects`): rival-suspect connectivity verification — advisory |
-| `validation/deep_candidates.csv` | deep-window rows (`examinees`, aggressive mode only) |
+| `validation/deep_candidates.csv` | candidate-window rows below the pool best — the top-`rank_top_k` band (`candidates`, family mode and up) and the wider aggressive band (`examinees`) |
 | `validation/noise_filtered_candidates.csv` | every dropped row and why |
 | `gap_fill/gap_fill_proposals.csv` | proposed partners for unpaired neurons (evidence only), with `counts_toward_restrictive_fill` / `counts_toward_family_fill` |
 | `gap_fill/gap_fill_levels.csv` | the layered fill (§2.2b) + each row's `backward_evidence` |
 | `expansion/family_candidates.csv` | the whole `family` bin (enumerated members ∪ evidence rows classified `family`) **[family mode]** |
-| `expansion/backward_matches.csv` | stage 5d only (`--backward-evidence`): one row per scanned member — reverse top-1 plus the serialized top-N neighbourhood (§2.2c) |
+| `expansion/backward_matches.csv` | stage 5d only (`--backward-evidence`): one row per (branch, scanned neuron) — reverse top-1, the `backward_own_type_*` hit the grade rests on, and the serialized top-N neighbourhood (§2.2c) |
 | `expansion/source_status.csv` | the backward `source-` statuses (§2.3b) |
 | `expansion/out_map_expansion.csv` | each unclaimed source neuron's top connectivity-ranked targets (exploratory, never a fill) |
-| `gap_fill/gap_fill_dedup.csv` | query-level bodyId dedup of the fill (the true filled-gap list), with the `dup` tag |
+| `gap_fill/gap_fill_dedup.csv` | query-level bodyId dedup of the fill (the true filled-gap list), with the `dup` tag and, on stage-5d runs, the reciprocal rollup of the neuron's strongest branch (§2.2c) |
 | `validation/pool_categories.csv` | the matched/verified/borderline/unmatched tier per in-map target |
 | `expansion/relatives.csv` | the whole `relative` bin (type-mates of candidate types ∪ evidence rows classified `relative`) |
 | `mapping/mapping_export.csv` | the per-bridge mapping record (refined pools + linkers) |
@@ -330,8 +386,10 @@ suggestion.
    already mapped somewhere, so it is not a missing partner — it is
    cross-branch convergence, and it never counts toward the fill.
 3. **`candidates`.** A suspected neuron **outside the map** that is
-   connectivity-qualified (an invader ahead of the pool best, or a gap
-   fire) **and** morph-qualified. This is the restrictive fill material —
+   connectivity-qualified (an invader ahead of the pool best, a gap fire,
+   or — *family mode and up* — a neuron inside the candidate-discovery
+   window, the top `rank_top_k` of **each** metric) **and**
+   morph-qualified. This is the restrictive fill material —
    the neurons worth reviewing as genuinely missing partners. The legend
    has ONE `candidates` root; each **bodyId leaf** carries the ordered
    token `{type}(out-map)` (an unmapped bodyId of an in-map type) /
@@ -399,8 +457,8 @@ question.
 | mode | flag | adds | behavior |
 | --- | --- | --- | --- |
 | **restrictive** (default) | — | — | the validated tier + `sibling` + `candidates` (invaders and gap fires that pass the morph rule). Minimal expansion |
-| **family** | `--mode family` | `family`, `relative` | also surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). Ungated by qualification — bounded by the types themselves |
-| **aggressive** | `--mode aggressive` | `examinees` | everything in family, plus the deep window (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
+| **family** | `--mode family` | discovery window, `family`, `relative` | reads the top `rank_top_k` of each metric as candidate evidence, then surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). The last two are ungated by qualification — bounded by the types themselves |
+| **aggressive** | `--mode aggressive` | `examinees` | everything in family, with the window widened to `candidate_window` (25); the band beyond `rank_top_k` is labelled `examinees` (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
 
 The mode is recorded in `parameters.json` (`validation_mode`). Only
 `candidates` count toward the restrictive gap fill; `family` and

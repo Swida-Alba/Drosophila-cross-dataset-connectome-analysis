@@ -200,6 +200,51 @@ def test_verified_strong_requires_both_metrics_top1():
     assert res['pairs'] == [(1, 201)]
 
 
+def test_the_verdict_is_the_pools_not_the_orderings():
+    """D-A (plan-tmvev-jaccard-primary-bodyid-ranking) + its two corrections:
+    the ladder quantifies over the POOL so a label cannot ride on the ordering
+    key's accident, but a rank-1 claim lifts only the row that PUBLISHES the
+    partner holding it.  Here 201 is the pool's rank_union top-1 while the
+    chain-best (202) leads on jaccard, so no single member holds both:
+    `verified_strong` cannot fire (r17's correction) and neither can
+    `verified` (user 2026-09-21: "tighten verified too") — the rank_union win
+    stays visible as `ru_top_target_bodyId` evidence instead.
+    """
+    res = scenario(
+        {201: ({'A': 1, 'B': 2, 'C': 3, 'D': 4}, {'P': 1, 'Q': 2}),   # same SET, reversed order
+         202: ({'A': 10, 'B': 8}, {'P': 6})},                         # same ORDER, partial set
+        pool=[201, 202])
+    row = res['rows'][0]
+    assert row['verdict'] == 'verified'
+    assert row['metric_top1'] == 'jaccard'
+    # the chain (Jaccard first) publishes 201; 202 carries the rank_union win
+    assert row['target_bodyId'] == 201
+    assert row['jaccard_rank'] == 1 and row['rank_union_rank'] == 2
+    assert row['ru_top_target_bodyId'] == 202
+
+
+def test_a_claim_on_an_unpublished_member_is_evidence_not_a_verdict():
+    """The discriminating shape for the tightened `verified`: the pool's
+    rank_union top-1 (201) is NOT the published partner (202, the pool's
+    Jaccard best), and 202 itself is behind an out-of-pool neuron on Jaccard,
+    so the published row holds no rank-1 claim at all.  Under the old
+    ∃-over-pool reading this row was `verified`; now it is `borderline` with
+    the rank_union winner still published as evidence.  r18 measured 2 of 223
+    real rows in exactly this shape (user 2026-09-21: "tighten verified too").
+    """
+    res = scenario(
+        {201: ({'A': 10, 'B': 8}, {}),                              # pool, rank_union top-1
+         202: ({'A': 10, 'B': 8, 'C': 4, 'D': 2, 'E': 3}, {}),      # pool, Jaccard best of the two
+         203: ({'A': 10, 'B': 8, 'C': 4, 'D': 2}, {})},             # out of pool, global Jaccard top-1
+        pool=[201, 202])
+    row = res['rows'][0]
+    assert row['verdict'] == 'borderline'
+    assert row['metric_top1'] == ''
+    assert row['target_bodyId'] == 202
+    assert row['jaccard_rank'] == 2 and row['rank_union_rank'] == 3
+    assert row['ru_top_target_bodyId'] == 201
+
+
 def test_verified_single_metric_top1():
     # 201 shares the source's SET (jaccard 1.0 -> tied rank 1) but with a
     # scrambled weight ordering (poor rank_union); only 201 is in the pool
@@ -367,6 +412,28 @@ def test_assignment_skips_unmatched_verdicts():
     assert assigned == [(2, 11)]
 
 
+def test_the_assignment_follows_the_chain_not_rank_union():
+    """S4 (plan-tmvev-jaccard-primary-bodyid-ranking): who a target belongs
+    to is the same key the reverse pass uses — Jaccard first, rank_union as
+    the tie-break.  Here s1 leads on Jaccard and loses on rank_union; under
+    the old rank_union-first key the pair would have been (2, 11) and s1
+    would have stayed unassigned."""
+    df1 = pd.DataFrame([
+        {'target_bid': 11, 'rank_union': 0.40, 'rank_union_rank': 2,
+         'jaccard': 0.90, 'jaccard_rank': 1},
+        {'target_bid': 12, 'rank_union': 0.10, 'rank_union_rank': 3,
+         'jaccard': 0.10, 'jaccard_rank': 3},
+    ])
+    df2 = pd.DataFrame([
+        {'target_bid': 11, 'rank_union': 0.80, 'rank_union_rank': 1,
+         'jaccard': 0.30, 'jaccard_rank': 2},
+    ])
+    val_rows = [{'source_bodyId': b, 'verdict': 'verified'}
+                for b in (1, 2)]
+    assert mutual_best_assignment({11, 12}, {1: df1, 2: df2},
+                                  val_rows) == [(1, 11)]
+
+
 def test_gap_rule_gt_one_always():
     # Revision 3.4: gap > 1 always (the '> 20% or > 5' rule is retired)
     assert gap_check(6, 7, 4, 1)['gap_triggered'] is True
@@ -452,6 +519,20 @@ def test_ladder_matched_top_level():
                                (99, 2, 0.1, 2, 0.1)])}
     cats, _ = categorize_pool_targets(per_source, {11})
     assert cats[11] == 'matched'
+
+
+def test_ladder_matched_reads_the_bar_off_the_chain_claimant():
+    """Two sources claim target 11.  S4 makes the claimant the CHAIN best
+    (Jaccard first), so the `matched` bar is read off THAT row — the
+    rank_union-best source is no longer the one whose score decides the
+    level, and `best_source_bodyId` says which one did."""
+    per_source = {
+        1: _scan_df([(11, 2, 0.05, 1, 0.80)]),   # chain best, ru below bar
+        2: _scan_df([(11, 1, 0.60, 2, 0.20)]),   # ru best, not the claimant
+    }
+    cats, detail = categorize_pool_targets(per_source, {11})
+    assert [d['best_source_bodyId'] for d in detail] == [1]
+    assert cats[11] == 'verified'    # the claimant's 0.05 does not clear 0.1
 
 
 def test_ladder_verified_top1_below_matched_threshold():

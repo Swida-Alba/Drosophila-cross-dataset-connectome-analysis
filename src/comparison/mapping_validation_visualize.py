@@ -57,6 +57,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from comparison.body_id_resolver import chain_key
 from comparison.mapping_validation import DEDUP_RANK, TIER_CATEGORIES
 
 # Color = f(category), unified across branches and types, high contrast
@@ -1064,10 +1065,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                             and r.get('morph_qualified') is not False]
                 if exp_rows:
                     best = {}
-                    for r in sorted(exp_rows,
-                                    key=lambda x: x.get('rank_union_rank')
-                                    if x.get('rank_union_rank') is not None
-                                    else 10 ** 9):
+                    for r in sorted(exp_rows, key=chain_key):
                         best.setdefault(int(r['target_bodyId']), r)
                     cand_ids = sorted(best)
                     raw, dropped = load_target_neurons(cand_ids)

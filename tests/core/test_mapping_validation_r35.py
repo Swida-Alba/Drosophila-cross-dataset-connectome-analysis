@@ -1011,12 +1011,12 @@ def test_rev310_compute_set_coverage_holes():
          'proposal_type': 'W'},
     ]
     cov = compute_set_coverage(pairs, per_pair_res, fills)
-    f = cov['fafb']
+    f = cov['source']
     assert f['total_queried'] == 4        # {1,2,3} u {4}
     assert f['assigned'] == 1             # source 1
     assert f['fill_proposed_only'] == 1   # source 2 (3 is sibling-blocked)
     assert f['unpaired_unproposed'] == 2  # source 3 + 4
-    m = cov['mcns']
+    m = cov['target']
     assert m['mapped_target_set'] == 4    # {11,12,99} u {21}
     assert m['in_branch_pool'] == 3       # 11, 12, 21
     assert m['reached_as_candidates_only'] == 1  # 30
@@ -1026,8 +1026,13 @@ def test_rev310_compute_set_coverage_holes():
     # once its proposal counts, the hole closes
     fills[1]['counts_toward_gap_fill'] = True
     cov = compute_set_coverage(pairs, per_pair_res, fills)
-    assert cov['mcns']['holes'] == 0
-    assert cov['mcns']['per_type']['X']['hole_body_ids'] == []
+    assert cov['target']['holes'] == 0
+    assert cov['target']['per_type']['X']['hole_body_ids'] == []
+    # the blocks are named by ROLE, not by a hard-coded dataset: a
+    # FAFB->BANC run that reports its target as `mcns` is a lie the
+    # report then repeats (plan-tmvev-jaccard-primary-bodyid-ranking.md
+    # §14, r22).
+    assert cov['source_dataset'] == 'dsA' and cov['target_dataset'] == 'dsB'
 
 
 def test_rev312_set_coverage_candidate_evidence_closes_hole():
@@ -1062,7 +1067,7 @@ def test_rev312_set_coverage_candidate_evidence_closes_hole():
          'category': '', 'in_scope': False},
     ]
     cov = compute_set_coverage(pairs, per_pair_res, [], evidence_rows=evidence)
-    m = cov['mcns']
+    m = cov['target']
     assert m['mapped_target_set'] == 2      # {11, 99}
     assert m['in_branch_pool'] == 1         # 11
     assert m['reached_as_candidates_only'] == 1  # 99 via the candidate row
@@ -1312,8 +1317,8 @@ def test_mapper_gap_report_in_readme():
     assert 'Mapper-gap evidence' not in text
     assert 'report.html' in text
     # the evidence lands in the set_coverage payload (additive key)
-    payload = v._set_coverage_payload({'fafb': {'total_queried': 1},
-                                       'mcns': {'holes': 0}})
+    payload = v._set_coverage_payload({'source': {'total_queried': 1},
+                                       'target': {'holes': 0}})
     assert payload['mapper_gap']['types'] == {'ME_unclear': 2,
                                               'SMP999': 1}
     assert payload['mapper_gap']['untyped_rows'] == 3
@@ -1519,7 +1524,13 @@ def test_deep_window_candidates_below_pool_best():
     # ...but the deep window catches it, and the fragment is dropped
     deep_bids = [d['ahead_target_bodyId'] for d in res['deep']]
     assert deep_bids == [302]
-    assert res['deep'][0]['candidate_source'] == 'deep_window'
+    # Re-based 2026-09-21: rank 4 is inside the borderline window
+    # `rank_top_k`, and that tight window is what family MODE reads as a
+    # candidate-discovery feed.  Tagging by the ROW's rank (not the mode)
+    # is what keeps the modes nested: the same neuron is a `candidates`
+    # row in family and in aggressive, never `examinees` in one and
+    # `candidates` in the other.
+    assert res['deep'][0]['candidate_source'] == 'top_window'
     assert res['summary']['deep_candidates'] == 1
     # and it classifies/qualifies through the standard buckets
     res['deep'][0].update(invader_class='unmapped', invader_label=None,
@@ -1561,6 +1572,76 @@ def test_deep_window_off_by_default():
     ])}
     res = v.validate_pair(pair, scans, {11: 'T', 302: 'TX'})
     assert res['deep'] == []
+
+
+def test_the_discovery_window_carries_candidates_a_perfect_pool_hides():
+    """The CB4091 shape (r16 -> r18, measured on real data).
+
+    When a pool member holds the global top-1 on BOTH metrics, nothing can
+    beat the pool's best position, so the invader window is empty by
+    construction — r18 published jaccard rank 1 on 190 of 223 rows.  The
+    candidate feed ran through that window, and rule 5 of
+    `classify_category` seeds the whole `relative` bin from the candidate
+    TYPES, so a well-validated branch reported the least: examinees
+    168 -> 118, candidate types 5 -> 3, `relatives.csv` 39 rows -> 1.
+
+    Family MODE therefore reads a WINDOW instead: the top-`rank_top_k` of
+    EACH metric.  302 sits below the pool best on both and is caught on the
+    jaccard side; 303 is only inside the rank_union window, which is what
+    makes the feed metric-parallel rather than a relabelled single-metric
+    scan.
+    """
+    import pandas as pd
+    from comparison.mapping_validation import classify_category
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(
+        source_dataset='dsA', target_dataset='dsB', query_types=['T'],
+        morph_enabled=False, visualize=False, validation_mode='family',
+        rank_top_k=5)
+    v.mapper = None
+    v.notes = []
+
+    class FakeProfiler:
+        def get_profile(self, bid, dataset):
+            return None
+
+        def get_types_for_bodyids(self, bids, dataset):
+            return {b: 'TX' for b in bids}
+
+    v.profiler = FakeProfiler()
+    pair = TypePair('dsA', 'T', [1], 'dsB', 'T', [11])
+    scans = {1: pd.DataFrame([
+        {'target_bid': 11, 'rank_union': 0.90, 'rank_union_rank': 1,
+         'jaccard': 0.90, 'jaccard_rank': 1},
+        {'target_bid': 302, 'rank_union': 0.10, 'rank_union_rank': 6,
+         'jaccard': 0.24, 'jaccard_rank': 3},
+        {'target_bid': 303, 'rank_union': 0.30, 'rank_union_rank': 2,
+         'jaccard': 0.05, 'jaccard_rank': 9},
+    ])}
+    res = v.validate_pair(pair, scans,
+                          {11: 'T', 302: 'CB4091', 303: 'SMP223'})
+    # the pool's best position is rank 1 on both metrics: no invader exists
+    assert res['suspicious'] == []
+    assert res['rows'][0]['verdict'] == 'verified_strong'
+    by_bid = {d['ahead_target_bodyId']: d for d in res['deep']}
+    assert sorted(by_bid) == [302, 303]
+    assert by_bid[302]['ahead_metric'] == 'jaccard'
+    assert by_bid[303]['ahead_metric'] == 'rank_union'
+    assert {d['candidate_source'] for d in res['deep']} == {'top_window'}
+    # ...and a window row is connectivity evidence, so it reaches
+    # `candidates` (which is what seeds its type into `relative`).
+    assert classify_category(
+        target_bid=302, branch_pool={11}, in_map={11}, target_type='CB4091',
+        branch_target_type='T', in_map_types={'T'}, candidate_types=set(),
+        connectivity_qualified=True, morph_ok=True, is_deep=True,
+        tier=None, mode='family') == ('candidates', True, False)
+    # the pre-fix reading: not connectivity-qualified, and its type is not
+    # yet a candidate type, so the row carried no bin at all.
+    assert classify_category(
+        target_bid=302, branch_pool={11}, in_map={11}, target_type='CB4091',
+        branch_target_type='T', in_map_types={'T'}, candidate_types=set(),
+        connectivity_qualified=False, morph_ok=True, is_deep=True,
+        tier=None, mode='family') == ('', False, False)
 
 
 def test_gap_fill_caliber_gate_and_untyped_render():
@@ -2466,3 +2547,131 @@ def test_rev312_finalize_pool_categories_query_arity():
     v.finalize_categories(per_pair, [], [], [], pool_detail)
     by_bid = {int(d['target_bodyId']): d['category'] for d in pool_detail}
     assert by_bid == {101: 'matched', 102: 'verified', 201: 'borderline'}
+
+
+# ---------------------------------------------------------------------------
+# §15.3: the per-side bridge basis
+# ---------------------------------------------------------------------------
+
+def _per_side_validator():
+    class _Mapper:
+        def get_type_bridges(self, *a, **k):
+            return []
+
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(source_dataset='src', target_dataset='tgt',
+                                    query_types=['T'], visualize=False,
+                                    morph_enabled=False)
+    v.mapper = _Mapper()
+    v.notes = []
+    v.log = lambda *a, **k: None
+    return v
+
+
+def _per_side_pool(refinement):
+    """The FAFB->BANC shape: the SELECTED chain is a target-side-only hop,
+    so it refines the target pool exactly and leaves the source pool at the
+    whole source-type population."""
+    return {
+        'resolution_status': 'supported',
+        'selected_chain': [{'dataset': 'tgt', 'column': 'fafb_cell_type',
+                            'value': 'X1'}],
+        'source_body_ids': [1, 2, 3, 4],
+        'target_body_ids': [11, 12],
+        'source_basis': 'full population',
+        'target_basis': 'linker rows',
+        'per_linker': [{'column': 'fafb_cell_type', 'value': 'X1',
+                        'home': 'tgt'}],
+        'source_type_total': 4, 'target_type_total': 2,
+        'source_side_refinement': refinement,
+    }
+
+
+def _per_side_pair():
+    pair = TypePair('src', 'T1', [1, 2, 3, 4], 'tgt', 'X1', [11, 12])
+    pair.parent_source_pool = [1, 2, 3, 4]
+    pair.parent_target_pool = [11, 12]
+    return pair
+
+
+def test_the_source_side_takes_the_chain_that_names_it(monkeypatch):
+    """One pool per branch, narrowed by the chain that carries source-side
+    evidence for the SAME endpoint (plan §15.3; r22 measured 756 wide
+    source slots for 242 neurons because the prioritizer's winner names
+    only the target side)."""
+    import ui.neuron_index as ni
+    alt = [{'dataset': 'src', 'column': 'type', 'value': 'T1'},
+           {'dataset': 'src', 'column': 'additional_type(s)', 'value': 'X1'},
+           {'dataset': 'tgt', 'column': 'type', 'value': 'X1'}]
+    monkeypatch.setattr(ni, 'resolve_prioritized_bridge_pool',
+                        lambda *a, **k: _per_side_pool({
+                            'rank': 2, 'chain': alt,
+                            'source_basis': 'linker rows',
+                            'source_body_ids': [2, 3],
+                            'per_linker': [
+                                {'column': 'additional_type(s)',
+                                 'value': 'X1', 'home': 'src'}]}))
+    pair = _per_side_pair()
+    assert _per_side_validator()._refine_pair_branch(pair) is True
+    assert pair.source_pool == [2, 3]              # narrowed
+    assert pair.target_pool == [11, 12]            # the selected chain's own
+    assert pair.pool_basis == 'linker rows'
+    assert pair.target_pool_basis == 'linker rows'
+    assert pair.selected_chain[0]['column'] == 'fafb_cell_type'
+    assert pair.source_chain == alt               # who supplied the source
+    assert pair.source_chain_text.endswith('tgt:type=X1')
+    assert {(l['home'], l['column']) for l in pair.linkers} == {
+        ('tgt', 'fafb_cell_type'), ('src', 'additional_type(s)')}
+
+
+def test_the_per_side_rule_narrows_never_widens_never_replaces(monkeypatch):
+    """A candidate that is not a subset of the selected pool is refused:
+    the rule may describe the same neurons with better evidence, but it
+    must not change membership or grow the pool."""
+    import ui.neuron_index as ni
+    alt = [{'dataset': 'tgt', 'column': 'type', 'value': 'X1'}]
+    for ids, expect in (([1, 2, 3, 4, 5], [1, 2, 3, 4]),   # widens -> refused
+                        ([7, 8], [1, 2, 3, 4]),            # replaces -> refused
+                        ([1, 2, 3, 4], [1, 2, 3, 4])):     # equal set -> basis
+        monkeypatch.setattr(ni, 'resolve_prioritized_bridge_pool',
+                            lambda *a, ids=ids, **k: _per_side_pool({
+                                'rank': 2, 'chain': alt,
+                                'source_basis': 'linker rows',
+                                'source_body_ids': ids,
+                                'per_linker': []}))
+        pair = _per_side_pair()
+        _per_side_validator()._refine_pair_branch(pair)
+        assert pair.source_pool == expect, ids
+    assert pair.pool_basis == 'linker rows'       # the equal-set case ran last
+
+
+def test_a_branch_stays_wide_when_no_chain_names_the_source(monkeypatch):
+    """The name-asserted population (r22: APDN3 / l-LNv / DN1a / DN1pA /
+    DN1pB — no FAFB `additional_type(s)` rows at all) keeps today's
+    behaviour: full pool, `source_chain` == `selected_chain`."""
+    import ui.neuron_index as ni
+    monkeypatch.setattr(ni, 'resolve_prioritized_bridge_pool',
+                        lambda *a, **k: _per_side_pool(None))
+    pair = _per_side_pair()
+    assert _per_side_validator()._refine_pair_branch(pair) is True
+    assert pair.source_pool == [1, 2, 3, 4]
+    assert pair.pool_basis == 'full population'
+    assert pair.source_chain == pair.selected_chain
+
+
+def test_the_refinement_of_a_different_endpoint_is_ignored(monkeypatch):
+    """The alternative chain must reach THIS branch's target type: r21's
+    same-name routes show a value-level mismatch is possible, and taking
+    another branch's evidence would import its membership."""
+    import ui.neuron_index as ni
+    other = [{'dataset': 'tgt', 'column': 'type', 'value': 'X2'}]
+    monkeypatch.setattr(ni, 'resolve_prioritized_bridge_pool',
+                        lambda *a, **k: _per_side_pool({
+                            'rank': 2, 'chain': other,
+                            'source_basis': 'linker rows',
+                            'source_body_ids': [2],
+                            'per_linker': []}))
+    pair = _per_side_pair()
+    _per_side_validator()._refine_pair_branch(pair)
+    assert pair.source_pool == [1, 2, 3, 4]
+    assert pair.pool_basis == 'full population'

@@ -3321,6 +3321,32 @@ def resolve_prioritized_bridge_pool(
     result["all_valid_source_basis"] = union_basis("source")
     result["all_valid_target_basis"] = union_basis("target")
 
+    # Per-side refinement fallback (plan-tmvev-jaccard-primary-bodyid-ranking.md
+    # §15.3).  `prioritized_bridge_chains` ranks by derivation simplicity —
+    # fewest linkers wins — which is the right answer for "which single
+    # derivation explains this type pair" and the wrong answer for "which
+    # neurons are in this pool": on FAFB->BANC the 1-linker chain is a
+    # TARGET-side column (`fafb_cell_type`), so it refines the target pool
+    # exactly while the source pool falls back to the whole source type,
+    # even though other supported chains for the SAME endpoint carry
+    # source-side linker rows.  Expose the first supported attempt that does
+    # narrow the source side.  Additive: selection and every existing field
+    # are untouched.
+    refining = None
+    for rank, chain, pool in valid:
+        basis = pool.get("source_basis")
+        ids = pool.get("source_body_ids") or []
+        if basis in ("linker rows", "release relation participants") and ids:
+            refining = {
+                "rank": rank,
+                "chain": chain,
+                "source_basis": basis,
+                "source_body_ids": list(ids),
+                "per_linker": list(pool.get("per_linker") or []),
+            }
+            break
+    result["source_side_refinement"] = refining
+
     # Retain per-linker unions for inspection/export without replacing the
     # selected chain's per-linker counts used by existing visual edges.
     linker_union: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
