@@ -54,7 +54,10 @@ all three NeuronBridge tabs. `prune_find_lines_run` / `prune_find_neurons_run`
 bodyId-level source-data tables after that run's summaries/report exist and
 `images/` after the PDF/PPTX artifact exists (artifact-existence is the
 success check — the generator swallows failures). Idempotent; audits every
-removal in the run's `cleanup_audit.json`. The finder methods
+removal in the run's `cleanup_audit.json`. A missing `output_path` (unset, or
+a folder that does not exist) returns an empty audit and creates nothing: the
+writer never mkdirs, because stringifying a `None` used to yield the relative
+path `None` and leave that folder wherever the process ran. The finder methods
 (`find_lines_batch`, `find_neurons_batch`, `analyze_colabeling`) accept
 `keep_per_match_csv` / `cleanup_source_images` and call it before returning.
 

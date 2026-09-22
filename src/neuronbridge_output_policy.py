@@ -17,6 +17,9 @@ Contract:
   wrapping finder calls can re-run it safely.
 * Every removal is audited: `cleanup_audit.json` in the run folder lists the
   removed paths and reclaimed bytes (merged across passes).
+* A run with no folder on disk is a no-op, never a new directory: an unset
+  `output_path` used to stringify to the relative path `None` and the audit
+  writer created that folder wherever the process was running.
 
 Under the default-off NeuronBridge match cache (D1 of the plan), a deleted
 per-match table regenerates only by re-running the query against the
@@ -65,6 +68,26 @@ def _file_size(path: Path) -> int:
         return 0
 
 
+def _run_folder(output_path: Any) -> Optional[str]:
+    """Absolute path of an *existing* run folder, or None when there is none.
+
+    ``str(None)`` is the literal ``'None'``, so an unset output folder used to
+    resolve as the relative path ``None`` and the audit writer created that
+    directory in the process CWD. A run with no folder on disk has nothing to
+    prune, and pruning must not conjure one.
+    """
+    if not output_path:
+        return None
+    resolved = os.path.abspath(str(output_path))
+    return resolved if os.path.isdir(resolved) else None
+
+
+def _empty_audit() -> Dict[str, Any]:
+    """The prune result for a run folder that does not exist."""
+    return {"removed": [], "bytes_reclaimed_this_pass": 0,
+            "bytes_reclaimed": 0, "total_removed": 0, "passes": 0}
+
+
 def _merge_audit(output_path: str, removed: List[Dict[str, Any]],
                  bytes_reclaimed: int,
                  force_write: bool = False) -> Dict[str, Any]:
@@ -103,11 +126,13 @@ def _merge_audit(output_path: str, removed: List[Dict[str, Any]],
         "updated_at": _now(),
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
+        # No mkdir: the audit belongs to a run folder that already exists, and
+        # creating one here is how a mistyped path turned into stray output.
+        if path.parent.is_dir():
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            temporary.write_text(
+                json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
     except OSError:
         pass
     return {
@@ -158,7 +183,9 @@ def _apply(
     match_condition_met: bool,
 ) -> Dict[str, Any]:
     """Shared prune pass; see module docstring for the contract."""
-    output_path = str(output_path)
+    output_path = _run_folder(output_path)
+    if output_path is None:
+        return _empty_audit()
     removed: List[Dict[str, Any]] = []
 
     if not keep_per_match_csv and match_condition_met:
@@ -199,7 +226,9 @@ def prune_find_lines_run(
     sheet exists.  Safe to call on folders without those files: everything
     is skipped.
     """
-    output_path = str(output_path)
+    output_path = _run_folder(output_path)
+    if output_path is None:
+        return _empty_audit()
     root = Path(output_path)
     # Flat base first, then one base per chip folder.
     bases = [root] + sorted(
@@ -243,7 +272,9 @@ def prune_find_neurons_run(
     distribution plot, and `plot-3d_*` folders are deliverables and stay.
     There is no image payload in this mode.
     """
-    output_path = str(output_path)
+    output_path = _run_folder(output_path)
+    if output_path is None:
+        return _empty_audit()
     by_dataset = Path(output_path) / "by_dataset"
     types_exist = bool(_glob_files(output_path, ["*_types.csv"])) or (
         by_dataset.is_dir()
@@ -280,7 +311,9 @@ def prune_colabel_run(
     matrices or the report exist.  Matrices, expression data, by-type
     distributions, and the report are deliverables and stay.
     """
-    output_path = str(output_path)
+    output_path = _run_folder(output_path)
+    if output_path is None:
+        return _empty_audit()
     deliverable_exists = (
         any(_has_content(p)
             for p in _glob_files(output_path, ["colabeling_matrix_*.csv"]))

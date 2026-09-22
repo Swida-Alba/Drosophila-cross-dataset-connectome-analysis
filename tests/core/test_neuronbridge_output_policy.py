@@ -282,3 +282,21 @@ class TestNonEmptyGating:
         policy.prune_find_lines_run(
             str(root), keep_per_match_csv=True, cleanup_source_images=True)
         assert (root / "images" / "L" / "i.png").exists()
+
+
+@pytest.mark.parametrize('missing', [None, '', 'no_such_run'])
+def test_prune_never_creates_its_run_folder(missing, tmp_path, monkeypatch):
+    """A run folder that is not there is nothing to prune.
+
+    The entry points used to stringify their argument, so `None` became the
+    literal relative path `None`, and the audit writer created that directory
+    wherever the process happened to be running - which is how a stray
+    `None/cleanup_audit.json` appeared in the repository root.
+    """
+    monkeypatch.chdir(tmp_path)
+    empty = {'removed': [], 'bytes_reclaimed_this_pass': 0,
+             'bytes_reclaimed': 0, 'total_removed': 0, 'passes': 0}
+    for prune in (policy.prune_find_lines_run, policy.prune_find_neurons_run,
+                  policy.prune_colabel_run):
+        assert prune(missing, keep_per_match_csv=False) == empty
+    assert list(tmp_path.iterdir()) == []

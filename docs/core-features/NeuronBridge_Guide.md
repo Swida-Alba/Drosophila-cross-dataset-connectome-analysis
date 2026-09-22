@@ -681,7 +681,8 @@ Compact keeps the newest N expanded runs' match tables (default N=1 —
 the latest query stays inspectable), prunes older Compact runs' tables,
 and removes the downloaded images once the PDF/PPTX exists — audited in
 `cleanup_audit.json`. A zero-byte summary/PDF (a crashed writer) never
-licenses deletion. The NeuronBridge match cache is OFF by
+licenses deletion, and a run whose output folder is not on disk prunes nothing —
+the pass returns an empty audit instead of creating a folder. The NeuronBridge match cache is OFF by
 default (`use_cache=False`; Settings → NeuronBridge Match Cache re-enables
 it) because NB queries are large and rarely reused — so a removed match
 table regenerates only by re-running the query. The same knob exists on
