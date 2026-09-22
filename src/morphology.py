@@ -88,6 +88,7 @@ try:
         is_banc_dataset,
         is_flywire_dataset,
         is_local_connectome_dataset,
+        neuprint_dataset_name,
         normalize_flywire_body_id,
         normalize_flywire_id_columns,
     )
@@ -97,6 +98,7 @@ except ImportError:
         is_banc_dataset,
         is_flywire_dataset,
         is_local_connectome_dataset,
+        neuprint_dataset_name,
         normalize_flywire_body_id,
         normalize_flywire_id_columns,
     )
@@ -4597,7 +4599,8 @@ def _fetch_neuprint_skeleton(dataset: str, body_id: int):
         token = token_manager.get_neuprint_token()
     except Exception:
         token = ""
-    client = Client("neuprint.janelia.org", dataset=dataset, token=token)
+    client = Client("neuprint.janelia.org",
+                    dataset=neuprint_dataset_name(dataset), token=token)
     set_default_client(client)
     df = fetch_skeleton(body_id)
     if df is None or len(df) == 0:
@@ -5019,7 +5022,8 @@ def _fetch_neuprint_skeleton_batch(
         except Exception:
             token = ""
         client = Client(
-            "neuprint.janelia.org", dataset=dataset, token=token)
+            "neuprint.janelia.org",
+            dataset=neuprint_dataset_name(dataset), token=token)
     try:
         set_default_client(client)
     except Exception:

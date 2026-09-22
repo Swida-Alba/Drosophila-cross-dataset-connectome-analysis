@@ -91,6 +91,30 @@ def dataset_folder(dataset: object) -> str:
     return canonical_dataset_name(dataset).replace(":", "_").replace(".", "_")
 
 
+_NEUPRINT_FOLDER_NAME_RE = re.compile(r"^(.+?)_v(\d+(?:_\d+)*)$")
+
+
+def neuprint_dataset_name(dataset: object) -> str:
+    """Map a dataset identifier to the spelling the NeuPrint server accepts.
+
+    ``dataset_folder`` is one-way: a NeuPrint release lives under
+    ``hemibrain_v1_2_1`` on disk but only ``hemibrain:v1.2.1`` exists on the
+    server, and the underscore form resolves happily against the local tables,
+    profile caches and folder names — so a run launched with it loses every
+    remote fetch while nothing local complains.  Use this ONLY at the NeuPrint
+    boundary: FAFB and standalone BANC are analyzed from local releases and
+    must keep their own identifiers.
+    """
+
+    text = canonical_dataset_name(dataset).strip()
+    if ":" in text or is_local_connectome_dataset(text):
+        return text
+    match = _NEUPRINT_FOLDER_NAME_RE.match(text)
+    if not match:
+        return text
+    return f"{match.group(1).replace('_', '-')}:v{match.group(2).replace('_', '.')}"
+
+
 def resolve_flywire_dataset_dir(
     project_root: str | Path, dataset: object
 ) -> Optional[Path]:

@@ -44,9 +44,10 @@ except ImportError:  # pragma: no cover - direct package imports
     from utils.naming_utils import canonical_dataset_name
 
 try:
-    from ..flywire_ids import is_local_connectome_dataset
+    from ..flywire_ids import (is_local_connectome_dataset,
+                               neuprint_dataset_name)
 except ImportError:  # pragma: no cover - direct package imports
-    from flywire_ids import is_local_connectome_dataset
+    from flywire_ids import is_local_connectome_dataset, neuprint_dataset_name
 
 
 # ============================================================================
@@ -2523,29 +2524,15 @@ class ConnectivityProfiler:
         return status
 
     def _normalize_neuprint_dataset_name(self, dataset: str) -> str:
+        """Convert a dataset folder name to its NeuPrint dataset name.
+
+        Thin delegate to the shared boundary helper (``flywire_ids``), which
+        also refuses to translate FAFB / standalone BANC:
+        ``hemibrain_v1_2_1`` -> ``hemibrain:v1.2.1``, ``male-cns_v0_9`` ->
+        ``male-cns:v0.9``.
         """
-        Convert dataset folder name to NeuPrint dataset name.
-        
-        Examples:
-            hemibrain_v1_2_1 → hemibrain:v1.2.1
-            male-cns_v0_9 → male-cns:v0.9
-            optic-lobe_v1_1 → optic-lobe:v1.1
-        """
-        # If already in NeuPrint format, return as-is
-        if ':' in dataset:
-            return dataset
-        
-        # Convert underscores back to proper format
-        # Pattern: name_vX_Y_Z → name:vX.Y.Z
-        import re
-        match = re.match(r'^(.+?)_v(\d+(?:_\d+)*)$', dataset)
-        if match:
-            name = match.group(1).replace('_', '-')  # hemibrain_v1_2_1 → hemibrain
-            version = match.group(2).replace('_', '.')  # 1_2_1 → 1.2.1
-            return f"{name}:v{version}"
-        
-        return dataset
-    
+        return neuprint_dataset_name(dataset)
+
     def _get_client_for_dataset(self, dataset: str) -> Optional[Any]:
         """Get or create NeuPrint client for a dataset."""
         if dataset in self._clients:

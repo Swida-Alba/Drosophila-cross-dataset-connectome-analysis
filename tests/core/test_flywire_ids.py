@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from flywire_ids import (  # noqa: E402
     FlyWireBodyIdError,
     body_id_to_api_int,
+    neuprint_dataset_name,
     normalize_flywire_body_id,
     normalize_flywire_id_columns,
     resolve_flywire_dataset_dir,
@@ -183,3 +184,32 @@ def test_neuronbridge_reads_exact_flywire_parquet_table(tmp_path):
     assert frame is not None
     assert frame["bodyId"].tolist() == [LARGE_ID]
     assert frame["bodyId"].map(type).eq(str).all()
+
+
+def test_folder_spellings_resolve_to_the_names_the_neuprint_server_knows():
+    """A NeuPrint release's folder spelling resolves against everything local
+    and nothing remote: r25 ran ``--target hemibrain_v1_2_1`` and the server
+    answered "Dataset 'hemibrain_v1_2_1' does not exist", so the run lost every
+    target skeleton — zero Track-A scores, no null-bar sample, scenes with no
+    target neurons — while its tables, profile cache and folder names all worked.
+    """
+    cases = {
+        "hemibrain_v1_2_1": "hemibrain:v1.2.1",
+        "male-cns_v0_9": "male-cns:v0.9",
+        "male-cns_v1_0": "male-cns:v1.0",
+        "manc_v1_2_3": "manc:v1.2.3",
+        "optic-lobe_v1_1": "optic-lobe:v1.1",
+        # already-correct and version-less server names pass through, so the
+        # translation is idempotent
+        "hemibrain:v1.2.1": "hemibrain:v1.2.1",
+        "mushroombody": "mushroombody",
+        # local releases are NOT NeuPrint datasets and must keep their own
+        # identifiers (FAFB's name even contains a version suffix)
+        "flywire_FAFB_v783": "flywire_FAFB_v783",
+        "banc_v888": "banc_v888",
+        "flywire_BANC_v626": "banc_v626",
+    }
+    for folder, expected in cases.items():
+        once = neuprint_dataset_name(folder)
+        assert once == expected
+        assert neuprint_dataset_name(once) == once
