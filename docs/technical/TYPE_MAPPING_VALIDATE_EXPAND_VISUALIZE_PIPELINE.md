@@ -120,6 +120,34 @@ for the verification is this pipeline's own:**
   with missing = 0; NaN when either side is constant; cosine and
   weighted_jaccard on the same union). Unit-tested to 1e-9/1e-12
   against production.
+- **The scan is indexed, and still exact.** A source neuron shares an
+  expanded type with only ~0.5 % of a whole connectome (416–1,184 of
+  banc_v888's 103,770 cached targets), yet scoring all of them pair-by-pair
+  cost 3.64 s per source neuron — 98 % of it in `rank_union` work on rows
+  that can only read `jaccard == 0`. `prep_target_stats` therefore returns a
+  `TargetScanIndex`: a plain `bid → _SideStats` dict that additionally
+  carries one postings list per type key and, per target, its key count and
+  the squared sum of its average-tie ranks. `scan_source` reaches the
+  positive block through the postings, scores those rows with the untouched
+  `score_one_candidate_fast`, and fills the disjoint block arithmetically —
+  including `rank_union`, whose padded-concatenation form is an identity, not
+  an approximation (`_disjoint_rank_union`: each side's ranks are `q + ρ` over
+  its own keys and `(q+1)/2` over the other's, so Pearson collapses to four
+  scalars per side). A weight of zero breaks that reading, so such rows fall
+  back to the scorer. The frame that comes out is the same frame — rows,
+  order, columns, values — measured identical over 20 real sources × 103,770
+  targets at 0.136 s vs 3.80 s per source
+  (`tests/core/test_mapping_validation_scan_parity.py`), which is why no rank
+  window, null sample or `chain_pos` consumer had to change.
+- **The stage-5 skeleton pre-flight is batched and threaded.** It reaches
+  the same store the stage-4 scenes use, so it is the run's only
+  network-bound block; fetching one skeleton per request measured 3.0 s each
+  (1,401 s for 467). It now goes through `fetch_skeletons_on_demand_batch`
+  (64-body requests, `skeleton_fetch_workers` threads, default 8) in
+  128-id chunks so the fetched neurons never all live in memory, bounded by
+  `skeleton_fetch_timeout_s` of socket inactivity because neither
+  neuprint-python nor navis exposes a per-request timeout. Cache-first,
+  resumable and fail-open exactly as before.
 - Ranks are competition-style (ties share the better rank, NaN last).
 - **The ordering chain** (`body_id_resolver._CHAIN`, surfaced as
   `order_by_chain()` / `chain_key()`): Jaccard desc → rank_union desc as
@@ -670,7 +698,14 @@ target-vector build time.
   machine-readable: the run folder carries **`pipeline_progress.jsonl`**
   (`ts/event/stage/done/total/pct` events — `run_start`, `stage_start`,
   `profiles_progress`, `stage_done`, `warning`, `run_done`), the contract a
-  future UI tails.  `--skip-profile-build` restores the historical
+  future UI tails.  Every stage the run opens now also closes: the
+  `stage_start`/`stage_done` pairs are `1` resolve, `2` scans (with one
+  `scan_progress` line per source type), `5` morphology, `3` categories,
+  `5d` backward evidence, `3b` coverage accounting, `expansion` out-map,
+  `4` scenes and `6` report, each carrying a `label` the Log tab prints
+  with its duration.  Before that, a 25-minute block sat inside one
+  never-closed stage and cost could only be attributed from artifact
+  mtimes.  `--skip-profile-build` restores the historical
   cache-only, fail-closed behavior.
 - **Layered gap-fill report**: `gap_fill_levels.csv` — one row per
   non-tier, non-sibling bodyId (siblings are claims, not fill proposals,

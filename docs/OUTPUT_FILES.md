@@ -832,8 +832,16 @@ bar-kind evidence) and a
     morph-checked against the run null bar (`morph_v2_similarity` /
     `morph_qualified`); failing rows stay in the file, the scene renders
     morph-passing targets only; exploratory — never fills.
-*   **`pipeline_progress.jsonl`**: machine-readable run progress (stage
-    and profile-pre-flight events) — the backend log a future UI tails.
+*   **`pipeline_progress.jsonl`**: machine-readable run progress — the
+    backend log a future UI tails. Every stage a run opens now closes:
+    `stage_start`/`stage_done` for `1` resolve, `2` scans, `5` morphology,
+    `3` categories, `5d` backward evidence, `3b` coverage accounting,
+    `expansion` out-map, `4` scenes, `6` report (each with a `label` the
+    report's Log tab prints with its duration), plus per-block counters
+    `scan_progress` (per source type), `profiles_progress`,
+    `skeletons_progress`, `backward_progress`, `out_map_progress`,
+    `warning`, `run_start` and `run_done` (`elapsed_s` is the authoritative
+    wall time).
 *   **`gap_fill_dedup.csv`**: query-level, one row per target bodyId —
     `dedup_category` (precedence `matched > verified > borderline >
     unmatched > sibling > candidates > family > relative > examinees`),

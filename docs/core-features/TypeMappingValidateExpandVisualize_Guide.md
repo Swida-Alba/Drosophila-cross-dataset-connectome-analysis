@@ -65,6 +65,8 @@ flag at all — the tab is their only entrance.
 | Backward scans unmatched pool members | `backward_scan_pool_targets` | `--no-backward-pool-targets` (negated) |
 | Suspicious per-source cap | `suspicious_per_source_cap` | `--suspicious-cap` |
 | Cache-only profiles | `skip_profile_build` | `--skip-profile-build` |
+| Skeleton-fetch threads | `skeleton_fetch_workers` | `--skeleton-fetch-workers` |
+| Skeleton-fetch timeout (s) | `skeleton_fetch_timeout_s` | `--skeleton-fetch-timeout` |
 | Skip out-map expansion | `skip_out_map_expansion` | `--skip-out-map-expansion` |
 | (Advanced) various thresholds | see §5 | various `--…` flags |
 
