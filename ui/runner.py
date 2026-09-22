@@ -323,6 +323,13 @@ TOOL_REGISTRY: Dict[str, dict] = {
             "run": "comparer.run()",
         },
     },
+    "type_mapping_validation": {
+        "label": "Type Validation (TM VEV)",
+        "import": ("from comparison.mapping_validation import "
+                   "MappingValidationConfig, MappingValidator"),
+        "class": None, "var": None, "init_method": None,
+        "methods": {"run": ""},  # dispatched to _generate_tmvev_script by name
+    },
 }
 
 
@@ -601,6 +608,9 @@ class ScriptRunner:
         elif tool_name == "plot3d_reexport":
             return self._generate_skeleton_reexport_script(
                 constructor_params, method_params)
+        elif tool_name == "type_mapping_validation":
+            return self._generate_tmvev_script(
+                constructor_params, method_params)
 
         # Standard script generation
         if tool_name == "plot_path":
@@ -856,6 +866,112 @@ analyzer.export_results()
 print("[DROCAT] Done.")
 '''
         return script
+
+    def _generate_tmvev_script(
+        self, constructor_params: dict, method_params: Optional[dict]
+    ) -> str:
+        """Generate the script that runs the TM VEV pipeline.
+
+        ``MappingValidationConfig`` is a plain dataclass, so ``constructor_params``
+        keys must be real field names (None/absent keys are dropped so the
+        dataclass defaults stay authoritative) and an unknown key raises TypeError.
+
+        The pipeline emits no ``[DROCAT]`` markers of any kind, so the generated
+        script installs a ``log`` wrapper on the validator — the single funnel
+        every ``[stage …]``/``[categories]``/``[TMVEV]`` banner passes through. It
+        (a) announces the run folder the first time a banner fires (``run_dir`` is
+        set before ``[stage 1]``), so the Output Files panel is populated during
+        the run and survives a SIGTERM cancel; and (b) maps the verified banner
+        literals to ``[DROCAT][progress] i/n label`` step events. The wrapper calls
+        through to the real ``log`` (the sole producer of ``notes``/README/report),
+        accepts one positional arg, returns None, and never raises.
+        """
+        cp = {k: v for k, v in (constructor_params or {}).items() if v is not None}
+
+        # Banner literals are matched as exact substrings (never prefixes):
+        # [stage 5]/[stage 5d] share a stem, [categories] failed /
+        # out-map-expansion no-work lines reuse their success prefix.
+        # The (literal, label) table lives in
+        # ui.components.page_progress.tmvev_progress_steps so the generated
+        # bridge and the results-panel checklist cannot drift apart.
+        from .components.page_progress import tmvev_progress_steps
+
+        matches = [
+            (lit, i + 1, label)
+            for i, (lit, label) in enumerate(tmvev_progress_steps(cp))
+        ]
+
+        # A plain (non-f) template keeps every literal ``{``/``}`` in the child
+        # code intact; values are spliced in via replace(), so no brace escaping.
+        template = '''#!/usr/bin/env python
+"""Auto-generated DROCAT runner script for type-mapping validation (TM VEV)."""
+import sys
+import re
+import warnings
+
+sys.path.insert(0, r"@@SRC@@")
+sys.path.insert(0, r"@@ROOT@@")
+sys.path.insert(0, r"@@VISPATH@@")
+
+warnings.filterwarnings("ignore")
+
+from comparison.mapping_validation import MappingValidationConfig, MappingValidator
+
+_total = @@TOTAL@@
+_outmap_re = re.compile(r"out-map expansion: \\d+/\\d+")
+_MATCHES = @@MATCHES@@
+_state = {"step": 0, "announced": False}
+
+
+def _announce(rd):
+    if rd is None or _state["announced"]:
+        return
+    _state["announced"] = True
+    print(f"[DROCAT] Output will be saved to: {rd}", flush=True)
+
+
+def _bridge(_orig):
+    def _log(msg=''):
+        try:
+            _orig(msg)
+        except Exception:
+            pass
+        try:
+            s = str(msg)
+            rd = getattr(validator, "run_dir", None)
+            if rd is not None:
+                _announce(rd)
+            for lit, i, label in _MATCHES:
+                if lit in s:
+                    if lit == "[TMVEV] out-map expansion: " and not _outmap_re.search(s):
+                        continue
+                    if i > _state["step"]:
+                        _state["step"] = i
+                        print(f"[DROCAT][progress] {i}/{_total} {label}", flush=True)
+                    break
+        except Exception:
+            pass
+    return _log
+
+
+cfg = MappingValidationConfig(
+@@PARAMS@@
+)
+validator = MappingValidator(cfg)
+validator.log = _bridge(validator.log)
+run_dir = validator.run()
+_announce(run_dir)
+print("[DROCAT] Done.")
+'''
+        return (
+            template
+            .replace("@@SRC@@", str(SRC_DIR))
+            .replace("@@ROOT@@", str(PROJECT_ROOT))
+            .replace("@@VISPATH@@", str(VISPATH_DIR))
+            .replace("@@TOTAL@@", str(len(matches)))
+            .replace("@@MATCHES@@", repr(matches))
+            .replace("@@PARAMS@@", _format_params(cp))
+        )
 
     def _generate_flylight_script(
         self, constructor_params: dict, method_params: Optional[dict]

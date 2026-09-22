@@ -6,6 +6,7 @@ from .network import create_network_tab
 from .connectivity import create_connectivity_tab
 from .morphology import create_morphology_tab
 from .inter_dataset import create_inter_dataset_tab
+from .type_validation import create_type_validation_tab
 from .nb_find_lines import create_nb_find_lines_tab
 from .nb_find_neuron import create_nb_find_neuron_tab
 from .nb_colabel import create_nb_colabel_tab
@@ -24,6 +25,7 @@ __all__ = [
     "create_connectivity_tab",
     "create_morphology_tab",
     "create_inter_dataset_tab",
+    "create_type_validation_tab",
     "create_nb_find_lines_tab",
     "create_nb_find_neuron_tab",
     "create_nb_colabel_tab",

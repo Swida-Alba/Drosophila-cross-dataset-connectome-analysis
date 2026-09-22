@@ -117,7 +117,8 @@ _DROCAT_TAB_NAMES = {
     "Complete Paths",
     "Shortest Paths",
     "Network",
-    "Cross-Dataset",
+    "Paths",
+    "Type Validation",
     "Skeleton",
     "Net-Viz",
     "Connectivity",
@@ -129,6 +130,10 @@ _DROCAT_TAB_NAMES = {
     "Settings",
 }
 
+# Browser-side user state only: a returning user's saved tab name is migrated
+# before the membership check. This is NOT a data back-compat shim.
+_TAB_NAME_ALIASES = {"Cross-Dataset": "Paths"}
+
 
 def _saved_active_tab() -> str:
     """Restore the last selected tab from a lightweight browser cookie."""
@@ -138,6 +143,7 @@ def _saved_active_tab() -> str:
         )))
     except Exception:
         saved = ""
+    saved = _TAB_NAME_ALIASES.get(saved, saved)
     return saved if saved in _DROCAT_TAB_NAMES else "Complete Paths"
 
 
@@ -146,6 +152,7 @@ from ui.tabs import (
     create_find_shortest_tab,
     create_network_tab,
     create_inter_dataset_tab,
+    create_type_validation_tab,
     create_skeleton_tab,
     create_net_viz_tab,
     create_connectivity_tab,
@@ -179,6 +186,7 @@ DROCAT_CSS = """
     --drocat-shadow: 0 16px 40px rgba(11, 31, 58, .08);
     /* Tab-group tints, shared by the group headers and their tabs */
     --drocat-tint-connection: #eaf0ff;
+    --drocat-tint-crossdataset: #ffeef2;
     --drocat-tint-visualization: #e2f6f5;
     --drocat-tint-similarity: #fff3e0;
     --drocat-tint-nb: #f6f1ff;
@@ -231,6 +239,7 @@ html:has(> body.body--dark) {
     --drocat-err: #f87171;
     --drocat-shadow: 0 16px 40px rgba(0, 0, 0, .5);
     --drocat-tint-connection: #18233c;
+    --drocat-tint-crossdataset: #331e26;
     --drocat-tint-visualization: #132a2c;
     --drocat-tint-similarity: #2c2313;
     --drocat-tint-nb: #251a3d;
@@ -286,11 +295,12 @@ body.body--dark {
 .drocat-release-dismiss .q-btn__content { color: var(--drocat-cobalt); }
 
 /* Active group-tab accents need brighter hues on the dark tints. */
-body.body--dark .drocat-tint-visualization .drocat-group-tab.drocat-active { color: #2dd4bf !important; }
-body.body--dark .drocat-tint-similarity .drocat-group-tab.drocat-active { color: #f59e0b !important; }
-body.body--dark .drocat-tint-nb .drocat-group-tab.drocat-active { color: #a78bfa !important; }
-body.body--dark .drocat-tint-flylight .drocat-group-tab.drocat-active { color: #4ade80 !important; }
-body.body--dark .drocat-tint-settings .drocat-group-tab.drocat-active { color: #94a3b8 !important; }
+body.body--dark .drocat-nav .drocat-tint-crossdataset .drocat-group-tab.drocat-active { color: #fb7185 !important; }
+body.body--dark .drocat-nav .drocat-tint-visualization .drocat-group-tab.drocat-active { color: #2dd4bf !important; }
+body.body--dark .drocat-nav .drocat-tint-similarity .drocat-group-tab.drocat-active { color: #f59e0b !important; }
+body.body--dark .drocat-nav .drocat-tint-nb .drocat-group-tab.drocat-active { color: #a78bfa !important; }
+body.body--dark .drocat-nav .drocat-tint-flylight .drocat-group-tab.drocat-active { color: #4ade80 !important; }
+body.body--dark .drocat-nav .drocat-tint-settings .drocat-group-tab.drocat-active { color: #94a3b8 !important; }
 
 /* The results mark keeps its white icon on a dark navy chip in both themes. */
 body.body--dark .drocat-results-mark { background: #1d2a42; }
@@ -1208,6 +1218,7 @@ html, body {
     box-shadow: inset 0 1px 3px rgba(11, 31, 58, .04);
 }
 .drocat-group-card.drocat-tint-connection { background: var(--drocat-tint-connection); }
+.drocat-group-card.drocat-tint-crossdataset { background: var(--drocat-tint-crossdataset); }
 .drocat-group-card.drocat-tint-visualization { background: var(--drocat-tint-visualization); }
 .drocat-group-card.drocat-tint-similarity { background: var(--drocat-tint-similarity); }
 .drocat-group-card.drocat-tint-nb { background: var(--drocat-tint-nb); }
@@ -1286,13 +1297,16 @@ html, body {
 .drocat-group-tab.drocat-tab-running::after { background: var(--drocat-cobalt); }
 .drocat-group-tab.drocat-tab-failed::after { background: var(--drocat-err); }
 .drocat-group-tab.drocat-tab-completed::after { background: var(--drocat-ok); }
-/* The active segment takes its group's accent color. */
-.drocat-tint-connection .drocat-group-tab.drocat-active { color: var(--drocat-cobalt) !important; }
-.drocat-tint-visualization .drocat-group-tab.drocat-active { color: #0e7490 !important; }
-.drocat-tint-similarity .drocat-group-tab.drocat-active { color: #b45309 !important; }
-.drocat-tint-nb .drocat-group-tab.drocat-active { color: #7c3aed !important; }
-.drocat-tint-flylight .drocat-group-tab.drocat-active { color: #15803d !important; }
-.drocat-tint-settings .drocat-group-tab.drocat-active { color: #475467 !important; }
+/* The active segment takes its group's accent color. The `.drocat-nav`
+   ancestor raises specificity above Quasar's `.text-primary`/`.q-btn--flat`
+   button-color rules so the per-group accent actually paints. */
+.drocat-nav .drocat-tint-connection .drocat-group-tab.drocat-active { color: var(--drocat-cobalt) !important; }
+.drocat-nav .drocat-tint-crossdataset .drocat-group-tab.drocat-active { color: #be123c !important; }
+.drocat-nav .drocat-tint-visualization .drocat-group-tab.drocat-active { color: #0e7490 !important; }
+.drocat-nav .drocat-tint-similarity .drocat-group-tab.drocat-active { color: #b45309 !important; }
+.drocat-nav .drocat-tint-nb .drocat-group-tab.drocat-active { color: #7c3aed !important; }
+.drocat-nav .drocat-tint-flylight .drocat-group-tab.drocat-active { color: #15803d !important; }
+.drocat-nav .drocat-tint-settings .drocat-group-tab.drocat-active { color: #475467 !important; }
 
 @media (max-width: 1100px) {
     /* Cards no longer fit side by side: let the nav strip scroll instead
@@ -2791,13 +2805,17 @@ def main_page():
     with ui.column().classes("w-full drocat-shell gap-3"):
         # Grouped navigation - layered cards. Every group is its own tinted
         # card holding its header on top of its tab segments (no partition,
-        # always aligned): Connection blue, Visualization teal, Similarity
-        # amber, NeuronBridge purple + NB badge, FlyLight green. Settings is
-        # a standalone slate card (no header), separated from the groups.
+        # always aligned): Connection blue, Cross-Dataset rose, Visualization
+        # teal, Similarity amber, NeuronBridge purple + NB badge, FlyLight
+        # green. Settings is a standalone slate card (no header), separated
+        # from the groups.
         NAV_GROUPS = [
-            ("Connection", "connection", 4, [
+            ("Connection", "connection", 3, [
                 ("Complete Paths", "route"), ("Shortest Paths", "alt_route"),
-                ("Network", "schema"), ("Cross-Dataset", "sync_alt"),
+                ("Network", "schema"),
+            ]),
+            ("Cross-Dataset", "crossdataset", 2, [
+                ("Paths", "sync_alt"), ("Type Validation", "policy"),
             ]),
             ("Visualization", "visualization", 2, [
                 ("Skeleton", "view_in_ar"), ("Net-Viz", "account_tree"),
@@ -2845,8 +2863,11 @@ def main_page():
                 create_find_shortest_tab()
             with ui.tab_panel("Network").classes("p-0"):
                 create_network_tab()
-            with ui.tab_panel("Cross-Dataset").classes("p-0"):
+            # Cross-Dataset
+            with ui.tab_panel("Paths").classes("p-0"):
                 create_inter_dataset_tab()
+            with ui.tab_panel("Type Validation").classes("p-0"):
+                create_type_validation_tab()
             # Visualization
             with ui.tab_panel("Skeleton").classes("p-0"):
                 skeleton_recovery = create_skeleton_tab()
@@ -2906,7 +2927,8 @@ def main_page():
             "Complete Paths": ["find_path"],
             "Shortest Paths": ["find_shortest"],
             "Network": ["network"],
-            "Cross-Dataset": ["inter_dataset"],
+            "Paths": ["inter_dataset"],
+            "Type Validation": ["type_mapping_validation"],
             "Skeleton": ["visualization_skeleton"],
             "Net-Viz": ["visualization_net_viz"],
             "Connectivity": ["connectivity_similar", "connectivity_comparison"],

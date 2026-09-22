@@ -556,6 +556,10 @@ DEFAULTS = {
     "candidate_cap": 500,
     "morph_visualize_top_n": 10,
     "morph_visualize_by": "type",
+    # Type Validation (TM VEV) tab defaults
+    "tmvev_mode": "restrictive",
+    # 0 renders one scene per parent, matching MappingValidationConfig.
+    "tmvev_max_scenes": 0,
 }
 
 # Pathfinding algorithms (names match the FastGraph implementations:
@@ -1006,6 +1010,27 @@ DEFAULT_SETTING_SPECS = {
         "max": 20,
         "step": 1,
         "hint": "Minimum unique partner types in a connectivity profile.",
+    },
+    "tmvev_mode": {
+        "label": "Type Validation Mode",
+        "group": "similarity",
+        "kind": "select",
+        "options": ["restrictive", "family", "aggressive"],
+        "hint": "Default nested mode for the Type Validation (TM VEV) tab. "
+                "restrictive ⊆ family ⊆ aggressive; each wider mode admits more "
+                "candidate bins and runs slower.",
+    },
+    "tmvev_max_scenes": {
+        "label": "Type Validation Max Scenes",
+        "group": "similarity",
+        "kind": "int",
+        "min": 0,
+        "max": 50,
+        "step": 1,
+        "hint": "Default cap on 3D review scenes rendered by the Type "
+                "Validation tab; broader scopes are clamped to this and split "
+                "into separate runs. 0 (the default) caps nothing and renders "
+                "one scene per parent type.",
     },
     "similarity_metric": {
         "label": "Similarity Metric (Sort By)",

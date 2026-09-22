@@ -204,6 +204,7 @@ Advanced technical documentation:
 | Direct connections          | [Main README](./core-features/BasicUsage_Guide.md)                                             |
 | Multi-hop paths             | [FindAllPath](./core-features/FindAllPath_Documentation.md)                          |
 | **Compare across datasets** | **[Cross-Dataset Comparison](./core-features/CrossDatasetComparison_Guide.md)**      |
+| **Validate a type mapping (bodyId level)** | The **Cross-Dataset › Type Validation** tab — see [TypeMappingValidateExpandVisualize_Guide.md](./core-features/TypeMappingValidateExpandVisualize_Guide.md) §1b |
 | **Build profiles**          | **[Connectivity Profiler Guide](./core-features/ConnectivityProfiler_Guide.md)**     |
 | **Find homologs**           | **[Homolog Finding](./core-features/HomologFinding_Guide.md)**                       |
 | **Intra-dataset profiling** | **[Connectivity Profiling](./CONNECTIVITY_PROFILING.md)**                            |

@@ -189,6 +189,44 @@ INITIALIZATION_TOOLS = frozenset({
 })
 
 
+def tmvev_progress_steps(context: Optional[dict] = None) -> List[Tuple[str, str]]:
+    """(banner literal, step label) pairs for one TM VEV run protocol.
+
+    Single source of truth shared by ``ui.runner._generate_tmvev_script`` —
+    which matches the literals inside the generated script's ``log`` bridge —
+    and :func:`progress_steps_for`, which names the results-panel checklist.
+    Flags collapse optional stages exactly as the backend skips them:
+    ``morph_enabled`` off drops the stage-5 step, backward off/skipped drops
+    stage 5d, ``skip_out_map_expansion`` drops the out-map step, and
+    ``visualize`` off drops the scenes step. Literals are exact substrings of
+    the pipeline's log banners (``[stage 5]``/``[stage 5d]`` share a stem, and
+    the ``[categories]`` failure line reuses the success prefix, so matches
+    must stay literal-and-ordered, never prefix-based).
+    """
+    context = context or {}
+    steps: List[Tuple[str, str]] = [
+        ("[stage 1] resolving type pairs", "Resolve type mapping branches"),
+        ("[stage 2] building target expanded-type vectors",
+         "Build target profiles and vectors"),
+        ("[stage 2] source type ",
+         "Score source neurons against the target universe"),
+    ]
+    if context.get("morph_enabled", True):
+        steps.append(("[stage 5] morphology verification + self-calibration",
+                      "Verify morphology and calibrate bars"))
+    steps.append(("[categories] mode=", "Partition categories"))
+    if (context.get("backward_evidence_enabled", False)
+            and not context.get("skip_backward_pass", False)):
+        steps.append(("[stage 5d] backward homolog evidence:",
+                      "Backward homolog evidence"))
+    if not context.get("skip_out_map_expansion", False):
+        steps.append(("[TMVEV] out-map expansion: ", "Expand out-map candidates"))
+    if context.get("visualize", True):
+        steps.append(("[stage 4] scenes in ", "Render 3D review scenes"))
+    steps.append(("[TMVEV] report written: ", "Write exports and the run report"))
+    return steps
+
+
 def progress_steps_for(
     tool_name: Optional[str],
     method_name: Optional[str] = None,
@@ -258,6 +296,10 @@ def progress_steps_for(
         if context.get("export_video"):
             steps.append("Export rotating video")
         return steps
+    if tool_name == "type_mapping_validation":
+        # Named checklist shared with the generated script's log bridge
+        # (ui.runner._generate_tmvev_script); flags collapse optional stages.
+        return [label for _literal, label in tmvev_progress_steps(context)]
     if method_name:
         key = (tool_name or "", method_name)
         if key in METHOD_PROGRESS_STEPS:
