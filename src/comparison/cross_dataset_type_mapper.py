@@ -175,6 +175,66 @@ def canonical_linker_token(value: Any) -> str:
         return token.split(':', 1)[1].strip()
     return token
 
+
+# ── Pool bases: what a resolved pool's evidence actually is ────────────────
+# ``ui.neuron_index._side_basis`` produces these strings, one per endpoint
+# side; the mapper owns the vocabulary because its own exports, the type
+# mapping panel, the visualization and the validation pipeline all read the
+# same field.
+#   'linker rows'                    a linker column measured a subset
+#   'release relation participants'  the release relation supplied members
+#   'linker rows + alternative chains'  several linker chains, widened
+#   'full population'                no evidence named this side, so the
+#                                     whole endpoint type population was used
+#   'unmeasured'                     this side's coverage index was absent
+ROW_EVIDENCE_BASES = ('linker rows', 'release relation participants',
+                      'linker rows + alternative chains')
+
+#: The row-evidence bases that also license taking one side's pool from a
+#: chain other than the selected one
+#: (plan-tmvev-jaccard-primary-bodyid-ranking.md §15.3).  A widened bucket is
+#: a union across chains, and a union may not re-decide a side.
+SOURCE_REFINING_BASES = ('linker rows', 'release relation participants')
+
+
+def basis_is_row_evidence(basis: Any) -> bool:
+    """True when a pool basis means "rows name these neurons".
+
+    A test written as ``basis == 'linker rows'`` reads every other row-backed
+    basis as a full-population claim, so a side resolved through the release
+    relation loses its disjointness measurement, its scene label and its
+    provenance bucket.  Read a basis through here.
+    """
+    return str(basis or '').strip() in ROW_EVIDENCE_BASES
+
+
+def source_side_refinement_note(pool: Dict[str, Any], source_dataset: str,
+                                target_dataset: str) -> str:
+    """Say which chain supplies the source pool when not the selected one.
+
+    ``prioritized_bridge_chains`` ranks by derivation simplicity, so the
+    selected chain can name only the target side (a target-side-only column)
+    while a different supported chain of the same endpoint names the source
+    side — the resolver reports that chain as ``source_side_refinement``.
+    The mapping panel and the visualization render the selected chain alone,
+    which after a per-side resolution understates the evidence: this note is
+    what makes the two views agree.  Empty when the selected chain already
+    supplies both sides.
+    """
+    pool = pool or {}
+    refinement = pool.get('source_side_refinement') or {}
+    chain = refinement.get('chain') or []
+    if not chain or chain == (pool.get('selected_chain') or []):
+        return ''
+    endpoint = str(chain[-1].get('value') or '')
+    text = bridge_linker_text([chain], source_dataset, target_dataset,
+                               endpoint).get('text') or ''
+    if not text:
+        return ''
+    return (f'source side from another supported chain: {text} '
+            f'({refinement.get("source_basis") or "row evidence"})')
+
+
 # Per FAFB/BANC namespace: which neuron table carries the primary ``type``
 # column and which additional-type column records renamed types.
 FLYWIRE_TYPE_SOURCES = {

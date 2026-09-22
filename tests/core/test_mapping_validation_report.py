@@ -576,3 +576,20 @@ def test_dedup_rank_candidates_outranks_family():
         "candidates"]
     assert DEDUP_RANK["candidates"] > DEDUP_RANK["relative"] > DEDUP_RANK[
         "examinees"]
+
+
+def test_basis_buckets_partition_on_evidence_kind():
+    """The in-map source population was read as the 'linker rows' plus the
+    'full population' keys, so a side resolved through the release relation
+    counted in neither and the Coverage/Targets cells under-reported it."""
+    from comparison.mapping_validation_report import split_basis_buckets
+    basis = {'linker rows': {1, 2},
+             'release relation participants': {3},
+             'full population': {4, 5},
+             'unmeasured': set()}
+    row, wide = split_basis_buckets(basis)
+    assert row == ['linker rows', 'release relation participants']
+    assert wide == ['full population', 'unmeasured']
+    assert sum(len(basis[b]) for b in row) == 3
+    assert sum(len(basis[b]) for b in wide) == 2
+    assert split_basis_buckets({}) == ([], [])

@@ -3018,6 +3018,14 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
                 f"{pool.get('target_basis', '')}; all-valid: "
                 f"{all_source_basis} / {all_target_basis}; "
                 f"{coverage_basis}")
+            # The selected chain can name only one side; say which chain
+            # supplies the source pool so this hover and the validation
+            # report describe the same evidence.
+            from comparison.cross_dataset_type_mapper import (
+                source_side_refinement_note)
+            side_note = source_side_refinement_note(pool, src_ds, tgt_ds)
+            if side_note:
+                coverage_basis = f"{coverage_basis}; {side_note}"
         selected_linker_values = "; ".join(
             str(linker.get("raw_value", linker.get("value", "")))
             for linker in linkers)

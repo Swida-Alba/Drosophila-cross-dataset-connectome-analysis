@@ -2675,3 +2675,25 @@ def test_the_refinement_of_a_different_endpoint_is_ignored(monkeypatch):
     _per_side_validator()._refine_pair_branch(pair)
     assert pair.source_pool == [1, 2, 3, 4]
     assert pair.pool_basis == 'full population'
+
+
+def test_every_row_backed_basis_is_measurable_not_just_one_string():
+    """Consumers that compared the basis with the literal 'linker rows' read
+    any other row-backed basis as a full population, so a side resolved
+    through the release relation silently lost its disjointness measurement
+    and read as an unresolved fan-out."""
+    from comparison.mapping_validation import (
+        annotate_pair_branches, measure_branch_disjointness)
+    a = _per_side_pair()
+    a.pool_basis = 'release relation participants'
+    b = _per_side_pair()
+    b.target_type, b.source_pool = 'X2', [5, 6]
+    b.pool_basis = 'linker rows + alternative chains'
+    assert measure_branch_disjointness([a, b]) is True
+    annotate_pair_branches([a, b])
+    assert 'resolved_by_linkers' in a.branch_annotation
+    # a genuinely wide branch still makes the overlap unmeasurable
+    wide = _per_side_pair()
+    wide.target_type, wide.source_pool, wide.pool_basis = 'X3', [7], \
+        'full population'
+    assert measure_branch_disjointness([a, b, wide]) is None

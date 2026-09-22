@@ -3147,6 +3147,7 @@ def resolve_prioritized_bridge_pool(
     three branches are mutually exclusive neurons.
     """
     from comparison.cross_dataset_type_mapper import (
+        SOURCE_REFINING_BASES,
         prioritized_bridge_chains,
         standardize_bridge,
     )
@@ -3330,13 +3331,14 @@ def resolve_prioritized_bridge_pool(
     # exactly while the source pool falls back to the whole source type,
     # even though other supported chains for the SAME endpoint carry
     # source-side linker rows.  Expose the first supported attempt that does
-    # narrow the source side.  Additive: selection and every existing field
-    # are untouched.
+    # narrow the source side; the basis vocabulary it tests against belongs to
+    # the mapper, which every reader of these pools shares.  Additive:
+    # selection and every existing field are untouched.
     refining = None
     for rank, chain, pool in valid:
         basis = pool.get("source_basis")
         ids = pool.get("source_body_ids") or []
-        if basis in ("linker rows", "release relation participants") and ids:
+        if basis in SOURCE_REFINING_BASES and ids:
             refining = {
                 "rank": rank,
                 "chain": chain,

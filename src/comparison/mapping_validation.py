@@ -96,7 +96,11 @@ from comparison.connectivity_profiler import (
     ConnectivityProfiler,
     ProfilerConfig,
 )
-from comparison.cross_dataset_type_mapper import get_type_mapper
+from comparison.cross_dataset_type_mapper import (
+    SOURCE_REFINING_BASES,
+    basis_is_row_evidence,
+    get_type_mapper,
+)
 from comparison.morph_bars import (
     BarSet,
     candidate_qualified,
@@ -310,13 +314,6 @@ class MappingValidationConfig:
         return self.mode_rank >= MODE_RANK[str(mode).lower()]
 
 
-#: The per-side pool states that name actual neurons rather than falling
-#: back to a whole type population (`ui.neuron_index._side_basis`).  A side
-#: whose basis is NOT here is validated wide, and the per-side basis in
-#: `_refine_pair_branch` looks for a chain that does narrow it (§15.3).
-_SOURCE_REFINING_BASES = ('linker rows', 'release relation participants')
-
-
 @dataclass
 class TypePair:
     source_dataset: str
@@ -388,8 +385,10 @@ def measure_branch_disjointness(pairs: List["TypePair"]) -> Optional[bool]:
 
     Returns None when it cannot be measured (single branch, or any branch
     falls back to the full population — the overlap is then meaningless).
+    A side resolved through the release relation names neurons just like
+    linker rows do, so both row-backed bases are measurable here.
     """
-    refined = [p for p in pairs if p.pool_basis == 'linker rows']
+    refined = [p for p in pairs if basis_is_row_evidence(p.pool_basis)]
     if len(pairs) < 2 or len(refined) != len(pairs):
         return None
     sets = [set(p.source_pool) for p in refined]
@@ -408,7 +407,7 @@ def annotate_pair_branches(pairs: List["TypePair"]) -> None:
         p.branch_index = i
     disjoint = measure_branch_disjointness(pairs)
     targets = {p.target_type for p in pairs}
-    all_linkered = all(p.pool_basis == 'linker rows' for p in pairs)
+    all_linkered = all(basis_is_row_evidence(p.pool_basis) for p in pairs)
     terms = []
     if len(targets) > 1:
         terms.append('bifurcation')
@@ -1839,7 +1838,7 @@ class MappingValidator:
         for (query, src_type), group in by_parent.items():
             annotate_pair_branches(group)
             for pair in group:
-                if pair.pool_basis in _SOURCE_REFINING_BASES:
+                if pair.pool_basis in SOURCE_REFINING_BASES:
                     self.log(
                         f'  branch {src_type} -> {pair.target_type}: '
                         f'pool {len(pair.source_pool)} of '
@@ -1907,7 +1906,7 @@ class MappingValidator:
         # alternative-chain members into the tier; this leaves every member
         # outside the pool to `compute_out_map_by_type` (the out-map
         # residue), so the tier stays mode-invariant as required.
-        if pair.pool_basis not in _SOURCE_REFINING_BASES:
+        if pair.pool_basis not in SOURCE_REFINING_BASES:
             cand = pool.get('source_side_refinement') or {}
             cand_chain = [dict(h) for h in (cand.get('chain') or [])]
             cand_ids = [int(b) for b in (cand.get('source_body_ids') or [])]

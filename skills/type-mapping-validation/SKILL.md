@@ -193,7 +193,15 @@ $PY scripts/RunMappingValidation.py \
   (`source_chain` records which). Subset only — never a widening, never a
   union, so the tier stays mode-invariant. Where no chain names the source
   neurons (the name-asserted types: DN1a / DN1pA / DN1pB / l-LNv) the pool
-  legitimately stays `full population`.
+  legitimately stays `full population` — FAFB annotates neurons with OTHER
+  datasets' names and never with its own `type`, so a same-name branch has no
+  row-level source evidence by construction. The basis vocabulary is
+  `cross_dataset_type_mapper.basis_is_row_evidence`, shared by the resolver,
+  the report's basis buckets, the scene branch labels and the disjointness
+  measure (a consumer that compares the basis with one literal misreads every
+  other row-backed basis), and the type-mapping panel / mapping-CSV hover name
+  the source-supplying chain too, so no two views of one mapping claim
+  different bridges.
 - **Every rendered member passed the morph rule**: binding native
   pool-ref floor (`pool_ref >= floor`) when the branch has one, else
   the null-calibrated Track-A bar (`track_a_null_bar` = p95 of

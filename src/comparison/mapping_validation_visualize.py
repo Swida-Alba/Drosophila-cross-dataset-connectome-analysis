@@ -58,6 +58,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from comparison.body_id_resolver import chain_key
+from comparison.cross_dataset_type_mapper import basis_is_row_evidence
 from comparison.mapping_validation import DEDUP_RANK, TIER_CATEGORIES
 
 # Color = f(category), unified across branches and types, high contrast
@@ -808,7 +809,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             for bi, (pair, res) in enumerate(branch_list, 0):
                 sig = _linker_sig(pair)
                 group = (f'{src_type} → {pair.target_type} · {sig}'
-                         if pair.pool_basis == 'linker rows' else
+                         if basis_is_row_evidence(pair.pool_basis) else
                          f'{src_type} → {pair.target_type} · full pool')
 
                 # query (source) neurons — first layer of the branch

@@ -510,3 +510,49 @@ def test_designed_fafb_at_to_banc_act_standard_survives():
         columns = [h['column'] for h in chain[1:]]
         assert columns == ['additional_type(s)', 'Alternative Cell Type(s)',
                            'Alternative Cell Type(s)'], chain
+
+
+def test_the_basis_vocabulary_separates_rows_from_name_assertions():
+    """One definition, read by the resolver, the validation pipeline, the
+    report and the scenes — a consumer that compares the basis with one
+    literal silently misread every other row-backed basis."""
+    from comparison.cross_dataset_type_mapper import (
+        SOURCE_REFINING_BASES, basis_is_row_evidence)
+    assert basis_is_row_evidence('linker rows')
+    assert basis_is_row_evidence('release relation participants')
+    assert basis_is_row_evidence('linker rows + alternative chains')
+    for wide in ('full population', 'unmeasured', '', None,
+                 'union of supported bridge pools'):
+        assert not basis_is_row_evidence(wide)
+    # a widened bucket is a union across chains, so it may not re-decide a
+    # side — that stays the narrower question the swap guards on
+    assert 'linker rows + alternative chains' not in SOURCE_REFINING_BASES
+
+
+def test_the_source_side_refinement_is_disclosed_only_when_it_differs():
+    """FAFB->BANC selects a target-side-only chain, so the panel and the
+    visualization must say which chain the SOURCE pool actually came from
+    (r23: 34 of 39 branches)."""
+    from comparison.cross_dataset_type_mapper import source_side_refinement_note
+    selected = [{'dataset': 'src', 'column': 'type', 'value': 'T1'},
+                {'dataset': 'tgt', 'column': 'fafb_cell_type', 'value': 'X1'}]
+    alt = [{'dataset': 'src', 'column': 'type', 'value': 'T1'},
+           {'dataset': 'src', 'column': 'additional_type(s)', 'value': 'X1'},
+           {'dataset': 'tgt', 'column': 'type', 'value': 'X1'}]
+    assert source_side_refinement_note(None, 'src', 'tgt') == ''
+    assert source_side_refinement_note(
+        {'selected_chain': selected}, 'src', 'tgt') == ''
+    note = source_side_refinement_note(
+        {'selected_chain': selected,
+         'source_side_refinement': {'chain': selected,
+                                    'source_basis': 'linker rows'}},
+        'src', 'tgt')
+    assert note == ''                          # the winner already supplies it
+    note = source_side_refinement_note(
+        {'selected_chain': selected,
+         'source_side_refinement': {'chain': alt,
+                                    'source_basis': 'linker rows'}},
+        'src', 'tgt')
+    assert 'source side from another supported chain' in note
+    assert 'additional_type(s)' in note and "'X1'" in note
+    assert 'linker rows' in note

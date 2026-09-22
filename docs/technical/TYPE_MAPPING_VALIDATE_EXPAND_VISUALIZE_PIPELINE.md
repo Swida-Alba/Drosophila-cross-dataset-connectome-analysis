@@ -62,10 +62,26 @@ source sub-pool ↔ target type), not the parent type pool:
   replacement, and never a union: the Rev 3.12 widening retirement
   stands), and `source_chain` records which one did. Measured on the
   r21/r22 branch sets: MCNS unchanged on all 43 branches (223 slots,
-  residue 30 — byte-identical pools), BANC narrowed on 27 of 39 branches
+  residue 30 — byte-identical pools), BANC narrowed on 34 of 39 branches
   to 223 slots with 19 neurons left in the out-map residue, and 7 more
   keep their membership but are now honestly labelled "linker rows"
   instead of "full population".
+  The basis vocabulary is owned by the type mapper
+  (`cross_dataset_type_mapper.ROW_EVIDENCE_BASES` /
+  `SOURCE_REFINING_BASES` / `basis_is_row_evidence`), because the resolver,
+  the validation pipeline, the report's basis buckets, the scene branch
+  labels and the branch-disjointness measure all read the same field — a
+  consumer comparing it with one literal misread every other row-backed
+  basis as a full population. The mapper UI is aligned with it too: the
+  type-mapping panel and the mapping CSV's bridge hover name the chain that
+  supplies the SOURCE pool when that is not the selected chain
+  (`source_side_refinement_note`), so no view of one mapping claims a single
+  bridge where two different chains serve the two sides.
+  Ceiling, measured: the source side can only be named through FAFB's
+  `additional_type(s)` (28,540 of 139,255 neurons), and FAFB never annotates
+  a neuron with its OWN type name — so every same-name branch (APDN3 on BANC,
+  DN1a / DN1pA / DN1pB / l-LNv on both) is structurally name-asserted and its
+  wide pool is the correct terminal answer, not an unresolved gap (§15.7).
 - Only the highest-ranked chain per target type survives
   prioritization; the collapsed alternatives are recorded as expansion
   evidence (§4, the `family`/`relative` bins).
@@ -917,8 +933,9 @@ branches that claim it (§4.6a).
   (opposite x-to-side conventions; needs an anatomical ground-truth
   call — mirror MCNS x, fix the landmark registration, or document).
   OPEN.
-- Track B has no render-frame fallback (vector-cache path only) and no
-  NBLAST variant (deferred).
+- Track B's render-frame fallback (`_track_b_render_fallback`) exists for the
+  vector-cache-miss case, but no test exercises it; no NBLAST variant
+  (deferred).
 - The WIDE candidate window (6..`candidate_window`) is scan-noise-dominated in
   the small-FAFB-type regime (cross-type neighbors outnumber same-type
   expansion ~25:1) — one more reason that band stays opt-in, and why

@@ -27,12 +27,27 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:  # package import (usual pipeline path)
     from . import report_kit
+    from .cross_dataset_type_mapper import basis_is_row_evidence
 except ImportError:  # script / notebook path
     import report_kit  # type: ignore[no-redef]
+    from cross_dataset_type_mapper import basis_is_row_evidence
+
+
+def split_basis_buckets(basis_map: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """Partition a basis-keyed bucket map into (row-evidence, name-asserted).
+
+    Branches bucket under whatever basis they resolved to, so reading only
+    the 'linker rows' and 'full population' keys would drop a side resolved
+    through the release relation out of BOTH counts and shrink the in-map
+    source population the Coverage and Targets tabs publish.
+    """
+    keys = sorted(basis_map or {})
+    row = [k for k in keys if basis_is_row_evidence(k)]
+    return row, [k for k in keys if k not in set(row)]
 
 # ---------------------------------------------------------------------------
 # glossary: term -> one-line definition (hover layer + per-section tables)
@@ -223,9 +238,12 @@ TERM_DEFS: Dict[str, str] = {
         'covered neuron was earned) · L3 validation (what was checked) '
         '— reported in every TM VEV report.',
     'linker rows':
-        'Pool resolved through the bridging evidence: the selected '
-        "chain's linker column values refine the full type population "
-        'to the neurons actually carried by the chain.',
+        'Row evidence for one side of a pool: a linker column of the chain '
+        'supplying that side named the neurons, so the pool is the bridging '
+        'subset rather than the whole type population. Each side is supplied '
+        'separately, so the source side can be named by a different chain '
+        'than the selected (target-side) one — the Branches detail table '
+        'shows both.',
     'full population':
         'That side of the pool is the WHOLE type population. Either no '
         'supported bridge chain exists, or the selected chain carries no '
@@ -1361,10 +1379,11 @@ def _coverage_tab(d: Dict) -> str:
         unclaimed = len(d['out_sources'])
         in_pool_residue = unpaired - unclaimed
         basis = d['basis_sources']
-        n_linker = len(basis.get('linker rows', set()))
-        n_full = len(basis.get('full population', set()))
-        b_linker = d['basis_branches'].get('linker rows', 0)
-        b_full = d['basis_branches'].get('full population', 0)
+        row_bases, wide_bases = split_basis_buckets(basis)
+        n_linker = sum(len(basis[b]) for b in row_bases)
+        n_full = sum(len(basis[b]) for b in wide_bases)
+        b_linker = sum(d['basis_branches'].get(b, 0) for b in row_bases)
+        b_full = sum(d['basis_branches'].get(b, 0) for b in wide_bases)
         covered = tcov.get('in_branch_pool', '—')
         total_q = scov.get('total_queried', '—')
         if basis:
@@ -2108,8 +2127,11 @@ def _backward_tab(d: Dict) -> str:
     validated entities."""
     scov, tcov = d['src'], d['tgt']
     basis = d['basis_sources']
-    n_linker = len(basis.get('linker rows', set()))
-    n_full = len(basis.get('full population', set()))
+    row_bases, wide_bases = split_basis_buckets(basis)
+    n_linker = sum(len(basis[b]) for b in row_bases)
+    n_full = sum(len(basis[b]) for b in wide_bases)
+    row_label = ' / '.join(row_bases) or 'row evidence'
+    wide_label = ' / '.join(wide_bases) or 'name assertion'
     total_q = scov.get('total_queried', '—')
     out_n = (total_q - d['n_with_branch']
              if isinstance(total_q, (int, float))
@@ -2118,8 +2140,8 @@ def _backward_tab(d: Dict) -> str:
     primary = _kv_block('Source population — where every neuron sits', [
         ('In-map (branch pools)',
          f'{n_linker + n_full} of {_esc(total_q)} — row-evidence backed '
-         f'{n_linker} (linker rows) · same-name pooled {n_full} '
-         '(full population)'),
+         f'{n_linker} ({_esc(row_label)}) · same-name pooled {n_full} '
+         f'({_esc(wide_label)})'),
         ('Out-map (no branch anywhere)', out_n),
     ])
     cards = [_section_card(

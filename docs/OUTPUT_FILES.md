@@ -260,8 +260,8 @@ Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined
 `{saveas}` below is the run's page stem — the same name as `{layer_names}` in the two files above.
 
 *   **`{saveas}.html`**: The **canonical** interactive viewer page (`plot_individuals()` and the video re-exporters must open this one, never a copy). It carries the full scene and every viewer extra: the collapsible tree-legend panel (when `legend_mode='tree'`), the light/dark theme switch, and — with `freeze_view=True` (the default) — the script that pins the scene axes to the padded extents of *all* traces so showing or hiding a legend row cannot rescale the view (a Freeze/Fit button and the `F` key toggle it; the script no-ops under WebDriver, so static exports still autoscale).
-*   **`{saveas}_simplified.html`**: Size-reduced copy of the viewer page, written by the export paths that decimate the scene to fit the renderer's HTML size cap (the WebDriver view-retry writes it inside `exported_views/`). It carries the same three extras as the canonical page, over the decimated scene. The WebDriver session reuses it as its rendering input, so it is both a viewer and an intermediate; the manifest lists it under `degraded_pages`.
-*   **`visualization_manifest.json`**: What the page *means*, so a stored run can be re-exported without its source data: `schema_version`, `dataset` / `client_type` / `version` / `brain_mesh` / `mesh_roi` / `background_color` / `saveas`, `canonical_page` and `degraded_pages`, `legend_mode` (`single` | `type` | `tree` | `layer`), `freeze_view` plus the `frozen_ranges` it pinned, `export_method`, `export_scale`, `neuron_alpha`, `layer_names`, per-view `views` cameras (`eye`/`up`/`center`), and a `traces` table of `{index, kind, rule, label, group, type, item, body_id, visible}` roles.
+*   **`{saveas}_simplified.html`**: Size-reduced copy of the viewer page, written by the export paths that decimate the scene to fit the renderer's HTML size cap (the WebDriver view-retry writes it inside `exported_views/`). It carries the same three extras as the canonical page, over the decimated scene. The WebDriver session reuses it as its rendering input, so it is both a viewer and an intermediate; `resolve_viewer_page()` recognises it by its `_simplified` suffix and re-exports from the canonical page instead.
+*   **`visualization_manifest.json`**: What the page *means*, so a stored run can be re-exported without its source data. Re-export inputs, each read back by `resolve_viewer_page()` / `profile_plan_from_html()` / `export_individuals_from_html()`: `canonical_page`, `dataset` / `brain_mesh` / `mesh_roi` / `background_color`, the per-view `views` cameras (`eye`/`up`/`center`), and a `traces` table of `{index, kind, rule, label, group, type, item, body_id, visible}` roles — which the re-exporter re-reads against the page it parsed, so identity stamps that fail to survive the HTML round trip are reported instead of silently coarsening every profile. Provenance for whoever opens the run next: `schema_version`, `client_type` / `version` / `saveas`, `legend_mode` (`single` | `type` | `tree` | `layer`), `freeze_view` (the ranges it pinned live in the page's own scene layout), `export_method`, `export_scale`, `neuron_alpha`, `layer_names`.
 
 Internal intermediates, deleted when the export finishes (listed only to explain a half-written run): `_temp_export.html` (WebDriver view session, in `exported_views/`), `_temp_main_figure.html` (`individual_profiles/`), `_temp_video.html` (video frame folder).
 
@@ -887,7 +887,9 @@ bar-kind evidence) and a
     the bins, it never changes a fill count, and no morphology is scored.
 *   **`mapping_export.csv`**: per-bridge mapping record (refined pools +
     linkers, with `selected_bridge` / `source_bridge` naming the chain that
-    resolved each side of the pool).
+    resolved each side of the pool, and the matching `pool_basis` (source
+    side) / `target_pool_basis` pair — equal unless the per-side basis took
+    the source side from another supported chain).
 *   **`set_coverage.json`**: set-level coverage in two ROLE-named
     blocks — `source` (assigned/fill-proposed/unpaired rollup) and
     `target` (in-pool/candidates/holes per type) — labelled by the

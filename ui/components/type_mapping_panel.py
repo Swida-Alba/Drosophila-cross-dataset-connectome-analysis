@@ -870,7 +870,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
 
     def _pair_card(src: str, tgt: str, flows, pools: dict) -> None:
         from comparison.cross_dataset_type_mapper import (
-            bridge_linker_text, get_type_mapper,
+            bridge_linker_text, get_type_mapper, source_side_refinement_note,
         )
         from comparison.mapping_visualization import (
             _pair_relationship,
@@ -927,6 +927,9 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             if selected_chain:
                 selected_text = bridge_linker_text(
                     [selected_chain], src, tgt, f_type).get("text") or ""
+                side_note = source_side_refinement_note(pool, src, tgt)
+                if side_note:
+                    selected_text = f"{selected_text} — {side_note}"
             all_valid_chains = (pool.get("valid_chains") if pool else None)
             all_valid_text = ""
             if all_valid_chains:
