@@ -4,6 +4,8 @@ Covers ``_plan/plan-tmvev-backward-expansion-evidence.md`` at the seams that
 are easy to break silently:
 
 * the grade classifier (high / medium / low by branch-type rank),
+* the display-parity invariant — a grade always publishes the hit it was
+  computed from, and which ranking surfaced it,
 * the single-column top-N payload the report hovers,
 * the ADVISORY contract -- a reverse label never moves a bin or a level,
 * ``run_file_path`` (new layout + legacy flat fallback),
@@ -80,12 +82,131 @@ def test_same_type_top1_outside_the_pool_still_grades_high():
     assert out['backward_evidence'] == 'high'
     assert out['backward_top1_source_bodyId'] == 777
     assert out['backward_top1_in_branch'] is False
+    # the hit the grade rests on travels too, so a `high` is self-explaining
+    assert out['backward_own_type_rank_source_bodyId'] == 777
+    # top-1 on BOTH rankings: `via` names the chain's leading metric, which
+    # is Jaccard from J1 on (it used to name rank_union)
+    assert out['backward_own_type_via'] == 'jaccard'
+    assert out['backward_own_type_rank_union_rank'] == 1
     # the branch's own source still travels in the neighbourhood payload,
     # flagged as the in-branch one, so the hover answers "then where is ours?"
-    recs = {r.split('|')[1]: r.split('|') for r in
+    recs = {r.split('|')[2]: r.split('|') for r in
             out['backward_topN'].split(';')}
     assert set(recs) == {'101', '777'}
     assert recs['101'][-1] == '1' and recs['777'][-1] == '0'
+
+
+def test_a_grade_reached_by_jaccard_alone_names_jaccard_as_its_via():
+    """D1c's whole point: the branch's type can be top-1 by JACCARD while
+    ranking third by rank_union. The grade must still be `high`, and the
+    published own-type hit must say which ranking carried it."""
+    m = _resolver()
+    df = _scan_df([(900, 0.60, 0.10, 1, 3),     # ru winner, other type
+                   (901, 0.50, 0.05, 2, 2),
+                   (101, 0.20, 0.90, 3, 1)])    # own type, jaccard top-1
+    out = m.classify_backward_scan(df, branch_pool={900},
+                                   id2type={900: 'B', 901: 'B',
+                                            101: 'A'},
+                                   branch_source_type='A')
+    assert out['backward_evidence'] == 'high'
+    assert out['backward_own_type_rank_source_bodyId'] == 101
+    assert out['backward_own_type_via'] == 'jaccard'
+    assert out['backward_own_type_jaccard_rank'] == 1
+    assert out['backward_own_type_rank_union_rank'] == 3
+    # J1 (plan-tmvev-jaccard-primary-bodyid-ranking): the displayed top-1 is
+    # the CHAIN-best, so here it coincides with the own-type hit; the
+    # rank_union winner 900 travels in the hover list instead.
+    assert out['backward_top1_source_bodyId'] == 101
+    recs = [r.split('|') for r in out['backward_topN'].split(';')]
+    assert [r[2] for r in recs] == ['101', '900', '901']
+
+
+def test_the_top1_is_the_chain_best_not_the_rank_union_winner():
+    """J1's contract on a scan where the two metrics disagree at the top and
+    the branch's own type is NOT involved: the published top-1, its score
+    pair, its shared/union base and its thin flag all describe the
+    Jaccard-best row, and rank_union is demoted to the confirmation value it
+    is documented as (J2: a label input, never a filter)."""
+    m = _resolver()
+    df = _scan_df([(900, 0.60, 0.10, 1, 3, 2, 40),    # ru-best, THIN base
+                   (901, 0.55, 0.70, 2, 1, 18, 40),   # jaccard-best
+                   (902, 0.50, 0.30, 3, 2, 12, 40)])
+    out = m.classify_backward_scan(df, branch_pool={900},
+                                   id2type={900: 'B', 901: 'C', 902: 'D'},
+                                   branch_source_type='A')
+    assert out['backward_top1_source_bodyId'] == 901
+    assert out['backward_top1_source_type'] == 'C'
+    assert out['backward_jaccard'] == pytest.approx(0.70)
+    assert out['backward_rank_union'] == pytest.approx(0.55)
+    assert out['backward_jaccard_rank'] == 1
+    assert out['backward_rank_union_rank'] == 2
+    # the evidence base follows the published row, so the thin marker does
+    # NOT fire on 901's 18 shared types even though 900 (2 shared) was thin
+    assert out['backward_shared_type_count'] == 18
+    assert out['backward_thin_evidence'] is False
+    # and the branch's own type never ranks: a graded negative, no filter
+    assert out['backward_evidence'] == 'low'
+
+
+def test_low_rows_publish_no_own_type_hit():
+    """A graded negative stays a graded negative: nothing to explain, so
+    nothing is invented."""
+    m = _resolver()
+    df = _scan_df([(900, 0.60, 0.50, 1, 1), (901, 0.50, 0.40, 2, 2)])
+    out = m.classify_backward_scan(df, branch_pool={900},
+                                   id2type={900: 'B', 901: 'B'},
+                                   branch_source_type='A')
+    assert out['backward_evidence'] == 'low'
+    assert out['backward_own_type_rank_source_bodyId'] is None
+    assert out['backward_own_type_via'] == ''
+
+
+#: (expected grade, scan rows, id2type) — one row per way a grade can be
+#: reached, so the parity invariant below has no untested branch.
+_PARITY_CASES = [
+    ('high', [(101, 0.42, 0.30, 1, 1), (999, 0.10, 0.08, 2, 2)],
+     {101: 'A', 999: 'B'}),                      # own type: rank_union top-1
+    ('high', [(900, 0.60, 0.10, 1, 3), (101, 0.20, 0.90, 3, 1)],
+     {900: 'B', 101: 'A'}),                      # own type: jaccard top-1
+    ('medium', [(999, 0.55, 0.40, 1, 1), (101, 0.20, 0.15, 2, 2)],
+     {999: 'B', 101: 'A'}),                      # own type: rank_union #2
+    ('medium', [(999, 0.55, 0.10, 1, 4), (998, 0.50, 0.20, 2, 3),
+                (101, 0.20, 0.30, 3, 2)],
+     {999: 'B', 998: 'B', 101: 'A'}),            # own type: jaccard #2
+    ('low', [(999, 0.55, 0.40, 1, 1), (998, 0.20, 0.15, 2, 2),
+             (997, 0.10, 0.10, 3, 3), (101, 0.05, 0.05, 4, 4)],
+     {999: 'B', 998: 'B', 997: 'B', 101: 'A'}),  # own type: outside both
+]
+
+
+@pytest.mark.parametrize('expect,rows,id2type', _PARITY_CASES,
+                         ids=['high-ru', 'high-jac', 'medium-ru',
+                              'medium-jac', 'low'])
+def test_the_published_hit_always_explains_the_grade(expect, rows, id2type):
+    """The display-parity invariant (D1c) — the assertion whose absence let
+    r15 show 20/49 `high`/`medium` rows with no visible branch-type hit.
+
+    The grade is a statement about the OWN-TYPE hit, so the published block
+    must agree with it in both directions: a grade names a hit of the
+    branch's own source type, ranked inside the window the grade claims, in
+    the ranking `_via` says carried it — and `low` names nothing."""
+    m = _resolver()
+    out = m.classify_backward_scan(_scan_df(rows), branch_pool={900},
+                                   id2type=id2type,
+                                   branch_source_type='A')
+    assert out['backward_evidence'] == expect
+    if expect == 'low':
+        assert out['backward_own_type_rank_source_bodyId'] is None
+        assert out['backward_own_type_via'] == ''
+        return
+    assert out['backward_own_type_rank_source_type'] == 'A'
+    via = out['backward_own_type_via']
+    assert via in ('rank_union', 'jaccard')
+    leading = out[f'backward_own_type_{via}_rank']
+    if expect == 'high':
+        assert leading == 1
+    else:
+        assert 1 < leading <= 3
 
 
 def test_there_is_no_score_bar_any_more():
@@ -172,17 +293,22 @@ def test_out_of_branch_competitors_count_over_the_whole_universe():
 # the top-N payload + the blank state
 # ---------------------------------------------------------------------------
 
-def test_serialize_topN_carries_membership_flags_in_rank_order():
+def test_serialize_topN_lists_in_jaccard_order_and_carries_both_ranks():
+    """The reciprocal list's default order is Jaccard-first (D2/D5), and one
+    rank column would hide a hit that is jaccard-1 but rank_union-2."""
     m = _resolver()
-    df = _scan_df([(500, 0.2, 0.1, 2, 2), (101, 0.6, 0.5, 1, 1)])
+    df = _scan_df([(500, 0.10, 0.90, 2, 1),    # jaccard winner, ru runner-up
+                   (101, 0.60, 0.20, 1, 2)])
     raw = m.serialize_backward_topN(df, id2type={101: 'A', 500: 'B'},
                                     top_n=5, branch_pool={101})
-    recs = raw.split(';')
-    assert [r.split('|')[0] for r in recs] == ['1', '2']
-    assert recs[0].split('|')[1] == '101'
-    assert recs[0].split('|')[-1] == '1'      # in the claiming branch
-    assert recs[1].split('|')[-1] == '0'      # elsewhere
-    assert len(recs[1].split('|')) == 6
+    # ru_rank | jac_rank | bid | type | ru | jaccard | in_branch
+    recs = [r.split('|') for r in raw.split(';')]
+    assert len(recs[0]) == 7
+    assert [f[2] for f in recs] == ['500', '101']      # jaccard order
+    assert [f[1] for f in recs] == ['1', '2']          # jaccard rank
+    assert [f[0] for f in recs] == ['2', '1']          # ru rank crosses over
+    assert recs[0][-1] == '0'      # the jaccard winner is elsewhere
+    assert recs[1][-1] == '1'      # the claiming branch's own source
 
 
 def test_serialize_topN_respects_the_cap_and_empty_inputs():
@@ -229,11 +355,17 @@ def test_never_scored_reads_as_no_count_and_no_warning():
                 m.blank_backward_fields('cap')):
         assert out['backward_shared_type_count'] is None
         assert out['backward_thin_evidence'] is False
+        # the own-type block is the same KIND of advisory field, so it
+        # reads "no hit / no warning" rather than "unknown" as well
+        assert out['backward_own_type_thin_evidence'] is False
+        assert out['backward_own_type_via'] == ''
+        assert out['backward_own_type_rank_source_bodyId'] is None
 
 
 def test_thin_evidence_never_moves_a_verdict_or_a_fill_level():
     """Advisory only: the two rows below score identically and differ in
-    nothing but the three published-evidence fields."""
+    nothing but the published-evidence fields (the top-1's base and the
+    own-type hit's base)."""
     m = _resolver()
     kw = dict(branch_pool={101}, branch_source_type='A',
               id2type={101: 'A'})
@@ -244,7 +376,10 @@ def test_thin_evidence_never_moves_a_verdict_or_a_fill_level():
     assert thin['backward_evidence'] == thick['backward_evidence'] == 'high'
     assert {k for k in thin if thin[k] != thick[k]} == {
         'backward_shared_type_count', 'backward_union_type_count',
-        'backward_thin_evidence'}
+        'backward_thin_evidence',
+        'backward_own_type_shared_type_count',
+        'backward_own_type_union_type_count',
+        'backward_own_type_thin_evidence'}
     mv = _mv()
     rows, counts = mv.build_gap_fill_levels([
         {'dedup_category': 'family', 'target_bodyId': 11, 'target_type': 'T1',
@@ -594,7 +729,7 @@ def test_report_reads_the_new_layout_and_the_legacy_one(tmp_path):
              'backward_size_ratio': None, 'backward_size_filtered': False,
              'backward_shared_type_count': 2, 'backward_union_type_count': 9,
              'backward_thin_evidence': True,
-             'backward_topN': '1|101|A|0.4200|0.3000|1',
+             'backward_topN': '1|1|101|A|0.4200|0.3000|1',
              'backward_scanned_at': 'run'}]
     import json
     (tmp_path / 'parameters.json').write_text(
@@ -603,7 +738,7 @@ def test_report_reads_the_new_layout_and_the_legacy_one(tmp_path):
                     'backward_per_branch_cap': 40}),
         encoding='utf-8')
     (tmp_path / 'set_coverage.json').write_text(json.dumps(
-        {'mcns': {'backward_evidence': {
+        {'target': {'backward_evidence': {
             'matched': 1, 'foreign': 0, 'none': 0, 'unscanned': 0,
             'distinct_scanned': 1, 'beyond_cap': 0}}}), encoding='utf-8')
     exp = tmp_path / 'expansion'
@@ -828,6 +963,69 @@ def test_the_topN_payload_round_trips_through_the_report_hover():
     assert _topn_hover('') == '' and _topn_hover(None) == ''
 
 
+def test_the_branch_type_cell_names_the_hit_rank_and_its_ranking():
+    """D1c's render side: the cell must say WHICH neuron the grade rested
+    on, at WHAT rank, and BY WHICH ranking — the three facts whose absence
+    made r15's `high` badges unexplainable."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "src"))
+    from comparison.mapping_validation_report import _own_type_cell
+    hit = {'backward_own_type_rank_source_bodyId': '720575940627171154',
+           'backward_own_type_rank_source_type': 's-CPDN3D',
+           'backward_own_type_via': 'jaccard',
+           'backward_own_type_jaccard_rank': 1,
+           'backward_own_type_rank_union_rank': 3,
+           'backward_own_type_jaccard': 0.9,
+           'backward_own_type_rank_union': 0.2,
+           'backward_own_type_thin_evidence': False}
+    html = _own_type_cell(hit)
+    assert '720575940627171154' in html and 's-CPDN3D' in html
+    assert '#1 by jaccard' in html.replace('\n', ' ')
+    assert 'jac 0.9000' in html and 'ru 0.2000' in html
+    assert 'bev-thin' not in html
+    # the rank the badge was read off is the via one, not the other
+    assert '#3' not in html
+    assert 'bev-thin' in _own_type_cell({**hit, 'backward_own_type_'
+                                              'thin_evidence': True})
+    # a graded negative renders as silence, not as a zero-filled row
+    blank = _own_type_cell({'backward_own_type_rank_source_bodyId': ''})
+    assert blank == "<span class='missing'>—</span>"
+    assert 'by ' not in blank
+
+
+def _sort_row(bid, ev, own_jac, own_rank, t1_jac):
+    return {'member_bodyId': bid, 'backward_evidence': ev,
+            'backward_own_type_jaccard': own_jac,
+            'backward_own_type_jaccard_rank': own_rank,
+            'backward_jaccard': t1_jac}
+
+
+def test_the_reciprocal_list_orders_by_the_hit_not_by_the_top1():
+    """D2's refinement: ordering by the DISPLAYED top-1's jaccard floated a
+    `low` neuron — whose top-1 is of some unrelated type — above a `high`
+    one.  The badge is a statement about the branch's own type, so that
+    hit's jaccard orders the list and a row with no hit sinks below every
+    row that has one, while the sunk rows still keep an order among
+    themselves."""
+    rep = _rep()
+    key = rep._reciprocal_row_sort
+    rows = [_sort_row('20', 'low', '', '', 0.95),      # flashy top-1, no hit
+            _sort_row('10', 'high', 0.30, 1, 0.30),
+            _sort_row('30', 'medium', 0.45, 2, 0.45)]
+    assert [r['member_bodyId'] for r in sorted(rows, key=key)] == \
+        ['30', '10', '20']
+    # among the hitless rows the top-1's jaccard is the fallback ordering
+    rows2 = [_sort_row('20', 'low', '', '', 0.95),
+             _sort_row('40', 'low', '', '', 0.99)]
+    assert [r['member_bodyId'] for r in sorted(rows2, key=key)] == \
+        ['40', '20']
+    # and the key is total, so equal evidence cannot reorder between runs
+    twin = _sort_row('50', 'high', 0.30, 1, 0.30)
+    assert key(twin) != key(rows[1])            # bodyId breaks the tie
+    assert [r['member_bodyId'] for r in
+            sorted([twin, rows[1]], key=key)] == ['10', '50']
+
+
 # ---------------------------------------------------------------------------
 # the same sentence in both sinks, and paths that exist
 # ---------------------------------------------------------------------------
@@ -844,7 +1042,7 @@ def _bev_row(bid, mtype, cat, evidence, top1):
         'backward_shared_type_count': 12 if evidence == 'high' else 2,
         'backward_union_type_count': 40,
         'backward_thin_evidence': evidence != 'high',
-        'backward_topN': f'1|{top1}|A|0.5000|0.4000|1',
+        'backward_topN': f'1|1|{top1}|A|0.5000|0.4000|1',
         'backward_scanned_at': 'run',
     }
 
@@ -861,7 +1059,7 @@ def _bev_run(run_dir, nested=True):
         'backward_scan_pool_targets': True, 'skip_backward_pass': False,
     }), encoding='utf-8')
     (run_dir / 'set_coverage.json').write_text(json.dumps(
-        {'mcns': {'backward_evidence': {
+        {'target': {'backward_evidence': {
             'high': 1, 'medium': 1, 'low': 0, 'not-checked': 0,
             'distinct_scanned': 2, 'beyond_cap': 4}}}), encoding='utf-8')
     out = run_dir / 'expansion'

@@ -758,13 +758,17 @@ class MorphQualification:
 
 def select_visualized_pairs(results_df: pd.DataFrame,
                             top_n: int,
-                            exclude_targets=None) -> List[Tuple[int, int]]:
+                            exclude_targets=None,
+                            metric: Optional[str] = None) -> List[Tuple[int, int]]:
     """(source_bodyId, target_bodyId) pairs the visualization would render.
 
     Mirrors ``_visualize_homolog_candidates``' bodyId-level selection:
-    per-source rank_union top-N, then a first-wins dedupe on the target
-    across sources. Keeping the two in lockstep is what makes the pooled
-    pre-scoring cover exactly the rendered set. ``exclude_targets`` mirrors
+    per-source top-N by the run's sort ``metric`` (Jaccard-led fallback, the
+    same chain the exported CSV uses — hard-coding rank_union here made the
+    pooled pre-scoring cover a DIFFERENT set than the scene rendered), then a
+    first-wins dedupe on the target across sources. Keeping the two in
+    lockstep is what makes the pooled pre-scoring cover exactly the rendered
+    set. ``exclude_targets`` mirrors
     the same-dataset scene rule — rows whose target is a query neuron (they
     render as the query layer, not as candidates) drop out before the
     top-N selection.
@@ -788,9 +792,14 @@ def select_visualized_pairs(results_df: pd.DataFrame,
     if top_n and top_n > 0:
         if 'source_bodyId' in candidate.columns:
             per_source = []
+            try:
+                from .profile_comparator import pick_visualization_metric
+            except ImportError:      # direct src/ execution
+                from profile_comparator import pick_visualization_metric
             for _key, group in candidate.groupby('source_bodyId'):
-                if 'rank_union' in group.columns:
-                    group = group.sort_values('rank_union', ascending=False,
+                _vc = pick_visualization_metric(metric, group.columns)
+                if _vc:
+                    group = group.sort_values(_vc, ascending=False,
                                               na_position='last')
                 per_source.append(group.head(top_n))
             top = (pd.concat(per_source, ignore_index=True)

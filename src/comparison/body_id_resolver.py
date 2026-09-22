@@ -185,15 +185,80 @@ def passes_target_quality_gate(vec: Dict[str, float],
     return True
 
 
+#: The bodyId-level ordering chain (plan-tmvev-jaccard-primary-bodyid-ranking
+#: J3 + D-B): Jaccard desc, rank_union desc as the tie-break, then bodyId so
+#: the order is TOTAL.  This is the answer to a measurement on run r16: 36%
+#: of reverse scans have a DUPLICATED ``jaccard_rank`` inside their top-5
+#: (0% for ``rank_union_rank``), because Jaccard is a ratio of small
+#: integers — and the rank columns use ``method='min'``, so a tie block
+#: shares one rank and any window taken on a rank column alone resolves by
+#: whatever the row order happens to be.  Ordering on the scores instead
+#: makes "top-N" mean N rows, reproducibly.  rank_union NaN (under 3 union
+#: types) sorts LAST within a Jaccard tie, never first.
+#:
+#: The metric rank columns stay published unchanged: they are the EVIDENCE a
+#: verdict is read off (the reciprocal grade's top-1 / top-3 windows, the
+#: forward ladder's "rank 1 by either metric"), and a collapsed tie rank is
+#: the honest statement of "these are indistinguishable by this metric".
+_CHAIN = ['jaccard', 'rank_union', 'target_bid']
+_CHAIN_ASC = [False, False, True]
+
+
+def order_by_chain(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` in :data:`_CHAIN` order (Jaccard desc, rank_union desc,
+    bodyId).  The public form of the chain, so the forward pipeline and the
+    reverse pass take their "best" and their top-N windows from one
+    definition instead of each re-spelling a rank-column sort."""
+    return df.sort_values(_CHAIN, ascending=_CHAIN_ASC, na_position='last')
+
+
+def _rank_key(v) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return math.inf
+    return f if f == f else math.inf
+
+
+def _neg_score_key(v) -> float:
+    """Ascending key for a "higher is better" score; blank/NaN goes last."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return math.inf
+    return -f if f == f else math.inf
+
+
+def chain_key(row) -> Tuple[float, float, float, float, float]:
+    """The single-row form of :data:`_CHAIN`, for code that compares rows
+    rather than sorting a frame: ``min(rows, key=chain_key)`` is
+    ``order_by_chain(df).iloc[0]``.
+
+    Accepts a ``Series`` or a dict read back from a run CSV.  The rank
+    columns lead because a ``method='min'`` tie block must resolve by the
+    scores the ranks collapsed, not by inherited row order (J3); the scores
+    then separate what a rank flattened, and bodyId last makes the order
+    total.  The two agree with :func:`order_by_chain` because equal scores
+    are what produce equal ranks in the first place."""
+    return (_rank_key(row.get('jaccard_rank')),
+            _rank_key(row.get('rank_union_rank')),
+            _neg_score_key(row.get('jaccard')),
+            _neg_score_key(row.get('rank_union')),
+            _rank_key(row.get('target_bid')
+                      if row.get('target_bid') is not None
+                      else row.get('target_bodyId')))
+
+
 def scan_source(src_vec: Dict[str, float],
                 target_stats: Dict[int, _SideStats],
                 target_bids: Optional[List[int]] = None) -> pd.DataFrame:
     """Score one source vector against every target; rank globally.
 
     Validation-only scan service (dataset scale).  Returns a DataFrame
-    (target_bid, metrics, rank_union_rank, jaccard_rank) sorted by
-    rank_union_rank.  Ranks are competition-style (ties share the better
-    rank, NaN last).
+    (target_bid, metrics, rank_union_rank, jaccard_rank, chain_pos) sorted by
+    the bodyId ordering chain :data:`_CHAIN`.  The two rank columns are
+    competition-style metric EVIDENCE (ties share the better rank, NaN last)
+    and are deliberately not the row order — see :data:`_CHAIN` for why.
     """
     src = _SideStats(src_vec)
     rows = []
@@ -215,7 +280,10 @@ def scan_source(src_vec: Dict[str, float],
         ascending=False, na_option='bottom', method='min')
     df['jaccard_rank'] = df['jaccard'].rank(
         ascending=False, na_option='bottom', method='min')
-    df = df.sort_values('rank_union_rank', na_position='last')
+    df = df.sort_values(_CHAIN, ascending=_CHAIN_ASC, na_position='last')
+    # 1-based position IN THE CHAIN, dense (unlike the rank columns, which a
+    # tie block collapses): this is what a "top-N" window means from here on
+    df['chain_pos'] = range(1, len(df) + 1)
     return df.reset_index(drop=True)
 
 
@@ -324,9 +392,25 @@ BACKWARD_COLUMNS = [
     'backward_n_out_of_branch', 'backward_size_ratio',
     'backward_size_filtered', 'backward_thin_evidence', 'backward_topN',
     'backward_scanned_at',
+    # The hit the GRADE actually rests on: the best-ranked source of the
+    # claiming branch's own type, whichever ranking placed it there
+    # (plan-tmvev-reciprocal-jaccard-sort-and-parity D1c).  Without these
+    # the row is graded on evidence the cell never shows — measured on r15,
+    # 20 of 49 high/medium rows displayed a top-1 of a different type.
+    'backward_own_type_rank_source_bodyId',
+    'backward_own_type_rank_source_type', 'backward_own_type_via',
+    'backward_own_type_rank_union', 'backward_own_type_jaccard',
+    'backward_own_type_shared_type_count',
+    'backward_own_type_union_type_count',
+    'backward_own_type_rank_union_rank', 'backward_own_type_jaccard_rank',
+    'backward_own_type_thin_evidence',
 ]
 
-_ORDER = ['rank_union_rank', 'jaccard_rank', 'rank_union']
+#: The two metric EVIDENCE columns, in the order the reciprocal grade reads
+#: them (a tie goes to the leading one, ``jaccard`` — J1).  Ordering of rows
+#: is NOT here — it is :data:`_CHAIN`, which sorts on the scores so a tie
+#: block cannot silently delegate the decision to row order.
+_RANK_COLS = ['jaccard_rank', 'rank_union_rank']
 
 #: A reverse hit whose two vectors share at most this many partner types.
 #: ``rank_union`` ranks the union with missing types scored 0.0, so a
@@ -374,36 +458,61 @@ def blank_backward_fields(scanned_at: str = 'disabled') -> Dict:
     out: Dict = {c: None for c in BACKWARD_COLUMNS}
     out['backward_evidence'] = 'not-checked'
     out['backward_size_filtered'] = False
-    # advisory flags read "no warning", not "unknown", when nothing ran
+    # advisory flags read "no warning", not "unknown", when nothing ran,
+    # and the two serialized/label fields read "nothing there" as empty
+    # rather than NaN — same convention as ``backward_topN``.
     out['backward_thin_evidence'] = False
+    out['backward_own_type_thin_evidence'] = False
     out['backward_topN'] = ''
+    out['backward_own_type_via'] = ''
     out['backward_scanned_at'] = scanned_at
     return out
 
 
+def _with_chain_pos(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` in :data:`_CHAIN` order with a dense 1-based
+    ``chain_pos`` column, adding it when the frame did not come from
+    :func:`scan_source` (hand-built frames, subsets, older callers).
+
+    Position, not rank, is what a "top-N" window means here: a rank column
+    with ``method='min'`` collapses a tie block onto one value, so ``<= k``
+    admits an unbounded set and ``nsmallest(k)`` delegates the choice to row
+    order (plan-tmvev-jaccard-primary-bodyid-ranking D-B)."""
+    if 'chain_pos' in df.columns:
+        return df
+    out = df.sort_values(_CHAIN, ascending=_CHAIN_ASC,
+                         na_position='last').reset_index(drop=True)
+    out['chain_pos'] = range(1, len(out) + 1)
+    return out
+
+
 def _best_row(df: pd.DataFrame) -> Optional[pd.Series]:
-    """The globally best-ranked row, forward ordering (rank_union first,
-    jaccard as the tie-break, NaN last)."""
-    usable = df[df[_ORDER[0]].notna() | df['jaccard_rank'].notna()]
+    """The chain-best row of one scan (Jaccard, then rank_union, then
+    bodyId) — the hit the reciprocal top-1 column publishes (user
+    2026-09-20, J1)."""
+    usable = df[df['jaccard'].notna() | df['rank_union'].notna()]
     if usable.empty:
         return None
-    return usable.sort_values(_ORDER, ascending=[True, True, False],
+    return usable.sort_values(_CHAIN, ascending=_CHAIN_ASC,
                               na_position='last').iloc[0]
 
 
 def serialize_backward_topN(df: Optional[pd.DataFrame], id2type=None,
                             top_n: int = 5, branch_pool=None) -> str:
-    """The reverse neighbourhood as ``rank|bid|type|ru|jaccard|in_branch``
-    records joined by ``;``.
+    """The reverse neighbourhood as
+    ``ru_rank|jac_rank|bid|type|ru|jaccard|in_branch`` records joined by
+    ``;``, listed in :data:`_CHAIN` order (Jaccard first — user 2026-09-20).
 
     The report shows the top-1 in the cell and this list in the hover, so the
     whole neighbourhood travels in one CSV column (the same list-in-cell
-    convention as ``same_name_rivals``)."""
+    convention as ``same_name_rivals``).  Both rank columns travel because a
+    hit can be Jaccard-1 while ranking poorly by rank_union, and a
+    single-metric ``#`` column would hide that."""
     if df is None or df.empty or int(top_n or 0) <= 0:
         return ''
     pool = {int(b) for b in (branch_pool or [])}
     parts: List[str] = []
-    head = df.sort_values(_ORDER, ascending=[True, True, False],
+    head = df.sort_values(_CHAIN, ascending=_CHAIN_ASC,
                           na_position='last').head(int(top_n))
     for r in head.itertuples(index=False):
         try:
@@ -414,6 +523,7 @@ def serialize_backward_topN(df: Optional[pd.DataFrame], id2type=None,
         jac = _clean_num(getattr(r, 'jaccard', None))
         parts.append('|'.join([
             str(_clean_int(getattr(r, 'rank_union_rank', None)) or ''),
+            str(_clean_int(getattr(r, 'jaccard_rank', None)) or ''),
             str(bid),
             _clean_type((id2type or {}).get(bid)),
             '' if ru is None else f'{ru:.4f}',
@@ -423,19 +533,25 @@ def serialize_backward_topN(df: Optional[pd.DataFrame], id2type=None,
     return ';'.join(parts)
 
 
-def _grade_by_branch_type(usable: pd.DataFrame, id2type: Optional[Dict],
-                          branch_source_type: str, top_k: int = 3) -> str:
-    """The evidence grade: how prominently hits of the claiming branch's
-    OWN source type rank (user 2026-09-19).  ``high`` = top-1 by
-    rank_union or by jaccard; ``medium`` = within the top-3 of either;
-    ``low`` = outside both top-3 windows, or nothing usable ranked.  A
-    same-type hit counts wherever it lives — pool membership is context
-    (``backward_top1_in_branch``), never a verdict, and there is NO score
-    bar: the raw rankings speak for themselves."""
+def _own_type_hit(usable: pd.DataFrame, id2type: Optional[Dict],
+                  branch_source_type: str, top_k: int = 3) -> Optional[Dict]:
+    """The best-ranked hit of the claiming branch's OWN source type, and
+    which ranking put it there.
+
+    Scans the top-``top_k`` window of BOTH rank columns and keeps the
+    strongest same-type hit; ties prefer ``jaccard`` (the leading metric,
+    :data:`_RANK_COLS`), so the result is deterministic.  Returns ``None``
+    when no same-type hit ranks at all.  The evidence grade reads straight
+    off it — ``high`` = rank 1, ``medium`` = rank 2..top_k, ``low`` =
+    ``None`` — and a same-type hit counts wherever it lives: pool membership
+    is context (``backward_top1_in_branch``), never a verdict, and there is
+    NO score bar (user 2026-09-19).  Publishing the hit is what lets a reader
+    see WHY a member reads ``high`` even when the globally best reverse hit
+    is of another type (plan-tmvev-reciprocal-jaccard-sort-and-parity D1c)."""
     if not branch_source_type or usable is None or usable.empty:
-        return 'low'
-    best = None
-    for col in _ORDER[:2]:                 # the two rank columns
+        return None
+    best = None                       # (rank, tie_pref, col, row)
+    for tie, col in enumerate(_RANK_COLS):        # the two rank columns
         sub = usable[usable[col].notna()]
         if sub.empty:
             continue
@@ -444,13 +560,19 @@ def _grade_by_branch_type(usable: pd.DataFrame, id2type: Optional[Dict],
                 bid = int(getattr(r, 'target_bid'))
             except (TypeError, ValueError):
                 continue
-            if (id2type or {}).get(bid) == branch_source_type:
-                rk = _clean_num(getattr(r, col))
-                if rk is not None and (best is None or rk < best):
-                    best = rk
+            if (id2type or {}).get(bid) != branch_source_type:
+                continue
+            rk = _clean_num(getattr(r, col))
+            if rk is None:
+                continue
+            if best is None or rk < best[0]:
+                best = (rk, tie, col, r)
     if best is None:
-        return 'low'
-    return 'high' if best <= 1 else 'medium'
+        return None
+    rk, _tie, col, row = best
+    return {'rank': rk,
+            'via': 'rank_union' if col == 'rank_union_rank' else 'jaccard',
+            'row': row}
 
 
 def classify_backward_scan(df: Optional[pd.DataFrame], *,
@@ -480,13 +602,23 @@ def classify_backward_scan(df: Optional[pd.DataFrame], *,
     ``backward_thin_evidence`` flag (:data:`THIN_SHARED_TYPE_COUNT`) so a
     reader can see how much of the union a rank_union actually rests on —
     the flag never changes ``backward_evidence`` and never gates anything.
+
+    The grade itself is also made legible: the winning hit from
+    :func:`_own_type_hit` travels as the ``backward_own_type_*`` block (its
+    bodyId, type, the ``_via`` ranking that surfaced it, both scores and
+    both ranks, its own shared/union base + thin flag).  Without it a
+    ``high`` whose displayed top-1 is of another type is an unexplained
+    cell — and there is no such thing as an unexplained cell in an advisory
+    report: ``low`` rows publish an empty block, so a grade is either
+    backed by a visible hit or visibly has none.
     """
     out = blank_backward_fields('run')
     pool = {int(b) for b in (branch_pool or [])}
     if df is None or df.empty:
         out['backward_evidence'] = 'low'
         return out
-    usable = df[df[_ORDER[0]].notna() | df['jaccard_rank'].notna()]
+    usable = _with_chain_pos(
+        df[df['jaccard'].notna() | df['rank_union'].notna()])
     best = _best_row(usable)
     if best is None:
         out['backward_evidence'] = 'low'
@@ -508,26 +640,57 @@ def classify_backward_scan(df: Optional[pd.DataFrame], *,
     if bid_size is not None and pbs > 0:
         ratio = bid_size / pbs
         size_filtered = ratio < float(min_size_ratio)
-    # Out-of-branch competitors above the branch's OWN best-ranked source.
+    # Out-of-branch competitors above the branch's OWN best-ranked source —
+    # counted on CHAIN POSITIONS, not on a rank column (D-B): a rank tie block
+    # collapses rivals onto the same rank as the pool member and understates
+    # the count, and which rival is "above" would depend on row order.
     n_out = 0
     if pool:
-        pool_rows = usable[usable['target_bid'].astype(int).isin(pool)]
+        in_pool = usable['target_bid'].astype(int).isin(pool)
+        pool_rows = usable[in_pool]
         own = _best_row(pool_rows)
         if own is not None:
-            for rank_col in ('rank_union_rank', 'jaccard_rank'):
-                own_rank = _clean_num(own.get(rank_col))
-                if own_rank is None:
-                    continue
-                above = usable[usable[rank_col].notna()
-                               & (usable[rank_col] < own_rank)
-                               & (~usable['target_bid'].astype(int)
-                                  .isin(pool))]
-                n_out = int(len(above))
-                break
+            own_pos = _clean_int(own.get('chain_pos'))
+            if own_pos is not None:
+                n_out = int(len(usable[(usable['chain_pos'] < own_pos)
+                                       & (~in_pool)]))
     # The grade is pure rank evidence: how prominently hits of the branch's
     # OWN source type rank.  Caliber and pool membership stay context —
-    # advisory hints on the row, never a verdict (user 2026-09-19).
-    evidence = _grade_by_branch_type(usable, id2type, branch_source_type)
+    # advisory hints on the row, never a verdict (user 2026-09-19).  The
+    # winning hit is published alongside it so a `high` that came from the
+    # jaccard window is legible even though the displayed top-1 is the
+    # rank_union winner (D1c).
+    own = _own_type_hit(usable, id2type, branch_source_type)
+    evidence = 'low' if own is None else (
+        'high' if own['rank'] <= 1 else 'medium')
+    own_fields: Dict = {}
+    if own is not None:
+        orow = own['row']
+        try:
+            own_bid: Optional[int] = int(getattr(orow, 'target_bid'))
+        except (TypeError, ValueError):
+            own_bid = None
+        own_shared = _clean_int(getattr(orow, 'shared_type_count', None))
+        own_fields = {
+            'backward_own_type_rank_source_bodyId': own_bid,
+            'backward_own_type_rank_source_type': _clean_type(
+                (id2type or {}).get(own_bid) if own_bid is not None else None),
+            'backward_own_type_via': own['via'],
+            'backward_own_type_rank_union': _clean_num(
+                getattr(orow, 'rank_union', None)),
+            'backward_own_type_jaccard': _clean_num(
+                getattr(orow, 'jaccard', None)),
+            'backward_own_type_shared_type_count': own_shared,
+            'backward_own_type_union_type_count': _clean_int(
+                getattr(orow, 'union_type_count', None)),
+            'backward_own_type_rank_union_rank': _clean_int(
+                getattr(orow, 'rank_union_rank', None)),
+            'backward_own_type_jaccard_rank': _clean_int(
+                getattr(orow, 'jaccard_rank', None)),
+            'backward_own_type_thin_evidence': bool(
+                own_shared is not None
+                and own_shared <= THIN_SHARED_TYPE_COUNT),
+        }
     out.update({
         'backward_evidence': evidence,
         'backward_top1_source_bodyId': top1,
@@ -550,6 +713,7 @@ def classify_backward_scan(df: Optional[pd.DataFrame], *,
             shared is not None and shared <= THIN_SHARED_TYPE_COUNT),
         'backward_topN': serialize_backward_topN(
             usable, id2type=id2type, top_n=top_n, branch_pool=pool),
+        **own_fields,
     })
     return out
 
@@ -561,11 +725,14 @@ def reverse_source_column(df: Optional[pd.DataFrame], source_pool,
     The true competitor set for ``categorize_pool_sources``: the forward scans
     can only ever see the branch's own sources, so out-of-branch rivals above a
     source are invisible there.  Returns entries in the shape
-    ``{'source', 'ru', 'jac', 'in_pool'}`` ordered best-first."""
+    ``{'source', 'ru', 'jac', 'in_pool'}`` ordered best-first in
+    :data:`_CHAIN` order (Jaccard first; user 2026-09-20, D5), so a column and
+    the neighbourhood printed for it read the same way.  The cut keeps every
+    pool row regardless of position."""
     if df is None or df.empty:
         return []
     pool = {int(b) for b in (source_pool or [])}
-    ranked = df.sort_values(_ORDER, ascending=[True, True, False],
+    ranked = df.sort_values(_CHAIN, ascending=_CHAIN_ASC,
                             na_position='last')
     cut = int(top_rows)
     out: List[Dict] = []
@@ -592,15 +759,25 @@ def reverse_source_column(df: Optional[pd.DataFrame], source_pool,
 # Evidence loaders (moved verbatim from mapping_validation)
 # ---------------------------------------------------------------------------
 
+def _column_key(name) -> str:
+    """Lower-cased alphanumeric-only view of a table column name, so the
+    datasets' own spellings fold together: ``size_nm``, ``Size (nm3)`` and
+    ``Volume (nm^3)`` all reach the same gate (BANC v888 uses the last two;
+    reading only ``size``/``size_nm`` silently disabled the spatial-caliber
+    noise filter and the hemisphere trigger for that target)."""
+    return ''.join(ch for ch in str(name).lower() if ch.isalnum())
+
+
 def load_caliber_map(dataset: str,
                      project_root=None) -> Dict[int, float]:
     """Spatial caliber per bodyId from the dataset's allneurons table.
 
     Primary noise-filter input (Rev 3.6: size/spatial arborization is a
     stronger, annotation-independent signal than connectivity heuristics).
-    MCNS tables carry ``size``; FAFB carries ``size_nm`` — both ~100%
-    coverage, so no skeleton fetch is needed.  Returns {} when the table
-    is unavailable (the caliber gate then falls back to the
+    MCNS tables carry ``size``, FAFB ``size_nm``, BANC v888
+    ``Volume (nm^3)`` — all nm³ and near-complete coverage (BANC: 162,643 of
+    188,508 rows), so no skeleton fetch is needed.  Returns {} when the
+    table is unavailable (the caliber gate then falls back to the
     expanded-weight ratio).
     """
     root = Path(project_root) if project_root else \
@@ -623,7 +800,9 @@ def load_caliber_map(dataset: str,
             return {}
     except Exception:
         return {}
-    col = next((c for c in ('size_nm', 'size') if c in tdf.columns), None)
+    keyed = {_column_key(c): c for c in tdf.columns}
+    col = next((keyed[k] for k in ('sizenm', 'size', 'volumenm3', 'volume')
+                if k in keyed), None)
     if col is None or 'bodyId' not in tdf.columns:
         return {}
     vals = pd.to_numeric(tdf[col], errors='coerce').fillna(0.0)
@@ -635,7 +814,9 @@ def load_hemisphere_map(dataset: str,
                         project_root=None) -> Dict[int, str]:
     """bodyId -> 'L'/'R' ('?' when unknown) from the dataset's
     hemisphere/instance columns — the hemisphere-asymmetry trigger's
-    side source."""
+    side source.  MCNS/FAFB carry ``hemisphere``/``sides``/``side``;
+    BANC v888 carries ``Soma side`` with 'left'/'right' (92% of rows).
+    """
     root = Path(project_root) if project_root else \
         Path(__file__).resolve().parents[2]
     try:
@@ -656,24 +837,31 @@ def load_hemisphere_map(dataset: str,
             return {}
     except Exception:
         return {}
+    if 'bodyId' not in tdf.columns:
+        return {}
     out: Dict[int, str] = {}
-    side_col = next((c for c in tdf.columns
-                     if str(c).lower() in ('hemisphere', 'sides',
-                                           'side')), None)
-    for r in tdf.itertuples(index=False):
+    keyed = {_column_key(c): c for c in tdf.columns}
+    side_col = next((keyed[k] for k in ('hemisphere', 'hemispheres',
+                                        'sides', 'side', 'somaside',
+                                        'somahemisphere')
+                     if k in keyed), None)
+    # Columns are read BY LABEL, not through `itertuples` + `getattr`:
+    # BANC v888 names the side column `Soma side`, which is not an
+    # attribute name, so the attribute form could never see it (and a
+    # renamed dataset column degrades to '?' silently).
+    sides = ([str(v) for v in tdf[side_col].fillna('')]
+             if side_col is not None else [''] * len(tdf))
+    insts = ([str(v) for v in tdf['instance'].fillna('')]
+             if 'instance' in tdf.columns else [''] * len(tdf))
+    for bid, raw_side, inst in zip(tdf['bodyId'], sides, insts):
         try:
-            bid = int(r.bodyId)
+            bid = int(bid)
         except (TypeError, ValueError):
             continue
-        side = '?'
-        if side_col is not None:
-            v = str(getattr(r, side_col) or '').strip().upper()
-            if v.startswith('L'):
-                side = 'L'
-            elif v.startswith('R'):
-                side = 'R'
-        if side == '?' and 'instance' in tdf.columns:
-            inst = str(getattr(r, 'instance', '') or '')
+        v = raw_side.strip().upper()
+        side = 'L' if v.startswith('L') else ('R' if v.startswith('R')
+                                              else '?')
+        if side == '?':
             if inst.endswith('_L'):
                 side = 'L'
             elif inst.endswith('_R'):

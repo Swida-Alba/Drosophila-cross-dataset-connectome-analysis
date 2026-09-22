@@ -35,7 +35,10 @@ from comparison.body_id_resolver import (  # noqa: E402
     BodyIdResolverConfig,
     ProfilesUnavailable,
     _SideStats,
+    chain_key,
     expanded_vector,
+    order_by_chain,
+    scan_source,
     score_one_candidate,
     score_one_candidate_fast,
 )
@@ -102,6 +105,30 @@ def test_scoring_parity_reference_vs_fast():
             assert isinstance(b, float) and math.isnan(b)
         else:
             assert a == pytest.approx(b, abs=1e-12)
+
+
+def test_the_single_row_chain_key_and_the_frame_chain_order_agree():
+    """Every S4 site that compares rows instead of sorting a frame goes
+    through :func:`chain_key` — this is the one definition of "best", so the
+    row form and the frame form must not be able to drift.
+
+    The frame is built to contain the case the chain exists for: 11 and 12
+    tie at jaccard 0.75 (so they share ``jaccard_rank`` 1) and only
+    rank_union separates them.  A window taken on the rank column alone
+    would delegate that choice to row order."""
+    src = {'T1:1': 9.0, 'T1:2': 8.0, 'T2:1': 7.0, 'T3:1': 6.0}
+    targets = {11: {'T1:1': 9.0, 'T1:2': 8.0, 'T2:1': 7.0},
+               12: {'T1:1': 9.0, 'T1:2': 8.0, 'T3:1': 6.0},
+               13: {'T1:1': 9.0, 'T4:1': 5.0}}
+    stats = {b: _SideStats(v) for b, v in targets.items()}
+    df = scan_source(src, stats, sorted(stats))
+    assert list(df['jaccard_rank']) == [1.0, 1.0, 3.0]
+    # dense positions, unlike the collapsed rank: this is what "top-N" means
+    assert list(df['chain_pos']) == [1, 2, 3]
+    assert list(order_by_chain(df)['target_bid']) == [11, 12, 13]
+    assert [r['target_bid'] for r in
+            sorted(df.to_dict('records'), key=chain_key)] == [11, 12, 13]
+    assert chain_key(df.iloc[0]) < chain_key(df.iloc[1])
 
 
 def test_moved_names_importable_from_mapping_validation():
@@ -391,3 +418,40 @@ def test_same_name_asymmetry_flag_and_population_accessor():
     assert m.get_type_population('TmY18', 'male-cns:v1.0') == 1367
     assert m.get_type_population('TmY18', 'flywire_FAFB_v783') == 1
     assert m._format_bridge_support(flagged).endswith('(1367 vs 1; suggested check)')
+
+
+def test_the_caliber_and_side_loaders_read_real_dataset_column_names(tmp_path):
+    """BANC v888 spells its caliber column `Volume (nm^3)` and its side column
+    `Soma side` ('left'/'right', 92% of 188,508 rows).
+
+    Reading only `size`/`size_nm`, and only a bare `side`/`hemisphere`/`sides`,
+    returned {} and all-'?' for that target — which silently disabled the
+    spatial-caliber noise filter and the hemisphere-asymmetry gap trigger in
+    every FAFB/MCNS -> BANC run (found preparing the FAFB -> BANC circadian
+    run; MCNS/FAFB output is unchanged, which is why no run ever noticed).
+    The loaders therefore match on an alphanumeric column key AND read by
+    label: `itertuples` renames a column containing a space, so the previous
+    `getattr(row, col)` form could not have worked even with the alias.
+    """
+    import pandas as pd
+    from comparison.body_id_resolver import (load_caliber_map,
+                                             load_hemisphere_map)
+    from utils.naming_utils import canonical_dataset_name
+
+    folder = canonical_dataset_name('banc_v888').replace(':', '_').replace(
+        '.', '_')
+    d = tmp_path / 'datasets' / folder
+    d.mkdir(parents=True)
+    pd.DataFrame([
+        {'bodyId': 11, 'Volume (nm^3)': 5.0e9, 'Soma side': 'left',
+         'instance': 'X_1'},
+        {'bodyId': 12, 'Volume (nm^3)': 1.0e8, 'Soma side': 'Right',
+         'instance': 'Unknown'},
+        {'bodyId': 13, 'Volume (nm^3)': None, 'Soma side': None,
+         'instance': 'Y_R'},
+    ]).to_csv(d / f'{folder}_allneurons_neuron_df.csv', index=False)
+
+    assert load_caliber_map('banc_v888', project_root=tmp_path) == {
+        11: 5.0e9, 12: 1.0e8, 13: 0.0}
+    assert load_hemisphere_map('banc_v888', project_root=tmp_path) == {
+        11: 'L', 12: 'R', 13: 'R'}

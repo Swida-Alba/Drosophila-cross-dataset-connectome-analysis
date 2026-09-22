@@ -139,6 +139,24 @@ DEFAULT_SCORE_WEIGHTS = {
 _OUTPUT_DROP_COLS = ('rank_corr', 'rank_union_raw', 'avg_rank_corr')
 
 
+#: The per-source VISUALIZATION pick falls back along this chain when the
+#: run's ``similarity_metric`` column is absent — Jaccard first, matching the
+#: shipped default sort (BENCHMARK_RESULTS.md §7.1).  Hard-coding rank_union
+#: here used to make the rendered set disagree with the exported ordering of
+#: the same run (plan-tmvev-jaccard-primary-bodyid-ranking S3).
+_VIS_METRIC_FALLBACK = ('jaccard', 'rank_union', 'cosine', 'rank_corr')
+
+
+def pick_visualization_metric(metric, columns) -> Optional[str]:
+    """Which column the per-source top-N visualization pick sorts by: the
+    run's own ``similarity_metric`` when the frame carries it, else the first
+    of :data:`_VIS_METRIC_FALLBACK` that is present."""
+    for name in ((metric,) if metric else ()) + _VIS_METRIC_FALLBACK:
+        if name in columns:
+            return name
+    return None
+
+
 def _drop_rank_cols(df: pd.DataFrame) -> pd.DataFrame:
     """Strip the poorly-ranking metric columns from user-facing output CSVs.
 
@@ -2129,7 +2147,10 @@ class ProfileComparator:
                 }
 
                 return {
-                    'results': results_df.sort_values('rank_union', ascending=False) if not results_df.empty else results_df,
+                    'results': (results_df.sort_values(
+                        ['jaccard', 'rank_union'], ascending=[False, False],
+                        na_position='last')
+                        if not results_df.empty else results_df),
                     'profiles_a': {},
                     'profiles_b': {},
                     'type_summary': type_summary,
@@ -2259,7 +2280,12 @@ class ProfileComparator:
 
         results_df = pd.DataFrame(rows)
         if not results_df.empty:
-            results_df = results_df.sort_values('rank_union', ascending=False)
+            # bodyId-level ordering convention (plan-tmvev-jaccard-primary-
+            # bodyid-ranking, user 2026-09-20): Jaccard first with rank_union
+            # as the tie-break, the same chain TM VEV ranks on
+            results_df = results_df.sort_values(
+                ['jaccard', 'rank_union'], ascending=[False, False],
+                na_position='last')
 
         # Build summary
         summary = {}
@@ -8473,10 +8499,16 @@ class HomologFinder:
                     if 'source_bodyId' in candidate_results.columns:
                         per_source_matches = []
                         for _, group in candidate_results.groupby('source_bodyId'):
-                            if 'rank_union' in group.columns:
-                                sorted_group = group.sort_values('rank_union', ascending=False, na_position='last')
-                            else:
-                                sorted_group = group
+                            # the run's own sort metric, not a hard-coded
+                            # rank_union — the picture must agree with the
+                            # CSV the same run exported
+                            _vc = pick_visualization_metric(
+                                getattr(self, 'similarity_metric', None),
+                                group.columns)
+                            sorted_group = (
+                                group.sort_values(_vc, ascending=False,
+                                                  na_position='last')
+                                if _vc else group)
                             per_source_matches.append(sorted_group.head(top_n))
 
                         if per_source_matches:
