@@ -11,6 +11,8 @@ Run:
         tests/core/test_visualize_skeleton_context_meshes.py -q
 """
 
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -147,8 +149,18 @@ class TestUnshownContextMeshPredicate:
                  legendrank=ROI_MESH_LEGEND_RANK_BASE, visible=False))
 
 
-class TestFrozenBoxIgnoresTheEmbeddedHalf:
-    def test_a_hidden_vnc_does_not_widen_the_box(self):
+class TestFrozenBoxSpansTheEmbeddedHalf:
+    """The page has one box, and it already fits the half held hidden.
+
+    This inverted on the user's round-4 call. Growing the box when a viewer
+    reveals the envelope moves the view (in a 3D scene the ranges *are* the
+    camera normalization), and holding the tight box instead draws nothing --
+    0.3% of a real nerve cord falls inside a brain-only box. One box that fits
+    everything makes both problems disappear, at a measured 1.46x of zoom-out
+    on a brain-only page.
+    """
+
+    def test_a_hidden_vnc_still_sizes_the_box(self):
         brain_only = figure(mesh([0, 10], [0, 10], [0, 10],
                                  legendrank=BRAIN_MESH_LEGEND_RANK))
         with_embedded = figure(
@@ -156,11 +168,11 @@ class TestFrozenBoxIgnoresTheEmbeddedHalf:
                  legendrank=BRAIN_MESH_LEGEND_RANK),
             mesh([0, 10], [0, 10], [900, 1200],
                  legendrank=VNC_MESH_LEGEND_RANK, visible=False))
-        assert _scene_data_ranges_for_test(brain_only) == \
-            _scene_data_ranges_for_test(with_embedded)
+        assert (_scene_data_ranges_for_test(with_embedded)['z'][1]
+                > _scene_data_ranges_for_test(brain_only)['z'][1])
 
-    def test_a_hidden_neuron_still_widens_it(self):
-        # The opposite half of the rule: revealing a neuron must not clip it.
+    def test_a_hidden_neuron_widens_it_the_same_way(self):
+        # One rule for every hidden trace: revealing anything must not clip it.
         without = figure(scatter([0, 10], [0, 10], [0, 10]))
         with_hidden = figure(
             scatter([0, 10], [0, 10], [0, 10]),
@@ -447,14 +459,15 @@ class TestTreeRestoreBaseline:
         assert 'initialVisible && initialVisible[i] === false' in show_all
 
 
-class TestRevealBoxBaking:
-    """The page carries the box it switches to while an embedded half is shown.
+class TestOneBoxBaking:
+    """The page bakes one box, and it spans the half the run kept hidden.
 
-    Keeping the hidden half out of the frozen box is the right first frame and
-    the wrong second one: on a real male-cns brain-only page only 0.3% of the
-    embedded nerve cord's vertices fall inside the brain's framing, so a viewer
-    who ticks its eye would see a clipped sliver. The writer therefore bakes a
-    second box -- and only when it is actually a different box.
+    Two boxes meant a choice at click time, and either choice broke a promise:
+    hold the tight one and the reveal draws nothing, switch to the wide one and
+    the freeze moves the view. One box that fits both removes the choice. The
+    writer therefore bakes the union, and the script gets no box machinery at
+    all -- which is what these tests pin, because a leftover selector would
+    silently reintroduce the switch.
     """
 
     @staticmethod
@@ -479,44 +492,35 @@ class TestRevealBoxBaking:
         )
         assert _unshown_context_mesh_indices(fig) == [2]
 
-    def test_the_wider_box_is_the_old_union(self):
-        """``include_context`` reproduces the box from before the half existed."""
-        fig = self._figure([900, 901, 902])
-        tight = VisualizeSkeleton._scene_data_ranges(fig)
-        wide = VisualizeSkeleton._scene_data_ranges(fig, include_context=True)
-        assert tight['z'][1] < 11
-        assert wide['z'][1] > 902
-        assert tight['x'] == pytest.approx(wide['x'])
+    def test_the_baked_box_is_the_union(self):
+        ranges = VisualizeSkeleton._scene_data_ranges(self._figure([900, 901, 902]))
+        assert ranges['z'][1] > 902
+        # The union is only in the axis the half actually extends; x and y are
+        # the neurons' own, padded, so a cord below the brain cannot stretch
+        # the scene sideways.
+        assert ranges['x'] == pytest.approx(
+            VisualizeSkeleton._scene_data_ranges(
+                figure(scatter([0, 10], [0, 10], [0, 10], name='aMe12')))['x'])
 
-    def test_the_script_bakes_both_boxes(self):
-        vis = make_vis()
-        tight = VisualizeSkeleton._scene_data_ranges(self._figure([900, 901]))
-        wide = VisualizeSkeleton._scene_data_ranges(
-            self._figure([900, 901]), include_context=True)
-        script = vis._freeze_view_html(tight, {'traces': [1], 'ranges': wide})
-        assert '"reveal": {"traces": [1], "ranges":' in script
-        assert 'function contextIsShown()' in script
-        assert 'function syncBox()' in script
-        # A page with nothing embedded must keep the single box it had before.
-        assert '"reveal"' not in vis._freeze_view_html(tight)
+    def test_the_script_carries_no_box_machinery(self):
+        script = make_vis()._freeze_view_html(
+            VisualizeSkeleton._scene_data_ranges(self._figure([900, 901])))
+        baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
+        assert list(json.loads(baked)) == ['ranges']
+        for gone in ('syncBox', 'contextIsShown', 'activeRanges',
+                     'CONFIG.reveal', '"reveal"'):
+            assert gone not in script
 
-    def test_a_half_inside_the_framing_bakes_no_second_box(self, tmp_path):
-        """No difference means no switch, so the page stays exactly as before."""
-        vis = _writer_vis()
-        fig = self._figure([1, 5, 10])
-        path = tmp_path / 'plot.html'
-        vis._write_plotly_html(fig, str(path), include_plotlyjs=False,
-                               freeze_view=True)
-        assert '"reveal"' not in path.read_text()
-
-    def test_a_half_outside_it_bakes_the_switch(self, tmp_path):
+    def test_a_written_page_bakes_the_spanning_box(self, tmp_path):
         vis = _writer_vis()
         path = tmp_path / 'plot.html'
         vis._write_plotly_html(self._figure([900, 901, 902]), str(path),
                                include_plotlyjs=False, freeze_view=True)
         html = path.read_text()
-        assert '"traces": [1]' in html
-        assert 'function syncBox()' in html
+        baked = json.loads(re.search(
+            r'var CONFIG = (\{[^\n]*"ranges"[^\n]*\});', html).group(1))
+        assert baked['ranges']['z'][1] > 902
+        assert 'syncBox' not in html
 
 
 class TestParametersTxtRecordsTheHiddenHalf:

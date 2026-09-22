@@ -161,8 +161,16 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   collapsible group/type/bodyId panel to the permanent HTML pages only; counts
   are unique neuron items, not Plotly traces.
 - `brain_mesh`/`vnc_mesh` choose what a page opens *showing*, not what it
-  contains. On `male-cns` and `banc` — whose native template is one volume
-  split at the neck — whatever the two boxes leave unshown is still embedded,
+  contains, and not the scene's coordinate space either: `_needs_skeleton_transform`
+  answers from the dataset's source→render pair, so a `male-cns`/`hemibrain`
+  scene still takes the raw-voxel → nm affine (×8) with `brain_mesh='none'`.
+  It used to answer False for `'none'` on the reasoning that no envelope means
+  no frame to match, which left the whole anatomy 8x too small in the wrong
+  corner next to the envelope the page always embeds. A transform that fails
+  twice now sets `_skeleton_transform_disabled` rather than rewriting
+  `brain_mesh`.
+  On `male-cns` and `banc` — whose native template is one volume
+  split at the neck — whatever the two checkboxes leave unshown is still embedded,
   hidden (`_embed_unshown_context_mesh` → `_embed_context_mesh`): a
   `brain_mesh='none'` run embeds both halves, a `none` + `vnc_mesh=True` run
   embeds the brain. Decimated to
@@ -172,12 +180,13 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   reaches the GLB/OBJ. It uses `visible=False`, not `'legendonly'`, because the
   tree reads legendonly as shown. Only these two datasets have a second half;
   FAFB, hemibrain, optic-lobe and MANC embed nothing extra (verified on a real
-  FAFB page: 11 traces, one shown envelope, no second box). A cross-template
+  FAFB page: 11 traces, one shown envelope, no hidden half). A cross-template
   scene never falls back to the native split — wrong coordinates.
   `_is_unshown_context_mesh` is the
   single predicate for "present but not shown"; it keeps such a mesh out of
-  the frozen box, the profile-plan background list, and the tree's restore
-  baseline. `_note_hidden_context_meshes` appends the names to
+  the profile-plan background list and the tree's restore baseline, but *not*
+  out of the frozen box — see `freeze_view` below. `_note_hidden_context_meshes`
+  appends the names to
   `parameters.txt` after the page is written — the parameter block itself is
   composed during initialization, before any trace exists.
 - `freeze_view=True` pins the permanent viewer pages' scene axes to the padded
@@ -199,7 +208,10 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   A Freeze/Fit button and the `F` key
   hand autoscaling back. All three floating controls -- those two and the
   light/dark switch -- show a hover hint naming the key and the current state,
-  drawn from `data-drocat-tip` by page CSS rather than a native `title`; the
+  drawn from `data-drocat-tip` by page CSS rather than a native `title`, one row
+  per hint (`width:max-content` under a `min(560px,88vw)` cap: the 36 px button
+  is the tip's containing block, so shrink-to-fit otherwise stacks a word per
+  line); the
   switch's copy names the theme the click selects ("Switch to the dark theme
   (T)") and is drawn to its left, since that button owns the top-right corner. The pin is injected page JS that exits early under
   `navigator.webdriver`, so PNG/video/profile exports keep autoscaling and draw
@@ -208,10 +220,18 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   one of them within 4 px of pre-existing ink — a hidden 29th trace nudges the
   alpha compositing at edges, and two runs of the same generator are
   byte-identical). An
-  embedded context mesh neither widens the first frame nor gets clipped: the
-  page bakes a second, wider box (`freeze_reveal`) and switches to it while any
-  of its trace indices is visible, which is why the listener also handles
-  `plotly_restyle` — a tree eye is a restyle, and relayout-only missed it.
+  embedded context mesh widens the first frame and is then never able to move a
+  frozen one: `_scene_data_ranges` spans it, so the page has exactly **one** box
+  and it already contains the half the viewer can reveal. There is no second box
+  and no box-switching code. Measured on a male-cns brain-only page: 0.3% of the
+  embedded cord's vertices fall inside a brain-only box, so the earlier two-box
+  design's toggle drew nothing; with the union box the cord comes on and goes off
+  with all three axis ranges, `camera.center`, `camera.eye` and `aspectratio`
+  unmoved and 0.37% of the frame's pixels different, at a cost of 1.46× zoom-out
+  along the longest axis. `repaint()` repairs a lost pin on `plotly_relayout`
+  *and* `plotly_restyle` (a tree eye is a restyle), and returns unless
+  `drifted()` — because growing the framing under a freeze is a camera move, and
+  Fit is the control that follows content.
 - `synapse_size` accepts `"real"` or a numeric value; uniform sizing uses the
   `uniform_synapse_size` bool. Invalid/empty values fall back to `"real"`.
 - `cache_neurons`/`cache_synapses` persist raw skeletons/synapses, reused by the

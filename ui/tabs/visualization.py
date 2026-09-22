@@ -205,6 +205,30 @@ def banc_synapse_warning(dataset: str, view: str):
     )
 
 
+def mesh_color_backend_value(auto, color, opacity) -> str:
+    """Compose a backend mesh color from the tab's trio of widgets.
+
+    'auto' while Auto is on, otherwise the picked color with the chosen opacity
+    baked in as rgba() -- the backend reads one string per mesh, and the two
+    template halves of a male-cns/banc scene are coloured independently (the
+    nerve cord whether the checkbox shows it or the page only embeds it hidden).
+    """
+    if auto.value:
+        return "auto"
+    hex_color = str(color.value or "#74A8D6").strip()
+    alpha = float(opacity.value or 1.0)
+    if alpha >= 1.0:
+        return hex_color
+    digits = hex_color[1:]
+    if len(digits) == 3:
+        digits = "".join(ch * 2 for ch in digits)
+    try:
+        r, g, b = (int(digits[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return hex_color
+    return f"rgba({r}, {g}, {b}, {alpha:g})"
+
+
 def create_skeleton_tab():
     skeleton_runner = ScriptRunner()
     skeleton_output = OutputPanel(
@@ -502,10 +526,18 @@ def create_skeleton_tab():
                         except Exception:
                             el.set_visibility(visible)
 
-                # Mesh extras share one compact row: the VNC toggle plus the
-                # brain outline color (Auto follows the background
-                # adaptively; unchecking pins the picked color + opacity).
-                # Per-ROI colors live in the ROI panel's palette editor.
+                # Mesh extras share one compact row: the VNC toggle plus one
+                # color trio per half (Auto follows the background adaptively;
+                # unchecking pins the picked color + opacity). The VNC color
+                # also paints the nerve cord a male-cns/banc page embeds
+                # without showing it, which is the half a viewer reveals from
+                # the legend tree. Per-ROI colors live in the ROI panel's
+                # palette editor.
+                def _sync_mesh_color(color, opacity, auto):
+                    enabled = not auto.value
+                    color.set_enabled(enabled)
+                    opacity.set_enabled(enabled)
+
                 with ui.row().classes("w-full items-end gap-6 flex-wrap"):
                     vnc_mesh = checkbox_input(
                         "VNC Mesh", False,
@@ -515,7 +547,7 @@ def create_skeleton_tab():
                         "Brain Mesh Color", value="#74A8D6",
                     ).props("dense").classes("drocat-input").style("width: 11rem")
                     brain_mesh_color_opacity = number_input(
-                        "Opacity", 0.04, 0, 1, 0.01,
+                        "Brain Opacity", 0.04, 0, 1, 0.01,
                         hint=(
                             "Outline opacity for the picked color. Defaults "
                             "to 0.04 (4%); only used when Auto is off."
@@ -530,35 +562,39 @@ def create_skeleton_tab():
                             "outline mesh."
                         ),
                     )
+                    vnc_mesh_color = ui.color_input(
+                        "VNC Mesh Color", value="#74A8D6",
+                    ).props("dense").classes("drocat-input").style("width: 11rem")
+                    vnc_mesh_color_opacity = number_input(
+                        "VNC Opacity", 0.04, 0, 1, 0.01,
+                        hint=(
+                            "Outline opacity for the VNC color. It paints the "
+                            "nerve cord whether the mesh checkbox shows it or "
+                            "the page only embeds it hidden."
+                        ),
+                    ).props("dense").classes("drocat-input").style("width: 7rem")
+                    vnc_mesh_color_auto = checkbox_input(
+                        "VNC Auto", True,
+                        hint=(
+                            "Adaptive outline color for the nerve cord, the "
+                            "same light blue #74A8D6 at 4%. Uncheck to pin the "
+                            "picked color and opacity to that half alone."
+                        ),
+                    )
                     brain_mesh_color.disable()
                     brain_mesh_color_opacity.disable()
-
-                    def _brain_mesh_color_value() -> str:
-                        """Compose the backend brain_mesh_color: 'auto' while
-                        Auto is on, otherwise the picked color with the chosen
-                        opacity baked in as rgba()."""
-                        if brain_mesh_color_auto.value:
-                            return "auto"
-                        hex_color = str(brain_mesh_color.value or "#74A8D6").strip()
-                        opacity = float(brain_mesh_color_opacity.value or 1.0)
-                        if opacity >= 1.0:
-                            return hex_color
-                        digits = hex_color[1:]
-                        if len(digits) == 3:
-                            digits = "".join(ch * 2 for ch in digits)
-                        try:
-                            r, g, b = (int(digits[i:i + 2], 16) for i in (0, 2, 4))
-                        except (ValueError, IndexError):
-                            return hex_color
-                        return f"rgba({r}, {g}, {b}, {opacity:g})"
-
-                    def _sync_brain_mesh_color_inputs():
-                        enabled = not brain_mesh_color_auto.value
-                        brain_mesh_color.set_enabled(enabled)
-                        brain_mesh_color_opacity.set_enabled(enabled)
+                    vnc_mesh_color.disable()
+                    vnc_mesh_color_opacity.disable()
 
                     brain_mesh_color_auto.on_value_change(
-                        lambda _e: _sync_brain_mesh_color_inputs()
+                        lambda _e: _sync_mesh_color(
+                            brain_mesh_color, brain_mesh_color_opacity,
+                            brain_mesh_color_auto)
+                    )
+                    vnc_mesh_color_auto.on_value_change(
+                        lambda _e: _sync_mesh_color(
+                            vnc_mesh_color, vnc_mesh_color_opacity,
+                            vnc_mesh_color_auto)
                     )
 
             def _default_synapse_shapes_for_skeleton_mode(mode=None):
@@ -1301,7 +1337,11 @@ def create_skeleton_tab():
             "export_scale": int(export_scale.value),
             "export_views": export_views.value,
             "show_fig": show_fig.value,
-            "brain_mesh_color": _brain_mesh_color_value(),
+            "brain_mesh_color": mesh_color_backend_value(
+                brain_mesh_color_auto, brain_mesh_color,
+                brain_mesh_color_opacity),
+            "vnc_mesh_color": mesh_color_backend_value(
+                vnc_mesh_color_auto, vnc_mesh_color, vnc_mesh_color_opacity),
             "neuprint_skeleton_pipeline": simplification_method.value,
             "skeleton_mesh_simplification": (
                 default_skeleton_tab_simplification(

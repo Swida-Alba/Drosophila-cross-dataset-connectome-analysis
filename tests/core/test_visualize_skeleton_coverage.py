@@ -2156,8 +2156,19 @@ class TestTemplateInfo:
         assert info['target'] == 'JRCFIB2018F'
 
     def test_needs_skeleton_transform(self):
+        """The envelope toggle does not decide the skeleton's coordinate space.
+
+        This used to answer False for ``brain_mesh='none'``, on the reasoning
+        that no template mesh means no template to match. But NeuPrint serves
+        hemibrain and male-cns skeletons in raw voxel space, roughly 1/8 of the
+        render space's nanometre frame, so that answer left the whole scene 8x
+        too small and off in a corner -- visible the moment the page carries a
+        context mesh it always embeds.
+        """
         assert make_vis(dataset='hemibrain:v1.2.1', brain_mesh='none') \
-            ._needs_skeleton_transform() is False
+            ._needs_skeleton_transform() is True
+        assert make_vis(dataset='male-cns:v1.0', brain_mesh='none') \
+            ._needs_skeleton_transform() is True
         assert make_vis(dataset='hemibrain:v1.2.1', brain_mesh='native') \
             ._needs_skeleton_transform() is True
         assert make_vis(dataset='flywire_FAFB_v783', brain_mesh='native') \
@@ -2165,6 +2176,20 @@ class TestTemplateInfo:
         # MANC native space: source == target identity
         assert make_vis(dataset='manc:v1.0', brain_mesh='native') \
             ._needs_skeleton_transform() is False
+
+    def test_a_failed_transform_stops_transforming_without_lying_about_mesh(self):
+        """The escape hatch disables the transform; it does not hide the mesh.
+
+        Setting ``brain_mesh='none'`` was how the retry path broke out of the
+        loop, which quietly changed which envelopes the page carried -- and now
+        that 'none' no longer means "skip the transform", it would not have
+        worked anyway.
+        """
+        vis = make_vis(dataset='male-cns:v1.0', brain_mesh='native')
+        assert vis._needs_skeleton_transform() is True
+        vis._skeleton_transform_disabled = True
+        assert vis._needs_skeleton_transform() is False
+        assert vis.brain_mesh == 'native'
 
     def test_get_vnc_template_info(self):
         vnc = make_vis(dataset='manc:v1.0')._get_vnc_template_info()
@@ -2841,6 +2866,17 @@ class TestPlotSynapsesFlywire:
 
 
 class TestPrePostSites:
+    """Synthetic pre/post sites are written in hemibrain's RAW space.
+
+    ``_make`` builds a ``brain_mesh='none'`` hemibrain scene, and the scene
+    still transforms: 'none' chooses which envelope to draw, not which
+    coordinate frame the skeletons arrive in. JRCFIB2018Fraw -> JRCFIB2018F is
+    an x8 nm scale, so every distance measured on a rendered site below carries
+    that factor.
+    """
+
+    RAW_TO_RENDER = 8.0
+
     def _make(self, tmp_path, monkeypatch, fetcher=None, **extra):
         ndf0 = pd.DataFrame({'bodyId': [101], 'type': ['A0'],
                              'name': ['n101']})
@@ -2885,8 +2921,9 @@ class TestPrePostSites:
         assert all(m.metadata['export_role'] == 'synapse'
                    for m in vis.exportable_meshes)
         assert vis._pre_post_seen_legend_groups
-        # real-distance sizing from the synthetic pair (distance 50.0)
-        assert vis._pre_post_real_synapse_distance == pytest.approx(50.0)
+        # real-distance sizing from the synthetic pair (50.0 in raw space)
+        assert vis._pre_post_real_synapse_distance == pytest.approx(
+            50.0 * self.RAW_TO_RENDER)
         saved = pd.read_csv(tmp_path / 't_synapses.csv')
         assert set(saved['viz_layer']) == {'0:pre', '0:post',
                                            '1:pre', '1:post'}
@@ -2935,8 +2972,9 @@ class TestPrePostSites:
         )
         assert vis.plot_synapses() == 0
         # single-layer estimate queries both directions: 101->202 (dist 50)
-        # and 202->101 (dist sqrt(30000)); the baseline is their mean
-        expected = (50.0 + np.sqrt(30000.0)) / 2.0
+        # and 202->101 (dist sqrt(30000)); the baseline is their mean, in the
+        # render space the sites were transformed into
+        expected = (50.0 + np.sqrt(30000.0)) / 2.0 * self.RAW_TO_RENDER
         assert vis._pre_post_real_synapse_distance == pytest.approx(expected)
         names = {t.name for t in vis.fig_3d.data}
         assert names == {'L0_pre', 'L0_post'}

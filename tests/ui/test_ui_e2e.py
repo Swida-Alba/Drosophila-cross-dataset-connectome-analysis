@@ -3760,6 +3760,11 @@ class TestTabs:
         # + color input); the ROI card hosts only the palette editor, no
         # swatch-picker row.
         assert "Brain Mesh Color" in labels
+        # One color trio per half, because the tab has always sent only
+        # brain_mesh_color: the nerve cord -- ticked or only embedded hidden --
+        # then kept the auto blue whatever the user picked.
+        assert "VNC Mesh Color" in labels
+        assert "VNC Opacity" in labels
         assert not any(
             "drocat-swatch-row" in getattr(el, "_classes", [])
             for el in client.elements.values()

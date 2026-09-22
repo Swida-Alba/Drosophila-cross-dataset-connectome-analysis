@@ -2578,7 +2578,8 @@ class VisualizeSkeleton:
         autoscaling back, and a Recenter button (⌖, the 'C' key) moves the
         rotation pivot onto the visible traces. Both carry a hover hint naming
         the key and the current state. A page that carries a hidden brain/VNC
-        half switches to the wider box that fits it while that half is on view.
+        half sizes its one box around that half too, so revealing it draws it
+        and the framing never has to move.
         Static exports are unaffected.
     
     expand_colors : str, default='interpolation'
@@ -4254,28 +4255,26 @@ class VisualizeSkeleton:
         )
 
     @staticmethod
-    def _scene_data_ranges(figure, include_context=False):
+    def _scene_data_ranges(figure):
         """Scene axis ranges that reproduce Plotly's own 3D first-frame extents.
 
         Returns ``{'x': [lo, hi], 'y': [...], 'z': [...]}`` or ``None`` when no
         trace carries usable coordinates. Traces that start hidden are
         included so revealing one cannot clip it -- Plotly itself autoranges
-        over the visible traces only, which is the difference this closes. The
-        one exception is a context mesh the run embedded but did not show
-        (`_is_unshown_context_mesh`), and only while ``include_context`` is
-        false: it exists to be revealed later, and letting it size the box
-        would zoom every brain-only page out to the nerve cord's extent.
-        ``include_context=True`` asks for that wider box instead, which is what
-        the page pins once such a mesh is on view. Legend-only swatches are
-        skipped. Each axis is padded by 1/32 of its own span, which is the
-        fraction Plotly.js adds when it autoranges a 3D scene.
+        over the visible traces only, which is the difference this closes. That
+        includes a context mesh the run embedded without showing
+        (``_is_unshown_context_mesh``): the page has one box, and it has to hold
+        both framings, because growing the scene to admit a revealed half is a
+        camera move and a frozen view that moves is not frozen. Measured on
+        male-cns, carrying the hidden nerve cord widens a brain-only page's box
+        by 1.46x. Legend-only swatches are skipped. Each axis is padded by 1/32
+        of its own span, which is the fraction Plotly.js adds when it
+        autoranges a 3D scene.
         """
         lo = [math.inf, math.inf, math.inf]
         hi = [-math.inf, -math.inf, -math.inf]
         for trace in getattr(figure, 'data', None) or []:
             if not _trace_has_geometry(trace):
-                continue
-            if not include_context and _is_unshown_context_mesh(trace):
                 continue
             for axis, key in enumerate(('x', 'y', 'z')):
                 live = _finite_coordinates(_trace_field(trace, key))
@@ -4292,7 +4291,7 @@ class VisualizeSkeleton:
             ranges[name] = [lo[axis] - pad, hi[axis] + pad]
         return ranges
 
-    def _freeze_view_html(self, ranges, reveal=None):
+    def _freeze_view_html(self, ranges):
         """Build the script that pins the 3D scene framing for human viewers.
 
         Injected next to the theme switch and the tree legend whenever the page
@@ -4310,14 +4309,13 @@ class VisualizeSkeleton:
         or restyle that drifted away from the freeze re-applies it; camera-only
         changes never drift, so orbiting and zooming stay untouched.
 
-        ``reveal`` is ``{'traces': [index, ...], 'ranges': {...}}`` for a page
-        that carries a brain/VNC envelope it did not show. That half sits far
-        outside the framing the run asked for -- measured on male-cns, 0.3% of
-        the embedded nerve cord's vertices fall inside a brain-only box, so
-        pinning to that box alone would leave the viewer's toggle drawing
-        nothing. The script therefore tracks whether any of those traces is on
-        view and pins the wider ``reveal`` ranges while one is, switching back
-        when it goes off. The first frame is untouched either way.
+        The page has exactly one box, and ``_scene_data_ranges`` already sized
+        it around a brain/VNC envelope the run embedded without showing. That
+        is the whole reveal contract: a toggle that draws nothing is a toggle
+        that does not exist, and growing the framing when the viewer reveals the
+        half would be the freeze moving the view it promised to hold. Measured
+        on male-cns, carrying the hidden nerve cord costs a brain-only page a
+        1.46x wider box and nothing else.
 
         A frozen box also fixes the rotation pivot at the centre of the whole
         scene, which is where the second control comes in: its button (also the
@@ -4328,10 +4326,9 @@ class VisualizeSkeleton:
         Fit clears it -- an autoscaled box is already centred on the visible
         traces, and carrying the old number over would leave the anatomy
         hanging off the pivot. Re-freezing restores it, unless the user has
-        panned in the meantime, which wins. Switching boxes recomputes it,
-        which is also what a fresh page does: a box is built around its
-        content's midpoint, so the pivot that implies is the one the viewer
-        would have chosen.
+        panned in the meantime, which wins. A box is built around its content's
+        midpoint, so the pivot the page starts on is the one the viewer would
+        have chosen.
         A Freeze/Fit button (also the 'F' key) hands the autoscaling back for
         anyone who wants the framing to follow the visible traces again. Both
         carry a hover hint rendered from their own ``data-drocat-tip``
@@ -4343,8 +4340,6 @@ class VisualizeSkeleton:
         shots must keep fitting the frame.
         """
         baked = {'ranges': ranges}
-        if reveal:
-            baked['reveal'] = reveal
         button_html = (
             '<button id="drocat-freeze-toggle" type="button"'
             ' aria-label="Freeze or fit the 3D view"'
@@ -4381,10 +4376,12 @@ class VisualizeSkeleton:
             'padding:4px 8px;border-radius:5px;background:rgba(0,0,0,0.82);'
             'color:#fff;font-size:11px;font-weight:400;line-height:1.35;'
             'letter-spacing:normal;opacity:0;'
-            # The longest hint is ~374 px on one line, which would run off a
-            # narrow window, so the tip wraps inside a capped box rather than
-            # overflowing it.
-            'max-width:min(340px,58vw);white-space:normal;'
+            # The 36 px button is the tip's containing block, so shrink-to-fit
+            # collapses the box to one word per line; max-content opts out and
+            # the hint reads as the single row it is meant to be. The cap only
+            # bites on a window too narrow for the longest hint (~450 px),
+            # where wrapping beats running off-screen.
+            'width:max-content;max-width:min(560px,88vw);white-space:normal;'
             'visibility:hidden;transition:opacity .12s ease;'
             'pointer-events:none;}'
             '#drocat-freeze-toggle:hover::after,'
@@ -4407,9 +4404,6 @@ class VisualizeSkeleton:
   var centerButton = document.getElementById('drocat-recenter');
   var frozen = false;
   var pinnedCenter = null;
-  // Which of the two boxes the page is pinned to: false is the framing the run
-  // asked for, true is the wider one that fits an embedded context mesh.
-  var revealed = false;
 
   function graphDiv() {
     return document.querySelector('.js-plotly-plot')
@@ -4423,45 +4417,18 @@ class VisualizeSkeleton:
       return true;
     } catch (err) { return false; }
   }
-  function contextIsShown() {
-    // gd.data is where a tree-panel toggle lands immediately; _fullData is
-    // rebuilt around the same time but only by the redraw this relayout is
-    // already causing, so reading the source traces cannot lag the click.
-    var gd = graphDiv();
-    var traces = (gd && (gd.data || gd._fullData)) || [];
-    var indices = (CONFIG.reveal && CONFIG.reveal.traces) || [];
-    for (var i = 0; i < indices.length; i++) {
-      var trace = traces[indices[i]];
-      if (trace && trace.visible !== false
-          && trace.visible !== 'legendonly') { return true; }
-    }
-    return false;
-  }
-  function activeRanges() {
-    return (revealed && CONFIG.reveal) ? CONFIG.reveal.ranges : CONFIG.ranges;
-  }
-  function syncBox() {
-    // Returns true when the page has to change boxes. A brain-only run pins to
-    // the brain's framing, so its embedded nerve cord lies outside it; the
-    // moment a viewer reveals that mesh the box has to grow or the toggle draws
-    // an empty scene.
-    var next = contextIsShown();
-    if (next === revealed) { return false; }
-    revealed = next;
-    return true;
-  }
   function ratio() {
     // 'data' re-derives the box from the *visible* traces on every restyle, so
     // pinned ranges alone still let one hidden trace rescale the other two
     // axes. 'manual' plus the ratio those ranges imply holds it trace-invariant.
-    var r = activeRanges();
+    var r = CONFIG.ranges;
     var s = {x: Math.abs(r.x[1] - r.x[0]), y: Math.abs(r.y[1] - r.y[0]),
              z: Math.abs(r.z[1] - r.z[0])};
     var m = Math.max(s.x, s.y, s.z) || 1;
     return {x: s.x / m, y: s.y / m, z: s.z / m};
   }
   function pinUpdate() {
-    var r = activeRanges();
+    var r = CONFIG.ranges;
     var q = ratio();
     var updateObj = {
       'scene.xaxis.autorange': false, 'scene.xaxis.range': r.x,
@@ -4491,7 +4458,7 @@ class VisualizeSkeleton:
     // .length; the resolved _fullData is where the coordinates live, as typed
     // arrays whose nulls have become NaN.
     var traces = (gd && (gd._fullData || gd.data)) || [];
-    var r = activeRanges();
+    var r = CONFIG.ranges;
     var lo = {x: Infinity, y: Infinity, z: Infinity};
     var hi = {x: -Infinity, y: -Infinity, z: -Infinity};
     var seen = false;
@@ -4531,7 +4498,7 @@ class VisualizeSkeleton:
     // midpoint converts straight into a pivot, without touching the box.
     var bounds = visibleBounds();
     if (!bounds) { return null; }
-    var r = activeRanges();
+    var r = CONFIG.ranges;
     var updateObj = {};
     for (var a = 0; a < AXES.length; a++) {
       var name = AXES[a];
@@ -4582,7 +4549,7 @@ class VisualizeSkeleton:
     var scene = gd && gd._fullLayout && gd._fullLayout.scene;
     if (!scene) { return false; }
     if (scene.aspectmode !== 'manual') { return true; }
-    var r = activeRanges();
+    var r = CONFIG.ranges;
     for (var a = 0; a < AXES.length; a++) {
       var axis = scene[AXES[a] + 'axis'];
       var range = axis && (axis._range || axis.range);
@@ -4614,7 +4581,6 @@ class VisualizeSkeleton:
     }
   }
   function setFrozen(next) {
-    if (next) { syncBox(); }
     var applied = update(next ? pinUpdate() : fitUpdate());
     if (!applied) { return; }
     frozen = next;
@@ -4663,22 +4629,19 @@ class VisualizeSkeleton:
       var repinning = false;
       function repaint() {
         if (!frozen || repinning) { return; }
-        // Revealing an embedded envelope is not a drift to repair, it is a
-        // different box to move to; the pivot follows the new content for the
-        // same reason the page's first frame centres on its own.
-        var switched = syncBox();
-        if (!switched && !drifted()) { return; }
+        // A lost pin only. There is one box and it never changes, so nothing
+        // that arrives here is a framing decision -- revealing an embedded
+        // envelope is a restyle like any other legend toggle, and the earlier
+        // version of this listener grew the box on it, which is how a frozen
+        // page ended up jumping.
+        if (!drifted()) { return; }
         repinning = true;
-        try {
-          if (update(pinUpdate()) && switched) { recenter(); }
-        } finally { repinning = false; }
+        try { update(pinUpdate()); } finally { repinning = false; }
       }
       try {
-        // Both events, because they carry different things: the tree panel's
-        // eye is a restyle, which is exactly when a box has to change, while
-        // Plotly's reset gestures are relayouts, which is when a pin has to be
-        // repaired. A measured brain-only page showed the embedded VNC coming
-        // on with the box unchanged, because only relayout was wired up here.
+        // Both events, because they can both drop the pin: Plotly's reset
+        // gestures are relayouts, and a legend-tree toggle redraws the scene as
+        // a restyle.
         gd.on('plotly_relayout', repaint);
         gd.on('plotly_restyle', repaint);
       } catch (err) { /* older plotly builds expose no such hook */ }
@@ -4769,7 +4732,10 @@ class VisualizeSkeleton:
             'padding:4px 8px;border-radius:5px;background:rgba(0,0,0,0.82);'
             'color:#fff;font-size:11px;font-weight:400;line-height:1.35;'
             'letter-spacing:normal;opacity:0;'
-            'max-width:min(340px,58vw);white-space:normal;'
+            # The same single-row rule as the two view tools: the round button
+            # is the containing block, so the tip has to opt out of
+            # shrink-to-fit or it stacks one word per line.
+            'width:max-content;max-width:min(560px,88vw);white-space:normal;'
             'visibility:hidden;transition:opacity .12s ease;'
             'pointer-events:none;}'
             '#drocat-theme-toggle:hover::after{opacity:1;'
@@ -5893,14 +5859,12 @@ class VisualizeSkeleton:
 
     def _inject_page_extras(self, html_path, theme_toggle=False,
                             mesh_indices=None, legend_tree=False,
-                            freeze_ranges=None, freeze_reveal=None):
+                            freeze_ranges=None):
         """Insert the warning banner and/or viewer extras at the top of a page.
 
         All extras share one read/insert/write pass so large HTML files are
         not rewritten twice.  Each extra is skipped when already present,
         keeping the pass idempotent against retry/export paths.
-        ``freeze_reveal`` is the box the same script switches to while an
-        embedded context mesh is on view; see ``_freeze_view_html``.
         """
         if not os.path.exists(html_path):
             return
@@ -5911,7 +5875,7 @@ class VisualizeSkeleton:
         )
         legend_html = self._legend_tree_html() if legend_tree else ''
         freeze_html = (
-            self._freeze_view_html(freeze_ranges, freeze_reveal)
+            self._freeze_view_html(freeze_ranges)
             if freeze_ranges else ''
         )
         if not (warning_html or theme_html or legend_html or freeze_html):
@@ -6125,26 +6089,14 @@ class VisualizeSkeleton:
             self._collect_adaptive_mesh_trace_indices(figure)
             if theme_toggle else None
         )
+        # One box for the page, and it already spans any context half the run
+        # embedded without showing: see ``_scene_data_ranges``.
         freeze_ranges = (
             self._scene_data_ranges(figure) if freeze_view else None
         )
-        freeze_reveal = None
-        if freeze_ranges:
-            context_indices = _unshown_context_mesh_indices(figure)
-            wider = (
-                self._scene_data_ranges(figure, include_context=True)
-                if context_indices else None
-            )
-            # Only a box that actually differs is worth switching to: a run that
-            # shows both halves embeds nothing hidden, and one whose hidden
-            # half sits inside the framing needs no change of its own.
-            if wider and wider != freeze_ranges:
-                freeze_reveal = {'traces': context_indices,
-                                 'ranges': wider}
         self._inject_page_extras(
             html_path, theme_toggle=theme_toggle, mesh_indices=mesh_indices,
             legend_tree=legend_tree, freeze_ranges=freeze_ranges,
-            freeze_reveal=freeze_reveal,
         )
         self._record_large_html_warning(html_path)
 
@@ -12831,9 +12783,12 @@ class VisualizeSkeleton:
             # Determine if we need transformation
             # Use _needs_skeleton_transform() which checks for skip_transform flag (FAFB uses native coords)
             needs_transform = self._needs_skeleton_transform()
-            template_info = None
-            if self.brain_mesh != 'none':
-                template_info = self._get_template_info()
+            # Only resolved when a transform is actually going to run: it is
+            # the pair of spaces the neurons are moved between, and the mesh
+            # toggle no longer decides that.
+            template_info = (
+                self._get_template_info() if needs_transform else None
+            )
 
             # Overlay layers (custom_neurons) are already in this scene's
             # coordinate space: render as-is, skip every cache/fetch branch.
@@ -13329,7 +13284,9 @@ class VisualizeSkeleton:
                             compact_progress=True,
                         )
                     except Exception as retry_e:
-                        tqdm.write(f'  ⚠️  Transformation still failed, setting brain_mesh to "none"')
+                        tqdm.write(
+                            '  ⚠️  Transformation still failed; rendering the '
+                            'skeletons in their source space for this run')
                         if self.verbose:
                             import traceback
                             frame = traceback.extract_tb(
@@ -13337,7 +13294,13 @@ class VisualizeSkeleton:
                             tqdm.write(
                                 f'  🐞 raised in {frame.filename}:'
                                 f'{frame.lineno} ({frame.name})')
-                        self.brain_mesh = 'none'
+                        # Stop transforming, and say so: this used to set
+                        # brain_mesh='none' as the only way to break the
+                        # transform loop, which silently changed which
+                        # envelopes the page carried.
+                        self._skeleton_transform_disabled = True
+                        needs_transform = False
+                        needs_actual_transform = False
             
             # Apply FAFB tilt correction if using template mode
             # This corrects the left-right tilt in the FLYWIRE template mesh
@@ -17248,8 +17211,6 @@ class VisualizeSkeleton:
         (brain_mesh='whole', ~13GB of H5 transforms) was retired together
         with the 'native'/'BANC'/'FAFB'/'male-cns' selection rename.
         """
-        if self.brain_mesh == 'none':
-            return
         template_info = self._get_template_info()
         if template_info.get('skip_transform', False):
             self._vprint(f'✓ Using native {template_info["mesh_name"]} - no coordinate transforms needed', level='full')
@@ -18064,9 +18025,9 @@ class VisualizeSkeleton:
         ``export_3d_model`` writes out every registered mesh and an
         unrequested nerve cord would turn up in the user's GLB/OBJ.
 
-        It also stays out of the frozen scene box, which is the framing the run
-        asked for; ``_freeze_view_html``'s ``reveal`` argument carries the
-        wider box the page switches to while this trace is on view.
+        Unlike a hidden neuron it *does* size the frozen scene box: the page has
+        one box, and a half the viewer can reveal has to be inside it, or the
+        toggle would draw nothing and the framing would have to move to fix that.
 
         ``visible=False`` rather than ``'legendonly'``: the legend tree reads
         legendonly as shown, so its eye would switch the mesh *off* on the
@@ -18322,18 +18283,26 @@ class VisualizeSkeleton:
         Returns False (skip transform) for:
         - FAFB: Data and template mesh are both in FLYWIRE space (identity transform)
         - BANC: Data and template mesh are both in BANC space (identity transform)
-        - brain_mesh='none': No template mesh, no transform needed
-        
+        - a scene whose source and target spaces are already the same
+
         Returns True (apply transform) for:
         - hemibrain, male-cns, manc, optic-lobe: Data needs affine transform to template space
           (These are fast, built-in affine transforms, no file download needed)
-        
+
         Note: This is different from _dataset_needs_transform() which checks if heavy
         H5 transforms requiring file downloads are needed.
+
+        ``brain_mesh='none'`` is deliberately NOT a reason to skip. The toggle
+        chooses which envelope to draw; it does not change the space the
+        skeletons arrive in, and NeuPrint serves male-cns/optic-lobe in
+        JRCFIB2022Mraw voxels -- about 1/8 of the render space's nanometre
+        frame. Skipping the transform there drew the anatomy 8x too small in
+        the wrong corner of the scene, which the always-embedded context mesh
+        then made impossible to miss.
         """
-        if self.brain_mesh == 'none':
+        if getattr(self, '_skeleton_transform_disabled', False):
             return False
-            
+
         template_info = self._get_template_info()
         
         # Check for skip_transform flag (set for FAFB or BANC native scenes)

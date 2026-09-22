@@ -76,29 +76,24 @@ def scene_figure():
     return fig
 
 
-def run_page_js(expression, ranges, *, gd='null', preamble='', reveal=None):
+def run_page_js(expression, ranges, *, gd='null', preamble=''):
     """Execute the emitted freeze helpers under node against plain stubs.
 
-    The slice starts at ``contextIsShown()`` and stops at ``decorate()``, which
-    is everything in the script that reads no DOM: the box selector, the
-    pin/fit builders and the pivot helpers. ``frozen``, ``revealed`` and
-    ``pinnedCenter`` live outside that window in the real IIFE, so the program
-    declares them itself and a test can seed ``preamble`` to set state.
+    The slice starts at ``ratio()`` and stops at ``decorate()``, which is
+    everything in the script that reads no DOM: the pin/fit builders and the
+    pivot helpers. ``frozen`` and ``pinnedCenter`` live outside that window in
+    the real IIFE, so the program declares them itself and a test can seed
+    ``preamble`` to set state.
     """
-    script = make_vis()._freeze_view_html(
-        ranges, {'traces': [1], 'ranges': reveal} if reveal else None)
-    start = script.index('function contextIsShown() {')
+    script = make_vis()._freeze_view_html(ranges)
+    start = script.index('function ratio() {')
     end = script.index('function decorate() {')
-    config = {'ranges': ranges}
-    if reveal:
-        config['reveal'] = {'traces': [1], 'ranges': reveal}
     program = (
-        f'var CONFIG = {json.dumps(config)};\n'
+        f'var CONFIG = {json.dumps({"ranges": ranges})};\n'
         "var AXES = ['x', 'y', 'z'];\n"
         f'var GD = {gd};\n'
         'var frozen = true;\n'
         'var pinnedCenter = null;\n'
-        'var revealed = false;\n'
         'var APPLIED = [];\n'
         'function graphDiv() { return GD; }\n'
         'function update(u) { APPLIED.push(u); return true; }\n'
@@ -236,9 +231,12 @@ class TestFreezeViewHtml:
         # text and the screen-reader text cannot drift apart.
         assert "setAttribute('data-drocat-tip'" in script
         assert "setAttribute('aria-label'" in script
-        # The longest state sentence is ~374 px on one line, which ran off a
-        # narrow window, so the tip wraps inside a capped box.
-        assert 'max-width:min(340px,58vw);white-space:normal;' in script
+        # The 36 px button is the tip's containing block, so shrink-to-fit
+        # collapses the box onto it and the hint stacks one word per line.
+        # max-content opts out, which is what keeps a hint on one row; the cap
+        # only wraps it on a window narrower than the longest sentence.
+        assert ('width:max-content;max-width:min(560px,88vw);'
+                'white-space:normal;') in script
         assert 'white-space:nowrap' not in script
 
 
@@ -264,11 +262,10 @@ class TestFrozenAspectRatio:
         """Execute the emitted pin/fit builders under node."""
         ranges = ranges or self.RANGES
         script = make_vis()._freeze_view_html(ranges)
-        start = script.index('function contextIsShown() {')
+        start = script.index('function ratio() {')
         end = script.index('function decorate() {')
         program = (
             f'var CONFIG = {json.dumps({"ranges": ranges})};\n'
-            'var revealed = false;\n'
             f'{script[start:end]}\n'
             'console.log(JSON.stringify({pin: pinUpdate(), '
             'fit: fitUpdate()}));'
@@ -293,25 +290,24 @@ class TestFrozenAspectRatio:
     def test_the_ratio_reads_only_the_baked_ranges(self):
         """No trace data may reach the ratio, or it is trace-dependent again.
 
-        The box it reads is one of two baked ones, and choosing between them is
-        a flag rather than a measurement, so the ratio still cannot see what is
-        currently drawn.
+        There is one baked box and the ratio reads it directly, so the pin
+        cannot see what is currently drawn -- and has no second framing to be
+        talked into when a hidden half comes on.
         """
         script = make_vis()._freeze_view_html(self.RANGES)
         body = script[script.index('function ratio() {'):
                       script.index('function pinUpdate() {')]
         code = '\n'.join(line.split('//')[0] for line in body.splitlines())
-        assert 'activeRanges()' in code
+        assert 'CONFIG.ranges' in code
         for leak in ('gd.data', 'visible', '_fullLayout', 'restyle'):
             assert leak not in code, f'{leak} makes the ratio trace-dependent'
-
-        selectors = script[script.index('function activeRanges() {'):
-                           script.index('function ratio() {')]
-        assert 'CONFIG.ranges' in selectors
-        assert 'CONFIG.reveal.ranges' in selectors
-        for leak in ('gd.data', 'visible', '_fullLayout', 'restyle',
-                     'Math.min', 'values'):
-            assert leak not in selectors, f'{leak} measures the scene'
+        # The box selector is gone, not merely unused: a page with one box has
+        # nothing to choose between.
+        for gone in ('activeRanges', 'contextIsShown', 'syncBox', 'revealed',
+                     'CONFIG.reveal'):
+            assert gone not in script, f'{gone} is the two-box machinery'
+        baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
+        assert list(json.loads(baked)) == ['ranges']
 
     def test_the_range_padding_keeps_the_raw_axis_ratios(self):
         """A proportional pad, so freezing cannot change the anatomy's shape.
@@ -347,10 +343,9 @@ class TestRecenterAndRepin:
         if shutil.which('node') is None:
             pytest.skip('node is not installed')
 
-    def _run(self, expression, gd='null', preamble='', reveal=None):
+    def _run(self, expression, gd='null', preamble=''):
         """Run *expression* under node against the page's own helper functions."""
-        return run_page_js(expression, self.RANGES, gd=gd, preamble=preamble,
-                           reveal=reveal)
+        return run_page_js(expression, self.RANGES, gd=gd, preamble=preamble)
 
     def test_the_pivot_follows_the_visible_traces(self):
         """Hidden content must not pull the pivot, and neither do placeholders.
@@ -444,7 +439,7 @@ class TestRecenterAndRepin:
         script = make_vis()._freeze_view_html(self.RANGES)
         assert 'function repaint() {' in script
         assert 'if (!frozen || repinning) { return; }' in script
-        assert 'if (!switched && !drifted()) { return; }' in script
+        assert 'if (!drifted()) { return; }' in script
 
         pinned = json.dumps({'_fullLayout': {'scene': {
             'aspectmode': 'manual',
@@ -467,117 +462,34 @@ class TestRecenterAndRepin:
             'zaxis': {'autorange': True, 'range': None}}}})
         assert self._run('drifted()', fitted) is True
 
-    def test_revealing_through_the_tree_reaches_the_repaint(self):
-        """A legend-tree eye is a restyle, and restyle is not relayout.
+    def test_revealing_through_the_tree_repairs_but_never_rescales(self):
+        """A legend-tree eye is a restyle, and a restyle must not move the view.
 
-        The first version of the box switch listened for relayout only, so on a
-        live page the embedded nerve cord came on with the framing unchanged --
-        which, given that 0.3% of it lies inside a brain-only box, is the same
-        as not shipping the toggle at all.
+        Both events reach ``repaint`` because either can drop the pin, but the
+        page has one box and ``repaint`` may only restore it. The two versions
+        this replaces both failed the same promise differently: one grew the
+        box on a reveal (a camera move under a freeze), the earlier one listened
+        for relayout only and so left the revealed half outside the framing.
         """
         script = make_vis()._freeze_view_html(self.RANGES)
         assert "gd.on('plotly_relayout', repaint);" in script
         assert "gd.on('plotly_restyle', repaint);" in script
+        repaint = script[script.index('function repaint() {'):
+                         script.index("gd.on('plotly_relayout'")]
+        assert 'drifted()' in repaint
+        assert 'recenter()' not in repaint
+        # The framing is decided when the page is written, so nothing between
+        # the pin builder and the button decorator asks what is on screen --
+        # except the recenter helper, whose whole job is the visible content.
+        pinning = script[script.index('function ratio() {'):
+                         script.index('function visibleBounds() {')]
+        code = '\n'.join(line.split('//')[0] for line in pinning.splitlines())
+        assert 'visible' not in code
 
     def test_the_doubleclick_handler_is_gone_now_that_relayout_listens(self):
         """One re-pin path, not two racing each other over the same gesture."""
         script = make_vis()._freeze_view_html(self.RANGES)
         assert 'plotly_doubleclick' not in script
-
-
-class TestContextMeshRevealBox:
-    """The pinned box grows while a viewer is looking at an embedded envelope.
-
-    A page that ships a brain/VNC half it did not show has to keep that half
-    out of the first frame's box -- otherwise a brain-only run opens zoomed out
-    to the nerve cord. But the two do not overlap: measured on a real male-cns
-    brain-only page, 0.3% of the embedded nerve cord's vertices fall inside the
-    box pinned to the brain's framing, so revealing it there would draw
-    almost nothing at all and the checkbox would be cosmetic. Hence a second
-    baked box, switched to only while such a mesh is on view.
-    """
-
-    RANGES = {'x': [0.0, 4.0], 'y': [0.0, 2.0], 'z': [0.0, 8.0]}
-    REVEAL = {'x': [-8.0, 4.0], 'y': [0.0, 2.0], 'z': [0.0, 24.0]}
-
-    # Index 1 is the embedded mesh: ``run_page_js`` bakes ``reveal.traces``.
-    @staticmethod
-    def _gd(context_visible):
-        traces = [
-            {'x': [1, 3], 'y': [0, 2], 'z': [1, 3], 'visible': True},
-            {'x': [1, 3], 'y': [0, 2], 'z': [1, 24],
-             'visible': context_visible},
-        ]
-        return json.dumps({'data': traces, '_fullData': traces})
-
-    def test_the_box_follows_the_embedded_mesh(self):
-        off = run_page_js('(syncBox(), {switched: revealed, '
-                          'z: pinUpdate()[\'scene.zaxis.range\'], '
-                          'again: syncBox()})', self.RANGES,
-                          gd=self._gd(False), reveal=self.REVEAL)
-        assert off == {'switched': False, 'z': [0.0, 8.0], 'again': False}
-
-        shown = run_page_js('(syncBox(), {switched: revealed, '
-                            'z: pinUpdate()[\'scene.zaxis.range\'], '
-                            'ratioZ: ratio().z, ratioX: ratio().x})',
-                            self.RANGES, gd=self._gd(True), reveal=self.REVEAL)
-        assert shown['switched'] is True
-        assert shown['z'] == [0.0, 24.0]
-        # The proportions belong to the box in force, not to the first frame:
-        # holding the old ratio while widening z would stretch the anatomy.
-        assert shown['ratioZ'] == pytest.approx(1.0)
-        assert shown['ratioX'] == pytest.approx(12.0 / 24.0)
-
-    def test_hiding_it_again_shrinks_the_box_back(self):
-        """The switch is a state, not a ratchet -- the run's framing returns."""
-        back = run_page_js('(revealed = true, '
-                           '{switched: syncBox(), '
-                           'z: pinUpdate()[\'scene.zaxis.range\']})',
-                           self.RANGES, gd=self._gd(False), reveal=self.REVEAL)
-        assert back == {'switched': True, 'z': [0.0, 8.0]}
-
-    def test_a_page_without_an_embedded_mesh_never_switches(self):
-        """No second box baked means no second box, however the traces read."""
-        plain = run_page_js('(syncBox(), {switched: revealed, '
-                            'z: pinUpdate()[\'scene.zaxis.range\'], '
-                            'ratio: ratio().z})', self.RANGES,
-                            gd=self._gd(True))
-        assert plain == {'switched': False, 'z': [0.0, 8.0],
-                         'ratio': pytest.approx(1.0)}
-
-    def test_legendonly_is_not_on_view(self):
-        """A swatch collapsed to the legend is not something the box must fit."""
-        traces = json.dumps({'data': [
-            {'x': [1, 3], 'y': [0, 2], 'z': [1, 3], 'visible': True},
-            {'x': [1, 3], 'y': [0, 2], 'z': [1, 24], 'visible': 'legendonly'},
-        ]})
-        assert run_page_js('contextIsShown()', self.RANGES, gd=traces,
-                           reveal=self.REVEAL) is False
-
-    def test_the_pivot_and_the_drift_read_the_active_box(self):
-        """Both normalize against whichever box is in force.
-
-        ``camera.center`` is in normalized scene units, so a pivot computed
-        against the other box points somewhere else entirely; and comparing the
-        live ranges against the wrong box would have the page re-pin itself on
-        every redraw.
-        """
-        pivot = run_page_js('(revealed = true, centerUpdate())', self.RANGES,
-                            gd=self._gd(True), reveal=self.REVEAL)
-        # Visible now is brain plus cord: x spans 1..3 inside a box centred on
-        # -2, and z spans 1..24 around the box's own midpoint of 12.
-        assert pivot['scene.camera.center.x'] == pytest.approx((2 + 2) / 12)
-        assert pivot['scene.camera.center.z'] == pytest.approx((12.5 - 12) / 24)
-
-        pinned_wide = json.dumps({'_fullLayout': {'scene': {
-            'aspectmode': 'manual',
-            'xaxis': {'autorange': False, 'range': self.REVEAL['x']},
-            'yaxis': {'autorange': False, 'range': self.REVEAL['y']},
-            'zaxis': {'autorange': False, 'range': self.REVEAL['z']}}}})
-        assert run_page_js('(revealed = true, drifted())', self.RANGES,
-                           gd=pinned_wide, reveal=self.REVEAL) is False
-        assert run_page_js('drifted()', self.RANGES, gd=pinned_wide,
-                           reveal=self.REVEAL) is True
 
 
 class TestInjection:

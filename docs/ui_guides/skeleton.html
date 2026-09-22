@@ -209,9 +209,9 @@
           off the rotation centre. Freezing again restores the pivot you chose,
           unless you panned in the meantime. All three floating controls — the
           two view buttons and the light/dark switch in the other corner —
-          carry a <b>hover hint</b> that names the key and
+          carry a <b>hover hint</b> on <b>one row</b> that names the key and
           states the current state ("View is frozen: legend toggles keep the
-          framing — F to fit"; the switch says which theme the click selects),
+          framing (F to fit)"; the switch says which theme the click selects),
           drawn by the page's own stylesheet rather than a
           native tooltip, which costs a second to appear. The freeze also
           re-applies itself after the page's single
@@ -224,12 +224,14 @@
           that exits early under
           <code>navigator.webdriver</code>, so view PNGs, individual profiles
           and video frames still autoscale exactly as before. A brain or VNC
-          envelope the run did not ask to show is left out of the pinned box —
-          otherwise a hidden nerve cord would zoom every brain-only page out to
-          its extent — and the page carries a second, wider box that takes over
-          <i>while</i> that envelope is on view, so revealing it shows the whole
-          CNS instead of a clipped sliver. The frame you open on is unchanged
-          either way; untick the box to hand scaling back to Plotly.</li>
+          envelope the run did not ask to show is still inside the pinned box,
+          because the page has one box and a half you can reveal has to be in
+          it — so a brain-only male-cns page opens framed to the whole CNS,
+          1.46× wider along its longest axis than the brain alone needs, and its
+          VNC eye then draws the nerve cord without moving the framing at all.
+          Nothing about a frozen view changes once you have it; <b>Fit</b>
+          (<code>F</code>) is the control that follows content. The frame you
+          open on is unchanged either way; untick the box to hand scaling back to Plotly.</li>
         <li><b>Background</b>: white or black. The default neuron palette
           follows it — <b>Category10</b> on white, <b>Set3</b> on black —
           until you pick a palette manually.</li>
@@ -253,10 +255,12 @@
           without re-running anything. Other datasets have a single native
           template (FAFB the brain, hemibrain the half-brain outline), so
           nothing extra is embedded. Neither hidden half is added to the
-          downloadable mesh model. <b>Brain Mesh Color</b> defaults to
-          <b>Auto</b> (adaptive: light tone on white background, dark tone on
-          black); uncheck it to pick a fixed outline color, with opacity
-          defaulting to 5% (half the original auto setting's subtlety).</li>
+          downloadable mesh model. <b>Brain Mesh Color</b> and <b>VNC Mesh
+          Color</b> each default to <b>Auto</b> (adaptive: light tone on white
+          background, dark tone on black); uncheck either to pick a fixed
+          outline color and opacity for that half alone. Each applies to the
+          embedded hidden half as well, so a nerve cord the viewer reveals
+          arrives in the colour set for it, not the default blue.</li>
       </ul>
     </div>
     <div class="card">

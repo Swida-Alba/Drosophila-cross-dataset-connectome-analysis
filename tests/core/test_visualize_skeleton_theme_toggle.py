@@ -92,6 +92,11 @@ def test_the_hover_hint_is_drawn_by_css_not_a_native_title():
     assert ('data-drocat-tip="Switch to the light theme (T)"'
             in _make_visualizer('black')._theme_toggle_html())
     assert "setAttribute('data-drocat-tip'" in html
+    # The one-row rule the two view tools follow: the round button is the
+    # tip's containing block, so without max-content the box collapses onto its
+    # 36 px and the hint stacks one word per line.
+    assert ('width:max-content;max-width:min(560px,88vw);'
+            'white-space:normal;') in html
 
 
 def test_theme_toggle_html_repositions_below_warning_banner():

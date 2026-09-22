@@ -438,9 +438,13 @@ reacting to what is hidden.
   because the button owns the top-right. For the two view tools the same text
   feeds `aria-label`, so the screen-reader name and the hint cannot drift apart;
   the theme button keeps its fixed accessible name, since "Toggle light/dark
-  theme" describes the control whichever way it currently points. The
-  tip wraps inside `max-width:min(340px,58vw)` — the longest state sentence is
-  ~374 px on one line, which ran off a narrow window.
+  theme" describes the control whichever way it currently points. Each hint
+  reads on one row: the 36 px button is its tip's containing block, so
+  shrink-to-fit collapses the box onto the button and the sentence stacks a word
+  per line — which is what it did before `width:max-content` opted out, capped at
+  `min(560px,88vw)` so a narrow window wraps rather than overflowing. Measured
+  live in a browser, the three tips are 272 / 221 / 138 px wide and one line
+  tall.
 - **The pin survives Plotly's own resets.** The modebar's *reset camera* button
   and a double-click restore the layout snapshot taken before this script ran,
   which drops `aspectmode='manual'` and lets the box re-scale to whatever is
@@ -464,11 +468,14 @@ reacting to what is hidden.
   of geometry that was already there — a hidden trace in the scene nudges how
   the translucent tubes composite at their edges, and two runs of the *same*
   generator are byte-identical, so that delta is the extra trace, not jitter.
-- A brain/VNC envelope the run carries but does not show stays out of the box,
-  so it cannot zoom a brain-only page out to the nerve cord; while such a mesh
-  is on view the page pins the wider box that fits it instead, and goes back
-  when it is hidden again. Set `freeze_view=False` to hand framing to Plotly
-  altogether.
+- A brain/VNC envelope the run carries but does not show is still inside the
+  box. The page has one box, and a half the viewer can reveal has to be in it:
+  widening the framing to admit a mesh that just came on is a camera move, and a
+  frozen view that pans when a checkbox is clicked is not a frozen view. So a
+  brain-only `male-cns` page opens framed to the whole CNS — 1.46× wider along
+  its longest axis than the brain alone needs — and its VNC eye then draws the
+  nerve cord inside that same frame. Fit (F) follows the content. Set
+  `freeze_view=False` to hand framing to Plotly altogether.
 
 ### Per-Neuron Colors via CSV
 
@@ -789,6 +796,15 @@ it is the embedded one. It is embedded whenever the page does not show it: a
 the brain. So a page that shows one half and hides the other is ~4% larger than
 a brain-only page used to be, not ~7%.
 
+`brain_mesh='none'` drops the envelope and nothing else. It does **not** change
+the scene's coordinate space: a `male-cns` or `hemibrain` scene still takes the
+raw-voxel → nanometre affine (×8) on its skeletons, synapses and pre/post sites.
+It used to skip that transform on the reasoning that no envelope means there is
+no frame to match, which left the anatomy drawn 8x too small in the wrong corner
+beside the envelope the page always carries. If the transform fails twice the
+run disables further transforming and says so, rather than rewriting
+`brain_mesh` to escape the loop.
+
 Three consequences are deliberate:
 
 - The hidden half is **not** written by `export_3d_model`. That function
@@ -803,20 +819,23 @@ Three consequences are deliberate:
   the baseline the page opened with and puts the envelope back. Both readings
   are useful and neither is the other's bug, so the difference is carried in the
   header eye's tooltip rather than coded away.
-- The hidden half does **not** size the frozen scene box. Measured: 0.3% of the
-  embedded VNC's vertices fall inside a brain-only box, so pinning to that box
-  alone would leave the first frame right and the reveal empty. The page
-  therefore carries both boxes and switches to the wider one *while* such a
-  mesh is visible — live in a browser, `z` held at `[71630, 350002]`, widened
-  to `[48786, 1103867]` on reveal with the aspect ratio that box implies, and
-  narrowed back on hide. The switch listens for restyle as well as relayout,
-  because a legend-tree eye is a restyle.
+- The hidden half **does** size the frozen scene box, because the page carries
+  one box and it has to hold both framings. Measured: 0.3% of the embedded VNC's
+  vertices fall inside a brain-only box, so a page framed to the brain alone
+  drew essentially nothing when its eye was clicked — the defect the earlier
+  two-box design carried, where the toggle worked but the half it revealed sat
+  outside the frame. So `z` bakes at `[48786, 1103867]` rather than
+  `[71630, 350002]`, and live in a browser the cord comes on and goes back off
+  with all three axis ranges, `camera.center`, `camera.eye` and `aspectratio`
+  unmoved, and 0.37% of the frame's pixels different — the cord, drawn where the
+  box already had room for it. What it costs is that a brain-only page opens
+  1.46× zoomed out.
 
 Datasets outside `male-cns`/`banc` have a single native template — FAFB the
 FLYWIRE brain, hemibrain the JRCFIB2018F half-brain, optic-lobe its own
 JRCFIB2022M, MANC the whole nerve cord — so there is no second half to embed
 and their pages are byte-for-byte what they were. On `male-cns`/`banc` whatever
-the two boxes leave unshown is embedded hidden, so a `brain_mesh='none'` run
+the two checkboxes leave unshown is embedded hidden, so a `brain_mesh='none'` run
 embeds *both* halves and a `none` + VNC run embeds the brain — which means such
 a run downloads and splits the native template mesh it used to skip. Because
 `parameters.txt` is written during initialization, before any trace exists, its
