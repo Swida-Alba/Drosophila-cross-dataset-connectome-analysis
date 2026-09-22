@@ -29,15 +29,33 @@ DS2 = "male-cns:v0.9"
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Where ``_params()`` puts run output; the autouse fixture below points it at
+# the test's tmp dir.
+_PARAMS_OUTPUT = {"folder": ""}
+
+
+@pytest.fixture(autouse=True)
+def _params_write_under_tmp(tmp_path):
+    """An empty ``output_folder`` resolves against the process CWD, which
+    during a test run is the repository root — so any test whose analyzer
+    touched its output path left a ``cross-dataset_*`` folder in the tree.
+    """
+    _PARAMS_OUTPUT["folder"] = str(tmp_path)
+
+
 def _params(**overrides):
-    """Build hermetic ComparisonParameters (no auto type mapping, no output)."""
+    """Build hermetic ComparisonParameters (no auto type mapping).
+
+    Pass ``output_folder=""`` to exercise the "no output folder" branch,
+    where the analyzer gets no ``DataLoader``.
+    """
     defaults = dict(
         datasets=[DS1, DS2],
         source_neurons=["Src"],
         target_neurons=["Tgt"],
         max_interlayer=1,
         thresholds=[1, 3],
-        output_folder="",
+        output_folder=_PARAMS_OUTPUT["folder"],
         auto_type_mapping=False,
         verbose=False,
     )
@@ -102,12 +120,14 @@ def test_escape_cypher_string_fallback():
     assert _escape_cypher_string_fallback(123) == "123"
 
 
-def test_init_no_output_folder(analyzer):
-    assert analyzer.data_loader is None
-    assert analyzer.raw_results == {}
-    assert analyzer.comparison_report is None
-    assert DS1 in analyzer._dataset_configs
-    assert isinstance(analyzer._dataset_configs[DS2], DatasetConfig)
+def test_init_no_output_folder():
+    # "" is the branch under test: no output folder, so no DataLoader.
+    a = ComparisonAnalyzer(_params(output_folder=""), verbose=False)
+    assert a.data_loader is None
+    assert a.raw_results == {}
+    assert a.comparison_report is None
+    assert DS1 in a._dataset_configs
+    assert isinstance(a._dataset_configs[DS2], DatasetConfig)
 
 
 def test_init_with_output_folder(tmp_path):
