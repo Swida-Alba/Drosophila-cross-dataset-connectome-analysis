@@ -277,6 +277,14 @@ class MappingValidationConfig:
     morph_enabled: bool = True
     morph_auc_floor: float = 0.65
     candidate_morph_cap: int = 20
+    # The stage-5 skeleton pre-flight is the one network-bound block in the
+    # run (measured 3.0 s per target fetched one-at-a-time: 1,401 s for 467
+    # on banc_v888).  It therefore goes through the shared batched NeuPrint
+    # fetcher with this many threads, and bounds the socket inactivity it
+    # will tolerate — neuprint-python and navis both expose no per-request
+    # timeout, so without this a single hung request stalls the stage.
+    skeleton_fetch_workers: int = 8
+    skeleton_fetch_timeout_s: int = 120
     # stage 4
     visualize: bool = True
     # 0 (default) renders one scene per parent type. A positive value caps
@@ -604,6 +612,12 @@ FILL_LEVELS = ('high', 'medium', 'low', 'type_gated', 'advice')
 # thousands of distinct targets, so the fetch is bounded and names what it
 # leaves unscored.
 MORPH_SKELETON_PREFLIGHT_CAP = 2000
+
+# The pre-flight walks the shared batched fetcher in chunks so the neurons it
+# returns (it persists AND hands back every skeleton it fetches) never all
+# live at once: 2,000 target skeletons is multi-GB of TreeNeurons, and the
+# pre-flight needs none of them in memory.
+MORPH_SKELETON_FETCH_CHUNK = 128
 
 
 def build_gap_fill_levels(dedup_rows, evidence_rows, family_material=()):
@@ -3540,21 +3554,26 @@ class MappingValidator:
 
         Bounded by ``MORPH_SKELETON_PREFLIGHT_CAP`` and named in the log when
         it truncates: the pair frame of a wide aggressive run can ask for tens
-        of thousands of targets, which is not a fetch budget.  Cache-first and
-        resumable (each fetch persists into the raw store), and every failure
-        is fail-open — the scorer then sees exactly what it used to see, and
-        :func:`morph_coverage_warning` says so.  FAFB targets come from the
-        healed-zip path, not this cache, so they are skipped.
+        of thousands of targets, which is not a fetch budget.  The fetch goes
+        through the shared batched fetcher (``cfg.skeleton_fetch_workers``
+        threads over 64-body requests, in ``MORPH_SKELETON_FETCH_CHUNK``
+        id-chunks) because this is the one network-latency-bound block in the
+        run — fetching one at a time measured 3.0 s per target, 1,401 s for
+        467.  Cache-first and resumable (each fetch persists into the raw
+        store), and every failure is fail-open — the scorer then sees exactly
+        what it used to see, and :func:`morph_coverage_warning` says so.  FAFB
+        targets come from the healed-zip path, not this cache, so they are
+        skipped.
         """
         cfg = self.cfg
         bids = sorted({int(b) for b in (bids or [])
                        if b is not None and str(b).strip()})
         stats = {'requested': len(bids), 'cached': 0, 'fetched': 0,
-                 'failed': 0, 'skipped_cap': 0}
+                 'failed': 0, 'skipped_cap': 0, 'unattempted': 0}
         if not bids or is_fafb_dataset(dataset):
             return stats
         try:
-            from morphology import fetch_skeleton_on_demand, find_similar_raw_cache
+            from morphology import find_similar_raw_cache
             cache = find_similar_raw_cache(dataset, verbose=False)
             missing = [b for b in bids if cache.find_skeleton_file(b) is None]
         except Exception as exc:  # noqa: BLE001
@@ -3575,28 +3594,57 @@ class MappingValidator:
                  f'{len(missing)}')
         if not missing:
             return stats
+        workers = max(1, min(int(getattr(cfg, 'skeleton_fetch_workers', 8) or 1),
+                             len(missing)))
+        timeout_s = max(0, int(getattr(cfg, 'skeleton_fetch_timeout_s', 120)
+                               or 0))
         self.progress.emit('skeletons_progress', stage='5', dataset=dataset,
-                           done=0, total=len(missing))
+                           done=0, total=len(missing), workers=workers)
         t0 = time.time()
-        for i, bid in enumerate(missing, 1):
-            try:
-                if fetch_skeleton_on_demand(dataset, bid) is None:
-                    stats['failed'] += 1
-            except Exception as exc:  # noqa: BLE001
-                stats['failed'] += 1
-                self.log(f'[stage 5] skeleton fetch failed for {bid}: {exc}')
-            if i % 50 == 0 or i == len(missing):
+        done = 0
+        # Neither neuprint-python nor navis exposes a per-request timeout, so
+        # bound socket INACTIVITY for the duration of the fetch and restore it
+        # afterwards: without this a single hung request stalls the stage
+        # forever, which is also what the serial loop used to do.
+        prev_timeout = None
+        if timeout_s:
+            import socket
+            prev_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(timeout_s)
+        try:
+            from morphology import fetch_skeletons_on_demand_batch
+            for start in range(0, len(missing), MORPH_SKELETON_FETCH_CHUNK):
+                chunk = missing[start:start + MORPH_SKELETON_FETCH_CHUNK]
+                # The batcher persists AND returns every skeleton, so it runs
+                # in chunks — the pre-flight needs the files on disk, not the
+                # neurons in memory.
+                got = fetch_skeletons_on_demand_batch(
+                    dataset, chunk, persist=True, max_threads=workers,
+                    raw_cache=cache, vector_cache=cache)
+                done += len(chunk)
+                stats['failed'] += len(chunk) - len(got or {})
                 self.progress.emit('skeletons_progress', stage='5',
-                                   dataset=dataset, done=i,
+                                   dataset=dataset, done=done,
                                    total=len(missing))
-        stats['fetched'] = len(missing) - stats['failed']
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'[stage 5] ! skeleton pre-flight stopped after '
+                     f'{done}/{len(missing)}: {exc} — scoring against '
+                     'whatever the cache holds')
+            self.progress.emit('warning', stage='5',
+                               note=f'skeleton pre-flight: {exc}')
+        finally:
+            if timeout_s:
+                import socket
+                socket.setdefaulttimeout(prev_timeout)
+        stats['fetched'] = done - stats['failed']
+        stats['unattempted'] = len(missing) - done
         self.progress.emit('skeletons_progress', stage='5', dataset=dataset,
-                           done=len(missing), total=len(missing),
+                           done=done, total=len(missing),
                            fetched=stats['fetched'], failed=stats['failed'],
                            note='complete')
         self.log(f'[stage 5] skeleton pre-flight done: fetched '
                  f'{stats["fetched"]}, failed {stats["failed"]} in '
-                 f'{time.time() - t0:.0f}s')
+                 f'{time.time() - t0:.0f}s ({workers} threads)')
         return stats
 
     def run_morphology(self, val_rows: List[Dict], sus_rows: List[Dict],
@@ -5093,7 +5141,7 @@ class MappingValidator:
                            query_types=list(cfg.query_types),
                            mode=cfg.effective_mode)
 
-        self.progress.emit('stage_start', stage='1')
+        self.progress.emit('stage_start', stage='1', label='resolve')
         self.log(f'[stage 1] resolving type pairs '
                  f'{cfg.source_dataset} -> {cfg.target_dataset}')
         self.pairs = self.resolve_type_pairs()
@@ -5112,8 +5160,8 @@ class MappingValidator:
             self._write_outputs([], [], [], [], None, None, [], [], [])
             return self.run_dir
 
-        self.progress.emit('stage_done', stage='1')
-        self.progress.emit('stage_start', stage='2')
+        self.progress.emit('stage_done', stage='1', label='resolve')
+        self.progress.emit('stage_start', stage='2', label='scans')
         self.log(f'[stage 2] building target expanded-type vectors '
                  f'({cfg.target_dataset})')
         if not cfg.skip_profile_build:
@@ -5187,6 +5235,12 @@ class MappingValidator:
                     target_bids)
             self.log(f'    scans done in {time.time() - t0:.0f}s '
                      f'({len(scans)}/{len(pool)} valid)')
+            self.progress.emit('scan_progress', stage='2',
+                               source_type=src_type,
+                               done=n_type, total=len(by_src_type),
+                               sources=len(pool), scanned=len(scans),
+                               targets=len(target_bids),
+                               elapsed_s=round(time.time() - t0, 1))
             for pair in plist:
                 res = self.validate_pair(pair, scans, target_id2type,
                                          sizes=self._target_sizes,
@@ -5277,6 +5331,13 @@ class MappingValidator:
         self.annotate_invaders(all_sus_rows + all_deep_rows, all_fills,
                                per_pair_res, family_types=family_types)
 
+        # Stage '2' opens right after stage 1 and spans the target-vector
+        # build plus every per-source-type scan frame.  It used to close at
+        # `run_done`, so 25 minutes of work sat inside one opaque stage and
+        # cost could only be attributed from artifact mtimes; the blocks
+        # below each get their own timed stage now.
+        self.progress.emit('stage_done', stage='2', label='scans')
+
         # Revision 3.11 relatives: expand the type-mates of
         # hollow/unmapped candidate types (annotation-review targets --
         # the ranking never surfaced them, but their siblings are
@@ -5290,6 +5351,7 @@ class MappingValidator:
 
         morph_info = None
         if cfg.morph_enabled:
+            self.progress.emit('stage_start', stage='5', label='morphology')
             self.log('[stage 5] morphology verification + self-calibration')
             try:
                 morph_info = self.run_morphology(all_val_rows, all_sus_rows,
@@ -5302,6 +5364,7 @@ class MappingValidator:
                 self.log(traceback.format_exc())
                 morph_info = {'note': f'stage failed: {exc}'}
             self.log(f'    {morph_info}')
+            self.progress.emit('stage_done', stage='5', label='morphology')
 
         # Revision 3.12: compute the category partition + query-level
         # dedup AFTER morphology (qualification is now known).  This sets
@@ -5310,6 +5373,7 @@ class MappingValidator:
         dedup_rows: List[Dict] = []
         family_rows_out: List[Dict] = []
         relatives_out: List[Dict] = []
+        self.progress.emit('stage_start', stage='3', label='categories')
         try:
             dedup_rows = self.finalize_categories(
                 per_pair_res, all_sus_rows, all_deep_rows, all_fills,
@@ -5340,12 +5404,15 @@ class MappingValidator:
             import traceback
             self.log(f'[categories] failed: {exc}')
             self.log(traceback.format_exc())
+        self.progress.emit('stage_done', stage='3', label='categories')
 
         # Stage 5d: backward (target -> source) homolog evidence for the
         # candidates / family / relative bins.  ADVISORY — it labels rows and
         # rebuilds the dedup rollup; no category or counts_toward_* flag
         # changes, so the fill totals stay identical to a run without it.
         # FAIL-OPEN: an advisory layer must never kill a run.
+        self.progress.emit('stage_start', stage='5d',
+                           label='backward evidence')
         try:
             rebuilt = self._backward_expansion_pass()
             if rebuilt:
@@ -5355,6 +5422,8 @@ class MappingValidator:
             self.log(f'[stage 5d] backward evidence failed '
                      f'(advisory, skipped): {exc}')
             self.log(traceback.format_exc())
+        self.progress.emit('stage_done', stage='5d',
+                           label='backward evidence')
 
         # Revision 3.10: set-level coverage — the deliverable for
         # "how much of the source→target mapping is validated, proposed,
@@ -5362,6 +5431,8 @@ class MappingValidator:
         # AFTER finalize_categories so the fills it counts carry the final
         # category-qualified `counts_toward_gap_fill` (Rev 3.12).
         coverage = None
+        self.progress.emit('stage_start', stage='3b',
+                           label='coverage accounting')
         try:
             # P2/P4 accounting counters (advisory, additive): held /
             # evidence-only same-name fan-outs + multivalue cells.
@@ -5409,6 +5480,8 @@ class MappingValidator:
             import traceback
             self.log(f'[gap fill levels] failed: {exc}')
             self.log(traceback.format_exc())
+        self.progress.emit('stage_done', stage='3b',
+                           label='coverage accounting')
 
         # Plan I follow-up: out-map expansion — scan the unpaired source
         # neurons (the scene's out-map branch) for connectivity-ranked
@@ -5430,6 +5503,9 @@ class MappingValidator:
                 for b in (res.get('_pool_set') or []):
                     in_map.add(int(b))
                     pool_owner[int(b)] = key
+            self.progress.emit('stage_start', stage='expansion',
+                               label='out-map expansion',
+                               unclaimed_sources=n_out_map)
             try:
                 out_map_rows, cand_raw = self._expand_out_map_sources(
                     out_map_by_type, in_map, target_stats, target_bids,
@@ -5445,12 +5521,16 @@ class MappingValidator:
                 import traceback
                 self.log(f'[TMVEV] out-map expansion failed: {exc}')
                 self.log(traceback.format_exc())
+            self.progress.emit('stage_done', stage='expansion',
+                               label='out-map expansion',
+                               rows=len(out_map_rows))
 
         # The scene reads the expansion rows — expose them BEFORE stage 4.
         self._out_map_expansion_rows = out_map_rows
         self._out_map_by_type = out_map_by_type
 
         if cfg.visualize:
+            self.progress.emit('stage_start', stage='4', label='scenes')
             try:
                 from comparison.mapping_validation_visualize import \
                     render_pair_scenes
@@ -5459,9 +5539,11 @@ class MappingValidator:
                 import traceback
                 self.log(f'[stage 4] visualization failed: {exc}')
                 self.log(traceback.format_exc())
+            self.progress.emit('stage_done', stage='4', label='scenes')
 
         # Export contract (Rev 3.6/2c): source caliber travels with the
         # validation rows.
+        self.progress.emit('stage_start', stage='6', label='report')
         for r in all_val_rows:
             r['source_size'] = (self._source_sizes or {}).get(
                 int(r['source_bodyId']))
@@ -5473,10 +5555,7 @@ class MappingValidator:
                             family_rows=family_rows_out,
                             gap_levels=gap_levels,
                             out_map_rows=out_map_rows)
-        # stage '2' opens right after stage 1 and spans every scan through
-        # the exports; without this close the Log-tab timeline carries a
-        # stage that never ends (found on the r13 real-data run)
-        self.progress.emit('stage_done', stage='2')
+        self.progress.emit('stage_done', stage='6', label='report')
         self.progress.emit('run_done',
                            run_dir=str(self.run_dir),
                            elapsed_s=round(time.time() - t_start, 1))

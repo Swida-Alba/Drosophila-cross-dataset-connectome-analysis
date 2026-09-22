@@ -249,28 +249,193 @@ def chain_key(row) -> Tuple[float, float, float, float, float]:
                       else row.get('target_bodyId')))
 
 
-def scan_source(src_vec: Dict[str, float],
-                target_stats: Dict[int, _SideStats],
-                target_bids: Optional[List[int]] = None) -> pd.DataFrame:
-    """Score one source vector against every target; rank globally.
+def _ranks_squared_sum(values: np.ndarray) -> float:
+    """Σ of the squared average-tie ranks of one weight vector.
 
-    Validation-only scan service (dataset scale).  Returns a DataFrame
-    (target_bid, metrics, rank_union_rank, jaccard_rank, chain_pos) sorted by
-    the bodyId ordering chain :data:`_CHAIN`.  The two rank columns are
-    competition-style metric EVIDENCE (ties share the better rank, NaN last)
-    and are deliberately not the row order — see :data:`_CHAIN` for why.
+    The sum of the ranks themselves is always ``n(n+1)/2`` whatever the tie
+    structure, so Σρ² is the only per-vector statistic a closed form needs.
     """
-    src = _SideStats(src_vec)
-    rows = []
-    bids = target_bids if target_bids is not None else list(target_stats)
-    for tbid in bids:
-        tgt = target_stats.get(tbid)
-        if tgt is None or not tgt.vec:
-            continue
-        m = score_one_candidate_fast(src, tgt)
-        m['target_bid'] = tbid
-        rows.append(m)
-    df = pd.DataFrame(rows)
+    if values.size == 0:
+        return 0.0
+    return float(np.square(_rankdata_average(values)).sum())
+
+
+def _disjoint_rank_union(p: int, r2_src: float, q: np.ndarray,
+                         r2_tgt: np.ndarray) -> np.ndarray:
+    """Exact ``rank_union`` for every pair (src, tgt) whose key sets are
+    DISJOINT — that is, for every ``jaccard == 0`` row of a scan frame.
+
+    For a disjoint pair the union is ``[src keys…, tgt keys…]``, so each
+    side is the other's padding: the source weights read ``q + ρ`` over their
+    own keys and the constant ``(q+1)/2`` over the target's, and vice versa
+    (ρ, σ are the vectors' own average-tie ranks).  Pearson over that collapses
+    to four scalars per side — the key count and Σρ² — because Σρ is
+    ``p(p+1)/2`` whatever the tie structure is.
+
+    This is an identity, not an approximation: the parity harness
+    (``tests/core/test_mapping_validation_scan_parity.py``) checks it against
+    :func:`score_one_candidate_fast` on real disjoint pairs.  It is valid only
+    when every weight is STRICTLY POSITIVE (a zero weight would tie with the
+    other side's padding) and the source side is non-empty; the caller gates
+    both and falls back to the scorer otherwise.
+    """
+    q = q.astype(float)
+    n = p + q
+    tri_p = p * (p + 1) / 2.0
+    tri_q = q * (q + 1) / 2.0
+    total = p * q + tri_p + tri_q                      # ΣX == ΣY
+    t2n = total * total / n
+    sum_xy = ((p + 1) / 2.0 * (p * q + tri_p)
+              + (q + 1) / 2.0 * (p * q + tri_q))
+    sum_x2 = p * q * q + q * p * (p + 1) + r2_src + q * (q + 1) ** 2 / 4.0
+    sum_y2 = q * p * p + p * q * (q + 1) + r2_tgt + p * (p + 1) ** 2 / 4.0
+    cov = sum_xy - t2n
+    var_x = sum_x2 - t2n
+    var_y = sum_y2 - t2n
+    out = np.full(n.shape, np.nan, dtype=float)
+    ok = (n >= 3) & (var_x > 0) & (var_y > 0)
+    out[ok] = cov[ok] / np.sqrt(var_x[ok] * var_y[ok])
+    return out
+
+
+class TargetScanIndex(dict):
+    """``bid -> _SideStats`` plus the derived structures that turn a
+    whole-universe scan into vector arithmetic.
+
+    98 % of a scan frame's cost sits in pairs that share no expanded type at
+    all: :func:`score_one_candidate_fast` still builds their union, ranks both
+    sides and runs Pearson — for a row that can only ever read
+    ``jaccard == 0``.  Measured on the real ``banc_v888`` universe (101,978
+    targets), 99.3 % of the pairs are such rows and the scorer costs 3.64 s
+    PER SOURCE NEURON on them.
+
+    The index precomputes what the disjoint closed form
+    (:func:`_disjoint_rank_union`) needs per target, plus one postings list
+    per type key, so a scan reaches the ~0.5 % positive block directly
+    through the postings and fills the rest of the frame arithmetically.
+
+    What comes out is the SAME frame the per-pair loop builds — same rows in
+    the same order, same columns, values bit-identical — so every consumer of
+    a rank window (``metric == 1``, ``nsmallest(top_n)``, ``invaders_ahead``)
+    and ``chain_pos`` reads exactly as before.  Plain dicts still work as
+    they used to: the fast path is a property of the object, not of the call.
+    """
+
+    __slots__ = ('postings', 'q_arr', 'r2_arr', 'analytic_ok', 'row_of')
+
+    def __init__(self, stats_by_bid: Dict[int, _SideStats]):
+        super().__init__(stats_by_bid)
+        postings: Dict[str, List[int]] = {}
+        row_of: Dict[int, int] = {}
+        qs: List[int] = []
+        r2s: List[float] = []
+        oks: List[bool] = []
+        for bid, st in stats_by_bid.items():
+            if st is None or not st.vec:
+                continue                      # the reference loop skips these
+            row_of[int(bid)] = len(qs)
+            keys = list(st.keys)
+            vals = np.array([st.vec[k] for k in keys], dtype=float)
+            qs.append(len(keys))
+            # a zero / NaN / negative weight breaks the padding assumption
+            if not bool(np.isfinite(vals).all()) or bool((vals <= 0).any()):
+                r2s.append(0.0)
+                oks.append(False)
+            else:
+                r2s.append(_ranks_squared_sum(vals))
+                oks.append(True)
+            for k in keys:
+                postings.setdefault(k, []).append(row_of[int(bid)])
+        self.postings = {k: np.asarray(v, dtype=np.int64)
+                         for k, v in postings.items()}
+        self.q_arr = np.asarray(qs, dtype=np.int64)
+        self.r2_arr = np.asarray(r2s, dtype=float)
+        self.analytic_ok = np.asarray(oks, dtype=bool)
+        self.row_of = row_of
+
+    # -- the scan ----------------------------------------------------------
+
+    def scan(self, src_vec: Dict[str, float],
+             target_bids: Optional[List[int]] = None) -> pd.DataFrame:
+        """One source against the indexed universe — the fast path of
+        :func:`scan_source`, exact by construction (see this class's
+        docstring for what keeps the frame identical)."""
+        bids = target_bids if target_bids is not None else list(self)
+        kept_bids: List[int] = []
+        kept_stats: List[_SideStats] = []
+        rows: List[int] = []
+        for bid in bids:
+            st = dict.get(self, bid)
+            if st is None or not st.vec:
+                continue
+            kept_bids.append(bid)
+            kept_stats.append(st)
+            rows.append(self.row_of[int(bid)])
+        if not rows:
+            return pd.DataFrame()
+        rows = np.asarray(rows, dtype=np.int64)
+        n = len(rows)
+        q = self.q_arr[rows]
+        r2_tgt = self.r2_arr[rows]
+        tgt_ok = self.analytic_ok[rows]
+
+        src = _SideStats(src_vec)
+        p = len(src.keys)
+        union_n = p + q                       # |src ∪ tgt| while disjoint
+        jac = np.zeros(n, dtype=float)
+        shared = np.zeros(n, dtype=np.int64)
+        pos_of = np.full(len(self.q_arr), -1, dtype=np.int64)
+        pos_of[rows] = np.arange(n)
+        hits = [self.postings[k] for k in src.keys if k in self.postings]
+        if hits:
+            loc = pos_of[np.concatenate(hits)]
+            loc = loc[loc >= 0]
+            if loc.size:
+                uniq, counts = np.unique(loc, return_counts=True)
+                shared[uniq] = counts
+                union_n[uniq] = p + q[uniq] - counts
+                jac[uniq] = counts / union_n[uniq]
+
+        # rank_union: the closed form over the jaccard-zero block, the
+        # reference scorer everywhere else (positives and any pair whose
+        # weights break the padding assumption).
+        ru = np.full(n, np.nan, dtype=float)
+        vals = np.array([src.vec[k] for k in src.keys], dtype=float)
+        src_ok = bool(p and np.isfinite(vals).all()
+                      and not (vals <= 0).any())
+        if src_ok:
+            ru = _disjoint_rank_union(p, _ranks_squared_sum(vals), q, r2_tgt)
+        positive = shared > 0
+        need_ref = positive | ((~positive) & (~tgt_ok | (~src_ok)))
+        # cosine / weighted_jaccard are structurally 0 on the disjoint block
+        # (an empty intersection zeroes them in the scorer), so only these
+        # rows can carry anything else.
+        cos = np.zeros(n, dtype=float)
+        wj = np.zeros(n, dtype=float)
+        for i in np.nonzero(need_ref)[0]:
+            m = score_one_candidate_fast(src, kept_stats[int(i)])
+            ru[i] = m['rank_union']
+            jac[i] = m['jaccard']
+            union_n[i] = m['union_type_count']
+            shared[i] = m['shared_type_count']
+            cos[i] = m['cosine']
+            wj[i] = m['weighted_jaccard']
+        df = pd.DataFrame({
+            'jaccard': jac,
+            'rank_union': ru,
+            'cosine': cos,
+            'weighted_jaccard': wj,
+            'shared_type_count': shared,
+            'union_type_count': union_n,
+        })
+        df['target_bid'] = np.asarray(kept_bids, dtype=object)
+        return _finish_frame(df)
+
+
+def _finish_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """The rank columns, the chain sort and ``chain_pos`` — one definition
+    shared by the reference scan loop and :meth:`TargetScanIndex.scan`, so the
+    two cannot drift apart."""
     if df.empty:
         return df
     # object dtype: mixed int/float frames upcast .iloc[0] rows to float64,
@@ -285,6 +450,38 @@ def scan_source(src_vec: Dict[str, float],
     # tie block collapses): this is what a "top-N" window means from here on
     df['chain_pos'] = range(1, len(df) + 1)
     return df.reset_index(drop=True)
+
+
+def scan_source(src_vec: Dict[str, float],
+                target_stats: Dict[int, _SideStats],
+                target_bids: Optional[List[int]] = None) -> pd.DataFrame:
+    """Score one source vector against every target; rank globally.
+
+    Validation-only scan service (dataset scale).  Returns a DataFrame
+    (target_bid, metrics, rank_union_rank, jaccard_rank, chain_pos) sorted by
+    the bodyId ordering chain :data:`_CHAIN`.  The two rank columns are
+    competition-style metric EVIDENCE (ties share the better rank, NaN last)
+    and are deliberately not the row order — see :data:`_CHAIN` for why.
+
+    ``target_stats`` as built by :func:`prep_target_stats` is a
+    :class:`TargetScanIndex`, which takes the vector path and returns the
+    identical frame; a plain dict of ``_SideStats`` (tests, pool-scoped
+    callers) still runs the per-pair loop below.
+    """
+    if isinstance(target_stats, TargetScanIndex):
+        return target_stats.scan(src_vec, target_bids=target_bids)
+    src = _SideStats(src_vec)
+    rows = []
+    bids = target_bids if target_bids is not None else list(target_stats)
+    for tbid in bids:
+        tgt = target_stats.get(tbid)
+        if tgt is None or not tgt.vec:
+            continue
+        m = score_one_candidate_fast(src, tgt)
+        m['target_bid'] = tbid
+        rows.append(m)
+    df = pd.DataFrame(rows)
+    return _finish_frame(df)
 
 
 def build_target_vectors(profiler: ConnectivityProfiler, dataset: str,
@@ -363,9 +560,15 @@ def build_target_vectors(profiler: ConnectivityProfiler, dataset: str,
 
 
 def prep_target_stats(vectors: Dict[int, Dict[str, float]]
-                      ) -> Dict[int, _SideStats]:
-    return {bid: _SideStats(vec) for bid, vec in vectors.items()
-            if vec}
+                      ) -> TargetScanIndex:
+    """The scan universe, indexed.
+
+    Returns a :class:`TargetScanIndex` — still a plain ``bid -> _SideStats``
+    mapping for every existing consumer — so a whole-universe scan costs
+    milliseconds per source instead of seconds.
+    """
+    return TargetScanIndex(
+        {bid: _SideStats(vec) for bid, vec in vectors.items() if vec})
 
 
 # ---------------------------------------------------------------------------

@@ -3047,14 +3047,15 @@ def _log_tab(d: Dict) -> str:
     pl = ' · '.join(f'{_esc(k)}={_esc(params[k])}'
                     for k in order if k in params)
     timeline: List[str] = []
-    stage_open: Dict[str, str] = {}
+    stage_open: Dict[str, Tuple[str, str]] = {}
     for p in d['progress']:
         ev = p.get('event')
         if ev == 'stage_start':
-            stage_open[str(p.get('stage'))] = str(p.get('ts', ''))
+            stage_open[str(p.get('stage'))] = (str(p.get('ts', '')),
+                                               str(p.get('label') or ''))
         elif ev == 'stage_done':
             st = str(p.get('stage'))
-            t0 = stage_open.pop(st, None)
+            t0, label = stage_open.pop(st, ('', ''))
             dur = ''
             if t0:
                 try:
@@ -3063,7 +3064,13 @@ def _log_tab(d: Dict) -> str:
                     dur = f' ({dt:.0f} s)'
                 except (ValueError, TypeError):
                     pass
-            timeline.append(f'stage {st}{dur}')
+            timeline.append(f'stage {st} {label}'.strip() + dur)
+        elif ev == 'scan_progress' and 'done' in p:
+            timeline.append(
+                f"scan {p.get('done')}/{p.get('total', '?')} "
+                f"{p.get('source_type', '')} "
+                f"({p.get('scanned', 0)}/{p.get('sources', 0)} sources, "
+                f"{p.get('elapsed_s', 0):.0f} s)")
         elif ev == 'profiles_progress' and 'universe' in p:
             timeline.append(
                 f"profiles pre-flight universe {p.get('universe', 0):,} "

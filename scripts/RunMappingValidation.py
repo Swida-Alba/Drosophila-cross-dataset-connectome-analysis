@@ -165,6 +165,14 @@ def parse_args(argv=None):
     p.add_argument('--no-morphology', action='store_true',
                    help='skip stage 5 (morphology verification)')
     p.add_argument('--morph-auc-floor', type=float, default=0.65)
+    p.add_argument('--skeleton-fetch-workers', type=int, default=8,
+                   help='threads the stage-5 skeleton pre-flight fetches '
+                        'with (default 8; this is the run\'s only '
+                        'network-bound block)')
+    p.add_argument('--skeleton-fetch-timeout', type=int, default=120,
+                   help='seconds of socket inactivity a skeleton request '
+                        'may idle before it is counted as failed '
+                        '(0 = no bound)')
     p.add_argument('--no-visualize', action='store_true',
                    help='skip stage 4 (pair scenes)')
     p.add_argument('--max-scenes', type=int, default=0,
@@ -225,6 +233,8 @@ def main(argv=None):
         scene_selfcheck=args.scene_selfcheck,
         morph_enabled=not args.no_morphology,
         morph_auc_floor=args.morph_auc_floor,
+        skeleton_fetch_workers=args.skeleton_fetch_workers,
+        skeleton_fetch_timeout_s=args.skeleton_fetch_timeout,
         visualize=not args.no_visualize,
         max_scenes=args.max_scenes,
         neuron_alpha=args.neuron_alpha,

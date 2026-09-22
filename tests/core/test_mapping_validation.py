@@ -933,7 +933,7 @@ def test_skeleton_preflight_is_cache_first_bounded_and_fails_open(monkeypatch,
     import types
     from comparison import mapping_validation as mv
 
-    fetched = []
+    fetched, calls = [], []
 
     class _Cache:
         def find_skeleton_file(self, bid):
@@ -942,13 +942,16 @@ def test_skeleton_preflight_is_cache_first_bounded_and_fails_open(monkeypatch,
                 return None
             return tmp_path / f'{bid}.swc.zst'
 
-    def _fetch(dataset, bid):
-        fetched.append(int(bid))
-        return None if int(bid) == 13 else object()
+    def _batch(dataset, body_ids, **kw):
+        ids = [int(b) for b in body_ids]
+        calls.append(dict(kw, ids=ids))
+        fetched.extend(ids)
+        # 13 is the one the endpoint cannot serve
+        return {b: object() for b in ids if b != 13}
 
     fake = types.ModuleType('morphology')
     fake.find_similar_raw_cache = lambda dataset, **kw: _Cache()
-    fake.fetch_skeleton_on_demand = _fetch
+    fake.fetch_skeletons_on_demand_batch = _batch
     monkeypatch.setitem(sys.modules, 'morphology', fake)
 
     v = mv.MappingValidator.__new__(mv.MappingValidator)
@@ -962,10 +965,19 @@ def test_skeleton_preflight_is_cache_first_bounded_and_fails_open(monkeypatch,
     assert stats['requested'] == 4 and stats['cached'] == 1
     assert stats['fetched'] == 2 and stats['failed'] == 1
     assert sorted(fetched) == [11, 12, 13]
+    # the fetch is the SHARED BATCHER on threads, not one request per neuron
+    # (measured 3.0 s/skeleton serial, 1,401 s for 467 on banc_v888)
+    assert calls and calls[0]['persist']
+    assert calls[0]['max_threads'] == 3          # never more workers than work
 
     # FAFB targets resolve through the healed-zip path, never this cache
     assert v._preflight_target_skeletons('flywire_FAFB_v783', [11])['fetched'] == 0
     assert sorted(fetched) == [11, 12, 13]
+
+    # the shipped default is 8-wide once there is enough work to spread
+    monkeypatch.setattr(mv, 'MORPH_SKELETON_PREFLIGHT_CAP', 100)
+    v._preflight_target_skeletons('dsB', list(range(200, 220)))
+    assert calls[-1]['max_threads'] == 8
 
     # a bounded fetch says what it left unscored instead of scoring less
     monkeypatch.setattr(mv, 'MORPH_SKELETON_PREFLIGHT_CAP', 2)
