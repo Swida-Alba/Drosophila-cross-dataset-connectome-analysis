@@ -1181,9 +1181,11 @@ TOOL_GUIDE_SPECS = {
                             "browser export. Re-export from the main page."},
             {"pattern": "visualization_manifest.json",
              "description": "Machine-readable record of the run: dataset, "
-                            "canonical viewer page, degraded pages, the frozen "
-                            "3D ranges, profile levels, and per-view cameras. "
-                            "The re-exporter reads its cameras from here."},
+                            "canonical viewer page, legend mode, freeze "
+                            "state, render settings, profile levels, and "
+                            "per-view cameras. The re-exporter reads its "
+                            "cameras from here and re-checks the recorded "
+                            "trace roles against the page."},
             {"pattern": "individual_profiles/*",
              "description": "One PNG per profile group (per legend entry, "
                             "layer, type, or bodyId leaf, per Profile "

@@ -1,5 +1,10 @@
 # VisualizeSkeleton Performance Optimizations (November 2024)
 
+> **Historical record (November 2024).** `VisualizeSkeleton` has since moved out
+> of `src/coana.py` into `src/visualize_skeleton.py`, so the
+> `from coana import VisualizeSkeleton` snippets below no longer run. For
+> current behavior and options see [3D_Skeleton_Guide.md](3D_Skeleton_Guide.md).
+
 ## Summary
 
 Comprehensive performance and efficiency optimizations for the VisualizeSkeleton class, focusing on speed, memory usage, and file size reduction.

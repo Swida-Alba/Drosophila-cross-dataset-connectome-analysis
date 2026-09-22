@@ -783,7 +783,7 @@ def _visualize(
         skip_synapse=True,
         show_connectors=False,
         mesh_roi=[],
-        brain_mesh="template",
+        brain_mesh="native",
         brain_mesh_color="rgba(170, 205, 220, 0.08)",
         show_fig=False,
         export_views=False,

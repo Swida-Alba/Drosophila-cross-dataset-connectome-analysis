@@ -1,10 +1,9 @@
-"""Brain-mesh selection rename + cross-template outline specs.
+"""Brain-mesh selection vocabulary + cross-template outline specs.
 
-The Skeleton tab's Brain Mesh selection was renamed from
-template/whole to native/banc/fafb/mcns/none: 'native' keeps the
-per-dataset outline, the explicit selections draw that template's
-outline bridged into the scene's render space (outline only — the
-scene's skeletons never move).
+The Skeleton tab's Brain Mesh selection is ``native``/``BANC``/``FAFB``/
+``male-cns``/``none`` and nothing else: 'native' keeps the per-dataset
+outline, the explicit selections draw that template's outline bridged into
+the scene's render space (outline only -- the scene's skeletons never move).
 """
 import trimesh
 import navis
@@ -28,13 +27,26 @@ def _make_visualizer(dataset='male-cns:v1.0'):
 
 
 class TestNormalizeBrainMesh:
-    def test_legacy_tokens_map_to_new(self):
-        assert normalize_brain_mesh('template') == 'native'
-        assert normalize_brain_mesh('whole') == 'FAFB'
-        assert normalize_brain_mesh('mcns') == 'male-cns'
-        # Un-capitalized spellings of the renamed options fold up.
+    """Normalization only restores capitals; it does not translate tokens.
+
+    The pre-rename spellings ('template', 'whole', 'mcns') were folded onto
+    the current options for a while, and are now retired: each has to fail
+    validation loudly instead of silently drawing a different outline than
+    the caller named.
+    """
+
+    def test_capitalized_options_are_restored_from_lowercase(self):
         assert normalize_brain_mesh('fafb') == 'FAFB'
         assert normalize_brain_mesh('banc') == 'BANC'
+
+    def test_retired_tokens_are_returned_unchanged_so_validation_rejects(
+            self):
+        # ``brain_mesh not in BRAIN_MESH_SELECTIONS`` is the validator's own
+        # predicate, so this is the rejection -- not a reimplemented one.
+        for token in ('template', 'whole', 'mcns', 'WHOLE'):
+            folded = normalize_brain_mesh(token)
+            assert folded == token.strip().lower()
+            assert folded not in BRAIN_MESH_SELECTIONS
 
     def test_current_tokens_pass_through(self):
         for token in BRAIN_MESH_SELECTIONS:
@@ -42,7 +54,6 @@ class TestNormalizeBrainMesh:
 
     def test_case_and_whitespace(self):
         assert normalize_brain_mesh('  Native ') == 'native'
-        assert normalize_brain_mesh('WHOLE') == 'FAFB'
         assert normalize_brain_mesh('FaFb') == 'FAFB'
         assert normalize_brain_mesh('BANC') == 'BANC'
 

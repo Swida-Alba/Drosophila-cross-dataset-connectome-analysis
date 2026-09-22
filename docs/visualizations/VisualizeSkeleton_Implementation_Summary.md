@@ -1,8 +1,13 @@
 # VisualizeSkeleton Enhancements - Implementation Summary
 
+> **Historical record (November 2024).** `VisualizeSkeleton` has since moved out
+> of `src/coana.py` into `src/visualize_skeleton.py`, so the
+> `from coana import VisualizeSkeleton` snippets below no longer run. For
+> current behavior and options see [3D_Skeleton_Guide.md](3D_Skeleton_Guide.md).
+
 **Date:** November 20, 2024  
 **Version:** v3.1  
-**Component:** `VisualizeSkeleton` class in `src/coana.py`
+**Component:** `VisualizeSkeleton` class in `src/visualize_skeleton.py` (then `src/coana.py`)
 
 ## Overview
 

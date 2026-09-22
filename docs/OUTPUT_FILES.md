@@ -252,7 +252,7 @@ Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined
     holds the paired inter-layer connections (`viz_layer` like `0->1`); in
     pre/post-site mode (`synapse_mode=pre_post`) it instead holds the per-site
     rows (`viz_layer` like `0:pre` / `0:post`) rendered by that mode.
-*   **`parameters.txt`**: Visualization parameters (colors, alphas, modes, backend, etc.), including the `Legend Mode`, `Freeze View`, `Viewer Page`, `Run Manifest` and `Profile Levels` lines
+*   **`parameters.txt`**: Visualization parameters (colors, alphas, modes, backend, etc.), including the `Legend Mode`, `Freeze View`, `Viewer Page`, `Run Manifest` and `Profile Levels` lines. On a `male-cns`/`banc` run whose viewer page embeds a template half the mesh checkboxes did not ask for, a `[Context Meshes Embedded But Hidden]` block is appended once the HTML exists — the parameter block above it is written during initialization, before any trace does, so it cannot name them.
 *   **`user_warning_notes.txt`**: Notes/warnings collected during rendering
 *   When `export_views=True` (or a view list) or `export_video=True` is requested, PNG screenshots and/or videos/GIFs are written into the same folder.
 

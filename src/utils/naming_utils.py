@@ -172,23 +172,20 @@ def dataset_abbrev(dataset) -> str:
 # its outline; 'none' hides the outline.
 BRAIN_MESH_OPTIONS = ["native", "BANC", "FAFB", "male-cns", "none"]
 
-# Selections persisted by older builds ('template'/'whole', and the
-# un-capitalized 'banc'/'fafb'/'mcns' spellings) fold onto the renamed
-# options ('whole' previously targeted JRC2018F; that scene-transform mode
-# was retired and the token now selects the FAFB outline).
-_BRAIN_MESH_LEGACY = {
-    "template": "native",
-    "whole": "FAFB",
+# Case restoration for the two capitalized options: they are lowercase words
+# in most inputs (a CLI flag, a saved setting, a hand-typed value) and the
+# option list is exact-match. The retired 'template'/'whole'/'mcns' spellings
+# are deliberately absent -- they now fail validation like any unknown token.
+_BRAIN_MESH_CASE_FOLDS = {
     "fafb": "FAFB",
     "banc": "BANC",
-    "mcns": "male-cns",
 }
 
 
 def normalize_brain_mesh_choice(value) -> str:
-    """Normalize a stored/entered brain-mesh choice to a current option."""
+    """Lowercase a brain-mesh choice and restore the capitalized spellings."""
     v = str(value or "").strip().lower()
-    return _BRAIN_MESH_LEGACY.get(v, v)
+    return _BRAIN_MESH_CASE_FOLDS.get(v, v)
 
 
 _HEMI_SUFFIXES = ('_L', '_R', '_U')

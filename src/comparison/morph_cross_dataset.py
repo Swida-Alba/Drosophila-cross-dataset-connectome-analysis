@@ -2179,7 +2179,7 @@ class CrossDatasetMorphComparer:
             'skip_synapse': True,
             'skeleton_mode': 'line',
             'legend_mode': 'tree',
-            'brain_mesh': 'template',
+            'brain_mesh': 'native',
             'export_views': False,
             'show_fig': False,
             # Unified cache-first behavior: render reference layers from

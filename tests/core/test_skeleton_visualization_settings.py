@@ -32,7 +32,7 @@ def test_homolog_visualization_settings_override_renderer_defaults():
         },
     )
     options = finder._homolog_visualizer_kwargs(
-        {"brain_mesh": "template", "show_fig": False},
+        {"brain_mesh": "FAFB", "show_fig": False},
         dataset="test:v1",
         neuron_layers=["A"],
     )

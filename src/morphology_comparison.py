@@ -884,7 +884,7 @@ class MorphologyProfileComparer:
             # representation, like Find Similar.
             "skeleton_mode": settings.get("skeleton_mode", "line"),
             "legend_mode": "tree",
-            "brain_mesh": "template",
+            "brain_mesh": "native",
             "export_views": False,
             "show_fig": False,
             "cache_neurons": (

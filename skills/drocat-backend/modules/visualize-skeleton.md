@@ -19,7 +19,7 @@ vs = VisualizeSkeleton(
     output_dir="/abs/output/skeleton",
     output_format="csv",                # merged synapse export: "csv" | "xlsx"
     skeleton_mode="line",               # "line" | "tube" (start with line)
-    brain_mesh="native",                # "native" | "BANC" | "FAFB" | "male-cns" | "none" ("template" is a legacy alias for "native")
+    brain_mesh="native",                # "native" | "BANC" | "FAFB" | "male-cns" | "none" (all five are the whole vocabulary; pre-rename 'template'/'whole' are rejected)
     vnc_mesh=None,
     legend_mode="layer",                # "single" | "type" | "tree" | "layer"
     freeze_view=True,                   # viewer pages pin the 3D framing on legend toggles
@@ -58,7 +58,7 @@ vs = VisualizeSkeleton(
 | `plot_neurons()` | Build the interactive HTML (main entry). |
 | `plot_individuals(pdf_images_per_page=(3,2), views=["front"], summary_format=["pdf"], granularity="legend", neuron_alpha=None)` | Profile export, one profile per `granularity` level: `"legend"` \| `"layer"` \| `"type"` \| `"body"` (bodyId leaf). Companion soma meshes and pre/post sites follow their owner; meshes, synapse markers and legend swatches are background. `views` are the lowercase camera names (`front` / `back` / `top` / `bottom` / `left` / `right`; `all` expands to the scene's table); capped at `MAX_INDIVIDUAL_PROFILES` (300) renders = groups × views, over which it renders the leading groups that fit and logs the skipped ones. |
 | `export_video(fps=30, degree_per_frame=1.0, rotate="horizontal", export_gif=True, gif_scale=0.2, html_file=None, ...)` | Rotating video/GIF export; `html_file` re-exports a stored page. |
-| `visualization_manifest()` / `write_visualization_manifest()` | Describe the scene for later re-export (`visualization_manifest.json` in the run folder: `canonical_page`, `degraded_pages`, `legend_mode`, `freeze_view`, `frozen_ranges`, render settings, `views` cameras, per-trace role table). |
+| `visualization_manifest()` / `write_visualization_manifest()` | Describe the scene for later re-export (`visualization_manifest.json` in the run folder: `canonical_page`, `legend_mode`, `freeze_view`, render settings, `views` cameras, and a per-trace role table the re-exporter re-reads as an HTML round-trip check). |
 | `list_available_rois(refresh=False, fetch_online=True)` | List available ROI meshes for the dataset. |
 
 ```python
@@ -94,6 +94,11 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
 - `read_visualization_manifest(path)` — the run's `visualization_manifest.json`
   as a dict, or `{}` for a run written before the manifest existed (page, folder
   or manifest path all accepted).
+- `manifest_role_drift(manifest, roles)` — advisory one-liner when a page
+  classifies as different roles than the manifest's `traces` table recorded,
+  i.e. its `drocatTrace` stamps did not survive the HTML round trip. `None` when
+  the run recorded no table or the two tallies agree;
+  `export_individuals_from_html()` prints it and exports anyway.
 - `resolve_viewer_page(path)` — the canonical viewer page of a run folder or
   page; a `_simplified.html` copy is resolved back to the canonical page
   (`visualization_manifest.json` → `canonical_page`, else the first
@@ -155,14 +160,58 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
 - `legend_mode="tree"` renders like `"type"` for static exports and adds the
   collapsible group/type/bodyId panel to the permanent HTML pages only; counts
   are unique neuron items, not Plotly traces.
+- `brain_mesh`/`vnc_mesh` choose what a page opens *showing*, not what it
+  contains. On `male-cns` and `banc` — whose native template is one volume
+  split at the neck — whatever the two boxes leave unshown is still embedded,
+  hidden (`_embed_unshown_context_mesh` → `_embed_context_mesh`): a
+  `brain_mesh='none'` run embeds both halves, a `none` + `vnc_mesh=True` run
+  embeds the brain. Decimated to
+  `CONTEXT_MESH_EMBEDDED_TARGET_FACES` (20,000 faces; measured halves: native
+  VNC 36,670 faces / 0.871 MB of page → 20,001 / 0.471 MB, BANC VNC
+  38,200 → 19,999 / 0.481 MB), and absent from `exportable_meshes` so it never
+  reaches the GLB/OBJ. It uses `visible=False`, not `'legendonly'`, because the
+  tree reads legendonly as shown. Only these two datasets have a second half;
+  FAFB, hemibrain, optic-lobe and MANC embed nothing extra (verified on a real
+  FAFB page: 11 traces, one shown envelope, no second box). A cross-template
+  scene never falls back to the native split — wrong coordinates.
+  `_is_unshown_context_mesh` is the
+  single predicate for "present but not shown"; it keeps such a mesh out of
+  the frozen box, the profile-plan background list, and the tree's restore
+  baseline. `_note_hidden_context_meshes` appends the names to
+  `parameters.txt` after the page is written — the parameter block itself is
+  composed during initialization, before any trace exists.
 - `freeze_view=True` pins the permanent viewer pages' scene axes to the padded
   extents of every trace (hidden ones included, span/32 per axis) so legend and
-  tree toggles cannot rescale the scene; a Freeze/Fit button and the `F` key
-  hand autoscaling back. The pin is injected page JS that exits early under
-  `navigator.webdriver`, so PNG/video/profile exports are unaffected. Because
-  Plotly itself autoranges over visible traces only, a scene with a far-away
-  hidden layer opens slightly wider than before — `freeze_view=False` restores
-  the old framing exactly.
+  tree toggles cannot rescale the scene, and pins `aspectmode='manual'` at the
+  ratio those ranges imply — `aspectmode='data'` recomputes the x:y:z box from
+  the visible traces on every redraw, so ranges alone let one hidden mesh change
+  the anatomy's shape. A relayout/restyle listener re-applies the pin after the
+  page's
+  reset-camera button or a double-click, which restore the pre-script layout
+  snapshot and silently drop it; Plotly's second reset button is removed from
+  the toolbar (`VIEWER_MODEBAR_BUTTONS_TO_REMOVE`, keyed by Plotly's
+  button-registry name `resetCameraDefault3d`, not the rendered `data-attr`). A
+  second ⌖ control (and the
+  `C` key) moves `scene.camera.center` onto the visible traces, because a frozen
+  box keeps its pivot at the centre of the whole scene; it is inert in fit mode,
+  and Fit itself clears that center (the offset is normalized to the pinned box)
+  while re-freezing restores it unless the user panned.
+  A Freeze/Fit button and the `F` key
+  hand autoscaling back. All three floating controls -- those two and the
+  light/dark switch -- show a hover hint naming the key and the current state,
+  drawn from `data-drocat-tip` by page CSS rather than a native `title`; the
+  switch's copy names the theme the click selects ("Switch to the dark theme
+  (T)") and is drawn to its left, since that button owns the top-right corner. The pin is injected page JS that exits early under
+  `navigator.webdriver`, so PNG/video/profile exports keep autoscaling and draw
+  the same content (measured against the pre-feature generator on one male-cns
+  scene: same 3 layer profiles and 2 views, 0.067% of pixels different, every
+  one of them within 4 px of pre-existing ink — a hidden 29th trace nudges the
+  alpha compositing at edges, and two runs of the same generator are
+  byte-identical). An
+  embedded context mesh neither widens the first frame nor gets clipped: the
+  page bakes a second, wider box (`freeze_reveal`) and switches to it while any
+  of its trace indices is visible, which is why the listener also handles
+  `plotly_restyle` — a tree eye is a restyle, and relayout-only missed it.
 - `synapse_size` accepts `"real"` or a numeric value; uniform sizing uses the
   `uniform_synapse_size` bool. Invalid/empty values fall back to `"real"`.
 - `cache_neurons`/`cache_synapses` persist raw skeletons/synapses, reused by the

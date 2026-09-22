@@ -119,7 +119,7 @@ the metadata and connection tables from the public release bucket.
 If you downloaded the `sk_lod1_783_healed.zip` file for FAFB, you can visualize 3D skeletons.
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 vs = VisualizeSkeleton(
     dataset='flywire_FAFB_v783',

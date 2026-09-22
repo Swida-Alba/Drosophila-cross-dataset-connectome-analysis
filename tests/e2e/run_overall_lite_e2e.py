@@ -251,7 +251,7 @@ def skeleton_specs() -> list:
         "custom_layer_names": [],
         "output_dir": out("skeleton_3layer"),
         "skeleton_mode": "tube",
-        "brain_mesh": "template",
+        "brain_mesh": "native",
         "vnc_mesh": False,
         "legend_mode": "type",
         "neuron_alpha": 0.3,

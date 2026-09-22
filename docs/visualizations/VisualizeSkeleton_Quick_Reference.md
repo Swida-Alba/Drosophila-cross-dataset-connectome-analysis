@@ -1,5 +1,10 @@
 # VisualizeSkeleton Quick Reference Card
 
+> **Historical record (November 2024).** `VisualizeSkeleton` has since moved out
+> of `src/coana.py` into `src/visualize_skeleton.py`, so the
+> `from coana import VisualizeSkeleton` snippet below no longer runs. For
+> current behavior and options see [3D_Skeleton_Guide.md](3D_Skeleton_Guide.md).
+
 ## New Features (November 2024)
 
 ### 1. Multi-Dataset Support

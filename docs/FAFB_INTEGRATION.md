@@ -122,7 +122,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 vs = VisualizeSkeleton(
     dataset='flywire_FAFB_v783',
@@ -135,7 +135,7 @@ vs = VisualizeSkeleton(
     skeleton_mode='tube',
     legend_mode='layer',
     show_fig=True,
-    brain_mesh='template',  # Use native FAFB coordinates
+    brain_mesh='native',  # Use native FAFB coordinates
     cache_neurons=True,
 )
 
@@ -150,7 +150,7 @@ set `force_API_fetching=True`. With `cache_neurons=True`, existing
 online-only fetch that neither reads nor writes the replacement store:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 vs = VisualizeSkeleton(
     dataset='flywire_FAFB_v783',
@@ -161,7 +161,7 @@ vs = VisualizeSkeleton(
     skeleton_mode='tube',
     legend_mode='layer',
     show_fig=True,
-    brain_mesh='template',
+    brain_mesh='native',
     cache_neurons=True,
     force_API_fetching=True,  # Use the CAVE resolution path
 )
@@ -192,7 +192,7 @@ Extrusion artifacts happen because:
 Enable `auto_fix_extrusions=True` to automatically detect and replace problematic skeletons:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 vs = VisualizeSkeleton(
     dataset='flywire_FAFB_v783',
@@ -231,7 +231,7 @@ vs.plot_neurons()
 The visualization system includes **soma-aware simplification** that applies gentler simplification to the soma region:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 vs = VisualizeSkeleton(
     dataset='flywire_FAFB_v783',
@@ -255,7 +255,7 @@ vs.plot_neurons()
 Use the built-in detection tools to identify problematic neurons:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 # Check a specific neuron for extrusions
 result = VisualizeSkeleton.check_fafb_skeleton_for_extrusions(
@@ -291,7 +291,7 @@ API path. Use `cache_neurons=False` when the request must bypass an existing
 local CAVE replacement; that online-only mode does not write a cache:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 # Method 1: Fix specific neurons by fetching them via API
 # Route the selected neurons through the CAVE resolution path
@@ -311,7 +311,7 @@ vs2 = VisualizeSkeleton(
     neuron_layers=['l-LNv', 's-LNv'],  # Mix of neurons
     force_API_fetching=False,  # Use raw/ZIP data; repaired bodies use cave_skeletons
     show_fig=True,
-    brain_mesh='template',
+    brain_mesh='native',
 )
 vs2.plot_neurons()
 ```
@@ -321,7 +321,7 @@ vs2.plot_neurons()
 The `detect_mesh_extrusions()` method provides detailed analysis:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 # If you have a mesh object already
 result = VisualizeSkeleton.detect_mesh_extrusions(

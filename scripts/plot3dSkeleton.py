@@ -9,8 +9,9 @@ from visualize_skeleton import VisualizeSkeleton
 # please provide your own neuprint token, which can be found at https://neuprint.janelia.org/account
 # dataset = 'hemibrain:v1.2.1'
 # Note: optic-lobe:v1.1 is in JRCFIB2018Fraw coordinates (same as hemibrain).
-# When brain_mesh='whole', it transforms to JRC2018F.
-# If alignment looks off, try brain_mesh='template' to view in native JRCFIB2018F space.
+# brain_mesh='native' keeps the scene in that own template space; 'FAFB' draws
+# the FLYWIRE outline as the scene frame instead. (The former brain_mesh='whole'
+# JRC2018F scene transform was retired.)
 
 
 vs = VisualizeSkeleton(
@@ -30,7 +31,7 @@ vs = VisualizeSkeleton(
     synapse_alpha = 0.6,
     skeleton_mode = 'tube',
     synapse_mode = 'cone',
-    legend_mode='type',  # 'single', 'type', or 'layer'
+    legend_mode='type',  # 'single', 'type', 'tree', or 'layer'
     
     export_views=True,
     show_fig=True,
@@ -39,7 +40,7 @@ vs = VisualizeSkeleton(
     
     mesh_roi = ['EB', 'LH', 'AL'],
     # mesh_color=(1,1,1,0),
-    brain_mesh='template',
+    brain_mesh='native',
     vnc_mesh=False,
     cache_neurons=True,
     cache_synapses=True,

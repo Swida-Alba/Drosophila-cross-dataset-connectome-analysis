@@ -178,7 +178,10 @@
           (for example, MCNS <code>SMP227</code> remains <code>SMP227</code>).
           The panel also shows the
           double-click interval: a second click on the same row under 300 ms
-          isolates that row; repeat the double-click to restore all rows.</li>
+          isolates that row; repeat the double-click to bring back the rows the
+          page <i>opened</i> with — which excludes a template half the run
+          embedded hidden. The eye in the panel header is the other control: it
+          shows or hides <b>every</b> row, that embedded half included.</li>
         <li><b>Freeze 3D view when toggling the legend</b> (checkbox in
           <b>Advanced</b> → Export, on by default): Plotly re-autoranges the
           three scene axes over the <i>visible</i> traces on every redraw, so
@@ -187,15 +190,46 @@
           <code>_simplified.html</code> copy) pins its axes on first render to
           the extents of <b>every</b> trace — hidden layers included, each axis
           padded by 1/32 of its span, which is Plotly's own 3D margin — so a
-          toggle only changes what is drawn. A 🔒/⛶ <b>Freeze/Fit</b> button in
+          toggle only changes what is drawn. It also freezes the box's x:y:z
+          proportions at the ratio those extents imply, because Plotly's
+          <code>aspectmode='data'</code> otherwise re-derives them from the
+          <i>visible</i> traces and one hidden mesh reshapes the anatomy. A
+          🔒/⛶ <b>Freeze/Fit</b> button in
           the page's top-left corner (or the <code>F</code> key) switches the
-          autoscaling back on, and double-clicking the scene re-applies the
-          freeze. The pin is injected page script that exits early under
+          autoscaling back on, and the <b>⌖ Recenter</b> button just below it
+          (or the <code>C</code> key) moves the rotation pivot onto the traces
+          you can currently see — a frozen box keeps its pivot at the centre of
+          the <i>whole</i> scene, so after hiding the VNC outline the brain
+          would otherwise orbit around the empty space it left. Recentering
+          moves only the pivot; the box and its proportions stay pinned. It does
+          nothing in fit mode, where the pivot already follows the visible
+          traces — and pressing <b>Fit clears that pivot</b>, because the offset
+          is normalized against the pinned box and fit mode shrinks the box onto
+          what you can see, so a leftover number would leave the anatomy hanging
+          off the rotation centre. Freezing again restores the pivot you chose,
+          unless you panned in the meantime. All three floating controls — the
+          two view buttons and the light/dark switch in the other corner —
+          carry a <b>hover hint</b> that names the key and
+          states the current state ("View is frozen: legend toggles keep the
+          framing — F to fit"; the switch says which theme the click selects),
+          drawn by the page's own stylesheet rather than a
+          native tooltip, which costs a second to appear. The freeze also
+          re-applies itself after the page's single
+          <i>reset camera</i> button and a double-click, which restore a layout
+          snapshot taken before the freeze existed and would otherwise hand the
+          scaling back to the visible traces. Plotly's second reset button is
+          removed from the toolbar: the two differ only by which snapshot they
+          restore, and the kept one returns the page to the framing it opened
+          with. The pin is injected page script
+          that exits early under
           <code>navigator.webdriver</code>, so view PNGs, individual profiles
-          and video frames still autoscale exactly as before. Because Plotly
-          itself sees only the visible traces, a scene with a far-away hidden
-          layer (a VNC layer in a brain view) now opens slightly wider; untick
-          the box to restore the old framing bit for bit.</li>
+          and video frames still autoscale exactly as before. A brain or VNC
+          envelope the run did not ask to show is left out of the pinned box —
+          otherwise a hidden nerve cord would zoom every brain-only page out to
+          its extent — and the page carries a second, wider box that takes over
+          <i>while</i> that envelope is on view, so revealing it shows the whole
+          CNS instead of a clipped sliver. The frame you open on is unchanged
+          either way; untick the box to hand scaling back to Plotly.</li>
         <li><b>Background</b>: white or black. The default neuron palette
           follows it — <b>Category10</b> on white, <b>Set3</b> on black —
           until you pick a palette manually.</li>
@@ -209,9 +243,17 @@
           neuron/synapse colors stay as generated.</li>
         <li><b>Brain Mesh</b>: <b>native</b> (dataset's own template),
           <b>BANC</b> (explicit BANC whole-CNS outline), <b>FAFB</b>,
-          <b>male-cns</b>, or <b>none</b>; the old <b>template</b>/<b>whole</b>
-          names still work as compatibility aliases. <b>VNC Mesh</b>
-          toggle for male-cns/manc/BANC. <b>Brain Mesh Color</b> defaults to
+          <b>male-cns</b>, or <b>none</b> — those five and nothing else;
+          the pre-rename <b>template</b>/<b>whole</b> names are retired.
+          <b>VNC Mesh</b>
+          toggle for male-cns/manc/BANC. Both pick what the page opens
+          <i>showing</i>: on <b>male-cns</b> and <b>BANC</b> the half you leave
+          off is still written into the exported HTML — hidden, and at reduced
+          detail — so whoever opens the page can reveal it from the legend tree
+          without re-running anything. Other datasets have a single native
+          template (FAFB the brain, hemibrain the half-brain outline), so
+          nothing extra is embedded. Neither hidden half is added to the
+          downloadable mesh model. <b>Brain Mesh Color</b> defaults to
           <b>Auto</b> (adaptive: light tone on white background, dark tone on
           black); uncheck it to pick a fixed outline color, with opacity
           defaulting to 5% (half the original auto setting's subtlety).</li>
@@ -406,7 +448,7 @@
                                           readable colors; only the active
                                           synapse color family is populated
     visualization_manifest.json         - what the scene means (dataset, view
-                                          cameras, legend mode, freeze ranges,
+                                          cameras, legend mode, freeze state,
                                           per-trace roles), so the page can be
                                           re-exported later without its source
     parameters.txt                      - exact parameters of the run

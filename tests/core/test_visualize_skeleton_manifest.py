@@ -15,7 +15,11 @@ import plotly.graph_objects as go
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from visualize_skeleton import VisualizeSkeleton  # noqa: E402
+from visualize_skeleton import (  # noqa: E402
+    VisualizeSkeleton,
+    classify_traces,
+    manifest_role_drift,
+)
 
 
 def make_vis(tmp_path, figure, **attrs):
@@ -59,13 +63,16 @@ class TestManifestContent:
         manifest = make_vis(tmp_path, figure()).visualization_manifest()
         assert manifest['schema_version'] == 1
         assert manifest['canonical_page'] == 'scene.html'
-        assert manifest['degraded_pages'] == ['scene_simplified.html']
         assert manifest['freeze_view'] is True
         assert manifest['legend_mode'] == 'tree'
         assert manifest['neuron_alpha'] == 0.2
         assert manifest['layer_names'] == ['KC layer']
-        # Padded union of the geometry, i.e. exactly what the page pins.
-        assert manifest['frozen_ranges']['x'] == [-10 / 32.0, 10 + 10 / 32.0]
+        # Keys the re-exporter cannot derive from the page itself. The
+        # simplified copy is recognised by its _simplified suffix, and the
+        # freeze pin is baked into the page's own scene layout, so neither is
+        # mirrored here.
+        assert 'degraded_pages' not in manifest
+        assert 'frozen_ranges' not in manifest
 
     def test_trace_table_records_roles_and_visibility(self, tmp_path):
         manifest = make_vis(tmp_path, figure()).visualization_manifest()
@@ -123,3 +130,40 @@ class TestManifestFile:
 
         monkeypatch.setattr(json, 'dump', boom)
         assert vis.write_visualization_manifest() is None
+
+
+class TestRecordedRolesAreCheckedOnReexport:
+    """``traces`` is the one manifest table the re-export reads back.
+
+    A page that loses its ``meta`` stamps in the HTML round trip still opens and
+    still profiles -- at ``legend`` level only, which is indistinguishable from
+    an honest legacy run. Comparing the page's roles with what the run recorded
+    is the only way the loss shows up.
+    """
+
+    def test_a_page_that_reads_back_as_recorded_says_nothing(self, tmp_path):
+        fig = figure()
+        manifest = make_vis(tmp_path, fig).visualization_manifest()
+        roles = classify_traces(fig.data, mesh_roi_names=['LH'])
+        assert manifest_role_drift(manifest, roles) is None
+
+    def test_roles_that_changed_are_named_with_both_counts(self, tmp_path):
+        manifest = make_vis(tmp_path, figure()).visualization_manifest()
+        # What a page whose stamps vanished parses as: unnamed, ungrouped
+        # geometry, i.e. one plain neuron and no synapse or mesh at all.
+        read_back = classify_traces(
+            [go.Scatter3d(x=[0, 1], y=[0, 1], z=[0, 1])])
+        drift = manifest_role_drift(manifest, read_back)
+        assert '1 mesh -> 0' in drift
+        assert '1 synapse -> 0' in drift
+        assert ' neuron ' not in drift, \
+            'a role count that survived must not be reported'
+        assert 'round trip' in drift
+
+    def test_a_run_without_a_recorded_table_stays_silent(self, tmp_path):
+        fig = figure()
+        roles = classify_traces(fig.data, mesh_roi_names=['LH'])
+        assert manifest_role_drift({}, roles) is None
+        assert manifest_role_drift({'traces': []}, roles) is None
+        assert manifest_role_drift(
+            {'traces': [{'index': 0, 'label': 'KC1a'}]}, roles) is None

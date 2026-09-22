@@ -83,7 +83,7 @@ for col in paths.columns:
 
 ```python
 import statvis as sv
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 # Login to NeuPrint
 sv.LogInHemibrain(token='your_token', dataset='hemibrain:v1.2.1')
@@ -180,8 +180,10 @@ call via `figure_payload_from_html()` — the pinned plotly 6.4 has no
 file, because the embedded plotly.js bundle contains the same literal). Point at
 the run folder or the canonical `{saveas}.html`: a `{saveas}_simplified.html`
 copy is resolved back to the canonical page (`resolve_viewer_page`), and the
-profile re-exporter reads `visualization_manifest.json` for the cameras and
-trace roles the page itself does not carry.
+profile re-exporter reads `visualization_manifest.json` for the cameras the page
+does not carry and re-checks its recorded trace roles against what it parsed
+(`manifest_role_drift`), so lost identity stamps are reported rather than
+quietly coarsening every profile.
 
 `export_video_from_html()` also takes `export_method`:
 
@@ -399,17 +401,74 @@ tree-panel eye moved the axes, not the camera. The permanent pages
 (`{saveas}.html` and its `{saveas}_simplified.html` copy) therefore pin the
 axes to the padded extents of **every** trace — hidden layers included, each
 axis padded by 1/32 of its span, which is Plotly's own 3D autorange margin —
-so a toggle only changes what is drawn.
+so a toggle only changes what is drawn. The one exception is a brain/VNC
+envelope the page carries without showing it, which is left out of the box
+unless it is on view ([Context meshes](#context-meshes-always-in-the-page)).
+
+The axis ranges alone are not enough, and hiding the VNC mesh on a real page is
+what proved it: `aspectmode='data'` re-derives the box's x:y:z proportions from
+the *visible* traces on every redraw, so the pinned ranges held their numbers
+while the brain itself changed shape (measured: `0.97 / 0.73 / 1.41` →
+`1.67 / 0.93 / 0.64` on one toggle). The pin therefore also freezes
+`aspectmode='manual'` at the ratio those ranges already imply, which is the
+ratio the unfrozen first frame picks — the page looks the same, and stops
+reacting to what is hidden.
 
 - **Freeze/Fit button** in the page's top-left corner, or the **`F`** key,
-  switches between the frozen framing and Plotly's autoscaling; double-clicking
-  the scene (Plotly's reset gesture) re-applies the freeze.
+  switches between the frozen framing and Plotly's autoscaling.
+- **Recenter button** (⌖, directly below the freeze one), or the **`C`** key,
+  moves the rotation pivot onto the traces that are currently visible. A frozen
+  box keeps its pivot at the centre of the *whole* scene, so after hiding the
+  VNC outline the brain would otherwise orbit around the empty space it left.
+  The control rewrites `scene.camera.center` only — the box and its proportions
+  stay pinned — and is inert in fit mode, where the pivot already follows the
+  visible content. Pressing **Fit hands the pivot back** (`camera.center` is
+  cleared): that offset is normalized against the *pinned* box, and fit mode
+  shrinks the box onto the visible traces, so carrying the number over left the
+  anatomy hanging 12% of the y-span and 35% of the z-span off the rotation
+  centre. Freezing again restores the pivot you chose — unless you panned in the
+  meantime, because a pivot you moved yourself beats one we remembered.
+- **Every floating control explains itself on hover.** The hints are drawn by
+  the page's own stylesheet from a `data-drocat-tip` attribute (not a native
+  `title`, which costs a second to appear), and each states the *current* state
+  along with the key: "View is frozen: legend toggles keep the framing (F to
+  fit)" versus "Fit the view to the visible traces (F to freeze)", and "Switch
+  to the dark theme (T)" on the light/dark button in the other corner — that one
+  names the theme the click selects, and it is drawn to the button's left
+  because the button owns the top-right. For the two view tools the same text
+  feeds `aria-label`, so the screen-reader name and the hint cannot drift apart;
+  the theme button keeps its fixed accessible name, since "Toggle light/dark
+  theme" describes the control whichever way it currently points. The
+  tip wraps inside `max-width:min(340px,58vw)` — the longest state sentence is
+  ~374 px on one line, which ran off a narrow window.
+- **The pin survives Plotly's own resets.** The modebar's *reset camera* button
+  and a double-click restore the layout snapshot taken before this script ran,
+  which drops `aspectmode='manual'` and lets the box re-scale to whatever is
+  visible (measured: the reset alone put the ratio back to
+  `1.67 / 0.93 / 0.64` while the lock icon still said frozen). Any relayout that
+  drifted from the pin re-applies it; camera drags never touch those keys, so
+  orbiting and zooming are untouched.
+- **The toolbar carries one reset, not two.** A 3D scene ships two
+  home-shaped buttons whose tooltips differ by four words; the page keeps
+  *reset camera to last save* (the framing it opened with) and removes
+  *reset camera to default* through `modeBarButtonsToRemove`. Note that this
+  config takes Plotly's button-registry name — `resetCameraDefault3d` — and the
+  rendered `data-attr` (`resetDefault`) is a different string that is accepted
+  and ignored without a word.
 - The pin is injected page JavaScript only. It exits early under
   `navigator.webdriver`, so PNG / video / individual-profile exports still
-  autoscale, and the frozen page's own camera presets keep working.
-- Because Plotly's own autorange sees only the visible traces, a scene with a
-  far-away hidden layer (a VNC layer inside a brain view) now opens slightly
-  wider than before. Set `freeze_view=False` to restore the old framing exactly.
+  autoscale, and the frozen page's own camera presets keep working. Measured
+  against the generator from before context meshes were embedded, on one
+  male-cns scene: the same three layer profiles and the same two views came out
+  of both, with 0.067% of pixels different and every one of those within 4 px
+  of geometry that was already there — a hidden trace in the scene nudges how
+  the translucent tubes composite at their edges, and two runs of the *same*
+  generator are byte-identical, so that delta is the extra trace, not jitter.
+- A brain/VNC envelope the run carries but does not show stays out of the box,
+  so it cannot zoom a brain-only page out to the nerve cord; while such a mesh
+  is on view the page pins the wider box that fits it instead, and goes back
+  when it is hidden again. Set `freeze_view=False` to hand framing to Plotly
+  altogether.
 
 ### Per-Neuron Colors via CSV
 
@@ -706,10 +765,73 @@ vs = VisualizeSkeleton(
 | **flywire_FAFB**     | FLYWIRE (native)       | ❌ No               |
 | **banc_v888**        | BANC (brain)           | ❌ No               |
 
+### Context meshes: always in the page
+
+The **brain mesh** and **VNC mesh** choices set what the page opens *showing*,
+not what it contains. On `male-cns` and `banc`, whose native template is one
+volume split at the neck, a run that asks for only one half still ships the
+other — hidden, decimated to `CONTEXT_MESH_EMBEDDED_TARGET_FACES` (20,000
+faces), and listed in the legend tree so a viewer can turn it on later. That is
+the point of the split: an exported page is something you hand to a colleague,
+and "which envelope did you want?" is a question they answer better once they
+are looking at the neurons.
+
+Measured on a real `male-cns:v1.0` brain-only page:
+
+| Embedded VNC half | faces / vertices | serialized page cost |
+| ----------------- | ---------------- | -------------------- |
+| at native detail | 36,670 / 18,051 | 0.871 MB |
+| at the 20,000-face budget | 20,001 / 9,716 | 0.471 MB |
+
+The brain half is 1.578 MB at native detail and is decimated the same way when
+it is the embedded one. It is embedded whenever the page does not show it: a
+`brain_mesh='none'` run embeds both halves, and a `none` + VNC run embeds just
+the brain. So a page that shows one half and hides the other is ~4% larger than
+a brain-only page used to be, not ~7%.
+
+Three consequences are deliberate:
+
+- The hidden half is **not** written by `export_3d_model`. That function
+  dumps every registered mesh, and an envelope nobody asked to see has no
+  business appearing in the user's GLB/OBJ. Measured on a real male-cns run:
+  trace 26 was the page's hidden `JRCFIB2022M (VNC)`, and the written GLB read
+  back with exactly one geometry, `JRCFIB2022M (brain)`.
+- The tree panel's two "all" controls are **not** the same control. The eye in
+  the panel header means every row, and on such a page that includes the
+  embedded half — clicking it is the one-handed way to see everything the file
+  holds. The double-click restore means *undo what I isolated*, so it returns to
+  the baseline the page opened with and puts the envelope back. Both readings
+  are useful and neither is the other's bug, so the difference is carried in the
+  header eye's tooltip rather than coded away.
+- The hidden half does **not** size the frozen scene box. Measured: 0.3% of the
+  embedded VNC's vertices fall inside a brain-only box, so pinning to that box
+  alone would leave the first frame right and the reveal empty. The page
+  therefore carries both boxes and switches to the wider one *while* such a
+  mesh is visible — live in a browser, `z` held at `[71630, 350002]`, widened
+  to `[48786, 1103867]` on reveal with the aspect ratio that box implies, and
+  narrowed back on hide. The switch listens for restyle as well as relayout,
+  because a legend-tree eye is a restyle.
+
+Datasets outside `male-cns`/`banc` have a single native template — FAFB the
+FLYWIRE brain, hemibrain the JRCFIB2018F half-brain, optic-lobe its own
+JRCFIB2022M, MANC the whole nerve cord — so there is no second half to embed
+and their pages are byte-for-byte what they were. On `male-cns`/`banc` whatever
+the two boxes leave unshown is embedded hidden, so a `brain_mesh='none'` run
+embeds *both* halves and a `none` + VNC run embeds the brain — which means such
+a run downloads and splits the native template mesh it used to skip. Because
+`parameters.txt` is written during initialization, before any trace exists, its
+`Brain Mesh:` / `VNC Mesh:` lines cannot account for that; the run appends a
+`[Context Meshes Embedded But Hidden]` block once the page is on disk, naming
+each embedded half.
+
 **Retired mode:** the former `brain_mesh='whole'` (which moved the entire
 scene into JRC2018F and required a ~10GB H5 transform download) was
-replaced by the explicit `FAFB`/`BANC`/`male-cns` outline selections; legacy
-'whole'/'template' values in saved settings are normalized automatically.
+replaced by the explicit `FAFB`/`BANC`/`male-cns` outline selections. The
+pre-rename spellings `whole`, `template` and the `mcns` abbreviation are now
+rejected outright rather than folded onto a current option, so the five
+listed above are the entire vocabulary. A saved UI default still carrying one
+is not translated either — it simply stops being recognized and the tab shows
+its own default again.
 
 ```
 ⚠ Brain transforms not found for hemibrain:v1.2.1

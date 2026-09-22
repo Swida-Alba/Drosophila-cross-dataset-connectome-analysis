@@ -1,5 +1,10 @@
 # VisualizeSkeleton Optimizations (November 2024)
 
+> **Historical record (November 2024).** `VisualizeSkeleton` has since moved out
+> of `src/coana.py` into `src/visualize_skeleton.py`, so the
+> `from coana import VisualizeSkeleton` snippets below no longer run. For
+> current behavior and options see [3D_Skeleton_Guide.md](3D_Skeleton_Guide.md).
+
 > **Note:** This document uses `NEUPRINT_APPLICATION_CREDENTIALS` for historical reasons. The current recommended environment variable is `NEUPRINT_TOKEN`. Both are supported for backwards compatibility.
 
 ## Summary

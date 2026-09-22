@@ -85,7 +85,7 @@ class TestLiveBancRender:
             dataset="banc_v888",
             neuron_layers=[["l-LNv"]],
             output_dir=str(tmp_path),
-            brain_mesh="template",
+            brain_mesh="native",
             mesh_roi=[],
             skip_synapse=True,
             show_fig=False,

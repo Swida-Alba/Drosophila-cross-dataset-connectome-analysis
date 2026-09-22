@@ -14,6 +14,7 @@ from nicegui import ui
 from ..config import (
     SKELETON_MODES,
     BRAIN_MESH_OPTIONS,
+    LEGEND_MODES,
     NETWORK_LAYOUTS,
     PROFILE_GRANULARITY_CHOICES,
     SEARCH_COLUMNS,
@@ -451,10 +452,12 @@ def create_skeleton_tab():
                         hint="'tube': 3D tube rendering (detailed). 'line': thin line (fast, for many neurons).",
                     )
                     legend_mode = select_input(
-                        "Neuron Legend Mode", ["layer", "type", "tree", "single"], get_user_default("legend_mode"),
+                        "Neuron Legend Mode", LEGEND_MODES, get_user_default("legend_mode"),
                         hint="'layer': one neuron legend entry per layer (or per custom group). "
-                             "'type': per neuron type. 'tree': per type with an "
-                             "expandable type -> neuron panel in the exported HTML. "
+                             "'type': per neuron type. 'tree': per type, plus a "
+                             "collapsible type -> bodyId/instance panel in the "
+                             "exported HTML, or group -> type -> bodyId/instance "
+                             "with custom groups. "
                              "'single': every neuron. "
                              "This only sets the LEGEND levels; the individual-profile "
                              "levels are chosen by Profile Granularity in the export "

@@ -26,7 +26,7 @@ Key Features
 Quick Start
 -----------
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 
 # Basic neuron visualization
 vs = VisualizeSkeleton(
@@ -244,6 +244,16 @@ ROI_MESH_LEGEND_RANK_BASE = 100_000_000
 BRAIN_MESH_LEGEND_RANK = 200_000_000
 VNC_MESH_LEGEND_RANK = 200_000_001
 
+# A context mesh the run did not ask to show is embedded so a viewer can
+# reveal it later. It never needs full template resolution -- a requested half
+# is drawn at native detail, an embedded one is decimated to this face budget.
+# Measured on male-cns:v1.0: the VNC half is 36,670 faces / 18,051 vertices and
+# costs 0.871 MB of page, so the budget has to sit below that to do any good --
+# at 60,000 it never bit and a brain-only page was byte-for-byte the size of
+# one showing both halves. 20,000 faces brings the embedded copy to 0.471 MB.
+# Envelopes are context at single-digit opacity, and that still reads smooth.
+CONTEXT_MESH_EMBEDDED_TARGET_FACES = 20_000
+
 # Default mesh opacities. ROI meshes provide local anatomical context,
 # while the brain/VNC envelopes are intentionally lighter scene scaffolding.
 DEFAULT_ROI_MESH_ALPHA = 0.1
@@ -299,6 +309,15 @@ SIMPLIFIED_HTML_SUFFIX = '_simplified'
 # tree panel owns its row events, so keep its manual detector in sync with
 # Plotly rather than using a more permissive, platform-specific window.
 TREE_DOUBLE_CLICK_INTERVAL_MS = 300
+# Plotly gives a 3D scene two home-shaped reset buttons that differ only in
+# which snapshot they restore. The viewer keeps "reset camera to last save" --
+# the framing the page opened with -- and drops "reset camera to default".
+# The names below are Plotly's button-registry keys, which is what
+# modeBarButtonsToRemove matches; the rendered data-attr ('resetDefault') is a
+# different string and is ignored silently when sent.
+VIEWER_MODEBAR_BUTTONS_TO_REMOVE = (
+    'sendDataToCloud', 'lasso2d', 'select2d', 'resetCameraDefault3d',
+)
 
 
 def _configure_roi_mesh_traces(mesh_traces, roi_name, legend_rank=None):
@@ -351,6 +370,39 @@ class TraceRole:
     owner: str | None = None
     owner_body_id: object = None
     layer_index: object = None
+    # The trace's raw ``visible``, so a profile plan can tell "in the page"
+    # from "shown on open" -- an embedded context mesh is the former only.
+    visible: object = True
+
+
+def _is_unshown_context_mesh(trace):
+    """True for a brain/VNC envelope the page carries but does not show.
+
+    ``_embed_unshown_context_mesh`` ships the half a run left unchecked so the
+    viewer can reveal it later. Such a mesh must not size the frozen scene box:
+    a hidden nerve cord would zoom every brain-only page out to its extent,
+    undoing the framing the freeze work stabilised. Hidden *neuron* traces keep
+    counting, because there the whole point is that revealing one cannot clip
+    it.
+    """
+    rank = _trace_field(trace, 'legendrank')
+    if not isinstance(rank, (int, float)) or isinstance(rank, bool):
+        return False
+    if rank < BRAIN_MESH_LEGEND_RANK:
+        return False
+    return _trace_field(trace, 'visible') is False
+
+
+def _unshown_context_mesh_indices(figure):
+    """Positions of the embedded-but-hidden envelopes in ``figure.data``.
+
+    The freeze script needs these as trace indices: the box has to grow the
+    moment a viewer reveals one, and ``visible`` is the only thing that changes
+    when they do. Order matters, so this walks ``figure.data`` -- the same list
+    Plotly writes into ``gd.data``.
+    """
+    return [index for index, trace in enumerate(getattr(figure, 'data', None) or [])
+            if _is_unshown_context_mesh(trace)]
 
 
 def _trace_field(trace, key, default=None):
@@ -469,6 +521,7 @@ def classify_traces(traces, mesh_roi_names=()):
                 'group': group_name or None, 'type': None, 'item': None,
                 'body_id': None, 'owner': None, 'owner_body_id': None,
                 'layer_index': None,
+                'visible': _trace_field(trace, 'visible', True),
             }
             payload.update(overrides)
             return TraceRole(**payload)
@@ -719,6 +772,42 @@ def profile_plan_from_html(html_path, granularity='legend'):
     return (VisualizeSkeleton._build_profile_plan(roles, granularity), roles)
 
 
+def _role_tally(values):
+    tally = {}
+    for value in values:
+        tally[value] = tally.get(value, 0) + 1
+    return tally
+
+
+def manifest_role_drift(manifest, roles):
+    """Advisory text when a page reads back as roles the run did not record.
+
+    ``traces`` is the classifier's answer at render time, including the ``rule``
+    no page carries, so comparing the two tallies catches identity stamps that
+    failed to survive the HTML round trip. That failure is invisible otherwise:
+    it looks exactly like a legacy page, and every fine profile granularity
+    silently collapses toward ``legend``.
+    """
+    recorded = _role_tally(
+        str(row.get('kind'))
+        for row in (manifest.get('traces') or [])
+        if isinstance(row, dict) and row.get('kind'))
+    if not recorded:
+        return None
+    actual = _role_tally(role.role for role in roles)
+    changed = [(kind, recorded.get(kind, 0), actual.get(kind, 0))
+               for kind in sorted(set(recorded) | set(actual))
+               if recorded.get(kind, 0) != actual.get(kind, 0)]
+    if not changed:
+        return None
+    detail = ', '.join(f'{was} {kind} -> {now}'
+                       for kind, was, now in changed)
+    return (f'{detail}: the page reads back with different trace roles than the '
+            f'run recorded, so its identity stamps did not survive the HTML '
+            f'round trip and profiles can only be coarser than the original '
+            f'run.')
+
+
 def export_individuals_from_html(
     html_path, output_dir=None, granularity='legend', views=None,
     scale=2, width=900, height=900, timeout=60, auto_crop=True,
@@ -748,6 +837,9 @@ def export_individuals_from_html(
         data, mesh_roi_names=manifest.get('mesh_roi') or ())
     entries, background, unlabeled = VisualizeSkeleton._build_profile_plan(
         roles, granularity)
+    drift = manifest_role_drift(manifest, roles)
+    if drift and verbose:
+        print(f'⚠️  {os.path.basename(page)}: {drift}')
     if not entries:
         # A mesh-only scene is a legitimate run, not a bad request: report and
         # render nothing, exactly like plot_individuals() does live, so a
@@ -2460,7 +2552,9 @@ class VisualizeSkeleton:
         - 'native': Dataset's own template outline (fast, no H5 transforms)
         - 'FAFB'/'BANC'/'male-cns': the whole scene rendered in that
           template's coordinates, with its outline
-    
+        In the exported HTML this chooses what opens *shown*; on male-cns and
+        BANC the other half still ships hidden for the viewer to reveal.
+
     legend_mode : str, default='layer'
         Controls how neurons appear in the legend. Options:
         - 'single': Each neuron gets its own legend entry ({bodyId}_{layer_name})
@@ -2478,9 +2572,14 @@ class VisualizeSkeleton:
     freeze_view : bool, default=True
         Keep the 3D framing constant when the viewer shows or hides traces.
         The permanent HTML pages pin their scene axes to the extents of the
-        whole scene (hidden layers included) so a legend or tree-panel toggle
-        cannot rescale it; a Freeze/Fit button and the 'F' key hand
-        autoscaling back. Static exports are unaffected.
+        traces the run asked to show (hidden neurons included) and freeze the
+        axis proportions those extents imply, so a legend or tree-panel toggle
+        cannot rescale or reshape it; a Freeze/Fit button and the 'F' key hand
+        autoscaling back, and a Recenter button (⌖, the 'C' key) moves the
+        rotation pivot onto the visible traces. Both carry a hover hint naming
+        the key and the current state. A page that carries a hidden brain/VNC
+        half switches to the wider box that fits it while that half is on view.
+        Static exports are unaffected.
     
     expand_colors : str, default='interpolation'
         Method for generating extra colors when more layers than colors available.
@@ -2895,7 +2994,12 @@ class VisualizeSkeleton:
     redraw, so toggling a legend row (or the tree panel's eye) re-scales the
     whole scene: the camera never moves, the axis ranges do. When enabled the
     exported HTML fixes the scene axes to the extents of the full scene on
-    first render, so show/hide changes nothing but the drawn traces.
+    first render, so show/hide changes nothing but the drawn traces. The axis
+    proportions those extents imply are fixed with them, because Plotly's
+    ``aspectmode='data'`` re-derives the x:y:z box from the visible traces on
+    every redraw: with only the ranges pinned, hiding one long mesh still
+    reshapes the anatomy (measured on a male-cns page: 0.97/0.73/1.41 became
+    1.67/0.93/0.64 when the VNC outline was hidden).
 
     The ranges cover every trace with geometry, including layers that start
     hidden, so revealing one cannot clip it. They are padded by 1/32 of each
@@ -3498,8 +3602,7 @@ class VisualizeSkeleton:
     '''
     Template outline selection for the 3D scene:\n
     - 'none': Only plot meshes specified in mesh_roi parameter\n
-    - 'native': The scene dataset's own template outline (renamed from the\n
-      former 'template'):\n
+    - 'native': The scene dataset's own template outline:\n
       • hemibrain → JRCFIB2018F (affine transform only, fast)\n
       • optic-lobe → JRCFIB2022M (affine transform only, fast)\n
       • manc → MANC (male adult nerve cord VNC, affine transform only, fast)\n
@@ -3508,19 +3611,34 @@ class VisualizeSkeleton:
       • BANC → BANC (native BANC coordinates, NO transform needed)\n
       • banc → BANC public region outline (brain portion; VNC via vnc_mesh)\n
     - 'FAFB': render the whole scene (neurons, synapses, and the outline)
-      in FLYWIRE/FAFB coordinates with the FAFB brain outline (renamed from
-      the former 'whole', which targeted JRC2018F and required ~13GB H5
-      downloads - that mode was retired)
+      in FLYWIRE/FAFB coordinates with the FAFB brain outline
     - 'BANC': render the whole scene in BANC coordinates with the BANC
       template outline (brain + VNC); e.g. FAFB neurons are bridged
       FLYWIRE -> JRCFIB2022M -> BANC
     - 'male-cns': render the whole scene in JRCFIB2022M coordinates with
       the male-CNS template outline (brain + VNC)
     \n
+    These five are the whole vocabulary: the 'template' and 'whole' spellings
+    from before the rename, and the 'mcns' abbreviation, are rejected like any
+    unknown value. ('whole' targeted JRC2018F and needed ~13GB of H5
+    downloads; that scene-transform mode was retired with it.)
+    \n
     Cross-template selections move neurons, synapses, ROIs, and the outline
     INTO the selected template's space; they must be reachable within two
     bridging hops (else the scene stays native with a warning). 'native'
     and 'none' keep the dataset's own render space.
+    \n
+    What this picks is what the scene *opens* with. In an exported HTML page
+    the choice is visibility only: on male-cns and BANC the other half of the
+    native template -- the VNC when the brain was asked for, the brain when the
+    VNC was -- still ships, hidden, so the viewer's legend tree can reveal it.
+    Such an embedded half is decimated to CONTEXT_MESH_EMBEDDED_TARGET_FACES,
+    stays out of the frozen scene box until it is on view, and is not written
+    into the GLB/OBJ mesh export. Datasets with a single native template (FAFB,
+    hemibrain, optic-lobe, MANC) have no second half, so nothing is embedded.
+    Whenever a half is embedded this way the run also loads and splits the
+    native template mesh -- including brain_mesh='none', and including a
+    'none' + vnc_mesh run that showed the cord and embeds the brain.
     \n
     See https://github.com/navis-org/navis-flybrains
     '''
@@ -3562,8 +3680,16 @@ class VisualizeSkeleton:
     - BANC → public BANC outline, split into brain and VNC portions\n
     For other datasets (hemibrain, optic-lobe, FAFB), this option is ignored.\n
     Note: For MANC with brain_mesh='native', the VNC is already shown\n
-    (MANC template IS the VNC, so it ignores vnc_mesh value). 
+    (MANC template IS the VNC, so it ignores vnc_mesh value).
     Use brain_mesh='none' to hide brain and VNC mesh.\n
+    \n
+    In an exported HTML page this is a visibility switch, not an inclusion
+    switch: leaving it off on male-cns or BANC still ships the VNC half, hidden
+    at reduced detail so the viewer can reveal it from the legend tree -- and
+    leaving brain_mesh at its native half embeds the VNC the same way. Only
+    male-cns and BANC have two halves to trade; a single-template dataset
+    embeds nothing extra. The hidden half never reaches the GLB/OBJ mesh
+    export.\n
     Default: False\n
     '''
     
@@ -4128,21 +4254,28 @@ class VisualizeSkeleton:
         )
 
     @staticmethod
-    def _scene_data_ranges(figure):
+    def _scene_data_ranges(figure, include_context=False):
         """Scene axis ranges that reproduce Plotly's own 3D first-frame extents.
 
         Returns ``{'x': [lo, hi], 'y': [...], 'z': [...]}`` or ``None`` when no
         trace carries usable coordinates. Traces that start hidden are
         included so revealing one cannot clip it -- Plotly itself autoranges
-        over the visible traces only, which is the difference this closes.
-        Legend-only swatches are skipped. Each axis is padded by 1/32 of its
-        own span, which is the fraction Plotly.js adds when it autoranges a 3D
-        scene.
+        over the visible traces only, which is the difference this closes. The
+        one exception is a context mesh the run embedded but did not show
+        (`_is_unshown_context_mesh`), and only while ``include_context`` is
+        false: it exists to be revealed later, and letting it size the box
+        would zoom every brain-only page out to the nerve cord's extent.
+        ``include_context=True`` asks for that wider box instead, which is what
+        the page pins once such a mesh is on view. Legend-only swatches are
+        skipped. Each axis is padded by 1/32 of its own span, which is the
+        fraction Plotly.js adds when it autoranges a 3D scene.
         """
         lo = [math.inf, math.inf, math.inf]
         hi = [-math.inf, -math.inf, -math.inf]
         for trace in getattr(figure, 'data', None) or []:
             if not _trace_has_geometry(trace):
+                continue
+            if not include_context and _is_unshown_context_mesh(trace):
                 continue
             for axis, key in enumerate(('x', 'y', 'z')):
                 live = _finite_coordinates(_trace_field(trace, key))
@@ -4159,38 +4292,106 @@ class VisualizeSkeleton:
             ranges[name] = [lo[axis] - pad, hi[axis] + pad]
         return ranges
 
-    def _freeze_view_html(self, ranges):
+    def _freeze_view_html(self, ranges, reveal=None):
         """Build the script that pins the 3D scene framing for human viewers.
 
         Injected next to the theme switch and the tree legend whenever the page
         is written with computed scene ranges. Applies the ranges once Plotly
         has a full layout, so legend and tree-panel toggles redraw the same
-        neurons at the same scale instead of re-autoranging the box. A small
-        Freeze/Fit button (also the 'F' key) hands the autoscaling back for
-        anyone who wants the framing to follow the visible traces again.
+        neurons at the same scale instead of re-autoranging the box. The axis
+        ranges alone are not enough: ``aspectmode='data'`` re-derives the box
+        proportions from the *visible* traces on every restyle, so hiding one
+        long mesh rescales the other two axes and the brain changes shape. The
+        script therefore also pins ``aspectmode='manual'`` with the ratio those
+        ranges already imply -- the same picture, now trace-invariant. Plotly's
+        reset gestures (the modebar's "reset camera to last save", the only
+        reset the page keeps, and a double-click) restore the layout snapshot
+        taken before this script ran and silently drop that pin, so any relayout
+        or restyle that drifted away from the freeze re-applies it; camera-only
+        changes never drift, so orbiting and zooming stay untouched.
+
+        ``reveal`` is ``{'traces': [index, ...], 'ranges': {...}}`` for a page
+        that carries a brain/VNC envelope it did not show. That half sits far
+        outside the framing the run asked for -- measured on male-cns, 0.3% of
+        the embedded nerve cord's vertices fall inside a brain-only box, so
+        pinning to that box alone would leave the viewer's toggle drawing
+        nothing. The script therefore tracks whether any of those traces is on
+        view and pins the wider ``reveal`` ranges while one is, switching back
+        when it goes off. The first frame is untouched either way.
+
+        A frozen box also fixes the rotation pivot at the centre of the whole
+        scene, which is where the second control comes in: its button (also the
+        'C' key) moves ``scene.camera.center`` onto the midpoint of the
+        currently visible traces, so hiding a long mesh lets you orbit the
+        brain instead of the empty space it left behind. That offset is
+        normalized against the *pinned* box, so handing the framing back to
+        Fit clears it -- an autoscaled box is already centred on the visible
+        traces, and carrying the old number over would leave the anatomy
+        hanging off the pivot. Re-freezing restores it, unless the user has
+        panned in the meantime, which wins. Switching boxes recomputes it,
+        which is also what a fresh page does: a box is built around its
+        content's midpoint, so the pivot that implies is the one the viewer
+        would have chosen.
+        A Freeze/Fit button (also the 'F' key) hands the autoscaling back for
+        anyone who wants the framing to follow the visible traces again. Both
+        carry a hover hint rendered from their own ``data-drocat-tip``
+        attribute rather than a native ``title``, because the hint states which
+        way the button currently points and a native tooltip costs a second to
+        appear.
         Everything exits early under ``navigator.webdriver``: the WebDriver
         export path shares these pages with the viewer, and its per-profile
         shots must keep fitting the frame.
         """
         baked = {'ranges': ranges}
+        if reveal:
+            baked['reveal'] = reveal
         button_html = (
             '<button id="drocat-freeze-toggle" type="button"'
             ' aria-label="Freeze or fit the 3D view"'
-            ' title="Freeze the scene framing across legend toggles (F)">'
+            ' data-drocat-tip="Freeze the scene framing across legend'
+            ' toggles (F)">'
+            '</button>'
+            '<button id="drocat-recenter" type="button"'
+            ' aria-label="Recenter the orbit on the visible traces"'
+            ' data-drocat-tip="Recenter the rotation on the visible'
+            ' traces (C)">'
             '</button>'
         )
         style_html = (
             '<style>'
-            '#drocat-freeze-toggle{position:fixed;left:14px;top:14px;'
+            '#drocat-freeze-toggle,#drocat-recenter{position:fixed;left:14px;'
             'z-index:9999;width:36px;height:30px;border-radius:6px;'
             'font-size:13px;line-height:1;display:none;align-items:center;'
             'justify-content:center;cursor:pointer;opacity:.85;'
             'background:rgba(255,255,255,0.85);color:#000;'
             'border:1px solid rgba(0,0,0,0.3);}'
-            '#drocat-freeze-toggle:hover{opacity:1;}'
-            'body.drocat-theme-dark #drocat-freeze-toggle{'
+            '#drocat-freeze-toggle{top:14px;}'
+            '#drocat-recenter{top:50px;}'
+            '#drocat-freeze-toggle:hover,#drocat-recenter:hover{opacity:1;}'
+            'body.drocat-theme-dark #drocat-freeze-toggle,'
+            'body.drocat-theme-dark #drocat-recenter{'
             'background:rgba(50,50,50,0.85);color:#fff;'
             'border-color:rgba(255,255,255,0.35);}'
+            # A native title tooltip takes a second to appear and cannot carry
+            # the button's current state, so the hint is rendered from the
+            # data-drocat-tip attribute decorate() keeps in sync.
+            '#drocat-freeze-toggle::after,#drocat-recenter::after{'
+            'content:attr(data-drocat-tip);position:absolute;'
+            'left:calc(100% + 9px);top:50%;transform:translateY(-50%);'
+            'padding:4px 8px;border-radius:5px;background:rgba(0,0,0,0.82);'
+            'color:#fff;font-size:11px;font-weight:400;line-height:1.35;'
+            'letter-spacing:normal;opacity:0;'
+            # The longest hint is ~374 px on one line, which would run off a
+            # narrow window, so the tip wraps inside a capped box rather than
+            # overflowing it.
+            'max-width:min(340px,58vw);white-space:normal;'
+            'visibility:hidden;transition:opacity .12s ease;'
+            'pointer-events:none;}'
+            '#drocat-freeze-toggle:hover::after,'
+            '#drocat-recenter:hover::after{opacity:1;visibility:visible;}'
+            'body.drocat-theme-dark #drocat-freeze-toggle::after,'
+            'body.drocat-theme-dark #drocat-recenter::after{'
+            'background:rgba(255,255,255,0.9);color:#111;}'
             '</style>'
         )
         script_html = """
@@ -4201,8 +4402,14 @@ class VisualizeSkeleton:
   var CONFIG = __DROCAT_FREEZE_CONFIG__;
   if (navigator.webdriver) { return; }
   if (!CONFIG || !CONFIG.ranges) { return; }
+  var AXES = ['x', 'y', 'z'];
   var button = document.getElementById('drocat-freeze-toggle');
+  var centerButton = document.getElementById('drocat-recenter');
   var frozen = false;
+  var pinnedCenter = null;
+  // Which of the two boxes the page is pinned to: false is the framing the run
+  // asked for, true is the wider one that fits an embedded context mesh.
+  var revealed = false;
 
   function graphDiv() {
     return document.querySelector('.js-plotly-plot')
@@ -4216,33 +4423,202 @@ class VisualizeSkeleton:
       return true;
     } catch (err) { return false; }
   }
+  function contextIsShown() {
+    // gd.data is where a tree-panel toggle lands immediately; _fullData is
+    // rebuilt around the same time but only by the redraw this relayout is
+    // already causing, so reading the source traces cannot lag the click.
+    var gd = graphDiv();
+    var traces = (gd && (gd.data || gd._fullData)) || [];
+    var indices = (CONFIG.reveal && CONFIG.reveal.traces) || [];
+    for (var i = 0; i < indices.length; i++) {
+      var trace = traces[indices[i]];
+      if (trace && trace.visible !== false
+          && trace.visible !== 'legendonly') { return true; }
+    }
+    return false;
+  }
+  function activeRanges() {
+    return (revealed && CONFIG.reveal) ? CONFIG.reveal.ranges : CONFIG.ranges;
+  }
+  function syncBox() {
+    // Returns true when the page has to change boxes. A brain-only run pins to
+    // the brain's framing, so its embedded nerve cord lies outside it; the
+    // moment a viewer reveals that mesh the box has to grow or the toggle draws
+    // an empty scene.
+    var next = contextIsShown();
+    if (next === revealed) { return false; }
+    revealed = next;
+    return true;
+  }
+  function ratio() {
+    // 'data' re-derives the box from the *visible* traces on every restyle, so
+    // pinned ranges alone still let one hidden trace rescale the other two
+    // axes. 'manual' plus the ratio those ranges imply holds it trace-invariant.
+    var r = activeRanges();
+    var s = {x: Math.abs(r.x[1] - r.x[0]), y: Math.abs(r.y[1] - r.y[0]),
+             z: Math.abs(r.z[1] - r.z[0])};
+    var m = Math.max(s.x, s.y, s.z) || 1;
+    return {x: s.x / m, y: s.y / m, z: s.z / m};
+  }
   function pinUpdate() {
-    var r = CONFIG.ranges;
-    return {
+    var r = activeRanges();
+    var q = ratio();
+    var updateObj = {
       'scene.xaxis.autorange': false, 'scene.xaxis.range': r.x,
       'scene.yaxis.autorange': false, 'scene.yaxis.range': r.y,
-      'scene.zaxis.autorange': false, 'scene.zaxis.range': r.z
+      'scene.zaxis.autorange': false, 'scene.zaxis.range': r.z,
+      'scene.aspectmode': 'manual',
+      'scene.aspectratio.x': q.x, 'scene.aspectratio.y': q.y,
+      'scene.aspectratio.z': q.z
     };
+    return updateObj;
   }
   function fitUpdate() {
     // Switching autorange back on is not enough: a 3D axis keeps honouring a
-    // manual range until the range itself is cleared.
+    // manual range until the range itself is cleared. The pivot has to travel
+    // with them -- camera.center is normalized to the *pinned* box, and fit
+    // mode shrinks the box onto the visible traces, so a leftover offset would
+    // leave the anatomy hanging off the rotation centre instead of at it.
     return {'scene.xaxis.autorange': true, 'scene.xaxis.range': null,
             'scene.yaxis.autorange': true, 'scene.yaxis.range': null,
-            'scene.zaxis.autorange': true, 'scene.zaxis.range': null};
+            'scene.zaxis.autorange': true, 'scene.zaxis.range': null,
+            'scene.aspectmode': 'data', 'scene.aspectratio': null,
+            'scene.camera.center': null};
+  }
+  function visibleBounds() {
+    var gd = graphDiv();
+    // gd.data[i].x is plotly's compact {dtype, bdata} container with no
+    // .length; the resolved _fullData is where the coordinates live, as typed
+    // arrays whose nulls have become NaN.
+    var traces = (gd && (gd._fullData || gd.data)) || [];
+    var r = activeRanges();
+    var lo = {x: Infinity, y: Infinity, z: Infinity};
+    var hi = {x: -Infinity, y: -Infinity, z: -Infinity};
+    var seen = false;
+    for (var i = 0; i < traces.length; i++) {
+      var trace = traces[i];
+      if (!trace || trace.visible === false
+          || trace.visible === 'legendonly') { continue; }
+      for (var a = 0; a < AXES.length; a++) {
+        var name = AXES[a];
+        var values = trace[name];
+        if (!values || !values.length) { continue; }
+        var low = Math.min(r[name][0], r[name][1]);
+        var high = Math.max(r[name][0], r[name][1]);
+        for (var j = 0; j < values.length; j++) {
+          var raw = values[j];
+          // Number(null) is 0, and the gd.data fallback keeps the raw
+          // [null] coordinates of legend swatches.
+          if (raw === null || raw === undefined || raw === '') { continue; }
+          var v = Number(raw);
+          // Outside the pinned box is a placeholder the renderer never meant
+          // to draw -- some traces carry one point at the dataset origin, and
+          // letting it in would drag the pivot toward that corner.
+          if (!isFinite(v) || v < low || v > high) { continue; }
+          seen = true;
+          if (v < lo[name]) { lo[name] = v; }
+          if (v > hi[name]) { hi[name] = v; }
+        }
+      }
+    }
+    return seen ? {lo: lo, hi: hi} : null;
+  }
+  function centerUpdate() {
+    // A frozen box keeps its rotation pivot at the centre of the whole scene,
+    // so hiding the ventral nerve cord leaves the brain orbiting around empty
+    // space. camera.center is in normalized scene units -- 0 at the middle of
+    // the pinned range, +/-0.5 at its ends -- so the visible content's
+    // midpoint converts straight into a pivot, without touching the box.
+    var bounds = visibleBounds();
+    if (!bounds) { return null; }
+    var r = activeRanges();
+    var updateObj = {};
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      var span = Math.abs(r[name][1] - r[name][0]) || 1;
+      var mid = (bounds.lo[name] + bounds.hi[name]) / 2;
+      var offset = (mid - (r[name][0] + r[name][1]) / 2) / span;
+      updateObj['scene.camera.center.' + name] =
+          Math.max(-0.5, Math.min(0.5, offset));
+    }
+    return updateObj;
+  }
+  function recenter() {
+    // Fit mode already re-fits the box to the visible traces, so its pivot is
+    // already right and the pinned ranges this math reads are stale.
+    if (!frozen) { return; }
+    var updateObj = centerUpdate();
+    if (!updateObj) { return; }
+    if (!update(updateObj)) { return; }
+    // Remember the pivot the user asked for: fitUpdate() clears the centre on
+    // the way out, and without this a Fit/Freeze round trip would silently
+    // discard it.
+    pinnedCenter = {};
+    for (var a = 0; a < AXES.length; a++) {
+      pinnedCenter[AXES[a]] = updateObj['scene.camera.center.' + AXES[a]];
+    }
+  }
+  function centerIsDefault() {
+    var gd = graphDiv();
+    var scene = gd && gd._fullLayout && gd._fullLayout.scene;
+    var c = (scene && scene.camera && scene.camera.center) || {};
+    for (var a = 0; a < AXES.length; a++) {
+      if (Math.abs(Number(c[AXES[a]]) || 0) > 1e-6) { return false; }
+    }
+    return true;
+  }
+  function restoreCenter() {
+    // Only while nothing else has moved it: Plotly's own pan writes
+    // camera.center, and a pivot the user dragged beats one we remembered.
+    if (!pinnedCenter || !centerIsDefault()) { return; }
+    var updateObj = {};
+    for (var a = 0; a < AXES.length; a++) {
+      updateObj['scene.camera.center.' + AXES[a]] = pinnedCenter[AXES[a]];
+    }
+    update(updateObj);
+  }
+  function drifted() {
+    var gd = graphDiv();
+    var scene = gd && gd._fullLayout && gd._fullLayout.scene;
+    if (!scene) { return false; }
+    if (scene.aspectmode !== 'manual') { return true; }
+    var r = activeRanges();
+    for (var a = 0; a < AXES.length; a++) {
+      var axis = scene[AXES[a] + 'axis'];
+      var range = axis && (axis._range || axis.range);
+      if (!axis || axis.autorange || !range) { return true; }
+      if (Math.abs(range[0] - r[AXES[a]][0]) > 1e-6
+          || Math.abs(range[1] - r[AXES[a]][1]) > 1e-6) { return true; }
+    }
+    return false;
   }
   function decorate() {
-    if (!button) { return; }
-    button.style.display = 'flex';
-    button.textContent = frozen ? '\\uD83D\\uDD12' : '\\u26F6';
-    button.title = frozen
-      ? 'View is frozen: legend toggles keep the framing (F to fit)'
-      : 'Fit the view to the visible traces (F to freeze)';
+    if (button) {
+      button.style.display = 'flex';
+      button.textContent = frozen ? '\\uD83D\\uDD12' : '\\u26F6';
+      var freezeTip = frozen
+        ? 'View is frozen: legend toggles keep the framing (F to fit)'
+        : 'Fit the view to the visible traces (F to freeze)';
+      button.setAttribute('data-drocat-tip', freezeTip);
+      button.setAttribute('aria-label', freezeTip);
+    }
+    if (centerButton) {
+      centerButton.style.display = 'flex';
+      centerButton.textContent = '\\u2316';
+      var centerTip = frozen
+        ? 'Recenter the rotation on the visible traces (C)'
+        : 'Freeze the view first: in fit mode the rotation already follows'
+          + ' the visible traces';
+      centerButton.setAttribute('data-drocat-tip', centerTip);
+      centerButton.setAttribute('aria-label', centerTip);
+    }
   }
   function setFrozen(next) {
+    if (next) { syncBox(); }
     var applied = update(next ? pinUpdate() : fitUpdate());
     if (!applied) { return; }
     frozen = next;
+    if (frozen) { restoreCenter(); }
     decorate();
   }
   function toggle() { setFrozen(!frozen); }
@@ -4255,32 +4631,56 @@ class VisualizeSkeleton:
       if (button) {
         button.addEventListener('click', toggle);
       }
+      if (centerButton) {
+        centerButton.addEventListener('click', recenter);
+      }
       document.addEventListener('keydown', function(e){
         var tag = (e.target && e.target.tagName) || '';
         if (/input|textarea|select/i.test(tag)) { return; }
         if (e.key === 'f' || e.key === 'F') { toggle(); }
+        if (e.key === 'c' || e.key === 'C') { recenter(); }
       });
       // Warning banners sit above the plot in normal flow, so a fixed corner
       // widget has to move down with them.
       function reposition() {
-        if (!button) { return; }
         var top = 14;
         var banner = document.querySelector('.drocat-warning-container');
         if (banner) {
           var bottom = banner.getBoundingClientRect().bottom;
           if (bottom > 0) { top += Math.round(bottom); }
         }
-        button.style.top = top + 'px';
+        if (button) { button.style.top = top + 'px'; }
+        if (centerButton) { centerButton.style.top = (top + 36) + 'px'; }
       }
       reposition();
       window.addEventListener('resize', reposition);
       window.addEventListener('load', reposition);
-      // A double-click on the scene is Plotly's own reset-to-autorange gesture;
-      // re-pin so a frozen page stays frozen after the user zooms.
+      // Plotly's reset gestures -- the modebar's "reset camera to last save"
+      // and a double-click -- restore the layout snapshot taken
+      // before this script ran, which drops aspectmode='manual' and lets the
+      // box re-scale to whatever is visible. Re-pin on any relayout that
+      // drifted; camera drags never touch these keys, so orbiting is untouched.
+      var repinning = false;
+      function repaint() {
+        if (!frozen || repinning) { return; }
+        // Revealing an embedded envelope is not a drift to repair, it is a
+        // different box to move to; the pivot follows the new content for the
+        // same reason the page's first frame centres on its own.
+        var switched = syncBox();
+        if (!switched && !drifted()) { return; }
+        repinning = true;
+        try {
+          if (update(pinUpdate()) && switched) { recenter(); }
+        } finally { repinning = false; }
+      }
       try {
-        gd.on('plotly_doubleclick', function() {
-          if (frozen) { update(pinUpdate()); }
-        });
+        // Both events, because they carry different things: the tree panel's
+        // eye is a restyle, which is exactly when a box has to change, while
+        // Plotly's reset gestures are relayouts, which is when a pin has to be
+        // repaired. A measured brain-only page showed the embedded VNC coming
+        // on with the box unchanged, because only relayout was wired up here.
+        gd.on('plotly_relayout', repaint);
+        gd.on('plotly_restyle', repaint);
       } catch (err) { /* older plotly builds expose no such hook */ }
       return;
     }
@@ -4326,7 +4726,8 @@ class VisualizeSkeleton:
         palettes are chosen per background before generation. Everything is
         guarded so a script error can never break the page, and the widget
         hides itself under webdriver (navigator.webdriver) so automated
-        exports never show or trigger it.
+        exports never show or trigger it. It carries the same styled hover
+        hint as the two view tools, worded for the theme the click selects.
         """
         initial = 'dark' if self._is_dark_background() else 'light'
         mesh_colors = {}
@@ -4341,10 +4742,14 @@ class VisualizeSkeleton:
             'meshColors': mesh_colors,
         }
 
+        # The hint names the theme the click would switch to, so it starts on
+        # the opposite theme -- the same rule decorateButton() re-applies.
+        next_theme = 'light' if initial == 'dark' else 'dark'
         button_html = (
             '<button id="drocat-theme-toggle" type="button"'
             ' aria-label="Toggle light/dark theme"'
-            ' title="Toggle light/dark theme (T)"></button>'
+            f' data-drocat-tip="Switch to the {next_theme} theme (T)">'
+            '</button>'
         )
         style_html = (
             '<style>'
@@ -4354,6 +4759,23 @@ class VisualizeSkeleton:
             'justify-content:center;cursor:pointer;opacity:.85;'
             'transition:opacity .15s,background .15s,color .15s;}'
             '#drocat-theme-toggle:hover{opacity:1;}'
+            # The same styled hint the two view tools draw: a native title
+            # takes about a second to appear and cannot name the theme the
+            # click would switch to. The switch owns the top-right corner, so
+            # its hint is drawn to its left.
+            '#drocat-theme-toggle::after{'
+            'content:attr(data-drocat-tip);position:absolute;'
+            'right:calc(100% + 9px);top:50%;transform:translateY(-50%);'
+            'padding:4px 8px;border-radius:5px;background:rgba(0,0,0,0.82);'
+            'color:#fff;font-size:11px;font-weight:400;line-height:1.35;'
+            'letter-spacing:normal;opacity:0;'
+            'max-width:min(340px,58vw);white-space:normal;'
+            'visibility:hidden;transition:opacity .12s ease;'
+            'pointer-events:none;}'
+            '#drocat-theme-toggle:hover::after{opacity:1;'
+            'visibility:visible;}'
+            'body.drocat-theme-dark #drocat-theme-toggle::after{'
+            'background:rgba(255,255,255,0.9);color:#111;}'
             # Keep the hover mode bar clear of the corner button.
             '.modebar-container{right:52px !important;}'
             '</style>'
@@ -4383,6 +4805,10 @@ class VisualizeSkeleton:
     btn.style.border = '1px solid ' + t.btnBorder;
     btn.style.color = t.text;
     btn.textContent = t.icon;
+    // Keep the hover hint on the button's current state, so the icon and the
+    // text a viewer sees before clicking cannot disagree.
+    btn.setAttribute('data-drocat-tip', 'Switch to the '
+      + (theme === 'dark' ? 'light' : 'dark') + ' theme (T)');
   }
 
   function graphDiv() {
@@ -4980,6 +5406,7 @@ class VisualizeSkeleton:
   function sync() {
     var gd = graphDiv();
     if (!gd) { return; }
+    snapshotInitialVisibility();
     records.forEach(function(rec) {
       var on = rec.indices.every(function(i) { return isVisible(gd.data[i]); });
       rec.eye.textContent = on ? '\u25CF' : '\u25CB';
@@ -5002,6 +5429,20 @@ class VisualizeSkeleton:
   var isolatedKey = null;
   function rowKey(indices) { return indices.join(','); }
 
+  /* The page's own starting visibility, snapshotted on the first sync() --
+     which runs at boot, before any row can be clicked. showAll() restores to
+     this rather than to "everything on", so a context mesh the run embedded
+     but did not show stays hidden after an isolate/restore round trip. */
+  var initialVisible = null;
+  function snapshotInitialVisibility() {
+    var gd = graphDiv();
+    if (!gd || !gd.data || initialVisible) { return; }
+    initialVisible = {};
+    for (var i = 0; i < gd.data.length; i++) {
+      initialVisible[i] = isVisible(gd.data[i]);
+    }
+  }
+
   function isolateOnly(indices) {
     var gd = graphDiv();
     if (!gd) { return; }
@@ -5018,7 +5459,15 @@ class VisualizeSkeleton:
     isolatedKey = null;
     var gd = graphDiv();
     if (!gd) { return; }
-    Plotly.restyle(gd, {visible: true}, managedIndices());
+    var all = managedIndices();
+    if (!all.length) { return; }
+    var on = [], off = [];
+    all.forEach(function(i) {
+      if (initialVisible && initialVisible[i] === false) { off.push(i); }
+      else { on.push(i); }
+    });
+    if (on.length) { Plotly.restyle(gd, {visible: true}, on); }
+    if (off.length) { Plotly.restyle(gd, {visible: false}, off); }
     sync();
   }
 
@@ -5212,9 +5661,15 @@ class VisualizeSkeleton:
     var header = makeEl('div', 'drocat-lt-header');
     header.appendChild(makeEl('span', 'drocat-lt-title', 'Legend'));
     masterEyeEl = makeEl('span', 'drocat-lt-eye');
+    // The header eye and the double-click restore are deliberately different:
+    // this one means *every row*, which on a male-cns/BANC page includes the
+    // template half the page ships hidden, while showAll() means *back to how
+    // the page opened*. The wording says so because the difference is only
+    // visible once you click.
     masterEyeEl.setAttribute('title',
-      'Show/hide all. Double-click window: ' + CONFIG.doubleClickMs +
-      ' ms; repeat on the isolated row to restore all.');
+      'Show/hide all rows, including an envelope this page opens without.'
+      + ' Double-click window: ' + CONFIG.doubleClickMs +
+      ' ms; repeat on the isolated row returns to how the page opened.');
     masterEyeEl.addEventListener('click', toggleAll);
     header.appendChild(masterEyeEl);
     panel.appendChild(header);
@@ -5438,12 +5893,14 @@ class VisualizeSkeleton:
 
     def _inject_page_extras(self, html_path, theme_toggle=False,
                             mesh_indices=None, legend_tree=False,
-                            freeze_ranges=None):
+                            freeze_ranges=None, freeze_reveal=None):
         """Insert the warning banner and/or viewer extras at the top of a page.
 
         All extras share one read/insert/write pass so large HTML files are
         not rewritten twice.  Each extra is skipped when already present,
         keeping the pass idempotent against retry/export paths.
+        ``freeze_reveal`` is the box the same script switches to while an
+        embedded context mesh is on view; see ``_freeze_view_html``.
         """
         if not os.path.exists(html_path):
             return
@@ -5454,7 +5911,8 @@ class VisualizeSkeleton:
         )
         legend_html = self._legend_tree_html() if legend_tree else ''
         freeze_html = (
-            self._freeze_view_html(freeze_ranges) if freeze_ranges else ''
+            self._freeze_view_html(freeze_ranges, freeze_reveal)
+            if freeze_ranges else ''
         )
         if not (warning_html or theme_html or legend_html or freeze_html):
             return
@@ -5525,9 +5983,16 @@ class VisualizeSkeleton:
         versus background, which camera belongs to the 'front' view, or what
         neuron alpha the scene was built with. ``visualization_manifest.json``
         records exactly that, so the individual/video re-exporters can work on
-        a run from days ago without re-fetching skeletons, and so
-        ``*_simplified.html`` (a size-reduced copy) is never mistaken for the
-        page to re-open.
+        a run from days ago without re-fetching skeletons. Two halves: the
+        re-export inputs (``canonical_page``, ``dataset``, ``brain_mesh``,
+        ``mesh_roi``, ``views``, ``background_color``, and ``traces``, which the
+        re-exporter re-reads as a round-trip check) and the render settings the
+        page itself cannot show, kept as provenance for whoever opens the run
+        next. Each role entry carries the trace's ``visible``, so a re-export
+        can tell a background mesh the run asked to show from one the page only
+        embeds for the viewer to reveal (``_is_unshown_context_mesh``).
+        ``*_simplified.html`` needs no key: ``resolve_viewer_page``
+        recognises a size-reduced copy by its name.
         """
         figure = getattr(self, 'fig_3d', None)
         if figure is None:
@@ -5549,10 +6014,8 @@ class VisualizeSkeleton:
             'background_color': self.background_color,
             'saveas': self.saveas,
             'canonical_page': canonical_page,
-            'degraded_pages': [f'{self.saveas}_simplified.html'],
             'legend_mode': self.legend_mode,
             'freeze_view': bool(self.freeze_view),
-            'frozen_ranges': self._scene_data_ranges(figure),
             'export_method': self.export_method,
             'export_scale': self.export_scale,
             'neuron_alpha': self.neuron_alpha,
@@ -5603,6 +6066,43 @@ class VisualizeSkeleton:
                          level='full')
             return None
 
+    def _note_hidden_context_meshes(self):
+        """Append to ``parameters.txt`` what the page carries but does not show.
+
+        ``Brain Mesh: native`` / ``VNC Mesh: False`` above no longer account for
+        the file's own contents: on male-cns and BANC the unchecked half of the
+        native template ships in the viewer HTML, decimated, so its legend row
+        can be revealed. This is the run's record of that, and it can only be
+        written after the scene exists -- unlike the parameter block, which is
+        composed during initialization.
+        """
+        try:
+            figure = getattr(self, 'fig_3d', None)
+            if figure is None or not self.save_folder:
+                return
+            indices = _unshown_context_mesh_indices(figure)
+            if not indices:
+                return
+            names = [str(getattr(figure.data[i], 'name', '') or f'trace {i}')
+                     for i in indices]
+            with open(os.path.join(self.save_folder, 'parameters.txt'), 'a',
+                      encoding='utf-8') as handle:
+                handle.write('\n[Context Meshes Embedded But Hidden]\n')
+                for name in names:
+                    handle.write(f'  {name}\n')
+                handle.write(
+                    '  Present in the viewer page although the mesh '
+                    'checkboxes did not ask for\n'
+                    f'  them; decimated to ~'
+                    f'{CONTEXT_MESH_EMBEDDED_TARGET_FACES:,} faces, and '
+                    'revealable from the legend tree.\n')
+            self._vprint(f'   Hidden context meshes noted in parameters.txt: '
+                         f'{", ".join(names)}', level='full')
+        except Exception as exc:
+            # A note about the page must never cost the user the page.
+            self._vprint(f'  Warning: could not note the hidden context '
+                         f'meshes: {exc}', level='full')
+
     def _write_plotly_html(self, figure, html_path, theme_toggle=False,
                            legend_tree=False, freeze_view=False, **kwargs):
         """Write a self-contained visualization HTML.
@@ -5628,9 +6128,23 @@ class VisualizeSkeleton:
         freeze_ranges = (
             self._scene_data_ranges(figure) if freeze_view else None
         )
+        freeze_reveal = None
+        if freeze_ranges:
+            context_indices = _unshown_context_mesh_indices(figure)
+            wider = (
+                self._scene_data_ranges(figure, include_context=True)
+                if context_indices else None
+            )
+            # Only a box that actually differs is worth switching to: a run that
+            # shows both halves embeds nothing hidden, and one whose hidden
+            # half sits inside the framing needs no change of its own.
+            if wider and wider != freeze_ranges:
+                freeze_reveal = {'traces': context_indices,
+                                 'ranges': wider}
         self._inject_page_extras(
             html_path, theme_toggle=theme_toggle, mesh_indices=mesh_indices,
             legend_tree=legend_tree, freeze_ranges=freeze_ranges,
+            freeze_reveal=freeze_reveal,
         )
         self._record_large_html_warning(html_path)
 
@@ -7165,7 +7679,9 @@ class VisualizeSkeleton:
         if not isinstance(self.export_method, str):
             errors.append(f"export_method must be a string, got {type(self.export_method).__name__}")
         elif self.export_method not in ('webdriver', 'webdriver-fast', 'kaleido'):
-            errors.append(f"export_method must be 'webdriver' or 'kaleido', got '{self.export_method}'")
+            errors.append(
+                "export_method must be 'webdriver', 'webdriver-fast' or "
+                f"'kaleido', got '{self.export_method}'")
             
         # === export_views validation ===
         valid_views = {'front', 'back', 'top', 'bottom', 'left', 'right', 'lateral', 'all'}
@@ -7979,8 +8495,9 @@ class VisualizeSkeleton:
         if self._resolved_skeleton_radius_style() not in ['fafb', 'source', 'constant']:
             raise ValueError(
                 'skeleton_radius_style must be "auto", "fafb", "source", or "constant"')
-        # Normalize legacy selections ('template'/'whole') before any
-        # consumer reads the token; unknown values still fail below.
+        # Restore the capitalized spellings before any consumer reads the
+        # token; anything else -- including the retired 'template'/'whole' --
+        # fails below rather than being folded onto a current option.
         self.brain_mesh = normalize_brain_mesh(self.brain_mesh)
         if self.brain_mesh not in BRAIN_MESH_SELECTIONS:
             raise ValueError(
@@ -11078,7 +11595,7 @@ class VisualizeSkeleton:
             
         Example
         -------
-        >>> from coana import VisualizeSkeleton
+        >>> from visualize_skeleton import VisualizeSkeleton
         >>> import trimesh
         >>> # Analyze a mesh
         >>> result = VisualizeSkeleton.detect_mesh_extrusions(mesh, soma_pos=[100, 200, 300])
@@ -11253,7 +11770,7 @@ class VisualizeSkeleton:
         Example
         -------
         >>> # Fix specific neurons with extrusion issues
-        >>> from coana import VisualizeSkeleton
+        >>> from visualize_skeleton import VisualizeSkeleton
         >>> fixed = VisualizeSkeleton.fix_fafb_extrusions([720575940596125868, 720575940597856265])
         >>> print(f"Fixed {len(fixed)} neurons")
 
@@ -11369,7 +11886,7 @@ class VisualizeSkeleton:
             
         Example
         -------
-        >>> from coana import VisualizeSkeleton
+        >>> from visualize_skeleton import VisualizeSkeleton
         >>> # Check a specific neuron
         >>> result = VisualizeSkeleton.check_fafb_skeleton_for_extrusions(
         ...     720575940624086675, 
@@ -17506,6 +18023,205 @@ class VisualizeSkeleton:
                 level='simple')
             return None, None
 
+    def _decimate_context_mesh(self, volume, *, label):
+        """Reduce an embedded-only context mesh to the viewer budget.
+
+        Returns the input unchanged -- and says so once -- when decimation is
+        not possible. A coarse envelope a viewer can still reveal beats no
+        envelope at all, and dropping it would quietly undo the point of
+        embedding it.
+        """
+        try:
+            tm = self._extract_trimesh(volume)
+            faces = 0 if tm is None else len(getattr(tm, 'faces', []))
+            if tm is None or faces <= CONTEXT_MESH_EMBEDDED_TARGET_FACES:
+                return volume
+            reduced = self._simplify_mesh_open3d(
+                tm, CONTEXT_MESH_EMBEDDED_TARGET_FACES)
+            got = 0 if reduced is None else len(reduced.faces)
+            if got < 100:
+                raise ValueError(f'decimation produced {got} faces')
+            self._vprint(f'   Embedded {label} decimated for the viewer: '
+                         f'{faces} → {got} faces', level='full')
+            return navis.Volume(reduced, name=f'{label}_embedded')
+        except Exception as exc:
+            self._vprint(f'   ⚠️  Could not decimate the embedded {label} '
+                         f'({exc}); embedding it at full resolution',
+                         level='simple')
+            return volume
+
+    def _embed_context_mesh(self, volume, *, name, rank, role):
+        """Add a context mesh that starts hidden so a viewer can reveal it.
+
+        The brain/VNC checkbox decides what is *shown on open*, not what
+        exists: the half a run left unchecked still ships, so the exported
+        page's tree panel can turn it on. Two deliberate differences from a
+        requested mesh. It is decimated to
+        ``CONTEXT_MESH_EMBEDDED_TARGET_FACES`` -- the full JRCFIB2022M VNC
+        costs 0.871 MB of page for pixels nobody asked to see, the budgeted
+        copy 0.471 MB. And it is *not*
+        registered with ``_append_exportable_mesh``, because
+        ``export_3d_model`` writes out every registered mesh and an
+        unrequested nerve cord would turn up in the user's GLB/OBJ.
+
+        It also stays out of the frozen scene box, which is the framing the run
+        asked for; ``_freeze_view_html``'s ``reveal`` argument carries the
+        wider box the page switches to while this trace is on view.
+
+        ``visible=False`` rather than ``'legendonly'``: the legend tree reads
+        legendonly as shown, so its eye would switch the mesh *off* on the
+        first click.
+        """
+        if volume is None or self.backend != 'plotly':
+            return False
+        try:
+            volume = self._decimate_context_mesh(volume, label=name)
+            with self._suppress_output():
+                fig_mesh = navis.plot3d(volume, backend='plotly')
+            traces = list(fig_mesh.data)
+            if not traces:
+                raise ValueError('navis.plot3d returned no traces')
+            color = self._get_effective_mesh_color(role)
+            for trace in traces:
+                trace.showlegend = True
+                trace.name = name
+                trace.hoverinfo = 'none'
+                trace.legendrank = rank
+                trace.visible = False
+                self._apply_plotly_trace_color(trace, color)
+            self.fig_3d.add_traces(traces)
+            self._vprint(f'   Embedded {name} hidden, for viewer toggling',
+                         level='full')
+            return True
+        except Exception as exc:
+            self._vprint(f'   ⚠️  Could not embed the {name} context mesh '
+                         f'({exc}); it will not be available in the page',
+                         level='simple')
+            return False
+
+    def _context_meshes_shown(self):
+        """Which context halves the figure already carries, by legend rank.
+
+        Read off the figure rather than tracked in flags, because several
+        branches legitimately conclude the VNC is already covered -- MANC's
+        template *is* the VNC, and a failed neck split falls back to the
+        whole-CNS envelope. The traces are the only answer that cannot
+        disagree with what was actually drawn.
+        """
+        shown = {'brain': False, 'vnc': False}
+        if not hasattr(self, 'fig_3d'):
+            return shown
+        for trace in self.fig_3d.data:
+            rank = getattr(trace, 'legendrank', None)
+            if rank == BRAIN_MESH_LEGEND_RANK:
+                shown['brain'] = True
+            elif rank == VNC_MESH_LEGEND_RANK:
+                shown['vnc'] = True
+        return shown
+
+    def _context_halves_kind(self):
+        """Which neck split this dataset has: 'mcns', 'banc', or None.
+
+        Only these two whole-CNS templates split into a brain half and a VNC
+        half worth embedding separately. FAFB, hemibrain and the optic-lobe
+        templates have a single native envelope, and MANC's native template
+        already *is* the VNC, so for them the requested path is the whole
+        story and nothing here changes.
+        """
+        if self.backend != 'plotly':
+            return None
+        dataset_lower = str(self.dataset or '').lower()
+        if 'male-cns' in dataset_lower or 'malecns' in dataset_lower:
+            return 'mcns'
+        if is_banc_dataset(self.dataset):
+            return 'banc'
+        return None
+
+    def _native_context_halves(self):
+        """Split this dataset's own template so a mesh-free page can still
+        offer both halves.
+
+        Both splits are in the scene's own space here, since this path only
+        runs for ``brain_mesh='none'``, where the scene keeps its native
+        target.
+        """
+        kind = self._context_halves_kind()
+        if kind is None:
+            return None
+        # This is a template a mesh-free run used never to touch, so say so
+        # before the download rather than leaving it as an unexplained pause.
+        self._vprint('   Loading the native template outline to embed the '
+                     'context mesh the run did not show (hidden, decimated)...',
+                     level='full')
+        try:
+            if kind == 'mcns':
+                import flybrains
+                brain, vnc = self._split_mcns_cns_volume(
+                    flybrains.JRCFIB2022M.mesh)
+                return (brain, vnc,
+                        'JRCFIB2022M (brain)', 'JRCFIB2022M (VNC)')
+            info = self._get_template_info()
+            template = info.get('template_obj')
+            volume = getattr(template, 'mesh', template)
+            brain, vnc = self._split_banc_cns_volume(volume)
+            return (brain, vnc,
+                    info.get('mesh_name') or 'BANC (brain)', 'BANC (VNC)')
+        except Exception as exc:
+            self._vprint(
+                f'   ⚠️  Could not prepare the hidden context meshes ({exc}); '
+                'the viewer will not be able to reveal them', level='simple')
+        return None
+
+    def _embed_unshown_context_mesh(self):
+        """Ship the context half the run did not show, hidden and decimated.
+
+        The brain/VNC checkbox means *shown when the page opens*, not *present
+        in the page*: handed a brain-only male-cns or BANC export, a viewer can
+        still reveal the nerve cord, and a neuron-only page can reveal either
+        half. Datasets with a single native envelope (FAFB, hemibrain, optic
+        lobes) have nothing to embed, and MANC's native template already is
+        the VNC.
+        """
+        if self.backend != 'plotly':
+            return
+        shown = self._context_meshes_shown()
+        if shown['brain'] and shown['vnc']:
+            return
+        # Read defensively: this also runs from plot_mesh's early return,
+        # before either block has had a chance to set them.
+        halves = getattr(self, '_ctx_halves', None)
+        if halves is None and str(self.brain_mesh or 'none').lower() == 'none':
+            # The test is on the scene's *space*, not on both halves being
+            # missing: with no outline drawn the scene is still native, so the
+            # dataset's own split is the right geometry to offer -- and a
+            # 'none' + vnc_mesh run shows the cord but still owes the viewer a
+            # brain envelope. A cross-template scene must not reach here: the
+            # native template's coordinates would not match the scene, and its
+            # own split is carried on the outline attributes below.
+            halves = self._native_context_halves()
+        brain = vnc = brain_name = vnc_name = None
+        if halves is not None:
+            brain, vnc, brain_name, vnc_name = halves
+        # A cross-template scene stashes its (already transformed) VNC half on
+        # the outline attributes instead, and draws no native brain at all.
+        outline_vnc = getattr(self, '_outline_vnc_volume', None)
+        if brain is None and vnc is None and outline_vnc is None:
+            return
+        # Brain first: the figure's convention is that the VNC mesh is the
+        # last trace, and the tree sorts both by rank anyway.
+        if not shown['brain'] and brain is not None and brain_name:
+            self._embed_context_mesh(brain, name=brain_name,
+                                     rank=BRAIN_MESH_LEGEND_RANK,
+                                     role='brain')
+        if not shown['vnc']:
+            volume = vnc if vnc is not None else outline_vnc
+            if volume is not None:
+                self._embed_context_mesh(
+                    volume,
+                    name=vnc_name or getattr(self, '_outline_vnc_name', None)
+                    or 'Template (VNC)',
+                    rank=VNC_MESH_LEGEND_RANK, role='vnc')
+
     def _get_vnc_template_info(self):
         """Get VNC template information for current dataset.
         
@@ -17672,6 +18388,11 @@ class VisualizeSkeleton:
         has_vnc_mesh = self.vnc_mesh
         
         if not has_roi_meshes and not has_brain_mesh and not has_vnc_mesh:
+            # Nothing to *show*, but a male-cns/BANC page still carries both
+            # context halves hidden so the viewer can reveal them later. Done
+            # here rather than by falling through, so a mesh-free run does not
+            # suddenly start resolving ROI lists.
+            self._embed_unshown_context_mesh()
             return
         
         is_flywire = is_fafb_dataset(self.dataset)
@@ -18070,6 +18791,9 @@ class VisualizeSkeleton:
 
         # Plot the template outline (brain mesh) regardless of ROI mesh status
         self._outline_vnc_volume = None
+        # (brain, vnc, brain_name, vnc_name) from this scene's neck split, for
+        # _embed_unshown_context_mesh() to ship the half the box left off.
+        self._ctx_halves = None
         if self.brain_mesh != 'none':
             brain_mesh = None
             mesh_display_name = None
@@ -18106,11 +18830,16 @@ class VisualizeSkeleton:
                     if use_brain_only:
                         # Neck segmentation (boundary faces assigned by
                         # centroid) keeps the brain and VNC portions
-                        # seamless at the cut plane. Native mode keeps
-                        # drawing its VNC from _get_vnc_template_info, so
-                        # the split VNC stays local to this branch.
-                        brain_mesh, _ = self._split_mcns_cns_volume(
+                        # seamless at the cut plane. The VNC half used to be
+                        # discarded here and re-derived from _get_vnc_template_info
+                        # when vnc_mesh was on; keeping it means an unchecked
+                        # box still ships the geometry for the viewer to
+                        # reveal, from the same cut rather than a second one.
+                        brain_mesh, mcns_vnc = self._split_mcns_cns_volume(
                             flybrains.JRCFIB2022M.mesh)
+                        self._ctx_halves = (
+                            brain_mesh, mcns_vnc,
+                            'JRCFIB2022M (brain)', 'JRCFIB2022M (VNC)')
                         if brain_mesh is not None:
                             self._vprint(
                                 f'   Extracted brain mesh: '
@@ -18119,6 +18848,11 @@ class VisualizeSkeleton:
                         else:
                             # Fallback to full mesh if extraction fails
                             brain_mesh = flybrains.JRCFIB2022M.mesh
+                            # That envelope already contains the VNC, so there
+                            # is no second half left to embed.
+                            self._ctx_halves = (
+                                brain_mesh, None,
+                                'JRCFIB2022M (brain)', None)
                             self._vprint('   ⚠️  Brain mesh extraction failed, using full CNS mesh', level='full')
                     else:
                         brain_mesh = template_info['template_obj'].mesh if hasattr(template_info['template_obj'], 'mesh') else template_info['template_obj']
@@ -18126,7 +18860,11 @@ class VisualizeSkeleton:
                     # BANC: brain-only portion, segmented from the whole-CNS
                     # outline at the neck coordinate (mirrors male-cns).
                     if use_banc_brain_only:
-                        brain_mesh, _ = self._split_banc_cns_volume(brain_mesh)
+                        brain_mesh, banc_vnc = self._split_banc_cns_volume(
+                            brain_mesh)
+                        self._ctx_halves = (
+                            brain_mesh, banc_vnc, mesh_display_name,
+                            'BANC (VNC)')
 
                     # Apply FAFB tilt correction in native mode.
                     # This corrects the left-right tilt in the FLYWIRE template mesh
@@ -18327,7 +19065,11 @@ class VisualizeSkeleton:
                         self._vprint(f'⚠️  Failed to load VNC mesh: {e}', level='full')
                 else:
                     self._vprint('⚠️  VNC mesh is only available for manc and male-cns datasets', level='full')
-        
+
+        # Whatever the checkboxes did not ask to show still ships, hidden, so
+        # the exported page's tree can reveal it later.
+        self._embed_unshown_context_mesh()
+
         self._vprint('Done', level='full')
         return 0
     
@@ -18400,7 +19142,8 @@ class VisualizeSkeleton:
                     'displayModeBar': True,
                     'displaylogo': False,  # Hide Plotly logo
                     'scrollZoom': True,
-                    'modeBarButtonsToRemove': ['sendDataToCloud', 'lasso2d', 'select2d'],
+                    'modeBarButtonsToRemove': list(
+                        VIEWER_MODEBAR_BUTTONS_TO_REMOVE),
                     'toImageButtonOptions': {
                         'format': 'png',
                         'filename': self.saveas,
@@ -18429,6 +19172,8 @@ class VisualizeSkeleton:
             # Record what the page means, for the individual/video
             # re-exporters; after the HTML exists so a failure there is visible.
             self.write_visualization_manifest()
+            # Same timing reason, for the human-readable side of the record.
+            self._note_hidden_context_meshes()
             
             if self.show_fig:
                 try:
@@ -18768,6 +19513,13 @@ class VisualizeSkeleton:
 
         for role in trace_roles:
             if role.role in ('mesh', 'synapse', 'legend_swatch'):
+                # A context mesh the page carries but does not show is left out
+                # of the plan entirely rather than listed as background: the
+                # profile exporter force-shows every background index, so
+                # listing it would put an unrequested nerve cord into every
+                # exported PNG.
+                if role.role == 'mesh' and role.visible is False:
+                    continue
                 background.append(role.index)
                 continue
             if role.role == 'site':

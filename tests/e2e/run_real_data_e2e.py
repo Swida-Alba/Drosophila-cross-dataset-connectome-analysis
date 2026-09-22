@@ -259,7 +259,7 @@ TOOLS = [
             "neuron_layers": ["aMe12"],
             "output_dir": out("skeleton"),
             "skeleton_mode": "tube",
-            "brain_mesh": "template",
+            "brain_mesh": "native",
             "neuron_alpha": 0.2,
             "mesh_roi": [],
             "skip_synapse": True,

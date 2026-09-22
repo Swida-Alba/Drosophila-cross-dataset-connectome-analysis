@@ -1,5 +1,11 @@
 # Brain Template Transformation Fix (November 2024)
 
+> **Historical record (November 2024).** `VisualizeSkeleton` has since moved out
+> of `src/coana.py` into `src/visualize_skeleton.py`, so the
+> `from coana import VisualizeSkeleton` snippets below no longer run. For
+> current behavior and options see
+> [3D_Skeleton_Guide.md](../visualizations/3D_Skeleton_Guide.md).
+
 ## Issue
 
 Brain transformations were failing with error:

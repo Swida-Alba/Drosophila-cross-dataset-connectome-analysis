@@ -13,6 +13,7 @@ from nicegui import ui
 
 from ..config import (
     BRAIN_MESH_OPTIONS,
+    LEGEND_MODES,
     SKELETON_MODES,
     SYNAPSE_SIZE_OPTIONS,
     get_user_default,
@@ -217,11 +218,12 @@ def skeleton_visualization_settings(
             )
             fields["legend_mode"] = select_input(
                 "Legend Mode",
-                ["layer", "type", "tree", "single"],
+                LEGEND_MODES,
                 get_user_default("legend_mode"),
-                hint="Choose one legend entry per layer, type, or individual "
-                     "neuron. 'tree' adds an expandable type -> neuron "
-                     "legend panel to the exported interactive HTML.",
+                hint="One legend entry per layer, type, or individual neuron. "
+                     "'tree' adds a collapsible type -> bodyId/instance panel "
+                     "to the exported HTML, or group -> type -> "
+                     "bodyId/instance with custom groups.",
             )
             fields["background_color"] = select_input(
                 "Background",

@@ -8839,7 +8839,7 @@ class MorphologyComparer:
                     "skeleton_mode", "line"
                 ),
                 "legend_mode": "layer" if self.visualize_by == "type" else "single",
-                "brain_mesh": "template",
+                "brain_mesh": "native",
                 "export_views": False,
                 "show_fig": False,
                 "cache_neurons": (

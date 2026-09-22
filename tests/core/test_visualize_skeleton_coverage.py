@@ -1270,7 +1270,7 @@ class TestTransformHelpers:
         assert make_vis(dataset='flywire_FAFB_v783',
                         brain_mesh='FAFB')._dataset_needs_transform() is False
         assert make_vis(dataset='male-cns:v0.9',
-                        brain_mesh='mcns')._dataset_needs_transform() is False
+                        brain_mesh='male-cns')._dataset_needs_transform() is False
 
     def test_fafb_tilt_correction_matrix(self):
         vis = make_vis(dataset='hemibrain:v1.2.1', brain_mesh='native')
@@ -4790,6 +4790,127 @@ class TestPlotIndividuals:
                              summary_format=False)
         after = [getattr(t, 'visible', None) for t in vis.fig_3d.data]
         assert before == after
+
+
+class TestStructuralRolesEndToEnd:
+    """Plan §5a FIX-1 (F3): the roles a profile export may never mis-file.
+
+    These run through ``plot_individuals()`` rather than the classifier, because
+    the bug was silent: a neuron whose *name* contained an ROI or dataset
+    acronym was demoted to background and simply never produced a PNG.
+    """
+
+    def _figure(self, tmp_path):
+        """ROI mesh + acronym-collision neurons + a legend-only swatch."""
+        stamper = make_individuals_vis(tmp_path, fig_3d=None)
+        fig = go.Figure()
+        fig.add_trace(go.Mesh3d(x=[0, 1, 0], y=[0, 0, 1], z=[0, 0, 0],
+                                i=[0], j=[1], k=[2],
+                                name='brain region [LH]',
+                                legendgroup='roi_mesh:LH'))
+        for name, group, type_label, item, body_id in (
+                ('LHPD1L', 'LH', 'LHPD1L', '512_aMe1', '512'),
+                ('LHPD1L', 'LH', 'LHPD1L', '513_aMe2', '513'),
+                ('query_transformed_SMP227_fafb',
+                 'query_transformed_SMP227_fafb', 'SMP227',
+                 '99_aMe1', '99')):
+            trace = go.Scatter3d(x=[0, 100], y=[0, 10], z=[0, 10],
+                                 mode='lines', name=name, legendgroup=name,
+                                 showlegend=True)
+            stamper._stamp_trace_identity(
+                trace, kind='neuron', group=group, type_label=type_label,
+                item=item, body_id=body_id)
+            fig.add_trace(trace)
+        # The legend's colour swatch: same group, no geometry of its own.
+        fig.add_trace(go.Scatter3d(x=[None, None], y=[None, None],
+                                   z=[None, None], mode='lines',
+                                   name='LHPD1L', legendgroup='LHPD1L',
+                                   showlegend=True))
+        return fig
+
+    def _vis(self, tmp_path, **over):
+        return make_individuals_vis(tmp_path, fig=self._figure(tmp_path),
+                                    mesh_roi=['LH', 'LHPR'], **over)
+
+    def _pngs(self, out):
+        return sorted(f for f in os.listdir(out) if f.endswith('.png'))
+
+    def test_profile_roi_name_substring_collision(self, tmp_path, monkeypatch):
+        """ROI 'LH' stays background while type 'LHPD1L' keeps its profile."""
+        patch_write_image(monkeypatch, mode='ok')
+        vis = self._vis(tmp_path)
+        out = vis.plot_individuals(output_format='png', views='front',
+                                   summary_format=False)
+        assert list(vis._profile_entries) == [
+            'LHPD1L', 'query_transformed_SMP227_fafb']
+        assert vis._profile_entries['LHPD1L'] == [1, 2]
+        assert vis._trace_roles[0].role == 'mesh'
+        assert self._pngs(out) == ['front_LHPD1L.png',
+                                   'front_query_transformed_SMP227_fafb.png']
+
+    def test_profile_cross_dataset_overlay_not_background(
+            self, tmp_path, monkeypatch):
+        """A '..._fafb' overlay layer is a neuron, not a dataset template.
+
+        The name tier survives only for structurally bare traces, and only on a
+        whole-word match, so neither the ``_fafb`` suffix of a cross-dataset
+        overlay nor the ``LH`` inside ``LHPD1L`` can fire.
+        """
+        patch_write_image(monkeypatch, mode='ok')
+        vis = self._vis(tmp_path)
+        roles = vs_module.classify_traces(
+            [go.Scatter3d(x=[0, 1], y=[0, 1], z=[0, 1], mode='lines',
+                          name='query_transformed_SMP227_fafb')],
+            mesh_roi_names=['LH', 'LHPR'])
+        assert [role.role for role in roles] == ['neuron']
+        vis.plot_individuals(output_format='png', views='front',
+                             summary_format=False)
+        overlay = vis._trace_roles[3]
+        assert (overlay.role, overlay.item) == ('neuron', '99_aMe1')
+        assert 'query_transformed_SMP227_fafb' in vis._profile_entries
+
+    def test_profile_legend_swatch_excluded(self, tmp_path, monkeypatch):
+        """The swatch carries the group's colour, never a profile of its own."""
+        patch_write_image(monkeypatch, mode='ok')
+        vis = self._vis(tmp_path)
+        vis.plot_individuals(output_format='png', views='front',
+                             summary_format=False)
+        assert vis._trace_roles[4].role == 'legend_swatch'
+        assert 5 not in vis._profile_entries['LHPD1L']
+        assert vis._profile_entries['LHPD1L'] == [1, 2]
+
+    @pytest.mark.parametrize('granularity, expected', [
+        ('legend', {'LHPD1L', 'query_transformed_SMP227_fafb'}),
+        ('layer', {'LH', 'query_transformed_SMP227_fafb'}),
+        ('type', {'LHPD1L', 'SMP227'}),
+        ('body', {'LH__LHPD1L__512_aMe1', 'LH__LHPD1L__513_aMe2',
+                  'query_transformed_SMP227_fafb__SMP227__99_aMe1'}),
+    ])
+    def test_granularity_levels_change_the_profiles_end_to_end(
+            self, tmp_path, monkeypatch, granularity, expected):
+        patch_write_image(monkeypatch, mode='ok')
+        vis = self._vis(tmp_path)
+        out = vis.plot_individuals(output_format='png', views='front',
+                                   summary_format=False,
+                                   granularity=granularity)
+        assert set(vis._profile_entries) == expected
+        assert len(self._pngs(out)) == len(expected)
+
+    def test_a_trace_with_no_identity_is_named_in_the_log(
+            self, tmp_path, monkeypatch, capsys):
+        """Silent loss was the bug; the log has to carry the count and index."""
+        patch_write_image(monkeypatch, mode='ok')
+        fig = self._figure(tmp_path)
+        orphan = go.Scatter3d(x=[5, 6], y=[0, 1], z=[0, 1], mode='lines')
+        fig.add_trace(orphan)
+        vis = make_individuals_vis(tmp_path, fig=fig, mesh_roi=['LH'],
+                                   verbose=True)
+        vis.plot_individuals(output_format='png', views='front',
+                             summary_format=False)
+        printed = capsys.readouterr().out
+        assert 'Trace roles:' in printed
+        assert '1 trace(s) carry no legend identity and got no profile' in printed
+        assert '[5]' in printed
 
 
 class TestIndividualSummaries:

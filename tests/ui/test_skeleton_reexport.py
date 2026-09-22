@@ -125,14 +125,19 @@ def test_missing_roots_are_ignored(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _build_skeleton_tab(monkeypatch, pages=None):
+    """Mount the Skeleton tab with a *pages*-shaped scan instead of the real one.
+
+    ``pages=None`` means "no stored runs at all", which is what a defaults
+    test needs: the card pre-selects the newest page it can find, so scanning
+    the developer's own output directory would put a real page in that slot.
+    """
     from ui.tabs.visualization import create_skeleton_tab
     import ui.layer_style_store as layer_style_store
 
     monkeypatch.setattr(layer_style_store, '_store_dir', Path('/tmp') /
                         f'tab_drafts_{uuid.uuid4().hex}')
-    if pages is not None:
-        monkeypatch.setattr(reexport, 'candidate_pages',
-                            lambda limit=PAGE_LIMIT: dict(pages))
+    monkeypatch.setattr(reexport, 'candidate_pages',
+                        lambda limit=PAGE_LIMIT: dict(pages or {}))
     client = Client(page(f'/skeleton-reexport-{uuid.uuid4().hex}'))
     with client:
         create_skeleton_tab()

@@ -72,6 +72,28 @@ def test_theme_toggle_html_starts_at_background_theme():
     assert '"initial": "dark"' in dark._theme_toggle_html()
 
 
+def test_the_hover_hint_is_drawn_by_css_not_a_native_title():
+    """The switch hints like the two view tools, naming the theme it picks.
+
+    A native ``title`` takes about a second to appear and could only name the
+    widget, never the state the click moves to, so the copy lives in
+    ``data-drocat-tip`` and ``::after`` renders it. The button owns the
+    top-right corner, so its hint is drawn to its left.
+    """
+    html = _make_visualizer('white')._theme_toggle_html()
+    assert 'content:attr(data-drocat-tip)' in html
+    assert '#drocat-theme-toggle:hover::after' in html
+    assert 'right:calc(100% + 9px)' in html
+    assert 'body.drocat-theme-dark #drocat-theme-toggle::after' in html
+    assert ' title=' not in html
+    # The baked hint already names the next theme, and decorateButton()
+    # rewrites it on every switch, so hint and icon cannot drift apart.
+    assert 'data-drocat-tip="Switch to the dark theme (T)"' in html
+    assert ('data-drocat-tip="Switch to the light theme (T)"'
+            in _make_visualizer('black')._theme_toggle_html())
+    assert "setAttribute('data-drocat-tip'" in html
+
+
 def test_theme_toggle_html_repositions_below_warning_banner():
     # The switch is fixed to the viewport's top-right corner and would
     # otherwise paint over the full-width warning banner; the injected

@@ -7275,7 +7275,7 @@ class NeuronBridgeFinder:
                 # The shared UI panel uses the dataset-aligned template brain
                 # by default.  Keep the same default for programmatic callers.
                 viz_settings = dict(visualization_settings or {})
-                brain_mesh = viz_settings.get('brain_mesh', 'template')
+                brain_mesh = viz_settings.get('brain_mesh', 'native')
                 pipeline = str(
                     viz_settings.get('neuprint_skeleton_pipeline', 'fine')
                     or 'fine'

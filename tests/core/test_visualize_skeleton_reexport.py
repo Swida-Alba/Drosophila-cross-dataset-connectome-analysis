@@ -258,6 +258,40 @@ class TestExportFromHtml:
         assert sorted(self.calls[0]['legend_entries']) == [
             'KC layer__KC1a__256_aMe4', 'KC layer__KC1a__257_aMe5']
 
+    def _with_recorded_roles(self, run_dir, kinds):
+        """Rewrite the run manifest's role table to claim ``kinds``."""
+        path = run_dir / VISUALIZATION_MANIFEST_NAME
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        manifest['traces'] = [{'index': index, 'kind': kind}
+                              for index, kind in enumerate(kinds)]
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        return manifest
+
+    def test_a_page_whose_stamps_did_not_survive_says_so(self, run, capsys):
+        """The recorded role table is the re-export's only round-trip check.
+
+        A page that loses its ``meta`` stamps still opens and still profiles --
+        just one level coarser -- so without this the failure is
+        indistinguishable from an honest legacy run. It stays advisory: the
+        export still runs on what the page can prove.
+        """
+        run_dir, page = run
+        self._with_recorded_roles(
+            run_dir, ['neuron', 'neuron', 'companion', 'site'])
+        export_individuals_from_html(str(page))
+        warned = capsys.readouterr().out
+        assert '1 companion -> 0' in warned and '1 site -> 0' in warned
+        assert '0 mesh -> 1' in warned
+        assert 'round trip' in warned
+        assert self.calls, 'the drift check must not block the export'
+
+    def test_recorded_roles_that_match_keep_the_log_clean(self, run, capsys):
+        run_dir, page = run
+        self._with_recorded_roles(
+            run_dir, ['neuron', 'neuron', 'mesh'])
+        export_individuals_from_html(str(page))
+        assert 'round trip' not in capsys.readouterr().out
+
     def test_a_manifest_less_page_still_moves_the_camera_per_view(
             self, tmp_path):
         """The preset table must arrive in the exporter's own key casing.

@@ -138,7 +138,7 @@ vs = VisualizeSkeleton(
     mesh_roi=["EB", "LH", "AL"],
     mesh_color=["#4A90E2", "#50E3C2", "#B8E986"],
     mesh_alpha=0.1,
-    brain_mesh="template",
+    brain_mesh="native",
     show_fig=False,
     export_views=False,
 )

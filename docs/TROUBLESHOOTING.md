@@ -423,7 +423,7 @@ and the replacement store makes every later run fully offline. To pre-warm
 specific neurons without rendering:
 
 ```python
-from coana import VisualizeSkeleton
+from visualize_skeleton import VisualizeSkeleton
 VisualizeSkeleton.fix_fafb_extrusions([720575940624086675])
 ```
 
@@ -739,26 +739,27 @@ vs = VisualizeSkeleton(
 
 ---
 
-#### Transform Download Issues
+#### Transform Download Issues (Historical)
 
 **Symptom:**
 ```
 ⚠️ Brain transforms not found for hemibrain:v1.2.1
 ```
 
-**Solutions:**
+**Status:** ✅ Cannot happen in the current build. The only mode that fetched
+H5 transforms (~10 GB, 1-2 hours) was the old `brain_mesh='whole'` JRC2018F
+scene transform; it was retired with the `native`/`BANC`/`FAFB`/`male-cns`
+selection rename, and every remaining path uses the offline transforms built
+into `flybrains`.
 
-1. **Accept the download prompt** (requires ~10GB disk space, 1-2 hours)
+An older checkout that still prints it can stay in the dataset's own space
+instead of transforming the scene:
 
-2. **Use template mesh instead:**
-   ```python
-   vs = VisualizeSkeleton(..., brain_mesh='template')  # Fast, no download
-   ```
+```python
+vs = VisualizeSkeleton(..., brain_mesh='native')  # no transform download
+```
 
-3. **Disable brain mesh:**
-   ```python
-   vs = VisualizeSkeleton(..., brain_mesh='none')
-   ```
+or drop the outline entirely with `brain_mesh='none'`.
 
 ---
 

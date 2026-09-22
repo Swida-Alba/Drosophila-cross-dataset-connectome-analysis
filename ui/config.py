@@ -373,8 +373,9 @@ def _coerce_user_default(key: str, value):
         # flywire_BANC_* -> banc_* rename.
         value = canonical_dataset_name(str(value).strip())
     if key == "brain_mesh":
-        # Legacy 'template'/'whole' selections map onto the renamed
-        # native/fafb options so saved defaults survive the rename.
+        # 'BANC'/'FAFB' are the only options that read as lowercase words, so
+        # a saved default or typed value needs its capitals restored before
+        # the exact-match option test below.
         value = normalize_brain_mesh_choice(value)
     return value if value in options else None
 
@@ -601,6 +602,12 @@ PATH_MODES = ["all", "shortest"]
 # Skeleton modes
 SKELETON_MODES = ["tube", "line"]
 
+# Legend levels the Skeleton tab offers, grouped options first. The set of
+# values is pinned to visualize_skeleton.LEGEND_MODES by
+# tests/core/test_visualize_skeleton_docs.py, so a mode added or renamed in the
+# renderer has to be reflected here.
+LEGEND_MODES = ["layer", "type", "tree", "single"]
+
 # Individual-profile granularity levels (mirrors
 # visualize_skeleton.PROFILE_GRANULARITIES): 'legend' keeps the historical
 # one-profile-per-legend-entry behaviour, 'layer' / 'type' / 'body' follow the
@@ -632,7 +639,7 @@ LAYER_EDITOR_MODES = ["Standard", "Advanced", "File upload"]
 # Net-Viz canvas source modes, shown as the same segmented-button row.
 NET_VIZ_SOURCE_MODES = ["Edge list editor", "Empty canvas", "File upload"]
 
-# Brain-mesh option tokens + legacy normalization are canonical in
+# Brain-mesh option tokens + their case restoration are canonical in
 # src/utils/naming_utils and shared with the renderer.
 try:
     from src.utils.naming_utils import (
@@ -927,11 +934,12 @@ DEFAULT_SETTING_SPECS = {
         "label": "Neuron Legend Mode",
         "group": "skeleton_render",
         "kind": "select",
-        "options": ["layer", "type", "tree", "single"],
+        "options": LEGEND_MODES,
         "hint": "One legend entry per layer, type, or individual neuron. "
-                "'tree' adds an expandable type -> neuron legend panel "
-                "to the exported interactive HTML. Independent of the "
-                "individual-profile granularity below.",
+                "'tree' adds a collapsible panel to the exported interactive "
+                "HTML: type -> bodyId/instance, or group -> type -> "
+                "bodyId/instance when custom groups are in play. Independent "
+                "of the individual-profile granularity below.",
     },
     "profile_granularity": {
         "label": "Individual Profile Granularity",
