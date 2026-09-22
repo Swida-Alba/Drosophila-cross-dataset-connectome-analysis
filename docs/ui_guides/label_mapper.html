@@ -24,7 +24,13 @@
     <li><b>Settings tab &rarr; Custom Type Mappings</b>: choose the
       <b>Target datasets</b> on the left, then open <b>Custom Mapping</b> on the
       right — one row per custom group, one aligned member input per selected
-      dataset, outlined chip fields, and a <b>See available neurons</b> lookup.
+      dataset, outlined chip fields, dataset-aware type-ahead with a Recent list
+      in each member input (a pick keeps that query's rows on screen and ticks
+      the names already added &mdash; in either list, and a ticked row takes its
+      chip back out on the next click &mdash; and a Recent row hints at the
+      column's own
+      dataset when that name actually exists there), and a
+      <b>See available neurons</b> lookup.
       The outlined <b>Save Mapping</b> action sits in the group action row,
       saves the stable <code>Custom Mapping</code> preset, and makes it active in
       <code>cache/user_mappings.json</code> (gitignored); it also exports it to

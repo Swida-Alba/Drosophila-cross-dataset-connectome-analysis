@@ -10,12 +10,14 @@ schema directly:
     }
 """
 from datetime import datetime
+from functools import partial
 from typing import Callable, Dict, List, Optional, Tuple
 
 from nicegui import ui
 
 from .. import group_history, history_store, mapping_store
 from ..config import PROJECT_ROOT
+from ..type_suggestions import dataset_suggestions
 from .common import neuron_list_input
 from .custom_grouper import LiteCustomGrouper
 
@@ -445,6 +447,16 @@ class MappingGridEditor:
             str(value).strip() for value in (values or []) if str(value).strip()
         )
 
+    @staticmethod
+    def _cell_suggest(dataset: str):
+        """Dataset-aware type-ahead for one group-member cell.
+
+        Bound per dataset because the grid keeps a column per LabelMapper side, so
+        a cell suggests from its own dataset's pools — the same dataset-aware
+        search the inline custom grouper wires for its member cells.
+        """
+        return partial(dataset_suggestions, dataset=dataset, search_columns="auto")
+
     def _collect_widgets(self) -> None:
         """Copy live chip values back into the legacy cell store."""
         for ds, widgets in self._cell_widgets.items():
@@ -571,6 +583,8 @@ class MappingGridEditor:
                                         initial=self._parse_cell_text(
                                             self._cells[ds].get(i, "")
                                         ),
+                                        suggestions=self._cell_suggest(ds),
+                                        history_hint_datasets=lambda ds=ds: [ds],
                                         available_neurons=lambda dataset=ds: dataset,
                                     )
                                 self._cell_widgets.setdefault(ds, {})[i] = cell

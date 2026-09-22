@@ -50,11 +50,15 @@
     listed in the same order: a name you already added is tinted and ticked
     rather than dropped, so the list never shifts under the cursor and you can
     keep clicking through it without retyping — type <code>PPL1</code>, pick
-    <code>PPL101</code>, then <code>PPL102</code>. Clicking a ticked row
-    changes nothing but the list. With the field empty,
-    the <b>Recent/Frequent</b> history lists your previously run queries, and
+    <code>PPL101</code>, then <code>PPL102</code>. Clicking a ticked row takes
+    that chip back out, exactly as the chip's own <b>x</b> does, so a marked row
+    works as a checkbox in either list. With the field empty,
+    the <b>Recent/Frequent</b> history lists your previously run queries — it
+    carries the same marks, and its small &times; is the other action, dropping
+    the entry from the history while keeping the
+    chip — and
     the list is click-to-toggle: clicking the focused field again hides it,
-    clicking once more brings it back (clicking a row still commits it, and
+    clicking once more brings it back (clicking a row still toggles its chip, and
     clicks on chips or their &times; buttons never toggle the list). A click
     that closes a held suggestion list ends that query too, so the next
     opening shows the history instead; clicking outside the box, pressing ESC

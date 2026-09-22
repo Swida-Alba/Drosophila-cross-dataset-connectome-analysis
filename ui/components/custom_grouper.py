@@ -429,6 +429,7 @@ class LiteCustomGrouper:
                                 show_upload=False,
                                 initial=row["cells"].get(ds, []),
                                 suggestions=self._cell_suggest(ds),
+                                history_hint_datasets=lambda ds=ds: [ds],
                                 available_neurons=lambda dataset=ds: dataset,
                             )
                         widgets[ds] = widget

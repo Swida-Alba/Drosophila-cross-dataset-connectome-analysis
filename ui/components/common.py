@@ -37,6 +37,15 @@ from ..dataset_service import (
 )
 
 from .. import group_history
+from .suggestion_list import (
+    ADDED_CLASS,
+    CHECK_CLASS,
+    MARKED_ROW_TITLE,
+    SUGGESTION_LIMIT,
+    chip_is_marked,
+    marked_rows,
+    without_chip,
+)
 from ..config import (
     PROJECT_ROOT,
     get_default_output_dir,
@@ -888,7 +897,7 @@ def neuron_list_input(
     history_hint_datasets: Optional[Callable[[], object]] = None,
     show_history_datasets: bool = False,
     suggestion_min_chars: int = 1,
-    suggestion_limit: int = 50,
+    suggestion_limit: int = SUGGESTION_LIMIT,
     show_count: bool = True,
     show_clear: bool = True,
     filter_dense: bool = True,
@@ -953,11 +962,14 @@ def neuron_list_input(
 
     Picking a row adds the chip first and clears the editor text after it, and
     the query's rows stay listed in the same order — a value that is already in
-    the query is tinted and ticked rather than dropped, so the list never
-    shifts under the pointer while several entries are picked in a row (type
-    ``PPL1``, click ``PPL101``, then ``PPL102``; clicking the ticked
-    ``PPL101`` again changes nothing but the list). Any click that closes the
-    list ends the held query: clicking in the query box dismisses it, and so
+    the field is tinted and ticked rather than dropped, so the list never
+    shifts under the pointer while several entries are handled in a row (type
+    ``PPL1``, click ``PPL101``, then ``PPL102``; clicking the ticked ``PPL101``
+    again takes that chip back out, the same as its own ``x``). The
+    Recent/Frequent history carries the same marks, and a marked history row
+    deselects too — its prune ``x`` remains a separate action, dropping the
+    entry from the history rather than from the query. Any click that closes
+    the list ends the held query: clicking in the query box dismisses it, and so
     does an outside click, ESC or focusing another input, after which the next
     opening shows the history list. New typed text starts its own round, and
     picking from the history list keeps showing that list.
@@ -1618,35 +1630,40 @@ def neuron_list_input(
             chip_input.run_method("updateInputValue", "")
 
         def _commit_suggestion(value):
-            """Commit a picked suggestion/history value as a chip.
+            """Add a clicked row's chip, or take it back out when it is marked.
 
             The held query (``_sticky``) decides what the finished-input
             handler renders afterwards: a suggestion pick keeps its own rows so
             the next entry can be added without retyping, while a history pick
-            re-offers the Recent/Frequent list.
+            re-offers the Recent/Frequent list. Both lists mark the rows that
+            stand for a current chip, so a second click on the same row is the
+            reverse of the first -- the tick is a checkbox, not a receipt. The
+            model shrinks through the same loopback as a chip's own ``x``, so
+            the list re-renders itself with that row unmarked.
             """
             current = list(chip_input.value or [])
+            # Only a suggestion row holds its query; a history row must not keep
+            # the type-ahead list alive under a blank editor.
+            held = None if _menu_showing_history["value"] else _sticky["query"]
+            pending_input["value"] = ""
+            if chip_is_marked(current, value):
+                # Deselect. Checked before the capacity clamp on purpose: a
+                # field that is full is exactly when taking a chip back out
+                # needs to work.
+                kept = without_chip(current, value)
+                _focused["value"] = True
+                _clear_editor_text()
+                _sticky["query"] = held
+                chip_input.set_value(kept)
+                chip_input.run_method("focus")
+                update_status()
+                return
             if max_items is not None and len(current) >= max_items:
                 # No room for another chip: holding rows that cannot be added
                 # would only leave a list that answers to nothing.
                 _sticky["query"] = None
                 _clear_editor_text()
                 _close_suggest()
-                return
-            # Only a suggestion row holds its query; a history row must not keep
-            # the type-ahead list alive under a blank editor.
-            held = None if _menu_showing_history["value"] else _sticky["query"]
-            pending_input["value"] = ""
-            if value in current:
-                # A ticked row: it is already in the query, so clicking it must
-                # not disturb the list. No model change means no finished-input
-                # pass, so clear the editor and re-render the held rows here.
-                _sticky["query"] = held
-                _focused["value"] = True
-                _clear_editor_text()
-                if held and _suggestions_enabled():
-                    _show_suggestions(_get_suggestions(held), held)
-                update_status()
                 return
             merged = current + [value]
             if max_items is not None:
@@ -1677,42 +1694,43 @@ def neuron_list_input(
             """Render type-ahead rows and hold them for the next pick.
 
             ``query`` is recorded as the held suggestion, so a pick re-renders
-            the same rows instead of falling back to the history list. The list
-            never shrinks under the pointer: a value that is already in the
-            query keeps its row and is marked (tinted, with a tick) so it reads
-            as done rather than missing.
+            the same rows instead of falling back to the history list. Which
+            rows read as already-added is decided by ``marked_rows`` -- shared
+            with the layer editor's overlay so the two lists cannot drift apart
+            -- and clicking such a row deselects it.
             """
             # Always discard the previous query before handling the new one.
             # This matters when a narrower query has no candidates: the menu
             # is hidden, but its old rows must not survive into a later reopen.
             _menu_showing_history["value"] = False
             _sticky["query"] = query
-            chipped = {str(item) for item in (chip_input.value or [])}
+            rows = marked_rows(entries, chip_input.value or [],
+                               limit=suggestion_limit)
             suggest_menu.clear()
-            if not entries:
+            if not rows:
                 # Nothing left to offer for this query: close and let the next
                 # focus re-offer the history list.
                 _sticky["query"] = None
                 _close_suggest()
                 return
             with suggest_menu:
-                for value, hint in entries[:suggestion_limit]:
-                    added = str(value) in chipped
+                for value, hint, added in rows:
                     row = ui.item().props("dense")
                     if added:
-                        row.classes("drocat-suggest-added")
+                        row.classes(ADDED_CLASS)
+                        row.props(f'title="{MARKED_ROW_TITLE}"')
                     with row.on_click(lambda v=value: _commit_suggestion(v)):
                         with ui.row().classes("items-center gap-2 no-wrap"):
-                            ui.label(str(value)).classes("text-body2")
+                            ui.label(value).classes("text-body2")
                             if hint:
-                                ui.label(str(hint)).classes(
+                                ui.label(hint).classes(
                                     "text-caption drocat-muted")
                             if added:
                                 # Stays listed so the rows never move under the
-                                # pointer; the tick says it is already in the
-                                # query, so clicking it again changes nothing.
+                                # pointer; the tick says this value is already a
+                                # chip, and clicking the row again takes it back.
                                 ui.icon("check").classes(
-                                    "text-caption drocat-muted")
+                                    f"text-caption drocat-muted {CHECK_CLASS}")
             _refresh_menu()
 
         def _show_history(query: str = ""):
@@ -1792,6 +1810,10 @@ def neuron_list_input(
                 if v not in recents and matches_query(v)
             ]
             if not recents and not freqs:
+                # Nothing left to offer (the prune x can empty the list while it
+                # is open): rebuild the menu empty before closing it, exactly as
+                # the type-ahead branch below does, so no stale row survives.
+                suggest_menu.clear()
                 _close_suggest()
                 return
 
@@ -1947,6 +1969,12 @@ def neuron_list_input(
                 return _column_lookup_state["lookup"]
 
             suggest_menu.clear()
+            # History rows carry the same marks as suggestion rows: a value the
+            # field already holds is ticked, and clicking it again takes that
+            # chip back out. Only chips count -- an uploaded file's neurons are
+            # not something a row click can remove, so ticking their rows would
+            # promise a deselect that cannot happen.
+            chipped = chip_input.value or []
             with suggest_menu:
                 if recents:
                     ui.item("Recent").props("dense disabled").classes(
@@ -1958,6 +1986,7 @@ def neuron_list_input(
                             _history_hint(v),
                             _remove_history_value,
                             _history_datasets(v),
+                            marked=chip_is_marked(chipped, v),
                         )
                 if freqs:
                     ui.item("Frequent").props("dense disabled").classes(
@@ -1969,6 +1998,7 @@ def neuron_list_input(
                             _history_hint(v),
                             _remove_history_value,
                             _history_datasets(v),
+                            marked=chip_is_marked(chipped, v),
                         )
             _refresh_menu()
             # After the reopen cycle (refresh closes and reopens the menu),
@@ -1977,9 +2007,15 @@ def neuron_list_input(
             _menu_showing_history["value"] = True
 
         def _history_item(value, is_custom=False, hint=None, remove_handler=None,
-                          datasets=None):
-            with ui.item().props("dense").on_click(
-                    lambda v=value: _commit_suggestion(v)):
+                          datasets=None, marked=False):
+            item = ui.item().props("dense")
+            if marked:
+                item.classes(ADDED_CLASS)
+                # The row and its prune button now both look like a removal, so
+                # say which is which: the row takes the chip back, the x takes
+                # the entry out of the history.
+                item.props(f'title="{MARKED_ROW_TITLE}"')
+            with item.on_click(lambda v=value: _commit_suggestion(v)):
                 with ui.row().classes("items-center gap-2 no-wrap w-full"):
                     ui.label(str(value)).classes("text-body2 flex-grow")
                     if hint:
@@ -1997,6 +2033,9 @@ def neuron_list_input(
                     if is_custom:
                         ui.badge("custom", color="grey-6").props(
                             "outline dense")
+                    if marked:
+                        ui.icon("check").classes(
+                            f"text-caption drocat-muted {CHECK_CLASS}")
                     if remove_handler is not None:
                         remove_button = ui.button(icon="close")
                         remove_button.props("flat round dense size=sm")

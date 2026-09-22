@@ -1723,6 +1723,20 @@ html, body {
 .drocat-suggest-item.drocat-suggest-active {
     background: var(--drocat-cobalt-soft, #e9f0f9);
 }
+/* A row whose value is already a chip in the cell stays listed and is tinted and
+   ticked rather than dropped, so the list never shifts under the pointer while
+   several entries are picked in a row (the query box's rule). The label carries
+   its own color and the gray hint keeps its muted one, so the tint goes on the
+   label and the tick. */
+.drocat-suggest-check {
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.drocat-suggest-item.drocat-suggest-added .drocat-suggest-label,
+.drocat-suggest-item.drocat-suggest-added .drocat-suggest-check {
+    color: var(--drocat-cobalt, #145cff);
+}
 .drocat-suggest-header {
     padding: 4px 10px;
     font-size: 11px;
@@ -2517,6 +2531,12 @@ html, body {
    never move under the pointer mid-pick; it is tinted (and ticked) instead of
    removed. The gray column hint keeps its own muted color. */
 .drocat-suggest-menu .q-item.drocat-suggest-added {
+    color: var(--drocat-cobalt) !important;
+}
+/* The row tint above cannot reach the tick: ui.icon carries .drocat-muted,
+   which sets its own color. Both surfaces now label the tick
+   .drocat-suggest-check, so the marked row reads the same everywhere. */
+.drocat-suggest-menu .q-item.drocat-suggest-added .drocat-suggest-check {
     color: var(--drocat-cobalt) !important;
 }
 /* Dataset provenance tags on history rows. */

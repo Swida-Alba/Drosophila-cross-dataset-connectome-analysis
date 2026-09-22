@@ -6110,7 +6110,8 @@ class TestComponents:
         The pick clears the editor text but keeps every row of the query listed
         in the same order, ticking the names that are already in the query
         rather than dropping them, so the list never shifts under the pointer.
-        The candidate pool is reused, so the provider is never asked again for
+        A ticked row toggles: the next click on it removes that chip. The
+        candidate pool is reused, so the provider is never asked again for
         a held query.
         """
         from types import SimpleNamespace
@@ -6186,21 +6187,27 @@ class TestComponents:
         assert box.get_value() == ("exact", ["PPL101", "PPL102"])
         assert ticked() == ["PPL101", "PPL102"]
 
-        # Re-picking a ticked row changes nothing about the query: the chip is
-        # already there, and the list simply stays.
+        # Clicking a ticked row is the reverse of the first click: that chip
+        # comes back out and the rows stay listed in place, now unmarked.
         pick("PPL101")
-        assert box.get_value() == ("exact", ["PPL101", "PPL102"])
-        assert menu.value is True and ticked() == ["PPL101", "PPL102"]
-
-        # Dropping a chip clears its tick; the row was never gone.
-        chip.set_value(["PPL102"])
+        assert box.get_value() == ("exact", ["PPL102"])
+        assert menu.value is True and ticked() == ["PPL102"]
         assert "PPL101" in visible()
-        assert ticked() == ["PPL102"]
 
-        # A fully ticked list still holds — only a closing click ends the
-        # held query, and the next focus then offers the history again.
+        # Picking it a third time re-adds it, so a marked row really is a
+        # checkbox rather than a one-way commit.
         pick("PPL101")
-        assert menu.value is True and ticked() == ["PPL101", "PPL102"]
+        assert box.get_value() == ("exact", ["PPL102", "PPL101"])
+        assert ticked() == ["PPL101", "PPL102"]
+
+        # Removing a chip through the field's own x clears its tick the same
+        # way; the row was never gone.
+        chip.set_value([])
+        assert "PPL101" in visible()
+        assert ticked() == []
+
+        # A closing click is still the only thing that ends the held query, so
+        # the next focus offers the history again.
         blur = listener("blur")
         chip._handle_event({
             "listener_id": blur.id,
@@ -6293,6 +6300,88 @@ class TestComponents:
         texts = [el.text for el in client.elements.values()
                  if getattr(el, "text", "")]
         assert "PPL101" in texts and "Recent" not in texts
+
+    def test_neuron_list_input_history_rows_mark_and_deselect(
+        self, tmp_path, monkeypatch
+    ):
+        """A Recent row that is also a chip ticks, and clicking it drops the chip.
+
+        The history half of the shared contract: the mark comes from the same
+        ``marked_rows`` helper the type-ahead rows use, the deselect lands on the
+        same model path as the chip's own ``x``, and the row's prune button stays
+        a separate action -- which is why a marked row says in its hover text what
+        the next click will do.
+        """
+        from types import SimpleNamespace
+
+        client, box, chip, menu, listener = self._build_held_box(
+            tmp_path, monkeypatch, "/neuron-input-history-deselect",
+            TestComponents._ppl_pool)
+        focus = listener("focus")
+
+        def subtree_texts(el):
+            out = [getattr(el, "text", "")]
+            for child in el.default_slot.children:
+                out.extend(subtree_texts(child))
+            return out
+
+        def rows_of(value):
+            return [el for el in client.elements.values()
+                    if type(el).__name__ == "Item"
+                    and value in subtree_texts(el)]
+
+        def ticked():
+            return sorted(
+                [text for text in subtree_texts(el) if text][0]
+                for el in client.elements.values()
+                if type(el).__name__ == "Item"
+                and any(c == "drocat-suggest-added" for c in el._classes))
+
+        def click_row(el):
+            next(listener for listener in el._event_listeners.values()
+                 if listener.type == "click").handler(SimpleNamespace())
+
+        def descendants(el):
+            for child in el.default_slot.children:
+                yield child
+                yield from descendants(child)
+        chip._handle_event({"listener_id": focus.id, "args": None})
+        texts = [el.text for el in client.elements.values()
+                 if getattr(el, "text", "")]
+        assert "Recent" in texts
+        assert ticked() == []  # the field holds nothing yet
+
+        click_row(rows_of("aMe12")[-1])
+        assert box.get_value() == ("exact", ["aMe12"])
+        assert menu.value is True
+        assert ticked() == ["aMe12"]  # the history row carries the mark
+        # The tick itself is a shared-class icon, so the CSS tints it the same
+        # way the overlay's does (the row-level tint cannot reach .drocat-muted).
+        assert any(type(el).__name__ == "Icon"
+                   and "drocat-suggest-check" in el._classes
+                   for el in descendants(rows_of("aMe12")[-1]))
+
+        click_row(rows_of("aMe12")[-1])
+        assert box.get_value() == ("exact", [])
+        assert menu.value is True
+        assert rows_of("aMe12"), "the row stays listed, unmarked"
+        assert ticked() == []
+
+        click_row(rows_of("aMe12")[-1])
+        assert box.get_value() == ("exact", ["aMe12"])
+
+        # The prune x on that marked row is still the other action: it drops the
+        # history entry and leaves the chip alone. It closes the list on the way,
+        # because pruning the last entry leaves nothing to offer.
+        button = next(el for el in descendants(rows_of("aMe12")[-1])
+                      if type(el).__name__ == "Button")
+        next(listener for listener in button._event_listeners.values()
+             if listener.type == "click").handler(SimpleNamespace())
+        assert box.get_value() == ("exact", ["aMe12"])
+        # Pruning the last entry leaves nothing to offer, so the list closes and
+        # rebuilds empty rather than leaving the pruned row mounted behind it.
+        assert menu.value is False
+        assert not rows_of("aMe12")
 
     def test_neuron_list_input_held_list_survives_history_disabled(
         self, tmp_path, monkeypatch

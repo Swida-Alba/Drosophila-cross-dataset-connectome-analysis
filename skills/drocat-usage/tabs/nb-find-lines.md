@@ -7,8 +7,12 @@ The tab is dataset-aware: the query box shares the Cross-Dataset tab's
 auto-suggestion and history (gray hints like `type · male-cns:v1.0`, history
 rows tagged with the datasets where the value actually resolves; the history
 list is click-to-toggle on the focused empty field — click hides, click shows
-again; a suggestion pick adds the chip, then keeps that query's rows on screen
-for the next pick), the dataset
+again; a suggestion pick adds the chip, clears the typed text and keeps that
+query's rows listed — in either list a name already added stays, tinted and
+ticked, and clicking a ticked row takes its chip back out, the same as the chip's
+own `x` (a history row's `×` is the other action: it prunes the history, not the
+query) — so entries
+can be handled one after another), the dataset
 input is a **multi-select** with an exclusive `(all)` indicator, datasets
 NeuronBridge does not host are **disabled** (advisory — runs still proceed with
 a warning), and an **Expand query names across datasets** toggle (default on)

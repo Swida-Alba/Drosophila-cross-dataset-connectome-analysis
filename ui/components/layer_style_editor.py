@@ -21,6 +21,12 @@ from nicegui import ui
 
 from .. import layer_style_store
 from ..type_suggestions import dataset_suggestions
+from .suggestion_list import (
+    MARKED_ROW_TITLE,
+    chip_is_marked,
+    marked_rows,
+    without_chip,
+)
 
 AUTOSAVE_DELAY = 0.6  # seconds between last edit and disk flush
 # Auto-save is only worth persisting once the table holds a real style; a handful
@@ -178,17 +184,45 @@ if (!window.drocatResizeDelegated) {
 # Client-side suggestion overlay renderer. The overlay DIV is a single static NiceGUI
 # element; its items are pure DOM injected here (never NiceGUI elements) so typing or
 # focusing never re-renders the q-table body (which would remount the focused
-# q-select and wipe typed text). Clicking an item commits via a single ``pick``
-# listener emitted over the socket; ``__OVERLAY_ID__``/``__PICK_LID__`` are
-# substituted at build time with the overlay's element id + pick listener id.
+# q-select and wipe typed text). Three socket listeners drive it from Python:
+# ``pick`` (commit a row), ``remove`` (prune a history row) and ``toggle``
+# (a click on the focused cell, or Escape, opening/closing the list).
+# ``__OVERLAY_ID__``/``__PICK_LID__``/``__REMOVE_LID__``/``__TOGGLE_LID__`` are
+# substituted at build time with the overlay's element id + those listener ids,
+# and ``__MARKED_TITLE_JSON__`` with the shared marked-row hover text.
 _SUGGESTION_JS = r"""
+function drocatSuggestEsc(text) {
+  // Rows are built as raw DOM from dataset/history values, which include names
+  // the user typed and later committed to history.
+  return String(text == null ? '' : text).replace(/[&<>"']/g, function (c) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+            "'": '&#39;'}[c];
+  });
+}
+// Hover text for a marked row, shared with the query box via suggestion_list.
+var __drocatMarkedTitle = __MARKED_TITLE_JSON__;
+// The q-select input of the cell the overlay is anchored to. ARIA state that
+// belongs to the combobox (expanded, active descendant) has to be written here,
+// because focus never leaves this input while the list is open.
+function drocatSuggestInput() {
+  var rowId = window.__drocatSuggestAnchorRow;
+  if (rowId === undefined || rowId === null) return null;
+  var cell = document.getElementById('neuron-cell-' + rowId);
+  return cell ? cell.querySelector('input') : null;
+}
 function drocatSuggestSetHighlight(rows, index) {
   for (var i = 0; i < rows.length; i++) {
     rows[i].classList.remove('drocat-suggest-active');
   }
+  var input = drocatSuggestInput();
   if (index >= 0 && index < rows.length) {
     rows[index].classList.add('drocat-suggest-active');
     rows[index].scrollIntoView({ block: 'nearest' });
+    // The highlight is visual only, so a screen reader needs the pointer to
+    // say which option the next Enter commits.
+    if (input) input.setAttribute('aria-activedescendant', rows[index].id);
+  } else if (input) {
+    input.removeAttribute('aria-activedescendant');
   }
 }
 // Anchor the overlay just below the cell. The overlay is position:fixed, so it
@@ -253,51 +287,101 @@ window.drocatSuggest = {
     // The list starts flush at the cell; the switch-cell mousedown guard already
     // distinguishes an item click (pick) from a click on a lower cell (focus
     // switch), so no transparent spacer is needed and no empty gap is shown.
+    // The cell's q-select is the combobox; this list is its popup. ARIA state
+    // lives on the input because focus never moves here (moving it would
+    // remount the cell), so the list is announced through aria-controls and
+    // aria-activedescendant rather than by being focusable itself.
+    o.setAttribute('role', 'listbox');
+    o.setAttribute('aria-multiselectable', 'true');
+    o.setAttribute('aria-label', isHistory ? 'Recent neurons' : 'Neuron suggestions');
+    var combobox = el.querySelector('input');
+    if (combobox) {
+      combobox.setAttribute('aria-expanded', 'true');
+      combobox.setAttribute('aria-controls', 'drocat-suggest-overlay');
+    }
     var html = '';
     if (isHistory) {
-      html += '<div class="drocat-suggest-header">Recent</div>';
+      // A listbox may only contain options, so the caption is presentational.
+      html += '<div class="drocat-suggest-header" role="presentation">Recent</div>';
     }
     for (var i = 0; i < items.length; i++) {
       var value = items[i][0];
       var hint = items[i][1] || '';
-      html += '<div class="drocat-suggest-item" data-value="' + value + '">';
-      html += '<span class="drocat-suggest-label">' + value + '</span>';
-      if (hint) html += '<span class="drocat-suggest-hint">' + hint + '</span>';
-      // History rows can be pruned individually, mirroring the query box.
+      // Third element: the value is already a chip in this cell, in the
+      // type-ahead list and in Recent alike. Like the query box, such a row is
+      // marked rather than dropped -- the list never shifts under the pointer
+      // -- and clicking it takes that chip back out.
+      var added = items[i][2] === true;
+      html += '<div class="drocat-suggest-item'
+              + (added ? ' drocat-suggest-added' : '')
+              + '" id="drocat-suggest-opt-' + i + '" role="option"'
+              + ' aria-selected="' + (added ? 'true' : 'false') + '"'
+              + (added ? ' title="' + drocatSuggestEsc(__drocatMarkedTitle) + '"'
+                       : '')
+              + ' data-value="' + drocatSuggestEsc(value) + '">';
+      html += '<span class="drocat-suggest-label">' + drocatSuggestEsc(value)
+              + '</span>';
+      if (hint) html += '<span class="drocat-suggest-hint">'
+                        + drocatSuggestEsc(hint) + '</span>';
+      if (added) {
+        // Decorative: aria-selected already carries the state.
+        html += '<span class="drocat-suggest-check material-icons"'
+                + ' aria-hidden="true">check</span>';
+      }
+      // History rows can be pruned individually, mirroring the query box. The
+      // control is mouse-only, so it stays out of the option's name.
       if (isHistory) {
-        html += '<span class="drocat-suggest-remove" data-value="' + value +
-                '" title="Remove from history">×</span>';
+        html += '<span class="drocat-suggest-remove" aria-hidden="true"'
+                + ' data-value="' + drocatSuggestEsc(value)
+                + '" title="Remove from history">' + '×</span>';
       }
       html += '</div>';
     }
     o.innerHTML = html;
     o.style.display = 'block';
+    // A keyboard pick asks for the next row to be highlighted once the rebuilt
+    // list lands, so repeated Enter presses keep selecting down the list. The
+    // row index is client state, so it is consumed here and always cleared.
+    var pending = window.__drocatSuggestPending;
+    window.__drocatSuggestPending = -1;
+    if (pending >= 0) {
+      var rows = o.querySelectorAll('.drocat-suggest-item');
+      drocatSuggestSetHighlight(rows, Math.min(pending, rows.length - 1));
+    }
     drocatSuggestStartTrack();
   },
   hide: function () {
     var o = document.getElementById('drocat-suggest-overlay');
     if (o) { o.style.display = 'none'; }
+    var input = drocatSuggestInput();
+    if (input) { input.setAttribute('aria-expanded', 'false'); }
+    window.__drocatSuggestPending = -1;
     drocatSuggestStopTrack();
   },
-  pick: function (value) {
+  emit: function (listenerId, value) {
     if (window.socket && window.did_handshake) {
       window.socket.emit('event', {
         id: __OVERLAY_ID__,
         client_id: window.clientId,
-        listener_id: '__PICK_LID__',
+        listener_id: listenerId,
+        // Always exactly one JSON argument: Client.handle_event iterates
+        // msg['args'], so an argument-less event must still send a list.
         args: [JSON.stringify(value)]
       });
     }
   },
+  pick: function (value) {
+    window.drocatSuggest.emit('__PICK_LID__', value);
+  },
   remove: function (value) {
-    if (window.socket && window.did_handshake) {
-      window.socket.emit('event', {
-        id: __OVERLAY_ID__,
-        client_id: window.clientId,
-        listener_id: '__REMOVE_LID__',
-        args: [JSON.stringify(value)]
-      });
-    }
+    window.drocatSuggest.emit('__REMOVE_LID__', value);
+  },
+  // A press on the already-focused cell, or Escape: the Python side decides
+  // whether that closes the list or brings it back (the query box's
+  // click-to-toggle), so this only reports -- and hides, when a list was up.
+  toggle: function (wasVisible) {
+    if (wasVisible) { window.drocatSuggest.hide(); }
+    window.drocatSuggest.emit('__TOGGLE_LID__', wasVisible === true);
   }
 };
 // Delegated (capture) click listener: attached at page load so it persists even
@@ -323,12 +407,13 @@ if (!window.drocatSuggestDelegated) {
   }, true);
 }
 // Down-key navigation into the open overlay: ArrowDown moves the highlight down
-// (entering the list from the cell), ArrowUp leaves it from the first row, and
-// Enter/Tab picks the highlighted row (mirroring the standard query box).
+// (entering the list from the cell), ArrowUp leaves it from the first row, Enter
+// picks the highlighted row (and asks for the next one, mirroring the standard
+// query box), and Escape closes the list the way an outside click would.
 if (!window.drocatSuggestNav) {
   window.drocatSuggestNav = true;
   document.addEventListener('keydown', function (event) {
-    if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) return;
+    if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) return;
     var o = document.getElementById('drocat-suggest-overlay');
     if (!o || o.style.display === 'none') return;
     var rows = o.querySelectorAll('.drocat-suggest-item');
@@ -336,6 +421,12 @@ if (!window.drocatSuggestNav) {
     var current = -1;
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].classList.contains('drocat-suggest-active')) current = i;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      window.drocatSuggest.toggle(true);
+      return;
     }
     if (event.key === 'ArrowDown') {
       if (current < rows.length - 1) {
@@ -354,6 +445,9 @@ if (!window.drocatSuggestNav) {
       if (current === -1) return;
       event.preventDefault();
       event.stopPropagation();
+      // Remember where the highlight was headed so the server's rebuild of the
+      // same rows lands with the highlight already on the next entry.
+      window.__drocatSuggestPending = current + 1;
       window.drocatSuggest.pick(rows[current].getAttribute('data-value'));
     }
   }, true);
@@ -410,6 +504,32 @@ if (!window.drocatSuggestCellSwitch) {
         if (input) input.focus();
         return;
       }
+    }
+  }, true);
+}
+// Click-to-toggle on the focused cell, mirroring the query box: a press on the
+// cell that owns the list reports itself and Python decides whether that closes
+// the list or brings it back (a dismissal click never re-opens it in the same
+// breath). The switch-cell guard above deliberately skips this cell, and chips
+// keep their own meaning, so a press on a chip's x never toggles. Only a press
+// that closes a visible list swallows the native click; with the list already
+// hidden the cell keeps its ordinary click behavior (focus, text selection) and
+// this merely reports the press, which Python ignores unless it was the
+// dismissal that hid the list.
+if (!window.drocatSuggestToggle) {
+  window.drocatSuggestToggle = true;
+  document.addEventListener('mousedown', function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    var cell = t.closest('.drocat-neuron-cell');
+    if (!cell || cell.id !== 'neuron-cell-' + window.__drocatSuggestAnchorRow) return;
+    if (t.closest('.q-chip')) return;
+    var o = document.getElementById('drocat-suggest-overlay');
+    if (o && o.style.display !== 'none') {
+      ev.preventDefault();
+      window.drocatSuggest.toggle(true);
+    } else {
+      window.drocatSuggest.toggle(false);
     }
   }, true);
 }
@@ -522,10 +642,26 @@ class LayerStyleEditorHandle:
         self._suggest_suppress_until: float = 0.0
         # Post-pick hold: a refreshed table can emit a synthetic blur right after a
         # suggestion pick; within this window on_inline_commit keeps the overlay
-        # open (matching the query box, where a pick never closes the list).
+        # open, so a pick never closes the list (matching the query box).
         self._suggest_keep_open_until: float = 0.0
+        # The query whose rows the overlay is currently holding, with the rows
+        # themselves, mirroring the shared query box: a pick re-renders the same
+        # rows so the next entry can be added without retyping. Any close drops it.
+        self._suggest_query: Optional[str] = None
+        self._suggest_pool: List[tuple] = []
+        # Whether the overlay is showing right now, and whether the last thing
+        # the user did was dismiss it with a click/Escape (the next such press
+        # brings the history list back instead of doing nothing).
+        self._suggest_visible: bool = False
+        self._suggest_toggled_off: bool = False
+        # A table refresh remounts the cells, and the remounted q-select re-emits
+        # an empty ``input-value``. While a list is on screen that reset must not
+        # be read as "the user cleared the field", or it would swap the held query
+        # for the history list right after a pick.
+        self._suggest_ignore_reset_until: float = 0.0
         self._suggest_pick_listener_id: Optional[str] = None
         self._suggest_remove_listener_id: Optional[str] = None
+        self._suggest_toggle_listener_id: Optional[str] = None
         # Value -> searched column (type/instance) cache for history category tags.
         self._history_cat_lookup: dict = {}
         self._history_cat_key: Optional[str] = None
@@ -628,6 +764,10 @@ class LayerStyleEditorHandle:
                 row for row in row_dicts if row["id"] in self._selected_ids
             ]
             self.table.update()
+        # The remount this triggers reports an empty cell input; while a list is
+        # on screen that reset is not a user action, so it is ignored briefly.
+        if self._suggest_visible:
+            self._suggest_ignore_reset_until = time.time() + 0.6
 
     def set_rows(self, rows: List[dict], name: Optional[str] = None) -> None:
         # Loading real rows replaces the working set as-is (no scaffolding), so a
@@ -853,6 +993,10 @@ class LayerStyleEditorHandle:
                     if str(v).strip()
                 ]
             self.rows[row_id]["neurons"] = neurons
+            # Marks follow the chips: dropping one clears its tick while the
+            # list is held, as it does in the query box.
+            if self._suggest_visible and row_id == self._suggest_row:
+                self._rehold_suggestions(row_id)
             return
 
         scalar = str(value or "").strip()
@@ -905,11 +1049,25 @@ class LayerStyleEditorHandle:
             and time.time() < self._suggest_suppress_until
         ):
             return
+        # Same story for a refresh while a list is on screen: the remounted cell
+        # reports an empty field, which is not the user clearing their query.
+        if (
+            not text
+            and self._suggest_query
+            and time.time() < self._suggest_ignore_reset_until
+        ):
+            return
         self._suggest_suppress = False
         self._show_neuron_suggestions(row_id, text)
 
     def on_neuron_focus(self, event) -> None:
-        """Record the focused cell and open history for an empty field."""
+        """Record the focused cell and open history for an empty field.
+
+        A refocus of the cell that already owns a held query is not a request to
+        re-open anything: it is the pick's own ``_refocus_neuron_cell`` coming
+        back around, and re-rendering here would replace the held rows with the
+        history list.
+        """
         args = getattr(event, "args", event)
         if not isinstance(args, dict):
             return
@@ -922,6 +1080,18 @@ class LayerStyleEditorHandle:
             # new cell open its own history/suggestions.
             self._close_suggest_overlay()
             self._suggest_suppress = False
+        elif (
+            self._suggest_visible
+            and self._suggest_query
+            and self._suggest_row == row_id
+            and time.time() < self._suggest_keep_open_until
+        ):
+            # The cell that owns a held query is reporting focus again. That is
+            # the refocus a pick performs after refreshing the table, and the
+            # held rows are already on screen: re-opening here would replace
+            # them with the history list and end the hold mid-run, which is the
+            # one thing the whole sticky-list feature exists to prevent.
+            return
         elif self._suggest_suppress:
             # Same cell re-focused. Only the re-render's synthetic focus (which
             # arrives inside the suppression window) is ignored; a genuine later
@@ -932,7 +1102,9 @@ class LayerStyleEditorHandle:
         self._suggest_row = row_id
         self._show_neuron_suggestions(row_id, "")
 
-    def _show_neuron_suggestions(self, row_id: int, text: str) -> None:
+    def _show_neuron_suggestions(
+        self, row_id: int, text: str, pool: Optional[List[tuple]] = None
+    ) -> None:
         """Fill the non-focus-stealing overlay below the focused neuron cell.
 
         The overlay div is populated entirely on the CLIENT via ``run_javascript``
@@ -941,6 +1113,13 @@ class LayerStyleEditorHandle:
         text. Clicking an item commits through the registered ``pick`` listener.
         History rows carry a ``Recent`` header and a right-aligned category tag,
         matching the standard query box.
+
+        ``text`` is also the query held for the next pick: a blank ``text`` offers
+        the Recent list and holds nothing, while a query records its rows (``pool``
+        reuses ones already computed) so several entries can be picked from one
+        list without retyping. In either list, values that are already chips stay
+        listed and are tinted and ticked, and clicking such a row takes its chip
+        back out -- exactly as ``neuron_list_input`` does.
         """
         if self._suggest_overlay is None:
             return
@@ -949,40 +1128,33 @@ class LayerStyleEditorHandle:
             if not self._suggestions_enabled():
                 self._close_suggest_overlay()
                 return
-            suggestions = self._suggest_neurons(text)
+            entries = list(pool if pool is not None else self._suggest_neurons(text))
             is_history = False
         else:
             # Query history, independently toggled in Settings.
             if not self._history_enabled():
                 self._close_suggest_overlay()
                 return
-            suggestions = self._recent_neuron_history()
+            entries = self._recent_neuron_history()
             is_history = True
-        # Drop suggestions/history values already present in this cell as chips,
-        # so they do not render as a standalone (redundant) entry that clicks
-        # back onto an existing chip.
-        existing = {
-            str(n).strip()
-            for n in self.rows[row_id].get("neurons", [])
-            if str(n).strip()
-        }
-        if existing:
-            suggestions = [
-                (value, hint)
-                for value, hint in suggestions
-                if str(value).strip() not in existing
-            ]
-        if not suggestions:
+        if not entries:
             self._close_suggest_overlay()
             return
         self._suggest_suppress = False
-        items = [[str(value), str(hint or "")] for value, hint in suggestions[:30]]
+        self._suggest_toggled_off = False
+        self._suggest_query = None if is_history else text
+        self._suggest_pool = [] if is_history else entries
+        # Which rows read as already-added is decided in suggestion_list, the
+        # same helper the shared query box uses, so the two lists cannot drift.
+        # Both lists mark: a Recent row that is also a chip deselects on click.
+        items = marked_rows(entries, self.rows[row_id].get("neurons", []))
         js = (
             f"window.drocatSuggest && window.drocatSuggest.render({int(row_id)}, "
             f"{json.dumps(items)}, {json.dumps(is_history)});"
         )
         try:
             self.table.client.run_javascript(js)
+            self._suggest_visible = True
         except Exception:
             self._close_suggest_overlay()
 
@@ -1046,13 +1218,17 @@ class LayerStyleEditorHandle:
         return lookup
 
     def _close_suggest_overlay(self) -> None:
-        # Closing (commit / blur / no matches) suppresses re-opening from the cell's
-        # reset events only for a short window; after it a genuine refocus or a
-        # non-empty query clears suppression (see ``on_neuron_suggest``/
-        # ``on_neuron_focus``). The client-side renderer hides the overlay so no
-        # NiceGUI elements are rebuilt.
+        # Closing (commit / blur / no matches / a dismissal click) ends the held
+        # query, so the next opening offers the history list rather than the old
+        # rows. Re-opening from the cell's reset events is suppressed only for a
+        # short window; after it a genuine refocus or a non-empty query clears
+        # suppression (see ``on_neuron_suggest``/``on_neuron_focus``). The
+        # client-side renderer hides the overlay so no NiceGUI elements rebuild.
         self._suggest_suppress = True
         self._suggest_suppress_until = time.time() + 0.4
+        self._suggest_visible = False
+        self._suggest_query = None
+        self._suggest_pool = []
         if self._suggest_overlay is not None:
             try:
                 self._suggest_overlay.client.run_javascript(
@@ -1061,36 +1237,73 @@ class LayerStyleEditorHandle:
             except Exception:
                 pass
 
-    def _commit_neuron_suggestion(self, row_id: int, value: str) -> None:
-        """Append a picked suggestion as a chip, keeping the list open.
+    def _rehold_suggestions(self, row_id: int) -> None:
+        """Re-render what the overlay showed before, so a pick never closes it.
 
-        Like the standard query box, picking an entry does not close the
-        overlay; unlike it, this overlay re-offers the Recent/history list
-        rather than holding the typed query's rows (the existing-chip filter
-        drops the value just added). The per-cell overlay is a plain div
-        rendered from the client, so holding a query across picks would need
-        its own filter state here — deliberately out of scope while the shared
-        ``neuron_list_input`` owns that behavior. The cell is re-focused
-        explicitly in case the table refresh remounts the q-select and drops
-        focus.
+        A held query keeps its own rows (from the cached pool, so a round of
+        picks costs one provider call); a pick from the history list re-offers
+        the history list.
         """
-        if not 0 <= row_id < len(self.rows):
+        held = self._suggest_query
+        if held:
+            self._show_neuron_suggestions(row_id, held, pool=self._suggest_pool)
+        else:
+            self._show_neuron_suggestions(row_id, "")
+
+    def _commit_neuron_suggestion(self, row_id: int, value: str) -> None:
+        """Add a clicked row's chip to the cell, or take it back out when marked.
+
+        Mirrors the standard query box: the row model changes first and the
+        table refresh that follows is what clears the cell's typed text (a
+        remounted q-select starts empty), so a leftover prefix can never be
+        committed as a second chip on blur. The list then stays on the same
+        query (its rows re-render with the new value ticked), so entries can be
+        handled one after another without retyping, and clicking a ticked row
+        removes that chip again -- the tick is a checkbox, not a receipt. The
+        cell is re-focused explicitly in case the refresh remounts the q-select
+        and drops focus.
+        """
+        if row_id is None or not 0 <= row_id < len(self.rows):
             return
         value = str(value or "").strip()
+        if not value:
+            return
         neurons = list(self.rows[row_id]["neurons"])
-        if value and value not in neurons:
+        if chip_is_marked(neurons, value):
+            neurons = without_chip(neurons, value)
+        else:
             neurons.append(value)
-            self.rows[row_id]["neurons"] = neurons
-            # Refresh the table, but ignore the re-render's stale re-emit for a
-            # moment so the q-select cannot clobber the chips we just committed.
-            self._suppress_neuron_value_until = time.time() + 0.6
-            # Hold the overlay open across the refresh's synthetic blur so the
-            # pick does not close the list (matching the query box).
-            self._suggest_keep_open_until = time.time() + 0.6
-            self.refresh_table(preserve_selection=True)
-            self.schedule_autosave()
-        self._show_neuron_suggestions(row_id, "")
+        self.rows[row_id]["neurons"] = neurons
+        # Ignore the re-render's stale re-emit for a moment so the q-select
+        # cannot clobber the chips we just committed -- in either direction,
+        # since a stale list would put a removed chip straight back.
+        self._suppress_neuron_value_until = time.time() + 0.6
+        self.schedule_autosave()
+        # Both paths refresh: it is the remount that drops the typed text, and the
+        # hold that keeps the refresh's synthetic blur from closing the list.
+        self._suggest_keep_open_until = time.time() + 0.6
+        self.refresh_table(preserve_selection=True)
+        self._rehold_suggestions(row_id)
         self._refocus_neuron_cell(row_id)
+
+    def _on_suggest_toggle(self, _event) -> None:
+        """A press on the focused cell, or Escape: close the list, or bring it back.
+
+        The dismissal never re-opens in the same breath; the next such press
+        offers the history list, so a held query cannot leak into a fresh round.
+        The client reports what it had rendered, but ``_suggest_visible`` is the
+        one the refresh cycle maintains, so that is what decides here.
+        """
+        row_id = self._suggest_row
+        if row_id is None or not 0 <= row_id < len(self.rows):
+            return
+        if self._suggest_visible:
+            self._close_suggest_overlay()
+            self._suggest_toggled_off = True
+            return
+        if not self._suggest_toggled_off:
+            return
+        self._show_neuron_suggestions(row_id, "")
 
     def _refocus_neuron_cell(self, row_id: int) -> None:
         """Refocus a neuron cell's input so the overlay stays put after a pick."""
@@ -1358,10 +1571,18 @@ def layer_style_editor(
         if _listener.type == "remove":
             handle._suggest_remove_listener_id = _listener.id
             break
+    # A press on the focused cell / Escape: the click-to-toggle the query box has.
+    handle._suggest_overlay.on("toggle", handle._on_suggest_toggle)
+    for _listener in handle._suggest_overlay._event_listeners.values():
+        if _listener.type == "toggle":
+            handle._suggest_toggle_listener_id = _listener.id
+            break
     _suggest_js = (
         _SUGGESTION_JS.replace("__OVERLAY_ID__", str(handle._suggest_overlay.id))
+        .replace("__MARKED_TITLE_JSON__", json.dumps(MARKED_ROW_TITLE))
         .replace("__PICK_LID__", str(handle._suggest_pick_listener_id))
         .replace("__REMOVE_LID__", str(handle._suggest_remove_listener_id))
+        .replace("__TOGGLE_LID__", str(handle._suggest_toggle_listener_id))
     )
     ui.add_head_html(f"<script>{_suggest_js}</script>")
 

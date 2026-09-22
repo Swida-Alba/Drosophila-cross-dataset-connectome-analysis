@@ -86,7 +86,16 @@
       <code>(auto)</code>. The <b>See available neurons</b> viewer appends one
       row per selected entry and assigns the whole viewer-selection batch to
       the next layer; the Add Row neuron field also provides dataset-aware
-      suggestions. Rows are auto-saved to
+      suggestions and, with an empty field, your Recent queries. Picking an
+      entry adds the chip and keeps that query's rows on screen &mdash; in either
+      list, a name you already added stays listed, tinted and ticked &mdash; so
+      several neurons go into one cell without retyping and the rows never shift
+      under the pointer. Clicking a ticked row takes that chip back out, the same
+      as the chip's own <b>x</b>; the small <b>&times;</b> beside a Recent entry
+      is a different action, which drops it from your query history and keeps the
+      chip. A click on the field, an
+      Escape or leaving the cell closes the list and resets it to Recent.
+      Rows are auto-saved to
       disk as you edit; use <b>Export CSV</b> to download, or
       <b>Upload CSV</b> to load a file into the table. The Neuron Colors /
       Synapse Colors palette editors are hidden (colors come from the file);

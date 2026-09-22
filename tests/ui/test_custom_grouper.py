@@ -812,10 +812,29 @@ class TestLabelMapperEditorSurface:
             for el in client.elements.values()
         )
 
-    def test_settings_mapping_editor_uses_the_same_member_surface(self, isolated_store):
+    def test_settings_mapping_editor_uses_the_same_member_surface(
+        self, isolated_store, tmp_path, monkeypatch
+    ):
         """The Settings LabelMapper editor exposes the same viewer/chip UX."""
         from nicegui import Client
         from nicegui.page import page
+
+        import ui.config as cfg
+
+        # Gate the toggles on a redirected file so the run does not depend on
+        # (or overwrite) the developer's own ui/local_config.json.
+        monkeypatch.setattr(cfg, "LOCAL_CONFIG_FILE", tmp_path / "local_config.json")
+        cfg.set_auto_suggest_enabled(True)
+        cfg.set_show_history_enabled(True)
+        # The member cell resolves suggestions through the shared dataset pool
+        # helper; stub it so the test proves the wiring, not the data.
+        calls = []
+        monkeypatch.setattr(
+            me, "dataset_suggestions",
+            lambda text, dataset=None, search_columns="auto": calls.append(
+                (text, dataset, search_columns)
+            ) or [("aMe12", "type")],
+        )
 
         client = Client(page("/settings-mapping-layout"))
         with client:
@@ -836,3 +855,31 @@ class TestLabelMapperEditorSurface:
             "drocat-labelmapper-dataset-row" in getattr(el, "_classes", set())
             for el in client.elements.values()
         )
+
+        # Type-ahead reaches the member cell the same way it reaches the inline
+        # grouper's: typing consults the dataset-aware provider for THIS column's
+        # dataset and lists its rows.
+        for listener in [
+            listener for listener in cell.chip_input._event_listeners.values()
+            if listener.type == "input"
+        ]:
+            cell.chip_input._handle_event(
+                {"listener_id": listener.id, "args": "aM"})
+        assert calls and calls[0] == ("aM", DS_A, "auto")
+        assert "aMe12" in [
+            element.text for element in client.elements.values()
+            if getattr(element, "text", "")
+        ]
+
+    def test_both_member_cells_offer_the_same_input_affordances(self):
+        """The inline grouper and the Settings grid are one surface in two
+        places, so neither may quietly offer less than the other: type-ahead
+        from the column's own dataset, and a Recent list whose rows say whether
+        that value exists in the column's dataset at all.
+        """
+        import inspect
+
+        for module in (cg, me):
+            source = inspect.getsource(module)
+            assert "suggestions=self._cell_suggest(ds)" in source
+            assert "history_hint_datasets=lambda ds=ds: [ds]" in source

@@ -126,9 +126,22 @@
 
   <h2>App settings</h2>
   <p>The <b>Input Auto-Suggestion</b> toggle controls the type-ahead
-    suggestions in the pathfinding neuron inputs: dataset type / instance /
-    bodyId names while typing, plus a Recent/Frequent query history when the
-    field is empty. Disabling it restores plain chip inputs. The change is
+    suggestions in every neuron query box (the analysis tabs, the mapping and
+    layer panels) and in the Advanced Layer Editor's neuron cells: dataset type
+    / instance / bodyId names while typing, plus a Recent/Frequent query
+    history when the field is empty. A pick adds its chip and then keeps that
+    query's rows on screen, and the history marks them the same way: a name
+    already in the input stays listed, tinted and ticked — so several entries can
+    be handled from one list without retyping and the rows never shift under the
+    pointer. Clicking a ticked row takes that chip back out, exactly like the
+    chip's own <b>x</b>; on a history row the small <b>×</b> beside it is the
+    other action, which drops the entry from the history and keeps the chip. Any
+    click that closes the list (or ESC, or leaving the field) resets it to
+    the history. <b>ArrowDown</b> moves into the open list and <b>ArrowUp</b>
+    leaves it from the first row; <b>Enter</b> adds the highlighted entry — or
+    removes it, when that row is ticked — and moves the highlight to the next
+    one, so a run of picks works without the
+    mouse. Disabling the toggle restores plain chip inputs. The change is
     saved immediately and applies to every input.</p>
 
   <h2>Default Settings</h2>

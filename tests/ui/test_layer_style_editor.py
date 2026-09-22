@@ -7,6 +7,7 @@ Covers:
   auto-save flush, CSV export/upload.
 - ui/tabs/visualization.py: Skeleton Layer Editor dropdown wiring.
 """
+import json
 import re
 import sys
 import time
@@ -224,6 +225,16 @@ def build_editor(store_dir, export_dir=None):
     return client, handle
 
 
+def render_call(js):
+    """The (row_id, items, is_history) triple behind one overlay render.
+
+    ``items`` entries are ``[value, hint, already_added]``: a picked value keeps
+    its row and is marked, exactly as the shared query box does.
+    """
+    payload = js.split("render(", 1)[1].rsplit(");", 1)[0]
+    return json.loads("[" + payload + "]")
+
+
 class TestEditorHandle:
     def test_card_elements_exist(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
@@ -379,67 +390,384 @@ class TestEditorHandle:
         assert handle._suggest_neurons("aMe") == [("aMe12", "type")]
         assert calls == [("aMe", "male-cns:v1.0", "type", None)]
 
-    def test_suggestion_commit_adds_chip_and_reoffers_without_closing(
+    def test_suggestion_commit_holds_the_query_list_and_ticks_picks(
         self, store_patch_for_component, monkeypatch
     ):
-        """Picking a suggestion adds the chip and keeps the list open.
+        """The in-table overlay follows the query box: pick, then keep picking.
 
-        Like the standard query box, the overlay is re-offered for the
-        still-focused cell instead of being closed (no suppression window is
-        armed), so subsequent focus/typing on the same cell continues to show
-        the list. Deliberate divergence: this per-cell overlay re-offers the
-        Recent/history list, while the shared query box holds the picked
-        query's own rows for the next entry.
+        A pick adds the chip and re-renders the same query's rows, marking the
+        values that are already chips instead of dropping them, so entries can be
+        added one after another without retyping. A pick from the history list
+        re-offers the history list, and any close ends the held query.
+        """
+        import ui.config as _config
+
+        client, handle = build_editor(store_patch_for_component)
+        monkeypatch.setattr(_config, "get_auto_suggest_enabled", lambda: True)
+        monkeypatch.setattr(_config, "get_show_history_enabled", lambda: True)
+        monkeypatch.setattr(
+            handle, "_recent_neuron_history", lambda: [("l-LNv", "type")],
+        )
+        calls = []
+
+        def provider(text):
+            calls.append(text)
+            return [
+                ("PPL101", "type"), ("PPL102", "type"), ("PPL103", "type"),
+            ] if str(text).startswith("PPL1") else []
+
+        monkeypatch.setattr(handle, "_suggest_neurons", provider)
+        monkeypatch.setattr(handle, "_refocus_neuron_cell", lambda row_id: None)
+        renders = []
+        monkeypatch.setattr(
+            handle.table.client, "run_javascript",
+            lambda js: renders.append(js),
+        )
+
+        def marks():
+            """Values the newest render offered, with their tick flags."""
+            _, items, _ = render_call(renders[-1])
+            return {item[0]: item[2] for item in items}
+
+        def added():
+            return sorted(value for value, tick in marks().items() if tick)
+
+        # Focusing an empty cell offers the history list, and nothing is held.
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        assert render_call(renders[-1])[2] is True
+        assert handle._suggest_query is None
+        assert handle._suggest_visible is True
+
+        # A pick from the history list adds the chip and re-offers that list --
+        # with the row ticked now, because a history row marks a current chip
+        # exactly like a type-ahead row does.
+        handle._commit_neuron_suggestion(0, "l-LNv")
+        assert handle.rows[0]["neurons"] == ["l-LNv"]
+        assert render_call(renders[-1])[2] is True
+        assert handle._suggest_query is None
+        assert added() == ["l-LNv"]
+
+        # Clicking that marked row is the reverse of the first click: the chip
+        # goes away and the list keeps its place, unmarked.
+        handle._commit_neuron_suggestion(0, "l-LNv")
+        assert handle.rows[0]["neurons"] == []
+        assert render_call(renders[-1])[2] is True
+        assert added() == []
+        handle._commit_neuron_suggestion(0, "l-LNv")
+        assert handle.rows[0]["neurons"] == ["l-LNv"]
+
+        # A typed query holds: the pick keeps its rows and ticks the new chip.
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
+        assert calls == ["PPL1"]
+        assert added() == []  # the held chip is not in this pool
+        handle._commit_neuron_suggestion(0, "PPL101")
+        assert handle.rows[0]["neurons"] == ["l-LNv", "PPL101"]
+        assert render_call(renders[-1])[2] is False
+        assert added() == ["PPL101"]
+        assert marks()["PPL102"] is False
+        # The held rows come from the cached pool, so the provider is not asked
+        # again for the same query.
+        assert calls == ["PPL1"]
+
+        # The list stayed put, so the next pick needs no new text.
+        handle._commit_neuron_suggestion(0, "PPL102")
+        assert added() == ["PPL101", "PPL102"]
+
+        # And a third click on a ticked row takes that one back out. The
+        # deselect is a model change like any other, so it goes through the same
+        # refresh -- the remount that drops the cell's typed text, which is what
+        # stops it committing a second chip on blur.
+        handle._commit_neuron_suggestion(0, "PPL101")
+        assert handle.rows[0]["neurons"] == ["l-LNv", "PPL102"]
+        assert added() == ["PPL102"]
+        assert marks()["PPL101"] is False
+        assert handle._suggest_query == "PPL1"
+        assert handle._suggest_keep_open_until > time.time()
+
+        # Removing a chip through the cell's own x clears its tick too.
+        handle._suppress_neuron_value_until = 0.0
+        handle.on_inline_edit(SimpleNamespace(args={
+            "id": 0, "field": "neuron", "value": ["l-LNv"],
+        }))
+        assert added() == []
+
+        # A commit (focus leaving the cell) ends the held query: the next focus
+        # offers the history list again.
+        handle._suggest_keep_open_until = 0.0
+        handle.on_inline_commit(SimpleNamespace(args={
+            "id": 0, "field": "neuron", "value": ["l-LNv"],
+        }))
+        assert handle._suggest_visible is False
+        assert handle._suggest_query is None
+        renders.clear()
+        # Past the short window that swallows the refresh's synthetic refocus, a
+        # genuine refocus of the cell offers the history list again.
+        handle._suggest_suppress_until = 0.0
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        assert render_call(renders[-1])[2] is True
+
+    def test_suggestion_hold_survives_the_refocus_a_pick_triggers(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The refocus a pick performs must not swap the held rows for history.
+
+        Committing a suggestion refreshes the table, which remounts the cell and
+        drops its focus, so ``_commit_neuron_suggestion`` refocuses it — and in a
+        real browser that ``focus()`` comes back as another ``on_neuron_focus``.
+        Handled naively it re-opens the history list and ends the hold, killing
+        the one behaviour the sticky list exists to provide. The test above
+        stubs the refocus away and cannot see this, so this one replays the
+        event the refocus actually produces.
+        """
+        import ui.config as _config
+
+        client, handle = build_editor(store_patch_for_component)
+        monkeypatch.setattr(_config, "get_auto_suggest_enabled", lambda: True)
+        monkeypatch.setattr(_config, "get_show_history_enabled", lambda: True)
+        monkeypatch.setattr(
+            handle, "_recent_neuron_history", lambda: [("l-LNv", "type")],
+        )
+        monkeypatch.setattr(handle, "_suggest_neurons", lambda text: [
+            ("PPL101", "type"), ("PPL102", "type")])
+
+        sent = []
+        monkeypatch.setattr(
+            handle.table.client, "run_javascript", lambda js: sent.append(js),
+        )
+        # The overlay renderer and the cell refocus both go out as JS; tell them
+        # apart so the test can see the refocus happen at all.
+
+        def renders():
+            return [s for s in sent if "drocatSuggest.render(" in s]
+
+        def refocuses():
+            return [s for s in sent if ".focus()" in s]
+
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
+        assert render_call(renders()[-1])[2] is False
+
+        handle._commit_neuron_suggestion(0, "PPL101")
+        assert refocuses(), "the pick must refocus the cell it added a chip to"
+
+        # What that refocus reports back, one round trip later.
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        _, items, is_history = render_call(renders()[-1])
+        assert is_history is False
+        assert handle._suggest_query == "PPL1"
+        assert {item[0]: item[2] for item in items} == {
+            "PPL101": True, "PPL102": False}
+
+        # Past the window, a genuine refocus is a genuine refocus again.
+        handle._suggest_keep_open_until = 0.0
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        assert render_call(renders()[-1])[2] is True
+        assert handle._suggest_query is None
+
+    def test_suggestion_overlay_ignores_the_refresh_empty_reset(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The remount after a pick must not swap the held query for history.
+
+        A table refresh remounts the cell, and the remounted q-select reports an
+        empty field. Read as typing, that would clear the held query, so the
+        reset is ignored while a query is held.
+        """
+        import ui.config as _config
+
+        client, handle = build_editor(store_patch_for_component)
+        monkeypatch.setattr(_config, "get_auto_suggest_enabled", lambda: True)
+        monkeypatch.setattr(handle, "_suggest_neurons", lambda text: [
+            ("PPL101", "type"), ("PPL102", "type")])
+        monkeypatch.setattr(handle, "_refocus_neuron_cell", lambda row_id: None)
+        renders = []
+        monkeypatch.setattr(
+            handle.table.client, "run_javascript",
+            lambda js: renders.append(js),
+        )
+
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
+        assert handle._suggest_query == "PPL1"
+        handle._commit_neuron_suggestion(0, "PPL101")
+        renders.clear()
+        # The reset the remount reports, arriving after the re-render.
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
+        assert renders == []
+        assert handle._suggest_query == "PPL1"
+
+        # Once the window passes, clearing the field really is a user action.
+        handle._suggest_ignore_reset_until = 0.0
+        handle._recent_neuron_history = lambda: [("l-LNv", "type")]
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
+        assert render_call(renders[-1])[2] is True
+        assert handle._suggest_query is None
+
+    def test_suggestion_overlay_click_and_escape_toggle_the_list(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """A press on the focused cell closes the list; the next one reopens it.
+
+        Mirrors the query box's click-to-toggle: the dismissal click never
+        reopens in the same breath, it ends the held query, and the following
+        press offers the history list.
+        """
+        import ui.config as _config
+
+        client, handle = build_editor(store_patch_for_component)
+        monkeypatch.setattr(_config, "get_show_history_enabled", lambda: True)
+        monkeypatch.setattr(
+            handle, "_recent_neuron_history", lambda: [("l-LNv", "type")],
+        )
+        monkeypatch.setattr(handle, "_suggest_neurons", lambda text: [
+            ("PPL101", "type"), ("PPL102", "type")])
+        press = SimpleNamespace(args=None)
+        renders = []
+        monkeypatch.setattr(
+            handle.table.client, "run_javascript",
+            lambda js: renders.append(js),
+        )
+
+        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
+        assert handle._suggest_visible is True
+        handle._on_suggest_toggle(press)
+        assert handle._suggest_visible is False
+        assert handle._suggest_toggled_off is True
+
+        # A second press reopens, and it is the history list (the hold ended).
+        handle._on_suggest_toggle(press)
+        assert handle._suggest_visible is True
+        assert handle._suggest_toggled_off is False
+        assert handle._suggest_query is None
+        assert render_call(renders[-1])[2] is True
+
+        # A close (blur/commit) is not a dismissal, so a press after it does
+        # not reopen the list on its own: refocusing the cell is what does that.
+        handle._close_suggest_overlay()
+        renders.clear()
+        handle._on_suggest_toggle(press)
+        assert renders == []
+        assert handle._suggest_visible is False
+
+    def test_suggestion_overlay_listeners_survive_the_socket_payload(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The overlay's listeners are reachable over the real event path.
+
+        Calling the handlers directly cannot catch a bad wire shape, and
+        NiceGUI's own normalization is strict: ``Client.handle_event`` iterates
+        ``msg['args']``, so an argument-less emit raises before the handler runs
+        and the click-to-toggle dies silently. Every listener therefore sends
+        exactly one JSON argument, which is what this drives here.
         """
         from ui.components import layer_style_editor as editor_module
 
-        client = Client(page(f"/layer-style-suggest-life-{uuid.uuid4().hex}"))
-        with client:
-            handle = editor_module.layer_style_editor(
-                dataset_provider=lambda: "male-cns:v1.0",
-                search_columns_provider=lambda: "type",
-            )
-        # Record which cell the overlay opened for (instead of rendering DOM).
-        showed = []
+        client, handle = build_editor(store_patch_for_component)
         monkeypatch.setattr(
-            handle, "_show_neuron_suggestions",
-            lambda row_id, text: showed.append((row_id, text)),
+            handle, "_recent_neuron_history", lambda: [("l-LNv", "type")],
         )
-        monkeypatch.setattr(handle, "_refocus_neuron_cell", lambda row_id: None)
+        monkeypatch.setattr(handle, "_suggest_neurons", lambda text: [
+            ("PPL101", "type")])
+        overlay = handle._suggest_overlay
+        assert handle._suggest_pick_listener_id
+        assert handle._suggest_toggle_listener_id
+        # The renderer has no argument-less branch left to send.
+        assert "args: [JSON.stringify(value)]" in editor_module._SUGGESTION_JS
 
-        # Focusing an empty cell opens suggestions for that cell.
-        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
-        assert showed == [(0, "")]
-        assert handle._suggest_row == 0
+        client.handle_event({
+            "id": overlay.id,
+            "listener_id": handle._suggest_pick_listener_id,
+            "args": [json.dumps("PPL101")],
+        })
+        assert handle.rows[0]["neurons"] == []
 
-        # Committing a picked suggestion adds the chip and re-offers the Recent
-        # list for the still-focused cell (the list stays open, not suppressed).
-        showed.clear()
-        handle._commit_neuron_suggestion(0, "aMe12")
-        assert handle.rows[0]["neurons"] == ["aMe12"]
-        assert showed == [(0, "")]
-        assert handle._suggest_suppress is False
+        # Focusing a cell is what names the row the overlay belongs to.
+        handle._suggest_row = 0
+        client.handle_event({
+            "id": overlay.id,
+            "listener_id": handle._suggest_pick_listener_id,
+            "args": [json.dumps("PPL101")],
+        })
+        assert handle.rows[0]["neurons"] == ["PPL101"]
 
-        # A synthetic re-focus of the same row re-opens (no suppression window).
-        showed.clear()
-        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
-        assert showed == [(0, "")]
+        # The very same message deselects, because the row is now marked: one
+        # wire shape carries both directions of the toggle.
+        client.handle_event({
+            "id": overlay.id,
+            "listener_id": handle._suggest_pick_listener_id,
+            "args": [json.dumps("PPL101")],
+        })
+        assert handle.rows[0]["neurons"] == []
 
-        # A reset empty input-value event on the same row also re-opens.
-        showed.clear()
-        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
-        assert showed == [(0, "")]
+        # A blank payload matches no chip, so it cannot remove one.
+        handle.rows[0]["neurons"] = ["PPL101"]
+        client.handle_event({
+            "id": overlay.id,
+            "listener_id": handle._suggest_pick_listener_id,
+            "args": [json.dumps("  ")],
+        })
+        assert handle.rows[0]["neurons"] == ["PPL101"]
 
-        # Typing a non-empty query shows filtered results for that cell.
-        showed.clear()
-        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "aMe"}))
-        assert showed == [(0, "aMe")]
+        handle._suggest_visible = True
+        client.handle_event({
+            "id": overlay.id,
+            "listener_id": handle._suggest_toggle_listener_id,
+            "args": [json.dumps(True)],
+        })
+        assert handle._suggest_visible is False
+        assert handle._suggest_toggled_off is True
 
-        # Switching to a different cell is a genuine action: it re-opens there.
-        showed.clear()
-        handle.on_neuron_focus(SimpleNamespace(args={"id": 1}))
-        assert showed == [(1, "")]
-        assert handle._suggest_suppress is False
+        # The shape the fix replaced: NiceGUI rejects it before dispatch.
+        with pytest.raises(TypeError):
+            client.handle_event({
+                "id": overlay.id,
+                "listener_id": handle._suggest_toggle_listener_id,
+                "args": None,
+            })
+
+    def test_suggestion_overlay_script_marks_holds_and_dismisses(
+        self, store_patch_for_component
+    ):
+        """The client renderer carries the synced affordances."""
+        from ui.components import layer_style_editor as editor_module
+
+        js = editor_module._SUGGESTION_JS
+        # A row already in the cell is marked, not removed.
+        assert "drocat-suggest-added" in js
+        assert 'drocat-suggest-check' in js
+        # Rows are raw DOM built from dataset/user text, so they are escaped.
+        assert "drocatSuggestEsc" in js
+        # A keyboard pick advances the highlight into the rebuilt list.
+        assert "__drocatSuggestPending" in js
+        # Escape closes the list, and a press on the focused cell toggles it.
+        assert "'Escape'" in js
+        assert "__TOGGLE_LID__" in js
+        assert "drocatSuggestToggle" in js
+        # Only a press that closes a visible list swallows the native click, so
+        # clicking the focused cell still focuses and text-selects as usual.
+        assert "toggle(true)" in js
+        assert "toggle(false)" in js
+        # Chip presses keep their own meaning and never toggle the list.
+        assert "q-chip" in js
+        # The rows are exposed as a listbox of options, and because focus never
+        # leaves the cell's input the combobox state is written there: the
+        # highlight is otherwise visual only and invisible to a screen reader.
+        assert "'listbox'" in js
+        assert 'role="option"' in js
+        assert "aria-selected" in js
+        assert "aria-multiselectable" in js
+        assert "aria-activedescendant" in js
+        assert "aria-expanded" in js
+        # The tick repeats aria-selected and the mouse-only history prune has no
+        # keyboard meaning, so neither may add to an option's accessible name.
+        assert 'aria-hidden="true">check<' in js
+        assert 'drocat-suggest-remove" aria-hidden="true"' in js
+        # A marked row says out loud what its next click does, because a marked
+        # history row also carries a prune x that means something else. The text
+        # arrives as a JSON literal substituted at build time.
+        assert "__drocatMarkedTitle" in js
+        assert "__MARKED_TITLE_JSON__" in js
+        assert 'title="' in js
 
     def test_autosave_gated_on_min_non_empty_rows(
         self, store_patch_for_component, monkeypatch
