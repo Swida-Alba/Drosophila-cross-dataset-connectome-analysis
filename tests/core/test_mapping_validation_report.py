@@ -593,3 +593,27 @@ def test_basis_buckets_partition_on_evidence_kind():
     assert sum(len(basis[b]) for b in row) == 3
     assert sum(len(basis[b]) for b in wide) == 2
     assert split_basis_buckets({}) == ([], [])
+
+
+def test_branches_cell_labels_each_side_of_the_pool(run_dir):
+    """One `pool_basis` per branch went ambiguous once each side could come
+    from a different chain; the cell names both, and a run written before the
+    per-side column exists still reads (source side only)."""
+    wide_term = "source <span class='term'>full population"
+    doc = build_report_document(collect_run_data(run_dir))
+    assert wide_term in doc and ' · target ' not in doc
+    header = ["query", "source_type", "target_type", "mapping_status",
+              "pool_basis", "target_pool_basis", "source_pool",
+              "target_pool", "source_type_total", "target_type_total",
+              "matched", "verdict_verified_strong", "verdict_verified",
+              "verdict_borderline", "verdict_unmatched",
+              "suspicious_neurons", "suspicious_noise_filtered", "gap",
+              "gap_ratio", "gap_triggered", "hemisphere"]
+    rows = list(csv.reader(
+        (run_dir / "pair_summary.csv").read_text().splitlines()))[1:]
+    _write_csv(run_dir / "pair_summary.csv", header,
+               [[*r[:5], 'linker rows', *r[5:]] for r in rows])
+    doc = build_report_document(collect_run_data(run_dir))
+    # row A is wide on the source, row B is row-backed on both sides
+    assert wide_term in doc and ' · target linker rows' in doc
+    assert 'source linker rows · target linker rows' in doc

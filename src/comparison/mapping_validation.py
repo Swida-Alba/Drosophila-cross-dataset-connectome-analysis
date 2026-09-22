@@ -955,8 +955,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'pair_summary.csv': [
         'query', 'source_type', 'target_type', 'mapping_status',
         'relationship', 'same_name_first', 'same_name_rivals',
-        'pool_basis', 'selected_chain', 'source_chain',
-        'branch_linker_values',
+        'pool_basis', 'target_pool_basis', 'selected_chain',
+        'source_chain', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_pool',
         'target_pool', 'pool_widen_added', 'source_type_total',
         'target_type_total', 'matched', 'verdict_verified_strong',
@@ -2599,6 +2599,7 @@ class MappingValidator:
                 pair.same_name_first.get('rivals') or [])
             if pair.same_name_first else '',
             'pool_basis': pair.pool_basis,
+            'target_pool_basis': pair.target_pool_basis,
             'selected_chain': pair.chain_text,
             'source_chain': pair.source_chain_text,
             'branch_linker_values': pair.linker_values,

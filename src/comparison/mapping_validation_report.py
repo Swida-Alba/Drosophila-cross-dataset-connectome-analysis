@@ -249,7 +249,10 @@ TERM_DEFS: Dict[str, str] = {
         'supported bridge chain exists, or the selected chain carries no '
         'linker column on this side (a target-side-only chain, e.g. '
         'FAFB->BANC through the banc_v888 `fafb_cell_type` hop) — the '
-        'other side can still be linker-refined.',
+        'other side can still be linker-refined. A same-name pair is always '
+        'like this on the source side, because FAFB annotates neurons with '
+        'OTHER datasets\' names and never with its own `type`: the wide pool '
+        'is then the correct terminal answer, not an unresolved gap.',
     'evidence_only':
         'Mapper N-to-1 convergence view: several source types map onto '
         'one target; branches without a supported bridge chain are '
@@ -848,6 +851,7 @@ def collect_run_data(run_dir: Path,
     # 'full population'), from the SELECTED branches of mapping_export.
     basis_sources: Dict[str, set] = {}
     basis_branches: Dict[str, int] = {}
+    target_basis_by_branch: Dict[tuple, str] = {}
     parent_all: set = set()
     claimed_all: set = set()
     try:
@@ -857,6 +861,10 @@ def collect_run_data(run_dir: Path,
                 continue
             basis = r.get('pool_basis', '?')
             basis_branches[basis] = basis_branches.get(basis, 0) + 1
+            target_basis_by_branch[
+                (str(r.get('source_type', '')),
+                 str(r.get('target_type', '')))] = str(
+                     r.get('target_pool_basis', '') or '')
             try:
                 ids = _ast.literal_eval(r.get('source_body_ids') or '{}')
                 parents = _ast.literal_eval(
@@ -869,6 +877,14 @@ def collect_run_data(run_dir: Path,
             parent_all.update(int(b) for b in parents)
     except Exception:  # noqa: BLE001
         basis_sources = {}
+    # A run whose pair_summary predates the per-side column still has the
+    # target-side basis in mapping_export, so the Branches cell can name both
+    # sides for every run, not just new ones.
+    for r in pair_rows:
+        if not r.get('target_pool_basis'):
+            r['target_pool_basis'] = target_basis_by_branch.get(
+                (str(r.get('source_type', '')),
+                 str(r.get('target_type', ''))), '')
     n_with_branch = (len(set().union(*basis_sources.values()))
                      if basis_sources else None)
     # The source-side claim envelope (§15.3): of every queried source
@@ -1622,13 +1638,29 @@ def _branches_tab(d: Dict) -> str:
              'verdict_borderline', 'verdict_unmatched'))
         susp = (f"{_esc(s.get('suspicious_neurons', 0))} / "
                 f"{_esc(s.get('suspicious_noise_filtered', 0))}")
+        # Both sides, labelled: after the per-side basis the single
+        # `pool_basis` cell describes only the SOURCE side, and a wide side is
+        # a structural fact, not a gap — so name each side and let the term
+        # carry the reason.
+        src_basis = str(s.get('pool_basis', '') or '')
+        tgt_basis = str(s.get('target_pool_basis', '') or '')
+
+        def _side(label, basis):
+            if not basis:
+                return ''          # run predates the per-side column
+            if basis == 'full population':
+                return f'{label} {_term("full population", basis)}'
+            return f'{label} {_esc(basis)}'
+
+        basis_cell = ' · '.join(p for p in (_side('source', src_basis),
+                                            _side('target', tgt_basis)) if p)
         triggered = _truthy(s.get('gap_triggered'))
         entries.append({
             'key': (not triggered, str(src), str(tgt)),
             'html': (
                 f"<tr><td>{_esc(src)} → {_esc(tgt)}{snf_marker}</td>"
                 f"<td>{_esc(s.get('mapping_status', ''))} / "
-                f"{_esc(s.get('pool_basis', ''))}</td>"
+                f"{basis_cell}</td>"
                 f"<td>{_esc(s.get('source_pool', '—'))}/"
                 f"{_esc(s.get('source_type_total', '—'))} → "
                 f"{_esc(s.get('target_pool', '—'))}/"
@@ -1650,12 +1682,15 @@ def _branches_tab(d: Dict) -> str:
             'validation pair of the query. Sorted by branch.')
         + _th('Mapping status / pool basis',
               'Mapper decision status (mapped / evidence_only / …) and how '
-              'the SOURCE pool was resolved: linker rows = the '
-              'bridging-evidence subset; full population = no supported '
-              'chain named the source neurons, so the whole type '
-              'population is validated. The basis is decided per side, so '
-              'the target pool can still be refined (hover the detail '
-              'table\'s source_chain).')
+              'EACH side of the pool was resolved, labelled source / '
+              'target: linker rows = the bridging-evidence subset; full '
+              'population = no supported chain named those neurons, so the '
+              'whole type population is validated. The two sides are '
+              'decided separately — the selected chain can be a '
+              'target-side-only hop while another supported chain of the '
+              'same endpoint names the source (hover the detail table\'s '
+              'source_chain). Runs predating the per-side column show the '
+              'source side only.')
         + _th('Pools (source of total → target of total)',
               'Validated pool sizes: source neurons of the source type '
               'total → target neurons of the target type total.')

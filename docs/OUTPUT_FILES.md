@@ -789,10 +789,13 @@ bar-kind evidence) and a
     `verified_strong` rests its two claims on different pool members.
 *   **`pair_summary.csv`**: per branch — pools, matched `M` (mutual-best 1:1
     pairs on the same chain), `gap` = `min(|P_S|,|P_T|) − M` (informational),
-    verdict/noise counters, `pool_best_size`. The report's Branches tab
-    additionally shows **Mapped** (verified_strong + verified + borderline)
-    and measures its displayed gap against that looser, verdict-based count,
-    hovering both numbers.
+    verdict/noise counters, `pool_best_size`, and the provenance set
+    `pool_basis` (SOURCE side) / `target_pool_basis` / `selected_chain` /
+    `source_chain` — the chain that resolved the target pool versus the one
+    that named the source neurons, equal except under the per-side basis. The
+    report's Branches tab additionally shows **Mapped** (verified_strong +
+    verified + borderline) and measures its displayed gap against that looser,
+    verdict-based count, hovering both numbers.
 *   **`pool_categories.csv`**: per in-map target — the tier category
     (`matched` / `verified` / `borderline` / `unmatched`) with the
     best-evidence metrics of its chain-claimant source (`best_source_bodyId`)
