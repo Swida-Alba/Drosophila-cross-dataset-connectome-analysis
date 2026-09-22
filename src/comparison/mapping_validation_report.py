@@ -48,19 +48,38 @@ TERM_DEFS: Dict[str, str] = {
         'switching mode only admits more neurons, never relabels one.',
     'mutual-best (assigned)':
         'A source neuron whose best pool member is itself the target\'s '
-        'best source — the strict pairing counted as "assigned".',
+        'best source — both sides read on the ordering chain, so the '
+        'strict pairing counted as "assigned" is the same relation the '
+        'ranked lists show.',
+    'ordering chain':
+        'How two candidate neurons are compared for "best": jaccard first, '
+        'rank_union breaking a jaccard tie, bodyId last (user 2026-09-20, '
+        'J1/J3). It decides the published top-1, the mutual-best pairing, a '
+        'target\'s best source, gap-fill proposals and every hover list. '
+        'The two rank columns are EVIDENCE the verdicts are read off, not '
+        'the order: jaccard is a ratio of small integers, so a tie block '
+        'shares one rank and would otherwise be decided by row order.',
     'verdict':
-        'Tiered rule — verified_strong (best pool member is global top-1 '
-        'under BOTH rank_union and jaccard), verified (top-1 under one), '
-        'borderline (top-5 window), unmatched.',
+        'Tiered rule, read off the POOL rather than off one chosen row, with a '
+        'rank-1 claim lifting only the row that PUBLISHES the partner holding '
+        'it: verified_strong (ONE pool member is global top-1 under BOTH '
+        'rank_union, positive, and jaccard), verified (that same published '
+        'member is top-1 under at least one metric), borderline (the pool\'s '
+        'best sits inside the top-5 window), unmatched. Quantifying over the '
+        'pool keeps a label from moving with the ordering key; tying the '
+        'claim to the published partner is what stops a verdict meaning "this '
+        'pool contains a winner somewhere" — r17 measured 46 rows on two '
+        'half-claims and r18 2 more on an unpublished rank_union win. Any '
+        'rank_union top-1 that is not the published target stays visible in '
+        'ru_top_target_bodyId, as evidence rather than verdict.',
     'matched':
-        'The only ASSERTED tier: the pool member is the mutual best '
-        'under both metrics.',
+        'The only ASSERTED tier: the pool member is the mutual best under '
+        'both metrics.',
     'verified':
-        'Review tier: best pool member is top-1 under exactly one of '
-        'rank_union / jaccard.',
+        'Review tier: the published pool member is global top-1 under at '
+        'least one of rank_union / jaccard.',
     'borderline':
-        'Review tier: best pool member sits inside the top-5 window.',
+        'Review tier: the pool\'s best member sits inside the top-5 window.',
     'unmatched':
         'No pool member qualifies under the tier rule — counted as a '
         'miss, never as coverage.',
@@ -73,8 +92,14 @@ TERM_DEFS: Dict[str, str] = {
         'An in-map target of the query in ANOTHER branch that appears '
         'in this branch\'s expansion — already mapped, never a fill.',
     'candidates':
-        'Out-of-map suspect, connectivity-qualified (invader or gap '
-        'fire) AND morph-qualified — the restrictive fill.',
+        'Out-of-map suspect, connectivity-qualified AND morph-qualified — '
+        'the restrictive fill. Connectivity is an invader ahead of the '
+        'pool best, a gap fire, or (family mode and up) a neuron inside '
+        "the candidate-discovery window, the top-rank_top_k of EACH "
+        'metric: a pool holding both global rank-1s leaves the invader '
+        'window empty, and since rule 5 seeds `relative` from the '
+        'candidate types, the bar alone made a strong branch report less '
+        'than a weak one (r16 -> r18: relatives 39 rows -> 1).',
     'family':
         'Out-map bodyIds of THIS branch\'s target type (family/aggressive '
         'modes; type-gated, not morph-gated).',
@@ -82,9 +107,13 @@ TERM_DEFS: Dict[str, str] = {
         'Type-mates of candidate types outside the map (family/aggressive '
         'modes).',
     'examinees':
-        'The aggressive-only deep window (out-of-pool homologs below the '
-        'pool best). Renamed from \'suspicious\' 2026-09-18 — the '
-        'mapper\'s rival-suspects concept now owns that word.',
+        'The aggressive-only WIDE window: out-of-pool homologs ranked below '
+        "the pool best, beyond `rank_top_k` (`candidate_source="
+        "'deep_window'). Inside `rank_top_k` the same rows are tagged "
+        "'top_window', count as connectivity evidence and land in "
+        "`candidates`, so the two bands are also the advisory-vs-fill "
+        "boundary. Renamed from 'suspicious' 2026-09-18 - the mapper's "
+        'rival-suspects concept now owns that word.',
     'candidate_annotation':
         'Per-bodyId leaf token on every expansion bin, one ordered '
         'value: {T}(out-map) wins, then {T}>{src}, then {T}(no_source), '
@@ -198,8 +227,11 @@ TERM_DEFS: Dict[str, str] = {
         "chain's linker column values refine the full type population "
         'to the neurons actually carried by the chain.',
     'full population':
-        'Pool fallback: no supported bridge chain exists, so the WHOLE '
-        'type population on each side is validated.',
+        'That side of the pool is the WHOLE type population. Either no '
+        'supported bridge chain exists, or the selected chain carries no '
+        'linker column on this side (a target-side-only chain, e.g. '
+        'FAFB->BANC through the banc_v888 `fafb_cell_type` hop) — the '
+        'other side can still be linker-refined.',
     'evidence_only':
         'Mapper N-to-1 convergence view: several source types map onto '
         'one target; branches without a supported bridge chain are '
@@ -224,8 +256,12 @@ TERM_DEFS: Dict[str, str] = {
         "renamed from 'suspicious' 2026-09-18.",
     'reciprocal':
         'Stage 5d evidence (advisory): a candidates / family / relative '
-        'member is scanned BACK in the source universe — the same '
+        'member — or an UNMATCHED pool member — is scanned BACK in the '
+        'source universe — the same '
         'homolog-finding scorer, run on the member\'s own target profile. '
+        'Matched / verified / borderline pool members are not scanned: '
+        'they are already mapped, and the symmetric forward score is their '
+        'evidence. '
         'Connectivity only; morphology is not re-evaluated (candidates '
         'are already morph-qualified, and family / relative members are '
         'morph-similar to the query or to those candidates). It never '
@@ -233,10 +269,22 @@ TERM_DEFS: Dict[str, str] = {
         'the Backward tab: that one is the type-level mapping direction, '
         'this one is per-neuron reverse connectivity.',
     'reciprocal top-1':
-        'The single best source-side hit for one member: its bodyId, '
-        'source type, and where it lives (this branch\'s pool, another '
-        'branch, or out-of-map) plus rank_union. Hover for the full '
-        'top-N list.',
+        'The chain-best source-side hit for one member — Jaccard first, '
+        'rank_union as the tie-break, bodyId last (user 2026-09-20, J1): '
+        'its bodyId, source type, where it lives '
+        "(this branch's pool, or elsewhere — out-of-branch, whatever "
+        'tier it would belong to) and its jaccard. rank_union travels in '
+        'the hover as the confirmation value and never filters a row. '
+        'Hover for the full top-N list with both scores and both ranks.',
+    'branch-type hit':
+        'The reverse hit the reciprocal grade actually rests on — the '
+        'best-ranked source of the CLAIMING BRANCH\'S OWN type, with the '
+        'rank it reached and which ranking (rank_union or jaccard) placed '
+        'it there. It is a different neuron from the top-1 whenever the '
+        'branch type wins on jaccard alone, which is why a row can read '
+        'high while its top-1 sits elsewhere. Its jaccard is also what '
+        'orders the Reciprocal list, so a row with no hit ranks below the '
+        'rows that have one.',
     'rank_union':
         'Rank agreement between the two partner-strength vectors over the '
         'UNION of their partner types: each side is average-tie ranked, a '
@@ -261,9 +309,10 @@ TERM_DEFS: Dict[str, str] = {
         'ranked at all). A graded negative, not an error.',
     'not-checked':
         'Reciprocal label for members the pass did not scan: the pass is '
-        'off, the neuron was over the per-run / per-branch caps, or it '
-        'sits in a bin that is not part of the gap-fill ladder. Displayed '
-        'as an explicit dash so absence is never read as failure.',
+        'off, the neuron was over the per-run / per-branch caps, or it is '
+        'outside the scanned set — an already-mapped (matched / verified / '
+        'borderline) pool member, or a bin the pass does not read. '
+        'Displayed as an explicit dash so absence is never read as failure.',
     'shared partner types':
         'How many partner types the two compared vectors have in common — '
         'the denominator a rank_union or jaccard is actually built on. '
@@ -282,16 +331,19 @@ TERM_DEFS: Dict[str, str] = {
 # per-file column/term notes for §12 expanders
 FILE_GLOSSARY: Dict[str, List[str]] = {
     'validation/validation_results.csv': [
-        'verdict', 'matched', 'verified', 'borderline', 'unmatched'],
+        'verdict', 'ordering chain', 'matched', 'verified', 'borderline',
+        'unmatched'],
     'validation/examinees.csv': [
         'category', 'sibling', 'candidates', 'family', 'relative',
         'out of scope', 'candidate_annotation', 'reciprocal',
         'shared partner types', 'thin evidence'],
     'expansion/backward_matches.csv': [
-        'reciprocal', 'reciprocal top-1', 'high', 'medium', 'low',
-        'not-checked', 'shared partner types', 'thin evidence'],
+        'reciprocal', 'reciprocal top-1', 'branch-type hit', 'high',
+        'medium', 'low', 'not-checked', 'shared partner types',
+        'thin evidence'],
     'gap_fill/gap_fill_dedup.csv': [
-        'dup', 'restrictive fill', 'family fill', 'thin evidence'],
+        'dup', 'restrictive fill', 'family fill', 'branch-type hit',
+        'thin evidence'],
     'gap_fill/gap_fill_levels.csv': ['fill levels'],
     'expansion/out_map_expansion.csv': ['out-map expansion', 'null bar'],
     'validation/pair_summary.csv': ['gap', 'verdict'],
@@ -327,7 +379,7 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
      'unclaimed-source expansion (§7)'),
     ('expansion/backward_matches.csv',
      'reciprocal homolog evidence per candidates/family/relative member '
-     '(§5d, advisory)'),
+     'and per unmatched pool member (§5d, advisory)'),
     ('expansion/source_status.csv',
      'backward `source-` status per in-branch source (advisory)'),
     ('expansion/source_candidates.csv',
@@ -434,6 +486,27 @@ def _f(v, nd=3) -> str:
         return f'{float(v):.{nd}f}'
     except (TypeError, ValueError):
         return '—'
+
+
+def _chain_key(r: Dict):
+    """Ascending sort key for the ordering chain of a run-CSV row — Jaccard
+    rank, rank_union rank as the tie-break, then the two scores (higher
+    first), blank last.  The authority is ``body_id_resolver.chain_key``;
+    re-spelled here because this module reads finished runs with no
+    pipeline import (it must stay runnable on a folder of CSVs alone)."""
+    def rank(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return float('inf')
+        return f if f == f else float('inf')
+
+    def score(v):
+        f = rank(v)
+        return -f if f != float('inf') else float('inf')
+
+    return (rank(r.get('jaccard_rank')), rank(r.get('rank_union_rank')),
+            score(r.get('jaccard')), score(r.get('rank_union')))
 
 
 def _pct(part, whole) -> str:
@@ -587,6 +660,9 @@ def collect_run_data(run_dir: Path,
     # -- stage 5d backward homolog evidence (advisory; connectivity only) --
     backward_rows = _read_csv_rows(_run_file(run_dir, 'backward_matches.csv'))
     _bev_rank = {'low': 1, 'medium': 2, 'high': 3}
+    _DEDUP_DISPLAY_RANK = {'matched': 9, 'verified': 8, 'borderline': 7,
+                           'unmatched': 6, 'sibling': 5, 'candidates': 4,
+                           'family': 3, 'relative': 2, 'examinees': 1}
 
     def _member_row_key(r: Dict) -> Tuple[int, int]:
         # a bodyId scanned under several branches reads ONCE: the
@@ -598,9 +674,6 @@ def collect_run_data(run_dir: Path,
                 -_DEDUP_DISPLAY_RANK.get(
                     str(r.get('member_category') or ''), 0))
 
-    _DEDUP_DISPLAY_RANK = {'matched': 9, 'verified': 8, 'borderline': 7,
-                           'unmatched': 6, 'sibling': 5, 'candidates': 4,
-                           'family': 3, 'relative': 2, 'examinees': 1}
     backward_by_bid: Dict[str, Dict] = {}
     rows_by_bid: Dict[str, List[Dict]] = collections.defaultdict(list)
     for r in backward_rows:
@@ -724,13 +797,7 @@ def collect_run_data(run_dir: Path,
         if not rows:
             continue
 
-        def rank_of(r):
-            try:
-                return float(r.get('rank_union_rank') or 999)
-            except ValueError:
-                return 999.0
-
-        best = min(rows, key=rank_of)
+        best = min(rows, key=_chain_key)
         n_q = sum(1 for r in rows if _truthy(r.get('morph_qualified')))
         per_source_best.append({'src': src, 'row': best, 'n_q': n_q,
                                 'n_total': len(rows)})
@@ -763,6 +830,8 @@ def collect_run_data(run_dir: Path,
     # 'full population'), from the SELECTED branches of mapping_export.
     basis_sources: Dict[str, set] = {}
     basis_branches: Dict[str, int] = {}
+    parent_all: set = set()
+    claimed_all: set = set()
     try:
         import ast as _ast
         for r in _read_csv_rows(_run_file(run_dir, 'mapping_export.csv')):
@@ -772,20 +841,32 @@ def collect_run_data(run_dir: Path,
             basis_branches[basis] = basis_branches.get(basis, 0) + 1
             try:
                 ids = _ast.literal_eval(r.get('source_body_ids') or '{}')
+                parents = _ast.literal_eval(
+                    r.get('parent_source_body_ids') or '{}')
             except (ValueError, SyntaxError):
                 continue
             basis_sources.setdefault(basis, set()).update(
                 int(b) for b in ids)
+            claimed_all.update(int(b) for b in ids)
+            parent_all.update(int(b) for b in parents)
     except Exception:  # noqa: BLE001
         basis_sources = {}
     n_with_branch = (len(set().union(*basis_sources.values()))
                      if basis_sources else None)
+    # The source-side claim envelope (§15.3): of every queried source
+    # neuron, how many sit in at least one branch pool (claimed and graded
+    # there) and how many fall outside all of them — the pool-refinement
+    # RESIDUE that `compute_out_map_by_type` hands to the out-map
+    # expansion. A residue of 0 over a large parent pool is not "nothing
+    # left to find": on an unrefined (wide) source pool every neuron is
+    # claimed by construction, so the expansion route never fires.
+    src_residue = len(parent_all - claimed_all) if parent_all else None
 
     # family-material reconciliation: family material is the map-structure
     # remainder (in-map − map-covered) and is reported COMPLETE; the dedup
     # bins split it by fill-accounting precedence (candidates > family), so
     # the note names which members the candidates bin claims.
-    fm_ids = {int(b) for b in (coverage.get('mcns') or {}).get(
+    fm_ids = {int(b) for b in (coverage.get('target') or {}).get(
         'family_material') or []}
     fm_family = fm_ids & {int(r['target_bodyId']) for r in dedup_rows
                           if r['dedup_category'] == 'family'}
@@ -824,9 +905,12 @@ def collect_run_data(run_dir: Path,
         'readme': readme,
         'mapper_gap': dict(gap or {}),
         'mapper_gap_untyped': gap_untyped,
-        'fafb': coverage.get('fafb') or {},
-        'mcns': coverage.get('mcns') or {},
+        'src': coverage.get('source') or {},
+        'tgt': coverage.get('target') or {},
         'scanned_sources': scanned_sources,
+        'src_parent': len(parent_all) or None,
+        'src_claimed': len(claimed_all) or None,
+        'src_residue': src_residue,
         'verdict_counts': verdict_counts,
         'cat_counts': cat_counts,
         'n_out_of_scope': n_out_of_scope,
@@ -850,7 +934,7 @@ def collect_run_data(run_dir: Path,
         'backward_bins': backward_bins,
         'backward_by_bid': backward_by_bid,
         'backward_rows_by_bid': rows_by_bid,
-        'backward_counters': (coverage.get('mcns') or {}).get(
+        'backward_counters': (coverage.get('target') or {}).get(
             'backward_evidence') or {},
         'out_sources': out_sources,
         'out_morph_pass': out_morph_pass,
@@ -1138,10 +1222,10 @@ def _hero(d: Dict) -> str:
     if d['advisories']:
         health += ' · ⚠️ ' + ', '.join(d['advisories'])
 
-    f_, m = d['fafb'], d['mcns']
-    total = f_.get('total_queried')
-    covered = m.get('in_branch_pool')
-    mapped_set = m.get('mapped_target_set')
+    scov, tcov = d['src'], d['tgt']
+    total = scov.get('total_queried')
+    covered = tcov.get('in_branch_pool')
+    mapped_set = tcov.get('mapped_target_set')
     if total and covered is not None:
         headline = (
             f'{_esc(total)} source neurons → <b>{_esc(covered)}</b> '
@@ -1149,8 +1233,8 @@ def _hero(d: Dict) -> str:
             f'{_term("map-covered")} (of {_esc(mapped_set)} in-map; '
             f'{_pct(covered, mapped_set)}) · '
             f'{_term("mutual-best (assigned)", "mutual-best")} '
-            f'{_esc(f_.get("assigned", "—"))} · fill-proposed '
-            f'+{_esc(f_.get("fill_proposed_only", "—"))}')
+            f'{_esc(scov.get("assigned", "—"))} · fill-proposed '
+            f'+{_esc(scov.get("fill_proposed_only", "—"))}')
     else:
         headline = ('Coverage artifacts absent — the run produced no '
                     'set-level coverage (see the Log tab).')
@@ -1172,40 +1256,48 @@ def _hero(d: Dict) -> str:
         + _chip('Health', _esc(health))
         + '</div>'
         "<p class='report-note'>Generated "
-        f'{datetime.now():%Y-%m-%d %H:%M:%S} · hover any dotted term '
-        'for its definition · every number traces to a run artifact '
-        '(Log tab lists them) · <a href="_UserGuide_please_read_me.html">'
+        f'{datetime.now():%Y-%m-%d %H:%M:%S} · hover any dotted term or '
+        'table header for its definition · every number traces to a run '
+        'artifact (Log tab lists them) · '
+        '<a href="_UserGuide_please_read_me.html">'
         '📘 User guide — this run\'s files and terms, '
         'explained</a></p>'
         '</header>')
 
 
 def _coverage_tab(d: Dict) -> str:
-    f_, m = d['fafb'], d['mcns']
+    scov, tcov = d['src'], d['tgt']
     cards = []
-    if f_ and m:
+    if scov and tcov:
         # §1 the three coverage levels
         l1 = _kv_block('L1 CLAIM (forward) — what does the map cover?', [
+            ('Source claim envelope',
+             ('—' if d.get('src_claimed') is None else
+              f"{_esc(d['src_claimed'])} of {_esc(d['src_parent'])} queried "
+              f"sources sit in a branch pool; "
+              f"{_esc(d.get('src_residue'))} outside every pool — the "
+              f"{_term('out-map expansion', 'out-map residue')}, which the "
+              f"expansion scans against the full target universe")),
             ('In-map target population',
-             f"{_esc(m.get('mapped_target_set', '—'))} neurons "
-             f'({len(m.get("per_type") or {})} target types)'),
+             f"{_esc(tcov.get('mapped_target_set', '—'))} neurons "
+             f'({len(tcov.get("per_type") or {})} target types)'),
             (_term('map-covered', 'Map-covered (branch pools)'),
-             f"{_esc(m.get('in_branch_pool', '—'))} "
-             f'({_pct(m.get("in_branch_pool"), m.get("mapped_target_set"))})'),
+             f"{_esc(tcov.get('in_branch_pool', '—'))} "
+             f'({_pct(tcov.get("in_branch_pool"), tcov.get("mapped_target_set"))})'),
             ('Reached only as candidates',
-             _esc(m.get('reached_as_candidates_only', '—'))),
+             _esc(tcov.get('reached_as_candidates_only', '—'))),
             (_term('hole', 'Holes (never map-covered)'),
-             f"{_esc(m.get('holes', '—'))} ▸ Targets tab"),
+             f"{_esc(tcov.get('holes', '—'))} ▸ Targets tab"),
             (_term('family material'),
-             f'{len(m.get("family_material") or [])} '
-             f'(= {m.get("mapped_target_set")} − '
-             f'{m.get("in_branch_pool")}) ▸ Targets tab'),
+             f'{len(tcov.get("family_material") or [])} '
+             f'(= {tcov.get("mapped_target_set")} − '
+             f'{tcov.get("in_branch_pool")}) ▸ Targets tab'),
         ])
         tiers = {k: d['dedup_cat'].get(k, 0)
                  for k in ('matched', 'verified', 'borderline')}
         l2 = _kv_block(
             'L2 PROVENANCE — how was each of the '
-            f'{_esc(m.get("in_branch_pool", "…"))} earned?', [
+            f'{_esc(tcov.get("in_branch_pool", "…"))} earned?', [
                 (f'{_term("matched")} <i>(the only ASSERTED tier)</i>',
                  _esc(tiers['matched'])),
                 (f'{_term("verified")} <i>(review tier)</i>',
@@ -1239,9 +1331,9 @@ def _coverage_tab(d: Dict) -> str:
         l3 = _kv_block('L3 VALIDATION — what was checked?', [
             ('Sources scanned into pools',
              f'{len(d["scanned_sources"])} of '
-             f"{_esc(f_.get('total_queried', '—'))} queried"),
+             f"{_esc(scov.get('total_queried', '—'))} queried"),
             (_term('mutual-best (assigned)', 'Mutual-best (assigned)'),
-             f"{_esc(f_.get('assigned', '—'))} sources"),
+             f"{_esc(scov.get('assigned', '—'))} sources"),
             ('Morph record', _esc(auc_txt)),
             (_term('scene self-check', 'Scene self-checks'),
              (f'{sc["pass"]}/{sc["pass"] + sc["fail"]} passed'
@@ -1263,9 +1355,9 @@ def _coverage_tab(d: Dict) -> str:
         # §2 source waterfall — mapper-consistent buckets (user
         # 2026-09-17: row-evidence backed + same-name pooled + out-map),
         # with the evidence overlay as the decided flat split.
-        assigned_n = f_.get('assigned', 0)
-        proposed_n = f_.get('fill_proposed_only', 0)
-        unpaired = f_.get('unpaired_unproposed', 0)
+        assigned_n = scov.get('assigned', 0)
+        proposed_n = scov.get('fill_proposed_only', 0)
+        unpaired = scov.get('unpaired_unproposed', 0)
         unclaimed = len(d['out_sources'])
         in_pool_residue = unpaired - unclaimed
         basis = d['basis_sources']
@@ -1273,8 +1365,8 @@ def _coverage_tab(d: Dict) -> str:
         n_full = len(basis.get('full population', set()))
         b_linker = d['basis_branches'].get('linker rows', 0)
         b_full = d['basis_branches'].get('full population', 0)
-        covered = m.get('in_branch_pool', '—')
-        total_q = f_.get('total_queried', '—')
+        covered = tcov.get('in_branch_pool', '—')
+        total_q = scov.get('total_queried', '—')
         if basis:
             # The out-map bucket derives from COVERAGE (queried − sources
             # with a branch), not from out-map row presence: a sparse
@@ -1305,7 +1397,7 @@ def _coverage_tab(d: Dict) -> str:
         else:
             # fixture / legacy fallback: the flat evidence split only
             wf_rows = [
-                f"<tr><td>{_esc(f_.get('total_queried', '—'))} queried</td>"
+                f"<tr><td>{_esc(scov.get('total_queried', '—'))} queried</td>"
                 '<td>the query population</td></tr>',
                 f"<tr><td>{_esc(assigned_n)} assigned</td>"
                 '<td>paired onto branch pools</td></tr>',
@@ -1330,7 +1422,7 @@ def _coverage_tab(d: Dict) -> str:
               'material and stays outside it. Per-source backward '
               'statuses: see the Backward tab (informational only).</p>')
         cards.append(_section_card(
-            f"Source side — the {f_.get('total_queried', '…')}, "
+            f"Source side — the {scov.get('total_queried', '…')}, "
             'accounted',
             'Mapper-consistent buckets (row-evidence backed / same-name '
             'pooled / out-map); proposals are evidence, the mapping is '
@@ -1339,7 +1431,7 @@ def _coverage_tab(d: Dict) -> str:
                  'validation mode']))
 
         # per-type table (21 rows here)
-        per = f_.get('per_type') or {}
+        per = scov.get('per_type') or {}
         rows = []
         for name in sorted(per, key=lambda k: -int(per[k].get('pool')
                                                    or 0)):
@@ -1352,7 +1444,7 @@ def _coverage_tab(d: Dict) -> str:
                 f'<td>{_esc(v.get("unpaired_unproposed", 0))}</td></tr>')
         body = _viewport(
             rows,
-            _th('source type', 'The queried source-side (FAFB) type.')
+            _th('source type', 'The queried source-side type.')
             + _th('pool', 'Source neurons of this type in the query '
                   'set.')
             + _th('assigned', 'Neurons with a mutual-best pair onto a '
@@ -1363,7 +1455,7 @@ def _coverage_tab(d: Dict) -> str:
                   'residue plus unclaimed neurons.'))
         cards.append(_section_card(
             'Per-type pools (source)',
-            'Feeds from set_coverage.json fafb.per_type.', body))
+            'Feeds from set_coverage.json source.per_type.', body))
     else:
         cards.append(_section_card(
             'Coverage — the deliverable', '',
@@ -1450,15 +1542,61 @@ def _branches_tab(d: Dict) -> str:
         try:
             h = ast.literal_eval(s.get('hemisphere', '') or '{}')
             if h.get('hemisphere_asymmetry'):
-                hemi = (" <span class='warn-chip' title='Hemisphere "
-                        'asymmetry fires the gap even at arithmetic '
-                        "gap 0'>⚠</span>")
+                def _sides(key):
+                    c = h.get(key) or {}
+                    out = f"L {c.get('L', 0)} / R {c.get('R', 0)}"
+                    return out + (f" / ? {c.get('?', 0)}"
+                                  if c.get('?') else '')
+                hemi = (" <span class='term warn-chip'>⚠<span class='tip'>"
+                        '<b>hemisphere asymmetry</b>'
+                        f'Source pool {_sides("source_sides")}, target pool '
+                        f'{_sides("target_sides")}. An L/R imbalance on '
+                        'either side fires the gap rule even at arithmetic '
+                        'gap 0 — some neuron has no same-side partner. '
+                        'Advisory: it gates nothing and claims no fill.'
+                        '</span></span>')
         except (ValueError, SyntaxError):
             pass
+        # Mapped = every source on this branch carrying a MAPPING verdict.
+        # The mutual-best pair count (`matched` in pair_summary.csv) is a
+        # STRICTER subset — a source inside a pair is already counted here —
+        # so the two are shown side by side, never added.
         try:
-            gap_ratio = f'{float(s.get("gap_ratio") or 0):.0%}'
-        except ValueError:
-            gap_ratio = '—'
+            mapped = sum(int(s.get(k) or 0) for k in
+                         ('verdict_verified_strong', 'verdict_verified',
+                          'verdict_borderline'))
+        except (TypeError, ValueError):
+            mapped = None
+        try:
+            smaller = min(int(s.get('source_pool') or 0),
+                          int(s.get('target_pool') or 0))
+        except (TypeError, ValueError):
+            smaller = 0
+        if mapped is None:
+            mapped_cell = gap_cell = '—'
+        else:
+            mapped_cell = _hover(
+                f"{mapped}<span class='mv-note'> · pairs "
+                f"{_esc(s.get('matched', '—'))}</span>",
+                '<b>Mapped vs paired</b>'
+                f'{mapped} source neurons carry a mapping verdict '
+                '(verified_strong / verified / borderline). '
+                f"{s.get('matched', '—')} of them sit in a mutual-best 1:1 "
+                'pair — both sides name each other — which is the stricter '
+                'count pair_summary.csv reports as `matched`. The paired '
+                'sources are inside the mapped total, not additional to it.')
+            gap_v = max(0, smaller - mapped)
+            gr = f'{(gap_v / smaller):.0%}' if smaller else '—'
+            gap_cell = _hover(
+                f"{gap_v} ({gr})",
+                '<b>Gap</b>'
+                f'min(|source pool|, |target pool|) = {smaller} − {mapped} '
+                'mapped = '
+                f'{gap_v}: the neurons on the smaller side that NO mapping '
+                'verdict claims. Clamped at 0. pair_summary.csv still '
+                f"reports the stricter pair-based gap ({s.get('gap', '—')}, "
+                'smaller − mutual-best pairs), so the two differ wherever '
+                'sources are mapped without pairing 1:1.')
         verdicts = ' / '.join(
             str(s.get(k, 0)) for k in
             ('verdict_verified_strong', 'verdict_verified',
@@ -1476,8 +1614,8 @@ def _branches_tab(d: Dict) -> str:
                 f"{_esc(s.get('source_type_total', '—'))} → "
                 f"{_esc(s.get('target_pool', '—'))}/"
                 f"{_esc(s.get('target_type_total', '—'))}</td>"
-                f"<td>{_esc(s.get('matched', '—'))}</td>"
-                f"<td>{_esc(s.get('gap', '—'))} ({gap_ratio})</td>"
+                f"<td>{mapped_cell}</td>"
+                f"<td>{gap_cell}</td>"
                 f"<td>{'●' if triggered else '–'}{hemi}</td>"
                 f'<td>{_esc(verdicts)}</td><td>{susp}</td>'
                 f'<td>{_term("branch bar", _esc(bar_txt))}</td>'
@@ -1492,24 +1630,34 @@ def _branches_tab(d: Dict) -> str:
             'One row per branch: a (source type, target type) '
             'validation pair of the query. Sorted by branch.')
         + _th('Mapping status / pool basis',
-              'Mapper decision status (mapped / evidence_only / …) and '
-              'how the source pool was resolved: linker rows = the '
-              'bridging-evidence subset; full population = no '
-              'supported chain, the whole type population.')
+              'Mapper decision status (mapped / evidence_only / …) and how '
+              'the SOURCE pool was resolved: linker rows = the '
+              'bridging-evidence subset; full population = no supported '
+              'chain named the source neurons, so the whole type '
+              'population is validated. The basis is decided per side, so '
+              'the target pool can still be refined (hover the detail '
+              'table\'s source_chain).')
         + _th('Pools (source of total → target of total)',
               'Validated pool sizes: source neurons of the source type '
               'total → target neurons of the target type total.')
-        + _th('Matched (M)',
-              'Mutual-best (assigned) source–target pairs — the only '
-              'ASSERTED tier.')
+        + _th('Mapped (M)',
+              'Source neurons on this branch carrying a MAPPING verdict: '
+              'verified_strong + verified + borderline. The smaller number '
+              'beside it is the mutual-best 1:1 pair count (`matched` in '
+              'pair_summary.csv) — a stricter subset, since a paired source '
+              'is already inside the mapped total. The two are never added.')
         + _th('Gap',
-              'min(|source pool|, |target pool|) − M, with its pool '
-              'ratio. Informational — proposals only, the mapping is '
-              'never rewritten.')
+              'min(|source pool|, |target pool|) − Mapped, with its pool '
+              'ratio: the neurons on the smaller side that NO mapping verdict '
+              'claims. Clamped at 0. Informational — proposals only, the '
+              'mapping is never rewritten. pair_summary.csv keeps the '
+              'stricter pair-based gap (smaller − mutual-best pairs); hover a '
+              'cell for both.')
         + _th('Gap triggered',
-              '● = the branch fired the gap rule (advisory; the '
-              'trigger no longer gates anything); ⚠ marks hemisphere '
-              'asymmetry.')
+              '● = the pipeline gap rule fired on the PAIR-based gap '
+              '(advisory; the trigger no longer gates anything), so it can '
+              'stay filled where the displayed Gap reads 0. '
+              '⚠ = hemisphere asymmetry — hover it for the L/R counts.')
         + _th('Verdicts v★ / v / b / u',
               'Per-branch source-side verdict counts: verified_strong '
               '(v★) / verified (v) / borderline (b) / unmatched (u).')
@@ -1524,7 +1672,7 @@ def _branches_tab(d: Dict) -> str:
         + _th('Scene', 'Link to the branch 3D scene, when rendered.'))
     table = _scroll_viewport(rows, headers, visible=50) \
         if rows else _empty('pair_summary.csv absent or empty.')
-    detail_cols = ('selected_chain', 'branch_linker_values',
+    detail_cols = ('selected_chain', 'source_chain', 'branch_linker_values',
                    'branch_annotation', 'branches_disjoint',
                    'pool_widen_added', 'deep_candidates', 'null_sample')
     det_rows = []
@@ -1536,7 +1684,12 @@ def _branches_tab(d: Dict) -> str:
                       for c in detail_cols) + '</tr>')
     detail_tips = {
         'selected_chain': 'The linker chain the mapper selected for '
-                          'this branch.',
+                          'this branch — the best single derivation, and '
+                          'the one that resolves the TARGET pool.',
+        'source_chain': 'The chain that supplied the SOURCE pool. Equal to '
+                        'selected_chain except where the per-side basis '
+                        '(§15.3) found another supported chain of the same '
+                        'endpoint that names the source neurons.',
         'branch_linker_values': 'Linker evidence values along the '
                                 'selected chain.',
         'branch_annotation': 'Branch annotation text from '
@@ -1567,8 +1720,8 @@ def _branches_tab(d: Dict) -> str:
 
 
 def _targets_tab(d: Dict) -> str:
-    m = d['mcns']
-    per = m.get('per_type') or {}
+    tcov = d['tgt']
+    per = tcov.get('per_type') or {}
     if per:
         rows = []
         for name in sorted(
@@ -1603,20 +1756,20 @@ def _targets_tab(d: Dict) -> str:
                   'inline.'))
         summary = (
             f"Mapped target population "
-            f"{_esc(m.get('mapped_target_set', '—'))} neurons across "
+            f"{_esc(tcov.get('mapped_target_set', '—'))} neurons across "
             f'{len(per)} types — holes get their bodyIds inline, '
             'because holes are the actionable output.')
     else:
-        body = _empty('set_coverage.json mcns block absent.')
+        body = _empty('set_coverage.json target block absent.')
         summary = 'Target-side coverage not available for this run.'
-    fam = m.get('family_material') or []
+    fam = tcov.get('family_material') or []
     fam_html = ''
     if fam:
         fam_html = (
             '<details class="detail-block"><summary>'
             f'{_term("family material")} ({len(fam)} bodyIds = '
-            f"{_esc(m.get('mapped_target_set', '—'))} in-map − "
-            f"{_esc(m.get('in_branch_pool', '—'))} map-covered; the type "
+            f"{_esc(tcov.get('mapped_target_set', '—'))} in-map − "
+            f"{_esc(tcov.get('in_branch_pool', '—'))} map-covered; the type "
             'mapper\'s mapped set is the 204-style pool set — these are '
             'unmapped in-map material, never part of it)</summary>'
             "<p class='mv-note'>"
@@ -1745,8 +1898,8 @@ def _fill_tab(d: Dict) -> str:
                          f'({_esc(ids)})')
         fam_rec = (
             f"<p class='mv-note'><b>Family material "
-            f"{len(d['fm_ids'])} (= {d['mcns'].get('mapped_target_set')} "
-            f"in-map − {d['mcns'].get('in_branch_pool')} map-covered) = "
+            f"{len(d['fm_ids'])} (= {d['tgt'].get('mapped_target_set')} "
+            f"in-map − {d['tgt'].get('in_branch_pool')} map-covered) = "
             + ' + '.join(parts) + '.</p>')
     sec5 = _section_card(
         'Expansion bins (Revision 3.12 distribution)',
@@ -1835,7 +1988,7 @@ def _fill_tab(d: Dict) -> str:
             f'<td>{_esc(tok)}</td><td>{_esc(bar_txt)}</td>'
             f"<td>{_esc(lvl.get('level', '—'))}</td>"
             f"<td>{_esc(lvl.get('dup', r.get('dup', '')))}</td>"
-            f'<td>{_bev_badge(bev, _is_thin(brec))}</td>'
+            f'<td>{_bev_badge(bev, _badge_thin(brec))}</td>'
             f'<td>{_esc(prov)}</td></tr>')
     table = _viewport(
         rows,
@@ -1872,7 +2025,7 @@ def _fill_tab(d: Dict) -> str:
 
 def _outmap_tab(d: Dict) -> str:
     if not d['out_rows_total']:
-        total_q = d['fafb'].get('total_queried')
+        total_q = d['src'].get('total_queried')
         unclaimed = (total_q - d['n_with_branch']
                      if isinstance(total_q, (int, float))
                      and d.get('n_with_branch') is not None else None)
@@ -1953,11 +2106,11 @@ def _backward_tab(d: Dict) -> str:
     interpretation layer = the advisory `source-` status distribution and
     the source-candidates regroup. Informational — the targets remain the
     validated entities."""
-    f_, m = d['fafb'], d['mcns']
+    scov, tcov = d['src'], d['tgt']
     basis = d['basis_sources']
     n_linker = len(basis.get('linker rows', set()))
     n_full = len(basis.get('full population', set()))
-    total_q = f_.get('total_queried', '—')
+    total_q = scov.get('total_queried', '—')
     out_n = (total_q - d['n_with_branch']
              if isinstance(total_q, (int, float))
              and d.get('n_with_branch') is not None
@@ -2186,24 +2339,68 @@ def _is_thin(r: Dict) -> bool:
     return _truthy(r.get('backward_thin_evidence'))
 
 
+def _own_type_cell(r: Dict) -> str:
+    """The reverse hit the GRADE actually rests on: the best-ranked source
+    of the claiming branch's own type, with the rank and the ranking that
+    placed it there (plan D1c).
+
+    Kept separate from the top-1 cell because the two are different
+    neurons whenever the branch's type wins on jaccard but not on
+    rank_union — 20 of the 49 high/medium rows in the r15 run."""
+    bid = r.get('backward_own_type_rank_source_bodyId')
+    if bid in (None, ''):
+        return "<span class='missing'>—</span>"
+    via = str(r.get('backward_own_type_via') or '')
+    rank_col = ('backward_own_type_jaccard_rank' if via == 'jaccard'
+                else 'backward_own_type_rank_union_rank')
+    rk = _as_num(r.get(rank_col))
+    otype = str(r.get('backward_own_type_rank_source_type') or '')
+    txt = (f'{_esc(str(bid))} · {_esc(otype or "(untyped)")}'
+           f"<span class='mv-note'> · "
+           f'{"#" + str(int(rk)) if rk is not None else "#—"}'
+           f' by {_esc(via or "—")}'
+           f' · jac {_f(r.get("backward_own_type_jaccard"), 4)}'
+           f' · ru {_f(r.get("backward_own_type_rank_union"), 4)}'
+           '</span>')
+    if _truthy(r.get('backward_own_type_thin_evidence')):
+        txt += " <span class='bev bev-thin'>thin</span>"
+    return txt
+
+
+def _badge_thin(r: Dict) -> bool:
+    """The thin marker belongs on the evidence the grade rests on: the
+    own-type hit when there is one, else the top-1 row's base."""
+    if r.get('backward_own_type_rank_source_bodyId') not in (None, ''):
+        return _truthy(r.get('backward_own_type_thin_evidence'))
+    return _is_thin(r)
+
+
 def _topn_hover(raw) -> str:
-    """Render a ``backward_topN`` cell as the hover's mini table."""
+    """Render a ``backward_topN`` cell as the hover's mini table.
+
+    Records are ``ru_rank|jac_rank|bid|type|ru|jaccard|in_branch`` and the
+    list arrives in the reciprocal list's default order (Jaccard first), so
+    BOTH ranks travel: a hit can be jaccard 1 while ranking poorly by
+    rank_union, and one rank column would hide that."""
     recs = [r for r in str(raw or '').split(';') if r.strip()]
     if not recs:
         return ''
     rows = []
     for rec in recs:
-        f = (rec.split('|') + ['', '', '', '', '', ''])[:6]
+        f = (rec.split('|') + ['', '', '', '', '', '', ''])[:7]
         rows.append(
-            f'<tr><td>{_esc(f[0] or "—")}</td>'
-            f'<td>{_esc(f[1] or "—")}</td>'
-            f'<td>{_esc(f[2] or "(untyped)")}</td>'
-            f'<td>{_esc(f[3] or "—")}</td>'
+            f'<tr><td>{_esc(f[1] or "—")}</td>'
+            f'<td>{_esc(f[0] or "—")}</td>'
+            f'<td>{_esc(f[2] or "—")}</td>'
+            f'<td>{_esc(f[3] or "(untyped)")}</td>'
             f'<td>{_esc(f[4] or "—")}</td>'
-            f'<td>{"this branch" if f[5] == "1" else "elsewhere"}</td></tr>')
-    return ('<b>top-N reverse hits</b>'
+            f'<td>{_esc(f[5] or "—")}</td>'
+            f'<td>{"this branch" if f[6] == "1" else "elsewhere"}</td></tr>')
+    return ('<b>top-N reverse hits (Jaccard order)</b>'
             '<table><thead><tr>'
-            "<th title='Rank position in the scan.'>#</th>"
+            "<th title='Rank by jaccard; the list is ordered by this.'>"
+            '#jac</th>'
+            "<th title='Rank by rank_union for the same hit.'>#ru</th>"
             "<th title='Source-side bodyId of the hit.'>source</th>"
             "<th title='Its source type; (untyped) when blank.'>type</th>"
             "<th title='Rank-agreement score of the pair.'>rank_union</th>"
@@ -2222,11 +2419,39 @@ def _as_num(v):
     return None if f != f else f
 
 
+def _reciprocal_row_sort(r: Dict) -> Tuple[float, float, float, int]:
+    """The reciprocal list's default order: the Jaccard of the
+    BRANCH-TYPE HIT, descending.
+
+    Not the top-1's Jaccard: the badge is a statement about the branch's
+    own source type, and a `low` neuron's unrelated top-1 can score high —
+    so ordering by it floated graded negatives above `high` rows (refines
+    plan-tmvev-reciprocal-jaccard-sort-and-parity D2, user 2026-09-20).
+    Ties break on that hit's jaccard rank, then on the top-1's jaccard, so
+    the `low` rows — which publish no hit and therefore sink together — keep
+    a meaningful order among themselves.  bodyId makes the key total.
+    """
+    j = _as_num(r.get('backward_own_type_jaccard'))
+    jr = _as_num(r.get('backward_own_type_jaccard_rank'))
+    t1 = _as_num(r.get('backward_jaccard'))
+    try:
+        bid = int(str(r.get('member_bodyId') or '0'))
+    except ValueError:
+        bid = 0
+    return (-(j if j is not None else -1e9),
+            jr if jr is not None else 1e9,
+            -(t1 if t1 is not None else -1e9),
+            bid)
+
+
 def _reciprocal_tab(d: Dict) -> str:
     """Stage 5d (plan-tmvev-backward-expansion-evidence): the candidates /
-    family / relative members scanned BACK against the whole SOURCE
-    universe — the homolog finding run in the reverse direction, one row
-    per neuron, grouped by type.  Connectivity only, advisory only."""
+    family / relative members and the unmatched pool members scanned BACK
+    against the whole SOURCE universe — the homolog finding run in the
+    reverse direction, one display row per neuron (graded per claiming
+    branch), ordered by the branch-type hit's Jaccard, the hit the grade
+    rests on shown beside the global top-1.  Connectivity only, advisory
+    only."""
     rows = d['backward_rows']
     params = d['params']
     bins = d['backward_bins']
@@ -2302,9 +2527,11 @@ def _reciprocal_tab(d: Dict) -> str:
             + _th('neurons', 'Distinct members of the bin that were '
                   'reverse-scanned.')
             + _th('high', 'Members whose own branch source type is the '
-                  'top-1 reverse hit of a rank window.')
-            + _th('medium', 'Members whose branch source type sits in '
-                  'a top-3 but not at rank 1.')
+                  'top-1 reverse hit of EITHER ranking — rank_union or '
+                  'jaccard; the branch-type hit column names which one.')
+            + _th('medium', 'Members whose branch source type reaches '
+                  'rank 2 or 3 inside a top-3 window of either ranking, '
+                  'and rank 1 in neither.')
             + _th('low', 'Members whose branch source type is outside '
                   'both top-3 windows.')
             + _th('top-3 share', 'high + medium as a share of the '
@@ -2316,8 +2543,9 @@ def _reciprocal_tab(d: Dict) -> str:
     # per-neuron rows, grouped by (bin, member type) — the display
     # contract: ONE row per neuron (a member claimed by several branches
     # was scanned once and graded per branch; the strongest branch
-    # verdict is shown and every claiming branch is listed), top-1 in
-    # the cell, the full top-N on hover.
+    # verdict is shown and every claiming branch is listed), top-1 and the
+    # branch-type hit side by side, the full top-N on hover, rows ordered by
+    # _reciprocal_row_sort.
     groups: Dict[Tuple[str, str], List[Dict]] = collections.defaultdict(list)
     for best in (d.get('backward_by_bid') or {}).values():
         groups[(str(best.get('member_category') or '?'),
@@ -2353,10 +2581,6 @@ def _reciprocal_tab(d: Dict) -> str:
         idx = _BEV_BIN_ORDER.index(cat) if cat in _BEV_BIN_ORDER else 99
         return (idx, cat, -len(groups[key]), tpe)
 
-    def _ru_desc(r):
-        v = _as_num(r.get('backward_rank_union'))
-        return -(v if v is not None else -1e9)
-
     _grade_rank = {'low': 1, 'medium': 2, 'high': 3}
 
     def _member_row_sort(rr):
@@ -2368,7 +2592,7 @@ def _reciprocal_tab(d: Dict) -> str:
     blocks = []
     for key in sorted(groups, key=_group_order):
         cat, tpe = key
-        members = sorted(groups[key], key=_ru_desc)
+        members = sorted(groups[key], key=_reciprocal_row_sort)
         trs = []
         for r in members:
             lab = str(r.get('backward_evidence') or 'not-checked')
@@ -2377,9 +2601,13 @@ def _reciprocal_tab(d: Dict) -> str:
             if bid:
                 where = ('this branch' if _truthy(
                     r.get('backward_top1_in_branch')) else 'elsewhere')
+                # J1: the row IS the Jaccard-best hit now, so its jaccard
+                # rank is #1 by construction — the informative number is the
+                # score, and rank_union travels in the hover as the
+                # confirmation value (J2: never a filter).
                 cell = (f'{_esc(bid)} · {_esc(t1_type or "(untyped)")}'
                         f"<span class='mv-note'> · {where} · "
-                        f'{_esc(_f(r.get("backward_rank_union"), 4))}'
+                        f'jac {_esc(_f(r.get("backward_jaccard"), 4))}'
                         '</span>')
             else:
                 cell = "<span class='missing'>—</span>"
@@ -2389,7 +2617,8 @@ def _reciprocal_tab(d: Dict) -> str:
             bid_key = str(r.get('member_bodyId') or '?')
             trs.append(
                 f'<tr><td>{_esc(r.get("member_bodyId") or "?")}</td>'
-                f'<td>{_bev_badge(lab, _is_thin(r))}</td>'
+                f'<td>{_bev_badge(lab, _badge_thin(r))}</td>'
+                f'<td>{_own_type_cell(r)}</td>'
                 f'<td>{cell}</td>'
                 f'<td>{_evidence_cell(r)}</td>'
                 f'<td>{_branch_cell(bid_key, r)}</td>'
@@ -2402,7 +2631,18 @@ def _reciprocal_tab(d: Dict) -> str:
             '<details class="detail-block"><summary>'
             f'{_esc(cat)} · {_esc(tpe)} — {len(members)} neuron'
             f'{"s" if len(members) != 1 else ""}</summary>'
-            "<div style='overflow-x:auto'><table class='mv-table'>"
+            # one shared colgroup (item 3): every group table used to be
+            # auto-layout, so each card sized its columns from its own
+            # content and the cards above/below never lined up
+            "<div style='overflow-x:auto'>"
+            "<table class='mv-table mv-bev-table'>"
+            '<colgroup>'
+            '<col style="width:8%"><col style="width:7%">'
+            '<col style="width:20%"><col style="width:20%">'
+            '<col style="width:8%"><col style="width:20%">'
+            '<col style="width:7%"><col style="width:5%">'
+            '<col style="width:5%">'
+            '</colgroup>'
             '<thead><tr>'
             + _th('member bodyId',
                   'The scanned neuron: one reverse scan per bodyId and '
@@ -2411,16 +2651,31 @@ def _reciprocal_tab(d: Dict) -> str:
             + _th('reciprocal',
                   'How prominently this member prefers its OWN branch: '
                   'an advisory reverse-scan verdict that labels the row, '
-                  'never a gate, never a fill count. For a multi-branch '
-                  'member this is the strongest branch verdict.')
-            + _th('top-1 source (hover: top-N)',
-                  'The single best source-side hit and whether it sits in '
-                  'the claiming branch. Hover for the full top-N '
-                  'neighbourhood with both scores.')
+                  'never a gate, never a fill count. high = the branch\'s '
+                  'source type is top-1 by rank_union OR jaccard; medium = '
+                  'inside a top-3 of either. For a multi-branch member '
+                  'this is the strongest branch verdict.')
+            + _th('branch-type hit (the grade)',
+                  'The reverse hit the badge actually rests on: the '
+                  'best-ranked source of the CLAIMING BRANCH\'S OWN type, '
+                  'with the rank it reached and which ranking put it there. '
+                  'This is a different neuron from the top-1 whenever the '
+                  'branch type wins on jaccard but not on rank_union. Its '
+                  'jaccard is what orders this list, descending; a row with '
+                  'no hit (every low) sinks below the rows that have one.')
+            + _th('top-1 source (Jaccard-best; hover: top-N)',
+                  'The chain-best reverse hit — Jaccard first, rank_union '
+                  'as the tie-break — and whether it sits in the claiming '
+                  'branch. Its jaccard score is shown because its rank is #1 '
+                  'by construction; rank_union travels in the hover as the '
+                  'confirmation value, never as a filter. Hover for the '
+                  'full top-N neighbourhood with both scores and both '
+                  'ranks, listed in the same chain order.')
             + _th('shared/union types',
-                  'How many partner types the score was computed over — '
-                  'the denominator a rank_union or jaccard rests on; the '
-                  'thin marker flags the few-shared cases.')
+                  'How many partner types the TOP-1 row\'s score was '
+                  'computed over — the denominator a rank_union or jaccard '
+                  'rests on; the thin marker flags the few-shared cases. '
+                  'The branch-type hit carries its own marker.')
             + _th('branch',
                   'The claiming branch (source type → target type) whose '
                   'pool was reversed against. A member claimed by several '
@@ -2444,17 +2699,21 @@ def _reciprocal_tab(d: Dict) -> str:
     cards.append(_section_card(
         'Per-neuron evidence, grouped by type',
         'One row per scanned neuron — a neuron claimed by several '
-        'branches is graded per branch and shown once, with its '
-        'strongest verdict and every claiming branch listed. The cell '
-        'holds only the top-1 reverse hit; hover it for the full top-N '
-        'neighbourhood with rank_union, jaccard and which hits sit in '
-        'the claiming branch. The shared/union column says how many '
-        'partner types the score was actually computed over — a '
-        'rank_union from 2 shared types and one from 20 are not the same '
-        'claim, and the <b>thin</b> marker only says which is which.',
+        'branches is graded per branch and shown once, with its strongest '
+        'verdict and every claiming branch listed. Rows are ordered by the '
+        'Jaccard of the <b>branch-type hit</b>, descending — the evidence '
+        'the badge rests on, so a row whose own type never ranks sinks '
+        'below the rows that have one. The <b>branch-type hit</b> column is '
+        'the reverse hit the badge rests on (the best-ranked source of the '
+        'claiming branch\'s own type, with the rank and the ranking that '
+        'placed it there); the <b>top-1 source</b> column is the chain-best '
+        'hit (Jaccard first, rank_union as the tie-break), and the two differ '
+        'whenever the branch '
+        'type wins on Jaccard alone. Hover the top-1 for the full top-N '
+        'neighbourhood with both scores and both ranks.',
         ''.join(blocks),
-        ['reciprocal top-1', 'rank_union', 'shared partner types',
-         'thin evidence']))
+        ['reciprocal top-1', 'branch-type hit', 'rank_union',
+         'shared partner types', 'thin evidence']))
     return ''.join(cards)
 
 
@@ -2846,6 +3105,11 @@ _EXTRA_CSS = """<style>
     color: var(--muted); }
 .mv-table.mv-defs td:first-child { white-space: nowrap;
     font-weight: 700; }
+/* the reciprocal per-neuron groups share one colgroup; fixed layout is what
+   makes the columns line up across cards, and `anywhere` keeps a 19-digit
+   bodyId from forcing its column wider than the plan allows */
+.mv-bev-table { table-layout: fixed; }
+.mv-bev-table td { overflow-wrap: anywhere; }
 .mv-kv { max-width: 980px; }
 .mv-kv .kv-k { width: 260px; font-weight: 700; white-space: nowrap; }
 .mv-kv-title { font-weight: 800; font-size: 13px; margin-bottom: 6px;
@@ -2910,7 +3174,19 @@ _HOVER_LAYER_CSS = """<style>
   box-shadow: 0 10px 26px rgba(21, 34, 56, .45); font-weight: 400; }
 #mv-hover-layer b { display: block; margin-bottom: 3px; }
 #mv-hover-layer table { border-collapse: collapse; width: 100%;
-  font-size: 11.5px; margin-top: 4px; }
+  font-size: 11.5px; margin-top: 4px;
+  /* fixed layout + wrapping: the 7-column top-N table carries 19-digit
+     bodyIds, and an auto layout let that column push WHERE past the box
+     (r16 review screenshot) */
+  table-layout: fixed; }
+#mv-hover-layer th:nth-child(1), #mv-hover-layer td:nth-child(1) { width: 8%; }
+#mv-hover-layer th:nth-child(2), #mv-hover-layer td:nth-child(2) { width: 8%; }
+#mv-hover-layer th:nth-child(3), #mv-hover-layer td:nth-child(3) { width: 30%; }
+#mv-hover-layer th:nth-child(4), #mv-hover-layer td:nth-child(4) { width: 17%; }
+#mv-hover-layer th:nth-child(5), #mv-hover-layer td:nth-child(5) { width: 12%; }
+#mv-hover-layer th:nth-child(6), #mv-hover-layer td:nth-child(6) { width: 12%; }
+#mv-hover-layer th:nth-child(7), #mv-hover-layer td:nth-child(7) { width: 13%; }
+#mv-hover-layer td { overflow-wrap: anywhere; }
 #mv-hover-layer th, #mv-hover-layer td { border: 0;
   border-bottom: 1px solid rgba(244, 247, 251, .18); padding: 3px 5px;
   text-align: left; }
@@ -2931,7 +3207,10 @@ _HOVER_LAYER_JS = """<script>
     if (!tip) { hide(); return; }
     layer.innerHTML = tip.innerHTML;
     layer.style.display = 'block';
-    layer.style.width = Math.min(480, window.innerWidth - 16) + 'px';
+    // a table payload (the top-N neighbourhood) needs more than the prose
+    // width — 7 columns of bodyIds and scores at 480px clipped the last one
+    var wide = layer.querySelector('table') ? 620 : 480;
+    layer.style.width = Math.min(wide, window.innerWidth - 16) + 'px';
     var r = term.getBoundingClientRect();
     var top = r.bottom + 8;
     if (top + layer.offsetHeight > window.innerHeight - 8)

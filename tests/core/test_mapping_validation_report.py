@@ -59,12 +59,12 @@ def run_dir(tmp_path: Path) -> Path:
                     "elapsed_s": 61.0}),
     ]) + "\n")
     (rd / "set_coverage.json").write_text(json.dumps({
-        "fafb": {"total_queried": 4, "assigned": 2,
+        "source": {"total_queried": 4, "assigned": 2,
                  "fill_proposed_only": 1, "unpaired_unproposed": 1,
                  "per_type": {"A": {"pool": 2, "assigned": 2,
                                     "fill_proposed": 0,
                                     "unpaired_unproposed": 0}}},
-        "mcns": {"mapped_target_set": 4, "in_branch_pool": 3,
+        "target": {"mapped_target_set": 4, "in_branch_pool": 3,
                  "reached_as_candidates_only": 1, "holes": 1,
                  "family_material": [900, 901],
                  "per_type": {
@@ -107,12 +107,12 @@ def run_dir(tmp_path: Path) -> Path:
                 "gap", "gap_ratio", "gap_triggered", "hemisphere"],
                [["q1", "A", "X", "mapped", "full population", 2, 2, 2, 2,
                  1, 1, 1, 0, 0, 0, 0, 1, 0.5, True,
-                 "{'source_sides': {'L': 1, 'R': 1}, 'hemisphere_"
-                 "asymmetry': False}"],
+                 "{'source_sides': {'L': 1, 'R': 1}, 'target_sides': "
+                 "{'L': 1, 'R': 1}, 'hemisphere_asymmetry': False}"],
                 ["q1", "B", "Y", "evidence_only", "linker rows", 1, 1, 2,
                  2, 0, 0, 0, 1, 0, 2, 1, 1, 0.5, True,
-                 "{'source_sides': {'L': 1, 'R': 0}, 'hemisphere_"
-                 "asymmetry': True}"]])
+                 "{'source_sides': {'L': 1, 'R': 0}, 'target_sides': "
+                 "{'L': 1, 'R': 0}, 'hemisphere_asymmetry': True}"]])
     _write_csv(rd / "validation_results.csv",
                ["query", "source_bodyId", "verdict"],
                [["q1", "101", "verified_strong"],
@@ -439,6 +439,35 @@ def test_branch_bar_join_accepts_query_prefixed_keys(run_dir: Path):
     (run_dir / "morphology_calibration.json").write_text(json.dumps(cal))
     html = build_report_document(collect_run_data(run_dir))
     assert "0.800 (native)" in html      # A->X native floor resolves
+
+
+def test_branches_tab_counts_mapped_not_paired(run_dir: Path):
+    """The old `matched` column showed the mutual-best PAIR count and the
+    gap was measured off it, so a branch whose sources all carry a mapping
+    verdict still read as a 1-neuron gap (user 2026-09-20).  Mapped sums
+    the verdicts (verified_strong + verified + borderline) and the gap is
+    measured against THAT number — the pair count stays visible beside it,
+    as the stricter subset rather than an addend."""
+    html = build_report_document(collect_run_data(run_dir))
+    assert "class='term'>Mapped (M)<span class='tip'>" in html
+    assert ">Matched<" not in html
+    # A->X: v★ 1 + v 1 + b 0 = 2 mapped, and both pools are 2, so the
+    # verdict-based gap is 0 even though the CSV pair-based gap is 1.
+    row = html.split("A → X", 1)[1].split("</tr>", 1)[0]
+    assert "2<span class='mv-note'> · pairs 1</span>" in row
+    assert "0 (0%)" in row
+    assert "1 (50%)" not in row
+
+
+def test_branches_tab_hemisphere_warning_carries_its_own_evidence(
+        run_dir: Path):
+    """⚠ in the Gap-triggered column used to be a bare `title` attribute —
+    invisible under the JS hover layer and silent about WHY it fired.  It
+    now names the pools' L/R counts, and only on the branch that flagged."""
+    html = build_report_document(collect_run_data(run_dir))
+    assert "class='term warn-chip'" in html
+    assert "Source pool L 1 / R 0, target pool L 1 / R 0" in html
+    assert "Source pool L 1 / R 1" not in html
 
 
 def test_track_a_unavailable_run_surfaced(run_dir: Path):
