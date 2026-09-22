@@ -617,3 +617,20 @@ def test_branches_cell_labels_each_side_of_the_pool(run_dir):
     # row A is wide on the source, row B is row-backed on both sides
     assert wide_term in doc and ' · target linker rows' in doc
     assert 'source linker rows · target linker rows' in doc
+
+
+def test_branches_tab_names_the_parents_without_a_scene(run_dir: Path):
+    """One scene renders one PARENT type's whole branch group, and stage 4
+    can be capped — so a bare '—' in the Scene column left 'the cap dropped
+    this parent' indistinguishable from 'this branch had nothing to review'
+    (user 2026-09-22, on a 43-branch run that rendered 12 of 21 parents).
+    The tab now states the coverage and marks the affected rows."""
+    html = build_report_document(collect_run_data(run_dir))
+    assert "1 of 2 parent types have a rendered scene" in html
+    assert "no scene for: B" in html
+    row_b = html.split("B → Y", 1)[1].split("</tr>", 1)[0]
+    assert "No scene rendered for this parent type" in row_b
+    # the parent WITH a scene keeps its plain link and no warning
+    row_a = html.split("A → X", 1)[1].split("</tr>", 1)[0]
+    assert "branches_A.html" in row_a
+    assert "No scene rendered" not in row_a

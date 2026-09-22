@@ -157,11 +157,13 @@ TERM_DEFS: Dict[str, str] = {
         'min(source_pool, target_pool) - matched; fills fire when '
         'gap > 1. Per-branch gaps double-count cross-branch convergence.',
     'hole':
-        'An in-map type\'s neuron never claimed by any branch pool — '
-        'the actionable coverage gap.',
+        'An OUT-MAP bodyId of an in-map TYPE — family material no branch '
+        'pool claims AND no fill candidate reaches: the overhang still '
+        'unexplained. BodyIds inline in the Targets tab.',
     'family material':
-        'BodyIds of in-map types not map-covered by any branch pool '
-        '(superset of holes).',
+        'Out-map bodyIds of in-map types: the mapped types\' populations '
+        'minus everything a branch pool map-covers (the `family` bin\'s '
+        'population; holes are its candidate-unreached subset).',
     'fill levels':
         'Branch-level fill ranking: high / medium / low (evidence '
         'strength), type_gated (type qualifies, morph does not), advice '
@@ -1544,6 +1546,19 @@ def _coverage_tab(d: Dict) -> str:
 
 def _branches_tab(d: Dict) -> str:
     entries = []
+    # Scene coverage is per PARENT type (one scene renders every branch of
+    # one source type), and stage 4 can be capped — so a row's empty SCENE
+    # cell must say whether the parent simply has no scene, rather than
+    # leaving "no scene" indistinguishable from "nothing to review".
+    scene_types = {x['type'] for x in d['scenes'] if x.get('html')}
+    parent_types = {s.get('source_type', '?') for s in d['pair_rows']}
+    scene_note = ''
+    if scene_types and parent_types - scene_types:
+        scene_note = (
+            f' {len(scene_types)} of {len(parent_types)} parent types have '
+            f'a rendered scene; no scene for: '
+            f"{_esc(', '.join(sorted(parent_types - scene_types)))} "
+            '(Max Scenes caps the render — 0 renders every parent).')
     for s in d['pair_rows']:
         src, tgt = s.get('source_type', '?'), s.get('target_type', '?')
         # same-name-first selections (P1): the pair exists because the
@@ -1571,8 +1586,17 @@ def _branches_tab(d: Dict) -> str:
         else:
             bar_txt = '—'
         scene = next((x for x in d['scenes'] if x['type'] == src), None)
-        scene_cell = (f"<a href='{_esc(scene['html'])}'>▶</a>"
-                      if scene and scene['html'] else '—')
+        if scene and scene['html']:
+            scene_cell = f"<a href='{_esc(scene['html'])}'>▶</a>"
+        elif scene_types:
+            scene_cell = ("<span class='term warn-chip'>—<span class='tip'>"
+                          'No scene rendered for this parent type: stage 4 '
+                          'renders one scene per parent type and Max Scenes '
+                          'can cap it (0 renders every parent). When the cap '
+                          'fires the run log names the dropped '
+                          'parents.</span></span>')
+        else:
+            scene_cell = '—'
         hemi = ''
         try:
             h = ast.literal_eval(s.get('hemisphere', '') or '{}')
@@ -1768,7 +1792,7 @@ def _branches_tab(d: Dict) -> str:
         'One row per branch, sorted by branch. All rows render in one '
         'scrollable table (50-row viewport). Hover any column header '
         'for what it measures; verdict columns are per-branch '
-        'source-side counts (v★ = verified_strong).',
+        'source-side counts (v★ = verified_strong).' + scene_note,
         body,
         ['branch bar', 'verdict', 'gap', 'validation mode'])
 
@@ -1805,9 +1829,10 @@ def _targets_tab(d: Dict) -> str:
                   'tier: matched / verified / borderline.')
             + _th('cand-only', 'Neurons reached only as fill '
                   'candidates, never in a branch pool.')
-            + _th('holes', 'Annotated in-map neurons absent from every '
-                  'branch pool — the actionable output; bodyIds '
-                  'inline.'))
+            + _th('holes', 'Out-map bodyIds of this in-map type that no '
+                  'branch pool claims and no fill candidate reaches '
+                  '(family material minus its candidate-closed part); '
+                  'bodyIds inline.'))
         summary = (
             f"Mapped target population "
             f"{_esc(tcov.get('mapped_target_set', '—'))} neurons across "

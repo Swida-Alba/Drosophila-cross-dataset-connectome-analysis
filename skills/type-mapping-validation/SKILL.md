@@ -78,6 +78,18 @@ $PY scripts/RunMappingValidation.py \
   was already a subfolder). Readers fall back to the old FLAT layout, so
   pre-2026-09-19 folders still open and regenerate.
 
+## 1b. Run from the UI
+
+The **Cross-Dataset › Type Validation** tab runs this same pipeline (tool key
+`type_mapping_validation`; run folders still `type-map-validation_*`). Defaults
+there: source = the Settings default dataset, **target = flywire_FAFB_v783**
+(deliberately independent of the Settings default target, which belongs to
+Connectivity → Find Similar). Mode, morphology / scenes / backward toggles and
+the advanced gates mirror `MappingValidationConfig`. **Max Scenes defaults to 0
+= one scene per parent type**; a positive value clamps to the largest pools and
+then names every dropped parent in the run log and in the report's Branches
+tab, because a silently uncapped-out parent has no review scene at all.
+
 ## 2. Read the outputs (always in this order)
 
 1. `report.html` — the per-run report: headline + the three coverage
@@ -122,6 +134,10 @@ $PY scripts/RunMappingValidation.py \
    (`'deep_window'`). Empty in restrictive.
 7. `gap_fill/gap_fill_proposals.csv` — proposals with `fill_class`
    (`in_pool`/`out_of_pool`), `category`, and the fill-count columns.
+   `side` says which dataset `bodyId` belongs to: a `source` row names the
+   unpaired source with `proposal_bodyId` as its target, a `target` row
+   spells the same relation the other way round (Track A resolves both
+   through `fill_pair`, so either side can carry `morph_v2_similarity`).
 8. `gap_fill/gap_fill_dedup.csv` — query-level, one row per target bodyId:
    `dedup_category`, `n_branches`, `dup`, and the reverse verdict
    (`backward_evidence` + top-1). This is the deduplicated fill
@@ -233,12 +249,24 @@ $PY scripts/RunMappingValidation.py \
   in-pool/candidates/holes. The two blocks are named by ROLE, never by a
   hard-coded dataset; `source_dataset`/`target_dataset` say which (hole
   bodyIds listed per type); use
-  `gap_fill_dedup.csv` for the bodyId-unique fill.
+  `gap_fill_dedup.csv` for the bodyId-unique fill. A **hole** is an
+  out-map bodyId of an in-map type — the `family` bin's population minus
+  whatever a fill candidate reached — claimed by no branch pool, no
+  counted proposal and no morph-qualified `candidates` row (a candidate
+  is a claim, so it closes the hole). Per type the identity holds:
+  `mapped_population − in_pool = reached_as_candidates_only + holes`.
 - **Fill accounting is query-scope-relative**: single-type queries
   report cross-type neighbors as expansion advice (never as fills);
   family/full-set queries account them via their own branches. Recommend
   per-type or family queries when the user asks "how much of the gap is
   filled".
+- **The panel and this pipeline publish ONE claim set**: the type-mapping
+  panel's *Mapped neurons* counts only the pairs the decision adopted
+  (`foreign_type ∈ mapping_target_types` — the same field that builds the
+  branches here). Declined same-name rivals and unadopted
+  `valid_split_evidence` fan-outs stay listed in the panel as disclosure
+  rows and never enter the count; before this rule `circadian_clock →
+  banc_v888` read 205 in the panel against 198 here.
 - **`matched` is the only asserted tier**; verified/borderline are
   review tiers; all proposals are evidence — the mapping is never
   rewritten.
@@ -428,8 +456,9 @@ When presenting results to the user:
 | --- | --- | --- |
 | `profile cache parquet not found` | cold dataset | build profiles first (`ConnectivityProfiling.py`) or pick another target |
 | scenes missing / `scene ... failed` in log | rendering error | check the traceback in the log; the CSVs are still valid |
-| `! {root}: {bid} unavailable` | skeleton not cached and the dataset API is unreachable | the neuron stays in the CSVs but gets no scene leaf — expected offline; re-run when the API/cache is available |
-| `Track-A null sample too thin` | small run | expected; Track-A falls back to the pooled-average bar |
+| `! {root}: {bid} unavailable` | skeleton not cached and the dataset API is unreachable | the neuron stays in the CSVs but gets no scene leaf — expected offline; re-run when the API/cache is available. (A NeuPrint dataset's *folder* spelling used to cause this on every target: `hemibrain_v1_2_1` is a local namespace, the server only knows `hemibrain:v1.2.1`; remote fetches normalize that now, so both spellings run.) |
+| `[stage 5] ! morphology scored 0 of N requested pairs` | no target skeleton was loadable for that dataset | that run's bars all degrade to the `null` kind with `track_a_null_n: 0` and its verdicts are connectivity-only — never report it as a morphology-qualified baseline. Stage 5 now pre-flights the pair frame's own targets (`[stage 5] skeleton pre-flight (ds): X/Y cached, fetching Z`); a `failed` count or the `capped at 2000` line says which pairs stay unscored (network/cache limit, not a scoring bug) |
+| `Track-A null sample too thin (n=k)` | small run | expected; Track-A falls back to the pooled-average bar. `n=0` is NOT this — see the line above |
 | `track B (native pool reference) unavailable` | vector cache failure | Track B skipped; candidates fall back to the Track-A bar (thinner evidence — note it in the report) |
 | type lookups return 0 for a NeuPrint dataset | API unreachable | `get_bodyids_for_type` / `get_types_for_bodyids` are offline-first — ensure the dataset has a repo-local neuron table under `datasets/` |
 | self-check `!` lines | legend/render mismatch | treat as a bug: capture the lines verbatim and investigate before trusting the scene |

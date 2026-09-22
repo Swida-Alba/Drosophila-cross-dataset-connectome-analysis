@@ -80,6 +80,22 @@ def _format_mapped_neurons(neurons: int, types: int) -> str:
     return str(neurons)
 
 
+def _pair_card_label(src: str, tgt: str, flows) -> str:
+    """The pair-card heading: the count is the ADOPTED pairs.
+
+    Disclosure rows — a same-name rival the decision declined, a split
+    fan-out it did not adopt — stay listed in the card, but they are
+    counted separately so the heading cannot read as a wider mapping than
+    the one the analysis (and the TM VEV report) uses.
+    """
+    from comparison.mapping_visualization import flow_is_claimed
+
+    claimed = sum(1 for f in flows if flow_is_claimed(f))
+    label = f"{src} → {tgt} · {claimed} mapped pairs"
+    extra = len(flows) - claimed
+    return label + (f" (+{extra} disclosure rows)" if extra else "")
+
+
 def _pool_mapping_pair(flows, src, tgt, indexes, pools) -> None:
     """Pool bodyIds for one type-mapping pair.
 
@@ -317,7 +333,14 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     # the branches' resolved target pools — NOT the full populations of the
     # received types (those are the reference denominator; the population
     # overhang is TM-EVE family material).
-    from comparison.mapping_visualization import mapping_pool_key
+    #
+    # Only flows the scoped decision ADOPTED contribute (``flow_is_claimed``).
+    # The pair list also carries disclosure rows — a same-name rival the
+    # mapper declined, a valid-split fan-out it did not adopt — and counting
+    # their pools made the panel and the TM VEV report publish two different
+    # mappings for one query (205 vs 198 on circadian_clock → BANC).
+    from comparison.mapping_visualization import (
+        flow_is_claimed, mapping_pool_key)
     claimed_by_ds: Dict[str, set] = {}
     # Per (source dataset, source type, TARGET dataset): the per-type
     # breakdown reports dataset-specific claim sets — never a sum across
@@ -325,6 +348,8 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     claimed_by_type: Dict[Tuple[str, str, str], set] = {}
     for (src, tgt), flows in pair_flows.items():
         for f in flows:
+            if not flow_is_claimed(f):
+                continue
             key = mapping_pool_key(src, tgt, f.get("source_type"),
                                    f.get("foreign_type"))
             pool = pools.get(key)
@@ -444,11 +469,13 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                                 (origin, target), []).append(entry)
                             orphan_by_key[(origin, target, otype)] = entry
                         entry["claimed"].extend(absent)
-    # The flow ends are the bridge half of the same resolution.
+    # The flow ends are the bridge half of the same resolution — again the
+    # ADOPTED ends only, so the type count and the neuron count describe
+    # one and the same claim set.
     for (s, t), fl in pair_flows.items():
         recv_types_by_ds.setdefault(t, set()).update(
             f.get("foreign_type") or "" for f in fl
-            if f.get("foreign_type"))
+            if f.get("foreign_type") and flow_is_claimed(f))
 
     summary = []
     for ds in datasets:
@@ -515,9 +542,16 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                              if f.get("source_type") == t]
                 ftypes = sorted({f.get("foreign_type") for f in tgt_flows
                                  if f.get("foreign_type")})
+                # The row's MAPPED columns count adopted ends only (the fan-
+                # out above stays visible in the pair cards and the
+                # relationship cell, which describe evidence, not claims).
+                claim_ftypes = sorted({
+                    f.get("foreign_type") for f in tgt_flows
+                    if f.get("foreign_type") and flow_is_claimed(f)})
                 tgt_counts = (count_types_in_index(indexes[tgt], ftypes)
                               if ftypes else {})
-                present_types = [tt for tt in ftypes if tgt_counts.get(tt)]
+                present_types = [tt for tt in claim_ftypes
+                                 if tgt_counts.get(tt)]
                 claimed = claimed_by_type.get((ds, t, tgt), set())
                 orphaned = sum(1 for e in orphans.get((ds, tgt), [])
                                if e.get("type") == t)
@@ -874,6 +908,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         )
         from comparison.mapping_visualization import (
             _pair_relationship,
+            flow_is_claimed,
             format_pool_side,
             get_mapping_pool,
         )
@@ -974,6 +1009,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 map_used = (f"same-name-first selection — same-name "
                             f"candidate chosen over {_n_riv} rival "
                             f"candidate(s); {map_used}")
+            # A rival the decision declined, or a split fan-out it did not
+            # adopt, is disclosure: its pool never enters the Mapped-neurons
+            # claim set, so the row must say so instead of reading as a claim.
+            if not flow_is_claimed(flow):
+                map_used = ("not adopted by the decision — evidence only, "
+                            f"not counted as mapped; {map_used}")
             # Per-row cardinality + suspects badge (fan-out/suspects display
             # round): the Relationship column mirrors the coverage tables and
             # the CSV; the Suspects badge is the row's marker, its per-rival
@@ -1380,7 +1421,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                     (state.get("reverse_contexts") or {}).get((src, tgt))
                     or {})
                 with ui.expansion(
-                        f"{src} → {tgt} · {len(flows)} mapped pairs",
+                        _pair_card_label(src, tgt, flows),
                         icon="compare_arrows").classes("w-full"):
                     _pair_card(src, tgt, flows, pools)
             if not pair_flows:

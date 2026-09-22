@@ -67,6 +67,24 @@ def make_profile(bid, up, dn):
     )
 
 
+def stub_skeleton_store_all_cached(monkeypatch):
+    """Stage 5 pre-flights the target raw-skeleton cache before scoring
+    (plan §17.2).  These tests fake the Track-A scorer, not the store, so
+    the store reports every target as already on disk: nothing is fetched
+    and no network is reached.  The pre-flight's own fetch/bound/fail-open
+    behavior is covered by
+    test_skeleton_preflight_is_cache_first_bounded_and_fails_open.
+    """
+    import morphology
+
+    class _AllCached:
+        def find_skeleton_file(self, bid):
+            return Path(f'/stub-cache/{int(bid)}.swc.zst')
+
+    monkeypatch.setattr(morphology, 'find_similar_raw_cache',
+                        lambda dataset, **kw: _AllCached())
+
+
 def run_validator(source_pool, target_pool, target_vectors_by_bid,
                   source_profiles_by_bid, sizes=None, weights=None,
                   source_sides=None, target_sides=None, **cfg_kwargs):
@@ -239,6 +257,7 @@ def test_run_morphology_records_candidate_rule(monkeypatch):
         return df
 
     monkeypatch.setattr(morphology, 'enrich_homolog_results', fake_enrich)
+    stub_skeleton_store_all_cached(monkeypatch)
     out = v.run_morphology(val_rows, [], [], pool_detail)
     # threshold = factor (0.25) x mean pool morph (0.5)
     assert out['candidate_thresholds']['T->T'] == pytest.approx(0.125)
@@ -278,6 +297,7 @@ def test_run_morphology_scores_pool_reference_pairs(monkeypatch):
         return df
 
     monkeypatch.setattr(morphology, 'enrich_homolog_results', fake_enrich)
+    stub_skeleton_store_all_cached(monkeypatch)
     out = v.run_morphology(val_rows, [], [], pool_detail)
     scored = {d['target_bodyId']: d['morph_v2_similarity']
               for d in pool_detail}
@@ -1410,6 +1430,7 @@ def test_track_b_floor_calibration_with_mock_cache(monkeypatch):
          'best_source_bodyId': 1, 'source_type': 'T', 'target_type': 'T'},
     ]
     v.annotate_invaders(sus, [], {})   # populates the audit columns
+    stub_skeleton_store_all_cached(monkeypatch)
     out = v.run_morphology(val_rows, sus, [], pool_detail, deep_rows=[])
     assert out['pool_ref_tiers']['T->T'] == 'matched+verified'
     assert out['pool_ref_baselines']['T->T'] == pytest.approx(1.0)
@@ -1771,6 +1792,7 @@ def test_run_morphology_discloses_score_frame(monkeypatch):
     monkeypatch.setattr(morphology, 'enrich_homolog_results',
                         lambda df, s, t, verbose=False: df.assign(
                             morph_v2_similarity=0.5, morph_nblast=0.4))
+    stub_skeleton_store_all_cached(monkeypatch)
     out = v.run_morphology(
         [{'source_bodyId': 1, 'target_bodyId': 11,
           'verdict': 'verified_strong', 'flags': ''}], [], [], [])
@@ -2697,3 +2719,65 @@ def test_every_row_backed_basis_is_measurable_not_just_one_string():
     wide.target_type, wide.source_pool, wide.pool_basis = 'X3', [7], \
         'full population'
     assert measure_branch_disjointness([a, b, wide]) is None
+
+
+def test_holes_are_the_unreached_part_of_family_material():
+    """A hole is an OUT-map bodyId of an in-map TYPE (user 2026-09-22).
+
+    The report's Targets-tab hover called it an "annotated in-map neuron",
+    which inverts the category model: an unmapped bodyId of a type already
+    in the map is out-map at bodyId level — the `{T}(out-map)` token, the
+    `family` bin's population. Holes are that population minus whatever a
+    fill candidate reached, so the per-type identity below is what the
+    prose has to keep matching.
+    """
+    pair = TypePair('dsA', 'T1', [1], 'dsB', 'X', [11, 99, 97])
+    pair.parent_source_pool = [1]
+    pair.parent_target_pool = [11, 99, 97]
+    per_pair_res = {('T1', 'X'): {
+        'pairs': [(1, 11)],
+        'target_categories': {11: 'matched'},
+        'fills': [],
+    }}
+    evidence = [{'source_type': 'T1', 'target_type': 'X',
+                 'ahead_target_bodyId': 99, 'ahead_target_type': 'X',
+                 'category': 'candidates', 'in_scope': True}]
+    m = compute_set_coverage([pair], per_pair_res, [],
+                             evidence_rows=evidence)['target']
+    per = m['per_type']['X']
+    assert per['mapped_population'] == 3 and per['in_pool'] == 1
+    # 99 is closed by the candidate; only 97 is still a hole
+    assert per['hole_body_ids'] == [97]
+    assert (per['mapped_population'] - per['in_pool']
+            == per['reached_as_candidates_only'] + per['holes'])
+    # and holes are a subset of the family material, never a different
+    # population
+    assert set(per['hole_body_ids']) <= set(m['family_material'])
+    assert m['family_material'] == [97, 99]
+
+
+def test_scene_planner_renders_every_parent_and_names_a_cap_drop():
+    """`max_scenes = 0` is the default; a positive cap says what it dropped.
+
+    Branch review is the point of a run, so the old default of 12 silently
+    uncapped-out the smallest-pool parents (9 of 21 on a circadian run).
+    The first cut of the warning unpacked the parent key wrong
+    (`((query, source_type), branches)` items) and raised inside stage 4,
+    which the pipeline swallowed as "visualization failed" — zero scenes.
+    Ordering is by total source pool, largest first.
+    """
+    from comparison.mapping_validation_visualize import plan_scene_parents
+
+    class _P:
+        def __init__(self, n):
+            self.source_pool = list(range(n))
+
+    parents = {('q', 'BIG'): [(_P(10), {})],
+               ('q', 'MID'): [(_P(5), {})],
+               ('q', 'SML'): [(_P(2), {}), (_P(1), {})]}
+    kept, dropped = plan_scene_parents(parents, 0)
+    assert [key[1] for key, _ in kept] == ['BIG', 'MID', 'SML']
+    assert dropped == []
+    kept, dropped = plan_scene_parents(parents, 2)
+    assert [key[1] for key, _ in kept] == ['BIG', 'MID']
+    assert dropped == ['SML']

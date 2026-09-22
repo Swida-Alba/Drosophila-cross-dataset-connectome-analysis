@@ -597,6 +597,28 @@ def compute_out_map_sources(branch_list) -> List[int]:
     return sorted(parent_pool - claimed)
 
 
+def plan_scene_parents(parents: Dict[Tuple[str, str], List],
+                       max_scenes: int) -> Tuple[List, List[str]]:
+    """Order the parent scene groups and apply the ``max_scenes`` cap.
+
+    Returns ``(kept, dropped)``: the ordered
+    ``((query, source_type), branches)`` items and the NAMES of the parent
+    types the cap removed. A cap that fires must name them — a Branches-tab
+    row with no scene is otherwise indistinguishable from a branch that had
+    nothing to review. ``max_scenes <= 0`` caps nothing (the default: every
+    parent gets a review scene).
+    """
+    scenes = sorted(parents.items(),
+                    key=lambda kv: -sum(len(p.source_pool)
+                                        for p, _ in kv[1]))
+    if 0 < max_scenes < len(scenes):
+        # An item is ((query, source_type), branches) — the parent TYPE is the
+        # SECOND element of the item's KEY, not the payload.
+        return (scenes[:max_scenes],
+                [key[1] for key, _ in scenes[max_scenes:]])
+    return scenes, []
+
+
 def render_pair_scenes(validator, per_pair_res: Dict) -> None:
     """Render one branch-structured scene per parent mapping group."""
     import navis
@@ -652,10 +674,18 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
         if res:
             parents.setdefault((pair.query, pair.source_type),
                                []).append((pair, res))
-    scenes = sorted(parents.items(),
-                    key=lambda kv: -sum(len(p.source_pool)
-                                        for p, _ in kv[1]))
-    scenes = scenes[:cfg.max_scenes]
+    scenes, dropped = plan_scene_parents(parents, cfg.max_scenes)
+    if dropped:
+        # Cap-and-warn (user decision 2026-09-19): the cap must not fire
+        # silently. Routing through validator.log puts the line on stdout AND
+        # in notes/README.txt, where the UI tab surfaces it post-run.  The
+        # dropped parents are named because a Branches-tab row without a
+        # scene is otherwise indistinguishable from a rendering failure.
+        validator.log(
+            f'[stage 4] scene cap: rendering {cfg.max_scenes} of '
+            f'{len(scenes) + len(dropped)} candidate branch scenes; '
+            f"not rendered: {', '.join(dropped)} — set Max Scenes to 0 to "
+            'render every parent, or split the query into separate runs')
 
     skel_dir = (Path(validator.profiler.cache_dir) /
                 cfg.target_dataset.replace(':', '_').replace('.', '_') /

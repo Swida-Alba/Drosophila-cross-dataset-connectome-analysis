@@ -872,3 +872,111 @@ def test_categorize_pool_sources_unmatched_when_dominated():
         matched_ru_min=0.1)
     assert statuses[4] == 'source-unmatched'
     assert statuses[1] == 'source-matched'
+
+
+def test_a_run_that_scores_nothing_says_why():
+    """r25's hemibrain run graded 36 branches on connectivity alone, and the
+    only trace in its notes was "Track-A null sample too thin (n=0)".  A
+    morphology pass that scored NONE of what it asked for must name the
+    degradation: the null bar has no sample because no target skeleton was
+    loadable, so the verdicts are not merely un-calibrated."""
+    from comparison.mapping_validation import morph_coverage_warning
+
+    # nothing requested -> nothing to explain
+    assert morph_coverage_warning({}, 'hemibrain_v1_2_1') is None
+    # partial coverage is ordinary (thin caches, missing neurons)
+    assert morph_coverage_warning(
+        {(1, 11): 0.4, (2, 12): None}, 'hemibrain_v1_2_1') is None
+    warn = morph_coverage_warning(
+        {(1, 11): None, (2, 12): None}, 'hemibrain_v1_2_1')
+    assert warn is not None
+    assert '0 of 2' in warn
+    assert 'hemibrain_v1_2_1' in warn
+    assert 'connectivity-only' in warn
+
+
+def test_gap_fill_proposals_name_their_pair_by_side():
+    """A proposal is spelled from the side it fills, so reading
+    bodyId/proposal_bodyId in one fixed order asked Track A to render a
+    target bodyId out of the SOURCE dataset: every target-side fill row
+    scored nothing (0 of 76 in the male-cns family baselines, 0 of 2 in the
+    hemibrain probe) while its source-side twin scored 87 of 88.  The pair
+    frame and the score merge now read it through one helper, so they cannot
+    drift apart."""
+    from comparison.mapping_validation import (MappingValidationConfig,
+                                               MappingValidator, fill_pair)
+
+    assert fill_pair({'side': 'source', 'bodyId': 1,
+                      'proposal_bodyId': 11}) == (1, 11)
+    assert fill_pair({'side': 'target', 'bodyId': 12,
+                      'proposal_bodyId': 2}) == (2, 12)
+
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(source_dataset='dsA', target_dataset='dsB',
+                                    query_types=['T'], visualize=False)
+    frame = v._morph_pair_frame([], [], [
+        {'side': 'source', 'bodyId': 1, 'proposal_bodyId': 11},
+        {'side': 'target', 'bodyId': 12, 'proposal_bodyId': 2}])
+    got = sorted(zip(frame['source_bodyId'], frame['target_bodyId']))
+    assert got == [(1, 11), (2, 12)], \
+        'a target-side proposal must score the real pair, not a swapped one'
+    assert set(frame['pair_kind']) == {'fill'}
+
+
+def test_skeleton_preflight_is_cache_first_bounded_and_fails_open(monkeypatch,
+                                                                 tmp_path):
+    """Stage 5 must fetch the target skeletons IT scores against (plan
+    §17.2): its target reader is cache-only while the stage-4 scenes — which
+    run later — are what fetch. Without the pre-flight a dataset's first run
+    scores 0 pairs and its second run gets different bars.
+    """
+    import types
+    from comparison import mapping_validation as mv
+
+    fetched = []
+
+    class _Cache:
+        def find_skeleton_file(self, bid):
+            bid = int(bid)
+            if bid in (11, 12, 13) or bid >= 100:
+                return None
+            return tmp_path / f'{bid}.swc.zst'
+
+    def _fetch(dataset, bid):
+        fetched.append(int(bid))
+        return None if int(bid) == 13 else object()
+
+    fake = types.ModuleType('morphology')
+    fake.find_similar_raw_cache = lambda dataset, **kw: _Cache()
+    fake.fetch_skeleton_on_demand = _fetch
+    monkeypatch.setitem(sys.modules, 'morphology', fake)
+
+    v = mv.MappingValidator.__new__(mv.MappingValidator)
+    v.cfg = mv.MappingValidationConfig(source_dataset='dsA', target_dataset='dsB',
+                                       query_types=['T'], visualize=False,
+                                       morph_enabled=True)
+    v.notes = []
+    v.progress = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    stats = v._preflight_target_skeletons('dsB', [11, 12, 13, 14])
+    assert stats['requested'] == 4 and stats['cached'] == 1
+    assert stats['fetched'] == 2 and stats['failed'] == 1
+    assert sorted(fetched) == [11, 12, 13]
+
+    # FAFB targets resolve through the healed-zip path, never this cache
+    assert v._preflight_target_skeletons('flywire_FAFB_v783', [11])['fetched'] == 0
+    assert sorted(fetched) == [11, 12, 13]
+
+    # a bounded fetch says what it left unscored instead of scoring less
+    monkeypatch.setattr(mv, 'MORPH_SKELETON_PREFLIGHT_CAP', 2)
+    st = v._preflight_target_skeletons('dsB', list(range(100, 110)))
+    assert st['skipped_cap'] == 8 and st['fetched'] == 2
+    assert any('capped at 2' in n for n in v.notes)
+
+    # fail-open: an unreadable cache must not kill the morphology stage
+    def _boom(dataset, **kw):
+        raise RuntimeError('no cache namespace')
+    fake.find_similar_raw_cache = _boom
+    v.notes = []
+    assert v._preflight_target_skeletons('dsB', [11])['fetched'] == 0
+    assert any('skeleton pre-flight unavailable' in n for n in v.notes)

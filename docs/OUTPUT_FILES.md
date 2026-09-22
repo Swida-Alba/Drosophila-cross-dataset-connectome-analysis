@@ -815,7 +815,9 @@ bar-kind evidence) and a
     `jaccard_below_pool`, `tie_margin`).
 *   **`gap_fill_proposals.csv`**: proposals with `fill_class`
     (`in_pool` / `out_of_pool`), `category`, `candidate_annotation`, and
-    the two fill-count columns.
+    the two fill-count columns. `side` says which dataset `bodyId` belongs
+    to (`source` / `target`) and `proposal_bodyId` is the other side, so
+    read the pair by side rather than by column order.
 *   **`gap_fill_levels.csv`**: the layered gap-fill report — one row per
     non-tier bodyId with its confidence `level` (`high` = native m+v
     floor, `medium` = Track-A backup `B_b − Δ`, `low` = run null bar,
@@ -898,8 +900,9 @@ bar-kind evidence) and a
     `target` (in-pool/candidates/holes per type) — labelled by the
     top-level `source_dataset`/`target_dataset`, because one writer
     serves every direction (a FAFB→BANC run must not call its target
-    `mcns`). A hole is a mapped-set neuron claimed by no branch pool, no
-    counted proposal, and no morph-qualified `candidates` row. Also
+    `mcns`). A hole is an out-map bodyId of an in-map type — family
+    material — claimed by no branch pool, no counted proposal, and no
+    morph-qualified `candidates` row. Also
     lists `family_material`: in-map-type bodyIds no branch pool claims
     (the population overhang of the claim set — TM VEV family/candidate
     material, never a mapper failure). New runs also record

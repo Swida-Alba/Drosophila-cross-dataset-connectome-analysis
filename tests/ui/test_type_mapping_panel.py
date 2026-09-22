@@ -594,3 +594,26 @@ def test_coverage_and_suspects_blocks_render(suspects_panel_client):
     # expanded by default) titled by its (source -> target) type pair
     assert any(lbl.startswith('Suspects — ') for lbl in labels)
 
+
+
+def test_a_declined_rival_is_listed_but_never_counted_as_mapped(panel_client):
+    """2026-09-22: the headline count and the pair list disagreed about what
+    the mapping is.  FAFB ``APDN3`` fans out to three BANC types, and the
+    same-name rule adopts ``APDN3 → APDN3`` (7 neurons) while declining
+    ``→ LMTe01`` (4) and ``→ LTe71`` (1).  Summing all three pools made the
+    panel claim 12 mapped neurons for a mapping the validator grades as 7 —
+    and the same error at scale read 205 against the report's 198 on
+    ``circadian_clock``.  The rivals stay visible as disclosure rows; only
+    the adopted pair feeds the claim numbers."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    outcome = _compute_type_mapping(['APDN3'], [FAFB, BANC], 'exact')
+    ends = {f['foreign_type'] for f in outcome['pair_flows'][(FAFB, BANC)]}
+    assert {'APDN3', 'LMTe01', 'LTe71'} <= ends        # still listed
+    banc = _summary_by_dataset(outcome)[BANC]
+    assert banc['mapped_neurons'] == 7 and banc['mapped_types'] == 1
+    per_type = [r for r in outcome['summary_per_type']
+                if r['type'] == 'APDN3' and r['target'] == BANC]
+    assert per_type[0]['mapped_neurons'] == 7
+    # the fan-out is still disclosed where it describes evidence, not claims
+    assert per_type[0]['relationship'] == '1-to-N'

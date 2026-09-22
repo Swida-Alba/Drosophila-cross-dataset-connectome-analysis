@@ -167,7 +167,10 @@ def parse_args(argv=None):
     p.add_argument('--morph-auc-floor', type=float, default=0.65)
     p.add_argument('--no-visualize', action='store_true',
                    help='skip stage 4 (pair scenes)')
-    p.add_argument('--max-scenes', type=int, default=12)
+    p.add_argument('--max-scenes', type=int, default=0,
+                   help='cap on rendered parent scenes, largest pool first '
+                        '(default 0 = one scene per parent type; a positive '
+                        'value names every dropped parent in the run log)')
     p.add_argument('--neuron-alpha', type=float, default=0.2,
                    help='global neuron opacity in scenes (default: 0.2)')
     p.add_argument('--suspicious-cap', type=int, default=20,

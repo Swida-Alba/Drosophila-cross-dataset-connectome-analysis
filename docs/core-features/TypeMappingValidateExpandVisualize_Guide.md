@@ -22,7 +22,7 @@ python scripts/RunMappingValidation.py \
 # a whole coarse cell type (242 FAFB neurons → 204 MCNS neurons map-covered)
 python scripts/RunMappingValidation.py \
     --source flywire_FAFB_v783 --target male-cns:v1.0 \
-    --types circadian_clock --label circadian --max-scenes 21
+    --types circadian_clock --label circadian
 
 # review the fill with the advisory reciprocal evidence (stage 5d, §2.2c)
 python scripts/RunMappingValidation.py \
@@ -102,7 +102,10 @@ python -m comparison.mapping_validation_report <run_dir>
 ### 2.1 The 3D scenes (`visualization/*.html`)
 
 One scene per parent type, skeleton lines in the **source brain
-template** (targets are bridged in). The legend tree, top to bottom:
+template** (targets are bridged in). By default every parent type in the
+run gets a scene (`--max-scenes 0`); a positive value keeps the largest
+pools and names each dropped parent in the run log and in the report's
+Branches tab. The legend tree, top to bottom:
 
 | legend root | meaning |
 | --- | --- |
@@ -324,7 +327,7 @@ pass on.
 | `mapping/suspects_verification.csv` | opt-in (`--verify-suspects`): rival-suspect connectivity verification — advisory |
 | `validation/deep_candidates.csv` | candidate-window rows below the pool best — the top-`rank_top_k` band (`candidates`, family mode and up) and the wider aggressive band (`examinees`) |
 | `validation/noise_filtered_candidates.csv` | every dropped row and why |
-| `gap_fill/gap_fill_proposals.csv` | proposed partners for unpaired neurons (evidence only), with `counts_toward_restrictive_fill` / `counts_toward_family_fill` |
+| `gap_fill/gap_fill_proposals.csv` | proposed partners for unpaired neurons (evidence only), with `counts_toward_restrictive_fill` / `counts_toward_family_fill`; `side` says whether `bodyId` is the source or the target neuron of the pair |
 | `gap_fill/gap_fill_levels.csv` | the layered fill (§2.2b) + each row's `backward_evidence` |
 | `expansion/family_candidates.csv` | the whole `family` bin (enumerated members ∪ evidence rows classified `family`) **[family mode]** |
 | `expansion/backward_matches.csv` | stage 5d only (`--backward-evidence`): one row per (branch, scanned neuron) — reverse top-1, the `backward_own_type_*` hit the grade rests on, and the serialized top-N neighbourhood (§2.2c) |
@@ -470,7 +473,7 @@ The mode is recorded in `parameters.json` (`validation_mode`). Only
 | --- | --- |
 | `--types` (required) | source types or a coarse `cell_type` (e.g. `circadian_clock`) |
 | `--scene-selfcheck` | verify every legend leaf's geometry matches its neuron (recommended) |
-| `--max-scenes N` | cap rendered scenes (default 12) |
+| `--max-scenes N` | cap rendered scenes; default **0** renders one scene per parent type (§2.1) |
 | `--target-min-size-ratio` | fragment bar (default 0.1 × pool best) |
 | `--suspicious-ru-margin` | numerical-tie rule (default 0.02) |
 | `--no-morphology` | skip stage 5 (fast structural pass) |
@@ -481,7 +484,7 @@ The mode is recorded in `parameters.json` (`validation_mode`). Only
 | `--backward-max-neurons N` | per-run budget of dataset-scale reverse scans (default 300) |
 | `--backward-per-branch-cap N` | max expansion members labeled per branch (default 40) |
 | `--no-backward-pool-targets` | do not reverse-scan the unmatched pool targets (matched / verified / borderline are never scanned — the symmetric forward score is their evidence) — then the `source-` statuses keep no pool-derived out-of-branch rivals (§2.3b) |
-| `--neuron-alpha`, `--max-scenes`, `--quiet` | rendering/verbosity |
+| `--neuron-alpha`, `--quiet` | rendering/verbosity |
 
 Turn `--backward-evidence` on when the *fill* is the question — it is the
 only surface that tells you whether a proposed member wants this branch
@@ -530,9 +533,10 @@ detail, not a verdict.
 - **`set_coverage.json` — the bottom-line answer.** Branch gaps
   double-count cross-branch convergence; this file rolls coverage up to
   the set level: how many of your source neurons are assigned / only
-  fill-proposed / unpaired, and which target neurons of the mapped set
-  are **holes** (never claimed by any branch pool, proposal, or
-  morph-qualified candidate — the true unmapped residues, listed by
+  fill-proposed / unpaired, and which target neurons of the mapped types'
+  populations are **holes** (out-map bodyIds of in-map types — family
+  material — never claimed by any branch pool, proposal, or
+  morph-qualified candidate; the true unmapped residues, listed by
   bodyId).
 - **`gap_fill_dedup.csv` — the deduplicated fill.** A single bodyId can
   appear in several branches (N-to-1 mappings); this file gives the

@@ -68,6 +68,19 @@ def mapping_pool_key(source_dataset: str, target_dataset: str,
             str(source_type or ""), str(foreign_type or ""))
 
 
+def flow_is_claimed(flow: Dict[str, Any]) -> bool:
+    """Did the scoped decision adopt this flow's target?
+
+    ``mapping_target_types`` is the decision's accepted target list — the
+    same field the validation pipeline builds its branches from.  A flow
+    ending outside it is disclosure, not a claim: a same-name rival the
+    mapper declined, or a valid-split fan-out it did not adopt.  Both
+    builders set the field, so an absent/empty list means no claim.
+    """
+    return flow.get("foreign_type") in (
+        list(flow.get("mapping_target_types") or []))
+
+
 def get_mapping_pool(pools: Optional[Dict[tuple, Dict[str, Any]]],
                      flow: Dict[str, Any]) -> Dict[str, Any]:
     """Look up a flow's bodyId pool, accepting the legacy two-part key.

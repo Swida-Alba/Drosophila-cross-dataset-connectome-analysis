@@ -625,8 +625,9 @@ target-vector build time.
   missing" — FAFB rollup (assigned / fill-proposed / unpaired) over the
   queried population, MCNS rollup over the mapped target set (in-pool by
   best tier, reached-as-candidates-only, and the explicit **holes** list =
-  mapped-set neurons claimed by no branch pool, no counted proposal, AND
-  no morph-qualified `candidates` row — an invader-surfaced candidate is
+  family material (out-map bodyIds of in-map types) claimed by no branch
+  pool, no counted proposal, AND no morph-qualified `candidates` row — an
+  invader-surfaced candidate is
   a claim, so it closes the hole).
   Out-of-pool candidates pass the same spatial-caliber gate.
   Out-of-map candidates are enumerated in TWO exports —
@@ -709,6 +710,41 @@ source template). The frame difference is disclosed in
   cache + native whitener; zero transforms). Exports
   `morph_pool_ref` (max) / `morph_pool_ref_mean`.
 
+**Both tracks read geometry from disk, and the run says what it could not get.**
+Track A renders each target out of the raw-skeleton cache
+(`cache/<target>/skeletons/raw_skeletons`) and Track B out of that dataset's
+v2 vector cache, while the fetching used to happen only in stage 4 — **after**
+stage 5, so a cold dataset scored nothing (`n_scored_pool: 0` on every branch,
+`track_a_null_n: 0`, every bar the `null` kind) while looking like an ordinary
+thin-sample fallback. `_preflight_target_skeletons` now fetches exactly the
+targets this run's pair frame asks for, before scoring: cache-first, resumable,
+emitting `skeletons_progress`, bounded by `MORPH_SKELETON_PREFLIGHT_CAP = 2000`
+and fail-open, and it names what it fetched, what it missed, and what the cap
+left unscored (`[stage 5] skeleton pre-flight (ds): X/Y cached, fetching Z`). A wide
+aggressive frame can ask for more targets than a fetch budget should cover, so
+the truncation is logged rather than scoring less quietly. `run_morphology`
+additionally records `morph_pairs_requested` / `morph_pairs_scored` in
+`morphology_calibration.json` and logs
+`[stage 5] ! morphology scored 0 of N requested pairs` when the pass is empty
+(`morph_coverage_warning`). Measured on hemibrain: 0/77 without the pre-flight;
+19/77 for the identical invocation once that run's scenes had cached 19
+skeletons; **75/77** with the pre-flight (54/56 fetched), which also derived
+the render-space artifacts and produced a real null bar (`p95 = 0.319, n = 55`)
+where every earlier hemibrain run had `n = 0`. Dataset names are normalized at
+the NeuPrint boundary (`flywire_ids.neuprint_dataset_name`: the local folder
+spelling `hemibrain_v1_2_1` is not a dataset the server knows, and it resolves
+happily against every local table, which is why r25 lost all its target
+neurons silently). The pair frame asks each gap-fill proposal for its pair
+through `fill_pair`, because a proposal is spelled from the SIDE it fills
+(`bodyId` is a source neuron on a `source` row and a target neuron on a
+`target` row): reading `bodyId` / `proposal_bodyId` in one fixed order sent
+every target-side proposal to Track A with the datasets swapped, which could
+not score (0 of 76 in the male-cns family baselines, against 87 of 88
+source-side rows) and cost one doomed skeleton fetch per swapped row. With the
+orientation fixed the same hemibrain pair scores **76 of 76** requested pairs
+with the null bar unchanged (`p95 = 0.319, n = 55`), and two consecutive runs
+are byte-equal on every graded value.
+
 **Qualification rule v3 — one bar engine, two currencies**
 (`comparison/morph_bars.py`; `morph_qualified` / `morph_qualified_suspicious`,
 used by the category classifier and the scene): each branch gets a
@@ -753,6 +789,15 @@ self-calibration AUC (verified_strong vs examinees) ≥ `morph_auc_floor`
 One scene per parent mapping group, in the source template, with the
 `drocatLegend` tree. The tree is built from the §4 categories (not by
 parsing label prefixes); leaves, in order:
+
+`max_scenes` defaults to **0 = one scene per parent**, because branch
+review is the point of the run: the old default of 12 silently dropped the
+smallest-pool parents, so a 43-branch / 21-parent circadian run shipped 9
+parents with no scene at all. A positive value still clamps (largest
+source pool first) and then names every dropped parent in the log, and the
+report's Branches tab states `N of M parent types have a rendered scene`
+and marks the affected rows — a dash must never be ambiguous between "the
+cap dropped this" and "there was nothing to render".
 
 ```
 branch: {source_type} → {target_type} · {linker_signature}

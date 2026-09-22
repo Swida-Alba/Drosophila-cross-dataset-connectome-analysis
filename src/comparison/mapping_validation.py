@@ -108,6 +108,7 @@ from comparison.morph_bars import (
     suspicious_qualified,
 )
 from comparison.profile_comparator import ProfileComparator
+from flywire_ids import is_fafb_dataset
 from comparison.body_id_resolver import (  # noqa: E402
     BodyIdResolver,
     BodyIdResolverConfig,
@@ -278,7 +279,11 @@ class MappingValidationConfig:
     candidate_morph_cap: int = 20
     # stage 4
     visualize: bool = True
-    max_scenes: int = 12
+    # 0 (default) renders one scene per parent type. A positive value caps
+    # the list — branch review is the point of a run, so a silent cap that
+    # leaves parents unrendered is a degradation, not a convenience; the
+    # planner names every dropped parent in the log when it clamps.
+    max_scenes: int = 0
     neuron_alpha: float = 0.2   # global neuron opacity (backend default)
     # Revision 3.5 Issue 6c: debug self-check — after rendering, verify
     # each legend leaf's geometry bbox matches its labeled neuron's bbox.
@@ -440,7 +445,8 @@ def compute_set_coverage(pairs: List["TypePair"],
       parent_target_pool), how many neurons sit in a branch pool with
       which best category, how many are reached ONLY as out-of-pool
       candidates/proposals, and which are never claimed anywhere
-      ('holes' — annotated-type neurons lost to linker refinement).
+      ('holes' — the family material, i.e. out-map bodyIds of in-map
+      types, that neither refinement nor a candidate reached).
       "Reached" covers BOTH proposal routes: gap-fill rows and the
       invader-surfaced rows `finalize_categories` labeled
       ``candidates`` (pass the post-finalization sus/deep rows as
@@ -590,6 +596,14 @@ GAP_FILL_LEVEL_BY_CATEGORY = {
 BAR_KIND_TO_LEVEL = {'native': 'high', 'track_a_backup': 'medium',
                      'null': 'low'}
 FILL_LEVELS = ('high', 'medium', 'low', 'type_gated', 'advice')
+
+# Stage 5 fetches the target skeletons it is about to score against (they
+# otherwise arrive in stage 4, which runs too late — see
+# MappingValidator._preflight_target_skeletons). The pair frame is already
+# capped per source, but a wide aggressive run can still ask for tens of
+# thousands of distinct targets, so the fetch is bounded and names what it
+# leaves unscored.
+MORPH_SKELETON_PREFLIGHT_CAP = 2000
 
 
 def build_gap_fill_levels(dedup_rows, evidence_rows, family_material=()):
@@ -1431,6 +1445,43 @@ def morph_qualified_suspicious(row: Dict, bars) -> bool:
     if bars is None:
         return False
     return suspicious_qualified(bars, row.get('morph_v2_similarity'))
+
+
+def morph_coverage_warning(scores: Dict[Tuple[int, int], Optional[float]],
+                           target_dataset: str) -> Optional[str]:
+    """Name the degradation when a morphology pass scores NOTHING it asked.
+
+    An all-empty score map means the scorer never received a target skeleton,
+    so every branch falls to the run null bar and the null bar has no sample
+    either — the run then grades on connectivity while looking merely
+    un-calibrated.  The stage-5 null line ("sample too thin, n=0") does not
+    say that, and the scenes of such a run hold no target neurons at all.
+    """
+    if not scores or any(v is not None for v in scores.values()):
+        return None
+    return (f'morphology scored 0 of {len(scores)} requested pairs: no '
+            f'{target_dataset} target skeleton was loadable (the scene '
+            '"unavailable" lines in these notes name them). Every admission '
+            'bar in this run is therefore the run null bar AND the null bar '
+            'has no sample, so these verdicts are connectivity-only, not '
+            'morphology-qualified.')
+
+
+def fill_pair(row: Dict) -> Tuple[int, int]:
+    """The ``(source_bodyId, target_bodyId)`` a gap-fill proposal asserts.
+
+    A proposal is spelled from the side it FILLS: a ``source``-side row names
+    the unpaired source in ``bodyId`` and its proposed target in
+    ``proposal_bodyId``, and a ``target``-side row spells the same relation
+    the other way round.  Reading the two columns in a fixed order asked
+    Track A to render a target bodyId out of the SOURCE dataset, so no
+    target-side fill ever scored (measured: 0 of 76 in the male-cns family
+    baselines and 0 of 2 in the hemibrain probe, against 87 of 88
+    source-side rows).
+    """
+    if row.get('side') == 'target':
+        return int(row['proposal_bodyId']), int(row['bodyId'])
+    return int(row['bodyId']), int(row['proposal_bodyId'])
 
 
 def categorize_pool_targets(per_source: Dict[int, pd.DataFrame],
@@ -3475,6 +3526,79 @@ class MappingValidator:
 
     # -- stage 5 ----------------------------------------------------------
 
+    def _preflight_target_skeletons(self, dataset: str, bids) -> Dict[str, int]:
+        """Fetch the target skeletons this run is about to score against.
+
+        Track A renders its targets out of the raw-skeleton cache, and
+        ``load_skeleton`` never fetches — the fetching happens in the stage-4
+        scenes, which run AFTER stage 5.  On a dataset with a cold cache that
+        ordering scored 0 of 77 pairs while reading as ordinary thin-sample
+        calibration (plan-tmvev-jaccard-primary-bodyid-ranking §17.2), so the
+        run meant to grade morphology graded connectivity and the next run got
+        different bars.  Pre-flighting here makes a dataset's first run behave
+        like its second.
+
+        Bounded by ``MORPH_SKELETON_PREFLIGHT_CAP`` and named in the log when
+        it truncates: the pair frame of a wide aggressive run can ask for tens
+        of thousands of targets, which is not a fetch budget.  Cache-first and
+        resumable (each fetch persists into the raw store), and every failure
+        is fail-open — the scorer then sees exactly what it used to see, and
+        :func:`morph_coverage_warning` says so.  FAFB targets come from the
+        healed-zip path, not this cache, so they are skipped.
+        """
+        cfg = self.cfg
+        bids = sorted({int(b) for b in (bids or [])
+                       if b is not None and str(b).strip()})
+        stats = {'requested': len(bids), 'cached': 0, 'fetched': 0,
+                 'failed': 0, 'skipped_cap': 0}
+        if not bids or is_fafb_dataset(dataset):
+            return stats
+        try:
+            from morphology import fetch_skeleton_on_demand, find_similar_raw_cache
+            cache = find_similar_raw_cache(dataset, verbose=False)
+            missing = [b for b in bids if cache.find_skeleton_file(b) is None]
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'[stage 5] skeleton pre-flight unavailable: {exc}; '
+                     'scoring against whatever the cache holds')
+            return stats
+        stats['cached'] = len(bids) - len(missing)
+        if len(missing) > MORPH_SKELETON_PREFLIGHT_CAP:
+            stats['skipped_cap'] = (len(missing)
+                                    - MORPH_SKELETON_PREFLIGHT_CAP)
+            self.log(f'[stage 5] ! skeleton pre-flight capped at '
+                     f'{MORPH_SKELETON_PREFLIGHT_CAP} targets; '
+                     f'{stats["skipped_cap"]} unfetched (their pairs stay '
+                     'unscored, so their branches keep the null bar)')
+            missing = missing[:MORPH_SKELETON_PREFLIGHT_CAP]
+        self.log(f'[stage 5] skeleton pre-flight ({dataset}): '
+                 f'{stats["cached"]}/{len(bids)} cached, fetching '
+                 f'{len(missing)}')
+        if not missing:
+            return stats
+        self.progress.emit('skeletons_progress', stage='5', dataset=dataset,
+                           done=0, total=len(missing))
+        t0 = time.time()
+        for i, bid in enumerate(missing, 1):
+            try:
+                if fetch_skeleton_on_demand(dataset, bid) is None:
+                    stats['failed'] += 1
+            except Exception as exc:  # noqa: BLE001
+                stats['failed'] += 1
+                self.log(f'[stage 5] skeleton fetch failed for {bid}: {exc}')
+            if i % 50 == 0 or i == len(missing):
+                self.progress.emit('skeletons_progress', stage='5',
+                                   dataset=dataset, done=i,
+                                   total=len(missing))
+        stats['fetched'] = len(missing) - stats['failed']
+        self.progress.emit('skeletons_progress', stage='5', dataset=dataset,
+                           done=len(missing), total=len(missing),
+                           fetched=stats['fetched'], failed=stats['failed'],
+                           note='complete')
+        self.log(f'[stage 5] skeleton pre-flight done: fetched '
+                 f'{stats["fetched"]}, failed {stats["failed"]} in '
+                 f'{time.time() - t0:.0f}s')
+        return stats
+
     def run_morphology(self, val_rows: List[Dict], sus_rows: List[Dict],
                        fills: List[Dict],
                        pool_detail: Optional[List[Dict]] = None,
@@ -3504,6 +3628,10 @@ class MappingValidator:
         if pair_df.empty:
             out['note'] = 'no pairs to score'
             return out
+        # Stage 5 must not depend on stage 4 having warmed the target's raw
+        # skeleton cache: fetch what THIS pair frame asks for, now.
+        self._preflight_target_skeletons(
+            cfg.target_dataset, pair_df['target_bodyId'].tolist())
         try:
             from morphology import enrich_homolog_results
             enriched = enrich_homolog_results(
@@ -3529,6 +3657,16 @@ class MappingValidator:
         scores = _collect(score_col)
         nblast = (_collect('morph_nblast')
                   if 'morph_nblast' in enriched.columns else {})
+        # The grade publishes its own record: a run that scored nothing asked
+        # for must say so, or its null bars read as ordinary thin-sample
+        # calibration rather than as absent target geometry.
+        out['morph_pairs_requested'] = len(scores)
+        out['morph_pairs_scored'] = sum(1 for v in scores.values()
+                                        if v is not None)
+        coverage = morph_coverage_warning(scores, cfg.target_dataset)
+        if coverage:
+            self.log(f'[stage 5] ! {coverage}')
+            out['morph_coverage_warning'] = coverage
 
         # Rev 3.9: NULL-CALIBRATED Track-A bar.  The factor x
         # pooled-average threshold is arbitrary; the p95 of the Track-A
@@ -3805,11 +3943,15 @@ class MappingValidator:
         out['suspicious_ru_margin'] = cfg.suspicious_ru_margin
 
         def _merge(row):
-            sid = row.get('source_bodyId', row.get('bodyId'))
-            tid = (row.get('target_bodyId')
-                   if row.get('target_bodyId') is not None
-                   else row.get('proposal_bodyId',
-                                row.get('ahead_target_bodyId')))
+            if 'source_bodyId' in row:
+                sid = row['source_bodyId']
+                tid = (row.get('target_bodyId')
+                       if row.get('target_bodyId') is not None
+                       else row.get('proposal_bodyId',
+                                    row.get('ahead_target_bodyId')))
+            else:
+                # a gap-fill proposal names its pair by side, not by column
+                sid, tid = fill_pair(row)
             key = (int(sid), int(tid) if tid is not None else -1)
             row['morph_v2_similarity'] = scores.get(key)
             row['morph_nblast'] = nblast.get(key)
@@ -4005,7 +4147,7 @@ class MappingValidator:
         for row in (null_rows or []):
             add(row['source_bodyId'], row['ahead_target_bodyId'], 'null')
         for row in fills:
-            add(row['bodyId'], row['proposal_bodyId'], 'fill')
+            add(*fill_pair(row), 'fill')
         # pool neurons (for the candidate morph threshold: the average
         # verified+matched+borderline pool similarity)
         for sid, tid in (pool_pairs or []):

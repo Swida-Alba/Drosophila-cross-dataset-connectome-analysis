@@ -117,9 +117,18 @@ def test_ladder_includes_verified_in_references(monkeypatch):
     when >= 2 matched exist (the run_morphology ladder, exercised through
     the Track-B mock harness)."""
     import numpy as np
+    import types
     import morphology
     from comparison.mapping_validation import (MappingValidationConfig,
                                                MappingValidator)
+
+    # The stage-5 skeleton pre-flight (plan §17.2) reads the target's raw
+    # cache before Track A scores; report it warm so a unit test fetches
+    # nothing.
+    monkeypatch.setattr(
+        morphology, 'find_similar_raw_cache',
+        lambda dataset, **kw: types.SimpleNamespace(
+            find_skeleton_file=lambda bid: Path('/stub-cache/x.swc.zst')))
 
     v = MappingValidator.__new__(MappingValidator)
     v.cfg = MappingValidationConfig(

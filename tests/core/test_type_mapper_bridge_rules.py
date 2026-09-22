@@ -556,3 +556,32 @@ def test_the_source_side_refinement_is_disclosed_only_when_it_differs():
     assert 'source side from another supported chain' in note
     assert 'additional_type(s)' in note and "'X1'" in note
     assert 'linker rows' in note
+
+
+def test_a_flow_only_claims_the_targets_the_decision_adopted():
+    """One place decides "is this pair part of the mapping?" (2026-09-22).
+
+    The panel summed every flow's target pool, so a query read 205 mapped
+    neurons where the same mapping graded 198 in the TM VEV report: the
+    pools of the same-name rivals the mapper had just DECLINED, and of the
+    valid-split fan-outs it never adopted, were being counted as claims.
+    ``mapping_target_types`` is the decision's accepted target list — the
+    field the validator builds its branches from — so the predicate reads
+    it rather than re-deriving a status.
+    """
+    from comparison.mapping_visualization import flow_is_claimed
+
+    adopted = {'source_type': 'APDN3', 'foreign_type': 'APDN3',
+               'mapping_target_types': ['APDN3']}
+    fan_out = {'source_type': 'DN1pD', 'foreign_type': 'SMP537',
+               'mapping_target_types': ['SMP537', 'SMP539']}
+    rival = {'source_type': 'APDN3', 'foreign_type': 'LMTe01',
+             'mapping_status': 'mapped', 'suspects': True,
+             'mapping_target_types': ['APDN3']}
+    split = {'source_type': 's-CPDN3C', 'foreign_type': 'CB3767',
+             'mapping_status': 'valid_split_evidence',
+             'mapping_target_types': ['CB1449', 'CB1709']}
+    assert flow_is_claimed(adopted) and flow_is_claimed(fan_out)
+    # a rival still carries status 'mapped' — only the target list knows
+    # the vote went elsewhere
+    assert not flow_is_claimed(rival) and not flow_is_claimed(split)
