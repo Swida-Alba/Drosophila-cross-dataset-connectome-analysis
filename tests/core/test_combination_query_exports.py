@@ -543,7 +543,9 @@ def test_standard_and_custom_pathfinding_suppress_ratio_probability(tmp_path, mo
     def run(mode):
         captured.clear()
         if mode == "standard":
-            params = ComparisonParameters(datasets=datasets, thresholds=[3])
+            params = ComparisonParameters(
+                datasets=datasets, thresholds=[3],
+                output_folder=str(tmp_path / mode))
             analyzer = ca.ComparisonAnalyzer(params)
             analyzer.raw_results = raw
             analyzer.get_mapped_results = lambda: raw
@@ -555,6 +557,7 @@ def test_standard_and_custom_pathfinding_suppress_ratio_probability(tmp_path, mo
         else:
             params = ComparisonParameters(
                 datasets=datasets,
+                output_folder=str(tmp_path / mode),
                 threshold_mode="combinations",
                 threshold_combinations=[
                     {"id": "q1",

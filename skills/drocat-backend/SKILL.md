@@ -84,6 +84,26 @@ PYTHONNOUSERSITE=1 PYTHONPATH=src:vispath-subproject/src:. conda run -n drocat-4
 - For offline/deprecated datasets use `cache_only=True` only after checking cache
   coverage; never silently switch datasets to make a run pass.
 
+## Test isolation
+
+Tests run from the repository root, so anything that resolves a relative
+default writes into the tree:
+
+- A comparison run needs `ComparisonParameters(output_folder=...)`. The field
+  defaults to `'.'` and an empty string resolves the same way, so a test that
+  leaves it unset creates `cross-dataset_*` folders at the repo root
+  (`tests/core/test_comparison_analyzer_coverage.py` routes its `_params()`
+  helper at `tmp_path` for exactly that reason; pass `output_folder=""` only
+  when the test is about the no-output-folder branch).
+- No test may write `ui/local_config.json`. `tests/ui/conftest.py` repoints
+  `ui.config.LOCAL_CONFIG_FILE` at a per-test file, because `load_local_config`
+  re-reads on any mtime change — a stray write shows up in the app the user has
+  open.
+- One pytest session at a time. Two concurrent sessions share the
+  `pytest-of-<user>/` tmp root and fail in ways that vanish on a solo re-run,
+  and a real-data pipeline running alongside a session produces load-dependent
+  UI failures.
+
 ## References
 
 - [Module index (all functions & signatures)](references/module-index.md)

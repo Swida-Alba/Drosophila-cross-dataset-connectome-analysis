@@ -147,8 +147,13 @@ def test_run_path_analysis_selects_find_tool_by_path_mode(monkeypatch):
     assert (lm_shortest is None) == (lm_all is None)
 
 
-def test_single_dataset_pipeline_runs_each_threshold(monkeypatch):
-    """One dataset still runs the complete threshold iteration pipeline."""
+def test_single_dataset_pipeline_runs_each_threshold(tmp_path, monkeypatch):
+    """One dataset still runs the complete threshold iteration pipeline.
+
+    `output_folder` has to be a real directory: the comparison stage persists
+    its threshold view under `full_output_path`, and an empty folder resolves
+    against the process CWD — i.e. the repository root during a test run.
+    """
     import pandas as pd
     from comparison import ComparisonAnalyzer
 
@@ -157,7 +162,7 @@ def test_single_dataset_pipeline_runs_each_threshold(monkeypatch):
         source_neurons=['aMe12'],
         target_neurons=['PPL101'],
         thresholds=[3, 7],
-        output_folder="",
+        output_folder=str(tmp_path),
         auto_type_mapping=False,
         verbose=False,
     )
