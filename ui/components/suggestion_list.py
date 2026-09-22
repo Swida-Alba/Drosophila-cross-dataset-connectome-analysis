@@ -22,6 +22,13 @@ ACTIVE_CLASS = "drocat-suggest-active"
 CHECK_CLASS = "drocat-suggest-check"
 LABEL_CLASS = "drocat-suggest-label"
 HINT_CLASS = "drocat-suggest-hint"
+REMOVE_CLASS = "drocat-suggest-remove"
+
+# The history-row prune. It removes the *entry from the query history*, right
+# next to a tick that removes the *chip*, and both read as a removal -- so the
+# CSS in ui/app.py keeps it invisible until the row is hovered, keyboard-focused
+# or highlighted. Invisible, never absent: an always-rendered control cannot
+# reflow the row under the pointer mid-pick, and stays reachable from tests.
 
 # Hover text for a marked row. The tick alone does not say that the next click
 # takes the chip back out, and a history row now has a prune "x" beside it that

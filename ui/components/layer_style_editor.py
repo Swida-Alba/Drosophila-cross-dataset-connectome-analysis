@@ -329,7 +329,10 @@ window.drocatSuggest = {
                 + ' aria-hidden="true">check</span>';
       }
       // History rows can be pruned individually, mirroring the query box. The
-      // control is mouse-only, so it stays out of the option's name.
+      // control is mouse-only, so it stays out of the option's name, and the CSS
+      // holds it at opacity 0 until the row is hovered or highlighted: a marked
+      // row's tick takes the chip back and this takes the history entry, so the
+      // two must not be on screen together.
       if (isHistory) {
         html += '<span class="drocat-suggest-remove" aria-hidden="true"'
                 + ' data-value="' + drocatSuggestEsc(value)

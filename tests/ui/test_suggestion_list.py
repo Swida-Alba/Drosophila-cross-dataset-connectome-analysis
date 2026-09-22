@@ -8,10 +8,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from ui.components.suggestion_list import (  # noqa: E402
+    ACTIVE_CLASS,
     ADDED_CLASS,
     CHECK_CLASS,
     ITEM_CLASS,
     MARKED_ROW_TITLE,
+    REMOVE_CLASS,
     SUGGESTION_LIMIT,
     chip_is_marked,
     marked_rows,
@@ -125,13 +127,13 @@ class TestClassNamesMatchTheRenderers:
         js = layer_style_editor._SUGGESTION_JS
         # The renderer concatenates class attributes, so match the token
         # rather than a quoted literal.
-        for name in (ITEM_CLASS, ADDED_CLASS, CHECK_CLASS):
+        for name in (ITEM_CLASS, ADDED_CLASS, CHECK_CLASS, REMOVE_CLASS):
             assert name in js
 
     def test_app_css_styles_the_shared_names(self):
         from ui.app import DROCAT_CSS
 
-        for name in (ITEM_CLASS, ADDED_CLASS, CHECK_CLASS):
+        for name in (ITEM_CLASS, ADDED_CLASS, CHECK_CLASS, REMOVE_CLASS):
             assert f".{name}" in DROCAT_CSS
 
     def test_the_query_box_tick_is_tinted_like_the_overlay_tick(self):
@@ -152,6 +154,49 @@ class TestClassNamesMatchTheRenderers:
         assert "CHECK_CLASS" in inspect.getsource(neuron_list_input)
         assert (f".drocat-suggest-menu .q-item.drocat-suggest-added"
                 f" .{CHECK_CLASS}") in DROCAT_CSS
+
+
+class TestPruneReveal:
+    """A history row's prune ``x`` drops the *history entry*, while a marked row's
+    tick drops the *chip* -- two removals a few pixels apart. Only one of them is
+    on screen until the row is the one being pointed at, and the one that hides
+    stays built into the row: adding and removing it would reflow the list under
+    the pointer partway through a run of picks."""
+
+    def test_the_prune_hides_until_its_row_is_pointed_at(self):
+        import re
+
+        from ui.app import DROCAT_CSS
+
+        assert re.search(
+            rf"\.{REMOVE_CLASS} \{{\s*\n\s*opacity: 0;", DROCAT_CSS)
+        for reveal in (
+            f".{ITEM_CLASS}:hover .{REMOVE_CLASS}",
+            f".{ITEM_CLASS}.{ACTIVE_CLASS} .{REMOVE_CLASS}",
+            f".drocat-suggest-menu .q-item:hover .{REMOVE_CLASS}",
+            f".drocat-suggest-menu .q-item:focus-within .{REMOVE_CLASS}",
+        ):
+            assert reveal in DROCAT_CSS, reveal
+
+    def test_hiding_is_css_only_on_both_surfaces(self):
+        """Neither renderer may decide to skip the control.
+
+        The overlay's is a client-side span, so the pin is that its branch is
+        gated on the list being history and not on the row being marked. The
+        query box's is a real ``ui.button`` and is pinned behaviorally by
+        ``test_neuron_list_input_history_rows_mark_and_deselect``.
+        """
+        import re
+
+        from ui.components import layer_style_editor
+
+        branch = re.search(
+            r"if \(isHistory\) \{[^}]*" + REMOVE_CLASS,
+            layer_style_editor._SUGGESTION_JS,
+            re.S,
+        )
+        assert branch, "every history row must build the prune"
+        assert "added" not in branch.group(0)
 
 
 def test_shared_limit_is_the_query_box_default():

@@ -6375,6 +6375,8 @@ class TestComponents:
         # because pruning the last entry leaves nothing to offer.
         button = next(el for el in descendants(rows_of("aMe12")[-1])
                       if type(el).__name__ == "Button")
+        # Built into the row and only hidden by CSS, so the reveal rule reaches it.
+        assert "drocat-suggest-remove" in button._classes
         next(listener for listener in button._event_listeners.values()
              if listener.type == "click").handler(SimpleNamespace())
         assert box.get_value() == ("exact", ["aMe12"])

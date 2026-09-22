@@ -41,6 +41,7 @@ from .suggestion_list import (
     ADDED_CLASS,
     CHECK_CLASS,
     MARKED_ROW_TITLE,
+    REMOVE_CLASS,
     SUGGESTION_LIMIT,
     chip_is_marked,
     marked_rows,
@@ -968,7 +969,9 @@ def neuron_list_input(
     again takes that chip back out, the same as its own ``x``). The
     Recent/Frequent history carries the same marks, and a marked history row
     deselects too — its prune ``x`` remains a separate action, dropping the
-    entry from the history rather than from the query. Any click that closes
+    entry from the history rather than from the query, and is shown only while
+    that row is hovered or focused so the two removals never sit side by side.
+    Any click that closes
     the list ends the held query: clicking in the query box dismisses it, and so
     does an outside click, ESC or focusing another input, after which the next
     opening shows the history list. New typed text starts its own round, and
@@ -2039,6 +2042,11 @@ def neuron_list_input(
                     if remove_handler is not None:
                         remove_button = ui.button(icon="close")
                         remove_button.props("flat round dense size=sm")
+                        # Built into the row, not added on hover: ui.row() would
+                        # reflow the list under the pointer mid-pick. The CSS in
+                        # ui/app.py is what keeps it out of the way until the
+                        # row is hovered or focused.
+                        remove_button.classes(REMOVE_CLASS)
                         remove_button.tooltip("Remove from query history")
                         remove_button.on(
                             "click",

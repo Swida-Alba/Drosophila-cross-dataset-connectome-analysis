@@ -1759,9 +1759,11 @@ html, body {
     text-align: right;
     flex-shrink: 0;
 }
-/* History-row removal 'x' (in-table overlay): a small, right-aligned control
-   that does not commit the row when clicked. */
-.drocat-suggest-remove {
+/* History-row removal 'x': prunes the entry from the query history without
+   committing the row. One class on both surfaces -- the overlay's span and the
+   query box's ui.button -- so the reveal rule below covers them together; the
+   metrics stay scoped to the overlay row so the Quasar button keeps its own. */
+.drocat-suggest-item .drocat-suggest-remove {
     flex-shrink: 0;
     margin-left: 6px;
     width: 16px;
@@ -1773,9 +1775,26 @@ html, body {
     border-radius: 3px;
     cursor: pointer;
 }
-.drocat-suggest-remove:hover {
+.drocat-suggest-item .drocat-suggest-remove:hover {
     color: var(--drocat-navy, #0b1f3a);
     background: var(--drocat-cobalt-soft, #e9f0f9);
+}
+/* A marked row's tick removes the chip and the prune removes the history entry;
+   with both always visible they read as two identical removals a few pixels
+   apart. So the prune only shows while its own row is the one being pointed at:
+   hovered on either surface, keyboard-highlighted in the overlay (its rows are
+   not focusable), or Tab-focused in the query box (its button is). Held at
+   opacity 0 rather than left out of the DOM, because the row must not change
+   width partway through a run of picks. */
+.drocat-suggest-remove {
+    opacity: 0;
+    transition: opacity .12s ease;
+}
+.drocat-suggest-item:hover .drocat-suggest-remove,
+.drocat-suggest-item.drocat-suggest-active .drocat-suggest-remove,
+.drocat-suggest-menu .q-item:hover .drocat-suggest-remove,
+.drocat-suggest-menu .q-item:focus-within .drocat-suggest-remove {
+    opacity: 1;
 }
 
 /* Single-color picker palette: exactly ten swatches per row, centred. */
