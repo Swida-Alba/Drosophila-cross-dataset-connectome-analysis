@@ -588,9 +588,16 @@ NETWORK_LAYOUTS = ["distributed", "circular", "shell", "spring"]
 # Similarity metrics
 # rank_corr (shared-only Spearman) is intentionally excluded: it is fragile at
 # bodyId level (<3 shared types or low variance -> NaN, MRR 0.34 at (15,5) per
-# the homolog-parameter benchmark), and the UI default is rank_union, which
-# dominates at both bodyId and pooled type level. See BENCHMARK_RESULTS.md §6c.
-SIMILARITY_METRICS = ["rank_union", "jaccard", "cosine"]
+# the homolog-parameter benchmark). The split the benchmark draws is metric-
+# BY-LEVEL, not one winner everywhere: Jaccard is best per bodyId (MRR 0.9992,
+# never degenerate) while rank_union is best for pooled TYPE profiles
+# (Hit@1 0.988 vs 0.963). Every bodyId-level surface therefore leads with
+# Jaccard — the TM VEV ordering chain, Find Homolog's default sort metric
+# (ComparisonParameters / DEFAULTS['similarity_metric'] above), and this
+# dropdown's option order — so the UI no longer implies a rank_union default
+# that nothing bodyId-level uses. rank_union stays available for sorting and
+# remains the type-level metric. See BENCHMARK_RESULTS.md §4c / §6c / §7.1.
+SIMILARITY_METRICS = ["jaccard", "rank_union", "cosine"]
 
 # Match algorithms for NeuronBridge
 MATCH_ALGORITHMS = ["cds", "pppm", "both"]
