@@ -306,6 +306,33 @@ class TestQualifyVisualizedPairs:
         assert not state.active
         assert any("no usable scores" in w for w in state.warnings)
 
+    def test_prune_pool_refs_is_the_callers_choice(self, monkeypatch,
+                                                   fafb_mcns):
+        """mapping_ref's "a branch-pool member was only fetched to ANCHOR a
+        bar, so it is not a candidate" rule is the supervised caller's
+        semantics. A caller whose candidate set is its own list must be able
+        to turn it off — the TM VEV `pooling` gate shipped with it on and
+        silently lost the verdict of every candidate the mapper also claimed
+        (measured 2026-09-23: 35 of 41 male-cns rows labelled `no-score` while
+        the scorer had a value for all 41). Grading stays honest with it off,
+        because a candidate is never measured against itself."""
+        fafb, mcns = fafb_mcns
+        self._install(monkeypatch, good_targets=(100,))
+        monkeypatch.setattr(
+            mcd, "_mapper_ref_pools",
+            lambda source_types, s, t, log=None: {"T": [100]})
+        monkeypatch.setattr(
+            mcd, "_finalize_mapping_ref_bars",
+            lambda mq, refs, df, log=None: None)
+        kw = dict(mode="mapping_ref", source_types={1: "T"}, null_k=30,
+                  project_root=".")
+        pruned = mcd.qualify_visualized_pairs(fafb, mcns, [(1, 100)], **kw)
+        kept = mcd.qualify_visualized_pairs(fafb, mcns, [(1, 100)],
+                                            prune_pool_refs=False, **kw)
+        assert (1, 100) not in pruned.scores      # the default, unchanged
+        assert (1, 100) in kept.scores
+        assert kept.is_qualified(1, 100) is True
+
     def test_intra_dataset_qualifies_and_excludes_queries(
             self, monkeypatch, fafb_mcns):
         # Same-dataset (intra) qualification runs on the identity chain;

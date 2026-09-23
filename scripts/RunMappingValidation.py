@@ -138,21 +138,11 @@ def parse_args(argv=None):
                    help='max deep-window candidates kept per source '
                         'neuron (Rev 3.8; default 10)')
     p.add_argument('--pooling-jaccard-floor', type=float, default=0.10,
-                   help='--mode pooling: absolute Jaccard floor. 0.10 is the '
-                        'measured value that keeps every pair the supervised '
-                        'path graded verified on all three targets (plan '
-                        '§2.2); the same floor is NOT dataset-neutral, so do '
-                        'not raise it without re-reading §2.2. With the '
-                        'evidence fit ON (default) this value is the CEILING: '
-                        'the run uses min(this, q05 of this dataset pair\'s '
-                        'graded pairs) and publishes which it used.')
-    p.add_argument('--no-pooling-floor-from-evidence', action='store_true',
-                   help='--mode pooling: gate on the literal '
-                        '--pooling-jaccard-floor instead of fitting it to this '
-                        'dataset pair\'s recorded supervised evidence '
-                        '(cache/<target>/pooling/jaccard_evidence_*.json). Use '
-                        'it for a run that must be reproducible against a '
-                        'moving evidence file.')
+                   help='--mode pooling: absolute Jaccard floor — a VOLUME '
+                        'guard-rail on how wide the connectivity scan may '
+                        'open, not a statement about whether any pair is a '
+                        'homolog (plan §5). The configured number is the '
+                        'number the run gates on and publishes.')
     p.add_argument('--pooling-rank-union-floor', type=float, default=0.0,
                    help='--mode pooling: absolute rank_union floor '
                         '(default 0 = strictly positive correlation)')
@@ -162,21 +152,13 @@ def parse_args(argv=None):
                         'selectivity is carried by the floors, not the window '
                         '(2 vs 4 moves the pool by <=3 targets).')
     p.add_argument('--no-pooling-morph-gate', action='store_true',
-                   help='--mode pooling: skip the final morph qualification '
-                        'and publish the connectivity-only pool')
+                   help='--mode pooling: skip the final morphology gate, so '
+                        'the pool is exactly what connectivity admitted '
+                        '(nothing is refused on shape)')
     p.add_argument('--pooling-max-morph-targets', type=int, default=400,
                    help='--mode pooling: budget for the morph pass (one '
                         'network-bound step); rows past the budget are '
                         "labelled morph_gate='not-attempted-cap', never blank")
-    p.add_argument('--pooling-corroborate-with', nargs='+', metavar='RUN_DIR',
-                   default=[],
-                   help='--mode pooling: run folders of the SAME query '
-                        'against OTHER target datasets.  Joins their pools '
-                        'on (source bodyId, candidate target TYPE) — the '
-                        'only identity that transfers across datasets — to '
-                        'fill `targets_corroborated`.  Advisory ranking, '
-                        'never a gate; omit it and the column stays blank '
-                        'rather than reading as "no other target agrees".')
     p.add_argument('--backward-evidence', action='store_true',
                    help='stage 5d: reverse (target -> source) scans label '
                         'the expansion bins — ADVISORY only, never gates '
@@ -277,8 +259,6 @@ def main(argv=None):
         pooling_window_mult=args.pooling_window_mult,
         pooling_morph_gate=not args.no_pooling_morph_gate,
         pooling_max_morph_targets=args.pooling_max_morph_targets,
-        pooling_floor_from_evidence=not args.no_pooling_floor_from_evidence,
-        pooling_sibling_runs=list(args.pooling_corroborate_with or []),
         backward_evidence_enabled=args.backward_evidence,
         skip_backward_pass=args.skip_backward_pass,
         backward_top_n=args.backward_top_n,

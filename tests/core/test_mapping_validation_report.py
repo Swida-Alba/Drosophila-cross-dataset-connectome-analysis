@@ -645,27 +645,33 @@ POOL_HEADER = ["target_bodyId", "target_type", "leaf", "best_source_bodyId",
                "window_size", "size_nm3", "size_universe_percentile",
                "in_scope", "n_sources", "dup", "morph_gate",
                "morph_similarity", "morph_bar", "morph_qualified",
-               "mapper_cell", "mapper_verdict", "targets_corroborated"]
+               "mapper_cell", "mapper_verdict"]
 
 XVAL = {
     "universe_scanned": 103770,
     "seed": {"queried_sources": 8, "scanned": 8,
              "sources_with_a_candidate": 5, "distinct_best_sources": 4},
-    "gate": {"jaccard_floor": 0.0723, "jaccard_floor_configured": 0.1,
-             "jaccard_floor_source": "dataset-fitted",
-             "jaccard_floor_evidence_n": 241,
-             "jaccard_floor_q05": 0.0723, "rank_union_floor": 0.0,
-             "window_mult": 2.0, "jaccard_floor_pairs_added": 12},
+    "gate": {"jaccard_floor": 0.1, "rank_union_floor": 0.0,
+             "window_mult": 2.0,
+             "role": "volume guard-rail — how wide connectivity may open, "
+                     "not a data-quality claim about any pair"},
     "cells": {"confirmed": 3, "pool_miss": 2, "type_miss": 1,
               "type_new": 1, "verified_only": 7},
     "body_ids": {"pool_miss": [501, 502], "verified_only": [601]},
     "pool_miss_by_type": {"DLp11": 1, "": 1},
-    "morph": {"attempted": 5, "scored": 4, "qualified": 2, "capped": 0,
-              "error": ""},
-    "corroboration": {"status": "computed", "sibling_runs": 2,
-                      "sibling_dirs": ["/r/a", "/r/b"], "unreadable": [],
-                      "how": "", "pool_size_histogram": {"2": 4, "1": 1},
-                      "advisory": "ranks the review, never gates it"},
+    "morph": {"attempted": 8, "scored": 4, "qualified": 2, "capped": 0,
+              "no_score": 4, "error": "", "gate_applied": True,
+              "dropped_targets": 2,
+              "warnings": ["BANC morphology is experimental: public "
+                           "skeleton products mix L2 / full / µm sources"]},
+    "input_fingerprint": {"git_rev": "abcdef1234567890",
+                          "scanned_target_universe": 101995,
+                          # the REAL shape `_store_identity` writes: epoch
+                          # seconds under `mtime_s`. A fixture that invents a
+                          # prettier key (`mtime`) lets a `@ None` ship — which
+                          # is what a 2026-09-23 real-data run caught.
+                          "mapper_snapshot": {"bytes": 123456,
+                                              "mtime_s": 1789866123}},
     "reading_notes": ["No cell is a recall measure."],
 }
 
@@ -678,8 +684,7 @@ def _pool_row(**kw):
          "size_universe_percentile": 61.0, "in_scope": True, "n_sources": 2,
          "dup": 1, "morph_gate": "scored", "morph_similarity": 0.66,
          "morph_bar": 0.55, "morph_qualified": True,
-         "mapper_cell": "type_miss", "mapper_verdict": "",
-         "targets_corroborated": 2}
+         "mapper_cell": "type_miss", "mapper_verdict": ""}
     r.update(kw)
     return r
 
@@ -690,9 +695,7 @@ def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
     params.update({"validation_mode": mode, "pooling_jaccard_floor": 0.1,
                    "pooling_rank_union_floor": 0.0,
                    "pooling_window_mult": 2.0, "pooling_morph_gate": True,
-                   "pooling_max_morph_targets": 400,
-                   "pooling_floor_from_evidence": True,
-                   "pooling_sibling_runs": []})
+                   "pooling_max_morph_targets": 400})
     (run_dir / "parameters.json").write_text(json.dumps(params))
     rows = pool if pool is not None else [_pool_row()]
     out = run_dir if flat else (run_dir / "pooling")
@@ -711,17 +714,17 @@ def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
 
 def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     """The Pooling tab is the only place a pooling run's result reads: the
-    nested ladder's tabs are empty by construction there.  So the fitted
-    floor must publish its provenance, not just a number, and the cells must
-    keep their names."""
+    nested ladder's tabs are empty by construction there.  So the floors are
+    named as the volume guard-rail they are (no fitted provenance dressing a
+    knob that measures pool size), and the cells keep their names."""
     _as_pooling_run(run_dir)
     html = build_report_document(collect_run_data(run_dir))
     assert ">Pooling</button>" in html
     assert "Pooling — the unsupervised scan" in html
-    # the floor says WHERE it came from and what it was fitted on
-    assert "0.0723 — dataset-fitted, configured 0.1000" in html
-    assert "q05 of 241 graded pair(s) on record" in html
-    assert "this run added 12 pair(s) to the record" in html
+    # the floor is the configured number, stated as a volume control
+    assert "jaccard &gt; 0.1000 (configured)" in html
+    assert "volume guard-rail" in html
+    assert "dataset-fitted" not in html     # the fit is deleted, not hidden
     assert "103770 target neurons" in html
     assert "3 of the pool also sit in a branch" in html
     assert "type_miss 1" in html and "type_new 1" in html
@@ -730,6 +733,55 @@ def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     assert "0.660 vs bar 0.550 ✓" in html
     assert "The harvest, by target type" in html
     assert "No cell is a recall measure." in html
+    # what the last gate ACTUALLY measured, and what it could not
+    assert "attempted 8 · scored 4 · qualified 2 · no-score 4" in html
+    # and what the bar REFUSED, so a shrunken pool is not a smaller harvest
+    assert "gate applied, 2 target(s) refused for scoring below the bar" \
+        in html
+    # …and the stores it measured against, because the cells are only
+    # comparable across runs that read the same ones
+    assert "git abcdef12 · target universe 101995" in html
+    assert "mapper snapshot 123456 B @ 2026-09-20 01:02 UTC" in html
+    assert '@ None' not in html       # an unrendered key must never ship
+
+
+def test_the_scored_against_line_names_what_it_cannot_record(run_dir: Path):
+    """A run whose code tree has no git rev, or whose snapshot mtime is gone,
+    must say WHICH part is missing: a line that quietly drops the rev reads as
+    "same code as the other run" to someone comparing two."""
+    _as_pooling_run(run_dir)
+    d = collect_run_data(run_dir)
+    d['pooling_xval']['input_fingerprint'] = {
+        'git_rev': None, 'scanned_target_universe': 101995,
+        'mapper_snapshot': {'bytes': 123456, 'mtime_s': None}}
+    text = re.sub(r'<[^>]+>', ' ', build_report_document(d))
+    assert 'git rev not recorded' in text
+    assert 'target universe 101995' in text
+    assert 'mapper snapshot 123456 B' in text
+    assert '123456 B @' not in text      # no stamp to name, no dangling '@'
+
+
+def test_the_pooling_caveats_reach_the_warning_notes(run_dir: Path):
+    """A pooling run whose morph gate scored 4 of 8 attempted targets must not
+    read as a morphologically cleared pool: the caveat is published in the
+    report AND in user_warning_notes.txt from ONE builder, so the two cannot
+    drift apart."""
+    _as_pooling_run(run_dir)
+    d = collect_run_data(run_dir)
+    line = next(w for w in collect_warnings(d) if w.startswith('[pooling] '))
+    assert 'scored 4/8 attempted targets (4 `no-score`)' in line
+    assert 'BANC morphology is experimental' in line
+    html = build_report_document(d)
+    text = re.sub(r'<[^>]+>', '', html)
+    # the same sentence the warning file carries is readable in the report
+    assert 'scored 4/8 attempted targets (4 `no-score`)' in text
+    assert 'BANC morphology is experimental' in text
+    # no caveat to state → no line (a healthy run is not noise)
+    d['pooling_xval']['morph'] = {'attempted': 8, 'scored': 8,
+                                  'qualified': 8, 'capped': 0,
+                                  'no_score': 0, 'error': '',
+                                  'warnings': []}
+    assert not [w for w in collect_warnings(d) if w.startswith('[pooling] ')]
 
 
 def test_the_mode_that_did_not_pool_says_it_is_parallel(run_dir: Path):
@@ -751,20 +803,27 @@ def test_a_failed_pooling_pass_is_not_a_null_result(run_dir: Path):
     assert "The gate admitted no candidate" in html
 
 
-def test_a_missing_corroboration_reads_absent_not_zero(run_dir: Path):
-    """Blank, not 0: a 0 would claim that no other target supports the pair,
-    which is a statement about runs that were never run."""
-    _as_pooling_run(run_dir, pool=[_pool_row(targets_corroborated="")])
+def test_the_pool_table_has_no_cross_dataset_agreement_column(run_dir: Path):
+    """`targets_corroborated` was deleted with the sibling join (user,
+    2026-09-23): pooling neglects the type name by design, so counting how
+    many other target datasets neglected it the same way grades nothing — and
+    a blank cell that only ever meant "you did not ask for that join" cost a
+    column of reading.  The cell count is the tripwire against quietly
+    re-growing it; the refused-candidate count is what replaced the column."""
+    _as_pooling_run(run_dir)
     html = build_report_document(collect_run_data(run_dir))
     row = html.split(">500 <", 1)[1].split("</tr>", 1)[0]
-    assert row.rstrip().endswith(
-        "<td><span class='missing'>—</span></td>")
-    assert ">0</td>" not in row
+    assert row.count("</td>") == 6        # the split drops the first opening tag
+    assert "cross-target" not in html
+    # the morphology cell still keeps a no-verdict row apart from a refusal
+    assert "0.660 vs bar 0.550 ✓" in row
 
 
 def test_an_untouched_morph_gate_is_a_word_not_a_cross(run_dir: Path):
     """`not-attempted-cap` means the budget never looked; rendering it as ✗
-    would turn a no-sample into a rejection."""
+    would turn a no-sample into a rejection.  The gate itself says so: off is
+    a word, and it is the only case where a below-bar row can still be
+    published."""
     _as_pooling_run(run_dir, pool=[_pool_row(
         morph_gate="not-attempted-cap", morph_similarity="", morph_bar="",
         morph_qualified="")])
@@ -780,4 +839,4 @@ def test_pooling_artifacts_resolve_from_a_flat_run_folder(run_dir: Path):
     _as_pooling_run(run_dir, flat=True)
     html = build_report_document(collect_run_data(run_dir))
     assert "Pooling — the unsupervised scan" in html
-    assert "0.0723 — dataset-fitted" in html
+    assert "jaccard &gt; 0.1000 (configured)" in html

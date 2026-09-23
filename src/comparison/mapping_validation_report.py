@@ -25,7 +25,7 @@ import collections
 import csv
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -73,15 +73,16 @@ TERM_DEFS: Dict[str, str] = {
         'off a branch pool, so the type mapper is compared with the result '
         'afterwards instead of deciding it.',
     'jaccard floor':
-        'The absolute connectivity bar a pooling candidate must clear. One '
-        'global constant is only safe in the low band — the same floor '
-        'rejects very different shares of two datasets\' verified rows — so '
-        'it is fitted per (source, target) pair as `min(configured, q05 of '
-        'the jaccards this pair\'s own graded matched/verified rows carry)`, '
-        'i.e. the value where that pair\'s verified rows start to be '
-        'rejected. The evidence is READ at the start of a pass and WRITTEN '
-        'at the end, so a run never gates on its own claims; below the '
-        'minimum sample the configured floor stands.',
+        'The absolute connectivity bar a pooling candidate must clear — a '
+        'VOLUME guard-rail, not a data-quality claim (user 2026-09-23). '
+        'Connectivity similarity is a ratio of small integers, so a low floor '
+        'admits a huge pool and a high one empties it; the floor exists to '
+        'keep the finding from exploding, and only the morphological gate '
+        'below it says anything about whether a candidate is a homolog. The '
+        'configured value is what gates the run. An earlier build fitted it '
+        'per (source, target) pair to the graded rows of past runs; that fit '
+        'was deleted, because it dressed a volume knob in the authority of a '
+        'quality measure.',
     'mapper_cell':
         'Post-hoc comparison of one pooling candidate with the supervised '
         'mapping: `confirmed` sits in a branch\'s refined target pool; '
@@ -91,19 +92,18 @@ TERM_DEFS: Dict[str, str] = {
         'did not admit. No cell is a recall measure — the two engines '
         'admit on different quantities.',
     'morph_gate':
-        'Pooling\'s last gate, on the connectivity survivors only: `scored` '
-        'carries a similarity and a bar, `inactive` means the AUC gate '
-        'suspended morphology, `disabled` means the run asked for none, and '
-        'the three absences are kept apart on purpose — `not-selected` (this '
-        'row is not the chain-best row of its target, the verdict lives on '
-        'that row), `not-attempted-cap` (the morph budget refused to look), '
-        '`no-score` (no vector for the pair). None of them is a rejection.',
-    'targets_corroborated':
-        'Advisory only, and blank unless `--pooling-corroborate-with` named '
-        'the sibling runs: how many TARGET datasets put the same '
-        '(source bodyId, candidate target TYPE) pair in their pooling pool. '
-        'A bodyId means nothing across datasets, so the type NAME is the '
-        'only key that transfers. It ranks the review; it never gates.',
+        'Pooling\'s last gate, on the connectivity survivors only. It is a '
+        'GATE: a `scored` row below its bar leaves the exported pool and the '
+        'scene root, and the count of those refusals is published as '
+        '`targets refused`. `scored` carries a similarity and a bar, '
+        '`inactive` means the AUC gate suspended morphology, `disabled` means '
+        'the run asked for none, and the three absences are kept apart on '
+        'purpose — `not-selected` (this row is not the chain-best row of its '
+        'target, the verdict lives on that row), `not-attempted-cap` (the '
+        'morph budget refused to look), `no-score` (the scorer returned no '
+        'value for the pair, so nothing was measured either way). None of the '
+        'three is a rejection, and each names a different reason the row '
+        'stayed in the pool unscored.',
     'mutual-best (assigned)':
         'A source neuron whose best pool member is itself the target\'s '
         'best source — both sides read on the ordering chain, so the '
@@ -415,11 +415,10 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
     'pooling/pooling_candidates.csv': [
         'pooling', 'ordering chain', 'rank_union', 'candidate_annotation',
         'out of scope', 'morph_gate', 'branch bar', 'mapper_cell',
-        'targets_corroborated'],
-    'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate',
-                                 'targets_corroborated'],
+        'jaccard floor'],
+    'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate'],
     'pooling/pooling_cross_validation.json': ['pooling', 'mapper_cell',
-                                              'targets_corroborated'],
+                                              'morph_gate'],
     'validation/pair_summary.csv': ['gap', 'verdict'],
     'validation/pool_categories.csv': ['pool_ref tier'],
     'morphology_calibration.json': [
@@ -462,13 +461,14 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
     ('pooling/pooling_candidates.csv',
      'POOLING mode: every (source, target) pair that passed the absolute '
      'connectivity gate, with the morph verdict and the post-hoc mapper '
-     'cell'),
+     'cell; includes the targets the morphology gate refused'),
     ('pooling/pooling_pool.csv',
-     'POOLING mode: one row per candidate target neuron (chain-best '
-     'source)'),
+     'POOLING mode: one row per candidate target neuron the LAST GATE '
+     'admitted (chain-best source)'),
     ('pooling/pooling_cross_validation.json',
      'POOLING mode: the unsupervised-vs-mapper comparison, the morph '
-     'record and the corroboration join'),
+     'record including how many targets the bar refused, and the '
+     'input fingerprint'),
     ('mapping/same_name_excluded.csv',
      'queried types held/excluded by the same-name-first rule, or '
      'multi-value cells (advisory accounting)'),
@@ -1095,6 +1095,41 @@ def _reciprocal_warning_line(d: Dict) -> Optional[str]:
     return note
 
 
+def _pooling_warning_line(d: Dict) -> Optional[str]:
+    """The pooling pass's own caveats, built ONCE so the Pooling tab, the Log
+    tab and ``user_warning_notes.txt`` cannot drift apart.
+
+    Emitted only when there is a caveat to state: the last gate measuring less
+    than it attempted (a `no-score` target is a missing measurement, and a run
+    where most targets are unscored must not read as "the pool was
+    morphologically cleared"), the budget dropping targets, the gate failing,
+    or the scorer's own warnings — BANC's experimental-skeleton caveat is the
+    standing one.
+    """
+    m = ((d.get('pooling_xval') or {}).get('morph') or {})
+    if not m:
+        return None
+    att = _as_num(m.get('attempted')) or 0
+    scored = _as_num(m.get('scored')) or 0
+    no_score = _as_num(m.get('no_score')) or 0
+    capped = _as_num(m.get('capped')) or 0
+    bits = []
+    if m.get('error'):
+        bits.append(f'the morphology gate itself failed ({m["error"]}); '
+                    'every row is unpublished, not rejected')
+    if scored < att or no_score:
+        bits.append(f'scored {int(scored)}/{int(att)} attempted targets '
+                    f'({int(no_score)} `no-score`) — an unscored candidate '
+                    'is a missing measurement, never a rejection')
+    if capped:
+        bits.append(f'{int(capped)} target(s) past the morph budget were '
+                    'never looked at (`morph_gate=not-attempted-cap`)')
+    bits += [str(w) for w in (m.get('warnings') or [])]
+    if not bits:
+        return None
+    return '[pooling] ' + '; '.join(bits)
+
+
 def collect_warnings(d: Dict) -> List[str]:
     lines = []
     sc = d['selfcheck']
@@ -1143,6 +1178,9 @@ def collect_warnings(d: Dict) -> List[str]:
     recip = _reciprocal_warning_line(d)
     if recip:
         lines.append(recip)
+    pooling = _pooling_warning_line(d)
+    if pooling:
+        lines.append(pooling)
     return lines
 
 
@@ -2571,6 +2609,24 @@ def _as_num(v):
     return None if f != f else f
 
 
+def _store_stamp(value) -> str:
+    """A `_store_identity` mtime (epoch SECONDS, the key `mtime_s`) as a UTC
+    minute — what a reader lines up between two runs.
+
+    Reading the wrong key here prints a bare `@ None`, which a unit fixture
+    cannot catch unless it carries the generator's real shape (a 2026-09-23
+    real-data run caught exactly that).
+    """
+    sec = _as_num(value)
+    if sec is None:
+        return ''
+    try:
+        return datetime.fromtimestamp(sec, tz=timezone.utc).strftime(
+            '%Y-%m-%d %H:%M UTC')
+    except (OverflowError, OSError, ValueError):
+        return ''
+
+
 def _reciprocal_row_sort(r: Dict) -> Tuple[float, float, float, int]:
     """The reciprocal list's default order: the Jaccard of the
     BRANCH-TYPE HIT, descending.
@@ -3053,7 +3109,6 @@ def _pooling_tab(d: Dict) -> str:
     seed = x.get('seed') or {}
     gate = x.get('gate') or {}
     morph = x.get('morph') or {}
-    corr = x.get('corroboration') or {}
 
     error_note = ''
     if x.get('error'):
@@ -3063,26 +3118,38 @@ def _pooling_tab(d: Dict) -> str:
             'what survived that failure, so an empty pool here means a pass '
             'that did not complete, not a universe with no homolog.</div>')
 
-    # the floor is a provenance statement, not just a number: a fitted one
-    # says which evidence fitted it, and a run records evidence for the NEXT
-    # run only (the read happens before the scan, the write after it).
-    floor_txt = (f"{_f(gate.get('jaccard_floor'), 4)} — "
-                 f"{_esc(str(gate.get('jaccard_floor_source') or '—'))}, "
-                 f"configured {_f(gate.get('jaccard_floor_configured'), 4)}")
-    if gate.get('jaccard_floor_q05') is not None:
-        floor_txt += (f"; q05 of {_cnt(gate.get('jaccard_floor_evidence_n'))} "
-                      'graded pair(s) on record = '
-                      f"{_f(gate.get('jaccard_floor_q05'), 4)}")
-    if gate.get('jaccard_floor_pairs_added') is not None:
-        floor_txt += (f"; this run added "
-                      f"{_cnt(gate.get('jaccard_floor_pairs_added'))} "
-                      'pair(s) to the record (they gate the NEXT run)')
-    if gate.get('jaccard_floor_note'):
-        floor_txt += (f"<span class='mv-note'> — "
-                      f"{_esc(gate['jaccard_floor_note'])}</span>")
+    # The floors are a VOLUME statement, not a quality one (plan §5): they say
+    # how wide the connectivity scan may open. The configured numbers ARE what
+    # gated the run, so they are simply named — an earlier build dressed them
+    # in fitted provenance, which guarded a question they do not answer.
+    floor_txt = (f"jaccard &gt; {_f(gate.get('jaccard_floor'), 4)} "
+                 f"(configured)")
 
-    gate_block = _kv_block('Gate — absolute, and read before anything was '
-                           'selected', [
+    # The scores and the fitted floor both come from stores that can move
+    # between runs, and the comparison is only comparable across runs that
+    # read the same ones — so name them (the §P7a input fingerprint, the same
+    # record parameters.json carries).  A part that the run could not record
+    # says so: a silently missing git rev would read as "same code" to a
+    # reader lining two runs up.
+    fp = x.get('input_fingerprint') or {}
+    snap = fp.get('mapper_snapshot') if isinstance(fp, dict) else None
+    parts = []
+    if fp:
+        rev = fp.get('git_rev')
+        parts.append(f"git {_esc(str(rev)[:8])}" if rev
+                     else 'git rev not recorded')
+        if fp.get('scanned_target_universe') is not None:
+            parts.append('target universe '
+                         f"{_cnt(fp.get('scanned_target_universe'))}")
+        if isinstance(snap, dict) and snap.get('bytes'):
+            stamp = _store_stamp(snap.get('mtime_s'))
+            parts.append(f"mapper snapshot {snap['bytes']} B"
+                         + (f' @ {stamp}' if stamp else ''))
+    comparability = ' · '.join(parts) or (
+        'not recorded — this run predates the input fingerprint, so these '
+        'cells cannot be lined up with another run\'s')
+
+    gate_rows = [
         (_term('jaccard floor'), floor_txt),
         (_term('rank_union', 'rank_union floor'),
          f"&gt; {_f(gate.get('rank_union_floor'), 3)}"),
@@ -3097,7 +3164,15 @@ def _pooling_tab(d: Dict) -> str:
                  f"{_cnt(seed.get('sources_with_a_candidate'))} found ≥1 "
                  f"candidate · {_cnt(seed.get('distinct_best_sources'))} "
                  'are some pooled target\'s best source'),
-    ])
+        ('Scored against', comparability),
+    ]
+    if gate.get('role'):
+        # The run's own record states what these numbers are FOR, so the tab
+        # shows it rather than leaving a reader to infer that a connectivity
+        # floor is a volume knob and not a quality bar.
+        gate_rows.insert(1, ('What they gate', _esc(str(gate['role']))))
+    gate_block = _kv_block('Gate — absolute, and read before anything was '
+                           'selected', gate_rows)
 
     cells_block = _kv_block('The post-hoc comparison with the mapping', [
         (_term('mapper_cell', 'confirmed'),
@@ -3118,25 +3193,28 @@ def _pooling_tab(d: Dict) -> str:
     morph_bits = [f"attempted {_cnt(morph.get('attempted'))}",
                   f"scored {_cnt(morph.get('scored'))}",
                   f"qualified {_cnt(morph.get('qualified'))}"]
+    if 'no_score' in morph:
+        # the distinction the record exists to make: attempted is what the
+        # budget allowed to be looked at, scored is what came back with a
+        # value. Collapsing them printed `scored 8` for a run whose rows
+        # held 1 `scored` and 7 `no-score`.
+        morph_bits.append(f"no-score {_cnt(morph.get('no_score'))}")
     if _as_num(morph.get('capped')):
         morph_bits.append(f"budget-capped {_cnt(morph.get('capped'))}"
                           ' (no look taken, not a rejection)')
     if morph.get('error'):
         morph_bits.append(f"error {_esc(morph['error'])}")
-    corr_bits = [f"status {_esc(corr.get('status') or 'not-computed')}",
-                 f"{_cnt(corr.get('sibling_runs'))} sibling run(s)"]
-    hist = corr.get('pool_size_histogram') or {}
-    if hist:
-        corr_bits.append('pool targets by agreeing datasets: ' + ' · '.join(
-            f"{_esc(k)} → {_cnt(v)}" for k, v in sorted(
-                hist.items(), key=lambda kv: -(_as_num(kv[1]) or 0))))
-    if corr.get('unreadable'):
-        corr_bits.append(f"{len(corr['unreadable'])} sibling(s) unreadable")
-    elif corr.get('sibling_dirs'):
-        corr_bits.append('siblings: '
-                         + ', '.join(_esc(s) for s in corr['sibling_dirs']))
-    elif corr.get('how'):
-        corr_bits.append(_esc(corr['how']))
+    # Morphology is a GATE here, not an advisory column: a scored candidate
+    # below its bar leaves the pool and the scene root.  The count of those
+    # refusals is the only trace they keep, so it is named rather than left as
+    # an absent row.
+    if morph.get('gate_applied') is not None:
+        morph_bits.append(
+            'gate '
+            + ('applied' if _truthy(morph.get('gate_applied')) else 'off')
+            + (f", {_cnt(morph.get('dropped_targets'))} target(s) refused "
+               'for scoring below the bar'
+               if _as_num(morph.get('dropped_targets')) else ''))
 
     notes = x.get('reading_notes') or []
     notes_block = ('' if not notes else
@@ -3144,6 +3222,11 @@ def _pooling_tab(d: Dict) -> str:
                    '<ul>'
                    + ''.join(f'<li>{_esc(n)}</li>' for n in notes)
                    + '</ul></div>')
+
+    pool_warn = _pooling_warning_line(d)
+    warn_block = ('' if not pool_warn else
+                  "<div class='mv-callout mv-warn'>⚠️ "
+                  f"{_esc(pool_warn)}</div>")
 
     head = (_section_card(
         'Pooling — the unsupervised scan',
@@ -3153,12 +3236,10 @@ def _pooling_tab(d: Dict) -> str:
         'list holds. Proposals for review — the mapping is never '
         'rewritten.',
         error_note + gate_block + cells_block
-        + _kv_block('The two gates that can be absent', [
+        + _kv_block('Morphology — the last gate', [
             (_term('morph_gate', 'morphology'), ' · '.join(morph_bits)),
-            (_term('targets_corroborated', 'cross-target corroboration'),
-             ' · '.join(corr_bits)),
-        ]) + notes_block,
-        ['pooling', 'mapper_cell', 'morph_gate', 'targets_corroborated',
+        ]) + warn_block + notes_block,
+        ['pooling', 'mapper_cell', 'morph_gate',
          'jaccard floor', 'ordering chain']))
 
     miss = x.get('pool_miss_by_type') or {}
@@ -3176,10 +3257,6 @@ def _pooling_tab(d: Dict) -> str:
             + _th('pool_miss neurons', 'How many of that type the gate '
                   'admitted outside every mapper pool.')
             + _th('share', 'Of all pool_miss neurons.')))
-
-    def _cor_cell(v):
-        s = str('' if v is None else v).strip()
-        return _esc(s) if s else "<span class='missing'>—</span>"
 
     trs = []
     for r in pool:
@@ -3208,8 +3285,7 @@ def _pooling_tab(d: Dict) -> str:
             f"<td>{_esc(r.get('mapper_cell') or '—')}"
             + (f" <span class='mv-note'>{_esc(r['mapper_verdict'])}</span>"
                if str(r.get('mapper_verdict') or '').strip() else '')
-            + '</td>'
-            f"<td>{_cor_cell(r.get('targets_corroborated'))}</td></tr>")
+            + '</td></tr>')
     table = _viewport(
         trs,
         _th('candidate target', 'The pooled target neuron and its shared '
@@ -3224,13 +3300,12 @@ def _pooling_tab(d: Dict) -> str:
         + _th('sources', 'How many queried sources reach this target (the '
               'extra ones are listed in pooling_candidates.csv).')
         + _th('morphology', 'The LAST gate: similarity against the '
-              'persisted reference bar, ✓ at or above it. An absence word '
-              'is not a rejection.')
+              'persisted reference bar, ✓ at or above it. With the gate on, '
+              'a scored ✗ row has already left this pool — so the only '
+              'absence words here (`no-score`, `not-attempted-cap`) name a '
+              'look not taken, never a rejection.')
         + _th('mapper_cell', 'The post-hoc comparison with the mapping, '
               'with the supervised verdict where one exists.')
-        + _th('datasets', 'How many TARGET DATASETS put the same '
-              '(source, candidate type) pair in their pool — advisory, and '
-              'blank unless sibling runs were named.')
     ) if trs else _empty(
         'The gate admitted no candidate: with these floors and this window '
         'the queried population has no connectivity homolog in the target '
@@ -3321,10 +3396,12 @@ def _log_tab(d: Dict) -> str:
     # from the exports rather than the log, so without this they would live
     # only in a side file a reader never opens.
     recip = _reciprocal_warning_line(d)
-    if recip:
+    derived = [ln for ln in (recip, _pooling_warning_line(d)) if ln]
+    if derived:
         warn_body += ("<p class='mv-note'>Derived advisories (also in "
                       'user_warning_notes.txt):</p>'
-                      "<pre class='mv-log'>" + _esc(recip) + '</pre>')
+                      "<pre class='mv-log'>" + _esc('\n'.join(derived))
+                      + '</pre>')
     sec10 = _section_card('Warnings & anomalies', '', warn_body)
 
     # §11 provenance
@@ -3339,8 +3416,7 @@ def _log_tab(d: Dict) -> str:
              'backward_scan_pool_targets', 'skip_backward_pass',
              'pooling_jaccard_floor', 'pooling_rank_union_floor',
              'pooling_window_mult', 'pooling_morph_gate',
-             'pooling_max_morph_targets', 'pooling_floor_from_evidence',
-             'pooling_sibling_runs']
+             'pooling_max_morph_targets']
     pl = ' · '.join(f'{_esc(k)}={_esc(params[k])}'
                     for k in order if k in params)
     timeline: List[str] = []

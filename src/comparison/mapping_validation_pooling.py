@@ -11,23 +11,18 @@ The unsupervised property is load-bearing, so it is stated as an invariant:
 candidate.**  The mapper is read after the gate, to label cells and leaf tokens.
 A unit test enforces it by making the claim lookups raise.
 
-One qualification is itself a design decision (plan §5): the Jaccard floor may be
-*fitted* from the graded pairs of PAST runs of the same dataset pair
-(:class:`JaccardFloorStore`).  That is dataset-level calibration, like the null
-sample the morphology bars are built from — not this run's claims deciding this
-run's rows.  The two are kept apart by ordering: the floor is read at the top of
-the pass and the evidence is written at the bottom, so a run's own verdicts can
-never move its own gate.  The effective floor and its provenance are published in
-every export.
+The floors are a **volume** control, not a data-quality claim (user
+2026-09-23): ``pooling_jaccard_floor`` / ``pooling_rank_union_floor`` and the
+window keep a scan from turning into thousands of candidates, and each is
+published as the configured number it is.  An earlier build fitted the Jaccard
+floor to the dataset pair's own graded evidence; that measured a quality
+question the floor does not answer, so it was deleted rather than tuned — see
+``_plan/plan-tmvev-pooling-mode.md`` §5.
 """
 from __future__ import annotations
 
-import csv
-import hashlib
-import json
-import os
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
@@ -46,160 +41,6 @@ CELL_POOL_MISS = 'pool_miss'          # the mapper never named this neuron
 CELL_VERIFIED_ONLY = 'verified_only'  # the mapper's pair fails the abs bar
 CELL_TYPE_MISS = 'type_miss'          # pool_miss, of an in-map type
 CELL_TYPE_NEW = 'type_new'            # pool_miss, of a type outside the map
-
-
-#: Where a run's effective Jaccard floor came from.  Published, because the
-#: number alone does not tell a reader whether it is a constant or a fit.
-FLOOR_CONFIG = 'config-default'
-FLOOR_FITTED = 'dataset-fitted'
-FLOOR_THIN = 'dataset-fitted-thin-sample'
-
-
-class JaccardFloorStore:
-    """The per-dataset-pair evidence behind the pooling Jaccard floor (P4).
-
-    One global floor is only safe in the low band: at J=0.20 the same rule
-    rejects 33 % of BANC's verified rows, 3 % of male-cns's and 27 % of
-    hemibrain's (plan §2.2), so a single constant quietly changes what each
-    dataset's run means.  This store therefore holds, per (source, target)
-    pair, the jaccard of every pair the SUPERVISED path graded
-    ``matched``/``verified*`` in past runs, and the floor is fitted as
-    ``min(configured, q05(that evidence))`` — the value at which this dataset
-    pair's own verified rows start to be rejected.
-
-    It lives beside the ``NullVectorStore`` sidecars for the same reason: an
-    unpinned sample makes a bar drift (BANC's null-kind bar measured
-    0.593 -> 0.235 between identical runs).  The drift that matters here is
-    removed by ordering: the floor is READ at the start of a pass and the
-    evidence is WRITTEN at the end, so no run can move its own gate with its
-    own claims — which is what keeps `pooling` unsupervised.
-    """
-
-    MIN_N = 20          # mirrors `null_min_n`: below this, do not fit
-    PERCENTILE = 5.0    # q05: the floor is a 5th-percentile statement
-    CAP = 20000         # keep the LOW tail exactly; that is what q05 reads
-
-    def __init__(self, source_dataset: str, target_dataset: str,
-                 project_root: Optional[str] = None):
-        from pathlib import Path
-        from morphology import _dataset_folder
-        from comparison.morph_cross_dataset import DEFAULT_PROJECT_ROOT
-        self.source_dataset = str(source_dataset or '')
-        self.target_dataset = str(target_dataset or '')
-        root = Path(project_root or DEFAULT_PROJECT_ROOT)
-        # the pool is scored against the TARGET universe, so the target owns
-        # the file; the source is hashed into the name (one file per pair)
-        tag = hashlib.sha1(self.source_dataset.encode()).hexdigest()[:12]
-        self.path = (root / 'cache' / _dataset_folder(self.target_dataset)
-                     / 'pooling' / f'jaccard_evidence_{tag}.json')
-
-    def load(self) -> Dict[str, float]:
-        try:
-            with open(self.path, errors='ignore') as fh:
-                raw = json.load(fh) or {}
-            pairs = raw.get('pairs') or {}
-            return {str(k): float(v) for k, v in pairs.items()}
-        except (OSError, ValueError, TypeError):
-            return {}
-
-    def fit(self, configured: float) -> Tuple[float, Dict[str, Any]]:
-        """The effective floor plus its provenance; never raises."""
-        meta: Dict[str, Any] = {'source': FLOOR_CONFIG, 'configured':
-                                float(configured), 'n': 0, 'q05': None,
-                                'percentile': self.PERCENTILE,
-                                'path': str(self.path)}
-        try:
-            values = np.asarray(sorted(self.load().values()), dtype=float)
-        except (TypeError, ValueError):
-            values = np.empty(0)
-        values = values[np.isfinite(values)]
-        meta['n'] = int(values.size)
-        if values.size < self.MIN_N:
-            meta['source'] = FLOOR_THIN
-            meta['why'] = (f'{values.size} graded pair(s) on record, below '
-                           f'min_n={self.MIN_N}: the configured floor stands')
-            return float(configured), meta
-        q = float(np.percentile(values, self.PERCENTILE))
-        meta['q05'] = round(q, 6)
-        floor = min(float(configured), max(0.0, q))
-        meta['source'] = FLOOR_FITTED
-        meta['clamped_by_config'] = floor == float(configured) and q >= float(
-            configured)
-        return floor, meta
-
-    def observe(self, val_rows: Iterable[Dict]) -> int:
-        """Add this run's supervised evidence; return the pairs newly recorded.
-
-        Keyed by the pair, so re-running the same query contributes nothing
-        twice.  Written atomically, and a write failure is a note, never an
-        aborted run.
-        """
-        fresh: Dict[str, float] = {}
-        for r in val_rows or []:
-            verdict = str(r.get('verdict') or '')
-            if verdict != 'matched' and not verdict.startswith('verified'):
-                continue
-            try:
-                jac = float(r.get('jaccard'))
-                key = (f"{int(r.get('source_bodyId'))}"
-                       f":{int(r.get('target_bodyId'))}")
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(jac) and jac > 0:
-                fresh[key] = jac
-        if not fresh:
-            return 0
-        merged = self.load()
-        before = len(merged)
-        merged.update(fresh)
-        if len(merged) > self.CAP:
-            # keep the lowest values: q05 is read off that tail, so trimming
-            # there would be the one trim that could move the fitted floor
-            keep = sorted(merged.items(), key=lambda kv: kv[1])[:self.CAP]
-            merged = dict(keep)
-        payload = {
-            'schema': 1,
-            'source_dataset': self.source_dataset,
-            'target_dataset': self.target_dataset,
-            'metric': 'jaccard of pairs the supervised path graded '
-                      'matched/verified (advisory evidence for the pooling '
-                      'floor — not a recall set)',
-            'pairs': merged,
-            'n': len(merged),
-            'written_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        }
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix('.json.tmp')
-            with open(tmp, 'w') as fh:
-                json.dump(payload, fh, indent=1, sort_keys=True)
-            os.replace(tmp, self.path)
-        except OSError:
-            return 0
-        return max(0, len(merged) - before)
-
-
-def resolve_jaccard_floor(cfg, project_root: Optional[str] = None
-                          ) -> Tuple[float, Dict[str, Any]]:
-    """The floor this pass will gate on: fitted when evidence allows, else the
-    configured constant.  Read once, at the top of the pass, and published.
-
-    `project_root` follows the pipeline's convention — the tree the run lives in
-    owns the store, so a scratch tree with its own frozen `cache/` clone fits
-    against its own evidence and cannot move another tree's floor.
-    """
-    configured = float(cfg.pooling_jaccard_floor)
-    if not getattr(cfg, 'pooling_floor_from_evidence', False):
-        return configured, {'source': FLOOR_CONFIG, 'configured': configured,
-                            'n': 0, 'q05': None,
-                            'why': 'pooling_floor_from_evidence is off'}
-    try:
-        return JaccardFloorStore(cfg.source_dataset, cfg.target_dataset,
-                                 project_root).fit(configured)
-    except Exception as exc:  # noqa: BLE001 — a missing store is not a failure
-        return configured, {'source': FLOOR_CONFIG, 'configured': configured,
-                            'n': 0, 'q05': None,
-                            'why': f'unavailable: {type(exc).__name__}: {exc}'}
 
 
 def seed_population(validator, query_types: Sequence[str]) -> List[int]:
@@ -251,8 +92,9 @@ def connectivity_candidates(validator, seed: Sequence[int],
     pass the absolute gate (plan §4.2): ``jaccard > J``, ``rank_union > RU``,
     and both metric ranks inside the source's window.
 
-    ``jaccard_floor`` is the RESOLVED floor (see `resolve_jaccard_floor`), not
-    the config field: the run must gate on one number and publish that number.
+    ``jaccard_floor`` is the configured floor passed in, and it is the number
+    the run gates on and publishes: a VOLUME guard-rail (plan §5), never a
+    statement about whether a pair is a good homolog.
 
     Returns the surviving rows plus the scan stats (rows scored, positives).
     """
@@ -370,10 +212,26 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
 
     Advisory-safe by design: any failure is recorded per row and on the notes,
     never silently — a blank verdict would read like a rejection.
+
+    The returned ``info`` is the run's morph RECORD and is published in
+    `pooling_cross_validation.json`, so its keys have to keep the quantities
+    apart: `attempted` is what the budget allowed to be looked at, `scored` is
+    what the scorer returned a verdict for (`morph_gate='scored'`),
+    `no_score` what it returned nothing for, `capped` the targets never looked
+    at, `qualified` the survivors of the bar, `error` a failed pass.  Keeping
+    `attempted` and `scored` apart earned its keep twice on 2026-09-23: the
+    field first collapsed them (a record of `attempted 8 / scored 8` whose rows
+    held ONE score), and the separated ratio then exposed the cause — the
+    shared scorer's mapping_ref rule "a branch-pool member was only fetched to
+    anchor a bar, so it is not a candidate" was deleting the verdict of every
+    candidate the mapper also claims, 35 of 41 rows on male-cns.  That is what
+    `prune_pool_refs=False` below fixes; a low `scored` now means the scorer
+    really had nothing for the pair, which is a missing measurement, never a
+    rejection.
     """
     cfg = validator.cfg
     info = {'attempted': 0, 'scored': 0, 'qualified': 0, 'capped': 0,
-            'error': ''}
+            'no_score': 0, 'error': ''}
     if not rows:
         return rows, info
     # `--no-morphology` is the run-wide "structural pass only" switch, and
@@ -419,6 +277,15 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
             mode='mapping_ref',
             source_types={int(r['source_bodyId']): str(r['source_type'])
                           for r in take},
+            # NOT the supervised convention. A pool member scored only to
+            # anchor a bar is dropped there because its candidate set IS the
+            # branch pool; here the candidate set is this run's own gate, so
+            # dropping them would delete the verdict of every candidate the
+            # mapper also claims — measured on 2026-09-23 as 35 of 41 rows
+            # mislabelled `no-score` on male-cns (and 33 of 41 on BANC).
+            # Grading stays honest either way: `native_scores` measures a
+            # candidate against the OTHER refs (`r != tgt`).
+            prune_pool_refs=False,
             log=validator.log)
     except Exception as exc:  # noqa: BLE001 — the gate is advisory, the run is not
         info['error'] = f'{type(exc).__name__}: {exc}'
@@ -437,7 +304,15 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
         r['morph_bar'] = mq.bar(key[0])
         r['morph_bar_kind'] = rb.get('kind') or 'null'
         r['morph_qualified'] = mq.is_qualified(*key)
-    info['scored'] = len(take) if mq.active else 0
+    # `scored` counts PAIRS THE SCORER RETURNED a verdict for, not the pairs it
+    # was asked about: an attempted target can still come back `no-score` (no
+    # vector for it in this dataset pair's store), and reporting the attempt
+    # count as the score count would hide exactly the degradation the row-level
+    # `morph_gate` exists to name. `attempted` and `scored` are therefore both
+    # published — and read them as the scorer's coverage of THIS run, never as
+    # a rejection rate.
+    info['scored'] = sum(1 for r in take if r['morph_gate'] == 'scored')
+    info['no_score'] = sum(1 for r in take if r['morph_gate'] == 'no-score')
     info['qualified'] = sum(1 for r in take if r['morph_qualified'])
     info['warnings'] = list(mq.warnings or [])
     for w in info['warnings']:
@@ -479,122 +354,27 @@ def pool_by_target(rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def corroborate(run_dirs: Sequence[str], target_dataset: str) -> Dict[str, Any]:
-    """Join this run's candidates against sibling pooling runs' pools.
+def morph_refused(pool: List[Dict]) -> List[Dict]:
+    """The pooled targets the LAST GATE said no to — the ones that leave the
+    exported pool (decision 3, and the user's reading of it on 2026-09-23:
+    morphology is a gate here, not a label).
 
-    One run has one target dataset, so cross-target agreement cannot be
-    computed inside a run: it is a join over the run folders of the same query
-    (`--pooling-corroborate-with`).  A candidate bodyId means nothing across
-    datasets, so the key is the (source bodyId, candidate target TYPE) pair —
-    the only identity that transfers.  Advisory by decision: it ranks the
-    review, it never gates.
+    Only an explicit refusal removes a target. A row with no verdict
+    (`no-score`, `not-attempted-cap`, `disabled`, `inactive`, `error`) stays,
+    because a missing measurement is not a rejection — that is the rule the
+    whole `morph_gate` vocabulary exists for. The count is published beside the
+    pool so a shrunken pool is never read as a smaller harvest.
     """
-    out: Dict[str, Any] = {'status': 'not-computed', 'sibling_runs': 0,
-                           'sibling_dirs': [],
-                           'how': 'pass --pooling-corroborate-with <run dirs> '
-                                  'to join the same query against other '
-                                  'targets',
-                           'by_pair': {}, 'unreadable': []}
-    dirs = [str(d) for d in (run_dirs or []) if str(d or '').strip()]
-    out['sibling_dirs'] = dirs
-    for d in dirs:
-        p = os.path.join(d, 'pooling', 'pooling_pool.csv')
-        if not os.path.exists(p):
-            p = os.path.join(d, 'pooling_pool.csv')
-        if not os.path.exists(p):
-            out['unreadable'].append(d)
-            continue
-        ds = _sibling_dataset(d)
-        # read the whole sibling before merging anything: a file that breaks
-        # half way must contribute a partial join to nobody
-        found: Dict[Tuple[int, str], set] = {}
-        try:
-            with open(p, newline='', errors='ignore') as fh:
-                for r in csv.DictReader(fh):
-                    key = (int(r['best_source_bodyId']),
-                           str(r.get('target_type') or ''))
-                    found.setdefault(key, set()).add(ds)
-        except (OSError, KeyError, ValueError, TypeError):
-            out['unreadable'].append(d)
-            continue
-        for key, datasets in found.items():
-            out['by_pair'].setdefault(key, set()).update(datasets)
-    out['sibling_runs'] = len(dirs) - len(out['unreadable'])
-    out['status'] = 'computed' if out['sibling_runs'] else 'not-computed'
-    out['self_dataset'] = str(target_dataset or '')
-    return out
-
-
-def _sibling_dataset(run_dir: str) -> str:
-    """A sibling run's TARGET dataset, which is what a corroboration count
-    counts.  The folder name is a timestamped label, not a dataset."""
-    try:
-        with open(os.path.join(run_dir, 'parameters.json'),
-                  errors='ignore') as fh:
-            ds = str((json.load(fh) or {}).get('target_dataset') or '')
-    except (OSError, ValueError):
-        return os.path.basename(run_dir.rstrip('/'))
-    return ds or os.path.basename(run_dir.rstrip('/'))
-
-
-def _corroborated(corr: Dict[str, Any], source_bid: int,
-                  target_type: str) -> Optional[int]:
-    """How many target datasets put this (source, candidate type) pair in
-    their pool, this run's own included.
-
-    Blank, not 0, when the join was never asked for: a 0 would read as "no
-    other target supports this pair", which is a claim about runs that were
-    not run.
-    """
-    if corr.get('status') != 'computed':
-        return None
-    datasets = set(corr.get('by_pair', {}).get((int(source_bid),
-                                                str(target_type or '')), ()))
-    datasets.add(str(corr.get('self_dataset') or ''))
-    datasets.discard('')
-    return len(datasets)
-
-
-def corroborate_pool(rows: List[Dict], pool: List[Dict],
-                     corr: Dict[str, Any]) -> Dict[str, Any]:
-    """Fold the advisory count into every exported row and summarise it.
-
-    The key is the source-side pair of each row, so a candidate the same
-    source reaches under two targets is compared with itself — the identity
-    that transfers across datasets is (source bodyId, target TYPE), never a
-    target bodyId.
-    """
-    for r in rows:
-        r['targets_corroborated'] = _corroborated(
-            corr, int(r['source_bodyId']), r.get('target_type', ''))
-    for p in pool:
-        p['targets_corroborated'] = _corroborated(
-            corr, int(p['best_source_bodyId']), p.get('target_type', ''))
-    hist: Dict[str, int] = {}
-    for p in pool:
-        v = p['targets_corroborated']
-        key = 'not-computed' if v is None else str(v)
-        hist[key] = hist.get(key, 0) + 1
-    return {
-        'status': corr.get('status', 'not-computed'),
-        'key': '(source bodyId of the queried dataset, candidate target '
-               'TYPE name) — target bodyIds do not transfer across datasets',
-        'sibling_runs': corr.get('sibling_runs', 0),
-        'sibling_dirs': list(corr.get('sibling_dirs') or []),
-        'unreadable': list(corr.get('unreadable') or []),
-        'how': corr.get('how', ''),
-        'pool_size_histogram': dict(sorted(hist.items(),
-                                           key=lambda x: -x[1])),
-        'advisory': 'ranks the review, never gates it (plan decision 6)',
-    }
+    return [p for p in pool
+            if p.get('morph_gate') == 'scored'
+            and p.get('morph_qualified') is False]
 
 
 def cross_validation(pool: List[Dict], rows: List[Dict], refs: Dict[str, Any],
-                     stats: Dict, morph: Dict, notes: List[str],
-                     corroboration: Optional[Dict[str, Any]] = None,
-                     ) -> Dict[str, Any]:
-    """The §4.5 comparison: cells, the containment numbers, and the three
-    honesty rules stated as data rather than as prose."""
+                     stats: Dict, morph: Dict,
+                     notes: List[str]) -> Dict[str, Any]:
+    """The §4.5 comparison: cells, the containment numbers, and the honesty
+    rules stated as data rather than as prose."""
     in_pool = {int(p['target_bodyId']) for p in pool
                if p['mapper_cell'] == CELL_CONFIRMED}
     miss = [p for p in pool if p['mapper_cell'] in (CELL_TYPE_MISS,
@@ -609,6 +389,10 @@ def cross_validation(pool: List[Dict], rows: List[Dict], refs: Dict[str, Any],
         return dict(sorted(out.items(), key=lambda x: -x[1]))
     return {
         'universe_scanned': stats.get('universe'),
+        # the comparison is only comparable between runs that scored against
+        # the same store and mapper snapshot, so the note below names a record
+        # this file actually carries (plan §4.3)
+        'input_fingerprint': stats.get('fingerprint') or {},
         'seed': {'queried_sources': stats.get('seed', 0),
                  'scanned': stats.get('sources_scanned', 0),
                  # two different questions, both worth reading: how many
@@ -634,11 +418,6 @@ def cross_validation(pool: List[Dict], rows: List[Dict], refs: Dict[str, Any],
         },
         'pool_miss_by_type': _by_type(miss),
         'morph': morph,
-        'corroboration': corroboration or {
-            'status': 'not-computed',
-            'how': 'pass --pooling-corroborate-with <run dirs> to join the '
-                   'same query against other targets',
-            'pool_size_histogram': {}},
         # §4.5 honesty rules, published where a reader cannot miss them:
         'reading_notes': [
             'No cell is a recall measure: the unsupervised seed is the queried '
@@ -649,6 +428,9 @@ def cross_validation(pool: List[Dict], rows: List[Dict], refs: Dict[str, Any],
             'false-positive count.',
             'This comparison is only comparable across runs when the '
             'input_fingerprint (mapper snapshot + profile caches) matches.',
+            'morph.dropped_targets are pooled targets the morphology bar '
+            'refused: they left the pool and the scene root, and their rows '
+            'stay in pooling_candidates.csv with the refusal on them.',
         ] + list(notes or []),
     }
 
@@ -658,18 +440,21 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     """The whole pass.  Returns ``{'candidates', 'pool', 'cross_validation'}``.
 
     Reads no pool, no branch bar and no mapper claim on the selection path;
-    the seed comes from the source dataset's annotation and the gate is
+    the seed comes from the source dataset's annotation and the floors are
     absolute.
     """
     cfg = validator.cfg
     notes: List[str] = []
-    # READ the fitted floor before anything is selected. The evidence store is
-    # written at the END of this function, so this run's own claims cannot move
-    # this run's gate — the unsupervised property depends on that ordering.
-    j_floor, j_meta = resolve_jaccard_floor(
-        cfg, getattr(validator, 'project_root', None))
-    store = JaccardFloorStore(cfg.source_dataset, cfg.target_dataset,
-                              getattr(validator, 'project_root', None))
+    # The floors are a VOLUME control (plan §5, user 2026-09-23): their job is
+    # to keep a scan from opening into thousands of candidates, not to say
+    # whether a pair is a good homolog. So the configured number IS the number
+    # that gated the run — published as one, with no fitted provenance.
+    j_floor = float(cfg.pooling_jaccard_floor)
+    gate = {'jaccard_floor': j_floor,
+            'rank_union_floor': cfg.pooling_rank_union_floor,
+            'window_mult': cfg.pooling_window_mult,
+            'role': 'volume guard-rail — how wide connectivity may open, not a '
+                    'data-quality claim about any pair'}
     seed = seed_population(validator, cfg.query_types)
     if not seed:
         notes.append('pooling: the queried population resolved to 0 neurons — '
@@ -677,11 +462,7 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
         return {'candidates': [], 'pool': [],
                 'cross_validation': cross_validation(
                     [], [], {'types': set(), 'pools': set(), 'pairs': {}},
-                    {'gate': {'jaccard_floor': j_floor,
-                              'jaccard_floor_source': j_meta.get('source'),
-                              'rank_union_floor': cfg.pooling_rank_union_floor,
-                              'window_mult': cfg.pooling_window_mult}},
-                    {}, notes)}
+                    {'gate': gate}, {}, notes)}
     # The source neurons' own type names: what the window scales to.  This is
     # the dataset's annotation, reached through the profile backend — the same
     # labels stage 2 reads for the target side.
@@ -701,44 +482,29 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     refs = mapper_reference(validator, val_rows)
     rows = annotate(validator, rows, target_id2type, refs)
     rows, morph = apply_morph_gate(validator, rows)
-    pool = pool_by_target(rows)
-    corr = corroborate(getattr(cfg, 'pooling_sibling_runs', None) or [],
-                       cfg.target_dataset)
-    corroboration = corroborate_pool(rows, pool, corr)
-    gate = {'jaccard_floor': j_floor,
-            'jaccard_floor_configured': cfg.pooling_jaccard_floor,
-            'jaccard_floor_source': j_meta.get('source'),
-            'jaccard_floor_evidence_n': j_meta.get('n'),
-            'jaccard_floor_q05': j_meta.get('q05'),
-            'rank_union_floor': cfg.pooling_rank_union_floor,
-            'window_mult': cfg.pooling_window_mult}
-    if j_meta.get('why'):
-        gate['jaccard_floor_note'] = str(j_meta['why'])
-    # WRITE the evidence last, and only from this run's supervised grades: the
-    # next run's floor may learn from this one, this run's gate never does.
-    try:
-        added = store.observe(val_rows)
-        gate['jaccard_floor_pairs_added'] = int(added)
-    except Exception as exc:  # noqa: BLE001 — a store is never worth a failed pass
-        notes.append(f'pooling: the J-floor evidence store could not be '
-                     f'updated ({type(exc).__name__}: {exc}); the next run '
-                     f'starts from what is already on record.')
+    # Morphology is the LAST GATE: an explicit refusal takes the target out of
+    # the pool and the scene; "no verdict" never does (see `morph_refused`).
+    pool_all = pool_by_target(rows)
+    refused = {int(r['target_bodyId']) for r in morph_refused(pool_all)}
+    pool = [r for r in pool_all if int(r['target_bodyId']) not in refused]
+    morph['gate_applied'] = bool(cfg.pooling_morph_gate and cfg.morph_enabled)
+    morph['dropped_targets'] = len(refused)
     stats.update({'seed': len(seed), 'universe': len(target_bids),
+                  'fingerprint': dict(getattr(validator, 'input_fingerprint',
+                                              None) or {}),
                   'gate': gate})
-    xval = cross_validation(pool, rows, refs, stats, morph, notes,
-                            corroboration=corroboration)
+    xval = cross_validation(pool, rows, refs, stats, morph, notes)
     validator.log(f"[pooling] {len(seed)} queried sources scanned "
                   f"{stats['rows_scored']:,} pairs -> {stats['rows_kept']} "
-                  f"rows, {len(pool)} candidate targets "
+                  f"rows; {len(pool_all)} connectivity-admitted targets, "
+                  f"{len(refused)} refused by the morphology bar, "
+                  f"{morph['no_score']} without a verdict kept and named "
+                  f"-> {len(pool)} pooled "
                   f"({xval['cells'][CELL_POOL_MISS]} outside every mapper "
-                  f"pool); morph {morph}; corroboration "
-                  f"{corroboration['status']} "
-                  f"({corroboration['sibling_runs']} sibling run(s))")
-    validator.log(f"[pooling] Jaccard floor {j_floor:.4f} "
-                  f"({j_meta.get('source')}; configured "
-                  f"{cfg.pooling_jaccard_floor}; "
-                  f"{j_meta.get('n', 0)} graded pair(s) on record, "
-                  f"q05={j_meta.get('q05')}"
-                  + (f"; {j_meta['why']}" if j_meta.get('why') else '') + ")")
+                  f"pool); morph {morph}")
+    validator.log(f"[pooling] floors: jaccard > {j_floor:.4f}, rank_union > "
+                  f"{cfg.pooling_rank_union_floor:.3f}, both ranks within "
+                  f"{cfg.pooling_window_mult:.2f} x the source type's own "
+                  f"population — volume guard-rails")
     return {'candidates': rows, 'pool': pool, 'cross_validation': xval,
             'stats': stats}

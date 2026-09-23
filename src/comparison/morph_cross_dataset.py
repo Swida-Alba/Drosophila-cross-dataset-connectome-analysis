@@ -1061,6 +1061,7 @@ def qualify_visualized_pairs(
         mode: str = 'null',
         level: int = 95,
         source_types: Optional[Dict[int, str]] = None,
+        prune_pool_refs: bool = True,
         log=None) -> MorphQualification:
     """Score the visualized (source, target) pairs + shared null sample.
 
@@ -1077,6 +1078,18 @@ def qualify_visualized_pairs(
     binding, Track-A backup floor ``B_b - Δ``, per-source null fallback.
     ``source_types`` maps source bodyId -> source type name (required for
     mapping_ref; built by the caller from the results rows).
+
+    ``prune_pool_refs`` (default True) is the mapping_ref convention that a
+    branch pool member which was only fetched to ANCHOR a bar is not a
+    candidate of its own pool, so its verdict is dropped. That is right for a
+    caller whose candidate set is the branch pool (the supervised ladder,
+    Find Homolog) and wrong for one whose candidates are its own list — where
+    keeping the default silently deletes the verdict of every candidate the
+    mapper also claims. Pass False for the latter: the grading stays honest
+    because `native_scores` never counts the candidate against itself
+    (`r != tgt`), so a pool member is measured against the OTHER refs, exactly
+    like an outsider. (Found on 2026-09-23: `pooling` lost 35 of its 41
+    verdicts this way and labelled them `no-score`.)
     """
     mq = MorphQualification(source_dataset=source_dataset,
                             target_dataset=target_dataset,
@@ -1197,7 +1210,7 @@ def qualify_visualized_pairs(
         _finalize_mapping_ref_bars(mq, src_refs, df, log=log)
     pool_bid_set = set(pool_bids)
     for (src, tgt), score in list(mq.scores.items()):
-        if tgt in pool_bid_set:
+        if prune_pool_refs and tgt in pool_bid_set:
             # Pool members were scored only to anchor B_b / native floors —
             # they are references, never candidates of their own pool.
             del mq.scores[(src, tgt)]

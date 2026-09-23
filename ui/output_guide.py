@@ -2210,25 +2210,29 @@ TOOL_GUIDE_SPECS = {
                             "pair that passed the ABSOLUTE connectivity gate "
                             "(jaccard / rank_union floors, a rank window "
                             "scaled to the source type's own population) "
-                            "with the morph verdict, the shared leaf token, "
-                            "the post-hoc mapper_cell (confirmed / type_miss "
-                            "/ type_new) and targets_corroborated. The "
-                            "mapper decides none of it — it is joined "
-                            "afterwards."},
+                            "with the morph verdict, the shared leaf token "
+                            "and the post-hoc mapper_cell (confirmed / "
+                            "type_miss / type_new). The mapper decides none "
+                            "of it — it is joined afterwards. Includes the "
+                            "targets the morphology gate refused, so the "
+                            "refusals stay auditable."},
             {"pattern": "pooling/pooling_pool.csv",
              "description": "--mode pooling only: the same pool deduplicated "
                             "to one row per candidate target neuron on the "
                             "ordering chain (chain-best source, n_sources, "
-                            "dup)."},
+                            "dup), AFTER the morphology gate — a scored "
+                            "candidate below its bar is not here."},
             {"pattern": "pooling/pooling_cross_validation.json",
              "description": "--mode pooling only: the unsupervised pool "
-                            "compared with the mapper's claim sets, the "
-                            "gate WITH its provenance (the Jaccard floor "
-                            "that actually gated the run, whether the "
-                            "dataset pair's own graded evidence fitted it, "
-                            "and what this run recorded for the next), the "
-                            "morph record, the corroboration histogram, and "
-                            "the reading notes that say which cells are NOT "
+                            "compared with the mapper's claim sets, the gate "
+                            "(the configured Jaccard / rank_union floors and "
+                            "window, stated as a VOLUME guard-rail rather "
+                            "than a quality bar), the morph record "
+                            "(attempted / scored / qualified / no-score / "
+                            "capped, plus gate_applied and dropped_targets — "
+                            "how many targets the bar refused), the input "
+                            "fingerprint the scores came from, and the "
+                            "reading notes that say which cells are NOT "
                             "recall measures."},
             {"pattern": "morphology_calibration.json",
              "description": "Per-branch qualification bars (floors v3), "

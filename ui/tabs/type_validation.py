@@ -58,7 +58,6 @@ _FALLBACK_DEFAULTS = {
     "pooling_jaccard_floor": 0.10, "pooling_rank_union_floor": 0.0,
     "pooling_window_mult": 2.0, "pooling_morph_gate": True,
     "pooling_max_morph_targets": 400,
-    "pooling_floor_from_evidence": True,
 }
 _RATIO_FLOATS = {
     "matched_ru_min", "candidate_morph_factor", "suspicious_jaccard_factor",
@@ -272,17 +271,11 @@ def create_type_validation_tab():
             pooling_j_floor = number_input(
                 "Jaccard floor", float(_default("pooling_jaccard_floor")),
                 0.0, 1.0, 0.01,
-                hint="0.10 is the measured value that keeps every pair the "
-                     "supervised path graded verified on all three targets — "
-                     "and it is NOT dataset-neutral, so raising it silently "
-                     "rejects each dataset's own verified evidence.")
-            pooling_fit = checkbox_input(
-                "Fit the floor to this dataset pair's evidence",
-                bool(_default("pooling_floor_from_evidence")),
-                hint="Gate on min(Jaccard floor, q05 of the pairs past runs of "
-                     "this dataset pair graded matched/verified), read before "
-                     "the scan and recorded after it — so a run never moves "
-                     "its own gate. Off = the literal floor above.")
+                hint="A VOLUME guard-rail, not a quality bar: it decides how "
+                     "wide the connectivity scan may open, and only the "
+                     "morphology gate below says anything about a pair. Raise "
+                     "it when a pool is too large to review, lower it when the "
+                     "scan finds nothing.")
             pooling_window_mult = number_input(
                 "Window multiplier", float(_default("pooling_window_mult")),
                 0.5, 20.0, 0.5,
@@ -293,18 +286,15 @@ def create_type_validation_tab():
                 "Morphology as the last gate",
                 bool(_default("pooling_morph_gate")),
                 hint="Qualify the connectivity survivors only, through the "
-                     "Find-Homolog fast path (no NBLAST). Off = publish the "
-                     "connectivity-only pool.")
+                     "Find-Homolog fast path (no NBLAST). It is a GATE: a "
+                     "candidate scored below its bar leaves the pool and the "
+                     "scene, and the run publishes how many it refused. "
+                     "Off = publish the connectivity-only pool.")
             pooling_budget = number_input(
                 "Morph budget (candidate targets)",
                 int(_default("pooling_max_morph_targets")), 0, 100000, 1,
                 hint="One network-bound step; rows past the budget read "
                      "morph_gate='not-attempted-cap', never blank.")
-            ui.label(
-                "Cross-target corroboration (targets_corroborated) joins the "
-                "same query run against other targets, so it stays a CLI flag: "
-                "--pooling-corroborate-with <run folder> …"
-            ).classes("text-caption opacity-70 w-full")
 
             def _sync_pooling():
                 pooling_card.set_visibility(mode_value["value"] == "pooling")
@@ -448,7 +438,6 @@ def create_type_validation_tab():
             "pooling_window_mult": float(pooling_window_mult.value),
             "pooling_morph_gate": bool(pooling_morph.value),
             "pooling_max_morph_targets": int(pooling_budget.value),
-            "pooling_floor_from_evidence": bool(pooling_fit.value),
             "aggressive_expansion": False,
             "pool_widen": False,
             "morph_enabled": bool(morph_enabled.value),

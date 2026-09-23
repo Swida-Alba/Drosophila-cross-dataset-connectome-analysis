@@ -4,7 +4,6 @@ The tests exist to hold the two properties the mode is defined by, not the
 arithmetic: selection must not depend on the type mapper (§1, §2.3), and a
 missing measurement must never read like a rejection (§4.2, §6.4).
 """
-import json
 import sys
 from pathlib import Path
 
@@ -58,10 +57,7 @@ class FakeValidator:
 def _cfg(**kw):
     base = dict(source_dataset='flywire_FAFB_v783', target_dataset='banc_v888',
                 query_types=['circadian_clock'], verbose=False,
-                validation_mode='pooling', pooling_morph_gate=False,
-                # the J-floor store lives in the project's cache/; unit tests
-                # never write there, so the fit is exercised explicitly below
-                pooling_floor_from_evidence=False)
+                validation_mode='pooling', pooling_morph_gate=False)
     base.update(kw)
     return mv.MappingValidationConfig(**base)
 
@@ -260,8 +256,13 @@ def test_morph_budget_names_what_it_dropped(monkeypatch):
 
 def test_the_three_absences_are_three_labels(monkeypatch):
     """`not-selected` (the verdict lives on the chain-best row),
-    `not-attempted-cap` (the budget refused), `no-score` (the scorer had no
-    vector) — none of them may read as a rejected candidate."""
+    `not-attempted-cap` (the budget refused), `no-score` (the scorer returned
+    nothing for the pair) — none of them may read as a rejected candidate.
+
+    The third label earned its keep: an earlier build's rows read `no-score`
+    for candidates the scorer HAD scored, because the shared scorer prunes
+    mapper pool members and pooling must not ask it to (see
+    `test_pooling_grades_candidates_the_mapper_also_claims`)."""
     import comparison.morph_cross_dataset as mcd
 
     class MQ:
@@ -287,9 +288,49 @@ def test_the_three_absences_are_three_labels(monkeypatch):
     assert gates == [(7, 'scored'), (7, 'not-selected'), (8, 'no-score')]
     assert info['attempted'] == 2 and info['capped'] == 0
     assert info['qualified'] == 1
+    # `scored` counts what the scorer RETURNED a value for, not what the
+    # budget attempted: collapsing them (the first version said scored 2)
+    # hides a run where the last gate measured almost nothing.
+    assert info['scored'] == 1 and info['no_score'] == 1
     # a row without a score carries no verdict, not a False
     assert [r['morph_qualified'] for r in rows if r['morph_gate'] ==
             'no-score'] == [None]
+
+
+def test_pooling_grades_candidates_the_mapper_also_claims(monkeypatch):
+    """The scorer's mapping_ref convention ("a branch-pool member was only an
+    anchor, not a candidate") is the SUPERVISED caller's semantics; pooling's
+    candidate set is its own gate, so it must ask for the un-pruned grading.
+    With the default in place 35 of 41 real male-cns candidates came back
+    `no-score` although every one of them had been scored — the flag is the
+    contract, this is the tripwire. The behavioural half lives in
+    `test_morph_cross_dataset.TestQualifyVisualizedPairs`."""
+    import comparison.morph_cross_dataset as mcd
+
+    seen = {}
+
+    class MQ:
+        active = True
+        warnings = []
+        scores = {(1, 7): 0.9, (1, 8): 0.8}   # 7 is also a mapper pool member
+        ref_bars = {}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            return self.scores[(int(s), int(t))] >= 0.5
+
+    def fake(*args, **kwargs):
+        seen.update(kwargs)
+        return MQ()
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs', fake)
+    v = FakeValidator(_cfg(pooling_morph_gate=True), {})
+    rows, info = pool.apply_morph_gate(v, _rows(7, 8))
+    assert seen.get('mode') == 'mapping_ref'
+    assert seen.get('prune_pool_refs') is False
+    assert info['scored'] == 2 and info['no_score'] == 0
 
 
 def test_morph_failure_is_recorded_per_row(monkeypatch):
@@ -306,6 +347,103 @@ def test_morph_failure_is_recorded_per_row(monkeypatch):
 
 
 # -- dedup + the post-hoc comparison ---------------------------------------
+
+def test_morphology_refusals_leave_the_pool_and_are_counted(monkeypatch):
+    """Decision 3 (2026-09-23): morphology is the LAST GATE, not a label.
+
+    A target whose chain-best row is scored BELOW its bar is gone from the
+    exported pool — and therefore from the scene root, which reads the pool —
+    while `dropped_targets` says how many left, so a small pool is never read
+    as a small harvest.  A target with no verdict stays: `no-score` and
+    `not-attempted-cap` are missing measurements, and only an explicit
+    refusal removes.  The refused rows themselves stay in `candidates`.
+    """
+    import comparison.morph_cross_dataset as mcd
+
+    class MQ:
+        active = True
+        warnings = []
+        scores = {(1, 100): 0.9, (1, 101): 0.1, (1, 102): 0.1}
+        ref_bars = {}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            return self.scores[(int(s), int(t))] >= 0.5
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
+                        lambda *a, **k: MQ())
+    frames = {1: _frame([
+        {'target_bid': 100, 'jaccard': 0.50, 'rank_union': 0.30,
+         'jaccard_rank': 1, 'rank_union_rank': 1},
+        {'target_bid': 101, 'jaccard': 0.40, 'rank_union': 0.30,
+         'jaccard_rank': 2, 'rank_union_rank': 2},
+        {'target_bid': 102, 'jaccard': 0.30, 'rank_union': 0.30,
+         'jaccard_rank': 3, 'rank_union_rank': 3}])}
+    _install_frames(monkeypatch, frames)
+    v = FakeValidator(_cfg(pooling_morph_gate=True, pooling_window_mult=5),
+                      frames, types={1: 's-LNv'})
+    v._backward_decision = lambda t: {'status': '', 'mapped': None,
+                                      'home_count': 0, 'home_real': False}
+    out = pool.run_pooling(v, target_stats={},
+                           target_bids=[100, 101, 102],
+                           target_id2type={100: 'DN1a', 101: 'DN1a',
+                                           102: 'LC16'},
+                           val_rows=[])
+    x = out['cross_validation']['morph']
+    assert {p['target_bodyId'] for p in out['pool']} == {100}
+    assert x['gate_applied'] is True
+    assert x['dropped_targets'] == 2
+    # the refusals stay in the per-pair export, with the verdict on them
+    refused = {r['target_bodyId']: r for r in out['candidates']
+               if r['morph_gate'] == 'scored'
+               and r['morph_qualified'] is False}
+    assert sorted(refused) == [101, 102]
+    assert 'dropped_targets' in ' '.join(
+        out['cross_validation']['reading_notes'])
+    assert any('2 refused by the morphology bar' in n for n in v.notes)
+
+
+def test_an_unscored_candidate_is_never_a_refusal(monkeypatch):
+    """The budget refusing to look is not the bar refusing to admit."""
+    import comparison.morph_cross_dataset as mcd
+
+    class MQ:
+        active = True
+        warnings = []
+        scores = {(1, 100): 0.9}                   # 101 never scored
+        ref_bars = {}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            v = self.scores.get((int(s), int(t)))
+            return None if v is None else v >= 0.5
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
+                        lambda *a, **k: MQ())
+    frames = {1: _frame([
+        {'target_bid': 100, 'jaccard': 0.50, 'rank_union': 0.30,
+         'jaccard_rank': 1, 'rank_union_rank': 1},
+        {'target_bid': 101, 'jaccard': 0.40, 'rank_union': 0.30,
+         'jaccard_rank': 2, 'rank_union_rank': 2}])}
+    _install_frames(monkeypatch, frames)
+    v = FakeValidator(_cfg(pooling_morph_gate=True,
+                           pooling_max_morph_targets=1), frames,
+                      types={1: 's-LNv'})
+    v._backward_decision = lambda t: {'status': '', 'mapped': None,
+                                      'home_count': 0, 'home_real': False}
+    out = pool.run_pooling(v, target_stats={}, target_bids=[100, 101],
+                           target_id2type={100: 'DN1a', 101: 'LC16'},
+                           val_rows=[])
+    x = out['cross_validation']['morph']
+    assert {p['target_bodyId'] for p in out['pool']} == {100, 101}
+    assert (x['dropped_targets'], x['capped'], x['scored']) == (0, 1, 1)
+    assert [p['morph_gate'] for p in out['pool']] == ['scored',
+                                                      'not-attempted-cap']
+
 
 def test_pool_deduplicates_on_the_ordering_chain():
     rows = _rows(7, 7, 8)
@@ -345,65 +483,7 @@ def test_cross_validation_publishes_cells_and_the_reading_rules():
     # the two source counts answer different questions and must not be merged
     assert xv['seed']['sources_with_a_candidate'] == 2
     assert xv['seed']['distinct_best_sources'] == 1
-    assert len(xv['reading_notes']) == 3                 # the honesty rules
-
-
-# -- cross-target corroboration (advisory ranking, plan §2.5) ---------------
-
-def _sibling_run(tmp_path, name, dataset, pairs):
-    """A sibling pooling run folder: its target dataset + its pool."""
-    d = tmp_path / name
-    (d / 'pooling').mkdir(parents=True)
-    (d / 'parameters.json').write_text(json.dumps({'target_dataset': dataset}))
-    (d / 'pooling' / 'pooling_pool.csv').write_text(
-        'best_source_bodyId,target_type,target_bodyId\n'
-        + ''.join(f'{s},{t},{9999 + i}\n'
-                  for i, (s, t) in enumerate(pairs)))
-    return str(d)
-
-
-def test_corroboration_is_blank_until_the_join_is_asked_for(tmp_path):
-    rows = [{'source_bodyId': 1, 'target_type': 'DN1a'},
-            {'source_bodyId': 2, 'target_type': 'LC16'}]
-    pool_rows = [dict(r, best_source_bodyId=r['source_bodyId']) for r in rows]
-    # One run has one target, so with no siblings named the honest answer is
-    # blank: a 0 would claim "no other target agrees", about runs that were
-    # never run.
-    summary = pool.corroborate_pool(rows, pool_rows,
-                                    pool.corroborate([], 'banc_v888'))
-    assert [r['targets_corroborated'] for r in rows] == [None, None]
-    assert summary['status'] == 'not-computed'
-    assert summary['pool_size_histogram'] == {'not-computed': 2}
-
-    sib = _sibling_run(tmp_path, 'run_mcns', 'male-cns:v1.0',
-                       [(1, 'DN1a'), (2, 'SMP228')])
-    summary = pool.corroborate_pool(rows, pool_rows,
-                                    pool.corroborate([sib], 'banc_v888'))
-    assert rows[0]['targets_corroborated'] == 2      # this run + the sibling
-    assert rows[1]['targets_corroborated'] == 1      # this run only
-    assert pool_rows[0]['targets_corroborated'] == 2
-    assert summary['sibling_runs'] == 1
-    assert summary['pool_size_histogram'] == {'2': 1, '1': 1}
-    # what the count is keyed on must be stated, not guessed
-    assert 'TYPE' in summary['key']
-
-
-def test_corroboration_keys_on_the_type_name_not_a_target_bodyId(tmp_path):
-    # target bodyIds do not transfer across datasets, so the sibling's own
-    # bodyIds (9999+) are never part of the key.
-    sib = _sibling_run(tmp_path, 'run_hemi', 'hemibrain', [(1, 'DN1a')])
-    corr = pool.corroborate([sib], 'banc_v888')
-    assert pool._corroborated(corr, 1, 'DN1a') == 2
-    assert pool._corroborated(corr, 1, 'dn1a') == 1     # names are exact
-    assert pool._corroborated(corr, 99, 'DN1a') == 1    # another source
-
-
-def test_unreadable_sibling_dirs_are_named_not_silently_dropped(tmp_path):
-    missing = str(tmp_path / 'no_such_run')
-    corr = pool.corroborate([missing], 'banc_v888')
-    assert corr['status'] == 'not-computed'
-    assert corr['sibling_runs'] == 0
-    assert corr['unreadable'] == [missing]
+    assert len(xv['reading_notes']) == 4                 # the honesty rules
 
 
 # -- the whole pass, end to end on a synthetic universe --------------------
@@ -440,31 +520,14 @@ def test_run_pooling_end_to_end(monkeypatch):
                                       'target_bodyId': 100}])
     # 101 is below the J floor and must not appear at all
     assert {p['target_bodyId'] for p in out['pool']} == {100, 102}
-    assert out['stats']['seed'] == 2 and out['stats']['gate'][
-        'jaccard_floor'] == 0.10
+    assert out['stats']['seed'] == 2
+    gate = out['stats']['gate']
+    assert gate['jaccard_floor'] == 0.10           # configured, no fit
+    assert 'volume' in gate['role']                # and it says so
     assert out['cross_validation']['cells'][pool.CELL_CONFIRMED] == 1
     assert out['cross_validation']['cells'][pool.CELL_POOL_MISS] == 1
     assert out['cross_validation']['morph']['attempted'] == 0   # gate off
     assert any('[pooling]' in n for n in v.notes)
-
-
-def test_run_pooling_publishes_the_sibling_join(monkeypatch, tmp_path):
-    frames = _e2e_frames(monkeypatch)
-    sib = _sibling_run(tmp_path, 'run_mcns', 'male-cns:v1.0', [(1, 'DN1a')])
-    v = FakeValidator(_cfg(pooling_sibling_runs=[sib]), frames,
-                      types={1: 's-LNv', 2: 's-LNv'})
-    v._backward_decision = lambda t: {'status': '', 'mapped': None,
-                                      'home_count': 0, 'home_real': False}
-    out = pool.run_pooling(v, target_stats={}, target_bids=[100, 101, 102],
-                           target_id2type={100: 'DN1a', 102: 'LC16'},
-                           val_rows=[])
-    corr = out['cross_validation']['corroboration']
-    assert corr['status'] == 'computed' and corr['sibling_runs'] == 1
-    # 100 is the DN1a candidate source 1 reaches, which the sibling also
-    # pooled; 102 is only this run's.
-    assert {p['target_bodyId']: p['targets_corroborated']
-            for p in out['pool']} == {100: 2, 102: 1}
-    assert corr['pool_size_histogram'] == {'2': 1, '1': 1}
 
 
 def test_run_pooling_with_an_empty_seed_is_explicit(monkeypatch):
@@ -473,119 +536,8 @@ def test_run_pooling_with_an_empty_seed_is_explicit(monkeypatch):
     out = pool.run_pooling(v, target_stats={}, target_bids=[],
                            target_id2type={}, val_rows=[])
     assert out['pool'] == []
-    assert 'queried population resolved to 0 neurons' in \
-        out['cross_validation']['reading_notes'][3]
-
-
-# -- the per-dataset Jaccard floor (P4) --------------------------------------
-
-def _store(tmp_path):
-    return pool.JaccardFloorStore('flywire_FAFB_v783', 'banc_v888',
-                                 project_root=str(tmp_path))
-
-
-def _graded(n, low=0.02):
-    return [{'verdict': 'verified', 'source_bodyId': 10 + i,
-             'target_bodyId': 100 + i, 'jaccard': low + i / 100}
-            for i in range(n)]
-
-
-def test_the_floor_fits_to_the_low_tail_of_the_recorded_evidence(tmp_path):
-    # a pair whose verified rows bottom out near 0.02 must not be gated at the
-    # global 0.10 — that floor would reject this dataset's own verified evidence
-    st = _store(tmp_path)
-    assert st.observe(_graded(30)) == 30
-    floor, meta = st.fit(0.10)
-    assert meta['source'] == pool.FLOOR_FITTED and meta['n'] == 30
-    assert floor == pytest.approx(meta['q05'])
-    assert floor < 0.10
-
-
-def test_a_thin_sample_leaves_the_configured_floor_alone(tmp_path):
-    st = _store(tmp_path)
-    st.observe(_graded(st.MIN_N - 1))
-    floor, meta = st.fit(0.10)
-    assert floor == 0.10 and meta['source'] == pool.FLOOR_THIN
-    assert 'below min_n' in meta['why']
-
-
-def test_evidence_is_deduplicated_by_pair(tmp_path):
-    st = _store(tmp_path)
-    same_pair = [{'verdict': 'verified', 'source_bodyId': 1,
-                  'target_bodyId': 100, 'jaccard': j} for j in (0.2, 0.9)]
-    assert st.observe(same_pair) == 1
-    assert st.observe(same_pair) == 0            # already on record
-    assert list(st.load().values()) == [0.9]     # the later grade stands
-
-
-def test_the_cap_keeps_the_low_tail_because_q05_reads_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(pool.JaccardFloorStore, 'CAP', 3)
-    st = _store(tmp_path)
-    st.observe(_graded(10))
-    assert sorted(st.load().values()) == [0.02, 0.03, 0.04]
-
-
-def test_ungraded_rows_are_not_evidence(tmp_path):
-    st = _store(tmp_path)
-    rows = _graded(3) + [{'verdict': 'borderline', 'source_bodyId': 9,
-                          'target_bodyId': 99, 'jaccard': 0.4},
-                         {'verdict': 'unmatched', 'source_bodyId': 8,
-                          'target_bodyId': 98, 'jaccard': 0.4}]
-    assert st.observe(rows) == 3
-
-
-def test_a_run_cannot_move_its_own_floor(monkeypatch, tmp_path):
-    """The ordering IS the unsupervised property, expressed in time.
-
-    The evidence is read before the scan and written after it, so the first run
-    on a store gates on the configured floor even though it contributes rows
-    that would fit far lower, and only the second run sees a fitted floor.
-    """
-    frames = {1: _frame([{'target_bid': 100, 'jaccard': 0.50,
-                          'rank_union': 0.30, 'jaccard_rank': 1,
-                          'rank_union_rank': 1},
-                         {'target_bid': 101, 'jaccard': 0.05,
-                          'rank_union': 0.40, 'jaccard_rank': 2,
-                          'rank_union_rank': 2}])}
-    _install_frames(monkeypatch, frames)
-    v = FakeValidator(_cfg(pooling_floor_from_evidence=True), frames,
-                      types={1: 's-LNv'})
-    v.project_root = str(tmp_path)
-    v._backward_decision = lambda t: {'status': '', 'mapped': None,
-                                      'home_count': 0, 'home_real': False}
-    val = _graded(30)
-
-    def run():
-        return pool.run_pooling(v, target_stats={}, target_bids=[100, 101],
-                                target_id2type={100: 'DN1a', 101: 'DN1a'},
-                                val_rows=val)
-
-    first = run()
-    g1 = first['cross_validation']['gate']
-    assert g1['jaccard_floor'] == 0.10
-    assert g1['jaccard_floor_source'] == pool.FLOOR_THIN
-    assert g1['jaccard_floor_pairs_added'] == 30       # written AFTER the scan
-    assert {r['target_bodyId'] for r in first['candidates']} == {100}
-
-    second = run()
-    g2 = second['cross_validation']['gate']
-    assert g2['jaccard_floor_source'] == pool.FLOOR_FITTED
-    assert g2['jaccard_floor'] == pytest.approx(g2['jaccard_floor_q05'])
-    assert g2['jaccard_floor'] < 0.05
-    # and the gate really moved: 101 (jaccard 0.05) is below the configured
-    # floor and above the fitted one
-    assert {r['target_bodyId'] for r in second['candidates']} == {100, 101}
-
-
-def test_the_floor_stay_can_be_switched_off(monkeypatch, tmp_path):
-    st = _store(tmp_path)
-    st.observe(_graded(30))
-    floor, meta = pool.resolve_jaccard_floor(
-        _cfg(pooling_floor_from_evidence=False), project_root=str(tmp_path))
-    assert (floor, meta['source']) == (0.10, pool.FLOOR_CONFIG)
-    floor, meta = pool.resolve_jaccard_floor(
-        _cfg(pooling_floor_from_evidence=True), project_root=str(tmp_path))
-    assert meta['source'] == pool.FLOOR_FITTED and floor < 0.10
+    assert any('resolved to 0 neurons' in n
+               for n in out['cross_validation']['reading_notes'])
 
 
 # ---------------------------------------------------------------------------

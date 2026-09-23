@@ -241,25 +241,25 @@ class MappingValidationConfig:
     # engine.  Absolute floors plus a window scaled to the source type's own
     # queried population — no branch pool, no pool-relative bar.  These knobs
     # are read only when `validation_mode == 'pooling'`.
+    #
+    # They are a VOLUME control, not a data-quality claim (user 2026-09-23):
+    # what they decide is how wide the connectivity scan may open.  An earlier
+    # build also fitted `pooling_jaccard_floor` to the dataset pair's own
+    # graded evidence; that guarded a quality question the floor does not
+    # answer, so the fit was deleted rather than tuned.
     # ------------------------------------------------------------------
     pooling_jaccard_floor: float = 0.10
     pooling_rank_union_floor: float = 0.0
     pooling_window_mult: float = 2.0
+    #: Morphology is the LAST GATE (decision 3): a candidate the bar refuses
+    #: leaves the exported pool and the scene root, counted as
+    #: `morph['dropped_targets']`.  A candidate with NO verdict never leaves —
+    #: a missing measurement is not a rejection.
     pooling_morph_gate: bool = True
     #: Morph is the LAST gate and the only network-bound step left in the
     #: path, so the pass is budgeted; rows past the budget say so in
     #: `morph_gate='not-attempted-cap'` rather than reading as rejections.
     pooling_max_morph_targets: int = 400
-    #: Fit the Jaccard floor per dataset pair from the graded pairs past runs
-    #: recorded (plan §5 / P4): one global 0.10 is only safe in the low band —
-    #: at 0.20 it rejects 33 % of BANC's verified rows, 3 % of male-cns's, 27 %
-    #: of hemibrain's. The evidence is READ before the pass and WRITTEN after
-    #: it, so a run never moves its own gate with its own claims.
-    pooling_floor_from_evidence: bool = True
-    #: Run folders of the SAME query against OTHER targets, joined after the
-    #: gate to fill `targets_corroborated`.  Advisory ranking only (plan
-    #: decision 6): a candidate never enters or leaves the pool because of it.
-    pooling_sibling_runs: List[str] = field(default_factory=list)
     # ------------------------------------------------------------------
     # Stage 5d: backward (target -> source) homolog evidence for the
     # expansion bins.  ADVISORY ONLY — `backward_evidence` labels a row, it
@@ -1103,14 +1103,13 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'window_size', 'in_scope', 'leaf', 'size_nm3',
         'size_universe_percentile', 'morph_gate', 'morph_bar_kind',
         'morph_similarity', 'morph_bar', 'morph_qualified', 'mapper_cell',
-        'mapper_verdict', 'targets_corroborated'],
+        'mapper_verdict'],
     'pooling_pool.csv': [
         'target_bodyId', 'target_type', 'leaf', 'best_source_bodyId',
         'best_source_type', 'jaccard', 'jaccard_rank', 'rank_union',
         'window_size', 'size_nm3', 'size_universe_percentile', 'in_scope',
         'n_sources', 'dup', 'morph_gate', 'morph_similarity', 'morph_bar',
-        'morph_qualified', 'mapper_cell', 'mapper_verdict',
-        'targets_corroborated'],
+        'morph_qualified', 'mapper_cell', 'mapper_verdict'],
 }
 
 # The backward (target -> source) evidence columns ride the three expansion
@@ -5822,7 +5821,8 @@ class MappingValidator:
             run_file_path(rd, 'pooling_cross_validation.json',
                           create_parent=True).write_text(
                 json.dumps(pooling.get('cross_validation') or {}, indent=2,
-                           default=str))
+                           default=str),
+                encoding='utf-8')
         _write_run_csv(rd, 'pair_summary.csv', summaries)
         _write_run_csv(rd, 'gap_fill_proposals.csv', fills)
         _write_run_csv(rd, 'pool_categories.csv', pool_detail)
@@ -5871,15 +5871,12 @@ class MappingValidator:
             'candidate_window': self.cfg.candidate_window,
             'deep_cap': self.cfg.deep_cap,
             # `pooling` mode (read only when validation_mode == 'pooling'):
-            # the absolute gate, its morph budget, and the sibling runs the
-            # advisory cross-target count was joined against.
+            # the absolute floors, the window and the morph budget.
             'pooling_jaccard_floor': self.cfg.pooling_jaccard_floor,
             'pooling_rank_union_floor': self.cfg.pooling_rank_union_floor,
             'pooling_window_mult': self.cfg.pooling_window_mult,
             'pooling_morph_gate': self.cfg.pooling_morph_gate,
             'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
-            'pooling_floor_from_evidence': self.cfg.pooling_floor_from_evidence,
-            'pooling_sibling_runs': list(self.cfg.pooling_sibling_runs or []),
             'scene_selfcheck': self.cfg.scene_selfcheck,
             'morph_enabled': self.cfg.morph_enabled,
             'morph_auc_floor': self.cfg.morph_auc_floor,
@@ -5995,6 +5992,19 @@ class MappingValidator:
             '- expansion/out_map_expansion.csv — each unclaimed '
             'source\'s top-k typed non-in-map expansion candidates, '
             'morph-checked against the run null bar.',
+            # a pooling run's own result is in none of the nested bins, so the
+            # folder index has to point at it — an unlisted folder of exports
+            # reads as "nothing was found" to anyone working from README.txt
+            *([] if self.cfg.effective_mode != POOLING_MODE else [
+                '- pooling/pooling_candidates.csv / pooling_pool.csv / '
+                'pooling_cross_validation.json (this run, --mode pooling) — '
+                'the UNSUPERVISED pool: every queried neuron scanned against '
+                'the whole target universe under absolute floors (a VOLUME '
+                'guard-rail, published as the configured numbers), then the '
+                'morphology bar as the last gate — a refusal leaves the pool '
+                'and is counted in `morph.dropped_targets`, while a candidate '
+                'with no verdict stays and is named. The mapper is joined '
+                'afterwards. Read the report\'s Pooling tab.']),
             '- validation/pair_summary.csv — per-branch pools / gap / '
             'verdicts; mapping/mapping_export.csv — the branch mapping '
             'with bodyId pools.',
