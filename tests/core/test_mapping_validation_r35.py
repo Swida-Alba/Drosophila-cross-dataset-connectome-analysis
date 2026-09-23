@@ -2219,8 +2219,14 @@ def test_rev312_normalize_mode_enum():
     # both flags: most permissive wins (never family-labelled-but-aggressive)
     assert normalize_mode('restrictive', pool_widen=True,
                           aggressive_expansion=True) == 'aggressive'
-    # bad input fails safe to restrictive
-    assert normalize_mode('nonsense') == 'restrictive'
+    # bad input no longer fails SILENTLY to restrictive: a run that reported
+    # one mode while running another is the degradation this guards against
+    # (contract change with `pooling`; see also
+    # test_mapping_validation_pooling.test_unknown_mode_raises_...).
+    with pytest.raises(ValueError):
+        normalize_mode('nonsense')
+    assert normalize_mode('') == 'restrictive'
+    assert normalize_mode('pooling') == 'pooling'
 
     # mode_at_least gates behavior
     from comparison.mapping_validation import MappingValidationConfig

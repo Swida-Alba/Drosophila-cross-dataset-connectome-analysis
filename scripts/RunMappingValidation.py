@@ -116,15 +116,17 @@ def parse_args(argv=None):
     p.add_argument('--skip-profile-build', action='store_true',
                    help='Plan I: skip the stage-2 target profile pre-flight '
                         '(stay cache-only; fail-closed on a thin cache)')
-    p.add_argument('--mode', choices=('restrictive', 'family',
-                                      'aggressive'), default='restrictive',
-                   help='expansion mode, ordered enum (Rev 3.12): '
-                        'restrictive (default) = tier + sibling + '
-                        'candidates; family = adds the family/relative '
-                        'bins; aggressive = adds the deep-window '
-                        'examinees bin (renamed from suspicious). '
-                        'Modes NEST: switching mode only '
-                        'admits more neurons, never relabels one.')
+    p.add_argument('--mode', choices=('restrictive', 'family', 'aggressive',
+                                      'pooling'), default='restrictive',
+                   help='validation mode: restrictive (default) = tier + '
+                        'sibling + candidates; family = adds the '
+                        'family/relative bins; aggressive = adds the '
+                        'deep-window examinees bin. Those three NEST. '
+                        'pooling is a PARALLEL, unsupervised engine: it scans '
+                        'the whole queried population against the whole '
+                        'target universe under absolute floors, and joins the '
+                        'type mapper afterwards as a post-hoc comparison '
+                        '(plan-tmvev-pooling-mode.md).')
     p.add_argument('--aggressive-expansion', action='store_true',
                    help='alias for --mode aggressive (Rev 3.12; retained '
                         'for compatibility).')
@@ -135,6 +137,36 @@ def parse_args(argv=None):
     p.add_argument('--deep-cap', type=int, default=10,
                    help='max deep-window candidates kept per source '
                         'neuron (Rev 3.8; default 10)')
+    p.add_argument('--pooling-jaccard-floor', type=float, default=0.10,
+                   help='--mode pooling: absolute Jaccard floor. 0.10 is the '
+                        'measured value that keeps every pair the supervised '
+                        'path graded verified on all three targets (plan '
+                        '§2.2); the same floor is NOT dataset-neutral, so do '
+                        'not raise it without re-reading §2.2.')
+    p.add_argument('--pooling-rank-union-floor', type=float, default=0.0,
+                   help='--mode pooling: absolute rank_union floor '
+                        '(default 0 = strictly positive correlation)')
+    p.add_argument('--pooling-window-mult', type=float, default=2.0,
+                   help='--mode pooling: rank window = this x the size of the '
+                        "source neuron's own queried type population. Measured "
+                        'selectivity is carried by the floors, not the window '
+                        '(2 vs 4 moves the pool by <=3 targets).')
+    p.add_argument('--no-pooling-morph-gate', action='store_true',
+                   help='--mode pooling: skip the final morph qualification '
+                        'and publish the connectivity-only pool')
+    p.add_argument('--pooling-max-morph-targets', type=int, default=400,
+                   help='--mode pooling: budget for the morph pass (one '
+                        'network-bound step); rows past the budget are '
+                        "labelled morph_gate='not-attempted-cap', never blank")
+    p.add_argument('--pooling-corroborate-with', nargs='+', metavar='RUN_DIR',
+                   default=[],
+                   help='--mode pooling: run folders of the SAME query '
+                        'against OTHER target datasets.  Joins their pools '
+                        'on (source bodyId, candidate target TYPE) — the '
+                        'only identity that transfers across datasets — to '
+                        'fill `targets_corroborated`.  Advisory ranking, '
+                        'never a gate; omit it and the column stays blank '
+                        'rather than reading as "no other target agrees".')
     p.add_argument('--backward-evidence', action='store_true',
                    help='stage 5d: reverse (target -> source) scans label '
                         'the expansion bins — ADVISORY only, never gates '
@@ -189,7 +221,13 @@ def parse_args(argv=None):
                         'their own target pools — advisory, writes '
                         'suspects_verification.csv + the Suspects tab')
     p.add_argument('--quiet', action='store_true')
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.mode == 'pooling' and args.aggressive_expansion:
+        # A CLI contradiction should read as a usage error (exit 2 + the
+        # help), not as a traceback from deep inside the config.
+        p.error('--mode pooling is the unsupervised engine and does not nest '
+                'with --aggressive-expansion')
+    return args
 
 
 def main(argv=None):
@@ -224,6 +262,12 @@ def main(argv=None):
         pool_widen=False,
         candidate_window=args.candidate_window,
         deep_cap=args.deep_cap,
+        pooling_jaccard_floor=args.pooling_jaccard_floor,
+        pooling_rank_union_floor=args.pooling_rank_union_floor,
+        pooling_window_mult=args.pooling_window_mult,
+        pooling_morph_gate=not args.no_pooling_morph_gate,
+        pooling_max_morph_targets=args.pooling_max_morph_targets,
+        pooling_sibling_runs=list(args.pooling_corroborate_with or []),
         backward_evidence_enabled=args.backward_evidence,
         skip_backward_pass=args.skip_backward_pass,
         backward_top_n=args.backward_top_n,

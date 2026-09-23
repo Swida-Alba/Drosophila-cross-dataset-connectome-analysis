@@ -2205,12 +2205,35 @@ TOOL_GUIDE_SPECS = {
                             "reach a branch pool (null-bar "
                             "morph-qualified) — the scenes' "
                             "source-candidates roots. Advisory."},
+            {"pattern": "pooling/pooling_candidates.csv",
+             "description": "--mode pooling only: every (source, target) "
+                            "pair that passed the ABSOLUTE connectivity gate "
+                            "(jaccard / rank_union floors, a rank window "
+                            "scaled to the source type's own population) "
+                            "with the morph verdict, the shared leaf token, "
+                            "the post-hoc mapper_cell (confirmed / type_miss "
+                            "/ type_new) and targets_corroborated. The "
+                            "mapper decides none of it — it is joined "
+                            "afterwards."},
+            {"pattern": "pooling/pooling_pool.csv",
+             "description": "--mode pooling only: the same pool deduplicated "
+                            "to one row per candidate target neuron on the "
+                            "ordering chain (chain-best source, n_sources, "
+                            "dup)."},
+            {"pattern": "pooling/pooling_cross_validation.json",
+             "description": "--mode pooling only: the unsupervised pool "
+                            "compared with the mapper's claim sets, the "
+                            "morph record, the corroboration histogram, and "
+                            "the reading notes that say which cells are NOT "
+                            "recall measures."},
             {"pattern": "morphology_calibration.json",
              "description": "Per-branch qualification bars (floors v3), "
                             "the run null bar, AUC gate record, and score "
                             "frames."},
             {"pattern": "parameters.json",
-             "description": "Every knob incl. validation_mode / mode_rank."},
+             "description": "Every knob incl. validation_mode / mode_rank (a "
+                            "pooling run has no mode_rank: the mode is "
+                            "parallel to the nested chain, not above it)."},
             {"pattern": "pipeline_progress.jsonl",
              "description": "Stage timeline events (pre-flight, scans, "
                             "out-map expansion, the stage-5d reciprocal "

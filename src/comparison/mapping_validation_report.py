@@ -60,7 +60,40 @@ TERM_DEFS: Dict[str, str] = {
         '"claim" per the approved fidelity plan.',
     'validation mode':
         'Ordered enum restrictive < family < aggressive; modes NEST — '
-        'switching mode only admits more neurons, never relabels one.',
+        'switching mode only admits more neurons, never relabels one. '
+        '`pooling` is parallel to that ladder, not its top rung: it is the '
+        'unsupervised engine, and a pooling run reports mode `pooling` '
+        'with no nested bins.',
+    'pooling':
+        'The UNSUPERVISED candidate engine (`--mode pooling`): every neuron '
+        'the query names is scanned against the WHOLE target universe under '
+        'absolute floors (jaccard > floor, rank_union > floor, both ranks '
+        'inside a window scaled to the source type\'s own population), then '
+        'morphology gates the connectivity survivors. Nothing here is read '
+        'off a branch pool, so the type mapper is compared with the result '
+        'afterwards instead of deciding it.',
+    'mapper_cell':
+        'Post-hoc comparison of one pooling candidate with the supervised '
+        'mapping: `confirmed` sits in a branch\'s refined target pool; '
+        '`type_miss` is an unmapped neuron of a type the map does assert; '
+        '`type_new` is of a type outside the map; `verified_only` names a '
+        'target the supervised path graded verified that this absolute gate '
+        'did not admit. No cell is a recall measure — the two engines '
+        'admit on different quantities.',
+    'morph_gate':
+        'Pooling\'s last gate, on the connectivity survivors only: `scored` '
+        'carries a similarity and a bar, `inactive` means the AUC gate '
+        'suspended morphology, `disabled` means the run asked for none, and '
+        'the three absences are kept apart on purpose — `not-selected` (this '
+        'row is not the chain-best row of its target, the verdict lives on '
+        'that row), `not-attempted-cap` (the morph budget refused to look), '
+        '`no-score` (no vector for the pair). None of them is a rejection.',
+    'targets_corroborated':
+        'Advisory only, and blank unless `--pooling-corroborate-with` named '
+        'the sibling runs: how many TARGET datasets put the same '
+        '(source bodyId, candidate target TYPE) pair in their pooling pool. '
+        'A bodyId means nothing across datasets, so the type NAME is the '
+        'only key that transfers. It ranks the review; it never gates.',
     'mutual-best (assigned)':
         'A source neuron whose best pool member is itself the target\'s '
         'best source — both sides read on the ordering chain, so the '
@@ -369,6 +402,14 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
         'thin evidence'],
     'gap_fill/gap_fill_levels.csv': ['fill levels'],
     'expansion/out_map_expansion.csv': ['out-map expansion', 'null bar'],
+    'pooling/pooling_candidates.csv': [
+        'pooling', 'ordering chain', 'rank_union', 'candidate_annotation',
+        'out of scope', 'morph_gate', 'branch bar', 'mapper_cell',
+        'targets_corroborated'],
+    'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate',
+                                 'targets_corroborated'],
+    'pooling/pooling_cross_validation.json': ['pooling', 'mapper_cell',
+                                              'targets_corroborated'],
     'validation/pair_summary.csv': ['gap', 'verdict'],
     'validation/pool_categories.csv': ['pool_ref tier'],
     'morphology_calibration.json': [
@@ -408,6 +449,16 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
     ('expansion/source_candidates.csv',
      'out-of-branch sources pointing into each branch pool, tagged '
      'in-map/out-map (advisory)'),
+    ('pooling/pooling_candidates.csv',
+     'POOLING mode: every (source, target) pair that passed the absolute '
+     'connectivity gate, with the morph verdict and the post-hoc mapper '
+     'cell'),
+    ('pooling/pooling_pool.csv',
+     'POOLING mode: one row per candidate target neuron (chain-best '
+     'source)'),
+    ('pooling/pooling_cross_validation.json',
+     'POOLING mode: the unsupervised-vs-mapper comparison, the morph '
+     'record and the corroboration join'),
     ('mapping/same_name_excluded.csv',
      'queried types held/excluded by the same-name-first rule, or '
      'multi-value cells (advisory accounting)'),

@@ -41,7 +41,10 @@ Stages
    reconciliation with a connectivity-only homolog search, never rendered.
    Modes nest: ``restrictive ⊆ family ⊆ aggressive``
    (``validation_mode`` / :func:`normalize_mode`); a shared neuron keeps
-   the same category across modes.
+   the same category across modes.  ``pooling`` is PARALLEL to that ladder,
+   not a fourth rung: :mod:`comparison.mapping_validation_pooling` scans
+   the whole queried population against the whole target universe under
+   absolute floors, and joins the mapper's claims only afterwards.
 4. Gap fill: ``gap = min(|P_S|, |P_T|) - M``; the restrictive fill counts
    ``candidates`` only, the family fill adds ``family``+``relative``.  The
    query-level dedup (``gap_fill_dedup.csv``) is bodyId-unique with
@@ -234,6 +237,24 @@ class MappingValidationConfig:
     candidate_window: int = 25
     deep_cap: int = 10
     # ------------------------------------------------------------------
+    # `pooling` mode (plan-tmvev-pooling-mode.md): the UNSUPERVISED candidate
+    # engine.  Absolute floors plus a window scaled to the source type's own
+    # queried population — no branch pool, no pool-relative bar.  These knobs
+    # are read only when `validation_mode == 'pooling'`.
+    # ------------------------------------------------------------------
+    pooling_jaccard_floor: float = 0.10
+    pooling_rank_union_floor: float = 0.0
+    pooling_window_mult: float = 2.0
+    pooling_morph_gate: bool = True
+    #: Morph is the LAST gate and the only network-bound step left in the
+    #: path, so the pass is budgeted; rows past the budget say so in
+    #: `morph_gate='not-attempted-cap'` rather than reading as rejections.
+    pooling_max_morph_targets: int = 400
+    #: Run folders of the SAME query against OTHER targets, joined after the
+    #: gate to fill `targets_corroborated`.  Advisory ranking only (plan
+    #: decision 6): a candidate never enters or leaves the pool because of it.
+    pooling_sibling_runs: List[str] = field(default_factory=list)
+    # ------------------------------------------------------------------
     # Stage 5d: backward (target -> source) homolog evidence for the
     # expansion bins.  ADVISORY ONLY — `backward_evidence` labels a row, it
     # never gates, never changes `category`, and never touches the
@@ -320,11 +341,19 @@ class MappingValidationConfig:
                               pool_widen=self.pool_widen)
 
     @property
-    def mode_rank(self) -> int:
-        return MODE_RANK[self.effective_mode]
+    def mode_rank(self) -> Optional[int]:
+        """The nested chain's rank, or None for `pooling`.
+
+        None is the point: pooling has no rank in that ladder, and publishing
+        it as such keeps a pooling run from being read as a wider restrictive
+        run.
+        """
+        mode = self.effective_mode
+        return None if mode == POOLING_MODE else MODE_RANK[mode]
 
     def mode_at_least(self, mode: str) -> bool:
-        return self.mode_rank >= MODE_RANK[str(mode).lower()]
+        rank = self.mode_rank
+        return False if rank is None else rank >= MODE_RANK[str(mode).lower()]
 
 
 @dataclass
@@ -873,6 +902,10 @@ RUN_FILE_LAYOUT: Dict[str, str] = {
     'gap_fill_dedup.csv': 'gap_fill',
     'gap_fill_levels.csv': 'gap_fill',
     'gap_fill_proposals.csv': 'gap_fill',
+    # pooling mode: the unsupervised engine and its post-hoc comparison
+    'pooling_candidates.csv': 'pooling',
+    'pooling_pool.csv': 'pooling',
+    'pooling_cross_validation.json': 'pooling',
     # mapping provenance
     'mapping_export.csv': 'mapping',
     'same_name_excluded.csv': 'mapping',
@@ -1058,6 +1091,20 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'backward_matches.csv': [
         'query', 'branch_source_type', 'branch_target_type',
         'member_bodyId', 'member_type', 'member_category', 'scan_role'],
+    'pooling_candidates.csv': [
+        'source_bodyId', 'source_type', 'target_bodyId', 'target_type',
+        'jaccard', 'jaccard_rank', 'rank_union', 'rank_union_rank',
+        'window_size', 'in_scope', 'leaf', 'size_nm3',
+        'size_universe_percentile', 'morph_gate', 'morph_bar_kind',
+        'morph_similarity', 'morph_bar', 'morph_qualified', 'mapper_cell',
+        'mapper_verdict', 'targets_corroborated'],
+    'pooling_pool.csv': [
+        'target_bodyId', 'target_type', 'leaf', 'best_source_bodyId',
+        'best_source_type', 'jaccard', 'jaccard_rank', 'rank_union',
+        'window_size', 'size_nm3', 'size_universe_percentile', 'in_scope',
+        'n_sources', 'dup', 'morph_gate', 'morph_similarity', 'morph_bar',
+        'morph_qualified', 'mapper_cell', 'mapper_verdict',
+        'targets_corroborated'],
 }
 
 # The backward (target -> source) evidence columns ride the three expansion
@@ -1295,6 +1342,11 @@ POOL_CATEGORY_ORDER = ('matched', 'verified', 'borderline', 'unmatched')
 # (S0–S8) and `docs/technical/...PIPELINE.md` §4 — those are normative.
 VALIDATION_MODES = ('restrictive', 'family', 'aggressive')
 MODE_RANK = {m: i for i, m in enumerate(VALIDATION_MODES)}
+#: `pooling` is deliberately NOT in `VALIDATION_MODES`/`MODE_RANK`: the nested
+#: chain answers "what else belongs to the pool the mapper asserted", pooling
+#: answers the unsupervised question, and putting it in the ladder would let
+#: every `mode_at_least` comparison admit it.
+POOLING_MODE = 'pooling'
 
 # Tier values (validated in-map targets) and expansion values.
 TIER_CATEGORIES = ('matched', 'verified', 'borderline', 'unmatched')
@@ -1341,8 +1393,20 @@ def normalize_mode(mode, aggressive_expansion: bool = False,
     active (the pre-3.12 precedence bug).
     """
     m = str(mode or 'restrictive').lower()
+    if m == POOLING_MODE:
+        # `pooling` does not nest, so a legacy widening flag alongside it is a
+        # contradiction, not a precedence question — say so and stop.
+        if aggressive_expansion or pool_widen:
+            raise ValueError(
+                "--mode pooling is the unsupervised engine and does not nest "
+                "with --aggressive-expansion / --pool-widen")
+        return POOLING_MODE
     if m not in MODE_RANK:
-        m = 'restrictive'
+        # A typo used to fall through to `restrictive`, i.e. the run reported
+        # one mode while running another.
+        raise ValueError(
+            f'unknown validation mode {mode!r}; expected one of '
+            f'{", ".join(VALIDATION_MODES)} or {POOLING_MODE}')
     if pool_widen and MODE_RANK[m] < MODE_RANK['family']:
         m = 'family'
     if aggressive_expansion:
@@ -5551,6 +5615,37 @@ class MappingValidator:
         self.progress.emit('stage_done', stage='3b',
                            label='coverage accounting')
 
+        # `pooling` mode (plan-tmvev-pooling-mode.md): the unsupervised
+        # candidate engine, on the universe stage 2 already built so nothing
+        # re-scans the vectors.  Reachable only through `--mode pooling`.
+        self._pooling = None
+        if cfg.effective_mode == POOLING_MODE:
+            self.progress.emit('stage_start', stage='P',
+                               label='pooling (unsupervised)',
+                               query_types=list(cfg.query_types))
+            try:
+                from comparison.mapping_validation_pooling import run_pooling
+                self._pooling = run_pooling(
+                    self, target_stats=target_stats, target_bids=target_bids,
+                    target_id2type=target_id2type, val_rows=all_val_rows)
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                self.log(f'[stage P] pooling failed: {exc}')
+                self.log(traceback.format_exc())
+                self.progress.emit('warning', stage='P',
+                                   note=f'pooling failed: {exc}')
+                # a failed pass still writes its exports, carrying the reason:
+                # a missing folder reads as "nothing found", which is a
+                # different claim than "the pass did not run"
+                self._pooling = {'candidates': [], 'pool': [],
+                                 'cross_validation': {
+                                     'error': f'{type(exc).__name__}: {exc}'}}
+            _p = self._pooling or {}
+            self.progress.emit(
+                'stage_done', stage='P', label='pooling (unsupervised)',
+                rows=len(_p.get('candidates') or []),
+                pool=len(_p.get('pool') or []))
+
         # Plan I follow-up: out-map expansion — scan the unpaired source
         # neurons (the scene's out-map branch) for connectivity-ranked
         # candidates outside the in-map claims.
@@ -5711,6 +5806,17 @@ class MappingValidator:
                            getattr(self, '_suspects_verification_rows', None)
                            or [])
         _write_run_csv(rd, 'out_map_expansion.csv', out_map_rows or [])
+        # pooling mode: the unsupervised pool and its post-hoc comparison.
+        # Written only when the pass ran — a non-pooling run gains no file.
+        pooling = getattr(self, '_pooling', None) or {}
+        if pooling:
+            _write_run_csv(rd, 'pooling_candidates.csv',
+                           pooling.get('candidates') or [])
+            _write_run_csv(rd, 'pooling_pool.csv', pooling.get('pool') or [])
+            run_file_path(rd, 'pooling_cross_validation.json',
+                          create_parent=True).write_text(
+                json.dumps(pooling.get('cross_validation') or {}, indent=2,
+                           default=str))
         _write_run_csv(rd, 'pair_summary.csv', summaries)
         _write_run_csv(rd, 'gap_fill_proposals.csv', fills)
         _write_run_csv(rd, 'pool_categories.csv', pool_detail)
@@ -5758,6 +5864,15 @@ class MappingValidator:
             'pool_widen': False,   # retired in Rev 3.12
             'candidate_window': self.cfg.candidate_window,
             'deep_cap': self.cfg.deep_cap,
+            # `pooling` mode (read only when validation_mode == 'pooling'):
+            # the absolute gate, its morph budget, and the sibling runs the
+            # advisory cross-target count was joined against.
+            'pooling_jaccard_floor': self.cfg.pooling_jaccard_floor,
+            'pooling_rank_union_floor': self.cfg.pooling_rank_union_floor,
+            'pooling_window_mult': self.cfg.pooling_window_mult,
+            'pooling_morph_gate': self.cfg.pooling_morph_gate,
+            'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
+            'pooling_sibling_runs': list(self.cfg.pooling_sibling_runs or []),
             'scene_selfcheck': self.cfg.scene_selfcheck,
             'morph_enabled': self.cfg.morph_enabled,
             'morph_auc_floor': self.cfg.morph_auc_floor,
