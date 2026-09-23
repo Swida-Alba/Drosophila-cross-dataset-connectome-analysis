@@ -199,9 +199,12 @@ mapper layer (plan
   `BACKWARD_EVIDENCE_VALUES` / `BACKWARD_COLUMNS` / `blank_backward_fields`
   (the verdict vocabulary + the row shape), `classify_backward_scan` (one
   reverse scan → `high` / `medium` / `low` for the scanned neuron, graded on
-  how prominently the branch's own source type ranks),
-  `serialize_backward_topN` (the `rank|bid|type|ru|jaccard|in_branch`
-  list-in-cell the report hovers), `THIN_SHARED_TYPE_COUNT` (3 — the backward
+  how prominently the branch's own source type ranks — which it reads from
+  `_own_type_hit`, the single scan of both top-3 windows that also publishes
+  the `backward_own_type_*` block, so a grade and its explanation cannot
+  disagree),
+  `serialize_backward_topN` (the `ru_rank|jac_rank|bid|type|ru|jaccard|in_branch`
+  list-in-cell the report hovers, in jaccard order), `THIN_SHARED_TYPE_COUNT` (3 — the backward
   rows publish `backward_shared_type_count` / `backward_union_type_count` with
   a non-gating `backward_thin_evidence` flag), `reverse_source_column` (a pool
   target's column over the whole source universe — the only real competitor set
@@ -234,8 +237,8 @@ BodyId-level validation of an auto type mapping (CLI
 
 - **Category partition**, one ordered first-match per branch: tier
   (`matched`/`verified`/`borderline`/`unmatched`) > `sibling` (in-map
-  bodyId of another branch) > `candidates` (out-of-map, invader or gap
-  fire, morph-qualified) > `family` (out-map bodyIds of THIS branch's
+  bodyId of another branch) > `candidates` (out-of-map, invader / gap
+  fire / family+ discovery-window row, morph-qualified) > `family` (out-map bodyIds of THIS branch's
   target type) > `relative` (candidate-type mates outside the map) >
   `examinees` (aggressive-only deep window; renamed from 'suspicious'
   2026-09-18). `unmatched` is the tier's
@@ -267,10 +270,16 @@ BodyId-level validation of an auto type mapping (CLI
   size pair are row context. **Two invariants:** connectivity
   only (morphology is never re-scored) and advisory (never a `category`,
   a `counts_toward_*` flag, or a fill `level` — the reverse fact rides
-  `gap_fill_levels.csv`'s `evidence` column as `backward_high` etc.).
+  `gap_fill_levels.csv`'s `evidence` column as `backward_high` etc. on
+  `family` / `relative` / `unmatched` rows; a `candidates` row keeps its
+  bar-kind evidence).
   Writes `expansion/backward_matches.csv` + `backward_*` columns onto the
   bins, the dedup and the levels; surfaced as the report's Reciprocal tab
-  (top-1 per row, top-N on hover) and the scenes'
+  (one row per neuron, ordered by the branch-type hit's jaccard —
+  `_reciprocal_row_sort`, not the top-1's — so hitless `low` rows sink, with
+  the branch-type hit beside the
+  branch-type hit beside the chain-best (Jaccard-first) top-1, top-N on
+  hover) and the scenes'
   `· high` / `· medium` / `· low` leaf suffixes (branch-source-type rank grade; token = label).
   Side effect: the pool-member reverse columns (unmatched pool targets
   since 2026-09-19) replace the columns
