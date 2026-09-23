@@ -684,6 +684,10 @@ mapping_validation/type-map-validation_{SRC}_to_{TGT}_{ts}/
         mapping_export.csv
         same_name_excluded.csv
         suspects_verification.csv
+    pooling/                            ← `--mode pooling` only
+        pooling_candidates.csv
+        pooling_pool.csv
+        pooling_cross_validation.json
     visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/
 ```
 
@@ -697,7 +701,9 @@ pre-2026-09-19 flat layout, so existing folders keep working untouched.
 One **ordered first-match partition** assigns every in-scope target
 exactly one `category`; the rule is mode-independent, and the three modes
 NEST (`restrictive ⊆ family ⊆ aggressive`) — switching mode only admits
-more neurons, never relabels one:
+more neurons, never relabels one. `pooling` is a PARALLEL unsupervised
+engine, not a fourth rung of that ladder (see "Pooling mode" below): it
+neither widens these bins nor lives in them.
 
 1. `matched` / `verified` / `borderline` / `unmatched` — the validated
    in-map targets of THIS branch (`unmatched` is the else; there is no
@@ -777,6 +783,45 @@ column of `gap_fill/gap_fill_levels.csv` (as `backward_high` etc. on the
 `family` / `relative` / `unmatched` rows — a `candidates` row keeps its
 bar-kind evidence) and a
 `backward_evidence` column beside it.
+
+### Pooling mode (`--mode pooling`, writes `pooling/`)
+
+`pooling` is **parallel** to the nested `restrictive ⊆ family ⊆ aggressive`
+ladder, not its top rung, and the run's `parameters.json` says so by
+carrying `validation_mode: pooling` and **no `mode_rank`**. The nested bins
+above are still produced (they are the supervised answer), and this engine
+adds an independent UNSUPERVISED one: the queried population is scanned
+against the WHOLE target universe under absolute floors
+(`pooling_jaccard_floor`, `pooling_rank_union_floor`, and a rank window of
+`pooling_window_mult` × the SOURCE type's own queried population), then
+morphology gates only those connectivity survivors through the
+Find-Homolog fast path. **No branch pool and no mapper claim decides whether
+a row is a candidate** — the mapper is joined afterwards, so the mode can
+disagree with it. A stage failure is recorded in
+`pooling/pooling_cross_validation.json` as `{"error": …}` and never aborts
+the run.
+
+*   **`pooling_candidates.csv`**: one row per (source, target) evidence
+    pair — scores, both ranks and the window, `leaf` (the same
+    `{T}(out-map)` / `{T}>{src}` / `{T}(no_source)` / `untyped` token the
+    expansion bins use), `size_nm3` + `size_universe_percentile`, the morph
+    verdict, `mapper_cell` and `targets_corroborated`.
+*   **`pooling_pool.csv`**: one row per candidate target neuron, the
+    chain-best source winning on the ordering chain, with `n_sources` /
+    `dup`.
+*   **`pooling_cross_validation.json`**: the cells — `confirmed` (sits in a
+    refined target pool), `type_miss` / `type_new` (the harvest: the mapper
+    never named it), `verified_only` (the mapper's pair fails the absolute
+    bar) — plus bodyId lists, the morph record, the corroboration histogram
+    and the `reading_notes` that say which cells are NOT recall measures.
+
+`morph_gate` keeps three absences apart on purpose (`not-selected`,
+`not-attempted-cap`, `no-score`) and none of them is a rejection;
+`targets_corroborated` stays blank unless `--pooling-corroborate-with` named
+sibling runs of the same query, because a `0` would claim that no other
+target agrees — about runs that were never run. The cross-target key is
+(source bodyId, candidate target TYPE): target bodyIds do not transfer
+across datasets. Both columns are advisory ranking only, never a gate.
 
 ### Key Output Files
 

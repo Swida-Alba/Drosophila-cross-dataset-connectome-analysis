@@ -457,15 +457,29 @@ morphology.
 
 The three modes **nest**: `restrictive ⊆ family ⊆ aggressive`. Each adds
 neurons; it never relabels one. Pick the smallest mode that answers your
-question.
+question. A fourth value, `pooling`, sits OUTSIDE that ladder and is
+described after the table.
 
 | mode | flag | adds | behavior |
 | --- | --- | --- | --- |
 | **restrictive** (default) | — | — | the validated tier + `sibling` + `candidates` (invaders and gap fires that pass the morph rule). Minimal expansion |
 | **family** | `--mode family` | discovery window, `family`, `relative` | reads the top `rank_top_k` of each metric as candidate evidence, then surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). The last two are ungated by qualification — bounded by the types themselves |
 | **aggressive** | `--mode aggressive` | `examinees` | everything in family, with the window widened to `candidate_window` (25); the band beyond `rank_top_k` is labelled `examinees` (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
+| **pooling** | `--mode pooling` | an independent UNSUPERVISED pool (`pooling/`) | NOT a rung of this ladder: every neuron the query names is scanned against the WHOLE target universe under absolute floors — `jaccard > pooling_jaccard_floor` (0.10), `rank_union > pooling_rank_union_floor` (0), both ranks inside `pooling_window_mult` (2×) the source type's own queried population — and morphology then gates only those connectivity survivors through the Find-Homolog fast path (no NBLAST). Nothing reads a branch pool or a mapper claim, so this is a homolog *finding*, not a pool *refinement*: the mapper's claims are joined afterwards into `pooling_cross_validation.json` (`confirmed` / `type_miss` / `type_new` / `verified_only`), and `parameters.json` carries `validation_mode: pooling` with **no `mode_rank`**. The nested bins above are still produced, from the mapper's side of the run |
 
-The mode is recorded in `parameters.json` (`validation_mode`). Only
+Two readings of `pooling` keep it honest. `verified_only` is expected to be
+large: the supervised tier admits by pool membership while this gate admits
+by global rank, so it is not a false-positive count. And no cell is a recall
+measure — the unsupervised seed is the queried population, whereas the
+supervised pair set exists only for the sources a branch claimed. It is
+reached from the CLI: the UI's mode dropdown offers the three nested modes
+only (`ui/tabs/type_validation.py:MODE_OPTIONS`, pinned to `VALIDATION_MODES`
+by a test), because pooling changes what a run *is*, not how wide it goes.
+
+The mode is recorded in `parameters.json` (`validation_mode`, plus
+`mode_rank` for the three nested ones — a `pooling` run publishes
+`validation_mode: pooling` and NO `mode_rank`, because there is no rung to
+be ranked on). Only
 `candidates` count toward the restrictive gap fill; `family` and
 `relative` are broader, lower-confidence suggestions.
 
@@ -480,6 +494,12 @@ The mode is recorded in `parameters.json` (`validation_mode`). Only
 | `--suspicious-ru-margin` | numerical-tie rule (default 0.02) |
 | `--no-morphology` | skip stage 5 (fast structural pass) |
 | `--mode {restrictive\|family\|aggressive}` | expansion mode (§4); default restrictive |
+| `--mode pooling` | the parallel unsupervised engine (§4) — writes `pooling/` and joins the mapper afterwards; it does not accept a widening flag (`--aggressive-expansion` with it is a usage error) |
+| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0 — the design plan measured 0.10 as the value that keeps every pair the supervised path graded `verified` on all three targets, `_plan/plan-tmvev-pooling-mode.md` §2.2; the floor is NOT dataset-neutral, so do not raise it without re-reading that section) |
+| `--pooling-window-mult` | rank window = this × the source type's own queried population (default 2.0; measured selectivity is carried by the floors, not the window) |
+| `--no-pooling-morph-gate` | publish the connectivity-only pool (the morph pass is the run's remaining network-bound cost) |
+| `--pooling-max-morph-targets N` | morph budget, one row per candidate target (default 400); rows past it are labelled `morph_gate=not-attempted-cap`, never blank |
+| `--pooling-corroborate-with RUN_DIR …` | run folders of the SAME query against OTHER targets: fills the advisory `targets_corroborated` count on (source bodyId, candidate target TYPE). Blank without it — a `0` would claim that no other target agrees, about runs that were never run |
 | `--backward-evidence` | stage 5d: reverse (target → source) homolog evidence on the `candidates` / `family` / `relative` bins (§2.2c) — **advisory, connectivity-only, default OFF** |
 | `--skip-backward-pass` | force-skip stage 5d even when `--backward-evidence` is set |
 | `--backward-top-n N` | reverse hits kept per neuron — the hover list in the Reciprocal tab (default 5) |

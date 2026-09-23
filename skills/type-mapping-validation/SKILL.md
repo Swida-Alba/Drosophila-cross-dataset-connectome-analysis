@@ -46,7 +46,7 @@ $PY scripts/RunMappingValidation.py \
     --source flywire_FAFB_v783 --target male-cns:v1.0 \
     --types <TYPE_A,TYPE_B | coarse_cell_type> \
     --label <short_label> \
-    [--mode restrictive|family|aggressive] \
+    [--mode restrictive|family|aggressive|pooling] \
     [--backward-evidence] \
     [--scene-selfcheck]
 ```
@@ -177,6 +177,14 @@ tab, because a silently uncapped-out parent has no review scene at all.
     with `backward_own_type_via` naming the ranking that placed it there),
     and the serialized `backward_topN` neighbourhood the report hovers,
     listed in jaccard order (§3).
+11d. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
+    `pooling_cross_validation.json` — `--mode pooling` only: every
+    (source, target) pair the absolute gate admitted, the same pool deduped
+    to one row per candidate target, and the post-hoc comparison with the
+    mapper (`confirmed` / `type_miss` / `type_new` / `verified_only`, the
+    morph record, the corroboration histogram, the `reading_notes`).
+    `morph_gate` names its three absences apart; `targets_corroborated` is
+    blank unless `--pooling-corroborate-with` named sibling runs (§4b).
 12. `visualization/*.html` — one 3D scene per parent type.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
@@ -362,11 +370,13 @@ tab, because a silently uncapped-out parent has no review scene at all.
   `type + suffix`, not bodyId. `sibling` stays a single counted root. The
   legend panel is content-width up to 420px.
 
-## 4. Scope switches (THREE NESTED MODES)
+## 4. Scope switches (THREE NESTED MODES + ONE PARALLEL)
 
 The modes are one ordered enum `restrictive < family < aggressive`; they
 NEST — a neuron keeps the same category across modes, and each mode only
-admits more neurons.
+admits more neurons. `pooling` is a fourth `--mode` value that is NOT in
+that enum (see below): it does not admit more of these bins, it answers a
+different question alongside them.
 
 - **restrictive (DEFAULT)**: tier + `sibling` + `candidates`. Minimal
   expansion.
@@ -409,6 +419,58 @@ admits more neurons.
 Note (Rev 3.12): chain-aware POOL widening is RETIRED — family mode no
 longer touches the tier; the former widening members are the `family`
 bin. `parameters.json` records `validation_mode` / `mode_rank`.
+
+## 4b. Pooling mode (`--mode pooling`) — the parallel unsupervised engine
+
+The nested ladder asks *what else belongs to the pool the type mapper
+already asserted*. Pooling asks *what do connectivity and morphology say
+is a homolog of the queried population, over the whole opposite universe*,
+and only then compares that answer with the mapper. It is a fourth CLI
+value, NOT a wider rung: it is absent from `VALIDATION_MODES` /
+`MODE_RANK`, so a pooling run publishes `validation_mode: pooling` with NO
+`mode_rank`, and `--mode pooling` with a widening flag is a usage error
+(it does not nest, so that pair is a contradiction, not a precedence
+question). It writes `pooling/` beside the nested bins and changes none of
+them.
+
+- **CLI-only by design**: the UI mode dropdown offers the three nested modes
+  (`ui/tabs/type_validation.py:MODE_OPTIONS`, pinned equal to
+  `VALIDATION_MODES` by `tests/ui/test_type_validation_tab.py`). Pooling is
+  reached through `scripts/RunMappingValidation.py --mode pooling`.
+- **Run it**: `--mode pooling [--pooling-jaccard-floor 0.10]
+  [--pooling-rank-union-floor 0] [--pooling-window-mult 2.0]
+  [--no-pooling-morph-gate] [--pooling-max-morph-targets 400]
+  [--pooling-corroborate-with <run dir> …]`.
+- **Gate (absolute, never pool-relative)**: `jaccard >` floor,
+  `rank_union >` floor, and BOTH metric ranks inside
+  `window_mult × the size of that source neuron's own type population`.
+  The seed is every neuron the query names by the SOURCE dataset's own
+  annotation, so the residue no branch claims is inside it. 0.10 is the
+  measured floor that keeps every pair the supervised path graded
+  `verified` on all three targets — and it is NOT dataset-neutral, so do
+  not raise it without re-fitting it.
+- **Morphology last**: the Find-Homolog fast path (no NBLAST) with the
+  branch-free persisted `mapping_ref` bar, on the connectivity survivors
+  only, under a budget. Read `morph_gate` before reading a blank:
+  `not-selected` (this row is not its target's chain-best row),
+  `not-attempted-cap` (the budget refused to look), `no-score` (no vector
+  for the pair) — none of the three is a rejection.
+- **Post-hoc cells** (`pooling/pooling_cross_validation.json`):
+  `confirmed` (sits in a refined target pool), `type_miss` / `type_new`
+  (the harvest: the mapper never named this neuron), `verified_only`.
+  Two rules when you report them: `verified_only` is EXPECTED to be large
+  (the supervised tier admits by pool membership, this gate by global
+  rank) and is not a false-positive count; and no cell is a recall
+  measure, because the two engines seed from different sets.
+- **Advisory columns**: `targets_corroborated` is blank unless
+  `--pooling-corroborate-with` named sibling runs of the same query
+  against other targets, and its key is (source bodyId, candidate target
+  TYPE) — target bodyIds do not transfer across datasets. `size_nm3` /
+  `size_universe_percentile` are labels, not bars (the nm³ medians differ
+  by orders of magnitude between datasets). Neither ever gates a row.
+- A stage-P failure never aborts the run: it lands in
+  `pooling_cross_validation.json` as `{"error": …}` and the CSVs come out
+  empty.
 
 ## 5. Reporting checklist
 

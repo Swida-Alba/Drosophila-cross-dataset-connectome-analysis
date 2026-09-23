@@ -323,6 +323,50 @@ window it is connectivity-qualified, so rule 3 takes it as a
 `candidate`), and a gap-fired target ranked below the pool best is a
 `candidate` (rule 3 precedes rule 6).
 
+### 4.5a Pooling: the parallel engine (`--mode pooling`)
+
+`pooling` is deliberately absent from `VALIDATION_MODES` / `MODE_RANK`, so
+every `mode_at_least` comparison keeps answering "not at all" for it and
+adding a rung cannot silently make the nested bins admit pooling rows. A
+pooling run therefore reports `validation_mode: pooling` with **no
+`mode_rank`** in `parameters.json`, and `normalize_mode` raises on
+`pooling` combined with a legacy widening flag (it does not nest, so that
+pair is a contradiction rather than a precedence question).
+
+The engine (`comparison/mapping_validation_pooling.py`, stage `P`, runs
+after the category partition and before the out-map expansion) answers a
+different question. The nested modes ask *what else belongs to the pool the
+type mapper already asserted*; pooling asks *what do connectivity and
+morphology say is a homolog of the queried population, over the whole
+opposite universe*, and compares that answer with the mapper afterwards.
+The unsupervised property is the invariant, and it is enforced by a test
+that makes the claim lookups raise:
+
+- **seed** — every neuron the query names by the SOURCE dataset's own
+  annotation (`_bodyids_for`), so the residue the branches do not claim is
+  inside it. A branch-pool seed would make the mode supervised and is not
+  offered.
+- **gate** — absolute, never pool-relative: `jaccard >` floor (0.10
+  measured), `rank_union >` floor (0), and both metric ranks inside
+  `window_mult` × the size of THAT SOURCE TYPE's queried population. The
+  window scales to the quantity an unsupervised run knows; a branch's
+  claimed pool is the supervised one.
+- **morphology last** — the Find-Homolog fast path (no NBLAST) with the
+  branch-free persisted `mapping_ref` bar, applied to the connectivity
+  survivors only, under a budget. A row that was not looked at says which
+  of the three absences it is (`not-selected`, `not-attempted-cap`,
+  `no-score`); a blank would read as a rejection.
+- **mapper joined post-hoc** — `confirmed` / `type_miss` / `type_new` /
+  `verified_only`, with `reading_notes` published beside them: no cell is a
+  recall measure (the two engines seed from different sets), and a large
+  `verified_only` is expected (pool membership vs global rank), not a
+  false-positive count.
+- **advisory only** — a pooling candidate never enters or leaves its pool
+  because of the mapper, of `targets_corroborated`, or of a size column
+  (`size_nm3` is published with its universe percentile, and nm³ medians
+  differ by orders of magnitude across datasets, so it is a label, not a
+  bar).
+
 ### 4.6 Query-level dedup
 
 A bodyId can appear in several branches (N-to-1 gives one target type
@@ -621,6 +665,7 @@ target-vector build time.
   (BANC 4.6e9 vs MCNS 1.8e8 nm³) and that is harmless: the caliber test is a
   ratio inside one dataset.
 - **Modes** (one nested enum `restrictive < family < aggressive`; §4.5):
+  `pooling` is a fourth CLI value and is NOT a rung of this enum (§4.5a).
   - **restrictive** (default): tier + `sibling` + `candidates`
     (invaders ∪ gap fires, morph-qualified). Minimal expansion.
   - **family**: adds the **candidate-discovery window** — the retained
@@ -908,7 +953,7 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
   against its neuron's bbox (undoing the FAFB tilt rotation before
   comparing).
 
-## 8b. Three modes — behavioral summary
+## 8b. Modes — behavioral summary
 
 | | restrictive (default) | family | aggressive |
 | --- | --- | --- | --- |
@@ -921,7 +966,9 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
 
 The mode is recorded in `parameters.json` (`validation_mode`). Modes are
 one ordered enum; a shared neuron's category is identical across modes
-(§4.5).
+(§4.5). `pooling` is a fourth `--mode` value and is NOT in that enum: it
+runs a parallel unsupervised engine whose rows live in `pooling/` and never
+enter the bins above (§4.5a).
 
 ## 9. Exports
 
@@ -945,7 +992,8 @@ gives the subfolder each one lives in.
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size`, and the provenance pair `selected_chain` / `source_chain` (the chain that resolved the target pool vs the one that named the source neurons — equal except under the per-side basis) |
-| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
+| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`); `targets_corroborated` stays blank unless `--pooling-corroborate-with` named sibling runs |
+| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the pooling knobs (`pooling_jaccard_floor`, `pooling_rank_union_floor`, `pooling_window_mult`, `pooling_morph_gate`, `pooling_max_morph_targets`, `pooling_sibling_runs`), the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
 | `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
@@ -969,6 +1017,8 @@ root keeps only the deliverables and the parameter/meta surface
 │                 · source_candidates · source_status · backward_matches
 ├── gap_fill/     gap_fill_dedup · gap_fill_levels · gap_fill_proposals
 ├── mapping/      mapping_export · same_name_excluded · suspects_verification
+├── pooling/      pooling_candidates · pooling_pool · pooling_cross_validation
+│                 (`--mode pooling` only — absent from every other run)
 └── visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/*.html
 ```
 (CSV names shown without their `.csv` suffix; every evidence file lives
