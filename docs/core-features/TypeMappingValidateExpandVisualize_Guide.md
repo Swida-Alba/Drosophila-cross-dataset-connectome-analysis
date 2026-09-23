@@ -58,7 +58,8 @@ flag at all — the tab is their only entrance.
 | Query chips | `query_types` (comma-split) | `--types` |
 | Run Label | `run_label` | `--label` |
 | Output directory | `output_dir` | `--output-dir` |
-| Validation Mode (Restrictive/Family/Aggressive) | `validation_mode` | `--mode` |
+| Validation Mode (Restrictive/Family/Aggressive/Pooling) | `validation_mode` | `--mode` |
+| Pooling gate card (visible only in mode Pooling): Jaccard floor / fit-to-evidence / window multiplier / morphology last / morph budget | `pooling_jaccard_floor` / `pooling_floor_from_evidence` / `pooling_window_mult` / `pooling_morph_gate` / `pooling_max_morph_targets` | `--pooling-jaccard-floor` / `--no-pooling-floor-from-evidence` / `--pooling-window-mult` / `--no-pooling-morph-gate` / `--pooling-max-morph-targets` |
 | Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
 | 3D review scenes | `visualize` | `--no-visualize` (negated) |
 | Backward (reciprocal) evidence | `backward_evidence_enabled` | `--backward-evidence` |
@@ -88,7 +89,8 @@ start there. It assembles the headline (e.g. **242 source neurons →
 (L1 claim / L2 provenance / L3 validation), the branch table, the
 target-side holes, the fill proposals with per-row provenance, the
 **Reciprocal** tab (stage 5d, only on `--backward-evidence` runs — §2.2c),
-the out-map expansion, the backward `source-` view, the morphology record
+the out-map expansion, the backward `source-` view, the **Pooling** tab (the
+whole result of a `--mode pooling` run — §4), the morphology record
 (with the null-sample advisory when null-kind bars are in play), the
 scene gallery, and a file index.
 Hover any dotted term — or any table header, which explains its own column
@@ -123,6 +125,7 @@ Branches tab. The legend tree, top to bottom:
 | `examinees` (red) | deep-window homologs below the pool best (renamed from `suspicious` — the mapper's rival-suspects concept now owns that word) — lowest confidence; each leaf carries `{type}(out-map)` / `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` **[aggressive mode]** |
 | `out-map query · {type}` (blue) | your source neurons of the type that **no branch pool claims** — the unplaced residue of the source-side gap; compare them with `candidates` to judge the fill |
 | `out-map candidates · {type}` (light blue) | the top connectivity-ranked targets found by scanning those unpaired sources (no morph bars; exploratory) |
+| `pooling · {source type}` (plum — `#7b4173`) **[pooling mode]** | the unsupervised pool whose best source has this type — one leaf per candidate target, ordered by the exported leaf token and tagged with the post-hoc `mapper_cell` (`confirmed` / `type_miss` / `type_new`) plus `morph ✓/✗` where the morph gate scored it. Nothing is re-gated for the picture, so the scene and `pooling/pooling_pool.csv` cannot disagree; a pool whose best source has a type no branch group covers has no host scene and is named in the run log. Report: Pooling tab |
 | `source-candidates · {target type}` (brown — Category10 `#8c564d`; hidden by default, one eye click restores) | **out-of-map sources** (claimed by no branch) whose best-ranked connectivity hits land in this branch's targets and pass the run null bar — the backward mirror of candidate admission; advisory only, never a fill. The leaf's type suffix is the source's own type; `(dup)` marks sources that are candidates for several branches. Report: Backward tab |
 
 Every expansion leaf carries **one** token, decided in this order:
@@ -471,10 +474,30 @@ Two readings of `pooling` keep it honest. `verified_only` is expected to be
 large: the supervised tier admits by pool membership while this gate admits
 by global rank, so it is not a false-positive count. And no cell is a recall
 measure — the unsupervised seed is the queried population, whereas the
-supervised pair set exists only for the sources a branch claimed. It is
-reached from the CLI: the UI's mode dropdown offers the three nested modes
-only (`ui/tabs/type_validation.py:MODE_OPTIONS`, pinned to `VALIDATION_MODES`
-by a test), because pooling changes what a run *is*, not how wide it goes.
+supervised pair set exists only for the sources a branch claimed.
+
+**The Jaccard floor is per dataset pair, and the configured value is a
+CEILING.** One global floor is only safe in the low band: measured over every
+pair the supervised path graded `matched`/`verified` in the runs on record,
+`J=0.20` rejects 2.1 % of FAFB→male-cns (241 pairs), 36.6 % of FAFB→BANC
+(164) and 20.0 % of FAFB→hemibrain (145), while the shipped `0.10` rejects
+none of them — the same non-neutrality `_plan/plan-tmvev-pooling-mode.md`
+§2.2 measured. So with `pooling_floor_from_evidence` on (the default) the run
+gates on `min(pooling_jaccard_floor, q05 of that dataset pair's own graded
+evidence)`, read from
+`cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` BEFORE the scan
+and written only AFTER it: a run can never move its own gate with its own
+claims, which is what keeps the mode unsupervised. Fewer than 20 pairs on
+record leaves the configured floor in place
+(`dataset-fitted-thin-sample`), and the Pooling tab's gate block publishes
+which of the three sources produced the number that gated this run.
+
+The UI offers `pooling` as a fourth **Pooling** button with its own gate card
+(§1b) because the tab must be able to START the mode — not because the mode
+is wider: `ui/tabs/type_validation.py:MODE_OPTIONS` is
+`VALIDATION_MODES + ['pooling']`, pinned beside `POOLING_MODE not in
+MODE_RANK` by a test. The result reads in the report's **Pooling** tab (§2.0)
+and, inside a scene, as the `pooling · {source type}` legend root (§2.1).
 
 The mode is recorded in `parameters.json` (`validation_mode`, plus
 `mode_rank` for the three nested ones — a `pooling` run publishes
@@ -495,7 +518,8 @@ be ranked on). Only
 | `--no-morphology` | skip stage 5 (fast structural pass) |
 | `--mode {restrictive\|family\|aggressive}` | expansion mode (§4); default restrictive |
 | `--mode pooling` | the parallel unsupervised engine (§4) — writes `pooling/` and joins the mapper afterwards; it does not accept a widening flag (`--aggressive-expansion` with it is a usage error) |
-| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0 — the design plan measured 0.10 as the value that keeps every pair the supervised path graded `verified` on all three targets, `_plan/plan-tmvev-pooling-mode.md` §2.2; the floor is NOT dataset-neutral, so do not raise it without re-reading that section) |
+| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0). The Jaccard value is a **ceiling**, not necessarily the gate: with the evidence fit on (below) it is pulled down to the fitted q05 when this dataset pair's own verified evidence starts below it — 0.10 rejects none of it on any target today, 0.20 rejects a third of BANC's (§4) |
+| `--no-pooling-floor-from-evidence` | gate on the literal floor above, ignoring the per-dataset-pair evidence record |
 | `--pooling-window-mult` | rank window = this × the source type's own queried population (default 2.0; measured selectivity is carried by the floors, not the window) |
 | `--no-pooling-morph-gate` | publish the connectivity-only pool (the morph pass is the run's remaining network-bound cost) |
 | `--pooling-max-morph-targets N` | morph budget, one row per candidate target (default 400); rows past it are labelled `morph_gate=not-attempted-cap`, never blank |

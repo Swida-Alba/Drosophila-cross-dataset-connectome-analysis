@@ -795,11 +795,20 @@ against the WHOLE target universe under absolute floors
 (`pooling_jaccard_floor`, `pooling_rank_union_floor`, and a rank window of
 `pooling_window_mult` × the SOURCE type's own queried population), then
 morphology gates only those connectivity survivors through the
-Find-Homolog fast path. **No branch pool and no mapper claim decides whether
+Find-Homolog fast path. The Jaccard floor the run actually gated on is a
+per-dataset-pair FIT bounded by the configured value
+(`min(pooling_jaccard_floor, q05 of the pairs this dataset pair's own
+`matched`/`verified` rows carry)`), read from
+`cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` before the scan
+and written after it, so no run gates on the claims it is making; its
+provenance is published in the `gate` block below. **No branch pool and no
+mapper claim decides whether
 a row is a candidate** — the mapper is joined afterwards, so the mode can
 disagree with it. A stage failure is recorded in
 `pooling/pooling_cross_validation.json` as `{"error": …}` and never aborts
-the run.
+the run. The run's whole result reads in `report.html`'s **Pooling** tab, and
+in a scene as the `pooling · {source type}` legend root (plum; one leaf per
+pooled target, tagged with its `mapper_cell`).
 
 *   **`pooling_candidates.csv`**: one row per (source, target) evidence
     pair — scores, both ranks and the window, `leaf` (the same

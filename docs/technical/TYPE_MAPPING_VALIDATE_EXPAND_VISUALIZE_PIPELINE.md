@@ -346,11 +346,22 @@ that makes the claim lookups raise:
   annotation (`_bodyids_for`), so the residue the branches do not claim is
   inside it. A branch-pool seed would make the mode supervised and is not
   offered.
-- **gate** — absolute, never pool-relative: `jaccard >` floor (0.10
-  measured), `rank_union >` floor (0), and both metric ranks inside
-  `window_mult` × the size of THAT SOURCE TYPE's queried population. The
-  window scales to the quantity an unsupervised run knows; a branch's
-  claimed pool is the supervised one.
+- **gate** — absolute, never pool-relative: `jaccard >` floor, `rank_union >`
+  floor (0), and both metric ranks inside `window_mult` × the size of THAT
+  SOURCE TYPE's queried population. The window scales to the quantity an
+  unsupervised run knows; a branch's claimed pool is the supervised one. The
+  Jaccard floor is a PER-PAIR FIT bounded by the configured value:
+  `min(configured, q05 of the jaccards this (source, target) pair's own
+  `matched`/`verified` rows carry)`, read from
+  `cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` (the
+  `NullVectorStore` neighbourhood, for the same reason — an unpinned sample
+  makes a bar drift) at the START of the pass and written at the END, so a
+  run never gates on claims it is making. Below 20 pairs on record the
+  configured floor stands. `pooling_floor_from_evidence=False` skips the fit.
+  Measured on the runs on record, the configured 0.10 binds nowhere (it
+  rejects 0 % of the graded pairs of all three targets) while 0.20 rejects
+  2.1 % / 36.6 % / 20.0 % of male-cns / BANC / hemibrain — the dataset
+  non-neutrality the fit exists for.
 - **morphology last** — the Find-Homolog fast path (no NBLAST) with the
   branch-free persisted `mapping_ref` bar, applied to the connectivity
   survivors only, under a budget. A row that was not looked at says which
@@ -366,6 +377,16 @@ that makes the claim lookups raise:
   (`size_nm3` is published with its universe percentile, and nm³ medians
   differ by orders of magnitude across datasets, so it is a label, not a
   bar).
+- **surfaces** — the run's whole result reads in the report's **Pooling** tab
+  (gate + provenance, the four cells, the harvest by target type, the morph
+  and corroboration summaries, then one row per pooled target); in a scene it
+  is the `pooling · {source type}` legend root (plum `#7b4173`), hosted by
+  the parent group of the source that reached each target best — a pool row
+  has no branch, so that type is its only scene address, and a type no branch
+  group covers is named in the run log instead of rendering nothing. The UI's
+  mode row offers a fourth **Pooling** button with its own gate card
+  (`card-tmvev-pooling`), which is an entrance to the mode, not a widening
+  of the ladder.
 
 ### 4.6 Query-level dedup
 
@@ -992,10 +1013,10 @@ gives the subfolder each one lives in.
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size`, and the provenance pair `selected_chain` / `source_chain` (the chain that resolved the target pool vs the one that named the source neurons — equal except under the per-side basis) |
-| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`); `targets_corroborated` stays blank unless `--pooling-corroborate-with` named sibling runs |
+| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`); `targets_corroborated` stays blank unless `--pooling-corroborate-with` named sibling runs. Its `gate` block publishes the floor that ACTUALLY gated the run with its provenance (`jaccard_floor`, `jaccard_floor_configured`, `jaccard_floor_source` ∈ `config-default` / `dataset-fitted` / `dataset-fitted-thin-sample`, `jaccard_floor_evidence_n`, `jaccard_floor_q05`, and `jaccard_floor_pairs_added` — what this run recorded for the next one) |
 | `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the pooling knobs (`pooling_jaccard_floor`, `pooling_rank_union_floor`, `pooling_window_mult`, `pooling_morph_gate`, `pooling_max_morph_targets`, `pooling_sibling_runs`), the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, the **Pooling** tab (§4.5a: the gate with its provenance, the four comparison cells, the harvest by target type, the morph + corroboration summaries and one row per pooled target — a pooling run's result reads nowhere else, because the nested tabs are empty by construction there), morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
 | `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap, `[reciprocal]` own-source-type top-3 counts) — the `[reciprocal]` line is also quoted verbatim in `report.html`'s Warnings section as a derived advisory |
 | `visualization/*.html` | tree-legend scenes per parent group |
