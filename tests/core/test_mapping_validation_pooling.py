@@ -586,3 +586,34 @@ def test_the_floor_stay_can_be_switched_off(monkeypatch, tmp_path):
     floor, meta = pool.resolve_jaccard_floor(
         _cfg(pooling_floor_from_evidence=True), project_root=str(tmp_path))
     assert meta['source'] == pool.FLOOR_FITTED and floor < 0.10
+
+
+# ---------------------------------------------------------------------------
+# Scene integration (plan §4.6): which scene hosts which pooled candidate
+# ---------------------------------------------------------------------------
+def test_the_pooling_root_wears_no_ladder_colour():
+    """`pooling` is parallel to the nested ladder, so its legend colour must
+    not be one of the bins' — a reader who sees plum knows the layer came
+    from the unsupervised scan, not from a branch."""
+    from comparison.mapping_validation_visualize import CATEGORY_COLORS
+    plum = CATEGORY_COLORS['pooling']
+    assert plum
+    for other in ('candidates', 'family', 'relative', 'sibling', 'examinees',
+                  'out-map candidates', 'source-candidates', 'fill'):
+        assert plum != CATEGORY_COLORS[other], other
+
+
+def test_a_pool_row_is_hosted_by_its_best_sources_type_scene():
+    """A pool row belongs to no branch, so the type of the source that
+    reached the target best is its only scene address.  A row whose source
+    has no type cannot be addressed, and lands in the key the render pass
+    reports as unhosted rather than disappearing."""
+    from comparison.mapping_validation_visualize import pool_rows_by_host
+    rows = [{'target_bodyId': 500, 'best_source_type': 's-LNv'},
+            {'target_bodyId': 501, 'best_source_type': 's-LNv'},
+            {'target_bodyId': 502, 'best_source_type': 'DN1pA'},
+            {'target_bodyId': 503, 'best_source_type': None}]
+    hosts = pool_rows_by_host(rows)
+    assert sorted(hosts) == ['', 'DN1pA', 's-LNv']
+    assert [r['target_bodyId'] for r in hosts['s-LNv']] == [500, 501]
+    assert pool_rows_by_host([]) == {}

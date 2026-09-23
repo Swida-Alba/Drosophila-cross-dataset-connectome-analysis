@@ -23,6 +23,13 @@ prefixes — so the legend and the CSVs cannot disagree.
                                              the qualified token
                                              ``{T}(out-map)`` / ``{T}>{src}``
                                              / ``{T}(no_source)`` / ``untyped``)
+    ``pooling · {src_type}``            (``pooling`` mode only: the
+                                             unsupervised pool whose best
+                                             source has this parent type;
+                                             the leaf token rides with the
+                                             post-hoc ``mapper_cell`` — and
+                                             the morph verdict where the
+                                             gate scored it — as the tag)
   A standalone ``(dup)`` tag on a leaf marks a bodyId recurring across
   branches.  Leaves inside a root are sorted by ``type + suffix``, and a
   bare-category root always renders even with a single leaf.
@@ -85,6 +92,11 @@ CATEGORY_COLORS = {
     'family': '#98df8a',       # light green - same-type extra, unqualified
     'relative': '#bcbd22',     # olive   - type-mates of candidate types
     'relatives': '#bcbd22',    # olive   - legacy alias (pre-3.12 root name)
+    'pooling': '#7b4173',      # plum    - `pooling` mode's unsupervised
+                               # pool: parallel to the ladder, so it wears
+                               # no colour the ladder's bins own
+                               # (distinct from candidates orange and
+                               # sibling pink)
 }
 UNASSIGNED_COLOR = '#7f7f7f'  # grey
 
@@ -585,6 +597,19 @@ def check_scene_identities(viz, scene_bboxes: Dict[int,
     return problems
 
 
+def pool_rows_by_host(pool_rows) -> Dict[str, List[Dict]]:
+    """The ``pooling`` pool grouped by the scene that may host it: the TYPE
+    of each candidate target's best source.  A pool row belongs to no branch,
+    so its source's type is its only scene address — one row per target means
+    one host, and a type no branch group covers renders no layer (the render
+    pass names those rows rather than dropping them quietly).
+    """
+    hosts: Dict[str, List[Dict]] = defaultdict(list)
+    for r in pool_rows or []:
+        hosts[str(r.get('best_source_type') or '')].append(r)
+    return hosts
+
+
 def compute_out_map_sources(branch_list) -> List[int]:
     """The source-side gap of one parent type: annotated FAFB bodyIds
     that NO branch pool claims (outside every refined ``source_pool`` —
@@ -664,6 +689,20 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             xformed = list(xformed)
         return xformed or []
 
+    def bridge_targets_to_scene_space(raw):
+        """TARGET neurons into the scene's render space, as
+        ``(neurons, dropped)``.  The dropped count matters: a neuron the
+        bounds validation refuses must be reported, never silently lost."""
+        if not raw or not needs_transform:
+            return list(raw), 0
+        xformed = transform_neurons_to_space(
+            navis.NeuronList(raw), tgt_native, src_space,
+            validate_bounds=True, verbose=False)
+        if isinstance(xformed, navis.NeuronList):
+            xformed = list(xformed)
+        xformed = xformed or []
+        return xformed, len(raw) - len(xformed)
+
     # group pairs into parent mapping groups (query, source_type)
     parents: Dict[Tuple[str, str], List] = {}
     for pair in validator.pairs:
@@ -690,6 +729,22 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
     skel_dir = (Path(validator.profiler.cache_dir) /
                 cfg.target_dataset.replace(':', '_').replace('.', '_') /
                 'skeletons' / 'raw_skeletons')
+
+    # `pooling` mode (plan-tmvev-pooling-mode.md): the unsupervised pool is
+    # hosted by the parent group of the source that reached each target BEST
+    # — a pool row has no branch, so the source type is its only scene
+    # address.  A source type no branch covers has no scene to host it, and
+    # that must be said rather than left as a missing layer.
+    pooling_hosts = pool_rows_by_host(
+        (getattr(validator, '_pooling', None) or {}).get('pool'))
+    unhosted = sorted(set(pooling_hosts) - {k[1] for k, _ in scenes})
+    if unhosted:
+        validator.log(
+            f'[stage 4] ! pooling: '
+            f'{sum(len(pooling_hosts[t]) for t in unhosted)} pooled '
+            f'target(s) have no scene — their best source has type '
+            f"{', '.join(unhosted)}, which no branch group covers. "
+            'pooling/pooling_pool.csv holds every one of them.')
 
     def load_target_neurons(bids: List[int]):
         neurons, dropped = [], []
@@ -1125,6 +1180,48 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                                       CATEGORY_COLORS['out-map candidates'],
                                       [c_label] * len(neurons),
                                       category='out-map candidates')
+
+            # `pooling` mode: the unsupervised pool for THIS parent type,
+            # one layer beside the branches it was compared with.  Nothing
+            # is re-gated for the picture — the leaf carries the exported
+            # leaf token plus the post-hoc mapper cell (and the morph
+            # verdict where the gate scored it), so the scene and
+            # `pooling/pooling_pool.csv` cannot disagree.
+            pool_rows = pooling_hosts.get(src_type) or []
+            if pool_rows:
+                by_bid = {}
+                for r in pool_rows:
+                    by_bid.setdefault(int(r['target_bodyId']), r)
+                raw, drop = load_target_neurons(sorted(by_bid))
+                for bid, why in drop:
+                    validator.log(f'    ! pooling: {bid} unavailable '
+                                  f'({why}) — no leaf, see the CSV')
+                neurons, lost = bridge_targets_to_scene_space(raw)
+                if lost:
+                    validator.log(f'    ! pooling: {lost} neuron(s) dropped '
+                                  'by bounds validation')
+                if neurons:
+                    root = f'pooling · {src_type}'
+                    p_types, p_tags, p_sorts = {}, {}, {}
+                    for n in neurons:
+                        r = by_bid.get(int(n.id)) or {}
+                        token = str(r.get('leaf') or r.get('target_type')
+                                    or '?')
+                        bits = [str(r.get('mapper_cell') or '')]
+                        if r.get('morph_gate') == 'scored':
+                            bits.append('morph ✓'
+                                        if r.get('morph_qualified')
+                                        else 'morph ✗')
+                        tag = ' · '.join(b for b in bits if b)
+                        p_types[int(n.id)] = token
+                        if tag:
+                            p_tags[int(n.id)] = tag
+                        p_sorts[int(n.id)] = f'{token} {tag}'.strip()
+                    add_layer(f'{src_type} · pooling', neurons,
+                              CATEGORY_COLORS['pooling'],
+                              [root] * len(neurons), category=root,
+                              leaf_types=p_types, leaf_tags=p_tags or None,
+                              leaf_sorts=p_sorts)
 
             if not entries:
                 validator.log('    nothing to render for this parent')

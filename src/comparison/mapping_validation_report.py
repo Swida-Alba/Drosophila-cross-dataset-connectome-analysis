@@ -72,6 +72,16 @@ TERM_DEFS: Dict[str, str] = {
         'morphology gates the connectivity survivors. Nothing here is read '
         'off a branch pool, so the type mapper is compared with the result '
         'afterwards instead of deciding it.',
+    'jaccard floor':
+        'The absolute connectivity bar a pooling candidate must clear. One '
+        'global constant is only safe in the low band — the same floor '
+        'rejects very different shares of two datasets\' verified rows — so '
+        'it is fitted per (source, target) pair as `min(configured, q05 of '
+        'the jaccards this pair\'s own graded matched/verified rows carry)`, '
+        'i.e. the value where that pair\'s verified rows start to be '
+        'rejected. The evidence is READ at the start of a pass and WRITTEN '
+        'at the end, so a run never gates on its own claims; below the '
+        'minimum sample the configured floor stands.',
     'mapper_cell':
         'Post-hoc comparison of one pooling candidate with the supervised '
         'mapping: `confirmed` sits in a branch\'s refined target pool; '
@@ -731,6 +741,12 @@ def collect_run_data(run_dir: Path,
     suspects_rows = _read_csv_rows(
         _run_file(run_dir, 'suspects_verification.csv'))
 
+    # -- pooling mode: the unsupervised pool and its post-hoc comparison ----
+    pooling_xval = _read_json(
+        _run_file(run_dir, 'pooling_cross_validation.json')) or {}
+    pooling_pool = _read_csv_rows(_run_file(run_dir, 'pooling_pool.csv'))
+    pooling_rows = _read_csv_rows(_run_file(run_dir, 'pooling_candidates.csv'))
+
     # -- stage 5d backward homolog evidence (advisory; connectivity only) --
     backward_rows = _read_csv_rows(_run_file(run_dir, 'backward_matches.csv'))
     _bev_rank = {'low': 1, 'medium': 2, 'high': 3}
@@ -1017,6 +1033,9 @@ def collect_run_data(run_dir: Path,
         'pair_rows': pair_rows,
         'same_name_excluded': same_name_excluded,
         'suspects_verification': suspects_rows,
+        'pooling_xval': pooling_xval,
+        'pooling_pool': pooling_pool,
+        'pooling_rows': pooling_rows,
         'backward_rows': backward_rows,
         'backward_bins': backward_bins,
         'backward_by_bid': backward_by_bid,
@@ -3005,6 +3024,229 @@ def _morph_tab(d: Dict) -> str:
          'Track-A backup floor', 'score frames', 'pool_ref tier'])
 
 
+def _pooling_tab(d: Dict) -> str:
+    """`pooling` mode: the UNSUPERVISED pool — every neuron the query names
+    scanned against the whole target universe under absolute floors — and its
+    post-hoc comparison with the mapper's claims.
+
+    The nested ladder's tabs read a pooling run as empty by construction: no
+    branch pool, no branch bar and no mapper claim decides a candidate here,
+    so this tab is where a pooling run's result lives.  The comparison cells
+    are published with their own honesty rules attached (`reading_notes`) —
+    a cell is a set difference, never a recall measure.
+    """
+    x = d['pooling_xval'] or {}
+    pool = d['pooling_pool']
+    rows = d['pooling_rows']
+    mode = str(d['params'].get('validation_mode') or '')
+    if not (x or pool or rows):
+        return _section_card(
+            'Pooling (unsupervised candidates)', '',
+            _empty(
+                f'Mode {mode} is a rung of the nested ladder; `pooling` is '
+                'PARALLEL to it, so this run performed no unsupervised '
+                'scan.' if mode and mode != 'pooling' else
+                'No pooling artifact: the seed resolved to 0 neurons or the '
+                'pass did not finish. Read the Log tab before taking an '
+                'absent file as "nothing found".'))
+    cells = x.get('cells') or {}
+    seed = x.get('seed') or {}
+    gate = x.get('gate') or {}
+    morph = x.get('morph') or {}
+    corr = x.get('corroboration') or {}
+
+    error_note = ''
+    if x.get('error'):
+        error_note = (
+            "<div class='mv-callout'><b>The pooling pass raised "
+            f"{_esc(x['error'])}</b> — whatever the exports below hold is "
+            'what survived that failure, so an empty pool here means a pass '
+            'that did not complete, not a universe with no homolog.</div>')
+
+    # the floor is a provenance statement, not just a number: a fitted one
+    # says which evidence fitted it, and a run records evidence for the NEXT
+    # run only (the read happens before the scan, the write after it).
+    floor_txt = (f"{_f(gate.get('jaccard_floor'), 4)} — "
+                 f"{_esc(str(gate.get('jaccard_floor_source') or '—'))}, "
+                 f"configured {_f(gate.get('jaccard_floor_configured'), 4)}")
+    if gate.get('jaccard_floor_q05') is not None:
+        floor_txt += (f"; q05 of {_cnt(gate.get('jaccard_floor_evidence_n'))} "
+                      'graded pair(s) on record = '
+                      f"{_f(gate.get('jaccard_floor_q05'), 4)}")
+    if gate.get('jaccard_floor_pairs_added') is not None:
+        floor_txt += (f"; this run added "
+                      f"{_cnt(gate.get('jaccard_floor_pairs_added'))} "
+                      'pair(s) to the record (they gate the NEXT run)')
+    if gate.get('jaccard_floor_note'):
+        floor_txt += (f"<span class='mv-note'> — "
+                      f"{_esc(gate['jaccard_floor_note'])}</span>")
+
+    gate_block = _kv_block('Gate — absolute, and read before anything was '
+                           'selected', [
+        (_term('jaccard floor'), floor_txt),
+        (_term('rank_union', 'rank_union floor'),
+         f"&gt; {_f(gate.get('rank_union_floor'), 3)}"),
+        ('Window',
+         f"both metric ranks ≤ {_f(gate.get('window_mult'), 2)} × the source "
+         "type's own queried population"),
+        ('Universe', f"{_cnt(x.get('universe_scanned'))} target neurons "
+                     f"({len(rows)} candidate pairs kept → {len(pool)} "
+                     'distinct candidate targets)'),
+        ('Seed', f"{_cnt(seed.get('queried_sources'))} queried sources · "
+                 f"{_cnt(seed.get('scanned'))} had a profile · "
+                 f"{_cnt(seed.get('sources_with_a_candidate'))} found ≥1 "
+                 f"candidate · {_cnt(seed.get('distinct_best_sources'))} "
+                 'are some pooled target\'s best source'),
+    ])
+
+    cells_block = _kv_block('The post-hoc comparison with the mapping', [
+        (_term('mapper_cell', 'confirmed'),
+         f"{_cnt(cells.get('confirmed'))} of the pool also sit in a branch's "
+         'refined target pool — two engines, named independently, agreeing'),
+        (_term('mapper_cell', 'pool_miss'),
+         f"{_cnt(cells.get('pool_miss'))} outside every pool: "
+         f"type_miss {_cnt(cells.get('type_miss'))} (a neuron of a type the "
+         f"map does assert) · type_new {_cnt(cells.get('type_new'))} (a type "
+         'outside the map) — the harvest this mode exists to produce'),
+        (_term('mapper_cell', 'verified_only'),
+         f"{_cnt(cells.get('verified_only'))} target(s) the supervised path "
+         'graded matched/verified that this gate did not admit — the two '
+         'admit on different quantities, so this is expected and not a '
+         'false-positive count'),
+    ])
+
+    morph_bits = [f"attempted {_cnt(morph.get('attempted'))}",
+                  f"scored {_cnt(morph.get('scored'))}",
+                  f"qualified {_cnt(morph.get('qualified'))}"]
+    if _as_num(morph.get('capped')):
+        morph_bits.append(f"budget-capped {_cnt(morph.get('capped'))}"
+                          ' (no look taken, not a rejection)')
+    if morph.get('error'):
+        morph_bits.append(f"error {_esc(morph['error'])}")
+    corr_bits = [f"status {_esc(corr.get('status') or 'not-computed')}",
+                 f"{_cnt(corr.get('sibling_runs'))} sibling run(s)"]
+    hist = corr.get('pool_size_histogram') or {}
+    if hist:
+        corr_bits.append('pool targets by agreeing datasets: ' + ' · '.join(
+            f"{_esc(k)} → {_cnt(v)}" for k, v in sorted(
+                hist.items(), key=lambda kv: -(_as_num(kv[1]) or 0))))
+    if corr.get('unreadable'):
+        corr_bits.append(f"{len(corr['unreadable'])} sibling(s) unreadable")
+    elif corr.get('sibling_dirs'):
+        corr_bits.append('siblings: '
+                         + ', '.join(_esc(s) for s in corr['sibling_dirs']))
+    elif corr.get('how'):
+        corr_bits.append(_esc(corr['how']))
+
+    notes = x.get('reading_notes') or []
+    notes_block = ('' if not notes else
+                   "<div class='mv-callout'><b>How to read these cells</b>"
+                   '<ul>'
+                   + ''.join(f'<li>{_esc(n)}</li>' for n in notes)
+                   + '</ul></div>')
+
+    head = (_section_card(
+        'Pooling — the unsupervised scan',
+        'Every neuron the query names, scanned against the whole target '
+        'universe under absolute floors, morphology last; the mapper\'s own '
+        'answer is joined only afterwards, so it cannot decide what this '
+        'list holds. Proposals for review — the mapping is never '
+        'rewritten.',
+        error_note + gate_block + cells_block
+        + _kv_block('The two gates that can be absent', [
+            (_term('morph_gate', 'morphology'), ' · '.join(morph_bits)),
+            (_term('targets_corroborated', 'cross-target corroboration'),
+             ' · '.join(corr_bits)),
+        ]) + notes_block,
+        ['pooling', 'mapper_cell', 'morph_gate', 'targets_corroborated',
+         'jaccard floor', 'ordering chain']))
+
+    miss = x.get('pool_miss_by_type') or {}
+    miss_tot = sum(int(v or 0) for v in miss.values())
+    harvest = ''
+    if miss:
+        harvest = ("<div class='mv-kv-title'>The harvest, by target "
+                   'type</div>' + _viewport(
+            [f"<tr><td>{_esc(t or 'untyped')}</td><td>{_cnt(n)}</td>"
+             f"<td>{_pct(n, miss_tot)}</td></tr>"
+             for t, n in sorted(miss.items(), key=lambda kv: -(int(
+                 kv[1] or 0)))],
+            _th('target type', 'A type the pooling pool holds candidates '
+                'for that no branch pool claims.')
+            + _th('pool_miss neurons', 'How many of that type the gate '
+                  'admitted outside every mapper pool.')
+            + _th('share', 'Of all pool_miss neurons.')))
+
+    def _cor_cell(v):
+        s = str('' if v is None else v).strip()
+        return _esc(s) if s else "<span class='missing'>—</span>"
+
+    trs = []
+    for r in pool:
+        mg = str(r.get('morph_gate') or '')
+        if mg == 'scored':
+            mcell = (f"{_f(r.get('morph_similarity'), 3)} vs bar "
+                     f"{_f(r.get('morph_bar'), 3)} "
+                     f"{'✓' if _truthy(r.get('morph_qualified')) else '✗'}")
+        else:
+            mcell = (f"<span class='missing'>{_esc(mg or '—')}</span>")
+        n_src = _cnt(r.get('n_sources'))
+        dup = _as_num(r.get('dup'))
+        trs.append(
+            f"<tr><td>{_esc(r.get('target_bodyId'))} "
+            f"<span class='mv-note'>{_esc(r.get('leaf') or '(untyped)')}"
+            '</span></td>'
+            f"<td>{_esc(r.get('best_source_type') or '—')} "
+            f"{_esc(r.get('best_source_bodyId'))}</td>"
+            f"<td>{_f(r.get('jaccard'), 4)} "
+            f"<span class='mv-note'>#{_esc(r.get('jaccard_rank'))} · RU "
+            f"{_f(r.get('rank_union'), 3)} · w "
+            f"{_esc(r.get('window_size'))}</span></td>"
+            f"<td>{n_src}{' (+' + str(int(dup)) + ' other)' if dup else ''}"
+            '</td>'
+            f'<td>{mcell}</td>'
+            f"<td>{_esc(r.get('mapper_cell') or '—')}"
+            + (f" <span class='mv-note'>{_esc(r['mapper_verdict'])}</span>"
+               if str(r.get('mapper_verdict') or '').strip() else '')
+            + '</td>'
+            f"<td>{_cor_cell(r.get('targets_corroborated'))}</td></tr>")
+    table = _viewport(
+        trs,
+        _th('candidate target', 'The pooled target neuron and its shared '
+            'leaf token: an unmapped bodyId of an in-map type reads '
+            '`(out-map)`, a foreign type with a backward home `T>src`, '
+            'one without `T(no_source)`, and no type `untyped`.')
+        + _th('best source', 'The chain-best source of the many that reach '
+              'this target — jaccard first, rank_union as the tie-break, '
+              'bodyId last.')
+        + _th('jaccard · rank · RU · window', 'The absolute gate this '
+              'candidate passed, plus the window that bounded its ranks.')
+        + _th('sources', 'How many queried sources reach this target (the '
+              'extra ones are listed in pooling_candidates.csv).')
+        + _th('morphology', 'The LAST gate: similarity against the '
+              'persisted reference bar, ✓ at or above it. An absence word '
+              'is not a rejection.')
+        + _th('mapper_cell', 'The post-hoc comparison with the mapping, '
+              'with the supervised verdict where one exists.')
+        + _th('datasets', 'How many TARGET DATASETS put the same '
+              '(source, candidate type) pair in their pool — advisory, and '
+              'blank unless sibling runs were named.')
+    ) if trs else _empty(
+        'The gate admitted no candidate: with these floors and this window '
+        'the queried population has no connectivity homolog in the target '
+        'universe. Raising pooling_window_mult or lowering '
+        'pooling_jaccard_floor is the knob, not a different verdict.')
+    return head + _section_card(
+        f'Pooling pool — {len(pool)} candidate target'
+        f'{"s" if len(pool) != 1 else ""}',
+        'One row per target neuron, on the ordering chain. The full '
+        'per-pair rows are in `pooling/pooling_candidates.csv`; the '
+        'comparison cells above are set differences, so no row here is a '
+        'recall measure.',
+        harvest + table,
+        ['ordering chain', 'mapper_cell', 'morph_gate'])
+
+
 def _scenes_tab(d: Dict) -> str:
     sc = d['selfcheck']
     statuses: Dict[str, bool] = {}
@@ -3094,7 +3336,11 @@ def _log_tab(d: Dict) -> str:
              'scene_selfcheck', 'aggressive_expansion', 'pool_widen',
              'backward_evidence_enabled', 'backward_top_n',
              'backward_max_neurons', 'backward_per_branch_cap',
-             'backward_scan_pool_targets', 'skip_backward_pass']
+             'backward_scan_pool_targets', 'skip_backward_pass',
+             'pooling_jaccard_floor', 'pooling_rank_union_floor',
+             'pooling_window_mult', 'pooling_morph_gate',
+             'pooling_max_morph_targets', 'pooling_floor_from_evidence',
+             'pooling_sibling_runs']
     pl = ' · '.join(f'{_esc(k)}={_esc(params[k])}'
                     for k in order if k in params)
     timeline: List[str] = []
@@ -3297,7 +3543,8 @@ _TABS: List[Tuple[str, str]] = [
     ('targets', 'Targets'), ('fill', 'Fill'),
     ('reciprocal', 'Reciprocal'), ('outmap', 'Out-map'),
     ('backward', 'Backward'), ('suspects', 'Suspects'),
-    ('morph', 'Morph'), ('scenes', 'Scenes'), ('log', 'Log'),
+    ('morph', 'Morph'), ('pooling', 'Pooling'),
+    ('scenes', 'Scenes'), ('log', 'Log'),
 ]
 
 
@@ -3385,6 +3632,7 @@ def build_report_document(d: Dict) -> str:
         'backward': lambda: _backward_tab(d),
         'suspects': lambda: _suspects_tab(d),
         'morph': lambda: _morph_tab(d),
+        'pooling': lambda: _pooling_tab(d),
         'scenes': lambda: _scenes_tab(d),
         'log': lambda: _log_tab(d),
     }

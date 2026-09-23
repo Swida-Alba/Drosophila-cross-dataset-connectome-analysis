@@ -634,3 +634,150 @@ def test_branches_tab_names_the_parents_without_a_scene(run_dir: Path):
     row_a = html.split("A → X", 1)[1].split("</tr>", 1)[0]
     assert "branches_A.html" in row_a
     assert "No scene rendered" not in row_a
+
+
+# ---------------------------------------------------------------------------
+# pooling mode: the unsupervised pool and its post-hoc comparison
+# ---------------------------------------------------------------------------
+
+POOL_HEADER = ["target_bodyId", "target_type", "leaf", "best_source_bodyId",
+               "best_source_type", "jaccard", "jaccard_rank", "rank_union",
+               "window_size", "size_nm3", "size_universe_percentile",
+               "in_scope", "n_sources", "dup", "morph_gate",
+               "morph_similarity", "morph_bar", "morph_qualified",
+               "mapper_cell", "mapper_verdict", "targets_corroborated"]
+
+XVAL = {
+    "universe_scanned": 103770,
+    "seed": {"queried_sources": 8, "scanned": 8,
+             "sources_with_a_candidate": 5, "distinct_best_sources": 4},
+    "gate": {"jaccard_floor": 0.0723, "jaccard_floor_configured": 0.1,
+             "jaccard_floor_source": "dataset-fitted",
+             "jaccard_floor_evidence_n": 241,
+             "jaccard_floor_q05": 0.0723, "rank_union_floor": 0.0,
+             "window_mult": 2.0, "jaccard_floor_pairs_added": 12},
+    "cells": {"confirmed": 3, "pool_miss": 2, "type_miss": 1,
+              "type_new": 1, "verified_only": 7},
+    "body_ids": {"pool_miss": [501, 502], "verified_only": [601]},
+    "pool_miss_by_type": {"DLp11": 1, "": 1},
+    "morph": {"attempted": 5, "scored": 4, "qualified": 2, "capped": 0,
+              "error": ""},
+    "corroboration": {"status": "computed", "sibling_runs": 2,
+                      "sibling_dirs": ["/r/a", "/r/b"], "unreadable": [],
+                      "how": "", "pool_size_histogram": {"2": 4, "1": 1},
+                      "advisory": "ranks the review, never gates it"},
+    "reading_notes": ["No cell is a recall measure."],
+}
+
+
+def _pool_row(**kw):
+    r = {"target_bodyId": 500, "target_type": "DLp11",
+         "leaf": "DLp11(out-map)", "best_source_bodyId": 101,
+         "best_source_type": "s-LNv", "jaccard": 0.31, "jaccard_rank": 2,
+         "rank_union": 0.44, "window_size": 16, "size_nm3": 120000.0,
+         "size_universe_percentile": 61.0, "in_scope": True, "n_sources": 2,
+         "dup": 1, "morph_gate": "scored", "morph_similarity": 0.66,
+         "morph_bar": 0.55, "morph_qualified": True,
+         "mapper_cell": "type_miss", "mapper_verdict": "",
+         "targets_corroborated": 2}
+    r.update(kw)
+    return r
+
+
+def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
+                    flat=False):
+    params = json.loads((run_dir / "parameters.json").read_text())
+    params.update({"validation_mode": mode, "pooling_jaccard_floor": 0.1,
+                   "pooling_rank_union_floor": 0.0,
+                   "pooling_window_mult": 2.0, "pooling_morph_gate": True,
+                   "pooling_max_morph_targets": 400,
+                   "pooling_floor_from_evidence": True,
+                   "pooling_sibling_runs": []})
+    (run_dir / "parameters.json").write_text(json.dumps(params))
+    rows = pool if pool is not None else [_pool_row()]
+    out = run_dir if flat else (run_dir / "pooling")
+    if out != run_dir:
+        out.mkdir(exist_ok=True)
+    _write_csv(out / "pooling_pool.csv", POOL_HEADER,
+               [[r.get(k, "") for k in POOL_HEADER] for r in rows])
+    _write_csv(out / "pooling_candidates.csv",
+               ["source_bodyId", "target_bodyId", "jaccard", "mapper_cell"],
+               [[r["best_source_bodyId"], r["target_bodyId"], r["jaccard"],
+                 r["mapper_cell"]] for r in rows])
+    (out / "pooling_cross_validation.json").write_text(
+        json.dumps(xval if isinstance(xval, dict) else {}))
+    return run_dir
+
+
+def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
+    """The Pooling tab is the only place a pooling run's result reads: the
+    nested ladder's tabs are empty by construction there.  So the fitted
+    floor must publish its provenance, not just a number, and the cells must
+    keep their names."""
+    _as_pooling_run(run_dir)
+    html = build_report_document(collect_run_data(run_dir))
+    assert ">Pooling</button>" in html
+    assert "Pooling — the unsupervised scan" in html
+    # the floor says WHERE it came from and what it was fitted on
+    assert "0.0723 — dataset-fitted, configured 0.1000" in html
+    assert "q05 of 241 graded pair(s) on record" in html
+    assert "this run added 12 pair(s) to the record" in html
+    assert "103770 target neurons" in html
+    assert "3 of the pool also sit in a branch" in html
+    assert "type_miss 1" in html and "type_new 1" in html
+    assert "graded matched/verified that this gate did not admit" in html
+    assert "500" in html and "DLp11(out-map)" in html
+    assert "0.660 vs bar 0.550 ✓" in html
+    assert "The harvest, by target type" in html
+    assert "No cell is a recall measure." in html
+
+
+def test_the_mode_that_did_not_pool_says_it_is_parallel(run_dir: Path):
+    """A family run's empty Pooling tab must not read as a lost artifact: the
+    mode ladder and `pooling` are different questions."""
+    html = build_report_document(collect_run_data(run_dir))
+    assert ">Pooling</button>" in html
+    assert "is a rung of the nested ladder; `pooling` is PARALLEL" in html
+    assert "Pooling — the unsupervised scan" not in html
+
+
+def test_a_failed_pooling_pass_is_not_a_null_result(run_dir: Path):
+    """The writer exports an empty pool for a crashed pass too — the report
+    has to keep "did not finish" apart from "nothing qualified"."""
+    _as_pooling_run(run_dir, pool=[], xval={"error": "RuntimeError: boom"})
+    html = build_report_document(collect_run_data(run_dir))
+    assert "RuntimeError: boom" in html
+    assert "not a universe with no homolog" in html
+    assert "The gate admitted no candidate" in html
+
+
+def test_a_missing_corroboration_reads_absent_not_zero(run_dir: Path):
+    """Blank, not 0: a 0 would claim that no other target supports the pair,
+    which is a statement about runs that were never run."""
+    _as_pooling_run(run_dir, pool=[_pool_row(targets_corroborated="")])
+    html = build_report_document(collect_run_data(run_dir))
+    row = html.split(">500 <", 1)[1].split("</tr>", 1)[0]
+    assert row.rstrip().endswith(
+        "<td><span class='missing'>—</span></td>")
+    assert ">0</td>" not in row
+
+
+def test_an_untouched_morph_gate_is_a_word_not_a_cross(run_dir: Path):
+    """`not-attempted-cap` means the budget never looked; rendering it as ✗
+    would turn a no-sample into a rejection."""
+    _as_pooling_run(run_dir, pool=[_pool_row(
+        morph_gate="not-attempted-cap", morph_similarity="", morph_bar="",
+        morph_qualified="")])
+    html = build_report_document(collect_run_data(run_dir))
+    row = html.split(">500 <", 1)[1].split("</tr>", 1)[0]
+    assert "not-attempted-cap" in row and "✗" not in row and "✓" not in row
+
+
+def test_pooling_artifacts_resolve_from_a_flat_run_folder(run_dir: Path):
+    """The layout registry moved the exports under `pooling/`; runs written
+    before it stay readable, because the report must regenerate any past
+    folder from the folder alone."""
+    _as_pooling_run(run_dir, flat=True)
+    html = build_report_document(collect_run_data(run_dir))
+    assert "Pooling — the unsupervised scan" in html
+    assert "0.0723 — dataset-fitted" in html

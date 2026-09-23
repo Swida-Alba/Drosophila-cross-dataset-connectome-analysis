@@ -2223,6 +2223,10 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "pooling/pooling_cross_validation.json",
              "description": "--mode pooling only: the unsupervised pool "
                             "compared with the mapper's claim sets, the "
+                            "gate WITH its provenance (the Jaccard floor "
+                            "that actually gated the run, whether the "
+                            "dataset pair's own graded evidence fitted it, "
+                            "and what this run recorded for the next), the "
                             "morph record, the corroboration histogram, and "
                             "the reading notes that say which cells are NOT "
                             "recall measures."},
