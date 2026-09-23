@@ -86,7 +86,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -817,6 +817,32 @@ def _short_name(dataset: str) -> str:
             ComparisonParameters, dataset))
     except Exception:  # noqa: BLE001
         return _abbrev(dataset)
+
+
+def _store_identity(path) -> Optional[Dict[str, Any]]:
+    """(bytes, mtime) of an input store, None when it is absent.
+
+    A run's outputs are a function of the caches it read, so an old-code vs
+    new-code A/B needs to tell 'the code changed' from 'the cache changed'
+    without forensics: this is what `parameters.json` publishes."""
+    try:
+        st = Path(path).stat()
+    except (OSError, TypeError):
+        return None
+    return {'path': str(path), 'bytes': int(st.st_size),
+            'mtime_s': int(st.st_mtime)}
+
+
+def _git_rev() -> Optional[str]:
+    """Short HEAD rev of the tree this code was executed from."""
+    try:
+        import subprocess
+        out = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                             cwd=str(Path(__file__).resolve().parents[2]),
+                             capture_output=True, text=True, timeout=5)
+        return (out.stdout or '').strip() or None
+    except Exception:  # noqa: BLE001 (a source zip has no git)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1835,6 +1861,9 @@ class MappingValidator:
         self.run_dir: Optional[Path] = None
         self.notes: List[str] = []
         self.pairs: List[TypePair] = []
+        # What the scan actually scored against, published to
+        # parameters.json — see _record_scan_universe().
+        self.input_fingerprint: Dict[str, Any] = {}
 
     def log(self, msg=''):
         if self.cfg.verbose:
@@ -4689,6 +4718,8 @@ class MappingValidator:
                 min_weight=cfg.target_min_weight,
                 min_partner_types=cfg.target_min_partner_types)
             source_stats = prep_target_stats(vectors)
+            self.input_fingerprint['scanned_source_universe'] = \
+                len(source_stats)
         except Exception as exc:  # noqa: BLE001
             self.log(f'[stage 5d] source-universe vectors unavailable, '
                      f'backward evidence skipped: {exc}')
@@ -5079,6 +5110,28 @@ class MappingValidator:
             finally:
                 del scans
 
+    def _record_scan_universe(self, vectors, target_stats) -> None:
+        """Publish the inputs the scan scored against.
+
+        The scoring backend is a pure function of (query, target universe,
+        caches), so an old-code vs new-code A/B is only meaningful on an
+        identical store — and this block is what shows a reader, from the
+        run folder alone, whether the two runs shared one or drifted (a
+        concurrent profile merge moves the universe under a run)."""
+        cfg = self.cfg
+        self.input_fingerprint.update({
+            'git_rev': _git_rev(),
+            'scanned_target_universe': len(target_stats),
+            'target_vectors_built': len(vectors),
+            'profile_cache_source': _store_identity(
+                self.profiler._get_cache_parquet_path(cfg.source_dataset)),
+            'profile_cache_target': _store_identity(
+                self.profiler._get_cache_parquet_path(cfg.target_dataset)),
+            'mapper_snapshot': _store_identity(
+                getattr(self.mapper, '_mapper_snapshot_path',
+                        lambda: None)()),
+        })
+
     def _suspects_only_pass(self) -> None:
         """P3 for a run whose EVERY queried type was fail-closed (e.g. a
         lone held fan-out): there are no pairs to validate, but the
@@ -5100,6 +5153,7 @@ class MappingValidator:
             min_partner_types=cfg.target_min_partner_types)
         target_stats = prep_target_stats(vectors)
         target_bids = list(target_stats)
+        self._record_scan_universe(vectors, target_stats)
         target_id2type = self._target_types(target_bids)
         self._target_sizes = load_caliber_map(cfg.target_dataset)
         self._source_sizes = load_caliber_map(cfg.source_dataset)
@@ -5180,6 +5234,7 @@ class MappingValidator:
             min_partner_types=cfg.target_min_partner_types)
         target_stats = prep_target_stats(vectors)
         target_bids = list(target_stats)
+        self._record_scan_universe(vectors, target_stats)
         target_id2type = self._target_types(target_bids)
         # Revision 3.6 evidence maps: spatial caliber (PRIMARY noise
         # filter) and the source type/additional_type counts (backward
@@ -5655,6 +5710,10 @@ class MappingValidator:
             # the folder name carries only the dataset nicknames + the
             # timestamp, so this is where a --label survives
             'run_label': self.cfg.run_label,
+            # the inputs the scan scored against: an A/B of two code trees
+            # is only meaningful on one frozen store, and this says whether
+            # it was (see _record_scan_universe)
+            'input_fingerprint': dict(sorted(self.input_fingerprint.items())),
             'top_k': self.cfg.top_k, 'top_m': self.cfg.top_m,
             'min_synapse_threshold': self.cfg.min_synapse_threshold,
             'include_untyped_partners': self.cfg.include_untyped_partners,
