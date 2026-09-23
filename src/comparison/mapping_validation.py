@@ -4718,8 +4718,7 @@ class MappingValidator:
                 min_weight=cfg.target_min_weight,
                 min_partner_types=cfg.target_min_partner_types)
             source_stats = prep_target_stats(vectors)
-            self.input_fingerprint['scanned_source_universe'] = \
-                len(source_stats)
+            self._fingerprint()['scanned_source_universe'] = len(source_stats)
         except Exception as exc:  # noqa: BLE001
             self.log(f'[stage 5d] source-universe vectors unavailable, '
                      f'backward evidence skipped: {exc}')
@@ -5110,6 +5109,20 @@ class MappingValidator:
             finally:
                 del scans
 
+    def _fingerprint(self) -> Dict[str, Any]:
+        """The run's `input_fingerprint`, created on first write.
+
+        Bookkeeping must never take a stage down: a validator built without
+        ``__init__`` (the unit-test stubs) would otherwise raise an
+        ``AttributeError`` here — and inside the backward pass's ``try`` that
+        mislabels every in-budget row ``error``, i.e. "the scan failed", when
+        nothing was even scanned.
+        """
+        fp = getattr(self, 'input_fingerprint', None)
+        if fp is None:
+            fp = self.input_fingerprint = {}
+        return fp
+
     def _record_scan_universe(self, vectors, target_stats) -> None:
         """Publish the inputs the scan scored against.
 
@@ -5119,7 +5132,7 @@ class MappingValidator:
         run folder alone, whether the two runs shared one or drifted (a
         concurrent profile merge moves the universe under a run)."""
         cfg = self.cfg
-        self.input_fingerprint.update({
+        self._fingerprint().update({
             'git_rev': _git_rev(),
             'scanned_target_universe': len(target_stats),
             'target_vectors_built': len(vectors),
@@ -5713,7 +5726,8 @@ class MappingValidator:
             # the inputs the scan scored against: an A/B of two code trees
             # is only meaningful on one frozen store, and this says whether
             # it was (see _record_scan_universe)
-            'input_fingerprint': dict(sorted(self.input_fingerprint.items())),
+            'input_fingerprint': dict(sorted(
+                (getattr(self, 'input_fingerprint', None) or {}).items())),
             'top_k': self.cfg.top_k, 'top_m': self.cfg.top_m,
             'min_synapse_threshold': self.cfg.min_synapse_threshold,
             'include_untyped_partners': self.cfg.include_untyped_partners,

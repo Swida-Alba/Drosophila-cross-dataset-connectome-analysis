@@ -532,6 +532,11 @@ def test_member_without_a_profile_is_unscanned_not_none(monkeypatch):
     assert v._backward_expansion_pass() == 'rebuilt'
     assert fam['backward_evidence'] == 'not-checked'
     assert fam['backward_scanned_at'] == 'no_profile'
+    # the pass' own bookkeeping must never be what kills it: writing the
+    # source-universe size into `input_fingerprint` inside the vector-build
+    # ``try`` made an AttributeError read as "vectors unavailable", which
+    # labelled every in-budget row `error` on a stub-built validator.
+    assert v.input_fingerprint['scanned_source_universe'] == 1
 
 
 def test_a_broken_scan_is_error_and_an_empty_one_is_none(monkeypatch):
