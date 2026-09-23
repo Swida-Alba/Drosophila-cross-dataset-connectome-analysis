@@ -506,7 +506,7 @@ class TestOneBoxBaking:
         script = make_vis()._freeze_view_html(
             VisualizeSkeleton._scene_data_ranges(self._figure([900, 901])))
         baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
-        assert list(json.loads(baked)) == ['ranges']
+        assert list(json.loads(baked)) == ['ranges', 'hiddenHalf']
         for gone in ('syncBox', 'contextIsShown', 'activeRanges',
                      'CONFIG.reveal', '"reveal"'):
             assert gone not in script
@@ -516,10 +516,34 @@ class TestOneBoxBaking:
         path = tmp_path / 'plot.html'
         vis._write_plotly_html(self._figure([900, 901, 902]), str(path),
                                include_plotlyjs=False, freeze_view=True)
-        html = path.read_text()
-        baked = json.loads(re.search(
-            r'var CONFIG = (\{[^\n]*"ranges"[^\n]*\});', html).group(1))
+        baked = self._config(path.read_text())
         assert baked['ranges']['z'][1] > 902
+        # The box spans a half the page never draws, so its centre is empty
+        # space: the same write has to tell the script to open pivoted on the
+        # half it shows.
+        assert baked['hiddenHalf'] is True
+
+    def test_a_page_that_draws_everything_it_bakes_is_not_re_pivoted(self, tmp_path):
+        """No hidden half means the pivot is already the anatomy's midpoint.
+
+        Moving it there anyway would be a framing change on every ordinary
+        page, so the flag has to be read off the figure rather than assumed.
+        """
+        vis = _writer_vis()
+        path = tmp_path / 'plot.html'
+        shown = figure(
+            scatter([0, 10], [0, 10], [0, 10], name='aMe12'),
+            mesh([0, 5, 10], [0, 5, 10], [900, 901, 902],
+                 name='JRCFIB2022M (VNC)', legendrank=VNC_MESH_LEGEND_RANK),
+        )
+        vis._write_plotly_html(shown, str(path), include_plotlyjs=False,
+                               freeze_view=True)
+        assert self._config(path.read_text())['hiddenHalf'] is False
+
+    @staticmethod
+    def _config(html):
+        return json.loads(re.search(
+            r'var CONFIG = (\{[^\n]*"ranges"[^\n]*\});', html).group(1))
         assert 'syncBox' not in html
 
 

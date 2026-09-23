@@ -217,7 +217,13 @@
           is normalized against the pinned box and fit mode shrinks the box onto
           what you can see, so a leftover number would leave the anatomy hanging
           off the rotation centre. Freezing again restores the pivot you chose,
-          unless you panned in the meantime. All three floating controls — the
+          unless you panned in the meantime. A page that opens with a context
+          half embedded but hidden <b>runs this control itself at setup</b>, so
+          its orbit starts on the anatomy you can see rather than on the middle
+          of the gap between the two halves — measured on a male-cns brain-only
+          page, a 40° turn slid the brain 212&nbsp;px across the frame before and
+          2&nbsp;px after. Nothing else about the framing moves: the box, its
+          proportions and the zoom are exactly what they were. All three floating controls — the
           two view buttons and the light/dark switch in the other corner —
           carry a <b>hover hint</b> on <b>one row</b> that names the key and
           states the current state ("View is frozen: legend toggles keep the
@@ -239,6 +245,9 @@
           it — so a brain-only male-cns page opens framed to the whole CNS,
           1.46× wider along its longest axis than the brain alone needs, and its
           VNC eye then draws the nerve cord without moving the framing at all.
+          The hidden half costs the <i>orbit</i> nothing, though: the page opens
+          pivoted on the half it draws, so turning the scene keeps the brain
+          where it is instead of swinging it around the cord's empty space.
           Nothing about a frozen view changes once you have it; <b>Fit</b>
           (<code>F</code>) is the control that follows content. The frame you
           open on is unchanged either way; untick the box to hand scaling back to Plotly.</li>

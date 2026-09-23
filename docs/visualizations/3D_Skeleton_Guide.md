@@ -428,6 +428,12 @@ reacting to what is hidden.
   anatomy hanging 12% of the y-span and 35% of the z-span off the rotation
   centre. Freezing again restores the pivot you chose — unless you panned in the
   meantime, because a pivot you moved yourself beats one we remembered.
+  A page that opens with a context half embedded but hidden runs this control
+  itself at setup, so the orbit starts on the anatomy you can see rather than on
+  the middle of the gap between the two halves: on a male-cns brain-only page a
+  40° turn slid the brain 212 px across the frame before, and 2 px after. It
+  fires only in that case — with nothing hidden the box is already its content,
+  and moving the pivot would be a framing change no one asked for.
 - **Every floating control explains itself on hover.** The hints are drawn by
   the page's own stylesheet from a `data-drocat-tip` attribute (not a native
   `title`, which costs a second to appear), and each states the *current* state
@@ -474,8 +480,11 @@ reacting to what is hidden.
   frozen view that pans when a checkbox is clicked is not a frozen view. So a
   brain-only `male-cns` page opens framed to the whole CNS — 1.46× wider along
   its longest axis than the brain alone needs — and its VNC eye then draws the
-  nerve cord inside that same frame. Fit (F) follows the content. Set
-  `freeze_view=False` to hand framing to Plotly altogether.
+  nerve cord inside that same frame. The wider frame costs the *orbit* nothing:
+  the page opens pivoted on the half it draws, so a hidden nerve cord does not
+  leave the brain turning around empty space (see the ⌖ bullet above). Fit (F)
+  follows the content. Set `freeze_view=False` to hand framing to Plotly
+  altogether.
 
 ### Per-Neuron Colors via CSV
 

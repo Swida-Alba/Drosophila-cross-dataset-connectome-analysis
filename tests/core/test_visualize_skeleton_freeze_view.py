@@ -189,9 +189,35 @@ class TestFreezeViewHtml:
     def test_script_pins_the_baked_ranges(self):
         script = make_vis()._freeze_view_html(RANGES)
         assert 'drocat-freeze-toggle' in script
-        assert json.dumps({'ranges': RANGES}) in script
+        assert json.dumps({'ranges': RANGES, 'hiddenHalf': False}) in script
         assert "'scene.xaxis.range': r.x" in script
         assert "'scene.xaxis.autorange': false" in script
+
+    def test_a_half_hidden_at_write_time_moves_the_opening_pivot(self):
+        """The box spans what the page does not draw, so say so.
+
+        A frozen box fixes the rotation pivot at its own centre, and when the
+        run embedded the other context half that centre is the gap between the
+        two groups of anatomy: a brain-only male-cns page opened with the brain
+        pushed to the top of a 1.46x wider frame. The page already has the
+        control that fixes it (⌖), so setup runs it once -- and only when a
+        half is actually hidden, because otherwise the pivot is already right
+        and moving it would be a framing change no one asked for.
+        """
+        hidden = make_vis()._freeze_view_html(RANGES, hidden_half=True)
+        assert json.dumps({'ranges': RANGES, 'hiddenHalf': True}) in hidden
+        shown = make_vis()._freeze_view_html(RANGES)
+        assert json.dumps({'ranges': RANGES, 'hiddenHalf': False}) in shown
+        for script in (hidden, shown):
+            start = script.index('setFrozen(true);')
+            # decorate() guards on `if (button)` too, so end the slice at the
+            # next one: what the page does at open is what sits in between.
+            end = script.index('if (button) {', start)
+            setup = script[start:end]
+            # One gated call, after the pin -- recenter() returns without
+            # acting while the page is still unfrozen.
+            assert "if (CONFIG.hiddenHalf) {" in setup
+            assert setup.count('recenter();') == 1
 
     def test_script_hands_autoscaling_back_on_demand(self):
         script = make_vis()._freeze_view_html(RANGES)
@@ -307,7 +333,9 @@ class TestFrozenAspectRatio:
                      'CONFIG.reveal'):
             assert gone not in script, f'{gone} is the two-box machinery'
         baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
-        assert list(json.loads(baked)) == ['ranges']
+        # One box, plus the note that says whether the box spans more than the
+        # page draws -- which is a pivot question, not a second box.
+        assert list(json.loads(baked)) == ['ranges', 'hiddenHalf']
 
     def test_the_range_padding_keeps_the_raw_axis_ratios(self):
         """A proportional pad, so freezing cannot change the anatomy's shape.

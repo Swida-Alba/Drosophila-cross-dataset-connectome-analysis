@@ -214,7 +214,13 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   `C` key) moves `scene.camera.center` onto the visible traces, because a frozen
   box keeps its pivot at the centre of the whole scene; it is inert in fit mode,
   and Fit itself clears that center (the offset is normalized to the pinned box)
-  while re-freezing restores it unless the user panned.
+  while re-freezing restores it unless the user panned. A page that opens with a
+  context half embedded but hidden runs that same control at setup -- the writer
+  passes `hidden_half` from `_unshown_context_mesh_indices`, and the script reads
+  it as `CONFIG.hiddenHalf` -- so the orbit starts on the half it draws instead
+  of on the gap between the two: a 40-degree turn slid the brain 212 px across a
+  male-cns frame before, 2 px after. With nothing hidden the flag is false and
+  the pivot is left where Plotly puts it.
   A Freeze/Fit button and the `F` key
   hand autoscaling back. All three floating controls -- those two and the
   light/dark switch -- show a hover hint naming the key and the current state,

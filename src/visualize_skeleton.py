@@ -394,11 +394,15 @@ def _is_unshown_context_mesh(trace):
     """True for a brain/VNC envelope the page carries but does not show.
 
     ``_embed_unshown_context_mesh`` ships the half a run left unchecked so the
-    viewer can reveal it later. Such a mesh must not size the frozen scene box:
-    a hidden nerve cord would zoom every brain-only page out to its extent,
-    undoing the framing the freeze work stabilised. Hidden *neuron* traces keep
-    counting, because there the whole point is that revealing one cannot clip
-    it.
+    viewer can reveal it later. It counts toward the frozen scene box like any
+    other hidden trace -- the page has one box and it cannot grow when the
+    half appears -- which is why the freeze script also asks whether one is
+    present: a box spanning both halves centres its pivot on the gap between
+    them, and a brain-only page would open with the brain pushed to one side
+    of the frame. Hidden *neuron* traces size the box the same way, but they
+    move the opening pivot only when they sit far from what the page draws;
+    an unchecked half is that case by construction, since the box then straddles
+    two groups of anatomy and its centre is neither.
     """
     rank = _trace_field(trace, 'legendrank')
     if not isinstance(rank, (int, float)) or isinstance(rank, bool):
@@ -411,9 +415,10 @@ def _is_unshown_context_mesh(trace):
 def _unshown_context_mesh_indices(figure):
     """Positions of the embedded-but-hidden envelopes in ``figure.data``.
 
-    The freeze script needs these as trace indices: the box has to grow the
-    moment a viewer reveals one, and ``visible`` is the only thing that changes
-    when they do. Order matters, so this walks ``figure.data`` -- the same list
+    The freeze script needs these as trace indices: their presence is what
+    tells the page its box straddles two halves and it should open pivoted on
+    the drawn one, and ``visible`` is the only thing that changes when a viewer
+    reveals one. Order matters, so this walks ``figure.data`` -- the same list
     Plotly writes into ``gd.data``.
     """
     return [index for index, trace in enumerate(getattr(figure, 'data', None) or [])
@@ -3024,7 +3029,9 @@ class VisualizeSkeleton:
     axis span, which is what Plotly's own 3D autorange adds; Plotly, however,
     autoranges over the *visible* traces only, so a scene whose hidden content
     lies far away (a hidden ventral-nerve-cord layer in a brain view) opens
-    slightly wider than it used to. Set freeze_view=False to keep the old
+    slightly wider than it used to. Its rotation pivot is moved onto the
+    visible content in that case, so the wider box costs the framing no
+    centring -- see the ⌖ button. Set freeze_view=False to keep the old
     framing exactly.
 
     The pin is applied by page JavaScript that exits early under
@@ -4316,7 +4323,7 @@ class VisualizeSkeleton:
             ranges[name] = [lo[axis] - pad, hi[axis] + pad]
         return ranges
 
-    def _freeze_view_html(self, ranges):
+    def _freeze_view_html(self, ranges, hidden_half=False):
         """Build the script that pins the 3D scene framing for human viewers.
 
         Injected next to the theme switch and the tree legend whenever the page
@@ -4340,7 +4347,9 @@ class VisualizeSkeleton:
         that does not exist, and growing the framing when the viewer reveals the
         half would be the freeze moving the view it promised to hold. Measured
         on male-cns, carrying the hidden nerve cord costs a brain-only page a
-        1.46x wider box and nothing else.
+        1.46x wider box, and ``hidden_half`` is how the script knows to open
+        pivoted on the half it shows rather than on the middle of the gap
+        between the two.
 
         A frozen box also fixes the rotation pivot at the centre of the whole
         scene, which is where the second control comes in: its button (also the
@@ -4351,9 +4360,16 @@ class VisualizeSkeleton:
         Fit clears it -- an autoscaled box is already centred on the visible
         traces, and carrying the old number over would leave the anatomy
         hanging off the pivot. Re-freezing restores it, unless the user has
-        panned in the meantime, which wins. A box is built around its content's
-        midpoint, so the pivot the page starts on is the one the viewer would
-        have chosen.
+        panned in the meantime, which wins.
+        That same control is what the page opens on whenever ``hidden_half``
+        says the run embedded an envelope the page does not show. A box is
+        built around its content's midpoint, and here the content is the union
+        of two halves while only one is drawn, so the default pivot sits in the
+        gap between them and a brain-only page opens with the brain pushed to
+        the top of the frame. Re-centering once at setup moves the pivot onto
+        what is actually visible without touching the box, which is the one
+        framing rule the reveal contract leaves available: the reveal itself
+        still draws without moving anything.
         A Freeze/Fit button (also the 'F' key) hands the autoscaling back for
         anyone who wants the framing to follow the visible traces again. Both
         carry a hover hint rendered from their own ``data-drocat-tip``
@@ -4364,7 +4380,7 @@ class VisualizeSkeleton:
         export path shares these pages with the viewer, and its per-profile
         shots must keep fitting the frame.
         """
-        baked = {'ranges': ranges}
+        baked = {'ranges': ranges, 'hiddenHalf': bool(hidden_half)}
         button_html = (
             '<button id="drocat-freeze-toggle" type="button"'
             ' aria-label="Freeze or fit the 3D view"'
@@ -4619,6 +4635,14 @@ class VisualizeSkeleton:
     var gd = graphDiv();
     if (gd && window.Plotly && gd._fullLayout && gd._fullLayout.scene) {
       setFrozen(true);
+      if (CONFIG.hiddenHalf) {
+        // The box spans a half this page does not draw, so its centre is the
+        // middle of the gap between the two and the anatomy sits pinned to one
+        // side of the frame. Same math the ⌖ button runs, so the page opens
+        // where the viewer would have put it -- a pivot, not a box, so the
+        // reveal later still has nowhere to move.
+        recenter();
+      }
       if (button) {
         button.addEventListener('click', toggle);
       }
@@ -5884,7 +5908,7 @@ class VisualizeSkeleton:
 
     def _inject_page_extras(self, html_path, theme_toggle=False,
                             mesh_indices=None, legend_tree=False,
-                            freeze_ranges=None):
+                            freeze_ranges=None, freeze_hidden_half=False):
         """Insert the warning banner and/or viewer extras at the top of a page.
 
         All extras share one read/insert/write pass so large HTML files are
@@ -5900,7 +5924,8 @@ class VisualizeSkeleton:
         )
         legend_html = self._legend_tree_html() if legend_tree else ''
         freeze_html = (
-            self._freeze_view_html(freeze_ranges)
+            self._freeze_view_html(freeze_ranges,
+                                   hidden_half=freeze_hidden_half)
             if freeze_ranges else ''
         )
         if not (warning_html or theme_html or legend_html or freeze_html):
@@ -6115,13 +6140,18 @@ class VisualizeSkeleton:
             if theme_toggle else None
         )
         # One box for the page, and it already spans any context half the run
-        # embedded without showing: see ``_scene_data_ranges``.
+        # embedded without showing: see ``_scene_data_ranges``. That half is
+        # also why the page has to say which pivot it opens on -- the box's
+        # centre is the gap between the two halves whenever one is hidden.
+        hidden_half = bool(
+            _unshown_context_mesh_indices(figure)) if freeze_view else False
         freeze_ranges = (
             self._scene_data_ranges(figure) if freeze_view else None
         )
         self._inject_page_extras(
             html_path, theme_toggle=theme_toggle, mesh_indices=mesh_indices,
             legend_tree=legend_tree, freeze_ranges=freeze_ranges,
+            freeze_hidden_half=hidden_half,
         )
         self._record_large_html_warning(html_path)
 
