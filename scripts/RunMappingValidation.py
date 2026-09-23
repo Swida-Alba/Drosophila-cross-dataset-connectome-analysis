@@ -142,7 +142,17 @@ def parse_args(argv=None):
                         'measured value that keeps every pair the supervised '
                         'path graded verified on all three targets (plan '
                         '§2.2); the same floor is NOT dataset-neutral, so do '
-                        'not raise it without re-reading §2.2.')
+                        'not raise it without re-reading §2.2. With the '
+                        'evidence fit ON (default) this value is the CEILING: '
+                        'the run uses min(this, q05 of this dataset pair\'s '
+                        'graded pairs) and publishes which it used.')
+    p.add_argument('--no-pooling-floor-from-evidence', action='store_true',
+                   help='--mode pooling: gate on the literal '
+                        '--pooling-jaccard-floor instead of fitting it to this '
+                        'dataset pair\'s recorded supervised evidence '
+                        '(cache/<target>/pooling/jaccard_evidence_*.json). Use '
+                        'it for a run that must be reproducible against a '
+                        'moving evidence file.')
     p.add_argument('--pooling-rank-union-floor', type=float, default=0.0,
                    help='--mode pooling: absolute rank_union floor '
                         '(default 0 = strictly positive correlation)')
@@ -267,6 +277,7 @@ def main(argv=None):
         pooling_window_mult=args.pooling_window_mult,
         pooling_morph_gate=not args.no_pooling_morph_gate,
         pooling_max_morph_targets=args.pooling_max_morph_targets,
+        pooling_floor_from_evidence=not args.no_pooling_floor_from_evidence,
         pooling_sibling_runs=list(args.pooling_corroborate_with or []),
         backward_evidence_enabled=args.backward_evidence,
         skip_backward_pass=args.skip_backward_pass,

@@ -10,12 +10,23 @@ The unsupervised property is load-bearing, so it is stated as an invariant:
 **no function here may use a mapper claim to decide whether a row is a
 candidate.**  The mapper is read after the gate, to label cells and leaf tokens.
 A unit test enforces it by making the claim lookups raise.
+
+One qualification is itself a design decision (plan §5): the Jaccard floor may be
+*fitted* from the graded pairs of PAST runs of the same dataset pair
+(:class:`JaccardFloorStore`).  That is dataset-level calibration, like the null
+sample the morphology bars are built from — not this run's claims deciding this
+run's rows.  The two are kept apart by ordering: the floor is read at the top of
+the pass and the evidence is written at the bottom, so a run's own verdicts can
+never move its own gate.  The effective floor and its provenance are published in
+every export.
 """
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -35,6 +46,160 @@ CELL_POOL_MISS = 'pool_miss'          # the mapper never named this neuron
 CELL_VERIFIED_ONLY = 'verified_only'  # the mapper's pair fails the abs bar
 CELL_TYPE_MISS = 'type_miss'          # pool_miss, of an in-map type
 CELL_TYPE_NEW = 'type_new'            # pool_miss, of a type outside the map
+
+
+#: Where a run's effective Jaccard floor came from.  Published, because the
+#: number alone does not tell a reader whether it is a constant or a fit.
+FLOOR_CONFIG = 'config-default'
+FLOOR_FITTED = 'dataset-fitted'
+FLOOR_THIN = 'dataset-fitted-thin-sample'
+
+
+class JaccardFloorStore:
+    """The per-dataset-pair evidence behind the pooling Jaccard floor (P4).
+
+    One global floor is only safe in the low band: at J=0.20 the same rule
+    rejects 33 % of BANC's verified rows, 3 % of male-cns's and 27 % of
+    hemibrain's (plan §2.2), so a single constant quietly changes what each
+    dataset's run means.  This store therefore holds, per (source, target)
+    pair, the jaccard of every pair the SUPERVISED path graded
+    ``matched``/``verified*`` in past runs, and the floor is fitted as
+    ``min(configured, q05(that evidence))`` — the value at which this dataset
+    pair's own verified rows start to be rejected.
+
+    It lives beside the ``NullVectorStore`` sidecars for the same reason: an
+    unpinned sample makes a bar drift (BANC's null-kind bar measured
+    0.593 -> 0.235 between identical runs).  The drift that matters here is
+    removed by ordering: the floor is READ at the start of a pass and the
+    evidence is WRITTEN at the end, so no run can move its own gate with its
+    own claims — which is what keeps `pooling` unsupervised.
+    """
+
+    MIN_N = 20          # mirrors `null_min_n`: below this, do not fit
+    PERCENTILE = 5.0    # q05: the floor is a 5th-percentile statement
+    CAP = 20000         # keep the LOW tail exactly; that is what q05 reads
+
+    def __init__(self, source_dataset: str, target_dataset: str,
+                 project_root: Optional[str] = None):
+        from pathlib import Path
+        from morphology import _dataset_folder
+        from comparison.morph_cross_dataset import DEFAULT_PROJECT_ROOT
+        self.source_dataset = str(source_dataset or '')
+        self.target_dataset = str(target_dataset or '')
+        root = Path(project_root or DEFAULT_PROJECT_ROOT)
+        # the pool is scored against the TARGET universe, so the target owns
+        # the file; the source is hashed into the name (one file per pair)
+        tag = hashlib.sha1(self.source_dataset.encode()).hexdigest()[:12]
+        self.path = (root / 'cache' / _dataset_folder(self.target_dataset)
+                     / 'pooling' / f'jaccard_evidence_{tag}.json')
+
+    def load(self) -> Dict[str, float]:
+        try:
+            with open(self.path, errors='ignore') as fh:
+                raw = json.load(fh) or {}
+            pairs = raw.get('pairs') or {}
+            return {str(k): float(v) for k, v in pairs.items()}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def fit(self, configured: float) -> Tuple[float, Dict[str, Any]]:
+        """The effective floor plus its provenance; never raises."""
+        meta: Dict[str, Any] = {'source': FLOOR_CONFIG, 'configured':
+                                float(configured), 'n': 0, 'q05': None,
+                                'percentile': self.PERCENTILE,
+                                'path': str(self.path)}
+        try:
+            values = np.asarray(sorted(self.load().values()), dtype=float)
+        except (TypeError, ValueError):
+            values = np.empty(0)
+        values = values[np.isfinite(values)]
+        meta['n'] = int(values.size)
+        if values.size < self.MIN_N:
+            meta['source'] = FLOOR_THIN
+            meta['why'] = (f'{values.size} graded pair(s) on record, below '
+                           f'min_n={self.MIN_N}: the configured floor stands')
+            return float(configured), meta
+        q = float(np.percentile(values, self.PERCENTILE))
+        meta['q05'] = round(q, 6)
+        floor = min(float(configured), max(0.0, q))
+        meta['source'] = FLOOR_FITTED
+        meta['clamped_by_config'] = floor == float(configured) and q >= float(
+            configured)
+        return floor, meta
+
+    def observe(self, val_rows: Iterable[Dict]) -> int:
+        """Add this run's supervised evidence; return the pairs newly recorded.
+
+        Keyed by the pair, so re-running the same query contributes nothing
+        twice.  Written atomically, and a write failure is a note, never an
+        aborted run.
+        """
+        fresh: Dict[str, float] = {}
+        for r in val_rows or []:
+            verdict = str(r.get('verdict') or '')
+            if verdict != 'matched' and not verdict.startswith('verified'):
+                continue
+            try:
+                jac = float(r.get('jaccard'))
+                key = (f"{int(r.get('source_bodyId'))}"
+                       f":{int(r.get('target_bodyId'))}")
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(jac) and jac > 0:
+                fresh[key] = jac
+        if not fresh:
+            return 0
+        merged = self.load()
+        before = len(merged)
+        merged.update(fresh)
+        if len(merged) > self.CAP:
+            # keep the lowest values: q05 is read off that tail, so trimming
+            # there would be the one trim that could move the fitted floor
+            keep = sorted(merged.items(), key=lambda kv: kv[1])[:self.CAP]
+            merged = dict(keep)
+        payload = {
+            'schema': 1,
+            'source_dataset': self.source_dataset,
+            'target_dataset': self.target_dataset,
+            'metric': 'jaccard of pairs the supervised path graded '
+                      'matched/verified (advisory evidence for the pooling '
+                      'floor — not a recall set)',
+            'pairs': merged,
+            'n': len(merged),
+            'written_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix('.json.tmp')
+            with open(tmp, 'w') as fh:
+                json.dump(payload, fh, indent=1, sort_keys=True)
+            os.replace(tmp, self.path)
+        except OSError:
+            return 0
+        return max(0, len(merged) - before)
+
+
+def resolve_jaccard_floor(cfg, project_root: Optional[str] = None
+                          ) -> Tuple[float, Dict[str, Any]]:
+    """The floor this pass will gate on: fitted when evidence allows, else the
+    configured constant.  Read once, at the top of the pass, and published.
+
+    `project_root` follows the pipeline's convention — the tree the run lives in
+    owns the store, so a scratch tree with its own frozen `cache/` clone fits
+    against its own evidence and cannot move another tree's floor.
+    """
+    configured = float(cfg.pooling_jaccard_floor)
+    if not getattr(cfg, 'pooling_floor_from_evidence', False):
+        return configured, {'source': FLOOR_CONFIG, 'configured': configured,
+                            'n': 0, 'q05': None,
+                            'why': 'pooling_floor_from_evidence is off'}
+    try:
+        return JaccardFloorStore(cfg.source_dataset, cfg.target_dataset,
+                                 project_root).fit(configured)
+    except Exception as exc:  # noqa: BLE001 — a missing store is not a failure
+        return configured, {'source': FLOOR_CONFIG, 'configured': configured,
+                            'n': 0, 'q05': None,
+                            'why': f'unavailable: {type(exc).__name__}: {exc}'}
 
 
 def seed_population(validator, query_types: Sequence[str]) -> List[int]:
@@ -80,15 +245,17 @@ def window_sizes(source_types: Dict[int, str], mult: float) -> Dict[int, int]:
 def connectivity_candidates(validator, seed: Sequence[int],
                             source_types: Dict[int, int],
                             windows: Dict[int, int], target_stats,
-                            target_bids: Sequence[int]) -> Tuple[List[Dict], Dict]:
+                            target_bids: Sequence[int],
+                            jaccard_floor: float) -> Tuple[List[Dict], Dict]:
     """Scan the seed against the WHOLE target universe and keep the rows that
     pass the absolute gate (plan §4.2): ``jaccard > J``, ``rank_union > RU``,
     and both metric ranks inside the source's window.
 
+    ``jaccard_floor`` is the RESOLVED floor (see `resolve_jaccard_floor`), not
+    the config field: the run must gate on one number and publish that number.
+
     Returns the surviving rows plus the scan stats (rows scored, positives).
     """
-    import time
-
     from comparison.body_id_resolver import scan_source
     from comparison.mapping_validation import expanded_vector
 
@@ -112,7 +279,7 @@ def connectivity_candidates(validator, seed: Sequence[int],
         scored += len(fr)
         positives += int(np.count_nonzero(np.isfinite(jac) & (jac > 0)))
         w = int(windows.get(int(bid), 1))
-        keep = ((jac > float(cfg.pooling_jaccard_floor))
+        keep = ((jac > float(jaccard_floor))
                 & (ru > float(cfg.pooling_rank_union_floor))
                 & (rr <= w) & (jr <= w))
         bids = fr['target_bid'].to_numpy()
@@ -496,15 +663,25 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     """
     cfg = validator.cfg
     notes: List[str] = []
+    # READ the fitted floor before anything is selected. The evidence store is
+    # written at the END of this function, so this run's own claims cannot move
+    # this run's gate — the unsupervised property depends on that ordering.
+    j_floor, j_meta = resolve_jaccard_floor(
+        cfg, getattr(validator, 'project_root', None))
+    store = JaccardFloorStore(cfg.source_dataset, cfg.target_dataset,
+                              getattr(validator, 'project_root', None))
     seed = seed_population(validator, cfg.query_types)
     if not seed:
         notes.append('pooling: the queried population resolved to 0 neurons — '
                      'nothing scanned.')
         return {'candidates': [], 'pool': [],
-                'cross_validation': cross_validation([], [], {'types': set(),
-                                                              'pools': set(),
-                                                              'pairs': {}},
-                                                     {}, {}, notes)}
+                'cross_validation': cross_validation(
+                    [], [], {'types': set(), 'pools': set(), 'pairs': {}},
+                    {'gate': {'jaccard_floor': j_floor,
+                              'jaccard_floor_source': j_meta.get('source'),
+                              'rank_union_floor': cfg.pooling_rank_union_floor,
+                              'window_mult': cfg.pooling_window_mult}},
+                    {}, notes)}
     # The source neurons' own type names: what the window scales to.  This is
     # the dataset's annotation, reached through the profile backend — the same
     # labels stage 2 reads for the target side.
@@ -519,7 +696,8 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     source_types = {int(b): source_types.get(int(b), '') for b in seed}
     windows = window_sizes(source_types, cfg.pooling_window_mult)
     rows, stats = connectivity_candidates(validator, seed, source_types,
-                                          windows, target_stats, target_bids)
+                                         windows, target_stats, target_bids,
+                                         j_floor)
     refs = mapper_reference(validator, val_rows)
     rows = annotate(validator, rows, target_id2type, refs)
     rows, morph = apply_morph_gate(validator, rows)
@@ -527,10 +705,26 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     corr = corroborate(getattr(cfg, 'pooling_sibling_runs', None) or [],
                        cfg.target_dataset)
     corroboration = corroborate_pool(rows, pool, corr)
+    gate = {'jaccard_floor': j_floor,
+            'jaccard_floor_configured': cfg.pooling_jaccard_floor,
+            'jaccard_floor_source': j_meta.get('source'),
+            'jaccard_floor_evidence_n': j_meta.get('n'),
+            'jaccard_floor_q05': j_meta.get('q05'),
+            'rank_union_floor': cfg.pooling_rank_union_floor,
+            'window_mult': cfg.pooling_window_mult}
+    if j_meta.get('why'):
+        gate['jaccard_floor_note'] = str(j_meta['why'])
+    # WRITE the evidence last, and only from this run's supervised grades: the
+    # next run's floor may learn from this one, this run's gate never does.
+    try:
+        added = store.observe(val_rows)
+        gate['jaccard_floor_pairs_added'] = int(added)
+    except Exception as exc:  # noqa: BLE001 — a store is never worth a failed pass
+        notes.append(f'pooling: the J-floor evidence store could not be '
+                     f'updated ({type(exc).__name__}: {exc}); the next run '
+                     f'starts from what is already on record.')
     stats.update({'seed': len(seed), 'universe': len(target_bids),
-                  'gate': {'jaccard_floor': cfg.pooling_jaccard_floor,
-                           'rank_union_floor': cfg.pooling_rank_union_floor,
-                           'window_mult': cfg.pooling_window_mult}})
+                  'gate': gate})
     xval = cross_validation(pool, rows, refs, stats, morph, notes,
                             corroboration=corroboration)
     validator.log(f"[pooling] {len(seed)} queried sources scanned "
@@ -540,5 +734,11 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
                   f"pool); morph {morph}; corroboration "
                   f"{corroboration['status']} "
                   f"({corroboration['sibling_runs']} sibling run(s))")
+    validator.log(f"[pooling] Jaccard floor {j_floor:.4f} "
+                  f"({j_meta.get('source')}; configured "
+                  f"{cfg.pooling_jaccard_floor}; "
+                  f"{j_meta.get('n', 0)} graded pair(s) on record, "
+                  f"q05={j_meta.get('q05')}"
+                  + (f"; {j_meta['why']}" if j_meta.get('why') else '') + ")")
     return {'candidates': rows, 'pool': pool, 'cross_validation': xval,
             'stats': stats}

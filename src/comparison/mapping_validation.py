@@ -250,6 +250,12 @@ class MappingValidationConfig:
     #: path, so the pass is budgeted; rows past the budget say so in
     #: `morph_gate='not-attempted-cap'` rather than reading as rejections.
     pooling_max_morph_targets: int = 400
+    #: Fit the Jaccard floor per dataset pair from the graded pairs past runs
+    #: recorded (plan §5 / P4): one global 0.10 is only safe in the low band —
+    #: at 0.20 it rejects 33 % of BANC's verified rows, 3 % of male-cns's, 27 %
+    #: of hemibrain's. The evidence is READ before the pass and WRITTEN after
+    #: it, so a run never moves its own gate with its own claims.
+    pooling_floor_from_evidence: bool = True
     #: Run folders of the SAME query against OTHER targets, joined after the
     #: gate to fill `targets_corroborated`.  Advisory ranking only (plan
     #: decision 6): a candidate never enters or leaves the pool because of it.
@@ -5872,6 +5878,7 @@ class MappingValidator:
             'pooling_window_mult': self.cfg.pooling_window_mult,
             'pooling_morph_gate': self.cfg.pooling_morph_gate,
             'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
+            'pooling_floor_from_evidence': self.cfg.pooling_floor_from_evidence,
             'pooling_sibling_runs': list(self.cfg.pooling_sibling_runs or []),
             'scene_selfcheck': self.cfg.scene_selfcheck,
             'morph_enabled': self.cfg.morph_enabled,

@@ -58,7 +58,10 @@ class FakeValidator:
 def _cfg(**kw):
     base = dict(source_dataset='flywire_FAFB_v783', target_dataset='banc_v888',
                 query_types=['circadian_clock'], verbose=False,
-                validation_mode='pooling', pooling_morph_gate=False)
+                validation_mode='pooling', pooling_morph_gate=False,
+                # the J-floor store lives in the project's cache/; unit tests
+                # never write there, so the fit is exercised explicitly below
+                pooling_floor_from_evidence=False)
     base.update(kw)
     return mv.MappingValidationConfig(**base)
 
@@ -135,7 +138,7 @@ def test_gate_keeps_only_absolute_evidence(monkeypatch):
     _install_frames(monkeypatch, frames)
     v = FakeValidator(_cfg(), frames, types={1: 's-LNv'})
     rows, stats = pool.connectivity_candidates(
-        v, [1], {1: 's-LNv'}, {1: 4}, {}, [100, 101, 102, 103])
+        v, [1], {1: 's-LNv'}, {1: 4}, {}, [100, 101, 102, 103], 0.10)
     assert [r['target_bodyId'] for r in rows] == [100]
     assert stats['rows_scored'] == 4 and stats['rows_kept'] == 1
 
@@ -159,7 +162,7 @@ def test_selection_does_not_depend_on_the_mapper(monkeypatch):
     for name, pairs in (('with_claims', claimed), ('no_claims', [])):
         v = FakeValidator(_cfg(), frames, types={1: 's-LNv'}, pairs=pairs)
         rows, _ = pool.connectivity_candidates(
-            v, [1], {1: 's-LNv'}, {1: 4}, {}, [100, 200])
+            v, [1], {1: 's-LNv'}, {1: 4}, {}, [100, 200], 0.10)
         refs = pool.mapper_reference(v, [])
         rows = pool.annotate(v, rows, {100: 'X', 200: 'Y'}, refs)
         out[name] = ({r['target_bodyId'] for r in rows},
@@ -472,3 +475,114 @@ def test_run_pooling_with_an_empty_seed_is_explicit(monkeypatch):
     assert out['pool'] == []
     assert 'queried population resolved to 0 neurons' in \
         out['cross_validation']['reading_notes'][3]
+
+
+# -- the per-dataset Jaccard floor (P4) --------------------------------------
+
+def _store(tmp_path):
+    return pool.JaccardFloorStore('flywire_FAFB_v783', 'banc_v888',
+                                 project_root=str(tmp_path))
+
+
+def _graded(n, low=0.02):
+    return [{'verdict': 'verified', 'source_bodyId': 10 + i,
+             'target_bodyId': 100 + i, 'jaccard': low + i / 100}
+            for i in range(n)]
+
+
+def test_the_floor_fits_to_the_low_tail_of_the_recorded_evidence(tmp_path):
+    # a pair whose verified rows bottom out near 0.02 must not be gated at the
+    # global 0.10 — that floor would reject this dataset's own verified evidence
+    st = _store(tmp_path)
+    assert st.observe(_graded(30)) == 30
+    floor, meta = st.fit(0.10)
+    assert meta['source'] == pool.FLOOR_FITTED and meta['n'] == 30
+    assert floor == pytest.approx(meta['q05'])
+    assert floor < 0.10
+
+
+def test_a_thin_sample_leaves_the_configured_floor_alone(tmp_path):
+    st = _store(tmp_path)
+    st.observe(_graded(st.MIN_N - 1))
+    floor, meta = st.fit(0.10)
+    assert floor == 0.10 and meta['source'] == pool.FLOOR_THIN
+    assert 'below min_n' in meta['why']
+
+
+def test_evidence_is_deduplicated_by_pair(tmp_path):
+    st = _store(tmp_path)
+    same_pair = [{'verdict': 'verified', 'source_bodyId': 1,
+                  'target_bodyId': 100, 'jaccard': j} for j in (0.2, 0.9)]
+    assert st.observe(same_pair) == 1
+    assert st.observe(same_pair) == 0            # already on record
+    assert list(st.load().values()) == [0.9]     # the later grade stands
+
+
+def test_the_cap_keeps_the_low_tail_because_q05_reads_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool.JaccardFloorStore, 'CAP', 3)
+    st = _store(tmp_path)
+    st.observe(_graded(10))
+    assert sorted(st.load().values()) == [0.02, 0.03, 0.04]
+
+
+def test_ungraded_rows_are_not_evidence(tmp_path):
+    st = _store(tmp_path)
+    rows = _graded(3) + [{'verdict': 'borderline', 'source_bodyId': 9,
+                          'target_bodyId': 99, 'jaccard': 0.4},
+                         {'verdict': 'unmatched', 'source_bodyId': 8,
+                          'target_bodyId': 98, 'jaccard': 0.4}]
+    assert st.observe(rows) == 3
+
+
+def test_a_run_cannot_move_its_own_floor(monkeypatch, tmp_path):
+    """The ordering IS the unsupervised property, expressed in time.
+
+    The evidence is read before the scan and written after it, so the first run
+    on a store gates on the configured floor even though it contributes rows
+    that would fit far lower, and only the second run sees a fitted floor.
+    """
+    frames = {1: _frame([{'target_bid': 100, 'jaccard': 0.50,
+                          'rank_union': 0.30, 'jaccard_rank': 1,
+                          'rank_union_rank': 1},
+                         {'target_bid': 101, 'jaccard': 0.05,
+                          'rank_union': 0.40, 'jaccard_rank': 2,
+                          'rank_union_rank': 2}])}
+    _install_frames(monkeypatch, frames)
+    v = FakeValidator(_cfg(pooling_floor_from_evidence=True), frames,
+                      types={1: 's-LNv'})
+    v.project_root = str(tmp_path)
+    v._backward_decision = lambda t: {'status': '', 'mapped': None,
+                                      'home_count': 0, 'home_real': False}
+    val = _graded(30)
+
+    def run():
+        return pool.run_pooling(v, target_stats={}, target_bids=[100, 101],
+                                target_id2type={100: 'DN1a', 101: 'DN1a'},
+                                val_rows=val)
+
+    first = run()
+    g1 = first['cross_validation']['gate']
+    assert g1['jaccard_floor'] == 0.10
+    assert g1['jaccard_floor_source'] == pool.FLOOR_THIN
+    assert g1['jaccard_floor_pairs_added'] == 30       # written AFTER the scan
+    assert {r['target_bodyId'] for r in first['candidates']} == {100}
+
+    second = run()
+    g2 = second['cross_validation']['gate']
+    assert g2['jaccard_floor_source'] == pool.FLOOR_FITTED
+    assert g2['jaccard_floor'] == pytest.approx(g2['jaccard_floor_q05'])
+    assert g2['jaccard_floor'] < 0.05
+    # and the gate really moved: 101 (jaccard 0.05) is below the configured
+    # floor and above the fitted one
+    assert {r['target_bodyId'] for r in second['candidates']} == {100, 101}
+
+
+def test_the_floor_stay_can_be_switched_off(monkeypatch, tmp_path):
+    st = _store(tmp_path)
+    st.observe(_graded(30))
+    floor, meta = pool.resolve_jaccard_floor(
+        _cfg(pooling_floor_from_evidence=False), project_root=str(tmp_path))
+    assert (floor, meta['source']) == (0.10, pool.FLOOR_CONFIG)
+    floor, meta = pool.resolve_jaccard_floor(
+        _cfg(pooling_floor_from_evidence=True), project_root=str(tmp_path))
+    assert meta['source'] == pool.FLOOR_FITTED and floor < 0.10
