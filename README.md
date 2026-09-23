@@ -158,6 +158,7 @@ All NeuPrint server datasets are supported (verified against `api.neuprint.janel
 ## What's New in v4.5.0
 
 - **Script-first analysis with coding agents** — run pathfinding, comparison, NeuronBridge, FlyLight, homolog, profile, PlotPath, and 3D skeleton scripts without the UI, via the [`drocat-usage`](skills/drocat-usage/SKILL.md) skill and its `run_direct.py` launcher.
+- **Cross-Dataset group** — the connection-comparison tab moved into its own top-level **Cross-Dataset** group as **Paths**, alongside the new **Type Validation** tab that runs the TM VEV pipeline (`MappingValidator`) from the UI: bodyId-level validation of a source→target type mapping, candidate expansion, and 3D review scenes (see [type_validation.html](docs/ui_guides/type_validation.html)).
 - **Local FAFB + standalone BANC dataset support** — local-first FAFB caching and public-bucket BANC caching so repeated local-release queries avoid network round-trips entirely; Polars-backed matrix/CSV steps measured 10-100x faster in the [December 2025 benchmarks](docs/technical/PERFORMANCE_OPTIMIZATIONS_DEC2025.md) ([FAFB Integration](docs/FAFB_INTEGRATION.md), [BANC Integration](docs/BANC_INTEGRATION.md)).
 - **NT visualization & grouping** — neurotransmitter edge groups, custom groups, export/import ([Network Features](docs/visualizations/VisualizePath_Network_Features.md)).
 - **Similarity tab reorganization** — the Similarity group is now two main tabs, each with Find Similar / Comparison sub-tabs:

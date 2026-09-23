@@ -1,7 +1,10 @@
 # Cross-Dataset Comparison (inter_dataset)
 
-Reproduce the **Cross-Dataset Comparison** UI tab as a direct backend call. Runs
-`ComparisonAnalyzer` over N datasets with shared source/target queries.
+Reproduce the **Paths** tab (UI label "Paths", in the **Cross-Dataset** group;
+tool key still `inter_dataset`) as a direct backend call. Runs
+`ComparisonAnalyzer` over N datasets with shared source/target queries. For
+bodyId-level validation of a type mapping, see the sibling
+[type-validation.md](type-validation.md).
 
 ## Backend contract
 

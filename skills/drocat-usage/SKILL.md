@@ -96,7 +96,8 @@ expected outputs, and a runnable launcher command.
 | Connectivity · Find Similar | [find-homologs.md](tabs/find-homologs.md) | `find_homologs` → `HomologFinder.find_homologs_multi` (cross-dataset homologs; Target = Source for intra-dataset similar search) |
 | Morphology · Find Similar | [find-similar.md](tabs/find-similar.md) | `find_similar_morphology` → `MorphologyComparer.find_similar` |
 | Morphology · Comparison | [morphology-comparison.md](tabs/morphology-comparison.md) | `morphology_comparison` → `MorphologyProfileComparer.run` |
-| Cross-Dataset Comparison | [inter-dataset.md](tabs/inter-dataset.md) | `inter_dataset` → `ComparisonParameters` + `ComparisonAnalyzer.run_comparison` |
+| Paths (Cross-Dataset) | [inter-dataset.md](tabs/inter-dataset.md) | `inter_dataset` → `ComparisonParameters` + `ComparisonAnalyzer.run_comparison` |
+| Type Validation (Cross-Dataset) | [type-validation.md](tabs/type-validation.md) | `type_mapping_validation` → `MappingValidationConfig` + `MappingValidator.run` (TM VEV bodyId-level mapping validation) |
 | Find Driver Lines | [nb-find-lines.md](tabs/nb-find-lines.md) | `nb_find_lines` → `NeuronBridgeFinder.find_lines_batch`; `nb_find_lines_expanded` → `ExpandedLineFinder.run` (coverage-routed cross-dataset name expansion) |
 | Find EM Neurons | [nb-find-neuron.md](tabs/nb-find-neuron.md) | `nb_find_neuron` → `NeuronBridgeFinder.find_neurons_batch` |
 | Co-Labeling Analysis | [nb-colabel.md](tabs/nb-colabel.md) | `nb_colabel` → `NeuronBridgeFinder.analyze_colabeling` |

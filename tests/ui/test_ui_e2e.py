@@ -3484,14 +3484,14 @@ class TestTabs:
     def test_all_tab_functions_exist(self):
         from ui.tabs import (
             create_find_path_tab, create_find_shortest_tab, create_connectivity_tab,
-            create_morphology_tab, create_inter_dataset_tab,
+            create_morphology_tab, create_inter_dataset_tab, create_type_validation_tab,
             create_nb_find_lines_tab, create_nb_find_neuron_tab, create_nb_colabel_tab,
             create_skeleton_tab, create_net_viz_tab, create_network_tab,
             create_visualization_tab, create_settings_tab,
         )
         assert all(callable(f) for f in [
             create_find_path_tab, create_find_shortest_tab, create_connectivity_tab,
-            create_morphology_tab, create_inter_dataset_tab,
+            create_morphology_tab, create_inter_dataset_tab, create_type_validation_tab,
             create_nb_find_lines_tab, create_nb_find_neuron_tab, create_nb_colabel_tab,
             create_skeleton_tab, create_net_viz_tab, create_network_tab,
             create_visualization_tab, create_settings_tab,
@@ -3522,7 +3522,8 @@ class TestTabs:
             return None
 
         expected_headers = {
-            "Connection": "connection", "Visualization": "visualization",
+            "Connection": "connection", "Cross-Dataset": "crossdataset",
+            "Visualization": "visualization",
             "Similarity": "similarity", "NeuronBridge": "nb",
             "FlyLight": "flylight",
         }
@@ -3543,7 +3544,8 @@ class TestTabs:
         # Every tab button lives inside its group's tinted card.
         tint_by_label = {
             "Complete Paths": "connection", "Shortest Paths": "connection",
-            "Network": "connection", "Cross-Dataset": "connection",
+            "Network": "connection",
+            "Paths": "crossdataset", "Type Validation": "crossdataset",
             "Skeleton": "visualization", "Net-Viz": "visualization",
             "Connectivity": "similarity", "Morphology": "similarity",
             "Find Lines": "nb", "Find Neurons": "nb", "Co-Labeling": "nb",

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Type Validation - DROCAT Instructions</title>
+  <link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<main class="guide">
+  <header class="guide-top">
+    <a class="back" href="README.html">&larr; Back to guides</a>
+    <span class="tag">Connectome</span>
+  </header>
+  <h1>Type Validation (TM VEV)</h1>
+  <p class="lede">
+    BodyId-level validation of a source &rarr; target type mapping between two
+    connectomes (e.g. <code>flywire_FAFB_v783</code> vs
+    <code>male-cns:v1.0</code>). It verifies the mapper&rsquo;s claimed branches
+    against real connectivity, expands candidate neurons, and renders 3D review
+    scenes. <b>Everything it produces is a proposal</b> - the mapping itself is
+    never rewritten.
+  </p>
+
+  <h2>Where it fits</h2>
+  <p>
+    This is the validation counterpart to the
+    <a href="cross_dataset.html">Paths</a> tab. Paths compares connectivity
+    across datasets; Type Validation checks whether a proposed type mapping
+    between a source and a target dataset actually holds at the neuron level.
+    Read the type-level preview, then validate at bodyId resolution.
+  </p>
+
+  <h2>Quick start</h2>
+  <ol>
+    <li>Pick a <b>Source Dataset</b> and a <b>Target Dataset</b>. They must
+      differ; same-dataset pairs usually resolve no cross-dataset branches.</li>
+    <li>Add one or more <b>Source Types / Categories</b> as chips: a neuron
+      type (<code>APDN3</code>, <code>s-CPDN3A</code>) or a coarse
+      <code>cell_type</code> category (<code>circadian_clock</code>). A query is
+      required - an empty query runs but produces an empty report.</li>
+    <li>Choose a <b>Validation Mode</b>: <code>restrictive</code> &sube;
+      <code>family</code> &sube; <code>aggressive</code>. Wider modes admit more
+      candidate bins and run slower. The fourth button, <code>pooling</code>, is
+      <b>not</b> a wider rung: it is a parallel unsupervised search that scans
+      the queried population against the whole target universe under absolute
+      floors, writes its result into <code>pooling/</code> beside the nested
+      bins, and changes none of them. Selecting it reveals its own gate card
+      (Jaccard floor, the rank window, morphology as the last gate, the morph
+      budget); the other modes never read those
+      knobs. The floors are a volume guard-rail &mdash; the configured number is
+      what gates the scan, and nothing fits it to this dataset pair&rsquo;s
+      evidence &mdash; while the morphology control is a true gate: a candidate
+      scored below its bar leaves the exported pool and the scene root.</li>
+    <li>Toggle <b>Stages</b> as needed (morphology, 3D scenes, backward
+      reciprocal evidence, out-map expansion) and set the offline behaviour in
+      <b>Data &amp; Offline</b>.</li>
+    <li>Click <b>Run Validation</b>. When it completes, open
+      <code>report.html</code>, the run folder, or the latest 3D scene from the
+      action row.</li>
+  </ol>
+
+  <h2>Cost &amp; scope</h2>
+  <p>
+    Validation scans each source neuron against the full target universe
+    (140&ndash;180k neurons). A coarse category, <code>aggressive</code> mode,
+    or backward reciprocal evidence each multiply runtime - a single backward
+    reverse scan is roughly 4&ndash;7&nbsp;s with a budget in the hundreds of
+    neurons. Start with a type-level <code>restrictive</code> pass. 3D scenes
+    default to <b>Max scenes&nbsp;=&nbsp;0</b>, which renders one page per
+    parent type - a coarse category therefore pays for every scene it resolves.
+    Set a positive cap (the run names the parents it drops) or split a broad
+    query into separate runs.
+  </p>
+
+  <h2>Offline runs</h2>
+  <p>
+    <b>Use connection cache</b> is not an offline switch - turning it off only
+    forces a refetch. To stay offline, check <b>Cache-only profiles (skip online
+    profile build)</b>, and also turn <b>Morphology verification</b> and
+    <b>Render 3D review scenes</b> off (stage-2 profiles, morph vectors and
+    skeleton loads are what reach the network). An unsupported dataset pair is
+    not an error - it resolves to zero branches and an empty run, so check the
+    log for &ldquo;no type pairs resolved&rdquo;.
+  </p>
+
+  <h2>Backward (reciprocal) evidence</h2>
+  <p>
+    With <b>Backward (reciprocal) homolog evidence</b> on, stage 5d asks the same
+    homolog question from the other side: each <code>candidates</code> /
+    <code>family</code> / <code>relative</code> member - and, by default, each
+    <b>unmatched</b> pool member - is reverse-scanned against the whole source
+    universe. Already-mapped members (matched / verified / borderline) are
+    skipped, because their forward pair already is the symmetric evidence; that
+    is why the only pool-side toggle is <b>Backward scans unmatched pool
+    members</b>. Each scanned neuron gets an advisory <code>high</code> /
+    <code>medium</code> / <code>low</code> grade for how prominently its own
+    branch&rsquo;s source type ranks in that reverse scan &mdash; in either
+    ranking, so the grade is pure rank evidence with no score threshold. It
+    never moves a neuron between bins and never counts toward a fill. Read it in
+    the report&rsquo;s <b>Reciprocal</b> tab (one row per neuron, ordered by
+    the Jaccard of the branch-type hit the grade rests on, so a neuron with
+    no such hit sinks below the ones that have one; it is shown beside the
+    global top-1) or in <code>expansion/backward_matches.csv</code>.
+  </p>
+
+  <h2>Output</h2>
+  <p>
+    The run lands in
+    <code>&lt;output&gt;/type-map-validation_{SRC}_to_{TGT}_{timestamp}/</code>
+    with <code>validation/</code>, <code>expansion/</code>,
+    <code>gap_fill/</code>, <code>mapping/</code> CSV/JSON deliverables, a
+    <code>report.html</code>, and <code>visualization/plot-3d_*/</code> scene
+    folders. The <code>pair_summary.csv</code> and
+    <code>gap_fill_dedup.csv</code> are previewable in the Output Files panel.
+  </p>
+
+  <p class="footnote"><a href="cross_dataset.html">Cross-Dataset Paths</a>
+    &middot; <a href="README.html">All guides</a></p>
+</main>
+</body>
+</html>
