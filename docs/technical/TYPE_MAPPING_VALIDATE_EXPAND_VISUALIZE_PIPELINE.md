@@ -349,37 +349,67 @@ that makes the claim lookups raise:
 - **gate** — absolute, never pool-relative: `jaccard >` floor, `rank_union >`
   floor (0), and both metric ranks inside `window_mult` × the size of THAT
   SOURCE TYPE's queried population. The window scales to the quantity an
-  unsupervised run knows; a branch's claimed pool is the supervised one. The
-  Jaccard floor is a PER-PAIR FIT bounded by the configured value:
-  `min(configured, q05 of the jaccards this (source, target) pair's own
-  `matched`/`verified` rows carry)`, read from
-  `cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` (the
-  `NullVectorStore` neighbourhood, for the same reason — an unpinned sample
-  makes a bar drift) at the START of the pass and written at the END, so a
-  run never gates on claims it is making. Below 20 pairs on record the
-  configured floor stands. `pooling_floor_from_evidence=False` skips the fit.
-  Measured on the runs on record, the configured 0.10 binds nowhere (it
-  rejects 0 % of the graded pairs of all three targets) while 0.20 rejects
-  2.1 % / 36.6 % / 20.0 % of male-cns / BANC / hemibrain — the dataset
-  non-neutrality the fit exists for.
-- **morphology last** — the Find-Homolog fast path (no NBLAST) with the
-  branch-free persisted `mapping_ref` bar, applied to the connectivity
-  survivors only, under a budget. A row that was not looked at says which
-  of the three absences it is (`not-selected`, `not-attempted-cap`,
-  `no-score`); a blank would read as a rejection.
+  unsupervised run knows; a branch's claimed pool is the supervised one.
+  These floors are a VOLUME guard-rail, not a data-quality claim (user
+  2026-09-23): they decide how wide the connectivity scan may open, and the
+  configured numbers are exactly what gated the run. An earlier build fitted
+  the Jaccard floor per (source, target) pair to the graded rows past runs
+  recorded (`min(configured, q05 of that pair's `matched`/`verified`
+  jaccards)`, read from a `cache/{target}/pooling/` evidence store before the
+  scan); the fit was DELETED rather than tuned, because the measurement that
+  motivated it — 0.10 rejecting 0 % of one pair's verified rows and 36.6 % of
+  another's at 0.20 — describes how much of the pool survives, which is
+  precisely the volume question the floor is allowed to answer, and nothing
+  about whether a pair is a homolog.
+- **morphology last, as a gate** — the Find-Homolog fast path (no NBLAST)
+  with the branch-free persisted `mapping_ref` bar, applied to the
+  connectivity survivors only, under a budget. A scored candidate BELOW its
+  bar leaves the exported pool and the scene root (`morph_refused` →
+  `morph.dropped_targets`); its rows stay in `pooling_candidates.csv`, so a
+  refusal stays auditable instead of becoming a silent absence. Nothing else
+  removes a target: a row that was not looked at says which of the three
+  absences it is (`not-selected`, `not-attempted-cap`, `no-score`), because a
+  blank would read as a rejection. The pass publishes that as a record, not a
+  ratio of convenience — `attempted` (what the budget allowed
+  to be looked at) · `scored` (what came back with a value) · `qualified` ·
+  `no_score` · `capped` · `gate_applied` · `dropped_targets` · `error` ·
+  `warnings` — because `scored` can sit far below `attempted` (one BANC run
+  recorded `attempted 8 / scored 8` while
+  its own rows said 1 `scored` and 7 `no-score`), and a pool that
+  was mostly unscored is a missing measurement rather than a morphologically
+  cleared one. Whenever the two differ the caveat is stated from ONE builder
+  (`_pooling_warning_line`) in the Pooling tab, the Log tab and
+  `user_warning_notes.txt`. That recorded collapse had a cause, and the first
+  explanation given for it was wrong: the pairs DO all score. The shared
+  scorer's `mapping_ref` rule "a branch-pool member was fetched only to
+  anchor a bar, so it is not a candidate" was deleting the verdict of every
+  candidate the mapper also claims (35/41 rows on male-cns, 33/41 on BANC);
+  `qualify_visualized_pairs(..., prune_pool_refs=False)` makes that
+  caller-side choice explicit, and grading stays honest because
+  `native_scores` never counts a candidate against itself.
 - **mapper joined post-hoc** — `confirmed` / `type_miss` / `type_new` /
   `verified_only`, with `reading_notes` published beside them: no cell is a
   recall measure (the two engines seed from different sets), and a large
   `verified_only` is expected (pool membership vs global rank), not a
   false-positive count.
 - **advisory only** — a pooling candidate never enters or leaves its pool
-  because of the mapper, of `targets_corroborated`, or of a size column
-  (`size_nm3` is published with its universe percentile, and nm³ medians
-  differ by orders of magnitude across datasets, so it is a label, not a
-  bar).
+  because of the mapper or of a size column (`size_nm3` is published with its
+  universe percentile, and nm³ medians differ by orders of magnitude across
+  datasets, so it is a label, not a bar). Nor does its target's TYPE NAME
+  corroborate anything: the type is the target dataset's own annotation,
+  reported for review and for the `mapper_cell` comparison, and there is no
+  cross-dataset agreement column (an earlier `targets_corroborated` join was
+  deleted — pooling neglects the type name by design, so counting how many
+  other datasets also ignored it in the same direction graded nothing).
 - **surfaces** — the run's whole result reads in the report's **Pooling** tab
-  (gate + provenance, the four cells, the harvest by target type, the morph
-  and corroboration summaries, then one row per pooled target); in a scene it
+  (the gate as the volume statement it is, the four cells, the harvest by
+  target type, the morph record including what the bar refused, then one row
+  per pooled target); the tab names
+  the STORES the cells were scored against (§P7a's `input_fingerprint`: git
+  rev, target universe, mapper snapshot), because the scores
+  and the comparison both read stores that can move, so a cell is only
+  comparable with another run that read the same ones — and it says so when a
+  run predates the fingerprint. In a scene it
   is the `pooling · {source type}` legend root (plum `#7b4173`), hosted by
   the parent group of the source that reached each target best — a pool row
   has no branch, so that type is its only scene address, and a type no branch
@@ -1013,10 +1043,10 @@ gives the subfolder each one lives in.
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, M, gap (informational), verdict/noise counters, `pool_best_size`, and the provenance pair `selected_chain` / `source_chain` (the chain that resolved the target pool vs the one that named the source neurons — equal except under the per-side basis) |
-| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`); `targets_corroborated` stays blank unless `--pooling-corroborate-with` named sibling runs. Its `gate` block publishes the floor that ACTUALLY gated the run with its provenance (`jaccard_floor`, `jaccard_floor_configured`, `jaccard_floor_source` ∈ `config-default` / `dataset-fitted` / `dataset-fitted-thin-sample`, `jaccard_floor_evidence_n`, `jaccard_floor_q05`, and `jaccard_floor_pairs_added` — what this run recorded for the next one) |
-| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the pooling knobs (`pooling_jaccard_floor`, `pooling_rank_union_floor`, `pooling_window_mult`, `pooling_morph_gate`, `pooling_max_morph_targets`, `pooling_sibling_runs`), the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
+| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`), and only an explicit `scored` below the bar removes a target from `pooling_pool.csv` (its rows stay in `pooling_candidates.csv`). Its `gate` block publishes the configured floors with their stated role (`jaccard_floor`, `rank_union_floor`, `window_mult`, `role` = volume guard-rail); its `morph` block is the RECORD the last gate left behind (`attempted` / `scored` / `qualified` / `no_score` / `capped` / `gate_applied` / `dropped_targets` / `error` / `warnings`, where `scored` ≤ `attempted` by construction — the ratio is published, and a shortfall reaches `user_warning_notes.txt`), and `input_fingerprint` names the stores the scores came from (git rev, target universe, mapper snapshot) so cells are only compared across runs that read the same ones |
+| `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the pooling knobs (`pooling_jaccard_floor`, `pooling_rank_union_floor`, `pooling_window_mult`, `pooling_morph_gate`, `pooling_max_morph_targets`), the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, the **Pooling** tab (§4.5a: the gate with its provenance, the four comparison cells, the harvest by target type, the morph + corroboration summaries and one row per pooled target — a pooling run's result reads nowhere else, because the nested tabs are empty by construction there), morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, the **Pooling** tab (§4.5a: the gate as the volume guard-rail it is, the four comparison cells, the harvest by target type, the morph record including what the bar refused, and one row per pooled target — a pooling run's result reads nowhere else, because the nested tabs are empty by construction there), morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
 | `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap, `[reciprocal]` own-source-type top-3 counts) — the `[reciprocal]` line is also quoted verbatim in `report.html`'s Warnings section as a derived advisory |
 | `visualization/*.html` | tree-legend scenes per parent group |

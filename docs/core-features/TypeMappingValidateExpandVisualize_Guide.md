@@ -59,7 +59,7 @@ flag at all — the tab is their only entrance.
 | Run Label | `run_label` | `--label` |
 | Output directory | `output_dir` | `--output-dir` |
 | Validation Mode (Restrictive/Family/Aggressive/Pooling) | `validation_mode` | `--mode` |
-| Pooling gate card (visible only in mode Pooling): Jaccard floor / fit-to-evidence / window multiplier / morphology last / morph budget | `pooling_jaccard_floor` / `pooling_floor_from_evidence` / `pooling_window_mult` / `pooling_morph_gate` / `pooling_max_morph_targets` | `--pooling-jaccard-floor` / `--no-pooling-floor-from-evidence` / `--pooling-window-mult` / `--no-pooling-morph-gate` / `--pooling-max-morph-targets` |
+| Pooling gate card (visible only in mode Pooling): Jaccard floor / window multiplier / morphology as the last gate / morph budget | `pooling_jaccard_floor` / `pooling_window_mult` / `pooling_morph_gate` / `pooling_max_morph_targets` | `--pooling-jaccard-floor` / `--pooling-window-mult` / `--no-pooling-morph-gate` / `--pooling-max-morph-targets` |
 | Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
 | 3D review scenes | `visualize` | `--no-visualize` (negated) |
 | Backward (reciprocal) evidence | `backward_evidence_enabled` | `--backward-evidence` |
@@ -125,7 +125,7 @@ Branches tab. The legend tree, top to bottom:
 | `examinees` (red) | deep-window homologs below the pool best (renamed from `suspicious` — the mapper's rival-suspects concept now owns that word) — lowest confidence; each leaf carries `{type}(out-map)` / `{type}>{src}` / `{type}(no_source)` / `untyped`, plus `(dup)` **[aggressive mode]** |
 | `out-map query · {type}` (blue) | your source neurons of the type that **no branch pool claims** — the unplaced residue of the source-side gap; compare them with `candidates` to judge the fill |
 | `out-map candidates · {type}` (light blue) | the top connectivity-ranked targets found by scanning those unpaired sources (no morph bars; exploratory) |
-| `pooling · {source type}` (plum — `#7b4173`) **[pooling mode]** | the unsupervised pool whose best source has this type — one leaf per candidate target, ordered by the exported leaf token and tagged with the post-hoc `mapper_cell` (`confirmed` / `type_miss` / `type_new`) plus `morph ✓/✗` where the morph gate scored it. Nothing is re-gated for the picture, so the scene and `pooling/pooling_pool.csv` cannot disagree; a pool whose best source has a type no branch group covers has no host scene and is named in the run log. Report: Pooling tab |
+| `pooling · {source type}` (plum — `#7b4173`) **[pooling mode]** | the unsupervised pool whose best source has this type — one leaf per candidate target, ordered by the exported leaf token and tagged with the post-hoc `mapper_cell` (`confirmed` / `type_miss` / `type_new`) plus `morph ✓` where the morph gate scored it. The root is drawn from the EXPORTED pool, so a target the morphology bar refused is already gone from it — nothing is re-gated for the picture, and the scene and `pooling/pooling_pool.csv` cannot disagree; a pool whose best source has a type no branch group covers has no host scene and is named in the run log. Report: Pooling tab |
 | `source-candidates · {target type}` (brown — Category10 `#8c564d`; hidden by default, one eye click restores) | **out-of-map sources** (claimed by no branch) whose best-ranked connectivity hits land in this branch's targets and pass the run null bar — the backward mirror of candidate admission; advisory only, never a fill. The leaf's type suffix is the source's own type; `(dup)` marks sources that are candidates for several branches. Report: Backward tab |
 
 Every expansion leaf carries **one** token, decided in this order:
@@ -468,36 +468,86 @@ described after the table.
 | **restrictive** (default) | — | — | the validated tier + `sibling` + `candidates` (invaders and gap fires that pass the morph rule). Minimal expansion |
 | **family** | `--mode family` | discovery window, `family`, `relative` | reads the top `rank_top_k` of each metric as candidate evidence, then surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). The last two are ungated by qualification — bounded by the types themselves |
 | **aggressive** | `--mode aggressive` | `examinees` | everything in family, with the window widened to `candidate_window` (25); the band beyond `rank_top_k` is labelled `examinees` (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
-| **pooling** | `--mode pooling` | an independent UNSUPERVISED pool (`pooling/`) | NOT a rung of this ladder: every neuron the query names is scanned against the WHOLE target universe under absolute floors — `jaccard > pooling_jaccard_floor` (0.10), `rank_union > pooling_rank_union_floor` (0), both ranks inside `pooling_window_mult` (2×) the source type's own queried population — and morphology then gates only those connectivity survivors through the Find-Homolog fast path (no NBLAST). Nothing reads a branch pool or a mapper claim, so this is a homolog *finding*, not a pool *refinement*: the mapper's claims are joined afterwards into `pooling_cross_validation.json` (`confirmed` / `type_miss` / `type_new` / `verified_only`), and `parameters.json` carries `validation_mode: pooling` with **no `mode_rank`**. The nested bins above are still produced, from the mapper's side of the run |
+| **pooling** | `--mode pooling` | an independent UNSUPERVISED pool (`pooling/`) | NOT a rung of this ladder: every neuron the query names is scanned against the WHOLE target universe under absolute floors — `jaccard > pooling_jaccard_floor` (0.10), `rank_union > pooling_rank_union_floor` (0), both ranks inside `pooling_window_mult` (2×) the source type's own queried population — and morphology then gates only those connectivity survivors through the Find-Homolog fast path (no NBLAST), as the LAST GATE and a true one: a candidate scored below its bar leaves the exported pool. Nothing reads a branch pool or a mapper claim, so this is a homolog *finding*, not a pool *refinement*: the mapper's claims are joined afterwards into `pooling_cross_validation.json` (`confirmed` / `type_miss` / `type_new` / `verified_only`), and `parameters.json` carries `validation_mode: pooling` with **no `mode_rank`**. The nested bins above are still produced, from the mapper's side of the run |
 
-Two readings of `pooling` keep it honest. `verified_only` is expected to be
+Three readings of `pooling` keep it honest. `verified_only` is expected to be
 large: the supervised tier admits by pool membership while this gate admits
 by global rank, so it is not a false-positive count. And no cell is a recall
 measure — the unsupervised seed is the queried population, whereas the
-supervised pair set exists only for the sources a branch claimed.
+supervised pair set exists only for the sources a branch claimed. And the
+morph summary is a RECORD, not a ratio of convenience: `attempted` is what
+the budget allowed to be looked at and `scored` is what the scorer returned a
+verdict for, so `scored` can sit far below `attempted` (one BANC run recorded
+`attempted 8 / scored 8` while its own rows said 1 `scored` and 7
+`no-score`). Read `scored/attempted`, never `attempted` alone — a pool
+that was mostly unscored is a missing measurement, not a morphologically
+cleared one, and when the two differ the Pooling tab, the Log tab and
+`user_warning_notes.txt` all say so from one builder. `no-score` means the
+scorer returned NO VALUE for the pair, never "this neuron is not in the
+vector store": the collapsed `scored` counts behind that example came from
+the shared `mapping_ref` scorer pruning every branch-pool member as a
+bar-anchor rather than a candidate, which deletes the verdict of every
+candidate the mapper also claims. Pooling passes `prune_pool_refs=False`
+(`comparison/morph_cross_dataset.py::qualify_visualized_pairs`) because its
+candidate set is its own gate, not a branch pool; a low `scored` now means a
+missing measurement.
 
-**The Jaccard floor is per dataset pair, and the configured value is a
-CEILING.** One global floor is only safe in the low band: measured over every
-pair the supervised path graded `matched`/`verified` in the runs on record,
-`J=0.20` rejects 2.1 % of FAFB→male-cns (241 pairs), 36.6 % of FAFB→BANC
-(164) and 20.0 % of FAFB→hemibrain (145), while the shipped `0.10` rejects
-none of them — the same non-neutrality `_plan/plan-tmvev-pooling-mode.md`
-§2.2 measured. So with `pooling_floor_from_evidence` on (the default) the run
-gates on `min(pooling_jaccard_floor, q05 of that dataset pair's own graded
-evidence)`, read from
-`cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` BEFORE the scan
-and written only AFTER it: a run can never move its own gate with its own
-claims, which is what keeps the mode unsupervised. Fewer than 20 pairs on
-record leaves the configured floor in place
-(`dataset-fitted-thin-sample`), and the Pooling tab's gate block publishes
-which of the three sources produced the number that gated this run.
+**Morphology is the last gate, and a gate that bites.** A candidate whose
+chain-best row is `morph_gate='scored'` with `morph_qualified` false leaves
+`pooling_pool.csv` AND its scene's `pooling · {source type}` root; its
+per-pair rows stay in `pooling_candidates.csv`, so the refusal is auditable
+rather than simply absent. The count is published as `morph.dropped_targets`
+beside `morph.gate_applied`, and the run log states it (`[pooling] … N refused
+by the morphology bar …`) — a shrunken pool must never read as a smaller
+harvest. Only an explicit refusal removes a target: `no-score`,
+`not-attempted-cap`, `not-selected`, `disabled`, `inactive` and `error` all
+stay in the pool and are named as what they are.
+
+**The floors are a volume guard-rail, and the configured number is the
+number.** `pooling_jaccard_floor` (0.10) and `pooling_rank_union_floor` (0)
+decide how wide connectivity may open, and nothing else: they are not a
+data-quality claim about any pair, and `pooling_cross_validation.json`'s
+`gate` block says so in its own `role` line beside the numbers it gated on.
+An earlier build fitted the Jaccard floor per dataset pair — the minimum of
+the configured value and the q05 of that pair's own graded
+`matched`/`verified` jaccards, read from a persisted evidence store before the
+scan — and the fit is DELETED, not tuned:
+it measured how much of a pair's graded evidence a floor rejects, which is
+exactly the pool-volume question a volume knob is allowed to answer and
+exactly not the quality question its provenance line implied. The measurement
+that motivated it stays as the reason, historically: the same floor rejects
+very different shares of two dataset pairs' graded rows (measured over the
+runs on record, `J=0.20` rejected 2.1 % of FAFB→male-cns (241 pairs), 36.6 %
+of FAFB→BANC (164) and 20.0 % of FAFB→hemibrain (145), where the shipped 0.10
+rejected none of them) — which is a statement about how many candidates each
+dataset pair yields, not about which of them are good homologs. Raising the
+floor is therefore a review-load decision you make and read back off the
+pool size, per dataset pair, with no mechanism pretending to calibrate it.
+
+**The `target_type` a candidate carries corroborates nothing, and no
+cross-dataset column exists.** An earlier build could count, across sibling
+runs of the same query against other targets, how many of them put the same
+(source bodyId, candidate target TYPE) pair in their pool, and published it as
+`targets_corroborated` (`--pooling-corroborate-with`). Both are DELETED: in
+pooling the type name is an advisory label the mode deliberately neglects —
+admission is by connectivity rank and the target's own annotation is only
+joined afterwards to name the `mapper_cell` — so counting how many other
+datasets neglected it the same way is not corroboration, and grades nothing.
+There is now no cross-dataset agreement column at all; `pooling_pool.csv` and
+`pooling_candidates.csv` are read on their own rows, per dataset pair.
 
 The UI offers `pooling` as a fourth **Pooling** button with its own gate card
 (§1b) because the tab must be able to START the mode — not because the mode
 is wider: `ui/tabs/type_validation.py:MODE_OPTIONS` is
 `VALIDATION_MODES + ['pooling']`, pinned beside `POOLING_MODE not in
 MODE_RANK` by a test. The result reads in the report's **Pooling** tab (§2.0)
-and, inside a scene, as the `pooling · {source type}` legend root (§2.1).
+and, inside a scene, as the `pooling · {source type}` legend root (§2.1). The
+tab's *Scored against* line names the stores the cells were measured in
+(`input_fingerprint`: git rev, target universe, mapper snapshot) — cells from
+runs that read different stores are not the same measurement, and a run that
+predates the fingerprint says so instead of implying a comparison it cannot
+support. The run's `README.txt` "Start here" list names `pooling/` for a
+pooling run.
 
 The mode is recorded in `parameters.json` (`validation_mode`, plus
 `mode_rank` for the three nested ones — a `pooling` run publishes
@@ -518,12 +568,10 @@ be ranked on). Only
 | `--no-morphology` | skip stage 5 (fast structural pass) |
 | `--mode {restrictive\|family\|aggressive}` | expansion mode (§4); default restrictive |
 | `--mode pooling` | the parallel unsupervised engine (§4) — writes `pooling/` and joins the mapper afterwards; it does not accept a widening flag (`--aggressive-expansion` with it is a usage error) |
-| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0). The Jaccard value is a **ceiling**, not necessarily the gate: with the evidence fit on (below) it is pulled down to the fitted q05 when this dataset pair's own verified evidence starts below it — 0.10 rejects none of it on any target today, 0.20 rejects a third of BANC's (§4) |
-| `--no-pooling-floor-from-evidence` | gate on the literal floor above, ignoring the per-dataset-pair evidence record |
-| `--pooling-window-mult` | rank window = this × the source type's own queried population (default 2.0; measured selectivity is carried by the floors, not the window) |
-| `--no-pooling-morph-gate` | publish the connectivity-only pool (the morph pass is the run's remaining network-bound cost) |
-| `--pooling-max-morph-targets N` | morph budget, one row per candidate target (default 400); rows past it are labelled `morph_gate=not-attempted-cap`, never blank |
-| `--pooling-corroborate-with RUN_DIR …` | run folders of the SAME query against OTHER targets: fills the advisory `targets_corroborated` count on (source bodyId, candidate target TYPE). Blank without it — a `0` would claim that no other target agrees, about runs that were never run |
+| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0) — a **volume guard-rail**: the configured number IS the number that gated the run, and it says nothing about whether any pair is a good homolog (§4). Raise it when a pool is too large to review, lower it when the scan finds nothing, and read the cost back off the pool size of that dataset pair |
+| `--pooling-window-mult` | rank window = this × the source type's own queried population (default 2.0; measured selectivity is carried by the floors, not the window — 2 vs 4 moves the pool by ≤ 3 targets) |
+| `--no-pooling-morph-gate` | publish the connectivity-only pool: morphology stops being a gate and `morph.gate_applied` reads false (the morph pass is the run's remaining network-bound cost) |
+| `--pooling-max-morph-targets N` | morph budget, one row per candidate target (default 400); rows past it are labelled `morph_gate=not-attempted-cap`, never blank, and never read as rejections |
 | `--backward-evidence` | stage 5d: reverse (target → source) homolog evidence on the `candidates` / `family` / `relative` bins (§2.2c) — **advisory, connectivity-only, default OFF** |
 | `--skip-backward-pass` | force-skip stage 5d even when `--backward-evidence` is set |
 | `--backward-top-n N` | reverse hits kept per neuron — the hover list in the Reciprocal tab (default 5) |

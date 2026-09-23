@@ -180,11 +180,14 @@ tab, because a silently uncapped-out parent has no review scene at all.
 11d. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
     `pooling_cross_validation.json` — `--mode pooling` only: every
     (source, target) pair the absolute gate admitted, the same pool deduped
-    to one row per candidate target, and the post-hoc comparison with the
-    mapper (`confirmed` / `type_miss` / `type_new` / `verified_only`, the
-    morph record, the corroboration histogram, the `reading_notes`).
-    `morph_gate` names its three absences apart; `targets_corroborated` is
-    blank unless `--pooling-corroborate-with` named sibling runs (§4b).
+    to one row per candidate target AFTER the morphology gate, and the
+    post-hoc comparison with the mapper (`confirmed` / `type_miss` /
+    `type_new` / `verified_only`, the morph record with its
+    `gate_applied` / `dropped_targets`, the `reading_notes`).
+    `morph_gate` names its absences apart, and only an explicit
+    `scored`-below-bar refusal leaves the pool (the refused pair rows stay in
+    `pooling_candidates.csv`); there is no cross-dataset agreement column
+    (§4b).
 12. `visualization/*.html` — one 3D scene per parent type.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
@@ -435,42 +438,68 @@ them.
 
 - **The UI can start it; that does not make it a rung**: the mode row of
   **Cross-Dataset › Type Validation** offers a fourth `Pooling` button with
-  its own gate card (`card-tmvev-pooling`), and
+  its own gate card (`card-tmvev-pooling` — its controls are Jaccard floor,
+  window multiplier, *Morphology as the last gate*, morph budget: there is no
+  floor-fit checkbox and no corroboration option), and
   `ui/tabs/type_validation.py:MODE_OPTIONS` is `VALIDATION_MODES +
   ['pooling']` — pinned beside `POOLING_MODE not in MODE_RANK` by
   `tests/ui/test_type_validation_tab.py`. The CLI route
   (`scripts/RunMappingValidation.py --mode pooling`) sends the same config.
 - **Run it**: `--mode pooling [--pooling-jaccard-floor 0.10]
   [--pooling-rank-union-floor 0] [--pooling-window-mult 2.0]
-  [--no-pooling-morph-gate] [--pooling-max-morph-targets 400]
-  [--no-pooling-floor-from-evidence]
-  [--pooling-corroborate-with <run dir> …]`.
-- **Gate (absolute, never pool-relative)**: `jaccard >` floor,
-  `rank_union >` floor, and BOTH metric ranks inside
+  [--no-pooling-morph-gate] [--pooling-max-morph-targets 400]`.
+- **Gate (absolute, never pool-relative — and never fitted)**: `jaccard >`
+  floor, `rank_union >` floor, and BOTH metric ranks inside
   `window_mult × the size of that source neuron's own type population`.
   The seed is every neuron the query names by the SOURCE dataset's own
-  annotation, so the residue no branch claims is inside it. 0.10 is the
-  measured floor that keeps every pair the supervised path graded
-  `verified` on all three targets — and it is NOT dataset-neutral, so do
-  not raise it without re-fitting it. That re-fit is the default: the run
-  gates on `min(configured, q05 of the jaccards this (source, target)
-  pair's own graded `matched`/`verified` rows carry)`, read from
-  `cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` BEFORE the
-  scan and written only AFTER it (so a run never moves its own gate — the
-  unsupervised property depends on that order), and it falls back to the
-  configured value below 20 pairs on record. Measured on the runs on
-  record: 0.10 rejects 0 % of male-cns (241 pairs) / BANC (164) /
-  hemibrain (145) graded evidence, while 0.20 rejects 2.1 % / 36.6 % /
-  20.0 % — so the fitted floor binds only once someone raises the ceiling.
-  `pooling_cross_validation.json → gate` publishes the number, its source
-  (`config-default` / `dataset-fitted` / `dataset-fitted-thin-sample`), the
-  q05 and the evidence count, and `jaccard_floor_pairs_added`.
-- **Morphology last**: the Find-Homolog fast path (no NBLAST) with the
-  branch-free persisted `mapping_ref` bar, on the connectivity survivors
-  only, under a budget. Read `morph_gate` before reading a blank:
+  annotation, so the residue no branch claims is inside it. The configured
+  floor IS the number that gated the run: `pooling_cross_validation.json →
+  gate` is `{jaccard_floor, rank_union_floor, window_mult, role}`, and
+  `role` states what they are — a *volume guard-rail*, how wide connectivity
+  may open, not a data-quality claim about any pair. An earlier build also
+  fitted the Jaccard floor per dataset pair (`pooling_floor_from_evidence`,
+  `--no-pooling-floor-from-evidence`, a persisted
+  `cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json`, and the
+  `jaccard_floor_*` gate keys); all of that is DELETED (Decision
+  2026-09-23, user: "the floor is only a safeguard to avoid explosion in the
+  finding, not a data quality guard"). What motivated the fit stays as the
+  reason it went: the same floor rejects very different shares of two dataset
+  pairs' graded rows (0.20 rejected 2.1 % of male-cns's 241 graded pairs,
+  36.6 % of BANC's 164, 20.0 % of hemibrain's 145; 0.10 rejected none) — but
+  that measures POOL VOLUME, which is all a volume knob may answer. So
+  raising `--pooling-jaccard-floor` is a review-load decision you read back
+  off the pool size yourself, per dataset pair; there is no mechanism to
+  calibrate it and no provenance line to explain.
+- **Morphology last, and it is a GATE**: the Find-Homolog fast path (no
+  NBLAST) with the branch-free persisted `mapping_ref` bar, on the
+  connectivity survivors only, under a budget. A candidate whose chain-best
+  row is `morph_gate='scored'` with `morph_qualified` false leaves
+  `pooling_pool.csv` AND the scene's `pooling · {source type}` root; its
+  per-pair rows stay in `pooling_candidates.csv` so the refusal is auditable,
+  and the count is published as `morph.dropped_targets` beside
+  `morph.gate_applied`, in the log too (`[pooling] … N refused by the
+  morphology bar …`). Only an explicit refusal removes a target:
   `not-selected` (this row is not its target's chain-best row),
-  `not-attempted-cap` (the budget refused to look), `no-score` (no vector
-  for the pair) — none of the three is a rejection.
+  `not-attempted-cap` (the budget refused to look), `no-score` (the scorer
+  returned no value for the pair), `disabled` / `inactive` / `error` all stay
+  in the pool and are named as such — none of them is a rejection, and a
+  shrunken pool is never read as a smaller harvest.
+  `pooling_cross_validation.json → morph` is the RECORD, and its counts do
+  not mean the same thing: `attempted` is what the budget allowed to be
+  looked at, `scored` is what came back with a verdict (`scored ≤ attempted`;
+  one BANC run recorded `scored 8` over rows that said 1 `scored` and 7
+  `no-score`), `qualified` is what cleared the bar.
+  Report `scored/attempted`, never `attempted` alone — a mostly-unscored
+  pool is a missing measurement, not a morphologically cleared one, and the
+  report's Pooling tab plus `user_warning_notes.txt` both say so from one
+  builder (`[pooling] … scored 4/8 attempted targets …`). `no-score` means
+  the scorer had nothing FOR THAT PAIR, never "the neuron is not in the
+  vector store": the collapsed `scored` counts behind those examples came
+  from the shared `mapping_ref` scorer's pool-reference pruning (it dropped
+  every branch-pool member as a bar-anchor, i.e. every candidate the mapper
+  also claims — 35 of 41 rows on male-cns), which pooling now disables with
+  `prune_pool_refs=False` in
+  `comparison/morph_cross_dataset.py::qualify_visualized_pairs`.
 - **Post-hoc cells** (`pooling/pooling_cross_validation.json`):
   `confirmed` (sits in a refined target pool), `type_miss` / `type_new`
   (the harvest: the mapper never named this neuron), `verified_only`.
@@ -478,20 +507,32 @@ them.
   (the supervised tier admits by pool membership, this gate by global
   rank) and is not a false-positive count; and no cell is a recall
   measure, because the two engines seed from different sets.
-- **Advisory columns**: `targets_corroborated` is blank unless
-  `--pooling-corroborate-with` named sibling runs of the same query
-  against other targets, and its key is (source bodyId, candidate target
-  TYPE) — target bodyIds do not transfer across datasets. `size_nm3` /
-  `size_universe_percentile` are labels, not bars (the nm³ medians differ
-  by orders of magnitude between datasets). Neither ever gates a row.
+- **Advisory columns**: `size_nm3` / `size_universe_percentile` are labels,
+  not bars (the nm³ medians differ by orders of magnitude between datasets).
+  Neither ever gates a row. `target_type` is the TARGET dataset's own
+  annotation, shown for review and used to name `mapper_cell` — the mode
+  neglects it for admission, so treat it as a label too. There is no
+  cross-dataset agreement column: `targets_corroborated` and
+  `--pooling-corroborate-with` were DELETED (Decision 2026-09-23, user) —
+  counting how many other TARGET datasets put the same (source bodyId,
+  candidate target TYPE) pair in their pool counted how many neglected the
+  type name the same way, which is not corroboration and grades nothing.
 - **Where it reads**: `report.html`'s **Pooling** tab carries the whole
-  result (gate + provenance, the four cells, the harvest by target type, the
-  morph and corroboration summaries, then one row per pooled target) — the
+  result (the gate and the volume-role line, the four cells, the harvest by
+  target type, the morph record with its `gate applied` / refused count,
+  then one row per pooled target) — the
   nested tabs are empty on a pooling run BY CONSTRUCTION, so quoting "0
-  candidates" from them is wrong. In a scene the same pool is the
+  candidates" from them is wrong. The tab's *Scored against* line names the
+  stores the cells came from (`input_fingerprint`: git rev, target universe,
+  mapper snapshot); before comparing two runs' cells, read it — cells from
+  runs that read different stores are not the same measurement. The run's
+  `README.txt` "Start here" list points at `pooling/` for a pooling run. In
+  a scene the same pool is the
   `pooling · {source type}` legend root (plum), hosted by the parent group of
-  the source that reached each target best; a pool whose best source has a
-  type no branch group covers cannot be hosted and is named by a `!` line.
+  the source that reached each target best; the root is drawn from the
+  exported pool, so a target the morphology bar refused is not in it either
+  place; a pool whose best source has a type no branch group covers cannot be
+  hosted and is named by a `!` line.
 - A stage-P failure never aborts the run: it lands in
   `pooling_cross_validation.json` as `{"error": …}` and the CSVs come out
   empty.

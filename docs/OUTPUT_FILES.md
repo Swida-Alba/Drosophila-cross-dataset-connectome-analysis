@@ -795,13 +795,14 @@ against the WHOLE target universe under absolute floors
 (`pooling_jaccard_floor`, `pooling_rank_union_floor`, and a rank window of
 `pooling_window_mult` × the SOURCE type's own queried population), then
 morphology gates only those connectivity survivors through the
-Find-Homolog fast path. The Jaccard floor the run actually gated on is a
-per-dataset-pair FIT bounded by the configured value
-(`min(pooling_jaccard_floor, q05 of the pairs this dataset pair's own
-`matched`/`verified` rows carry)`), read from
-`cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json` before the scan
-and written after it, so no run gates on the claims it is making; its
-provenance is published in the `gate` block below. **No branch pool and no
+Find-Homolog fast path. The floors are a **volume guard-rail**: they decide
+how wide the scan may open, and say nothing about whether any pair is a good
+homolog — that is the morphology gate's job, and it is a true gate (a scored
+candidate below its bar leaves the exported pool and the scene root, and the
+count of those refusals is published as `morph.dropped_targets`). An earlier
+build fitted the Jaccard floor per dataset pair to the graded rows of past
+runs; the fit was deleted rather than tuned, because it dressed a volume knob
+in the authority of a quality measure. **No branch pool and no
 mapper claim decides whether
 a row is a candidate** — the mapper is joined afterwards, so the mode can
 disagree with it. A stage failure is recorded in
@@ -814,23 +815,38 @@ pooled target, tagged with its `mapper_cell`).
     pair — scores, both ranks and the window, `leaf` (the same
     `{T}(out-map)` / `{T}>{src}` / `{T}(no_source)` / `untyped` token the
     expansion bins use), `size_nm3` + `size_universe_percentile`, the morph
-    verdict, `mapper_cell` and `targets_corroborated`.
-*   **`pooling_pool.csv`**: one row per candidate target neuron, the
-    chain-best source winning on the ordering chain, with `n_sources` /
-    `dup`.
+    verdict and `mapper_cell`. Rows for targets the morphology gate refused
+    stay here, so a refusal is auditable rather than simply absent.
+*   **`pooling_pool.csv`**: one row per candidate target neuron the LAST GATE
+    admitted, the chain-best source winning on the ordering chain, with
+    `n_sources` / `dup`.
 *   **`pooling_cross_validation.json`**: the cells — `confirmed` (sits in a
     refined target pool), `type_miss` / `type_new` (the harvest: the mapper
     never named it), `verified_only` (the mapper's pair fails the absolute
-    bar) — plus bodyId lists, the morph record, the corroboration histogram
-    and the `reading_notes` that say which cells are NOT recall measures.
+    bar) — plus bodyId lists and the `reading_notes` that say which cells are
+    NOT recall measures. The morph record keeps the counts apart:
+    `attempted` (what the budget allowed to be looked at) · `scored` (what
+    came back with a value) · `qualified` (what cleared the bar) · `no_score`
+    (the scorer returned nothing for the pair — a missing measurement) ·
+    `capped` (never looked at) · `gate_applied` · `dropped_targets` (pooled
+    targets removed because the bar refused them) · `error` · `warnings`.
+    `scored` can sit far below `attempted`
+    — a pool that was mostly unscored is a MISSING measurement, not a cleared
+    pool, so the report's Pooling tab and `user_warning_notes.txt` both
+    publish the ratio from one builder (`[pooling] … scored 4/8 attempted
+    targets …`). `gate` carries the configured floors and says in one line
+    what role they have, and
+    `input_fingerprint` names the stores the scores came from (git rev, target
+    universe, mapper snapshot) because the cells are only comparable across
+    runs that read the same ones.
 
 `morph_gate` keeps three absences apart on purpose (`not-selected`,
-`not-attempted-cap`, `no-score`) and none of them is a rejection;
-`targets_corroborated` stays blank unless `--pooling-corroborate-with` named
-sibling runs of the same query, because a `0` would claim that no other
-target agrees — about runs that were never run. The cross-target key is
-(source bodyId, candidate target TYPE): target bodyIds do not transfer
-across datasets. Both columns are advisory ranking only, never a gate.
+`not-attempted-cap`, `no-score`) and none of them is a rejection — only an
+explicit `scored` below the bar removes a target, and it does so from the
+pool and the scene while leaving its row in `pooling_candidates.csv`. The
+type name a candidate carries is the target dataset's annotation, shown for
+review and used for the `mapper_cell` comparison; it corroborates nothing,
+and no other dataset's agreement is joined into this mode's pool.
 
 ### Key Output Files
 
