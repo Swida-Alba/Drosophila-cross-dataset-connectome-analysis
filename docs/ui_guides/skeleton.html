@@ -153,7 +153,17 @@
     <div class="card">
       <h3>General Appearance</h3>
       <ul>
-        <li><b>Skeleton Mode</b>: tube (detailed) or line (fast).</li>
+        <li><b>Skeleton Mode</b>: tube (detailed) or line (fast). In line
+          mode every neuron shows a soma marker: the sphere sits at the SWC
+          <code>label==1</code> node, and skeletons without that marker
+          (about a third of male-cns) get the node nearest the NeuPrint
+          <code>somaLocation</code> annotation marked automatically — or the
+          fattest radius node when no annotation exists — before line
+          simplification; never on BANC, whose skeletons carry no soma
+          signal. Spheres below 0.55% of the scene's longest axis are grown
+          to that floor at save time, so the soma stays a visible dot at
+          whole-CNS overview; line soma sizes are display choices, not
+          measurements.</li>
         <li><b>Neuron Legend Mode</b>: layer, type, tree, or single. ROI
           meshes always keep independent legend entries and rank after every
           neuron entry (brain mesh, then VNC mesh, last).</li>

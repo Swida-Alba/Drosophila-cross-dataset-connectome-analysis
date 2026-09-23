@@ -27,6 +27,11 @@ vs = VisualizeSkeleton(
     output_dir="/absolute/output/skeleton",
     output_format="csv",                # merged synapse export: "csv" | "xlsx"
     skeleton_mode="line",               # start with line for large queries
+                                        # line somas: resolved from the SWC
+                                        # label-1 marker, else the NeuPrint
+                                        # somaLocation annotation, else the
+                                        # fattest radius node (not on BANC);
+                                        # floored to a visible size
     brain_mesh="native",
     vnc_mesh=None,
     legend_mode="layer",                # "single" | "type" | "tree" | "layer"

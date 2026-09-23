@@ -237,7 +237,7 @@ The `VisualizeSkeleton` class (in `src/visualize_skeleton.py`) generates 3D visu
 Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined with `_`)
 
 ### Key Output Files
-*   **`{layer_names}.html`**: The interactive 3D visualization. Open in a web browser to view neurons, synapses, and ROIs.
+*   **`{layer_names}.html`**: The interactive 3D visualization. Open in a web browser to view neurons, synapses, and ROIs. In line mode every neuron carries a soma sphere (fallback-marked at the node nearest the NeuPrint `somaLocation` annotation when present, else the fattest radius node, when the SWC `label==1` marker is absent — never on BANC), grown to at least 0.55% of the scene's longest axis so it stays visible at whole-CNS overview; line soma sizes are display choices, not measurements.
 *   **`{layer_names}_neuron_info.csv`**: One merged neuron metadata table for
     all visualization layers. The numeric `viz_layer` column records the
     layer index for each row and sits directly before `bodyId`; ROI-count

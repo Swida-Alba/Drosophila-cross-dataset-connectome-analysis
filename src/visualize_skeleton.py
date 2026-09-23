@@ -76,6 +76,21 @@ For FAFB, the system includes:
   the network. A local branch-pruning fallback applies when CAVE cannot
   replace an affected tree
 
+Line-Mode Somas
+---------------
+- **Fallback soma detection**: navis draws line somas only at SWC
+  ``label==1`` nodes, which male-cns skeletons carry for ~66% of neurons
+  only. Before line node reduction the renderer resolves the soma from the
+  neuron's own data when the marker is absent -- the NeuPrint
+  ``somaLocation`` annotation when the layer table carries it, else the
+  fattest radius node (never on BANC, whose skeletons carry no soma
+  signal) -- so every line neuron shows a soma where tube mode shows its
+  radius-profile bulb.
+- **Visibility floor**: tagged line soma spheres smaller than
+  ``LINE_SOMA_MIN_VISIBLE_FRACTION`` (0.0055) of the frozen scene's longest
+  axis are grown to the floor at save time -- a physical soma is a
+  few-pixel dot at whole-CNS overview.
+
 Performance Notes
 -----------------
 - First run downloads and caches data (may take several minutes)
@@ -2513,6 +2528,8 @@ class VisualizeSkeleton:
         - List of layers: ['L1', 'L2', 'L3']
         - String with '->' separator: 'L1->L2->L3'
         - Each layer can contain types, instances (regex), bodyIds, or lists thereof
+        - A comma-separated layer string ('100133,100218') resolves every
+          token into that one layer (equivalent to the list form)
     
     backend : str, default='plotly'
         Visualization backend. Options: 'plotly' (interactive HTML), 'k3d' (WebGL)
@@ -3432,7 +3449,15 @@ class VisualizeSkeleton:
     '''
 
     show_soma: bool = True
-    '''whether to show soma'''
+    '''whether to show soma.
+
+    Line mode: navis draws the sphere at the SWC ``label==1`` node; when the
+    marker is absent the renderer marks the node nearest the NeuPrint
+    ``somaLocation`` annotation (when the layer table carries one), else the
+    fattest radius node, before line node reduction (never on BANC), and
+    sub-floor spheres are grown to ``LINE_SOMA_MIN_VISIBLE_FRACTION`` of the
+    scene at save time. Tube mode: the soma shows as the radius-profile bulb
+    of the tube mesh itself.'''
 
     show_fig: bool = True
     '''whether to show the figure'''
@@ -7166,6 +7191,243 @@ class VisualizeSkeleton:
             n_count = len(neurons) if isinstance(neurons, list) else 1
             self._vprint(f"    Layer {i}: {name} ({n_count} neurons)")
 
+    # Fraction of the frozen scene's longest axis that a line-mode soma
+    # sphere is grown to when its physical radius is smaller. A physical
+    # soma is a few-pixel dot at whole-CNS overview (male-cns: ~2.5 um in a
+    # ~900k nm scene), so line mode enforces a visibility floor instead of
+    # physical accuracy; ~1% of the long axis as diameter reads as a clear
+    # dot at overview zoom without swamping a neuron-level view.
+    LINE_SOMA_MIN_VISIBLE_FRACTION = 0.0055
+
+    @staticmethod
+    def _split_layer_terms(layer_input):
+        """Normalize one ``neuron_layers`` entry to a term list.
+
+        A bare string stays a single term, except that comma-separated
+        tokens (``'100133,100218'``, ``'aMe12, Mi1'``) split into a list so
+        every token resolves into the SAME layer — how a pasted bodyId or
+        name list is meant to read. Without this, the whole string is
+        treated as one search term, matches nothing, and the layer silently
+        renders empty. A passed list is returned unchanged.
+        """
+        if isinstance(layer_input, str) and ',' in layer_input:
+            tokens = [t.strip() for t in layer_input.split(',') if t.strip()]
+            if tokens:
+                return tokens
+        return [layer_input]
+
+    def _ensure_line_soma(self, neuron) -> None:
+        """Guarantee a soma marker on a line-mode TreeNeuron.
+
+        navis draws the line-mode soma as a sphere at ``neuron.soma``, which
+        it resolves from SWC ``label == 1`` nodes. The male-cns skeleton
+        product marks only ~66% of neurons that way. For the rest, the soma
+        is resolved from the neuron's own data, in order of authority:
+
+        1. the NeuPrint ``somaLocation`` annotation from the layer table
+           (nearest node to that coordinate), when the table carries it;
+        2. the fattest radius node -- the same thickness bump the tube-mode
+           radius profile renders as a bulb.
+
+        Marking the fallback BEFORE ``simplify_skeleton_nodes`` lets
+        ``preserve_nodes`` carry the exact node through node reduction, and
+        the reduced neuron inherits the attribute so navis draws the sphere.
+
+        BANC skeletons carry no skeleton-side soma signal (labels are all
+        ``2`` and the root node is thinner than the neurites), so they are
+        skipped rather than mis-marked at a fat branchpoint.
+        """
+        if self.skeleton_mode != 'line' or is_banc_dataset(self.dataset):
+            return
+        if not getattr(self, 'show_soma', True):
+            return
+        nodes = getattr(neuron, 'nodes', None)
+        if not isinstance(nodes, pd.DataFrame) or nodes.empty \
+                or 'radius' not in nodes.columns:
+            return
+        soma = getattr(neuron, 'soma', None)
+        if soma is not None and len(np.atleast_1d(soma)):
+            return
+        radii = pd.to_numeric(nodes['radius'], errors='coerce')
+        valid = radii.dropna()
+        if valid.empty or float(valid.max()) <= 0:
+            return
+        location = self._soma_location_lookup().get(
+            getattr(neuron, 'id', None))
+        if location is not None:
+            coords = nodes[['x', 'y', 'z']].apply(
+                pd.to_numeric, errors='coerce')
+            distances = ((coords - np.asarray(location, dtype=float)) ** 2
+                         ).sum(axis=1)
+            if distances.notna().any():
+                best_index = int(distances.idxmin())
+                neuron.soma = int(nodes.loc[best_index, 'node_id'])
+                return
+        # navis normalizes the SWC parent column to 'parent_id'.
+        parent_col = ('parent_id' if 'parent_id' in nodes.columns
+                      else 'parent')
+        parents = dict(zip(nodes['node_id'].astype(int),
+                           nodes[parent_col]))
+
+        def _hops_to_root(node_id):
+            hops = 0
+            current = int(node_id)
+            seen = {current}
+            while True:
+                parent = parents.get(current)
+                if (parent is None or pd.isna(parent)
+                        or int(parent) not in parents or int(parent) in seen):
+                    return hops
+                current = int(parent)
+                seen.add(current)
+                hops += 1
+
+        best_index = int(radii.idxmax())
+        tied = [ix for ix in radii.index
+                if float(radii.loc[ix]) == float(radii.loc[best_index])]
+        if len(tied) > 1:
+            best_index = min(tied, key=lambda ix: _hops_to_root(
+                nodes.at[ix, 'node_id']))
+        neuron.soma = int(nodes.loc[best_index, 'node_id'])
+
+    @staticmethod
+    def _parse_soma_location(raw):
+        """``somaLocation`` cell -> ``[x, y, z]`` floats, or None.
+
+        NeuPrint serves the annotation as a ``"[x, y, z]"`` string; accept
+        real sequences too. Anything unparsable (empty, ``None``, malformed)
+        yields None so the caller falls through to the radius heuristic.
+        """
+        if isinstance(raw, str):
+            text = raw.strip().strip('[]()')
+            parts = [p for p in (s.strip() for s in text.split(','))]
+            try:
+                values = [float(p) for p in parts if p]
+            except ValueError:
+                return None
+        elif isinstance(raw, (list, tuple, np.ndarray)):
+            try:
+                values = [float(v) for v in raw]
+            except (TypeError, ValueError):
+                return None
+        else:
+            return None
+        if len(values) != 3:
+            return None
+        return values
+
+    def _soma_location_lookup(self) -> dict:
+        """bodyId -> parsed ``somaLocation`` from the layer metadata tables.
+
+        Built once per run from ``neuron_dfs``; empty (and never re-scanned)
+        when no table carries the column, so FAFB and metadata-less queries
+        fall straight through to the radius heuristic.
+        """
+        lookup = getattr(self, '_soma_location_by_body', None)
+        if lookup is not None:
+            return lookup
+        lookup = {}
+        for df in (getattr(self, 'neuron_dfs', None) or []):
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            if not {'bodyId', 'somaLocation'}.issubset(df.columns):
+                continue
+            for _, row in df.iterrows():
+                point = self._parse_soma_location(row.get('somaLocation'))
+                if point is None:
+                    continue
+                body_id = row.get('bodyId')
+                try:
+                    lookup[int(body_id)] = point
+                except (TypeError, ValueError):
+                    continue
+                lookup[str(body_id)] = point
+        self._soma_location_by_body = lookup
+        return lookup
+
+    def _stamp_line_soma_tag(self, trace, source_is_tree) -> None:
+        """Flag a navis soma sphere for the line-mode visibility floor.
+
+        In line mode a TreeNeuron renders as scatter3d lines plus, when
+        navis found a soma, exactly one unnamed mesh3d sphere -- so an
+        unnamed mesh3d from a TreeNeuron source is the soma by construction.
+        The tag MUST be stamped BEFORE ``fig_3d.add_trace``: plotly stores a
+        copy, so mutations of the passed object after adding never reach the
+        figure. ``drocatTrace.soma`` is inert for ``classify_traces``, which
+        reads only its known keys.
+
+        ``source_is_tree`` is a layer-level flag (every source neuron in the
+        layer is a TreeNeuron), not a per-trace identity: the identity
+        resolver's positional fallback for unnamed companions can return an
+        out-of-range source index, which must not suppress the stamp.
+        """
+        if self.skeleton_mode != 'line' or not source_is_tree:
+            return
+        if getattr(trace, 'name', None) \
+                or str(getattr(trace, 'type', '') or '') != 'mesh3d':
+            return
+        meta = dict(getattr(trace, 'meta', None) or {})
+        identity = dict(meta.get('drocatTrace') or {})
+        identity['soma'] = True
+        meta['drocatTrace'] = identity
+        trace.meta = meta
+
+    @staticmethod
+    def _trace_sphere_radius(trace):
+        """Half the largest axis extent of a trace's geometry, or None."""
+        try:
+            extents = []
+            for axis in ('x', 'y', 'z'):
+                values = np.asarray(_trace_field(trace, axis), dtype=float)
+                if values.size == 0:
+                    return None
+                extents.append(float(np.ptp(values)))
+            return max(extents) / 2.0
+        except (TypeError, ValueError):
+            return None
+
+    def _enforce_line_soma_visibility(self) -> None:
+        """Grow line-mode soma spheres below the visibility floor.
+
+        Runs once on the assembled figure, before anything is written:
+        spheres tagged ``drocatTrace.soma`` smaller than
+        ``LINE_SOMA_MIN_VISIBLE_FRACTION`` of the frozen scene's longest
+        axis are rescaled about their centroid up to the floor. The span
+        comes from ``_scene_data_ranges`` -- the same box the freeze view
+        pins -- so the marker stays a visible dot at whatever overview the
+        page can open at. Rescaling touches geometry only; color, opacity
+        and legend handling are untouched, and the write-time freeze ranges
+        naturally include the grown spheres.
+        """
+        if self.skeleton_mode != 'line':
+            return
+        figure = getattr(self, 'fig_3d', None)
+        if figure is None:
+            return
+        try:
+            ranges = self._scene_data_ranges(figure)
+        except Exception:
+            return
+        if not ranges:
+            return
+        span = max(ranges[axis][1] - ranges[axis][0]
+                   for axis in ('x', 'y', 'z'))
+        floor = self.LINE_SOMA_MIN_VISIBLE_FRACTION * span
+        if floor <= 0:
+            return
+        for trace in figure.data:
+            identity = _trace_meta(trace).get('drocatTrace')
+            if not (isinstance(identity, dict) and identity.get('soma')):
+                continue
+            radius = self._trace_sphere_radius(trace)
+            if radius is None or radius >= floor:
+                continue
+            scale = floor / radius
+            for axis in ('x', 'y', 'z'):
+                values = np.asarray(_trace_field(trace, axis), dtype=float)
+                center = float(np.mean(values))
+                setattr(trace, axis, center + (values - center) * scale)
+
     def _apply_soma_radius_cap(self, neuron_vols):
         """
         Apply radius capping and optional smoothing to skeleton radii.
@@ -8662,7 +8924,7 @@ class VisualizeSkeleton:
         for i in layer_iter:
             layer_input = self.neuron_layers[i]
             if not isinstance(layer_input, list):
-                layer_input = [layer_input]
+                layer_input = self._split_layer_terms(layer_input)
             
             # Update progress bar description
             layer_desc = str(layer_input[0])[:20] if layer_input else f"layer_{i}"
@@ -8684,6 +8946,11 @@ class VisualizeSkeleton:
             
             n_neurons = len(ndf) if ndf is not None else 0
             total_neurons += n_neurons
+            if n_neurons == 0:
+                tqdm.write(
+                    f'  ⚠️  Layer {i} ({layer_input}) resolved to 0 neurons; '
+                    'it renders as an empty group — check the query spelling '
+                    'or the bodyId list.')
             
             # Update postfix with neuron count
             layer_iter.set_postfix(neurons=n_neurons, total=total_neurons)
@@ -8696,6 +8963,16 @@ class VisualizeSkeleton:
         
         # Print summary
         self._vprint(f'✓ Loaded {total_neurons:,} neurons across {n_layers} layers')
+
+        # A run whose every layer resolved to zero neurons still completes:
+        # warn loudly (the page will carry the context envelopes only), but
+        # never interrupt — the user may be probing queries deliberately.
+        if self.neuron_layers and total_neurons == 0:
+            tqdm.write(
+                '  ⚠️  No neurons resolved for any layer: '
+                + ', '.join(str(x) for x in self.neuron_layers)
+                + ' — the page will render with the context envelopes only. '
+                'Check the names/bodyIds, the dataset, and search_columns.')
         
         # Show detailed breakdown if full verbose
         if self.verbose == 'full':
@@ -10644,6 +10921,9 @@ class VisualizeSkeleton:
                 if (line_reduction is not None
                         and isinstance(base, navis.TreeNeuron)):
                     _set_preprocess_stage(body_id, 'simplify lines')
+                    # Mark a radius-column fallback soma BEFORE the node
+                    # stage so preserve_nodes carries it through reduction.
+                    self._ensure_line_soma(base)
                     try:
                         work, stats = simplify_skeleton_nodes(
                             base, line_reduction)
@@ -12588,6 +12868,9 @@ class VisualizeSkeleton:
                 for n in neurons_list:
                     neuron_id = getattr(n, 'id', None)
                     if isinstance(n, navis.TreeNeuron):
+                        # Fallback soma first: preserve_nodes carries the
+                        # marked node through the reduction below.
+                        self._ensure_line_soma(n)
                         try:
                             report(neuron_id, 'reduce nodes')
                             work, stats = simplify_skeleton_nodes(
@@ -13067,6 +13350,9 @@ class VisualizeSkeleton:
                 for n in neurons_list:
                     neuron_id = getattr(n, 'id', None)
                     if isinstance(n, navis.TreeNeuron):
+                        # Fallback soma first: preserve_nodes carries the
+                        # marked node through the reduction below.
+                        self._ensure_line_soma(n)
                         try:
                             work, stats = simplify_skeleton_nodes(
                                 n, NEUPRINT_LINE_NODE_REDUCTION)
@@ -13457,9 +13743,12 @@ class VisualizeSkeleton:
                         for trace in fig_layer.data:
                             # navis leaves soma/connector companions unnamed,
                             # so an unnamed trace is never a profile of its own.
+                            is_companion = not getattr(trace, 'name', None)
+                            self._stamp_line_soma_tag(
+                                trace, isinstance(neuron, navis.TreeNeuron))
                             trace_entries.append(
                                 (trace, neuron_id, unit_index, neuron_color,
-                                 not getattr(trace, 'name', None))
+                                 is_companion)
                             )
                 else:
                     # Convert rgba color to hex for navis compatibility
@@ -13483,12 +13772,16 @@ class VisualizeSkeleton:
                     identities = self._resolve_plotly_trace_identities(
                         neuron_vols, fig_traces,
                     )
+                    layer_trees = all(
+                        isinstance(x, navis.TreeNeuron) for x in neuron_vols)
                     for (trace, (neuron_id, source_index)) in zip(
                             fig_traces, identities):
                         neuron_color = self._resolve_neuron_color(neuron_id, i)
+                        is_companion = not getattr(trace, 'name', None)
+                        self._stamp_line_soma_tag(trace, layer_trees)
                         trace_entries.append(
                             (trace, neuron_id, source_index, neuron_color,
-                             not getattr(trace, 'name', None))
+                             is_companion)
                         )
 
                 # Neuron ID -> type. 'type'/'tree' need it for the legend; the
@@ -13740,6 +14033,16 @@ class VisualizeSkeleton:
                             except Exception:
                                 display_color = None
                             tree_meta = dict(getattr(trace, 'meta', None) or {})
+                            # A line-mode soma sphere is its neuron's
+                            # companion, not an extra neuron: the panel
+                            # groups by group/item (kind is only
+                            # special-cased for sites), while the manifest
+                            # and profile plans count by role — so the
+                            # sphere must not publish kind='neuron'.
+                            legend_kind = (
+                                'companion'
+                                if (tree_meta.get('drocatTrace') or {}).get(
+                                    'soma') else 'neuron')
                             if self._tree_uses_custom_groups():
                                 # Revision 3.5 Issue 1: per-bodyId trace
                                 # identity + hover in branch-group scenes
@@ -13765,7 +14068,7 @@ class VisualizeSkeleton:
                                         self.layer_names[i]).split(
                                         ' :: ')[0]
                                 tree_meta['drocatLegend'] = {
-                                    'kind': 'neuron',
+                                    'kind': legend_kind,
                                     'group': group_name,
                                     'type': neuron_type or None,
                                     'item': tree_label,
@@ -13787,7 +14090,7 @@ class VisualizeSkeleton:
                                         neuron_vols, source_index,
                                         neuron_id))
                                 tree_meta['drocatLegend'] = {
-                                    'kind': 'neuron',
+                                    'kind': legend_kind,
                                     'group': legend_group,
                                     'item': tree_label,
                                     'color': display_color,
@@ -19056,6 +19359,10 @@ class VisualizeSkeleton:
 
     def save_figure(self):
         if self.backend == 'plotly':
+            # Grow sub-floor line-mode soma spheres before anything is
+            # written, so the HTML, static exports and the write-time freeze
+            # ranges all see the corrected geometry.
+            self._enforce_line_soma_visibility()
             # Scatter synapse/pre-post-site modes expose a size slider in the
             # interactive HTML; solid marker modes leave this empty.
             sliders = getattr(self, '_plotly_sliders', [])
@@ -19715,7 +20022,9 @@ class VisualizeSkeleton:
         
         # Individual exports inherit the application-wide neuron opacity unless
         # the caller explicitly requests another value.
-        individual_alpha = neuron_alpha if neuron_alpha is not None else 0.2
+        individual_alpha = (
+            neuron_alpha if neuron_alpha is not None
+            else getattr(self, 'neuron_alpha', 0.2))
         
         # Helper function to modify alpha after decoding any supported color
         # format. Lists/arrays of per-point colors are handled element-wise;
