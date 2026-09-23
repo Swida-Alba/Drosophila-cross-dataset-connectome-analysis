@@ -57,9 +57,29 @@ def test_tab_advanced_fields_are_real_fields():
 
 
 def test_validation_mode_options_match_backend():
-    from comparison.mapping_validation import VALIDATION_MODES
+    from comparison.mapping_validation import (MODE_RANK, POOLING_MODE,
+                                               VALIDATION_MODES)
     from ui.tabs import type_validation as tv
-    assert list(VALIDATION_MODES) == tv.MODE_OPTIONS
+    # `pooling` is the one dropdown value that is NOT in the nested enum: it
+    # is a parallel mode, so `MODE_RANK` must not learn it (a rank would make
+    # every mode_at_least comparison admit it) while the tab still has to be
+    # able to start it.
+    assert list(VALIDATION_MODES) + [POOLING_MODE] == tv.MODE_OPTIONS
+    assert POOLING_MODE not in MODE_RANK
+    assert set(tv.MODE_HINTS) == set(tv.MODE_OPTIONS)
+
+
+def test_pooling_widgets_back_real_fields():
+    """Every pooling knob the tab renders is a dataclass field.
+
+    The parity test above already pins the DEFAULTS; this pins the set, so a
+    widget cannot be left behind when a knob is renamed.
+    """
+    from ui.tabs import type_validation as tv
+    assert {"pooling_jaccard_floor", "pooling_rank_union_floor",
+            "pooling_window_mult", "pooling_morph_gate",
+            "pooling_max_morph_targets",
+            "pooling_floor_from_evidence"} <= set(tv._FALLBACK_DEFAULTS)
 
 
 # --------------------------------------------------------------------------
@@ -70,6 +90,21 @@ def _generate(cp):
     assert "type_mapping_validation" in TOOL_REGISTRY
     return ScriptRunner()._generate_script(
         "type_mapping_validation", cp, "run", None)
+
+
+def test_generated_script_passes_the_pooling_gate():
+    cp = {"source_dataset": "A", "target_dataset": "B", "query_types": ["t"],
+          "validation_mode": "pooling", "pooling_jaccard_floor": 0.07,
+          "pooling_window_mult": 3.0, "pooling_morph_gate": False,
+          "pooling_max_morph_targets": 50,
+          "pooling_floor_from_evidence": False}
+    s = _generate(cp)
+    compile(s, "<gen>", "exec")
+    for frag in ("validation_mode='pooling'", "pooling_jaccard_floor=0.07",
+                 "pooling_window_mult=3.0", "pooling_morph_gate=False",
+                 "pooling_max_morph_targets=50",
+                 "pooling_floor_from_evidence=False"):
+        assert frag in s, frag
 
 
 def test_generated_script_compiles_and_is_wired():
@@ -266,6 +301,36 @@ def test_target_dataset_defaults_to_fafb():
     assert target[0].value == "flywire_FAFB_v783"
 
 
+def test_pooling_mounts_a_button_and_a_hidden_gate_card():
+    """The tab has to be able to START `pooling` without presenting it as a
+    wider rung: four mode buttons, and a gate card that stays hidden until the
+    mode is `pooling` (a knob panel visible on a restrictive run would read as
+    if the floors gated that run)."""
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.tabs import create_type_validation_tab
+    client = Client(page("/tmvev-pooling-mount"))
+    with client:
+        create_type_validation_tab()
+    props = [getattr(e, "_props", {}) or {} for e in client.elements.values()]
+    assert "card-tmvev-pooling" in {p.get("id") for p in props}
+    # inputs carry their caption as a `label` prop, checkboxes as `.text`
+    labels = ({p.get("label") for p in props}
+              | {getattr(e, "text", None) for e in client.elements.values()})
+    for want in ("Jaccard floor",
+                 "Fit the floor to this dataset pair's evidence",
+                 "Window multiplier", "Morphology as the last gate",
+                 "Morph budget (candidate targets)"):
+        assert want in labels, want
+    assert {"Restrictive", "Family", "Aggressive", "Pooling"} <= {
+        p.get("label") for p in props if p.get("label") in
+        {"Restrictive", "Family", "Aggressive", "Pooling"}}
+    card = [e for e in client.elements.values()
+            if (getattr(e, "_props", {}) or {}).get("id")
+            == "card-tmvev-pooling"][0]
+    assert card.visible is False          # default mode is restrictive
+
+
 def test_progress_steps_for_names_the_checklist():
     """The results-panel checklist mirrors the generated bridge's step table:
     same labels, same flag-driven collapsing, same totals."""
@@ -291,11 +356,23 @@ def test_progress_steps_for_names_the_checklist():
         context={**full, "skip_out_map_expansion": True})) == 8
     # default context: backward evidence off → 8
     assert len(progress_steps_for("type_mapping_validation")) == 8
+    # `pooling` adds the ONE stage the mode owns, because for a pooling run
+    # that is the long one — and it collapses away in every other mode.
+    pool_named = progress_steps_for(
+        "type_mapping_validation",
+        context={**full, "validation_mode": "pooling"})
+    assert len(pool_named) == len(named) + 1
+    assert "Scan the unsupervised pool" in pool_named
+    assert "Scan the unsupervised pool" not in named
     # single source of truth: every banner literal the checklist is built
     # from is embedded in the generated script's bridge table
     script = _generate(full)
     for literal, _label in tmvev_progress_steps(full):
         assert literal in script
+    pool_script = _generate({**full, "validation_mode": "pooling"})
+    for literal, _label in tmvev_progress_steps(
+            {**full, "validation_mode": "pooling"}):
+        assert literal in pool_script
 
 
 def test_scene_cap_line_read_from_readme(tmp_path):

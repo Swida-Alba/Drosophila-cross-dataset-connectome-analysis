@@ -22,11 +22,19 @@ from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner, open_file, open_folder
 from ..type_suggestions import dataset_aware_suggestions
 
-MODE_OPTIONS = ["restrictive", "family", "aggressive"]
+# `pooling` is a fourth CLI value but NOT a rung of the nested ladder: it is
+# outside VALIDATION_MODES/MODE_RANK, so a pooling run reports no mode_rank and
+# the three nested bins keep the same meaning it gave them. The dropdown offers
+# it because the tab must be able to start the mode, not because it is wider.
+MODE_OPTIONS = ["restrictive", "family", "aggressive", "pooling"]
 MODE_HINTS = {
     "restrictive": "matched / verified / borderline tiers only — the like-for-like spine.",
     "family": "adds the sibling / candidates / family bins (mapped relatives).",
     "aggressive": "adds the relative tier and the deep-window examinees bin (widest, slowest).",
+    "pooling": "not a wider mode: a PARALLEL unsupervised homolog search over "
+               "the whole target universe (absolute floors, morphology last), "
+               "compared with the mapper afterwards. Writes pooling/ beside the "
+               "bins above and changes none of them.",
 }
 
 # Field-name -> default fallback, used only if the backend dataclass cannot be
@@ -47,6 +55,10 @@ _FALLBACK_DEFAULTS = {
     "backward_per_branch_cap": 40,
     "include_untyped_partners": True, "backward_scan_pool_targets": True,
     "scene_selfcheck": False, "verify_suspects": False,
+    "pooling_jaccard_floor": 0.10, "pooling_rank_union_floor": 0.0,
+    "pooling_window_mult": 2.0, "pooling_morph_gate": True,
+    "pooling_max_morph_targets": 400,
+    "pooling_floor_from_evidence": True,
 }
 _RATIO_FLOATS = {
     "matched_ru_min", "candidate_morph_factor", "suspicious_jaccard_factor",
@@ -223,9 +235,9 @@ def create_type_validation_tab():
             if mode_value["value"] not in MODE_OPTIONS:
                 mode_value["value"] = "restrictive"
             mode_buttons = {}
-            with ui.row().classes("w-full items-center justify-between gap-4 px-2 flex-nowrap"):
+            with ui.row().classes("w-full items-center justify-between gap-4 px-2 flex-wrap"):
                 for _mode in MODE_OPTIONS:
-                    _b = ui.button(_mode.capitalize()).props("outline no-caps").classes("w-1/3")
+                    _b = ui.button(_mode.capitalize()).props("outline no-caps").classes("w-1/4")
                     _b.style("min-height: 3rem; font-size: 1.0rem; font-weight: 700;")
                     mode_buttons[_mode] = _b
             mode_hint = ui.label("").classes("text-xs opacity-60 w-full")
@@ -240,10 +252,65 @@ def create_type_validation_tab():
                     mode_value["value"] = mode
                 _sync_mode()
                 _sync_stage_visibility()
+                if _sync_pooling_visibility:
+                    _sync_pooling_visibility()
 
             for _m, _b in mode_buttons.items():
                 _b.on_click(lambda _e, mode=_m: _set_mode(mode=mode))
             _sync_mode()
+
+        # --- Pooling gate (only read when the mode is `pooling`) ---
+        _sync_pooling_visibility = None
+        with ui.card().classes("w-full drocat-card").props('id="card-tmvev-pooling"') as pooling_card:
+            section_header("Pooling gate (unsupervised mode)", "public")
+            ui.label(
+                "Read only in mode `pooling`: absolute floors over the whole "
+                "target universe, so no branch pool decides a row. The run "
+                "writes pooling/ beside the nested bins and joins the mapper "
+                "afterwards."
+            ).classes("text-caption opacity-70 w-full")
+            pooling_j_floor = number_input(
+                "Jaccard floor", float(_default("pooling_jaccard_floor")),
+                0.0, 1.0, 0.01,
+                hint="0.10 is the measured value that keeps every pair the "
+                     "supervised path graded verified on all three targets — "
+                     "and it is NOT dataset-neutral, so raising it silently "
+                     "rejects each dataset's own verified evidence.")
+            pooling_fit = checkbox_input(
+                "Fit the floor to this dataset pair's evidence",
+                bool(_default("pooling_floor_from_evidence")),
+                hint="Gate on min(Jaccard floor, q05 of the pairs past runs of "
+                     "this dataset pair graded matched/verified), read before "
+                     "the scan and recorded after it — so a run never moves "
+                     "its own gate. Off = the literal floor above.")
+            pooling_window_mult = number_input(
+                "Window multiplier", float(_default("pooling_window_mult")),
+                0.5, 20.0, 0.5,
+                hint="Rank window = this x the size of the source neuron's own "
+                     "type population. Measured selectivity sits in the floors, "
+                     "not here (2 vs 4 moves the pool by <=3 targets).")
+            pooling_morph = checkbox_input(
+                "Morphology as the last gate",
+                bool(_default("pooling_morph_gate")),
+                hint="Qualify the connectivity survivors only, through the "
+                     "Find-Homolog fast path (no NBLAST). Off = publish the "
+                     "connectivity-only pool.")
+            pooling_budget = number_input(
+                "Morph budget (candidate targets)",
+                int(_default("pooling_max_morph_targets")), 0, 100000, 1,
+                hint="One network-bound step; rows past the budget read "
+                     "morph_gate='not-attempted-cap', never blank.")
+            ui.label(
+                "Cross-target corroboration (targets_corroborated) joins the "
+                "same query run against other targets, so it stays a CLI flag: "
+                "--pooling-corroborate-with <run folder> …"
+            ).classes("text-caption opacity-70 w-full")
+
+            def _sync_pooling():
+                pooling_card.set_visibility(mode_value["value"] == "pooling")
+
+        _sync_pooling_visibility = _sync_pooling
+        _sync_pooling()
 
         # --- Stages ---
         with ui.card().classes("w-full drocat-card").props('id="card-tmvev-stages"'):
@@ -292,7 +359,8 @@ def create_type_validation_tab():
                 hint="Additionally verify excluded/suspect source types (advisory pass).")
 
             cost_note = ui.label(
-                "Cost scales fast: a coarse category, aggressive mode, or backward evidence each "
+                "Cost scales fast: a coarse category, aggressive or pooling "
+                "mode, or backward evidence each "
                 "multiply runtime. Start with a type-level restrictive pass. Max scenes 0 renders a "
                 "page per parent type, so a coarse query pays for all of them — cap it or split "
                 "the query."
@@ -309,7 +377,8 @@ def create_type_validation_tab():
                 _mode = mode_value["value"]
                 _many = len(query_input.get_value()[1] or []) > 1
                 cost_note.set_visibility(
-                    bool(backward_enabled.value or _mode == "aggressive" or _many))
+                    bool(backward_enabled.value
+                         or _mode in ("aggressive", "pooling") or _many))
 
             for w in (morph_enabled, visualize, backward_enabled, query_input):
                 if hasattr(w, "on_value_change"):
@@ -372,6 +441,14 @@ def create_type_validation_tab():
             "target_dataset": target,
             "query_types": queries,
             "validation_mode": mode_value["value"],
+            # the pooling gate: read only in mode `pooling`, sent always so the
+            # payload keeps mirroring the dataclass surface rather than the
+            # CLI's flag names
+            "pooling_jaccard_floor": float(pooling_j_floor.value),
+            "pooling_window_mult": float(pooling_window_mult.value),
+            "pooling_morph_gate": bool(pooling_morph.value),
+            "pooling_max_morph_targets": int(pooling_budget.value),
+            "pooling_floor_from_evidence": bool(pooling_fit.value),
             "aggressive_expansion": False,
             "pool_widen": False,
             "morph_enabled": bool(morph_enabled.value),

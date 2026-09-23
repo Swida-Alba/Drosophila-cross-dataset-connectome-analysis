@@ -215,6 +215,11 @@ def tmvev_progress_steps(context: Optional[dict] = None) -> List[Tuple[str, str]
         steps.append(("[stage 5] morphology verification + self-calibration",
                       "Verify morphology and calibrate bars"))
     steps.append(("[categories] mode=", "Partition categories"))
+    if str(context.get("validation_mode") or "") == "pooling":
+        # The mode's own stage, and for a pooling run the long one: the pass
+        # logs `[pooling] …` when the scan + gate finishes (stage P runs right
+        # after the category partition).
+        steps.append(("[pooling] ", "Scan the unsupervised pool"))
     if (context.get("backward_evidence_enabled", False)
             and not context.get("skip_backward_pass", False)):
         steps.append(("[stage 5d] backward homolog evidence:",

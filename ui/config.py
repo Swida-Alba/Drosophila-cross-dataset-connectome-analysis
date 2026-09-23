@@ -1023,10 +1023,13 @@ DEFAULT_SETTING_SPECS = {
         "label": "Type Validation Mode",
         "group": "similarity",
         "kind": "select",
-        "options": ["restrictive", "family", "aggressive"],
-        "hint": "Default nested mode for the Type Validation (TM VEV) tab. "
+        "options": ["restrictive", "family", "aggressive", "pooling"],
+        "hint": "Default mode for the Type Validation (TM VEV) tab. "
                 "restrictive ⊆ family ⊆ aggressive; each wider mode admits more "
-                "candidate bins and runs slower.",
+                "candidate bins and runs slower. `pooling` is NOT a wider rung: "
+                "it is a parallel unsupervised homolog search over the whole "
+                "target universe that writes pooling/ beside those bins and "
+                "joins the mapper afterwards.",
     },
     "tmvev_max_scenes": {
         "label": "Type Validation Max Scenes",
