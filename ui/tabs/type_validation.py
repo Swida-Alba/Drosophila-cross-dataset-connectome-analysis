@@ -286,10 +286,12 @@ def create_type_validation_tab():
                 "Bar depth (top-N per metric)",
                 int(_default("pooling_bar_top_n")), 1, 100, 1,
                 hint="How deep each metric's rank list goes. The default admits "
-                     "~1.1 targets per queried source on FAFB->male-cns (272 for "
-                     "242). Each source is capped at 2N rows because rank_union "
-                     "ties (17 rows/source at N=5), and the run publishes how "
-                     "many the cap cut.")
+                     "~1 candidate target per queried source and keeps 0.92 of "
+                     "them after morphology on FAFB->male-cns (272 found / 222 "
+                     "kept over 242 sources) and 0.86 on FAFB->BANC. Each source "
+                     "is capped at 2N rows because rank_union ties (17 rows/"
+                     "source at N=5), and the run publishes how many the cap "
+                     "cut.")
             pooling_j_floor = number_input(
                 "Jaccard floor (advisory flag)",
                 float(_default("pooling_jaccard_floor")),
@@ -298,6 +300,14 @@ def create_type_validation_tab():
                      "against it and published as below_jaccard_floor, and "
                      "nothing is removed for missing it. The bar above decides "
                      "admission; raise this only to read the flag differently.")
+            pooling_ru_floor = number_input(
+                "rank_union floor (advisory flag)",
+                float(_default("pooling_rank_union_floor")),
+                -1.0, 1.0, 0.01,
+                hint="Advisory, like the Jaccard floor, and its default 0 is "
+                     "deliberate: it only asks that the union be positive. When "
+                     "it was still a filter that sign test starved 119 of 242 "
+                     "queried sources, which is why rank_union is never a bar.")
             pooling_window_mult = number_input(
                 "Window multiplier (advisory flag)",
                 float(_default("pooling_window_mult")),
@@ -452,6 +462,7 @@ def create_type_validation_tab():
             # payload keeps mirroring the dataclass surface rather than the
             # CLI's flag names
             "pooling_jaccard_floor": float(pooling_j_floor.value),
+            "pooling_rank_union_floor": float(pooling_ru_floor.value),
             "pooling_window_mult": float(pooling_window_mult.value),
             "pooling_bar_metric": str(pooling_bar_metric.value),
             "pooling_bar_top_n": int(pooling_bar_top_n.value),

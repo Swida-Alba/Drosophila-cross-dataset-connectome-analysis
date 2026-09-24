@@ -99,12 +99,16 @@ def _generate(cp):
 def test_generated_script_passes_the_pooling_gate():
     cp = {"source_dataset": "A", "target_dataset": "B", "query_types": ["t"],
           "validation_mode": "pooling", "pooling_jaccard_floor": 0.07,
+          # every knob the card shows must also be in the payload, or the
+          # widget lies about what it controls
+          "pooling_rank_union_floor": -0.5,
           "pooling_window_mult": 3.0, "pooling_bar_metric": "jaccard",
           "pooling_bar_top_n": 5,
           "pooling_max_morph_targets": 50}
     s = _generate(cp)
     compile(s, "<gen>", "exec")
     for frag in ("validation_mode='pooling'", "pooling_jaccard_floor=0.07",
+                 "pooling_rank_union_floor=-0.5",
                  "pooling_window_mult=3.0", "pooling_bar_metric='jaccard'",
                  "pooling_bar_top_n=5",
                  "pooling_max_morph_targets=50"):
@@ -324,6 +328,7 @@ def test_pooling_mounts_a_button_and_a_hidden_gate_card():
               | {getattr(e, "text", None) for e in client.elements.values()})
     for want in ("Bar depth (top-N per metric)",
                  "Jaccard floor (advisory flag)",
+                 "rank_union floor (advisory flag)",
                  "Window multiplier (advisory flag)",
                  "Morph budget (scoring units)"):
         assert want in labels, want

@@ -411,6 +411,72 @@ def check_pooling(run, tag):
               and tuple(r.verdict_for_pair.split('->')) not in scored_pairs]
     chk(not orphan, f'{tag}: every borrowed verdict points at a scored pair',
         str(orphan[:5]))
+    # The bar's own arithmetic, checked against the rows it produced.  These are
+    # the four facts the bar can be wrong about without anything else noticing:
+    # a `bar_rank` that is not the rank it claims, a source holding more rows
+    # than its cap allows, a `supported_by` that disagrees with its flag, and a
+    # pool row that represents a target with a verdict the bar refused (which is
+    # what the 2026-09-25 BANC run exported before `pool_by_target` was fixed).
+    bar = xv.get('bar') or {}
+    if bar and {'bar_rank', 'jaccard_rank', 'rank_union_rank'} <= set(cand.columns):
+        want = ('min' if str(bar.get('metric')) == 'either'
+                else str(bar.get('metric')))
+        bad_rank = []
+        for r in cand.itertuples(index=False):
+            jr, rr = int(float(r.jaccard_rank)), int(float(r.rank_union_rank))
+            exp = min(jr, rr) if want == 'min' else (
+                jr if want == 'jaccard' else rr)
+            if int(float(r.bar_rank)) != exp:
+                bad_rank.append(f'{r.source_bodyId}->{r.target_bodyId}: '
+                                f'{r.bar_rank} != {exp}')
+        chk(not bad_rank, f'{tag}: bar_rank is the rank the metric says',
+            f'{len(bad_rank)} rows, e.g. {bad_rank[:3]}')
+        cap = int(bar.get('row_cap_multiple') or 0) * int(bar.get('top_n') or 0)
+        per_src = cand.groupby('source_bodyId').size()
+        over = [f'{s}:{int(n)}' for s, n in per_src.items() if cap and n > cap]
+        chk(not over, f'{tag}: no source holds more than the {cap}-row cap',
+            str(over[:5]))
+    if {'supported_by', 'single_metric_support'} <= set(cand.columns):
+        bad_sup = [f'{r.source_bodyId}->{r.target_bodyId}' for r in
+                   cand.itertuples(index=False)
+                   if bool(str(r.supported_by or '').split('+')[0])
+                   and (len([m for m in str(r.supported_by or '').split('+')
+                             if m.strip()]) > 1)
+                   == as_bool(r.single_metric_support or 'False')]
+        chk(not bad_sup,
+            f'{tag}: single_metric_support agrees with supported_by',
+            f'{len(bad_sup)} rows, e.g. {bad_sup[:3]}')
+    tiers_by_target = {}
+    refused_by_target = {}
+    for r in cand.to_dict('records'):
+        t = int(r['target_bodyId'])
+        if str(r.get('tier') or '').strip():
+            tiers_by_target.setdefault(t, set()).add(str(r['tier']).strip())
+        if (str(r.get('morph_gate') or '') in ('scored', 'shared')
+                and r.get('morph_qualified') is False
+                or str(r.get('morph_gate') or '') in ('scored', 'shared')
+                and str(r.get('morph_qualified', '')).lower() in ('false', '0')):
+            refused_by_target[t] = refused_by_target.get(t, 0) + 1
+    bad_tiers = []
+    for r in pool.to_dict('records'):
+        t = int(r['target_bodyId'])
+        if str(r.get('mapper_cell') or '') == 'verified_only':
+            continue
+        if set(str(r.get('tiers') or '').split('+')) - {''} != tiers_by_target.get(t, set()):
+            bad_tiers.append(f'{t}: {r.get("tiers")} != '
+                             f'{sorted(tiers_by_target.get(t, set()))}')
+        if int(float(r.get('n_rows_refused') or 0)) != refused_by_target.get(t, 0):
+            bad_tiers.append(f'{t}: n_rows_refused {r.get("n_rows_refused")} != '
+                             f'{refused_by_target.get(t, 0)}')
+    chk(not bad_tiers, f'{tag}: pool rows report their target\'s tier set and '
+        'refusal count', f'{len(bad_tiers)}, e.g. {bad_tiers[:3]}')
+    contrad = [str(r['target_bodyId']) for r in pool.to_dict('records')
+               if str(r.get('in_pool') or '').strip().lower() in ('true', '1', 'yes')
+               and str(r.get('morph_gate') or '') in ('scored', 'shared')
+               and str(r.get('morph_qualified') or '').strip().lower()
+               in ('false', '0')]
+    chk(not contrad, f'{tag}: a pooled row never publishes a refused verdict',
+        f'{len(contrad)} targets, e.g. {contrad[:3]}')
     # the floors are flags: a flagged row is still in the file
     for col in ('below_jaccard_floor', 'below_rank_union_floor',
                 'outside_window'):

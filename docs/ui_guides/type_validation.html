@@ -44,15 +44,22 @@
       <code>family</code> &sube; <code>aggressive</code>. Wider modes admit more
       candidate bins and run slower. The fourth button, <code>pooling</code>, is
       <b>not</b> a wider rung: it is a parallel unsupervised search that scans
-      the queried population against the whole target universe under absolute
-      floors, writes its result into <code>pooling/</code> beside the nested
-      bins, and changes none of them. Selecting it reveals its own gate card
-      (Jaccard floor, the rank window, morphology as the last gate, the morph
+      the queried population against the whole target universe, keeps each
+      source&rsquo;s top-N rows under its own admission bar, writes its result
+      into <code>pooling/</code> beside the nested
+      bins, and changes none of them. Selecting it reveals its own card
+      (the bar metric and depth, the two floors and the rank window, the morph
       budget); the other modes never read those
-      knobs. The floors are a volume guard-rail &mdash; the configured number is
-      what gates the scan, and nothing fits it to this dataset pair&rsquo;s
-      evidence &mdash; while the morphology control is a true gate: a candidate
-      scored below its bar leaves the exported pool and the scene root.</li>
+      knobs. <b>The bar admits; the floors only flag.</b> Each source keeps the
+      top-N rows of the metric it chose (<code>either</code> is the union of
+      both metrics&rsquo; own top-N), and the Jaccard / rank_union floors and
+      the window are then measured against every admitted row and exported as
+      flags that remove nothing &mdash; they were filters until one of them, at
+      its own default, was measured starving 119 of 242 queried sources.
+      Morphology is the last gate and a mandatory one: a candidate
+      scored below its bar leaves the exported pool and the scene root, and the
+      budget that priced the pass is published with its rule (0 = auto, three
+      scoring units per queried source).</li>
     <li>Toggle <b>Stages</b> as needed (morphology, 3D scenes, backward
       reciprocal evidence, out-map expansion) and set the offline behaviour in
       <b>Data &amp; Offline</b>.</li>

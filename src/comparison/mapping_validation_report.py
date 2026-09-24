@@ -492,8 +492,9 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
      'row\'s tier, how many targets it admitted vs kept, and no_finding when '
      'the bar admitted nothing'),
     ('pooling/pooling_pool.csv',
-     'POOLING mode: one row per candidate target neuron the LAST GATE '
-     'admitted (chain-best source)'),
+     'POOLING mode: one row per candidate target neuron, represented by its '
+     'chain-best SURVIVING row; `in_pool=False` marks a target the last gate '
+     'refused on every row, and `verified_only` rows are the mapper\'s alone'),
     ('pooling/pooling_cross_validation.json',
      'POOLING mode: the unsupervised-vs-mapper comparison, the morph '
      'record including how many targets the bar refused, and the '
@@ -3446,10 +3447,22 @@ def _pooling_tab(d: Dict) -> str:
             mcell = (f"<span class='missing'>{_esc(mg or '—')}</span>")
         n_src = _cnt(r.get('n_sources'))
         dup = _as_num(r.get('dup'))
+        # A row can be published and NOT pooled: `in_pool=False` is the target
+        # the bar refused on every admitting row. It left the scene, not the
+        # file, and the table has to say which of the two the reader is looking
+        # at — otherwise "N candidate targets" counts rows that are not in the
+        # pool, and the ✗ beside them reads as a bug in the gate.
+        kept = str(r.get('in_pool') or '').strip().lower() in TRUE_STR
+        tiers = str(r.get('tiers') or '').strip()
+        refused_n = _as_num(r.get('n_rows_refused'))
         trs.append(
             f"<tr><td>{_esc(r.get('target_bodyId'))} "
             f"<span class='mv-note'>{_esc(r.get('leaf') or '(untyped)')}"
-            '</span></td>'
+            + (f" · {_esc(tiers)}" if tiers else '')
+            + ('' if kept else
+               f" <span class='missing'>refused on all "
+               f'{_cnt(refused_n)} row(s)</span>')
+            + '</span></td>'
             f"<td>{_esc(r.get('best_source_type') or '—')} "
             f"{_esc(r.get('best_source_bodyId'))}</td>"
             f"<td>{_f(r.get('jaccard'), 4)} "
@@ -3465,10 +3478,13 @@ def _pooling_tab(d: Dict) -> str:
             + '</td></tr>')
     table = _viewport(
         trs,
-        _th('candidate target', 'The pooled target neuron and its shared '
-            'leaf token: an unmapped bodyId of an in-map type reads '
-            '`(out-map)`, a foreign type with a backward home `T>src`, '
-            'one without `T(no_source)`, and no type `untyped`.')
+        _th('candidate target', 'The pooled target neuron, its shared '
+            'leaf token (`(out-map)` / `T>src` / `T(no_source)` / '
+            '`untyped`) and the tier set its admitting rows carry. A row '
+            'marked `refused on all N row(s)` is published but NOT pooled: '
+            'every source that reached this target was refused by the '
+            'morphology bar, so it left the scene while its row stayed here '
+            'for the count.')
         + _th('best source', 'The chain-best source of the many that reach '
               'this target — jaccard first, rank_union as the tie-break, '
               'bodyId last.')
@@ -3492,10 +3508,15 @@ def _pooling_tab(d: Dict) -> str:
         'pooling_bar_top_n or widening pooling_bar_metric is the knob, not a '
         'different verdict — the floors are flags and were never the knob.')
 
+    n_kept = sum(1 for r in pool
+                 if str(r.get('in_pool') or '').strip().lower() in TRUE_STR)
     return head + _section_card(
         f'Pooling pool — {len(pool)} candidate target'
-        f'{"s" if len(pool) != 1 else ""}',
-        'One row per target neuron, on the ordering chain. The full '
+        f'{"s" if len(pool) != 1 else ""} published, {n_kept} kept',
+        'One row per target neuron, on the ordering chain; the count that '
+        'matters is the second one — a target the morphology bar refused on '
+        'every row stays in this table with `in_pool=False` so the refusal is '
+        'auditable, and leaves the scene. The full '
         'per-pair rows are in `pooling/pooling_candidates.csv`; the '
         'comparison cells above are set differences, so no row here is a '
         'recall measure.',
