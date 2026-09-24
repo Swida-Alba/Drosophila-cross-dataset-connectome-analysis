@@ -91,6 +91,17 @@ TERM_DEFS: Dict[str, str] = {
         'connectivity threshold says how wide the scan opened, never whether '
         'a pair is a homolog, which is the morphology gate\'s job. The '
         'configured value is still published so the flag is recomputable.',
+    'pooling tier':
+        'Pooling\'s OWN ladder, assigned per row and first-match down: '
+        '`matched` (the row is some metric\'s top-1 for its source AND its '
+        'rank_union clears the matched bar), `verified` (top-1 on either '
+        'metric), `nominated` (ranks 2..N inside the bar). It shares two NAMES '
+        'with the supervised tiers and none of their machinery: pooling has no '
+        'branch pool to be a member of, so a pooling `matched` asserts a '
+        'connectivity-and-morphology finding under this mode\'s own bar, not '
+        'the mapper\'s mutual-best claim. There is no `borderline` and no '
+        '`relative` here — the deep window and the type-mate bins belong to '
+        'the nested modes.',
     'mapper_cell':
         'Post-hoc comparison of one pooling candidate with the supervised '
         'mapping: `confirmed` sits in a branch\'s refined target pool; '
@@ -3359,7 +3370,7 @@ def _pooling_tab(d: Dict) -> str:
              f"{_cnt(len(admitted))} of {_cnt(len(srcs))} · "
              f"{_cnt(sum(_n(r, 'n_admitted') for r in srcs))} admitted rows "
              'total'),
-            ('Tier of each source\'s best finding',
+            (_term('pooling tier', 'Tier of each source\'s best finding'),
              ' · '.join(f"{t} {_cnt(tiers.get(t, 0))}" for t in POOLING_TIERS)
              + (f" · {_cnt(len(none))} found nothing" if none else '')),
             ('Kept ≥1 after morphology',
@@ -3389,7 +3400,7 @@ def _pooling_tab(d: Dict) -> str:
             (_term('morph_gate', 'morphology'), ' · '.join(morph_bits)),
         ]) + src_block + warn_block + notes_block,
         ['pooling', 'mapper_cell', 'morph_gate',
-         'jaccard floor', 'admission bar', 'ordering chain']))
+         'jaccard floor', 'admission bar', 'pooling tier', 'ordering chain']))
 
     miss = x.get('pool_miss_by_type') or {}
     miss_tot = sum(int(v or 0) for v in miss.values())

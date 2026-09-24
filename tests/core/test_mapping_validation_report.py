@@ -849,6 +849,23 @@ def test_pooling_tab_headlines_the_source_axis(run_dir: Path):
     assert "borderline" not in text.split("Per source")[1][:400]
 
 
+def test_pooling_tiers_are_glossed_as_poolings_own_ladder(run_dir: Path):
+    """`matched` and `verified` mean something else in the nested modes — the
+    mapper's asserted tier and its review tier, both decided by POOL
+    membership. A pooling run prints the same two words over a bar, so the tab
+    has to say which ladder it is quoting; without this a reader hovers
+    `matched` in a pooling block and gets the supervised definition.
+    """
+    _as_pooling_run(run_dir)
+    html = build_report_document(collect_run_data(run_dir))
+    # `_term(key, label)` prints the LABEL (escaped) and puts the definition in
+    # the tip, so the assertion reaches into the tip rather than the key.
+    assert "Tier of each source" in html
+    tip = html.split("best finding", 1)[1].split("</span>", 4)[0]
+    assert "OWN ladder" in tip and "branch pool" in tip
+    assert "There is no `borderline`" in tip
+
+
 def test_a_pooling_run_leads_its_own_answer_not_the_ladder(run_dir: Path):
     """Issue 13: the hero quoted the supervised levels (map-covered /
     mutual-best / fill-proposed) for a run whose mode is parallel to that
