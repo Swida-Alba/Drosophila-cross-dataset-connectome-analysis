@@ -145,6 +145,18 @@ class TestDatasetSelector:
         assert set(selector.value) == set(
             ds for ds in _KNOWN_COVERED_DEFAULT if ds in DATASETS)
 
+    def test_release_upgrade_notice_never_renders_in_the_tab(
+        self, isolated_history, coverage_isolated
+    ):
+        # NeuronBridge hosts male-cns:v0.9 data, so the selector's
+        # "newer release" recommendation has nothing to offer here and
+        # is opted out entirely.
+        client = _build_tab("/nbfl-no-release-notice")
+        assert not any(
+            element._props.get("data-testid") == "dataset-release-notice"
+            for element in client.elements.values()
+        )
+
     def test_all_exclusivity_handler(self, isolated_history, coverage_isolated):
         client = _build_tab("/nbfl-all-exclusive")
         selector = _dataset_selector(client)

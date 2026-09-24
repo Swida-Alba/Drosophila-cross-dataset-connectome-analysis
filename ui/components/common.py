@@ -616,6 +616,7 @@ def dataset_selector(
     allow_custom: bool = False,
     show_local_status: bool = True,
     disable_banc: bool = False,
+    show_release_notice: bool = True,
 ) -> ui.select:
     """Create a dataset dropdown selector with local status labels.
 
@@ -647,7 +648,8 @@ def dataset_selector(
     ).props("outlined").classes("w-full drocat-select").tooltip(hint)
     if show_local_status:
         _register_dataset_selector(sel, options, service)
-    _attach_release_recommendation_notice(sel, options, multiple=False)
+    if show_release_notice:
+        _attach_release_recommendation_notice(sel, options, multiple=False)
     if disable_banc:
         # NiceGUI converts its Python option mapping to QSelect options with
         # ``label`` and an internal index.  Use the rendered label as the
@@ -685,6 +687,7 @@ def dataset_multi_selector(
         "[FAFB]=FAFB local release, [BANC]=public BANC bucket, ✓ local / ☁ server status."
     ),
     show_local_status: bool = True,
+    show_release_notice: bool = True,
 ) -> ui.select:
     """Create a multi-select dataset dropdown with local status labels."""
     from ..dataset_service import get_dataset_service
@@ -722,7 +725,8 @@ def dataset_multi_selector(
     _clear_native_select_editor_after_selection(sel)
     if show_local_status:
         _register_dataset_selector(sel, options, service)
-    _attach_release_recommendation_notice(sel, options, multiple=True)
+    if show_release_notice:
+        _attach_release_recommendation_notice(sel, options, multiple=True)
     return sel
 
 

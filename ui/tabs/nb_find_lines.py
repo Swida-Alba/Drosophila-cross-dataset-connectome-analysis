@@ -86,18 +86,21 @@ def create_nb_find_lines_tab():
                 available_neurons=lambda: _selected_datasets() or DATASETS,
                 show_history_datasets=True,
             )
-            with param_grid(2):
-                datasets_select = dataset_multi_selector(
-                    label="Datasets ('(all)' or empty searches everywhere)",
-                    default=[ds for ds in _KNOWN_COVERED_DEFAULT if ds in DATASETS],
-                    datasets=[_ALL_DATASETS] + DATASETS,
-                    hint=(
-                        "Select one or more EM datasets to search. '(all)' or an "
-                        "empty selection searches every dataset. Datasets "
-                        "NeuronBridge does not host are disabled below (advisory: "
-                        "runs still proceed with a warning)."
-                    ),
-                )
+            # Full row on purpose: the release-upgrade notice is off here
+            # because NeuronBridge hosts male-cns:v0.9 data, so a v1.0
+            # recommendation would point at data the tab never searches.
+            datasets_select = dataset_multi_selector(
+                label="Datasets ('(all)' or empty searches everywhere)",
+                default=[ds for ds in _KNOWN_COVERED_DEFAULT if ds in DATASETS],
+                datasets=[_ALL_DATASETS] + DATASETS,
+                hint=(
+                    "Select one or more EM datasets to search. '(all)' or an "
+                    "empty selection searches every dataset. Datasets "
+                    "NeuronBridge does not host are disabled below (advisory: "
+                    "runs still proceed with a warning)."
+                ),
+                show_release_notice=False,
+            )
 
             # '(all)' is an exclusive indicator: picking it clears dataset
             # chips; picking a dataset chip clears '(all)'. The newest

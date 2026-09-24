@@ -80,3 +80,29 @@ def test_multi_selector_suppresses_notice_when_newer_release_is_selected():
     assert notice.visible is False
     selector.set_value(["male-cns:v0.9"])
     assert notice.visible is True
+
+
+def test_selectors_can_opt_out_of_the_release_notice():
+    from ui.components.common import dataset_multi_selector, dataset_selector
+
+    client = Client(page("/dataset-release-notice-opt-out"))
+    with client:
+        single = dataset_selector(
+            datasets=["male-cns:v0.9", "male-cns:v1.0"],
+            default="male-cns:v0.9",
+            show_local_status=False,
+            show_release_notice=False,
+        )
+        multi = dataset_multi_selector(
+            datasets=["male-cns:v0.9", "male-cns:v1.0"],
+            default=["male-cns:v0.9"],
+            show_local_status=False,
+            show_release_notice=False,
+        )
+
+    for selector in (single, multi):
+        assert not hasattr(selector, "_drocat_release_notice")
+    assert not any(
+        element._props.get("data-testid") == "dataset-release-notice"
+        for element in client.elements.values()
+    )
