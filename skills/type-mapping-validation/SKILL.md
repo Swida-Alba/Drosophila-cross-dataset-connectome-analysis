@@ -171,8 +171,10 @@ against — `local_data/` is disposable by design.
    gate warnings). The old glossary / pair-summaries / coverage
    sections moved into `report.html`; `user_warning_notes.txt` mirrors
    the warnings in bracketed-tag lines.
-3. `validation/pair_summary.csv` — per branch: pools, matched `M`
-   (mutual-best 1:1 pairs), `gap` = smaller pool − `M` (informational),
+3. `validation/pair_summary.csv` — per branch: pools, `best` (the
+   mutual-best 1:1 pair count; renamed from `matched` on 2026-09-24, because
+   the tier `matched` is a different quantity), `gap` = smaller pool − `best`
+   (informational),
    verdict/noise counters. The report's Branches tab shows **Mapped** =
    verified_strong + verified + borderline and measures its own gap
    against Mapped, since a source can carry a verdict without being
@@ -488,7 +490,7 @@ not):
 | --- | --- | --- | --- |
 | **L1 branch claim** | bodyId in a branch's refined source/target pool | 212 examined | 204 claimed |
 | **L2 row-based bridge evidence** | a crosswalk ROW individually names the neuron; pooled-identity (same-name full-population) claims are name-asserted, row-less | 188 row-backed + 24 name-asserted | 180 + 24 |
-| **L3 validation evidence** | bodyId-level connectivity+morph: mutual-best pairs / asserted `matched` | 103 paired | 52 asserted |
+| **L3 validation evidence** | bodyId-level connectivity+morph: `best` (mutual-best pairs) / asserted `matched` tier | 103 paired | 52 asserted |
 
 - L1 is the mapper's claim set (IM): `242→204` is the claim envelope;
   204/219 is claim coverage of the in-map types' populations (the 15

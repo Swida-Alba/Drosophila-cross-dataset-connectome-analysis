@@ -872,8 +872,8 @@ and no other dataset's agreement is joined into this mode's pool.
     `rank_union` breaking a Jaccard tie, bodyId last);
     `ru_top_target_bodyId` names the `rank_union` top-1 when a
     `verified_strong` rests its two claims on different pool members.
-*   **`pair_summary.csv`**: per branch — pools, matched `M` (mutual-best 1:1
-    pairs on the same chain), `gap` = `min(|P_S|,|P_T|) − M` (informational),
+*   **`pair_summary.csv`**: per branch — pools, `best` (the mutual-best 1:1
+    pair count, renamed from `matched` on 2026-09-24), `gap` = `min(|P_S|,|P_T|) − best` (informational),
     verdict/noise counters, `pool_best_size`, and the provenance set
     `pool_basis` (SOURCE side) / `target_pool_basis` / `selected_chain` /
     `source_chain` — the chain that resolved the target pool versus the one

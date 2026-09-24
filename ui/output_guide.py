@@ -2097,8 +2097,8 @@ TOOL_GUIDE_SPECS = {
                             "labelled by source_dataset / target_dataset, "
                             "plus mapper_gap."},
             {"pattern": "validation/pair_summary.csv", "preview": True,
-             "description": "Per branch: pools, matched M (mutual-best 1:1 "
-                            "pairs), gap = smaller pool − M, "
+             "description": "Per branch: pools, best (the mutual-best 1:1 "
+                            "pair count), gap = smaller pool − best, "
                             "gap_triggered, verdict/noise counters, "
                             "hemisphere symmetry. The report's Branches tab "
                             "shows Mapped (verified_strong+verified+"

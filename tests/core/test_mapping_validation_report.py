@@ -102,7 +102,7 @@ def run_dir(tmp_path: Path) -> Path:
     _write_csv(rd / "pair_summary.csv",
                ["query", "source_type", "target_type", "mapping_status",
                 "pool_basis", "source_pool", "target_pool",
-                "source_type_total", "target_type_total", "matched",
+                "source_type_total", "target_type_total", "best",
                 "verdict_verified_strong", "verdict_verified",
                 "verdict_borderline", "verdict_unmatched",
                 "suspicious_neurons", "suspicious_noise_filtered",
@@ -444,7 +444,8 @@ def test_branch_bar_join_accepts_query_prefixed_keys(run_dir: Path):
 
 
 def test_branches_tab_counts_mapped_not_paired(run_dir: Path):
-    """The old `matched` column showed the mutual-best PAIR count and the
+    """The `best` column (published as `matched` before 2026-09-24) shows the
+    mutual-best PAIR count and the
     gap was measured off it, so a branch whose sources all carry a mapping
     verdict still read as a 1-neuron gap (user 2026-09-20).  Mapped sums
     the verdicts (verified_strong + verified + borderline) and the gap is
@@ -607,7 +608,7 @@ def test_branches_cell_labels_each_side_of_the_pool(run_dir):
     header = ["query", "source_type", "target_type", "mapping_status",
               "pool_basis", "target_pool_basis", "source_pool",
               "target_pool", "source_type_total", "target_type_total",
-              "matched", "verdict_verified_strong", "verdict_verified",
+              "best", "verdict_verified_strong", "verdict_verified",
               "verdict_borderline", "verdict_unmatched",
               "suspicious_neurons", "suspicious_noise_filtered", "gap",
               "gap_ratio", "gap_triggered", "hemisphere"]

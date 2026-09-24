@@ -325,7 +325,7 @@ pass on.
 
 | file | question it answers |
 | --- | --- |
-| `validation/pair_summary.csv` | per branch: pool sizes, `matched` (mutual-best 1:1 pairs), gap (informational), verdict/noise counters. The report's Branches tab reads **Mapped** = verified_strong+verified+borderline and measures its displayed gap against that, because a source can carry a verdict without being paired; both numbers hover side by side |
+| `validation/pair_summary.csv` | per branch: pool sizes, `best` (mutual-best 1:1 pairs), gap (informational), verdict/noise counters. The report's Branches tab reads **Mapped** = verified_strong+verified+borderline and measures its displayed gap against that, because a source can carry a verdict without being paired; both numbers hover side by side |
 | `validation/validation_results.csv` | per source neuron: verdict, global ranks, scores |
 | `validation/examinees.csv` (was `suspicious_candidates.csv`) | every expansion row with its `category` + `candidate_annotation`, both morph tracks, and the `backward_*` columns (§2.2c) |
 | `mapping/same_name_excluded.csv` | queried types whose same-name fan-out was held/excluded, or multi-value cells — advisory accounting |

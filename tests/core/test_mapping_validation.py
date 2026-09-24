@@ -459,7 +459,7 @@ def test_summary_gap_min_rule():
     summary = MappingValidator._summary(pair, val_rows, [(1, 11), (3, 12)],
                                         gap_min=1)
     assert summary['source_pool'] == 3 and summary['target_pool'] == 4
-    assert summary['matched'] == 2
+    assert summary['best'] == 2
     assert summary['gap'] == 1 and summary['gap_ratio'] == 0.3333
     # gap 1 is tolerated under 'gap > 1 always'
     assert summary['gap_triggered'] is False

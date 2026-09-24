@@ -1055,7 +1055,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'source_chain', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_pool',
         'target_pool', 'pool_widen_added', 'source_type_total',
-        'target_type_total', 'matched', 'verdict_verified_strong',
+        'target_type_total', 'best', 'verdict_verified_strong',
         'verdict_verified', 'verdict_borderline', 'verdict_unmatched',
         'verdict_skipped', 'suspicious_neurons',
         'suspicious_noise_filtered', 'suspicious_size_filtered',
@@ -2812,7 +2812,7 @@ class MappingValidator:
             + len(pair.pool_widen_added_targets),
             'source_type_total': pair.source_type_total,
             'target_type_total': pair.target_type_total,
-            'matched': len(assigned),
+            'best': len(assigned),
             'verdict_verified_strong': sum(
                 r['verdict'] == 'verified_strong' for r in val_rows),
             'verdict_verified': sum(
@@ -5436,7 +5436,7 @@ class MappingValidator:
                          f'{pair.target_type} [{pair.status}]: '
                          f'verdicts: '
                          f'{_counter_text("verdict", res["rows"])}; '
-                         f'M={res["summary"]["matched"]}, '
+                         f'best={res["summary"]["best"]}, '
                          f'gap={res["summary"]["gap"]} '
                          f'({res["summary"]["gap_ratio"]:.0%}), '
                          f'triggered={res["summary"]["gap_triggered"]}, '

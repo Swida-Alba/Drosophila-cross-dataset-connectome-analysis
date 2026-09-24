@@ -736,6 +736,15 @@ def collect_run_data(run_dir: Path,
     prop_rows = _read_csv_rows(
         _run_file(run_dir, 'gap_fill_proposals.csv'))
     pair_rows = _read_csv_rows(_run_file(run_dir, 'pair_summary.csv'))
+    # One name for one quantity: the mutual-best 1:1 PAIR count was published as
+    # `matched`, the same word the asserted tier carries (verified AND
+    # rank_union > matched_ru_min, `mapping_validation.py`), so the column is now
+    # `best`.  A run archived before the rename still carries the old header, and
+    # this report is documented as regenerable over any run folder — so read it
+    # under the new name rather than rendering an empty cell for old runs.
+    for _r in pair_rows:
+        if 'best' not in _r and 'matched' in _r:
+            _r['best'] = _r['matched']
     out_rows = _read_csv_rows(_run_file(run_dir, 'out_map_expansion.csv'))
     fam_rows = _read_csv_rows(
         _run_file(run_dir, 'family_candidates.csv'))
@@ -1748,13 +1757,13 @@ def _branches_tab(d: Dict) -> str:
         else:
             mapped_cell = _hover(
                 f"{mapped}<span class='mv-note'> · pairs "
-                f"{_esc(s.get('matched', '—'))}</span>",
+                f"{_esc(s.get('best', '—'))}</span>",
                 '<b>Mapped vs paired</b>'
                 f'{mapped} source neurons carry a mapping verdict '
                 '(verified_strong / verified / borderline). '
-                f"{s.get('matched', '—')} of them sit in a mutual-best 1:1 "
+                f"{s.get('best', '—')} of them sit in a mutual-best 1:1 "
                 'pair — both sides name each other — which is the stricter '
-                'count pair_summary.csv reports as `matched`. The paired '
+                'count pair_summary.csv reports as `best`. The paired '
                 'sources are inside the mapped total, not additional to it.')
             gap_v = max(0, smaller - mapped)
             gr = f'{(gap_v / smaller):.0%}' if smaller else '—'
