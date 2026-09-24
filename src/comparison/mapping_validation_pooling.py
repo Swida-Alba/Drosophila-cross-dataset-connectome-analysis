@@ -879,8 +879,9 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
             'rank_union_floor': ru_floor,
             'window_mult': cfg.pooling_window_mult,
             'role': 'advisory flags — each is evaluated and published per row, '
-                    'and none of them removes a candidate. The bar below is '
-                    'what decides admission.'}
+                    'and none of them removes a candidate. The bar '
+                    '(pooling_bar_metric x pooling_bar_top_n) is what decides '
+                    'admission.'}
     bar = {'metric': str(cfg.pooling_bar_metric),
            'top_n': int(cfg.pooling_bar_top_n),
            'row_cap_multiple': ROW_CAP_MULTIPLE,

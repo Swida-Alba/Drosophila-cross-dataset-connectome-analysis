@@ -655,10 +655,23 @@ XVAL = {
     "universe_scanned": 103770,
     "seed": {"queried_sources": 8, "scanned": 8,
              "sources_with_a_candidate": 5, "distinct_best_sources": 4},
+    # the blocks `cross_validation` writes on a bar-driven run, in its shape:
+    # the bar decides admission, the gate holds the floors it only flags.
+    "bar": {"metric": "either", "top_n": 3, "row_cap_multiple": 2,
+            "role": "the admission rule: each source keeps the top-N of each "
+                    "chosen metric, capped at this many x N rows per source",
+            "rows_cut": 1},
     "gate": {"jaccard_floor": 0.1, "rank_union_floor": 0.0,
              "window_mult": 2.0,
-             "role": "volume guard-rail — how wide connectivity may open, "
-                     "not a data-quality claim about any pair"},
+             "role": "advisory flags — each is evaluated and published per "
+                     "row, and none of them removes a candidate. The bar "
+                     "(pooling_bar_metric x pooling_bar_top_n) is what "
+                     "decides admission."},
+    "floor_flags": {"below_jaccard_floor": 2, "below_rank_union_floor": 3,
+                    "outside_window": 1, "rows": 12},
+    "tiers": {"matched": 4, "verified": 5, "nominated": 3},
+    "pool_per_source": 0.75,
+    "pool_size_warning": "",
     "cells": {"confirmed": 3, "pool_miss": 2, "type_miss": 1,
               "type_new": 1, "verified_only": 7},
     "body_ids": {"pool_miss": [501, 502], "verified_only": [601]},
@@ -726,16 +739,22 @@ def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
 
 def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     """The Pooling tab is the only place a pooling run's result reads: the
-    nested ladder's tabs are empty by construction there.  So the floors are
-    named as the volume guard-rail they are (no fitted provenance dressing a
-    knob that measures pool size), and the cells keep their names."""
+    nested ladder's tabs are empty by construction there.  So the tab leads
+    with the bar that admits each row, names the floors as the flags they
+    became (no fitted provenance dressing a knob that measures pool size), and
+    the cells keep their names."""
     _as_pooling_run(run_dir)
     html = build_report_document(collect_run_data(run_dir))
     assert ">Pooling</button>" in html
     assert "Pooling — the unsupervised scan" in html
-    # the floor is the configured number, stated as a volume control
-    assert "jaccard &gt; 0.1000 (configured)" in html
-    assert "volume guard-rail" in html
+    # the bar is what admits a row, so it leads the block; the floors state
+    # that they flag rather than filter
+    assert "either × top-3" in html
+    assert "the union of BOTH metrics' own top-N" in _plain(html)
+    assert "row cap 2 × N, 1 row(s) cut by it" in _plain(html)
+    assert "advisory flag only" in html
+    assert "configured 0.1000" in html
+    assert "advisory flags" in html      # the run's own role line, quoted
     assert "dataset-fitted" not in html     # the fit is deleted, not hidden
     assert "103770 target neurons" in html
     assert "3 of the pool also sit in a branch" in html
@@ -888,7 +907,8 @@ def test_pooling_artifacts_resolve_from_a_flat_run_folder(run_dir: Path):
     _as_pooling_run(run_dir, flat=True)
     html = build_report_document(collect_run_data(run_dir))
     assert "Pooling — the unsupervised scan" in html
-    assert "jaccard &gt; 0.1000 (configured)" in html
+    assert "either × top-3" in html
+    assert "advisory flag only" in html
 
 
 def test_an_attempted_scene_that_crashed_is_named_not_counted_away(run_dir: Path):

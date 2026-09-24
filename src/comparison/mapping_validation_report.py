@@ -66,23 +66,31 @@ TERM_DEFS: Dict[str, str] = {
         'with no nested bins.',
     'pooling':
         'The UNSUPERVISED candidate engine (`--mode pooling`): every neuron '
-        'the query names is scanned against the WHOLE target universe under '
-        'absolute floors (jaccard > floor, rank_union > floor, both ranks '
-        'inside a window scaled to the source type\'s own population), then '
-        'morphology gates the connectivity survivors. Nothing here is read '
+        'the query names is scanned against the WHOLE target universe, each '
+        'source then keeps its top-N rows under the admission bar, and '
+        'morphology gates those connectivity survivors. Nothing here is read '
         'off a branch pool, so the type mapper is compared with the result '
         'afterwards instead of deciding it.',
+    'admission bar':
+        'What decides which rows a pooling run keeps: each queried source '
+        'takes the top-N of the chosen metric (`pooling_bar_metric` × '
+        '`pooling_bar_top_n`), where `either` is the UNION of both metrics\' '
+        'own top-N rather than a merged best-rank ordering — a merged order '
+        'spends the slots on the two metrics\' rank-1 rows and loses the '
+        'candidates the union recovers. Because `rank_union` ties across '
+        'hundreds of targets, a rank cut is not a row bound, so each source '
+        'holds at most 2 × N rows in the chain order and the number the cap '
+        'cut is published. The absolute floors are NOT part of admission: '
+        'they are flags (see `jaccard floor`).',
     'jaccard floor':
-        'The absolute connectivity bar a pooling candidate must clear — a '
-        'VOLUME guard-rail, not a data-quality claim (user 2026-09-23). '
-        'Connectivity similarity is a ratio of small integers, so a low floor '
-        'admits a huge pool and a high one empties it; the floor exists to '
-        'keep the finding from exploding, and only the morphological gate '
-        'below it says anything about whether a candidate is a homolog. The '
-        'configured value is what gates the run. An earlier build fitted it '
-        'per (source, target) pair to the graded rows of past runs; that fit '
-        'was deleted, because it dressed a volume knob in the authority of a '
-        'quality measure.',
+        'An ADVISORY FLAG on a pooling row, measured against the configured '
+        '`pooling_jaccard_floor` and published as `below_jaccard_floor` — '
+        'evaluated, exported, and applied to nothing (user 2026-09-24). It '
+        'was a filter until a run showed the rank_union floor beside it, set '
+        'to its own default 0, was starving 119 of 242 queried sources: a '
+        'connectivity threshold says how wide the scan opened, never whether '
+        'a pair is a homolog, which is the morphology gate\'s job. The '
+        'configured value is still published so the flag is recomputable.',
     'mapper_cell':
         'Post-hoc comparison of one pooling candidate with the supervised '
         'mapping: `confirmed` sits in a branch\'s refined target pool; '
@@ -99,15 +107,16 @@ TERM_DEFS: Dict[str, str] = {
         'was applied to: `morph_bar_kind` names the rule, `morph_bar` is its '
         'binding value, and the score is `morph_pool_ref` for a native row '
         'and `morph_similarity` otherwise, so the verdict can always be '
-        'recomputed from the row. `inactive` means the AUC gate suspended '
-        'morphology, `disabled` means '
-        'the run asked for none, and the three absences are kept apart on '
-        'purpose — `not-selected` (this row is not the chain-best row of its '
-        'target, the verdict lives on that row), `not-attempted-cap` (the '
-        'morph budget refused to look), `no-score` (the scorer returned no '
-        'value for the pair, so nothing was measured either way). None of the '
-        'three is a rejection, and each names a different reason the row '
-        'stayed in the pool unscored.',
+        'recomputed from the row. `shared` means the verdict was made for the '
+        'pair named in `verdict_for_pair`, not for this row — a borrowed '
+        'number is never this row\'s own measurement. `inactive` means the AUC '
+        'gate suspended morphology, `disabled` means the run asked for none '
+        '(which pooling refuses outright), and the remaining absences are kept '
+        'apart on purpose — `not-attempted-cap` (the morph budget refused to '
+        'look; `morph.budget` names the rule that priced it), `no-score` (the '
+        'scorer returned no value for the pair, so nothing was measured either '
+        'way). Neither is a rejection, and each names a different reason the '
+        'row stayed in the pool unscored.',
     'mutual-best (assigned)':
         'A source neuron whose best pool member is itself the target\'s '
         'best source — both sides read on the ordering chain, so the '
@@ -3133,14 +3142,7 @@ def _pooling_tab(d: Dict) -> str:
             'what survived that failure, so an empty pool here means a pass '
             'that did not complete, not a universe with no homolog.</div>')
 
-    # The floors are a VOLUME statement, not a quality one (plan §5): they say
-    # how wide the connectivity scan may open. The configured numbers ARE what
-    # gated the run, so they are simply named — an earlier build dressed them
-    # in fitted provenance, which guarded a question they do not answer.
-    floor_txt = (f"jaccard &gt; {_f(gate.get('jaccard_floor'), 4)} "
-                 f"(configured)")
-
-    # The scores and the fitted floor both come from stores that can move
+    # The scores and the floors both come from stores and knobs that can move
     # between runs, and the comparison is only comparable across runs that
     # read the same ones — so name them (the §P7a input fingerprint, the same
     # record parameters.json carries).  A part that the run could not record
@@ -3164,13 +3166,30 @@ def _pooling_tab(d: Dict) -> str:
         'not recorded — this run predates the input fingerprint, so these '
         'cells cannot be lined up with another run\'s')
 
-    gate_rows = [
-        (_term('jaccard floor'), floor_txt),
+    bar = x.get('bar') or {}
+    # The bar is what admits a row, so it leads the block; the floors follow as
+    # what they are now — flags.  An archived pre-bar run has no `bar` record,
+    # and printing `? × top-` there would invent an admission rule it never had.
+    adm_rows = [
+        (_term('admission bar', 'Bar'),
+         (f"{_esc(str(bar.get('metric')))} × top-{_cnt(bar.get('top_n'))}"
+          + (' — the union of BOTH metrics\' own top-N, not a merged '
+             'best-rank ordering' if str(bar.get('metric')) == 'either'
+             else ' per source')
+          + (f" · row cap {_cnt(bar.get('row_cap_multiple'))} × N, "
+             f"{_cnt(bar.get('rows_cut'))} row(s) cut by it"))
+         if bar else 'not recorded — this run predates the admission bar, so '
+                     'its floors were its admission rule'),
+    ]
+    gate_rows = adm_rows + [
+        (_term('jaccard floor'),
+         f"advisory flag only · measured against the configured "
+         f"{_f(gate.get('jaccard_floor'), 4)}, nothing removed for missing it"),
         (_term('rank_union', 'rank_union floor'),
-         f"&gt; {_f(gate.get('rank_union_floor'), 3)}"),
+         f"advisory flag only · configured {_f(gate.get('rank_union_floor'), 3)}"),
         ('Window',
-         f"both metric ranks ≤ {_f(gate.get('window_mult'), 2)} × the source "
-         "type's own queried population"),
+         f"advisory flag only · ranks ≤ {_f(gate.get('window_mult'), 2)} × the "
+         "source type's own queried population"),
         ('Universe', f"{_cnt(x.get('universe_scanned'))} target neurons "
                      f"({len(rows)} candidate pairs kept → {len(pool)} "
                      'distinct candidate targets)'),
@@ -3185,9 +3204,10 @@ def _pooling_tab(d: Dict) -> str:
         # The run's own record states what these numbers are FOR, so the tab
         # shows it rather than leaving a reader to infer that a connectivity
         # floor is a volume knob and not a quality bar.
-        gate_rows.insert(1, ('What they gate', _esc(str(gate['role']))))
-    gate_block = _kv_block('Gate — absolute, and read before anything was '
-                           'selected', gate_rows)
+        gate_rows.insert(len(adm_rows) + 1,
+                         ('What they gate', _esc(str(gate['role']))))
+    gate_block = _kv_block('Admission — the bar decides, and read this before '
+                           'anything was selected', gate_rows)
 
     cells_block = _kv_block('The post-hoc comparison with the mapping', [
         (_term('mapper_cell', 'confirmed'),
@@ -3269,10 +3289,10 @@ def _pooling_tab(d: Dict) -> str:
     head = (_section_card(
         'Pooling — the unsupervised scan',
         'Every neuron the query names, scanned against the whole target '
-        'universe under absolute floors, morphology last; the mapper\'s own '
-        'answer is joined only afterwards, so it cannot decide what this '
-        'list holds. Proposals for review — the mapping is never '
-        'rewritten.',
+        'universe, each source then keeping its top-N under the admission bar '
+        'with morphology last; the mapper\'s own answer is joined only '
+        'afterwards, so it cannot decide what this list holds. Proposals for '
+        'review — the mapping is never rewritten.',
         error_note + gate_block + cells_block
         + _kv_block('Morphology — the last gate', [
             (_term('morph_gate', 'morphology'), ' · '.join(morph_bits)),
