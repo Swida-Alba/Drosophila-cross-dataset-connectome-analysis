@@ -521,14 +521,15 @@ def cost_table(entries):
                     (datetime.fromisoformat(v[-1])
                      - datetime.fromisoformat(v[0])).total_seconds())
         par = json.loads(path_of(run, 'parameters.json').read_text('utf-8'))
-        rows[(str(par.get('target_dataset'))[:10], str(mode))] = cells
+        rows[(str(par.get('target_dataset'))[:10],
+              str(mode or par.get('validation_mode')))] = cells
         for k in cells:
             if k not in order:
                 order.append(k)
     if not rows:
         return
     print(f'{"run":22}' + ''.join(
-        f'{k + ":" + str(labels.get(k, ""))[:9]:>16}' for k in order)
+        f'{(k + ":" + str(labels.get(k, "")))[:15]:>16}' for k in order)
         + f'{"TOTAL":>9}')
     for key, cells in sorted(rows.items()):
         print(f'{key[0]}/{key[1]:10} ' + ''.join(
@@ -554,7 +555,11 @@ def main(argv=None):
         par = json.loads(path_of(run, 'parameters.json').read_text('utf-8'))
         mode = ent[2] or par.get('validation_mode')
         tag = f'{ent[1] or par.get("target_dataset")}/{mode}'
-        chk(str(ent[3]) in (None, '0'), f'{tag}: exit 0', str(ent[3]))
+        # A bare run folder has no manifest row, so its exit code was never
+        # recorded — that is nothing to assert, not a failure (`str(None)` is
+        # how this read as a red `exit 0 [None]` on a single-folder run).
+        chk(ent[3] is None or str(ent[3]) == '0', f'{tag}: exit 0',
+            'not in a manifest' if ent[3] is None else str(ent[3]))
         check_layout(run, tag)
         check_report(run, tag, mode)
         check_coverage(run, tag)
