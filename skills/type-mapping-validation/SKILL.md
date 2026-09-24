@@ -69,7 +69,11 @@ $PY scripts/RunMappingValidation.py \
   shared data root), and `--skeleton-fetch-workers` /
   `--skeleton-fetch-timeout` (default 8 threads / 120 s of socket
   inactivity), which bound the stage-5 skeleton pre-flight — the run's only
-  network-bound block. Pooling's own four: `--pooling-jaccard-floor`,
+  network-bound block. A run's `parameters.json` spells every knob by its
+  config FIELD name (`morph_track_a_offset`, `morph_suspicious_level`,
+  `pool_ref_floor_margin`, `out_map_top_k`, `max_scenes`), so the flag list
+  and that file are the same knobs in two notations.
+  Pooling's own four: `--pooling-jaccard-floor`,
   `--pooling-rank-union-floor`, `--pooling-window-mult`,
   `--pooling-max-morph-targets` (400) and `--no-pooling-morph-gate`.
 - Stage 2 pre-flights the TARGET profile cache: typed neurons missing
@@ -307,10 +311,26 @@ against — `local_data/` is disposable by design.
   how many queried sources sit in a branch pool and how many are the out-map
   residue; a residue of 0 over a wide pool means nothing was left outside,
   not that nothing is missing.
-- **Every rendered member passed the morph rule**: binding native
-  pool-ref floor (`pool_ref >= floor`) when the branch has one, else
-  the null-calibrated Track-A bar (`track_a_null_bar` = p95 of
-  jaccard<=0.05 rows). Failures stay in the CSVs.
+- **Every rendered member passed the morph rule (floors v3 — one bar engine
+  per branch, published in `morphology_calibration.json` → `branch_bars`)**:
+  the binding native matched+verified floor (`pool_ref >= mean pairwise
+  reference sim - native margin`, kind `native`) when the branch has >= 2
+  scored refs; else the Track-A backup floor (kind `track_a_backup`,
+  `morph_v2 >= B_b - Δ` where Δ is §1's `--morph-track-a-offset`);
+  else the run null bar (kind `null`, `track_a_null_bar` = p95 of the
+  jaccard<=0.05 rows). Aggressive adds the loose deep-window bar
+  (`B_b - k*Δ`, k = `--morph-suspicious-level`, with the null p50
+  `track_a_null_bar_lo` as fallback): between the two bars a deep row is an
+  `examinee`, below both it stays out of scope. Failures stay in the CSVs;
+  `bar_params` records Δ, k and the native margin for the run, and
+  `candidate_kind` / `suspicious_kind` say which currency each bar speaks —
+  a `native` bar compares `morph_pool_ref`, every Track-A bar compares
+  `morph_v2_similarity`, so never read one against the other.
+  NOTE the two engines spell their kinds differently: the per-BRANCH
+  `branch_bars` engine (supervised bins) uses `native` / `track_a_backup` /
+  `null`, while the per-SOURCE mapping-ref engine that POOLING grades with
+  uses `native` / `track_a` / `null_bar`. One report can therefore print both
+  spellings; match on the engine, not on the word.
 - **One ordering, one key**: every bodyId-level "best" and "top-N" — the
   published target, the mutual-best pairing, a target's best source,
   gap-fill proposals, the out-map list, the reverse top-1, and the
@@ -356,6 +376,12 @@ against — `local_data/` is disposable by design.
   `valid_split_evidence` fan-outs stay listed in the panel as disclosure
   rows and never enter the count; before this rule `circadian_clock →
   banc_v888` read 205 in the panel against 198 here.
+- **Every parent type gets a scene by default** (`max_scenes = 0`): branch
+  review is the point of the run, and the old default of 12 silently dropped
+  the smallest-pool parents (9 of 21 on a circadian run). A positive cap
+  clamps largest-pool-first and names each dropped parent in the run log and
+  in the report's Branches tab, so a missing scene is always a disclosure,
+  never a silence.
 - **`matched` is the only asserted tier**; verified/borderline are
   review tiers; all proposals are evidence — the mapping is never
   rewritten.
@@ -450,6 +476,82 @@ against — `local_data/` is disposable by design.
   wins); the other two are type-level. Leaves under a root are sorted by
   `type + suffix`, not bodyId. `sibling` stays a single counted root. The
   legend panel is content-width up to 420px.
+
+## 3b. Mapping result quality — three coverage levels
+
+The same run answers three different coverage questions. ALWAYS state
+which level a number comes from (reference: the circadian_clock FAFB →
+male-cns family run; a newer run's numbers supersede these, the LEVELS do
+not):
+
+| level | criterion | FAFB (of 242) | MCNS (of 219) |
+| --- | --- | --- | --- |
+| **L1 branch claim** | bodyId in a branch's refined source/target pool | 212 examined | 204 claimed |
+| **L2 row-based bridge evidence** | a crosswalk ROW individually names the neuron; pooled-identity (same-name full-population) claims are name-asserted, row-less | 188 row-backed + 24 name-asserted | 180 + 24 |
+| **L3 validation evidence** | bodyId-level connectivity+morph: mutual-best pairs / asserted `matched` | 103 paired | 52 asserted |
+
+- L1 is the mapper's claim set (IM): `242→204` is the claim envelope;
+  204/219 is claim coverage of the in-map types' populations (the 15
+  remainder are `family` material).
+- L2 provenance splits the claim: **row-backed** (a crosswalk row names
+  the bodyId via its `additional_type` / `flywireType` value) vs
+  **name-asserted** (pooled identity: same-name pairs claim full
+  populations with no per-bodyId rows — DN1a / DN1pA / DN1pB / l-LNv;
+  s-LNv resolves via rows instead). This is why a wide `full population`
+  pool is not a missing bridge (§3's per-side basis rule).
+- L3 is the grading: `matched` is the only asserted tier;
+  verified/verified_strong/borderline are review; assignments are
+  **mutual-best 1:1** — N-to-1 convergence (8 l-LNv sources → 3 MCNS
+  targets) leaves in-pool sources unpaired even at 100% pool coverage.
+  Those unpaired are the scene's `out-map` review material only when they
+  are OUTSIDE the pools (the 30); in-pool unpaired stay in `query` + tier
+  layers.
+- **Panel vs TM VEV**: the cross-dataset panel's "coverage 8/8 100%" is
+  L1/L2 type-POOL coverage; TM VEV reports L3 bodyId pairing (l-LNv:
+  panel 8/8, M=3). Both true at their own level. (`I-LNv` vs `l-LNv` is
+  an ell/capital-I display artifact — FAFB has only `l-LNv`, 8 neurons.)
+- **Bar kinds grade L3 admission per branch** (`branch_bars`): `native`
+  floor (>= 2 scored refs) > `track_a_backup` (`B_b − Δ`) > `null` (run
+  null bar). The null-kind bar is SAMPLE-DEPENDENT: it moved
+  0.593→0.235 between identical runs (scored null rows 72→346) as the
+  skeleton cache GREW. Since 2026-09-24 the backdrop no longer moves with
+  the MODE (§3's mode-invariant exclusion), so any remaining run-to-run
+  drift in a null-kind branch verdict is cache growth or a healed
+  skeleton — read `input_fingerprint` before comparing two runs' bars.
+
+## 3c. Gap-fill estimation — under different confidence levels
+
+`gap_fill/gap_fill_levels.csv` assigns every non-claim bodyId a confidence
+level; the fill estimate = the level table + the source-side residue.
+Estimation recipe (family mode recommended for gap questions):
+
+1. **Claim coverage**: `set_coverage.json` → `target.in_branch_pool` /
+   `mapped_target_set` (reference: 204/219 = 93%).
+2. **Evidence fill**: `gap_fill_levels.csv` `high` + `medium` (+ `low`) —
+   the morph-qualified candidates, one level per bar kind; `hole closer`
+   notes flag candidates that close mapped-type holes (reference: 15 high
+   + 1 medium = 16, of which 5 are hole closers). `set_coverage.json`'s
+   `gap_fill_by_level` mirrors the table.
+3. **Expansion advice**: `expansion/out_map_expansion.csv` —
+   connectivity-ranked typed targets for the unclaimed sources (top
+   `--out-map-top-k`, default 10 per source), where `morph_qualified`
+   marks passes vs the run null bar (reference: R1-R6 fail 528/530, CB4091
+   pass 132/132 — the column is what separates photoreceptor/orphan noise
+   from same-family targets). A scene renders only the passing ones, under
+   its `out-map candidates · {type}` branch beside the `out-map query ·
+   {type}` residue.
+4. **Source-side residue**: `set_coverage.source` assigned / proposed /
+   unpaired — split SATURATED types (target populations smaller than the
+   source's: annotation-bound, not fillable) from non-saturated types
+   (evidence-bound).
+
+Reference totals (circadian_clock): 16 candidates (15 high + 1 medium) +
+10 family + 17 relatives = <= +43 beyond the 204 claims. For BANC: 3
+candidates (all native), claims 205/205 — the BANC gap is
+annotation-bound, and BANC Track-A cannot confirm same-name pairs
+(positives score below the null; the calibration artifacts that showed it
+were kept under `local_data/morph-qualification-inspection/` and are no
+longer there).
 
 ## 4. Scope switches (THREE NESTED MODES + ONE PARALLEL)
 
@@ -704,3 +806,5 @@ When presenting results to the user:
 | type lookups return 0 for a NeuPrint dataset | API unreachable | `get_bodyids_for_type` / `get_types_for_bodyids` are offline-first — ensure the dataset has a repo-local neuron table under `datasets/` |
 | self-check `!` lines | legend/render mismatch | treat as a bug: capture the lines verbatim and investigate before trusting the scene |
 | `[stage 5d] backward evidence failed (advisory, skipped)` / `source-universe vectors unavailable` | the reverse pass could not build or scan the source universe | advisory layer only — bins, fills and levels are unaffected; every row stays `not-checked`. Re-run with `--skip-backward-pass` if only the tier is needed |
+| null-kind branch bars drift between runs (e.g. 0.593→0.235) | the run null bar is the p95 of the scored jaccard-window null rows, and the scored subset grows as the skeleton cache fills | expected cache-dependence (the MODE-dependence was removed 2026-09-24 — one backdrop now serves every rung, so a bar that moves between two runs of the SAME mode means the cache moved). Prefer branches with native/backup floors for admission decisions, and pin the null sample per dataset (future work) |
+| expansion top hits are R1-R6 / orphan NaN-type neurons | unpaired sources in saturated types grab dense-profile fragments | the typed-only filter removes NaN types; R1-R6 fail the morph check (median ≈ −0.02), so `morph_qualified=False` keeps them out of the scene — treat them as noise evidence, never as candidates |
