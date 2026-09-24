@@ -31,6 +31,14 @@ Finding Methods:
 
 Author: Example script for drocat
 """
+# DROCAT edit-to-run TEMPLATE, not a CLI. It mirrors the UI's
+# "find_homologs" tool (registry
+# ui/runner.py TOOL_REGISTRY; payload built in ui/tabs/connectivity.py), and its
+# values below are pinned to ui/config.py DEFAULTS so an unedited
+# run reproduces what the tab sends. Copy to
+# archive/scripts_local/ before a real scientific run
+# (skills/drocat-usage/SKILL.md:66); the relative paths assume a
+# working directory of scripts/.
 
 import sys
 from pathlib import Path

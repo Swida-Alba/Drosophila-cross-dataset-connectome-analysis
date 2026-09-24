@@ -1,3 +1,10 @@
+# DROCAT edit-to-run TEMPLATE, not a CLI — and with NO UI mirror:
+# FindDirectConnections appears nowhere in ui/ (only in
+# src/coana.py), so this script is the only surface for it. Values
+# below are pinned to ui/config.py DEFAULTS anyway, so a future tab
+# agrees with it. Copy to archive/scripts_local/ before a real
+# scientific run (skills/drocat-usage/SKILL.md:66); relative paths
+# assume a working directory of scripts/.
 import sys
 from pathlib import Path
 import warnings

@@ -47,6 +47,14 @@ Output Structure:
             └── heatmap_type_avg_{direction}_{metric}.html
 
 """
+# DROCAT edit-to-run TEMPLATE, not a CLI. It mirrors the UI's
+# "connectivity_profiling" tool (registry
+# ui/runner.py TOOL_REGISTRY; payload built in ui/tabs/connectivity.py), and its
+# values below are pinned to ui/config.py DEFAULTS so an unedited
+# run reproduces what the tab sends. Copy to
+# archive/scripts_local/ before a real scientific run
+# (skills/drocat-usage/SKILL.md:66); the relative paths assume a
+# working directory of scripts/.
 
 import sys
 from pathlib import Path
