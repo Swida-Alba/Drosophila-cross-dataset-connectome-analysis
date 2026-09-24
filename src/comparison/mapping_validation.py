@@ -43,8 +43,9 @@ Stages
    (``validation_mode`` / :func:`normalize_mode`); a shared neuron keeps
    the same category across modes.  ``pooling`` is PARALLEL to that ladder,
    not a fourth rung: :mod:`comparison.mapping_validation_pooling` scans
-   the whole queried population against the whole target universe under
-   absolute floors, and joins the mapper's claims only afterwards.
+   the whole queried population against the whole target universe, admits
+   each source's top-N rows under its own bar, and joins the mapper's claims
+   only afterwards.
 4. Gap fill: ``gap = min(|P_S|, |P_T|) - M``; the restrictive fill counts
    ``candidates`` only, the family fill adds ``family``+``relative``.  The
    query-level dedup (``gap_fill_dedup.csv``) is bodyId-unique with
@@ -5976,7 +5977,8 @@ class MappingValidator:
             'candidate_window': self.cfg.candidate_window,
             'deep_cap': self.cfg.deep_cap,
             # `pooling` mode (read only when validation_mode == 'pooling'):
-            # the absolute floors, the window and the morph budget.
+            # the admission bar, the floors it only flags, the window and the
+            # morph budget.
             'pooling_jaccard_floor': self.cfg.pooling_jaccard_floor,
             'pooling_rank_union_floor': self.cfg.pooling_rank_union_floor,
             'pooling_window_mult': self.cfg.pooling_window_mult,
@@ -6106,12 +6108,15 @@ class MappingValidator:
                 'pooling_sources.csv / '
                 'pooling_cross_validation.json (this run, --mode pooling) — '
                 'the UNSUPERVISED pool: every queried neuron scanned against '
-                'the whole target universe under absolute floors (a VOLUME '
-                'guard-rail, published as the configured numbers), then the '
-                'morphology bar as the last gate — a refusal leaves the pool '
-                'and is counted in `morph.dropped_targets`, while a candidate '
-                'with no verdict stays and is named. The mapper is joined '
-                'afterwards. Read the report\'s Pooling tab.']),
+                'the whole target universe, each source keeping its top-N rows '
+                'under the admission bar (the Jaccard / rank_union floors and '
+                'the window are published as ADVISORY flags and remove '
+                'nothing), then the morphology bar as the last gate — a '
+                'refusal leaves the pool and is counted in '
+                '`morph.dropped_targets`, while a candidate with no verdict '
+                'stays and is named; `morph.budget` says what priced the pass. '
+                'The mapper is joined afterwards. Read the report\'s Pooling '
+                'tab, whose Per-source block is the mode\'s own axis.']),
             '- validation/pair_summary.csv — per-branch pools / gap / '
             'verdicts; mapping/mapping_export.csv — the branch mapping '
             'with bodyId pools.',

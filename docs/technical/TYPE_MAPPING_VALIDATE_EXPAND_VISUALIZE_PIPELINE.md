@@ -352,30 +352,48 @@ that makes the claim lookups raise:
   annotation (`_bodyids_for`), so the residue the branches do not claim is
   inside it. A branch-pool seed would make the mode supervised and is not
   offered.
-- **gate** — absolute, never pool-relative: `jaccard >` floor, `rank_union >`
-  floor (0), and both metric ranks inside `window_mult` × the size of THAT
-  SOURCE TYPE's queried population. The window scales to the quantity an
-  unsupervised run knows; a branch's claimed pool is the supervised one.
-  These floors are a VOLUME guard-rail, not a data-quality claim (user
-  2026-09-23): they decide how wide the connectivity scan may open, and the
-  configured numbers are exactly what gated the run. An earlier build fitted
-  the Jaccard floor per (source, target) pair to the graded rows past runs
-  recorded (`min(configured, q05 of that pair's `matched`/`verified`
+- **admission — the bar, per source**: each queried source keeps the top-N rows
+  of the metric it chose (`pooling_bar_metric` ∈ `either|jaccard|rank_union` ×
+  `pooling_bar_top_n`, default `either`/3). `either` is the **union of each
+  metric's own top-N**, never a merged best-rank ordering: a merged order spends
+  the N slots on the two metrics' rank-1 rows (162 of 242 sources have two
+  distinct ones) and was measured keeping 79 of the 118 targets the old gate
+  found, where the union keeps 116. Because `rank_union` ties at exactly 0
+  across hundreds of targets, a rank cut is not a row bound (17.1 rows/source at
+  N=5 against jaccard's 5.1), so each source holds at most `2N` rows in the
+  chain order and the number the cap cut is published as `bar.rows_cut`.
+- **the floors are flags, not filters** — `jaccard >` floor, `rank_union >`
+  floor, and both ranks inside `window_mult` × the size of THAT SOURCE TYPE's
+  queried population are still evaluated and exported per row
+  (`below_jaccard_floor` / `below_rank_union_floor` / `outside_window`), and
+  remove nothing. They were filters until 2026-09-24: the rank_union floor sat at
+  its own default `0`, which is a sign test, and that alone starved 119 of 242
+  queried sources of any candidate. An earlier build ALSO fitted the Jaccard
+  floor per (source, target) pair to the graded rows past runs recorded
+  (`min(configured, q05 of that pair's `matched`/`verified`
   jaccards)`, read from a `cache/{target}/pooling/` evidence store before the
   scan); the fit was DELETED rather than tuned, because the measurement that
   motivated it — 0.10 rejecting 0 % of one pair's verified rows and 36.6 % of
   another's at 0.20 — describes how much of the pool survives, which is
-  precisely the volume question the floor is allowed to answer, and nothing
+  precisely the volume question a floor is allowed to answer, and nothing
   about whether a pair is a homolog.
-- **morphology last, as a gate** — the Find-Homolog fast path (no NBLAST)
-  with the branch-free persisted `mapping_ref` bar, applied to the
-  connectivity survivors only, under a budget. A scored candidate BELOW its
-  bar leaves the exported pool and the scene root (`morph_refused` →
-  `morph.dropped_targets`); its rows stay in `pooling_candidates.csv`, so a
+- **morphology last, as a gate, and mandatory** — the Find-Homolog fast path (no
+  NBLAST) with the branch-free persisted `mapping_ref` bar, applied to the
+  connectivity survivors only. `--no-morphology` beside `--mode pooling` is a
+  usage error, refused in the CLI, in `MappingValidator.__init__` and in
+  `run_pooling`: every tier of this mode is defined morph-qualified, so a
+  connectivity-only pool would publish findings under claim-shaped names — the
+  existing homolog finding, which this mode exists to be more than.
+  A scored candidate BELOW its
+  bar leaves the exported pool and the scene root (`morph.dropped_targets`);
+  its rows stay in `pooling_candidates.csv`, so a
   refusal stays auditable instead of becoming a silent absence. Nothing else
-  removes a target: a row that was not looked at says which of the three
-  absences it is (`not-selected`, `not-attempted-cap`, `no-score`), because a
-  blank would read as a rejection. A verdict publishes the pair it was made
+  removes a target: a row that was not looked at says which of the absences it
+  is (`shared`, `not-attempted-cap`, `no-score`), because a
+  blank would read as a rejection. `shared` is the hybrid's honesty: the pass
+  scores one verdict per SCORING UNIT (every tier-1 row, plus each target's
+  chain-best row) and every other row of that target borrows it, naming the pair
+  in `verdict_for_pair`. A verdict publishes the pair it was made
   from, in four columns that name one another: `morph_bar_kind` is the binding
   rule (`native` / `track_a` / `null_bar`), `morph_bar` that rule's value, and
   the score applied to it is `morph_pool_ref` for a native row and
@@ -385,16 +403,25 @@ that makes the claim lookups raise:
   own bar with a ✓ beside it. The gate had graded the right pair; the export
   could not show it, and a report a reader cannot recompute from is not a
   record. The run publishes that as a record, not a
-  ratio of convenience — `attempted` (what the budget allowed
-  to be looked at) · `scored` (what came back with a value) · `qualified` ·
-  `no_score` · `capped` · `gate_applied` · `dropped_targets` · `error` ·
+  ratio of convenience — `units` (what the pass was offered) ·
+  `attempted` (what the budget allowed
+  to be looked at) · `capped` · `scored` (what came back with a value) ·
+  `qualified` ·
+  `no_score` · `shared` · `budget` · `gate_applied` · `dropped_targets` ·
+  `error` ·
   `warnings` — because `scored` can sit far below `attempted` (one BANC run
   recorded `attempted 8 / scored 8` while
   its own rows said 1 `scored` and 7 `no-score`), and a pool that
   was mostly unscored is a missing measurement rather than a morphologically
   cleared one. Whenever the two differ the caveat is stated from ONE builder
   (`_pooling_warning_line`) in the Pooling tab, the Log tab and
-  `user_warning_notes.txt`. That recorded collapse had a cause, and the first
+  `user_warning_notes.txt`. The budget is counted in units and defaults to
+  **auto: 3 per queried source** (`pooling_max_morph_targets = 0`), and
+  `morph.budget` publishes which rule priced the run — the constant 400 an
+  earlier build used cut 146 of the 546 units the default bar needed, and
+  because units have dependents that cost more than time: 29 targets the bar
+  would have refused stayed IN the pool, since the row that owed each of them a
+  verdict was itself cut. That recorded collapse had a cause, and the first
   explanation given for it was wrong: the pairs DO all score. The shared
   scorer's `mapping_ref` rule "a branch-pool member was fetched only to
   anchor a bar, so it is not a candidate" was deleting the verdict of every
@@ -417,18 +444,26 @@ that makes the claim lookups raise:
   deleted — pooling neglects the type name by design, so counting how many
   other datasets also ignored it in the same direction graded nothing).
 - **surfaces** — the run's whole result reads in the report's **Pooling** tab
-  (the gate as the volume statement it is, the four cells, the harvest by
-  target type, the morph record including what the bar refused, then one row
-  per pooled target); the tab names
+  (the admission bar with its row cap and cut count, the floors labelled as the
+  flags they are, the four cells, the morph record including what the bar
+  refused and which budget priced it, the **Per source** block — queried →
+  reached ≥1 → each source's chain-best tier → kept ≥1 after morphology →
+  mapper-claimed → pool/source with its band — then the harvest by target type
+  and one row per pooled target); the tab names
   the STORES the cells were scored against (§P7a's `input_fingerprint`: git
   rev, target universe, mapper snapshot), because the scores
   and the comparison both read stores that can move, so a cell is only
   comparable with another run that read the same ones — and it says so when a
-  run predates the fingerprint. In a scene it
+  run predates the fingerprint. On a pooling run the report's HERO leads with
+  that source axis and names the supervised ladder as the same run's other
+  answer, because the ladder's three levels are not this mode's levels. In a scene it
   is the `pooling · {source type}` legend root (plum `#7b4173`), hosted by
   the parent group of the source that reached each target best — a pool row
   has no branch, so that type is its only scene address, and a type no branch
-  group covers is named in the run log instead of rendering nothing. The UI's
+  group covers is named in the run log instead of rendering nothing. Each leaf
+  is tagged `{mapper_cell} · {tiers} · morph ✓/✗` by `pool_leaf_tag`, since a
+  scene shows a candidate with no column header to explain it.
+  The UI's
   mode row offers a fourth **Pooling** button with its own gate card
   (`card-tmvev-pooling`), which is an entrance to the mode, not a widening
   of the ladder.
@@ -1067,10 +1102,10 @@ gives the subfolder each one lives in.
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |
 | `pool_categories.csv` | tier + metrics + `size` per in-map target |
 | `pair_summary.csv` | per branch: pools, best (the mutual-best 1:1 pair count; renamed from `matched`), gap (informational), verdict/noise counters, `pool_best_size`, and the provenance pair `selected_chain` / `source_chain` (the chain that resolved the target pool vs the one that named the source neurons — equal except under the per-side basis) |
-| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair that passed the absolute gate, deduplicated to one row per candidate target on the ordering chain, and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps the three absences apart (`not-selected` / `not-attempted-cap` / `no-score`), and only an explicit `scored` below the bar removes a target from `pooling_pool.csv` (its rows stay in `pooling_candidates.csv`). Each pooling row publishes the whole record of its verdict: `morph_bar_kind` names the binding rule, `morph_bar` is that rule's value, and the score it graded is `morph_pool_ref` for a native row and `morph_similarity` otherwise, so `morph_qualified` is recomputable from the row beside it (§4.5a). Its `gate` block publishes the configured floors with their stated role (`jaccard_floor`, `rank_union_floor`, `window_mult`, `role` = volume guard-rail); its `morph` block is the RECORD the last gate left behind (`attempted` / `scored` / `qualified` / `no_score` / `capped` / `gate_applied` / `dropped_targets` / `error` / `warnings` / `vector_cache` (`loaded` / `stale_dropped` / `saved` — the target-vector store's ledger: a stored 256-dim vector plus its hemisphere lets a repeat run skip 0.412 s of skeleton load, render transform and vectorization per neuron, and rows are keyed on their skeleton's `(mtime_ns, size)` so a healed skeleton is recomputed rather than reused — a cache that could re-grade a pair would be a different instrument, not a faster one), where `scored` ≤ `attempted` by construction — the ratio is published, and a shortfall reaches `user_warning_notes.txt`), and `input_fingerprint` names the stores the scores came from (git rev, target universe, mapper snapshot) so cells are only compared across runs that read the same ones. The store keeps its vectors at full precision and stamps `vector_dtype`, and `load()` refuses a file stamped otherwise as a unit: a `float32` store was measured re-grading a score in its 8th decimal, and a cache that changes a verdict is a different instrument rather than a faster one. The cold/warm pair on the frozen harness came out byte-identical (0 differing cells across both pooling CSVs, same 40-target pool and same single refusal) with stage `P` at 132 s cold and 56 s warm |
+| `pooling_candidates.csv` / `pooling_pool.csv` / `pooling_sources.csv` / `pooling_cross_validation.json` | `--mode pooling` only (§4.5a): every (source, target) pair the BAR admitted, the same pool deduplicated to one row per candidate target on the ordering chain, one row per QUERIED SOURCE (the mode's own unit — a source that found nothing is named, never absent), and the post-hoc comparison with the mapper's claim sets (`confirmed` / `type_miss` / `type_new` / `verified_only`, with the `reading_notes` that say which cells are not recall measures). `morph_gate` keeps its absences apart (`shared` / `not-attempted-cap` / `no-score`), and only an explicit `scored` below the bar removes a target from `pooling_pool.csv` (its rows stay in `pooling_candidates.csv`). Each pooling row publishes the whole record of its verdict: `morph_bar_kind` names the binding rule, `morph_bar` is that rule's value, and the score it graded is `morph_pool_ref` for a native row and `morph_similarity` otherwise, so `morph_qualified` is recomputable from the row beside it (§4.5a). Its `bar` block is the admission rule as run (`metric` / `top_n` / `row_cap_multiple` / `rows_cut`); its `gate` block publishes the configured floors with a `role` line saying they flag rather than filter, beside `floor_flags` counting what each one flagged and `tiers` counting ROWS per tier and `pool_per_source` with its `pool_size_warning` band; its `morph` block is the RECORD the last gate left behind (`units` / `attempted` / `capped` / `budget` (which rule priced the pass — `auto: 3 x N queried sources` unless a cap was configured) / `scored` / `qualified` / `no_score` / `shared` / `gate_applied` / `dropped_targets` / `error` / `warnings` / `vector_cache` (`loaded` / `stale_dropped` / `saved` — the target-vector store's ledger: a stored 256-dim vector plus its hemisphere lets a repeat run skip 0.412 s of skeleton load, render transform and vectorization per neuron, and rows are keyed on their skeleton's `(mtime_ns, size)` so a healed skeleton is recomputed rather than reused — a cache that could re-grade a pair would be a different instrument, not a faster one), where `scored` ≤ `attempted` by construction — the ratio is published, and a shortfall reaches `user_warning_notes.txt`), and `input_fingerprint` names the stores the scores came from (git rev, target universe, mapper snapshot) so cells are only compared across runs that read the same ones. The store keeps its vectors at full precision and stamps `vector_dtype`, and `load()` refuses a file stamped otherwise as a unit: a `float32` store was measured re-grading a score in its 8th decimal, and a cache that changes a verdict is a different instrument rather than a faster one. The cold/warm pair on the frozen harness came out byte-identical (0 differing cells across both pooling CSVs, same 40-target pool and same single refusal) with stage `P` at 132 s cold and 56 s warm |
 | `parameters.json` | every knob incl. `validation_mode`, cutoffs, the null-calibration knobs (`null_jaccard_max`, `null_per_source_cap`, `null_min_n`, `null_percentile`), `out_map_top_k`, the pooling knobs (`pooling_bar_metric`, `pooling_bar_top_n`, `pooling_jaccard_floor`, `pooling_rank_union_floor`, `pooling_window_mult`, `pooling_max_morph_targets`), the stage-5d knobs (`backward_evidence_enabled`, `backward_top_n`, `backward_max_neurons`, `backward_per_branch_cap`, `backward_scan_pool_targets`, `skip_backward_pass`) + the `backward_evidence` counter block, and the stage skip flags |
 | `morphology_calibration.json` | per-branch thresholds, `pool_ref_tier`/`baselines`/`floors`, `track_a_null_bar`/`n`, `score_frame`, AUC gate record |
-| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, the **Pooling** tab (§4.5a: the gate as the volume guard-rail it is, the four comparison cells, the harvest by target type, the morph record including what the bar refused, and one row per pooled target — a pooling run's result reads nowhere else, because the nested tabs are empty by construction there), morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
+| `report.html` | the per-run report: headline + three coverage levels (L1 claim / L2 provenance / L3 validation), branches (Mapped = the sources carrying a mapping verdict, with the mutual-best pair count beside it; the displayed `gap` is measured against Mapped, while `pair_summary.csv` keeps the stricter pair-based gap — hover either cell for both), fills (with the per-row `reciprocal` column, the headline count and a `Reverse evidence by bin` split — its own axis, never a level), the **Reciprocal** tab (stage 5d: one row per neuron, jaccard-ordered, the branch-type hit beside the rank_union top-1, top-N on hover), out-map expansion, backward source status, the **Pooling** tab (§4.5a: the admission bar with its row cap and cut count, the floors labelled as the flags they are, the four comparison cells, the morph record including what the bar refused and which budget priced it, a **Per source** block on the mode's own axis, the harvest by target type, and one row per pooled target — a pooling run's result reads nowhere else, because the nested tabs are empty by construction there; on a pooling run the report's HERO leads with that source axis and names the supervised ladder beside it, rather than quoting the ladder's levels as this mode's answer), morphology record, scenes, file index (paths as THIS run wrote them, so a pre-layout folder lists no subfolders); hover-glossary on every term; `backward_progress` events timeline the pass in the Log tab; regenerable via `python -m comparison.mapping_validation_report <run_dir>` |
 | `README.txt` | slim directions (what file is what) + full run log — the analysis content moved into `report.html` |
 | `user_warning_notes.txt` | bracketed-tag warning lines appended by the report writer (self-check, null-sample, mapper-gap, `[reciprocal]` own-source-type top-3 counts) — the `[reciprocal]` line is also quoted verbatim in `report.html`'s Warnings section as a derived advisory |
 | `visualization/*.html` | tree-legend scenes per parent group |

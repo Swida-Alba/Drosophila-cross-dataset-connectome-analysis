@@ -73,9 +73,12 @@ $PY scripts/RunMappingValidation.py \
   config FIELD name (`morph_track_a_offset`, `morph_suspicious_level`,
   `pool_ref_floor_margin`, `out_map_top_k`, `max_scenes`), so the flag list
   and that file are the same knobs in two notations.
-  Pooling's own four: `--pooling-jaccard-floor`,
-  `--pooling-rank-union-floor`, `--pooling-window-mult`,
-  `--pooling-max-morph-targets` (400) and `--no-pooling-morph-gate`.
+  Pooling's own: `--pooling-bar-metric` (`either|jaccard|rank_union`, the
+  admission bar), `--pooling-bar-top-n` (3), `--pooling-jaccard-floor`,
+  `--pooling-rank-union-floor`, `--pooling-window-mult` (the last three are
+  ADVISORY flags now) and `--pooling-max-morph-targets` (0 = auto: 3 scoring
+  units per queried source). Morphology is mandatory in this mode, so
+  `--no-morphology` beside `--mode pooling` is a usage error.
 - Stage 2 pre-flights the TARGET profile cache: typed neurons missing
   from the cache are built through the profiler backend (cache-first,
   resumable, ~125 neurons/s measured on banc_v888; fail-open to
@@ -243,12 +246,19 @@ against — `local_data/` is disposable by design.
     and the serialized `backward_topN` neighbourhood the report hovers,
     listed in jaccard order (§3).
 11d. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
-    `pooling_cross_validation.json` — `--mode pooling` only: every
-    (source, target) pair the absolute gate admitted, the same pool deduped
-    to one row per candidate target AFTER the morphology gate, and the
+    `pooling_sources.csv` / `pooling_cross_validation.json` — `--mode pooling`
+    only, three axes: every (source, target) pair the BAR admitted (with its
+    `tier`, `bar_rank`, the three advisory flags and `verdict_for_pair`), the
+    same pool deduped to one row per candidate TARGET on the ordering chain
+    AFTER the morphology gate (`in_pool`, `n_rows_refused`, `tiers`, plus the
+    mapper-only `verified_only` rows), one row per QUERIED SOURCE (its
+    chain-best finding, `n_admitted` / `n_in_pool` / `n_refused`, and
+    `no_finding` — a source that found nothing is named, never absent), and the
     post-hoc comparison with the mapper (`confirmed` / `type_miss` /
-    `type_new` / `verified_only`, the morph record with its
-    `gate_applied` / `dropped_targets` / `vector_cache` (the target-vector
+    `type_new` / `verified_only`, the `bar` block as run, `floor_flags`,
+    `tiers`, `pool_per_source` with its band, the morph record with its
+    `units` / `budget` / `capped` / `gate_applied` / `dropped_targets` /
+    `vector_cache` (the target-vector
     store's ledger), the `reading_notes`).
     `morph_gate` names its absences apart, and only an explicit
     `scored`-below-bar refusal leaves the pool (the refused pair rows stay in
@@ -635,16 +645,29 @@ them.
   [--pooling-rank-union-floor 0] [--pooling-window-mult 2.0]
   [--pooling-max-morph-targets 0]` (`--no-morphology` beside `--mode pooling`
   is a usage error).
-- **Gate (absolute, never pool-relative — and never fitted)**: `jaccard >`
-  floor, `rank_union >` floor, and BOTH metric ranks inside
-  `window_mult × the size of that source neuron's own type population`.
-  The seed is every neuron the query names by the SOURCE dataset's own
-  annotation, so the residue no branch claims is inside it. The configured
-  floor IS the number that gated the run: `pooling_cross_validation.json →
-  gate` is `{jaccard_floor, rank_union_floor, window_mult, role}`, and
-  `role` states what they are — a *volume guard-rail*, how wide connectivity
-  may open, not a data-quality claim about any pair. An earlier build also
-  fitted the Jaccard floor per dataset pair (`pooling_floor_from_evidence`,
+- **Admission is the BAR, per source (never pool-relative)**: each queried
+  source keeps the top-N rows of `pooling_bar_metric` at depth
+  `pooling_bar_top_n` (default `either`/3). `either` is the **UNION of each
+  metric's own top-N**, never a merged best-rank ordering — a merged order
+  spends the slots on the two metrics' rank-1 rows (162 of 242 sources have two
+  distinct ones) and was measured keeping 79 of the 118 targets the old gate
+  found where the union keeps 116. `rank_union` ties at exactly 0 across
+  hundreds of targets, so a rank cut is not a row bound (17.1 rows/source at
+  N=5 against jaccard's 5.1): each source holds at most `2N` rows in the chain
+  order and `bar.rows_cut` says what the cap cut. The seed is every neuron the
+  query names by the SOURCE dataset's own annotation, so the residue no branch
+  claims is inside it. `pooling_cross_validation.json → bar` is
+  `{metric, top_n, row_cap_multiple, rows_cut, role}`.
+- **The floors are FLAGS now, and they remove nothing**: `jaccard >` floor,
+  `rank_union >` floor and `window_mult × the size of that source neuron's own
+  type population` are still evaluated per admitted row and exported as
+  `below_jaccard_floor` / `below_rank_union_floor` / `outside_window`, with the
+  counts in `floor_flags` and the configured numbers in `gate` (whose `role`
+  line says they flag rather than filter). They were filters until 2026-09-24:
+  the rank_union floor at its own default `0` is only a sign test, and that
+  alone starved 119 of 242 queried sources — which is why RU is never a real
+  bar (user, round 5). An earlier build ALSO fitted the Jaccard floor per
+  dataset pair (`pooling_floor_from_evidence`,
   `--no-pooling-floor-from-evidence`, a persisted
   `cache/{target}/pooling/jaccard_evidence_{sha1(source)}.json`, and the
   `jaccard_floor_*` gate keys); all of that is DELETED (Decision
@@ -653,10 +676,10 @@ them.
   reason it went: the same floor rejects very different shares of two dataset
   pairs' graded rows (0.20 rejected 2.1 % of male-cns's 241 graded pairs,
   36.6 % of BANC's 164, 20.0 % of hemibrain's 145; 0.10 rejected none) — but
-  that measures POOL VOLUME, which is all a volume knob may answer. So
-  raising `--pooling-jaccard-floor` is a review-load decision you read back
-  off the pool size yourself, per dataset pair; there is no mechanism to
-  calibrate it and no provenance line to explain.
+  that measures POOL VOLUME, which is all a connectivity threshold may answer.
+  To widen or narrow the pool, move the BAR (`--pooling-bar-top-n`,
+  `--pooling-bar-metric`) and read `pool_per_source` back; the floors are for
+  reading the run, not for driving it.
 - **Morphology last, and it is a GATE**: the Find-Homolog fast path (no
   NBLAST) with the branch-free persisted `mapping_ref` bar, on the
   connectivity survivors only, under a budget counted in SCORING UNITS (a unit
@@ -674,7 +697,10 @@ them.
   and the count is published as `morph.dropped_targets` beside
   `morph.gate_applied`, in the log too (`[pooling] … N refused by the
   morphology bar …`). Only an explicit refusal removes a target:
-  `not-selected` (this row is not its target's chain-best row),
+  `not-selected` is GONE: the hybrid scores one verdict per SCORING UNIT, so a
+  row that is not its target's chain-best row reads that unit's verdict and says
+  so — `shared` with the pair named in `verdict_for_pair`. A borrowed number is
+  never this row's own measurement, and it is not a rejection either.
   `not-attempted-cap` (the budget refused to look), `no-score` (the scorer
   returned no value for the pair), `disabled` / `inactive` / `error` all stay
   in the pool and are named as such — none of them is a rejection, and a

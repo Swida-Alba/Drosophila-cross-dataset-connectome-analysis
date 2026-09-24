@@ -468,7 +468,7 @@ described after the table.
 | **restrictive** (default) | — | — | the validated tier + `sibling` + `candidates` (invaders and gap fires that pass the morph rule). Minimal expansion |
 | **family** | `--mode family` | discovery window, `family`, `relative` | reads the top `rank_top_k` of each metric as candidate evidence, then surfaces every out-map bodyId of your in-map types (`family`) and the type-mates of candidate types (`relative`). The last two are ungated by qualification — bounded by the types themselves |
 | **aggressive** | `--mode aggressive` | `examinees` | everything in family, with the window widened to `candidate_window` (25); the band beyond `rank_top_k` is labelled `examinees` (out-of-pool homologs ranked *below* the pool best). Over-expansion prone — review carefully |
-| **pooling** | `--mode pooling` | an independent UNSUPERVISED pool (`pooling/`) | NOT a rung of this ladder: every neuron the query names is scanned against the WHOLE target universe under absolute floors — `jaccard > pooling_jaccard_floor` (0.10), `rank_union > pooling_rank_union_floor` (0), both ranks inside `pooling_window_mult` (2×) the source type's own queried population — and morphology then gates only those connectivity survivors through the Find-Homolog fast path (no NBLAST), as the LAST GATE and a true one: a candidate scored below its bar leaves the exported pool. Nothing reads a branch pool or a mapper claim, so this is a homolog *finding*, not a pool *refinement*: the mapper's claims are joined afterwards into `pooling_cross_validation.json` (`confirmed` / `type_miss` / `type_new` / `verified_only`), and `parameters.json` carries `validation_mode: pooling` with **no `mode_rank`**. The nested bins above are still produced, from the mapper's side of the run |
+| **pooling** | `--mode pooling` | an independent UNSUPERVISED pool (`pooling/`) | NOT a rung of this ladder: every neuron the query names is scanned against the WHOLE target universe, and each source then keeps its top-N rows under the admission bar (`pooling_bar_metric` × `pooling_bar_top_n`, default `either`/3, where `either` is the union of both metrics' own top-N); the Jaccard / rank_union floors and the window survive only as **advisory flags** published per row. Morphology then gates those connectivity survivors through the Find-Homolog fast path (no NBLAST), as the LAST GATE, a true one and a MANDATORY one (`--no-morphology` with `--mode pooling` is a usage error): a candidate scored below its bar leaves the exported pool. Nothing reads a branch pool or a mapper claim, so this is a homolog *finding*, not a pool *refinement*: the mapper's claims are joined afterwards into `pooling_cross_validation.json` (`confirmed` / `type_miss` / `type_new` / `verified_only`), and `parameters.json` carries `validation_mode: pooling` with **no `mode_rank`**. The nested bins above are still produced, from the mapper's side of the run |
 
 Three readings of `pooling` keep it honest. `verified_only` is expected to be
 large: the supervised tier admits by pool membership while this gate admits
@@ -500,8 +500,12 @@ rather than simply absent. The count is published as `morph.dropped_targets`
 beside `morph.gate_applied`, and the run log states it (`[pooling] … N refused
 by the morphology bar …`) — a shrunken pool must never read as a smaller
 harvest. Only an explicit refusal removes a target: `no-score`,
-`not-attempted-cap`, `not-selected`, `disabled`, `inactive` and `error` all
-stay in the pool and are named as what they are.
+`not-attempted-cap`, `shared`, `disabled`, `inactive` and `error` all
+stay in the pool and are named as what they are. `shared` is the honest edge of
+the hybrid: the pass scores one verdict per **scoring unit** (every tier-1 row,
+plus each target's chain-best row), and a `nominated` row that reads another
+pair's number says which one in `verdict_for_pair` — a borrowed number is never
+this row's own measurement.
 
 **Read a verdict from the four columns that made it.** `morph_bar_kind` names
 the binding rule (`native` / `track_a` / `null_bar`), `morph_bar` is that rule's
@@ -513,12 +517,26 @@ pair with its kind. An earlier build published the per-source null bar under a
 own bar with a ✓ beside it: the gate had graded the right pair, the export could
 not show it.
 
-**The floors are a volume guard-rail, and the configured number is the
-number.** `pooling_jaccard_floor` (0.10) and `pooling_rank_union_floor` (0)
-decide how wide connectivity may open, and nothing else: they are not a
-data-quality claim about any pair, and `pooling_cross_validation.json`'s
-`gate` block says so in its own `role` line beside the numbers it gated on.
-An earlier build fitted the Jaccard floor per dataset pair — the minimum of
+**The bar admits; the floors only flag.** Admission is per source: each queried
+neuron keeps the top-N rows of `pooling_bar_metric` (`either` | `jaccard` |
+`rank_union`, default `either`) at depth `pooling_bar_top_n` (default 3), where
+`either` is the **union of both metrics' own top-N** — not a merged best-rank
+ordering, which spends the slots on the two metrics' rank-1 rows and loses the
+candidates the union recovers. A `2N` row cap bounds the tie mass, and
+`bar.rows_cut` says what it cut. `pooling_cross_validation.json`'s `bar` block is
+that rule as run.
+
+The floors are the demoted part of the old gate, and they are still published:
+`pooling_jaccard_floor` (0.10), `pooling_rank_union_floor` (0) and
+`pooling_window_mult` (2.0) are measured against every admitted row and exported
+as `below_jaccard_floor` / `below_rank_union_floor` / `outside_window`, with the
+counts in `floor_flags`, and **no row is removed for missing one**. They were
+filters until 2026-09-24, when the rank_union floor — sitting at its own default
+`0`, which is only a sign test — was measured starving 119 of 242 queried sources
+of any candidate at all. A connectivity threshold says how wide the scan opened,
+never whether a pair is a homolog; that is the morphology gate's job, which is
+why it is mandatory here.
+An earlier build also fitted the Jaccard floor per dataset pair — the minimum of
 the configured value and the q05 of that pair's own graded
 `matched`/`verified` jaccards, read from a persisted evidence store before the
 scan — and the fit is DELETED, not tuned:
@@ -530,9 +548,7 @@ very different shares of two dataset pairs' graded rows (measured over the
 runs on record, `J=0.20` rejected 2.1 % of FAFB→male-cns (241 pairs), 36.6 %
 of FAFB→BANC (164) and 20.0 % of FAFB→hemibrain (145), where the shipped 0.10
 rejected none of them) — which is a statement about how many candidates each
-dataset pair yields, not about which of them are good homologs. Raising the
-floor is therefore a review-load decision you make and read back off the
-pool size, per dataset pair, with no mechanism pretending to calibrate it.
+dataset pair yields, not about which of them are good homologs.
 
 **The `target_type` a candidate carries corroborates nothing, and no
 cross-dataset column exists.** An earlier build could count, across sibling

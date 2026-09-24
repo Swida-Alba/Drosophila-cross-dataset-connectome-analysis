@@ -3148,8 +3148,9 @@ def _morph_tab(d: Dict) -> str:
 
 def _pooling_tab(d: Dict) -> str:
     """`pooling` mode: the UNSUPERVISED pool — every neuron the query names
-    scanned against the whole target universe under absolute floors — and its
-    post-hoc comparison with the mapper's claims.
+    scanned against the whole target universe, each source keeping its top-N
+    under the admission bar — and its post-hoc comparison with the mapper's
+    claims.
 
     The nested ladder's tabs read a pooling run as empty by construction: no
     branch pool, no branch bar and no mapper claim decides a candidate here,
