@@ -791,7 +791,7 @@ bar-kind evidence) and a
 
 `pooling` is **parallel** to the nested `restrictive ⊆ family ⊆ aggressive`
 ladder, not its top rung, and the run's `parameters.json` says so by
-carrying `validation_mode: pooling` and **no `mode_rank`**. The nested bins
+carrying `validation_mode: pooling` and **`mode_rank: null`** — the key is always written, and a pooling run simply has no rung. The nested bins
 above are still produced (they are the supervised answer), and this engine
 adds an independent UNSUPERVISED one: the queried population is scanned
 against the WHOLE target universe, and each source then keeps its **top-N rows

@@ -897,6 +897,29 @@ def test_has_type_name_accepts_every_real_name(good):
     assert mv.has_type_name(good) is True
 
 
+def test_type_name_of_never_hands_back_a_pandas_placeholder():
+    """`.get(bid, '?')` is NOT a guard here.
+
+    `target_id2type` comes off a pandas column, so an unannotated neuron's entry
+    EXISTS and is float nan — the default only fires for a missing key, and
+    `str(nan)` is the truthy string 'nan'.  That is how 178 rows of
+    `noise_filtered_candidates.csv` and one `gap_fill_proposals.csv` row on the
+    2026-09-24 male-cns run exported a target whose type is literally "nan",
+    after the same hole was closed on the pooling side.
+    """
+    import math
+    names = {1: 'DN1a', 2: float('nan'), 3: None}
+    assert mv.type_name_of(names, 1) == 'DN1a'
+    assert mv.type_name_of(names, 2) == '?'
+    assert mv.type_name_of(names, 3) == '?'
+    assert mv.type_name_of(names, 99) == '?'          # missing key
+    assert mv.type_name_of(None, 1) == '?'
+    assert mv.type_name_of({1: 'nan'}, 1) == '?'
+    # the placeholder is never mistaken for a name downstream
+    assert not mv.has_type_name(mv.type_name_of(names, 2))
+    assert math.isnan(names[2])
+
+
 def test_an_unannotated_target_is_untyped_not_named_nan():
     """The bug the landed run published: 6 of 393 rows carried
     `target_type='nan'` with `in_scope=True` and the leaf `nan(no_source)`,

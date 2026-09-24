@@ -682,6 +682,42 @@ def check_ladder(runs, label):
             str(sorted(set(lv.target_bodyId) - set(dedup.target_bodyId))[:5]))
 
 
+def check_placeholder_types(run, tag):
+    """No identity column of any exported CSV may hold a float placeholder.
+
+    `str(nan)` is the non-empty string 'nan', so a `.get(bid, '?')` on a dict
+    built from a pandas column hands an unannotated neuron a TYPE NAMED "nan" —
+    which then reads as a real type in a leaf token or a hover.  Measured on the
+    2026-09-24 male-cns run: 178 rows of `noise_filtered_candidates.csv` and one
+    `gap_fill_proposals.csv` row did exactly that, after the same hole had been
+    closed on the pooling side; a check that only looks at the pooling files
+    cannot see the supervised ones.
+    """
+    hits = []
+    for path in sorted(run.rglob('*.csv')):
+        rel = path.relative_to(run).as_posix()
+        if rel.startswith('visualization/'):
+            continue
+        try:
+            # keep_default_na=False is the whole point: pandas reads the
+            # literal string "nan" as a missing value by default, so a naive
+            # .fillna('') erases exactly the evidence this check is looking for
+            # (it passed the run that had 180 of them).
+            df = pd.read_csv(path, dtype=str, keep_default_na=False,
+                             na_filter=False)
+        except Exception:  # noqa: BLE001
+            continue
+        for col in df.columns:
+            if not any(k in col.lower()
+                       for k in ('type', 'leaf', 'annotation', 'category')):
+                continue
+            n = int(df[col].isin(['nan', 'NaN', 'NA', 'None', 'none']).sum())
+            if n:
+                hits.append(f'{rel}:{col}={n}')
+    chk(not hits, f'{tag}: no float placeholder in an identity column',
+        str(hits[:6]))
+
+
 def check_partition(runs, label):
     """Rev 3.12 hygiene on every binned row of every mode."""
     for m, run in runs.items():
@@ -788,6 +824,7 @@ def main(argv=None):
         check_layout(run, tag)
         check_report(run, tag, mode)
         check_coverage(run, tag)
+        check_placeholder_types(run, tag)
         if mode == 'pooling':
             check_pooling(run, tag)
         grp = groups.setdefault(group_key(run), {})

@@ -2292,7 +2292,7 @@ TOOL_GUIDE_SPECS = {
                             "frames."},
             {"pattern": "parameters.json",
              "description": "Every knob incl. validation_mode / mode_rank (a "
-                            "pooling run has no mode_rank: the mode is "
+                            "pooling run has mode_rank null: the mode is "
                             "parallel to the nested chain, not above it)."},
             {"pattern": "pipeline_progress.jsonl",
              "description": "Stage timeline events (pre-flight, scans, "

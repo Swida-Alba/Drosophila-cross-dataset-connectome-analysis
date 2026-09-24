@@ -1556,6 +1556,21 @@ def has_type_name(value) -> bool:
     return str(value).strip() not in UNSET_TYPE_LABELS
 
 
+def type_name_of(values, bid, default: str = '?') -> str:
+    """The type NAME of one bodyId out of a lookup dict, never the string 'nan'.
+
+    ``target_id2type`` is built from a pandas column, so an unannotated neuron's
+    entry is float ``nan`` and ``.get(bid, '?')`` returns it — the default only
+    fires for a MISSING key.  Measured on the 2026-09-24 male-cns run: 178 rows
+    of ``noise_filtered_candidates.csv`` and one ``gap_fill_proposals.csv`` row
+    exported ``ahead_target_type`` / ``proposal_type`` as the literal 'nan',
+    which is the hole :func:`has_type_name` closed on the pooling side and left
+    open here.
+    """
+    value = (values or {}).get(int(bid))
+    return value if has_type_name(value) else default
+
+
 def candidate_annotation(target_type, backward_types, has_type: bool,
                          home_real: bool = True,
                          type_in_map: bool = False) -> str:
@@ -2836,8 +2851,7 @@ class MappingValidator:
             'branch_annotation': pair.branch_annotation,
             'source_bodyId': sbid,
             'ahead_target_bodyId': int(r.target_bid),
-            'ahead_target_type': (target_id2type or {}).get(
-                int(r.target_bid), '?'),
+            'ahead_target_type': type_name_of(target_id2type, r.target_bid),
             'ahead_metric': metric,
             'ahead_rank': _f(ru_rank if metric == 'rank_union' else ja_rank),
             'ahead_rank_union': _f(r.rank_union),
@@ -2977,7 +2991,7 @@ class MappingValidator:
                 'proposal_bodyId': tbid,
                 'fill_class': 'in_pool' if in_pool else 'out_of_pool',
                 'proposal_type': (pair.target_type if in_pool else
-                                  (target_id2type or {}).get(tbid, '?')),
+                                  type_name_of(target_id2type, tbid)),
                 'rank_union': _f(best['rank_union']),
                 'rank_union_rank': _f(best['rank_union_rank']),
                 'jaccard': _f(best['jaccard']),
@@ -3611,7 +3625,7 @@ class MappingValidator:
             'pool_basis': '', 'branch_linker_values': '',
             'branch_annotation': '', 'source_bodyId': None,
             'ahead_target_bodyId': int(bid),
-            'ahead_target_type': tname,
+            'ahead_target_type': tname if has_type_name(tname) else '?',
             'ahead_metric': '', 'ahead_rank': None,
             'ahead_rank_union': None, 'ahead_jaccard': None,
             'best_pool_target_bodyId': None, 'best_pool_rank': None,

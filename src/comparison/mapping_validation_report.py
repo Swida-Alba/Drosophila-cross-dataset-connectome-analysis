@@ -1829,7 +1829,11 @@ def _branches_tab(d: Dict) -> str:
                 f"{s.get('best', '—')} of them sit in a mutual-best 1:1 "
                 'pair — both sides name each other — which is the stricter '
                 'count pair_summary.csv reports as `best`. The paired '
-                'sources are inside the mapped total, not additional to it.')
+                'sources are inside the mapped total, not additional to it. '
+                '<b>`best` is a per-branch count</b>: two branches of one '
+                'query can both pair the same neuron, so summing the column '
+                'over branches can exceed the run\'s set-level mutual-best '
+                '(the headline and set_coverage.json count each neuron once).')
             gap_v = max(0, smaller - mapped)
             gr = f'{(gap_v / smaller):.0%}' if smaller else '—'
             gap_cell = _hover(
@@ -3105,6 +3109,18 @@ def _morph_tab(d: Dict) -> str:
     sk = ' · '.join(f'{k} {v}' for k, v in
                     sorted(d['susp_kind_counts'].items()))
     frames = calib.get('score_frame') or {}
+    # In a pooling run this record describes the SUPERVISED side of the same
+    # run — the branch bars the nested bins used. "AUC gate INACTIVE" must not
+    # be read as "morphology was skipped here": pooling refuses a run without
+    # morphology outright, and its own record (units scored, budget, refusals)
+    # lives on the Pooling tab.
+    pooling_note = (
+        "<div class='mv-callout'>This is a <b>pooling</b> run: the record "
+        'above is the supervised side of the same run. Pooling\'s own '
+        'morphology pass is mandatory and its record — units offered, '
+        'attempted, scored, refused, and the budget that priced them — is on '
+        'the Pooling tab.</div>'
+        if str(d['params'].get('validation_mode') or '') == 'pooling' else '')
     summ = _kv_block('Morphology record', [
         (_term('AUC gate'),
          (f"{_f(calib.get('auc'))} — " if calib.get('auc') is not None
@@ -3153,7 +3169,7 @@ def _morph_tab(d: Dict) -> str:
         'Morphology record',
         'Per-branch bars live in the Branches tab; this section only '
         'aggregates.',
-        summ + advisory,
+        summ + pooling_note + advisory,
         ['AUC gate', 'null bar', 'branch bar', 'native floor',
          'Track-A backup floor', 'score frames', 'pool_ref tier'])
 
@@ -3628,8 +3644,8 @@ def _log_tab(d: Dict) -> str:
         else:
             checks = 'No scenes rendered.'
         warn_body = (
-            "<p class='mv-note'>This run: no ``!`` failures. "
-            f'{checks}</p>')
+            "<p class='mv-note'>This run wrote no <code>!</code> failure "
+            f'line. {checks}</p>')
     if d['advisories']:
         warn_body += ("<p class='mv-note'>Advisories carried: "
                       + _esc(', '.join(d['advisories'])) + '.</p>')

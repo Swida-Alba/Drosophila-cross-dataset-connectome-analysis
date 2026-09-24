@@ -23,7 +23,7 @@ from ..runner import ScriptRunner, open_file, open_folder
 from ..type_suggestions import dataset_aware_suggestions
 
 # `pooling` is a fourth CLI value but NOT a rung of the nested ladder: it is
-# outside VALIDATION_MODES/MODE_RANK, so a pooling run reports no mode_rank and
+# outside VALIDATION_MODES/MODE_RANK, so a pooling run reports mode_rank null and
 # the three nested bins keep the same meaning it gave them. The dropdown offers
 # it because the tab must be able to start the mode, not because it is wider.
 MODE_OPTIONS = ["restrictive", "family", "aggressive", "pooling"]
