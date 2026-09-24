@@ -156,12 +156,17 @@ class TestSimplifiedCacheE2E:
         vs = _vs(tmp_path)
         vs._save_cached_neurons(pd.DataFrame({"bodyId": PROBE_IDS}), probe_neurons)
 
-        # The compatibility level still serves the shared raw cache (no
-        # network), then returns a level-90 view of the raw fetch.
+        # The compatibility level is validated and then DELIBERATELY ignored for
+        # NeuPrint (`morphology.fetch_skeleton_on_demand`: "simplification is a
+        # visualization-time concern"), so a `simp90` request serves the shared
+        # RAW cache — no network, and no decimated geometry on disk that a later
+        # vectorization could silently score.  Asserting a smaller node count
+        # here would be asserting the removed behaviour: it passed only while
+        # this module was skipped for want of a reachable server.
         nrn = morph.fetch_skeleton_on_demand(
             DATASET, PROBE_IDS[0], project_root=str(tmp_path), level="simp90")
         assert nrn is not None
-        assert 0 < len(nrn.nodes) < len(probe_neurons[0].nodes)
+        assert 0 < len(nrn.nodes) == len(probe_neurons[0].nodes)
 
         # Raw requests use the same source and therefore also hit the raw
         # cache, even when persistence is disabled for this call.
