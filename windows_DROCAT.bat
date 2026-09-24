@@ -121,45 +121,88 @@ if not defined CONDA_BIN if exist "%ProgramData%\anaconda3\Scripts\conda.exe" se
 goto resolve_reset
 
 :launch
-REM Port-conflict guard: when the UI port is busy, ask the user whether
-REM to start on a new port, kill the existing DROCAT process, or cancel.
+REM Port-conflict guard: when the UI port is busy, list every running DROCAT
+REM instance and ask the user whether to start on a new port, stop them all
+REM and restart, or cancel. When the port is free the same inventory is shown
+REM as a menu so stale instances from earlier "new port" choices can be
+REM cleaned up; Return starts a second instance, so a non-interactive launch
+REM (EOF on stdin) is never blocked.
 set "APP_PORT="
 for /f "tokens=3" %%p in ('findstr /C:"APP_PORT =" "%SCRIPT_DIR%ui\config.py"') do set "APP_PORT=%%p"
 if not defined APP_PORT set "APP_PORT=8080"
 if defined DROCAT_UI_PORT set "APP_PORT=!DROCAT_UI_PORT!"
 
 set "OWNER_PID="
+set "OWNER_IS_DROCAT=0"
 REM /C: keeps the regex together: findstr treats an unquoted space as a
 REM separator between search terms, so ":!APP_PORT! .*LISTENING" would
 REM match EVERY LISTENING line (picking PID 4, System, as the owner).
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /R /C:":!APP_PORT! .*LISTENING"') do if not defined OWNER_PID set "OWNER_PID=%%p"
-if not defined OWNER_PID goto start_ui
+if not defined OWNER_PID goto other_instances
 
 set "OWNER_CMD="
 for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!OWNER_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "OWNER_CMD=%%c"
 REM System-owned ports (PID 4) cannot be inspected; show a fallback label.
 if not defined OWNER_CMD set "OWNER_CMD=PID !OWNER_PID! (command line unavailable)"
+echo !OWNER_CMD! | findstr /I "ui\app.py drocat" >nul
+if not errorlevel 1 set "OWNER_IS_DROCAT=1"
+
 echo.
 echo Port !APP_PORT! is already in use by PID !OWNER_PID!:
 echo     !OWNER_CMD!
+call :scan_drocat_instances
 echo   [1] Start DROCAT on a new port
-echo !OWNER_CMD! | findstr /I "ui\app.py drocat" >nul
-if errorlevel 1 (
-    echo   [2] Not allowed: the process on port !APP_PORT! is not DROCAT - stop it manually, then retry
+if "!OWNER_IS_DROCAT!"=="1" (
+    echo   [2] Kill all !DROCAT_COUNT! DROCAT process^(es^) listed above and restart on port !APP_PORT!
 ) else (
-    echo   [2] Kill the existing DROCAT process and restart on port !APP_PORT!
+    if !DROCAT_COUNT! GTR 0 (
+        echo   [2] Kill the !DROCAT_COUNT! DROCAT process^(es^) listed above ^(port !APP_PORT! is owned by a non-DROCAT process, which is never killed^)
+    ) else (
+        echo   [2] Not allowed: the process on port !APP_PORT! is not DROCAT - stop it manually, then retry
+    )
 )
 echo   [3] Cancel
 set "CHOICE="
 set /p "CHOICE=Your choice [1-3]: "
 if "!CHOICE!"=="1" goto pick_new_port
-if "!CHOICE!"=="2" (
-    echo !OWNER_CMD! | findstr /I "ui\app.py drocat" >nul
-    if errorlevel 1 goto conflict_abort
-    echo Stopping PID !OWNER_PID!...
-    taskkill /PID !OWNER_PID! /F >nul 2>nul
-    goto wait_port_free
+if "!CHOICE!"=="2" goto stop_all_drocat
+goto conflict_abort
+
+:other_instances
+call :scan_drocat_instances
+if !DROCAT_COUNT! EQU 0 goto start_ui
+echo.
+echo Port !APP_PORT! is free.
+echo   [1] Start another DROCAT instance on port !APP_PORT!
+echo   [2] Kill all !DROCAT_COUNT! DROCAT process^(es^) listed above, then start on port !APP_PORT!
+echo   [3] Cancel
+set "CHOICE="
+set /p "CHOICE=Your choice [1-3], Return starts a second instance: "
+if not defined CHOICE goto start_ui
+if "!CHOICE!"=="1" goto start_ui
+if "!CHOICE!"=="2" goto stop_all_drocat
+if "!CHOICE!"=="3" exit /b 1
+echo Invalid choice.
+goto other_instances
+
+REM Stops every DROCAT instance: DROCAT_PIDS plus the busy-port owner when
+REM it is DROCAT but absent from the listing. Ownership is re-checked per PID
+REM in :stop_pid_list, because taskkill is irreversible.
+:stop_all_drocat
+set "KILL_PIDS=!DROCAT_PIDS! "
+if "!OWNER_IS_DROCAT!"=="1" (
+    echo !KILL_PIDS! | findstr /C:" !OWNER_PID! " >nul
+    if errorlevel 1 set "KILL_PIDS=!KILL_PIDS!!OWNER_PID! "
 )
+if "!KILL_PIDS!"==" " (
+    echo The process on port !APP_PORT! is not DROCAT; it will not be killed automatically.
+    goto launch
+)
+call :stop_pid_list !KILL_PIDS!
+if "!OWNER_IS_DROCAT!"=="1" goto wait_port_free
+REM The port owner was not DROCAT, so the port is still busy: back to the
+REM menu (the happy-path call re-enters with the instances already gone).
+goto launch
 
 :conflict_abort
 echo ERROR: could not resolve the port conflict on !APP_PORT!.
@@ -187,9 +230,50 @@ set "OWNER_PID="
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /R /C:":!APP_PORT! .*LISTENING"') do if not defined OWNER_PID set "OWNER_PID=%%p"
 if not defined OWNER_PID goto start_ui
 set /a WAIT+=1
-if !WAIT! GEQ 20 goto conflict_abort
+if !WAIT! GEQ 20 (
+    echo Port !APP_PORT! is still in use by a non-DROCAT process.
+    goto launch
+)
 ping -n 2 127.0.0.1 >nul
 goto wait_port_free_loop
+
+REM Lists every listening TCP port owned by a DROCAT process (command line
+REM runs ui\app.py or a drocat env): prints the table, fills DROCAT_PIDS
+REM with the PIDs and DROCAT_COUNT with the row count. Get-NetTCPConnection
+REM needs the NetTCPIP module; where it is unavailable the listing is empty
+REM and the guard keeps its single-port behavior.
+:scan_drocat_instances
+set "DROCAT_COUNT=0"
+set "DROCAT_PIDS="
+set "DROCAT_LIST_FILE=%TEMP%\drocat-listeners-%RANDOM%%RANDOM%.txt"
+powershell -NoProfile -Command "$procs=@{}; Get-CimInstance Win32_Process | ForEach-Object { $procs[[int]$_.ProcessId] = $_.CommandLine }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $cl = $procs[[int]$_.OwningProcess]; if ($cl -and ($cl -match 'ui[\\/]app\.py' -or $cl -match 'drocat')) { @($_.LocalPort, $_.OwningProcess, $cl) -join '|' } } | Sort-Object -Unique" > "!DROCAT_LIST_FILE!" 2>nul
+for /f "usebackq tokens=1,2* delims=|" %%a in ("!DROCAT_LIST_FILE!") do set /a DROCAT_COUNT+=1
+if !DROCAT_COUNT! GTR 0 (
+    echo.
+    echo DROCAT instances currently running:
+    for /f "usebackq tokens=1,2* delims=|" %%a in ("!DROCAT_LIST_FILE!") do (
+        echo     port %%a  PID %%b  %%c
+        set "DROCAT_PIDS=!DROCAT_PIDS! %%b"
+    )
+)
+del "!DROCAT_LIST_FILE!" >nul 2>nul
+goto :eof
+
+REM %* = space-separated PIDs to stop. Each PID is ownership-checked again
+REM before taskkill; a listed PID that is gone or is not DROCAT is skipped.
+:stop_pid_list
+for %%p in (%*) do (
+    set "STOP_CMD="
+    for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=%%p' -ErrorAction SilentlyContinue).CommandLine"') do set "STOP_CMD=%%c"
+    if defined STOP_CMD (
+        echo !STOP_CMD! | findstr /I "ui\app.py drocat" >nul
+        if not errorlevel 1 (
+            echo Stopping DROCAT PID %%p...
+            taskkill /PID %%p /F >nul 2>nul
+        )
+    )
+)
+goto :eof
 
 :start_ui
 echo Starting DROCAT v!DROCAT_VERSION! in !ENV_NAME! at http://127.0.0.1:!APP_PORT!...

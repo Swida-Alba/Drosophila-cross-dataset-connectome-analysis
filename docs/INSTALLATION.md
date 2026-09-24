@@ -230,7 +230,7 @@ For the complete operation catalog and recipes, see
 | Problem | Fix |
 | --- | --- |
 | `pip check` fails / dependency conflict | Re-run the one-click installer; it repairs the env. The release pins `chardet==5.2.0` (Requests/CloudVolume compatibility). |
-| Port 8080 busy | Running `mac_DROCAT.command` / `windows_DROCAT.bat` interactively now asks what to do: **[1]** start on a new port, **[2]** kill the existing DROCAT process and restart on the same port (non-DROCAT processes are never auto-killed), **[3]** cancel. Manual override: `DROCAT_UI_PORT=8081 ./mac_DROCAT.command` (Windows: `set DROCAT_UI_PORT=8081 && windows_DROCAT.bat`). |
+| Port 8080 busy | Running `mac_DROCAT.command` / `windows_DROCAT.bat` interactively first lists every running DROCAT instance (port, PID, command line), then asks what to do: **[1]** start on a new port, **[2]** stop all listed DROCAT instances and restart on the target port (non-DROCAT processes are never auto-killed), **[3]** cancel. The same listing appears when the target port is free but other instances are still running, so stale servers can be cleaned up in one step. Manual override: `DROCAT_UI_PORT=8081 ./mac_DROCAT.command` (Windows: `set DROCAT_UI_PORT=8081 && windows_DROCAT.bat`). |
 | PNG/video export fails | Install Google Chrome (WebGL/ChromeDriver). Kaleido is the fallback. |
 | Native folder picker missing | Type the path directly. Linux may need `tkinter` / `xdg-utils`. |
 

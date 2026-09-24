@@ -316,11 +316,14 @@ main() {
     fi
 
     # --- Port-conflict guard ---------------------------------------------
-    # If the UI port is already in use, ask the user whether to start on a new
-    # port, kill the existing DROCAT process and restart, or cancel. When the
-    # script is not interactive (agents, CI), keep the previous automatic
-    # behavior: open the browser if a DROCAT instance owns the port, otherwise
-    # fail with a hint.
+    # If the UI port is already in use, list the DROCAT instances that are
+    # listening and ask the user whether to start on a new port, kill them all
+    # and restart, or cancel. When the port is free the same inventory is shown
+    # as a menu (stale instances from earlier "new port" choices otherwise pile
+    # up unnoticed). Non-DROCAT processes are never killed. When the script is
+    # not interactive (agents, CI), keep the previous automatic behavior: open
+    # the browser if a DROCAT instance owns the port, otherwise fail with a
+    # hint.
     APP_PORT="${DROCAT_UI_PORT:-$(sed -n 's/^APP_PORT = \([0-9][0-9]*\)/\1/p' "$SCRIPT_DIR/ui/config.py" | head -1)}"
     APP_PORT="${APP_PORT:-8080}"
 
@@ -335,11 +338,101 @@ main() {
         fi
     }
 
+    # A process is a DROCAT instance when its command line runs the UI entry
+    # point (`ui/app.py`) or lives in a drocat conda env.  Run backends are
+    # spawned as `python -u /tmp/...py` and never listen on a port, so the
+    # inventory below cannot pick one up.
+    is_drocat_command() {
+        printf '%s' "${1:-}" | grep -qE "ui/app\.py|drocat"
+    }
+
     is_drocat_owner() {
         local pid="$1" cmd
         [[ -n "$pid" ]] || return 1
         cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-        echo "$cmd" | grep -qE "ui/app\.py|drocat"
+        is_drocat_command "$cmd"
+    }
+
+    # Every listening TCP port owned by a DROCAT process, printed as
+    # "port<TAB>pid<TAB>command" lines sorted by port.  Requires lsof; where
+    # lsof is missing the inventory stays empty and the guard keeps its
+    # single-port behavior.
+    drocat_listeners() {
+        command -v lsof >/dev/null 2>&1 || return 0
+        local pid addr port cmd
+        { lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null || true; } \
+            | awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid "\t" substr($0, 2) }' \
+            | while IFS=$'\t' read -r pid addr; do
+                port="${addr##*:}"
+                [[ "$port" =~ ^[0-9]+$ ]] || continue
+                cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+                is_drocat_command "$cmd" || continue
+                printf '%s\t%s\t%s\n' "$port" "$pid" "$cmd"
+            done \
+            | awk -F'\t' '!seen[$1 FS $2]++' \
+            | sort -n
+    }
+
+    # Prints the inventory and fills DROCAT_PIDS / DROCAT_COUNT for the menus.
+    # Returns 1 when nothing is listed, so callers can skip their menu.
+    print_drocat_listeners() {
+        local listeners port pid cmd
+        DROCAT_PIDS=""
+        DROCAT_COUNT=0
+        listeners="$(drocat_listeners || true)"
+        [[ -n "$listeners" ]] || return 1
+        printf '\nDROCAT instances currently running:\n'
+        while IFS=$'\t' read -r port pid cmd; do
+            [[ -n "$pid" ]] || continue
+            printf '    port %-6s PID %-7s %s\n' "$port" "$pid" "$cmd"
+            DROCAT_PIDS="$DROCAT_PIDS $pid"
+            DROCAT_COUNT=$((DROCAT_COUNT + 1))
+        done <<< "$listeners"
+        return 0
+    }
+
+    # SIGTERM every PID of a space-separated list, then wait for each to exit.
+    # SIGTERM (never -9) lets NiceGUI's shutdown hook stop the run backends the
+    # instance owns before its port is reused.  The DROCAT-ownership check is
+    # repeated per PID because killing is irreversible.  An unreaped (zombie)
+    # process counts as stopped: it holds no port, and only its parent can
+    # clear its entry.
+    stop_drocat_pids() {
+        local pid waited state
+        for pid in ${1:-}; do
+            is_drocat_owner "$pid" || continue
+            printf 'Stopping DROCAT PID %s...\n' "$pid"
+            kill "$pid" 2>/dev/null || true
+        done
+        for pid in ${1:-}; do
+            waited=0
+            while true; do
+                state="$(ps -p "$pid" -o state= 2>/dev/null || true)"
+                if [[ -z "$state" || "$state" == Z* ]]; then
+                    break
+                fi
+                if [[ "$waited" -ge 20 ]]; then
+                    printf 'ERROR: DROCAT PID %s did not stop.\n' "$pid" >&2
+                    return 1
+                fi
+                waited=$((waited + 1))
+                sleep 0.5
+            done
+        done
+        return 0
+    }
+
+    # Everything a "kill all" choice stops: the listed instances plus the port
+    # owner when it is DROCAT but absent from the inventory (lsof unavailable).
+    # $1 = the port owner PID (may be empty).  Returns 1 when nothing is
+    # killable, i.e. the busy port belongs to a non-DROCAT process.
+    kill_all_drocat() {
+        local owner="${1:-}" targets="${DROCAT_PIDS:-}"
+        if is_drocat_owner "$owner" && [[ " $targets " != *" $owner "* ]]; then
+            targets="$targets $owner"
+        fi
+        [[ -n "${targets// /}" ]] || return 1
+        stop_drocat_pids "$targets"
     }
 
     launch_ui() {
@@ -362,9 +455,12 @@ main() {
             # Interactive: let the user decide what to do with the busy port.
             while true; do
                 printf '\nPort %s is already in use by PID %s:\n    %s\n' "$APP_PORT" "$owner_pid" "$owner_cmd"
+                print_drocat_listeners || true
                 printf '  [1] Start DROCAT on a new port\n'
                 if is_drocat_owner "$owner_pid"; then
-                    printf '  [2] Kill the existing DROCAT process and restart on port %s\n' "$APP_PORT"
+                    printf '  [2] Kill all %s DROCAT process(es) listed above and restart on port %s\n' "$DROCAT_COUNT" "$APP_PORT"
+                elif [[ "$DROCAT_COUNT" -gt 0 ]]; then
+                    printf '  [2] Kill the %s DROCAT process(es) listed above (port %s is owned by a non-DROCAT process, which is never killed)\n' "$DROCAT_COUNT" "$APP_PORT"
                 else
                     printf '  [2] Not allowed: the process on port %s is not DROCAT - stop it manually, then retry\n' "$APP_PORT"
                 fi
@@ -382,21 +478,16 @@ main() {
                         launch_ui "$new_port"
                         ;;
                     2)
-                        if is_drocat_owner "$owner_pid"; then
-                            printf 'Stopping PID %s...\n' "$owner_pid"
-                            kill "$owner_pid" 2>/dev/null || true
-                            for _ in $(seq 1 20); do
-                                port_in_use || break
-                                sleep 0.5
-                            done
-                            if port_in_use; then
-                                printf 'ERROR: the process on port %s did not stop.\n' "$APP_PORT" >&2
-                                return 1
-                            fi
-                            launch_ui "$APP_PORT"
-                        else
+                        if [[ "$DROCAT_COUNT" -eq 0 ]] && ! is_drocat_owner "$owner_pid"; then
                             printf 'The process on port %s is not DROCAT; it will not be killed automatically.\n' "$APP_PORT"
+                            continue
                         fi
+                        kill_all_drocat "$owner_pid" || return 1
+                        if port_in_use; then
+                            printf 'Port %s is still in use by a non-DROCAT process.\n' "$APP_PORT"
+                            continue
+                        fi
+                        launch_ui "$APP_PORT"
                         ;;
                     3)
                         printf 'Cancelled.\n'
@@ -431,6 +522,30 @@ main() {
             printf 'Stop it manually, run with DROCAT_UI_PORT=<free port>, or run interactively to choose.\n' >&2
             return 1
         fi
+    fi
+
+    # --- Other instances while the target port is free ---------------------
+    # Starting a second server is allowed, but stale instances from earlier
+    # "start on a new port" choices otherwise pile up unnoticed.  Only an
+    # interactive launch asks; agents and CI start straight away.
+    if [[ -t 0 ]]; then
+        while print_drocat_listeners; do
+            printf 'Port %s is free.\n' "$APP_PORT"
+            printf '  [1] Start another DROCAT instance on port %s\n' "$APP_PORT"
+            printf '  [2] Kill all %s DROCAT process(es) listed above, then start on port %s\n' "$DROCAT_COUNT" "$APP_PORT"
+            printf '  [3] Cancel\n'
+            printf 'Your choice [1-3]: '
+            read -r choice || break
+            case "$choice" in
+                1) launch_ui "$APP_PORT" ;;
+                2) kill_all_drocat && launch_ui "$APP_PORT" ;;
+                3)
+                    printf 'Cancelled.\n'
+                    return 1
+                    ;;
+                *) printf 'Invalid choice.\n' ;;
+            esac
+        done
     fi
 
     printf 'Starting DROCAT v%s in %s...\n' "$DROCAT_VERSION" "$ENV_NAME"

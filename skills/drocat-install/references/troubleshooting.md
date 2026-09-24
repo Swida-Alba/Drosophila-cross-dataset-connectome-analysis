@@ -96,8 +96,13 @@ symptoms.
   the full neuron table (needs token + network, can take minutes).
 - FlyWire FAFB requires manually downloaded local files (Settings tab guide);
   BANC auto-prepares from its public bucket (network only, no token).
-- UI port 8080 busy: set `DROCAT_UI_PORT` (for example
-  `DROCAT_UI_PORT=8081 ./mac_DROCAT.command`) or stop the other process.
+- UI port 8080 busy: the interactive launcher lists every running DROCAT
+  instance (port, PID, command line) and offers to start on a new port, stop
+  all of them and restart, or cancel — the same listing appears when the target
+  port is free but other instances run, so stale servers can be cleaned up in
+  one step. Non-DROCAT processes are never killed. Manual override: set
+  `DROCAT_UI_PORT` (for example `DROCAT_UI_PORT=8081 ./mac_DROCAT.command`) or
+  stop the other process yourself.
 - 3D PNG/video exports use Chrome + WebDriver (Kaleido fallback). Install Chrome
   if exports fail.
 - Neuron indexes are persistent "system files" under `neuron_indexes/` (not

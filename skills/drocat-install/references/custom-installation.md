@@ -83,8 +83,9 @@ python skills/drocat-install/scripts/verify_install.py --project . --require-tok
 
 - Launch without a browser: `DROCAT_UI_SHOW=0 python ui/app.py`.
 - Set `DROCAT_UI_HOST` and `DROCAT_UI_PORT` for a non-default bind (port 8080 is
-  default). If the port is busy the launcher offers a new one interactively, or
-  you can set the env var to a free port.
+  default). If the port is busy the launcher lists the running DROCAT instances
+  and offers a new port or stopping them all, or you can set the env var to a
+  free port.
 - Everything (analysis scripts, caches, tokens) works without the UI; the
   analysis skills (`drocat-usage` Layer 1, `drocat-backend` Layer 2) run in the
   same `drocat-4.5.0` environment.

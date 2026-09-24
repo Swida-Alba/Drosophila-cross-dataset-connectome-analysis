@@ -5,7 +5,10 @@ token UX contract."""
 import importlib.util
 import re
 import shutil
+import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -25,10 +28,23 @@ class TestRunDrocatLaunchers:
         # installs on demand from the packed location
         assert "archive/install/install.sh" in text
         assert "Conda is not installed" in text
-        # port-conflict prompt with the DROCAT-ownership guard
+        # port-conflict prompt: the inventory of every running DROCAT
+        # instance, the kill-all choice, and the non-DROCAT refusal
         assert "Your choice [1-3]" in text
-        assert "Kill the existing DROCAT process" in text
+        assert "DROCAT instances currently running:" in text
+        assert "drocat_listeners()" in text
+        assert "print_drocat_listeners" in text
+        assert "stop_drocat_pids" in text
+        assert "kill_all_drocat" in text
+        assert "Kill all %s DROCAT process(es) listed above and restart on port %s" in text
         assert "is not DROCAT" in text
+        # the same inventory is offered when the target port is free
+        assert "Port %s is free." in text
+        assert "Start another DROCAT instance on port %s" in text
+        # SIGTERM, never -9: NiceGUI's shutdown hook stops the run backends
+        assert 'kill "$pid" 2>/dev/null' in text
+        # an unreaped zombie counts as stopped (it holds no port)
+        assert 'ps -p "$pid" -o state=' in text
         # token reminder for users who skipped the installer prompt
         assert "config.json" in text
         assert "config_local.json" in text
@@ -54,6 +70,18 @@ class TestRunDrocatLaunchers:
         assert "Your choice [1-3]" in text
         assert "taskkill /PID" in text
         assert "netstat -ano" in text
+        # port-conflict prompt: the inventory of every running DROCAT
+        # instance, the kill-all choice, and the non-DROCAT refusal
+        assert "DROCAT instances currently running:" in text
+        assert ":scan_drocat_instances" in text
+        assert ":stop_all_drocat" in text
+        assert ":stop_pid_list" in text
+        assert "Get-NetTCPConnection -State Listen" in text
+        assert "Kill all !DROCAT_COUNT! DROCAT process" in text
+        # the same inventory is offered when the target port is free, and an
+        # empty choice (EOF on stdin) starts instead of hanging an agent
+        assert "Port !APP_PORT! is free." in text
+        assert "Return starts a second instance" in text
         assert "NeuPrint token is not configured yet" in text
         assert "CAVE token is optional" in text
         # token acquisition links are part of the notice
@@ -220,6 +248,121 @@ def _run_json_value(path: Path, section: str, key: str, config: Path) -> str:
         ["bash", "-c", script], capture_output=True, text=True, check=True
     )
     return proc.stdout
+
+
+# The launcher inventories every listening DROCAT instance (lsof parsing +
+# command-line ownership predicate) to offer its kill-all menu. These tests
+# execute the extracted functions against a real listener, so a regression
+# fails here instead of on a user's double-click.
+
+_PORT_GUARD_RE = re.compile(
+    r"^(?P<body>    is_drocat_command\(\) \{.*?)^    launch_ui\(\) \{$", re.S | re.M
+)
+
+
+def _port_guard_source(path: Path) -> str:
+    match = _PORT_GUARD_RE.search(path.read_text(encoding="utf-8"))
+    assert match, f"port-guard functions not found in {path}"
+    return match.group("body")
+
+
+def _wait_port_open(port: int, deadline: float = 20.0) -> bool:
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        with socket.socket() as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.2)
+    return False
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@requires_bash
+@pytest.mark.skipif(shutil.which("lsof") is None, reason="lsof not available")
+class TestDrocatPortInventory:
+    def _start_listener(self, tmp_path: Path, port: int) -> subprocess.Popen:
+        """A listener whose command line looks like a DROCAT UI server."""
+        script = tmp_path / "ui" / "app.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            "import socket, sys, time\n"
+            "s = socket.socket()\n"
+            "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            "s.bind(('127.0.0.1', int(sys.argv[1])))\n"
+            "s.listen(5)\n"
+            "time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.Popen([sys.executable, str(script), str(port)])
+        if not _wait_port_open(port):
+            proc.kill()
+            pytest.fail(f"listener on port {port} never came up")
+        return proc
+
+    def _harness(self, body: str) -> subprocess.CompletedProcess:
+        script = (
+            "set -euo pipefail\n"
+            f"{_port_guard_source(ROOT / 'mac_DROCAT.command')}\n"
+            "APP_PORT=8080\n"
+            f"{body}\n"
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def test_lists_only_drocat_listeners_and_kills_them(self, tmp_path):
+        port = _free_port()
+        proc = self._start_listener(tmp_path, port)
+        body = f"""
+rows="$(drocat_listeners)"
+if [[ "$rows" != *"{port}"$'\\t'"{proc.pid}"$'\\t'* ]]; then
+    echo "port {port} / pid {proc.pid} missing from: $rows"
+    exit 1
+fi
+# exactly one row: lsof reports each socket more than once per endpoint
+if [[ "$(printf '%s\\n' "$rows" | grep -c .)" != "1" ]]; then
+    echo "expected one row, got: $rows"
+    exit 1
+fi
+# the ownership predicate distinguishes run backends from servers
+if ! is_drocat_command "python ui/app.py"; then
+    echo "ui/app.py rejected"
+    exit 1
+fi
+if is_drocat_command "python -u /tmp/run-4711.py"; then
+    echo "run backend accepted as a DROCAT server"
+    exit 1
+fi
+# an empty inventory is not killable, so the guard refuses
+if kill_all_drocat ""; then
+    echo "empty kill list accepted"
+    exit 1
+fi
+# print_drocat_listeners feeds the menus
+print_drocat_listeners >/dev/null
+if [[ "$DROCAT_COUNT" != "1" || "$DROCAT_PIDS" != " {proc.pid}" ]]; then
+    echo "count=$DROCAT_COUNT pids=$DROCAT_PIDS"
+    exit 1
+fi
+stop_drocat_pids "{proc.pid}"
+if [[ -n "$(drocat_listeners)" ]]; then
+    echo "inventory not empty after the kill"
+    exit 1
+fi
+echo PASS
+"""
+        try:
+            result = self._harness(body)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert "PASS" in result.stdout
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
 
 
 @requires_bash
