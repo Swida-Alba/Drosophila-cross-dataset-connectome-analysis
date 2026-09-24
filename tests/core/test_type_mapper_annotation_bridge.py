@@ -454,7 +454,8 @@ def real_mapper():
     reason='real male-cns v1.0 neuron table not available locally')
 class TestRealDataAcceptance:
     """The circadian-gap acceptance set (probe:
-    local_data/type_mapping_bridge_probe.py)."""
+    a one-shot ``type_mapping_bridge_probe.py`` under local_data/, now gone:
+    its findings are the assertions below."""
 
     def test_apdn3_same_name_resolves_production(self, real_mapper):
         assert real_mapper.get_mapped_type(

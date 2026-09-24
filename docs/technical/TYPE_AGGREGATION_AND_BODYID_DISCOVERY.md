@@ -222,8 +222,9 @@ are indistinguishable ("same type"), and the phantom path appears.
 
 ## 5. Comparative measurements
 
-`local_data/type_agg_eval.py` compares the two pipelines on real cached
-connectomes: **OLD** (discovery + in-path aggregation, the current
+A one-shot harness (`type_agg_eval.py`, written under the disposable
+`local_data/` in 2026-09 and no longer kept) compared the two pipelines on
+real cached connectomes: **OLD** (discovery + in-path aggregation, the current
 pipeline) vs **NEW** (aggregate all per-bodyId pairs → type graph →
 type-level pathfinding). Every new-only type path is then checked for a
 simple bodyId route **from a queried source to a queried target** in (a)

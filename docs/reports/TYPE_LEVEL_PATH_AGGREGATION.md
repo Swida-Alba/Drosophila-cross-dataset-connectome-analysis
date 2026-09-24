@@ -154,7 +154,7 @@ neuron pairs:              type aggregation:
 
 Type-level says `A → B → C` exists. But the only A→B edges land on b1 and b2, and the only B→C edges leave b2 and b3 — and b1 is a dead end, b3 has no incoming A-edge. **No neuron path exists.** It's a phantom.
 
-This is **verified on real data** (`local_data/type_agg_eval.py`), measuring the current pipeline (derive) vs the shortcut (aggregate-all → type pathfinding), across queries in male-cns and hemibrain:
+This is **verified on real data**, measuring the current pipeline (derive) vs the shortcut (aggregate-all → type pathfinding), across queries in male-cns and hemibrain. The instrument was a one-shot (`type_agg_eval.py`) in `local_data/`, the disposable data directory, and is not kept — the table is its recorded output, and re-deriving it means rebuilding the comparison:
 
 | Query | bodyId paths | type OLD (derive) | type NEW (shortcut) | phantom |
 |---|--:|--:|--:|--:|
@@ -237,7 +237,7 @@ inaccuracies, since fixed in the codebase:
    label-level pathfinding. The legacy `FindPath` entry point is
    unchanged and out of scope.
 2. **The evaluation table's "type OLD (derive)" column (line 159) was
-   mislabeled.** `local_data/type_agg_eval.py` measures OLD as the
+   mislabeled.** The one-shot harness measured OLD as the
    historical type-graph re-search on in-path-aggregated edges (its
    `type_paths()` runs `find_paths_memoized_dfs` on the type graph); the
    derivation is the eval's third ("agg") pipeline, whose counts are not

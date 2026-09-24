@@ -18,7 +18,8 @@ Rules under test:
 
 Walk-level tests run on a hermetic bare mapper (internal tables injected
 directly); real-data acceptance tests skip when the local datasets are
-absent.  Probe: local_data/bridge_rules_probe.py.
+absent.  A one-shot probe of the same name lived under local_data/ and is
+not kept; the cases below are what it established.
 """
 
 from pathlib import Path

@@ -20,7 +20,7 @@ acceleration.  These tests pin that contract at three levels:
 
 The end-to-end proof is a run-level one: an optimized run must be
 verdict-identical to the pre-acceleration baselines r27b/r28/r29
-(``local_data/r17_delta.py``), which compares 242 real sources against
+(``_plan/probes/r17_delta.py``), which compares 242 real sources against
 ~100k real targets — 24.6M pairs — rather than a sample.
 """
 import sys
