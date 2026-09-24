@@ -566,6 +566,51 @@ def test_pool_deduplicates_on_the_ordering_chain():
     assert pool_rows[0]['target_type'] == 'DN1a'
 
 
+def test_the_pool_row_shows_a_verdict_that_agrees_with_in_pool():
+    """A target stays while ANY of its rows survives the bar — but then the row
+    standing for it must not be one the bar REFUSED.
+
+    Found by the run auditor on the 2026-09-25 FAFB->BANC run (1 target of 208):
+    its chain-best row scored 0.729 under a native bar of 0.919 while a second
+    source's row scored 0.803 over 0.753, so `pooling_pool.csv` published
+    `in_pool=True` beside `morph_qualified=False`. A reader recomputing the
+    verdict from the row would conclude the gate let a refusal through; the
+    count that shows otherwise (`n_rows_refused`) is a different column, and an
+    export that contradicts itself is not a record.
+    """
+    rows = _rows(7, 7)
+    # chain-best by the ordering chain (jaccard first), and the bar said no
+    rows[0].update(source_bodyId=1, jaccard=0.60, rank_union=0.30,
+                   jaccard_rank=2, rank_union_rank=3,
+                   morph_gate='scored', morph_qualified=False,
+                   morph_bar_kind='native', morph_pool_ref=0.729,
+                   morph_bar=0.919, morph_similarity=-0.15)
+    # survives, but reaches the target second
+    rows[1].update(source_bodyId=2, jaccard=0.50, rank_union=0.40,
+                   jaccard_rank=3, rank_union_rank=1,
+                   morph_gate='scored', morph_qualified=True,
+                   morph_bar_kind='native', morph_pool_ref=0.803,
+                   morph_bar=0.753, morph_similarity=-0.11)
+    refs = {'types': set(), 'pools': set(), 'pairs': {}}
+    rows = pool.annotate(FakeValidator(_cfg(), {}, types={}), rows, {7: 'DN1a'},
+                         refs)
+    # Each row here is its OWN source's top-1, so annotate grades both
+    # `matched`; the real case had a `nominated` chain-best row over a
+    # `verified` survivor. The tier rule has its own tests — this one is about
+    # which row represents a target, so set the pair the run produced.
+    rows[0]['tier'], rows[1]['tier'] = 'nominated', 'verified'
+    p = pool.pool_by_target(rows)[0]
+    assert p['in_pool'] is True and p['n_rows_refused'] == 1
+    assert p['best_source_bodyId'] == 2
+    assert p['morph_qualified'] is True and p['morph_pool_ref'] == 0.803
+    assert p['n_sources'] == 2 and '+' in p['tiers']
+    # when NOTHING survives, the chain-best row represents the refusal
+    rows[1]['morph_qualified'] = False
+    q = pool.pool_by_target(rows)[0]
+    assert q['in_pool'] is False and q['best_source_bodyId'] == 1
+    assert q['morph_qualified'] is False and q['n_rows_refused'] == 2
+
+
 def test_cross_validation_publishes_cells_and_the_reading_rules():
     pool_rows = [{
         'target_bodyId': 100, 'target_type': 'DN1a', 'leaf': 'DN1a(out-map)',

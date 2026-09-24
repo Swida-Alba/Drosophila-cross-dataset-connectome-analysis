@@ -616,6 +616,20 @@ def pool_by_target(rows: List[Dict]) -> List[Dict]:
     also where a refusal is decided: a target stays in the pool while ANY of its
     admitted rows survives the bar, because another source may hold its own (and
     better) verdict for it.
+
+    The row that REPRESENTS the target is therefore the chain-best row whose
+    verdict SURVIVES, not the chain-best row full stop.  Both readings are
+    defensible for "which source reached this target best", but only the first
+    keeps the export recomputable: a row with `in_pool=True` beside
+    `morph_qualified=False` tells a reader the gate let a refusal through, when
+    what happened is that a different source's row carried it.  Measured on the
+    2026-09-25 FAFB->BANC run, exactly 1 target of 208 had its chain-best row
+    refused while another qualified (its `verified` row scored 0.803 over a
+    native bar of 0.753 while the chain-best `nominated` row scored 0.729 under
+    0.919), and the run auditor named it as a ledger contradiction.
+    `n_rows_refused` still publishes how many of the target's rows the bar
+    refused, and `tiers` still spans every admitting row, so nothing about the
+    ladder is hidden by choosing a surviving representative.
     """
     by: Dict[int, List[Dict]] = {}
     for r in rows:
@@ -623,8 +637,8 @@ def pool_by_target(rows: List[Dict]) -> List[Dict]:
     out: List[Dict] = []
     for bid, group in by.items():
         group.sort(key=lambda x: (-x['jaccard'], -x['rank_union'], bid))
-        b = group[0]
         refused = [r for r in group if row_refused(r)]
+        b = next((r for r in group if not row_refused(r)), group[0])
         out.append({
             'target_bodyId': bid, 'target_type': b['target_type'],
             'leaf': b['leaf'], 'best_source_bodyId': b['source_bodyId'],
