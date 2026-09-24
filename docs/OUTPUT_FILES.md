@@ -689,6 +689,7 @@ mapping_validation/type-map-validation_{SRC}_to_{TGT}_{ts}/
     pooling/                            ← `--mode pooling` only
         pooling_candidates.csv
         pooling_pool.csv
+        pooling_sources.csv
         pooling_cross_validation.json
     visualization/plot-3d_{ABBREV}_branches_{query}_{ts}/
 ```
@@ -793,50 +794,112 @@ ladder, not its top rung, and the run's `parameters.json` says so by
 carrying `validation_mode: pooling` and **no `mode_rank`**. The nested bins
 above are still produced (they are the supervised answer), and this engine
 adds an independent UNSUPERVISED one: the queried population is scanned
-against the WHOLE target universe under absolute floors
-(`pooling_jaccard_floor`, `pooling_rank_union_floor`, and a rank window of
-`pooling_window_mult` × the SOURCE type's own queried population), then
-morphology gates only those connectivity survivors through the
-Find-Homolog fast path. The floors are a **volume guard-rail**: they decide
-how wide the scan may open, and say nothing about whether any pair is a good
-homolog — that is the morphology gate's job, and it is a true gate (a scored
-candidate below its bar leaves the exported pool and the scene root, and the
-count of those refusals is published as `morph.dropped_targets`). An earlier
-build fitted the Jaccard floor per dataset pair to the graded rows of past
-runs; the fit was deleted rather than tuned, because it dressed a volume knob
-in the authority of a quality measure. **No branch pool and no
-mapper claim decides whether
+against the WHOLE target universe, and each source then keeps its **top-N rows
+under the admission bar** (`pooling_bar_metric` ∈ `either|jaccard|rank_union`
+× `pooling_bar_top_n`, default `either`/3 — `either` is the UNION of both
+metrics' own top-N, never a merged best-rank ordering, and a `2N` row cap
+bounds the tie mass a rank cut would otherwise let through). Morphology then
+gates only those connectivity survivors, through the Find-Homolog fast path,
+and it is **mandatory**: `--no-morphology` beside `--mode pooling` is a usage
+error, because every tier of this mode is defined morph-qualified and a
+connectivity-only pool would just be the existing homolog finding.
+
+The absolute floors (`pooling_jaccard_floor`, `pooling_rank_union_floor`,
+`pooling_window_mult`) are **advisory flags, not filters**: each admitted row
+is measured against them and published as `below_jaccard_floor` /
+`below_rank_union_floor` / `outside_window`, and no row is removed for missing
+one. They were filters until 2026-09-24, when the rank_union one — at its own
+default `0`, i.e. a sign test — was measured starving 119 of 242 queried
+sources. An earlier build also fitted the Jaccard floor per dataset pair; that
+fit was deleted rather than tuned, because it dressed a volume knob in the
+authority of a quality measure.
+
+Morphology is a true gate: a scored candidate below its bar leaves the
+exported pool and the scene root, and the count of those refusals is published
+as `morph.dropped_targets`. The pass is budgeted in **scoring units** (one
+network-bound step each), and the budget defaults to **auto: 3 units per
+queried source** — `morph.budget` publishes which rule priced the run, because
+the constant 400 an earlier build used cut 146 of the 546 units the default
+bar needed, and a cut tail silently kept 29 refused targets IN the pool.
+
+**No branch pool and no mapper claim decides whether
 a row is a candidate** — the mapper is joined afterwards, so the mode can
 disagree with it. A stage failure is recorded in
 `pooling/pooling_cross_validation.json` as `{"error": …}` and never aborts
-the run. The run's whole result reads in `report.html`'s **Pooling** tab, and
-in a scene as the `pooling · {source type}` legend root (plum; one leaf per
-pooled target, tagged with its `mapper_cell`).
+the run. The run's whole result reads in `report.html`'s **Pooling** tab —
+which leads with the bar, then the **Per source** block, since the mode's unit
+is the queried source — and in a scene as the `pooling · {source type}` legend
+root (plum; one leaf per pooled target, tagged `{mapper_cell} · {tiers} ·
+morph ✓/✗`).
+
+Three tables, three axes: `pooling_candidates.csv` is one row per admitted
+(source, target) pair with its tier and its flags; `pooling_pool.csv`
+deduplicates that to one row per candidate TARGET on the ordering chain, after
+the morphology gate (rows the bar refused stay here with `in_pool=False`, and
+targets only the mapper claims ride along as `mapper_cell=verified_only`);
+`pooling_sources.csv` is one row per QUERIED SOURCE — its chain-best finding,
+how many targets it admitted versus kept, and `no_finding` when the bar
+admitted nothing, so a source that found nothing is named rather than absent.
 
 *   **`pooling_candidates.csv`**: one row per (source, target) evidence
-    pair — scores, both ranks and the window, `leaf` (the same
+    pair the BAR admitted — `source_bodyId` / `target_bodyId` and both types,
+    `jaccard` / `rank_union` with `jaccard_rank` / `rank_union_rank`,
+    `bar_metric` + `bar_top_n` (the bar this row was admitted under, printed on
+    the row so a re-graded export can be told from the run that chose it),
+    `bar_rank` (the better of the
+    two ranks, which is what the bar cuts on), `window_size`, `tier`
+    (`matched` > `verified` > `nominated`, per ROW), the three advisory flags
+    (`below_jaccard_floor` / `below_rank_union_floor` / `outside_window`),
+    `supported_by` and `single_metric_support` (which metric carried the row),
+    `leaf` (the same
     `{T}(out-map)` / `{T}>{src}` / `{T}(no_source)` / `untyped` token the
-    expansion bins use), `size_nm3` + `size_universe_percentile`, the morph
-    verdict and `mapper_cell`. The verdict is four columns and they always
+    expansion bins use) and `map_tag` (whether the target type is `(in-map)`,
+    `family`, or needs a backward route), `size_nm3` + `size_universe_percentile`,
+    the morph verdict and `mapper_cell` + `mapper_verdict`.
+    The verdict is four columns and they always
     name one another: `morph_bar_kind` is the rule that graded the pair
     (`native` / `track_a` / `null_bar`), `morph_bar` is that rule's binding
     value, and the score it was applied to is `morph_pool_ref` for a native
     row and `morph_similarity` otherwise — so `morph_qualified` can be
-    recomputed from the row it appears on. Rows for targets the morphology
+    recomputed from the row it appears on. A row whose `morph_gate` reads
+    `shared` did NOT get its own measurement: it borrows the verdict of the
+    pair named in `verdict_for_pair`, and must never be read as this row's
+    number. Rows for targets the morphology
     gate refused stay here, so a refusal is auditable rather than simply
     absent.
-*   **`pooling_pool.csv`**: one row per candidate target neuron the LAST GATE
-    admitted, the chain-best source winning on the ordering chain, with
-    `n_sources` / `dup` and the same four morph columns.
+*   **`pooling_pool.csv`**: one row per candidate target neuron, the chain-best
+    source (`best_source_bodyId` / `best_source_type`) winning on the ordering
+    chain, with `n_sources` / `dup` /
+    `best_bar_rank` / `tiers` (the set of tiers its admitting rows carry, e.g.
+    `matched+nominated`) and the same four morph columns. `in_pool` is false on
+    a target EVERY admitting row the bar refused — `n_rows_refused` says how
+    many of its rows that was, which is what makes "it left only because nothing
+    held it" checkable rather than asserted (it stays for the count, and leaves
+    the scene) — and `mapper_cell=verified_only` rows are targets only
+    the supervised path claims: published, never pooled.
+*   **`pooling_sources.csv`**: one row per QUERIED SOURCE, the mode's own unit —
+    its chain-best finding and that row's `tier`, `n_admitted` / `n_in_pool` /
+    `n_refused`, `source_claimed` (mapper-derived, advisory), and `no_finding`
+    naming why the source reached nothing. A source with no finding is a ROW
+    here, never an absence, so the denominator cannot quietly shrink.
 *   **`pooling_cross_validation.json`**: the cells — `confirmed` (sits in a
     refined target pool), `type_miss` / `type_new` (the harvest: the mapper
     never named it), `verified_only` (the mapper's pair fails the absolute
     bar) — plus bodyId lists and the `reading_notes` that say which cells are
-    NOT recall measures. The morph record keeps the counts apart:
-    `attempted` (what the budget allowed to be looked at) · `scored` (what
+    NOT recall measures. `bar` is the admission rule as run (metric, top-N, the
+    row-cap multiple and `rows_cut`); `gate` holds the configured floors with a
+    `role` line saying they flag rather than filter, and `floor_flags` counts
+    what each one flagged. `tiers` counts ROWS per tier, and
+    `pool_per_source` publishes the pool-to-source ratio with a
+    `pool_size_warning` when it leaves the [0.5, 2.0] band the bar aims for.
+    The morph record keeps the counts apart:
+    `units` (what the pass was offered) · `attempted` (what the budget allowed
+    to be looked at) · `capped` (never looked at) · `scored` (what
     came back with a value) · `qualified` (what cleared the bar) · `no_score`
     (the scorer returned nothing for the pair — a missing measurement) ·
-    `capped` (never looked at) · `gate_applied` · `dropped_targets` (pooled
+    `shared` (rows reading another pair's verdict) ·
+    `budget` (WHICH RULE PRICED the pass: `auto: 3 x N queried sources`, or a
+    configured cap) · `gate_applied` · `dropped_targets` (pooled
     targets removed because the bar refused them) · `error` · `warnings` ·
     `vector_cache` (the target-vector store's own ledger: `loaded` rows this
     run did not have to prepare, `stale_dropped` rows it refused to reuse
@@ -845,17 +908,17 @@ pooled target, tagged with its `mapper_cell`).
     hemisphere, and a row is keyed on its skeleton's `(mtime_ns, size)`, so
     caching geometry cannot quietly re-grade a pair; cold and warm runs score
     identically and the ledger is where the difference shows.
+    `attempted + capped == units`, and
     `scored` can sit far below `attempted`
     — a pool that was mostly unscored is a MISSING measurement, not a cleared
     pool, so the report's Pooling tab and `user_warning_notes.txt` both
     publish the ratio from one builder (`[pooling] … scored 4/8 attempted
-    targets …`). `gate` carries the configured floors and says in one line
-    what role they have, and
+    targets …`).
     `input_fingerprint` names the stores the scores came from (git rev, target
     universe, mapper snapshot) because the cells are only comparable across
     runs that read the same ones.
 
-`morph_gate` keeps three absences apart on purpose (`not-selected`,
+`morph_gate` keeps its absences apart on purpose (`shared`,
 `not-attempted-cap`, `no-score`) and none of them is a rejection — only an
 explicit `scored` below the bar removes a target, and it does so from the
 pool and the scene while leaving its row in `pooling_candidates.csv`. The
