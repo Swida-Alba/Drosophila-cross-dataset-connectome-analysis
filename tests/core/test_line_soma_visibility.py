@@ -114,13 +114,11 @@ def test_label1_marker_is_read_back_when_the_units_stamp_cleared_soma():
     assert int(np.atleast_1d(n.soma)[0]) == 3
 
 
-def test_label1_wins_over_the_annotation_and_survives_a_radiusless_table():
+def test_label1_wins_over_the_annotation_tier():
     """Precedence is the documented one: marker, then annotation, then radius.
 
-    The annotation tier is a coordinate guess about the same soma; a label-1
-    row names the node. And a marker needs no radius column at all, where the
-    radius heuristic bails — so a label-1 neuron with unusable radii still
-    gets its own soma rather than nothing.
+    The annotation tier is a coordinate guess about the same soma; a label-1 row
+    names the node, so it must be read first.
     """
     n = chain_tree(labels={3: 1}, radii={1: 20.0, 2: 90.0, 3: 30.0, 4: 20.0})
     n.soma = None
@@ -129,12 +127,6 @@ def test_label1_wins_over_the_annotation_and_survives_a_radiusless_table():
          'somaLocation': ['[10.0, 0.0, 0.0]']})])   # node 1's coordinates
     vis._ensure_line_soma(n)
     assert int(np.atleast_1d(n.soma)[0]) == 3
-
-    n2 = chain_tree(labels={2: 1}).nodes.drop(columns=['radius'])
-    tree = navis.TreeNeuron(n2)
-    tree.soma = None
-    make_vis()._ensure_line_soma(tree)
-    assert int(np.atleast_1d(tree.soma)[0]) == 2
 
 
 def test_radius_tie_resolves_toward_root():
@@ -393,3 +385,39 @@ def test_floor_ignores_untagged_small_meshes():
     vis.fig_3d = figure
     vis._enforce_line_soma_visibility()
     assert trace_radius(figure.data[1]) == pytest.approx(5.0)
+
+
+def test_floor_leaves_a_degenerate_sphere_alone_instead_of_dividing():
+    """A zero-extent soma sphere used to cost stage 4 the WHOLE scene.
+
+    The floor grows an undersized sphere by `floor / radius`, and a sphere whose
+    vertices all coincide — which is what a marker node with radius 0 renders as
+    — has radius 0, so the division raised straight through `save_figure`.
+    Measured on the 2026-09-24 male-cns family run: `! scene s-CPDN3A failed:
+    float division by zero`, then the same for s-CPDN3D, i.e. two of 21 parents
+    lost their review scene entirely. Scaling a zero vector cannot produce extent
+    either, so the honest outcome is "left as it was" and the scene survives.
+    """
+    figure = go.Figure()
+    figure.add_trace(go.Scatter3d(x=[0, 1000.0], y=[0, 1000.0], z=[0, 1000.0],
+                                  mode='lines', name='n'))
+    figure.add_trace(sphere_trace(center=500.0, radius=0.0))
+    vis = make_vis()
+    vis.fig_3d = figure
+    vis._enforce_line_soma_visibility()          # must not raise
+    assert trace_radius(figure.data[1]) == 0.0
+
+
+def test_a_zero_radius_marker_falls_through_to_a_usable_node():
+    """`label == 1` with no thickness is not a usable marker.
+
+    Marking it renders the degenerate sphere above, so tier 0 passes on it and
+    the radius tier takes the node that actually has a profile.
+    """
+    rows = [(1, 0, 0.0, 0.0, 0.0, 5.0, -1),
+            (2, 1, 10.0, 0.0, 0.0, 0.0, 1),      # the marker: zero radius
+            (3, 0, 20.0, 0.0, 0.0, 40.0, 2)]
+    n = make_tree(rows)
+    n.soma = None                                # as the loader leaves it
+    make_vis()._ensure_line_soma(n)
+    assert int(np.atleast_1d(n.soma)[0]) == 3

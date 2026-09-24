@@ -140,14 +140,18 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   setter clears the assignment (measured: 0 of 150 sampled male-cns and 0 of
   150 hemibrain cached skeletons arrive with a soma). So before line node
   reduction the renderer resolves the marker itself, in order: the `label==1`
-  row still in the node table (62.7% of male-cns files carry it; the radius
-  heuristic below disagreed with it on 14% of those), else the node nearest the
-  NeuPrint `somaLocation` annotation when the layer table carries one, else the
-  fattest radius node (skipped on BANC — its skeletons have no soma signal:
-  labels all `2`, root thinner than neurites) — and at save time any tagged
-  sphere below `LINE_SOMA_MIN_VISIBLE_FRACTION` (0.0055) of the frozen scene's
-  longest axis is grown to that floor. Line soma sizes are display choices, not
-  measurements. `show_soma=False` disables all of it.
+  row still in the node table, provided it has a radius to render (62.7% of
+  male-cns files carry the row and every sampled one had positive radius; the
+  radius heuristic disagreed with the marker on 14% of those), else the node
+  nearest the NeuPrint `somaLocation` annotation when the layer table carries
+  one, else the fattest radius node (skipped on BANC — its skeletons have no soma
+  signal: labels all `2`, root thinner than neurites) — and at save time any
+  tagged sphere below `LINE_SOMA_MIN_VISIBLE_FRACTION` (0.0055) of the frozen
+  scene's longest axis is grown to that floor, while a sphere with NO extent is
+  left alone: it cannot be scaled into one, and dividing by it once raised
+  straight through `save_figure` and cost stage 4 the whole scene (5 of 21
+  parents on a 2026-09-24 male-cns family run). Line soma sizes are display
+  choices, not measurements. `show_soma=False` disables all of it.
 - BANC (`banc_v626` / `banc_v888`) is supported and renders in native BANC
   space from the public release bucket (no token): SWC skeletons, ROI meshes
   from the public `region_outlines` layer, and brain/VNC outline templates

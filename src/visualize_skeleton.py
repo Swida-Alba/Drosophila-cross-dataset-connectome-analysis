@@ -93,7 +93,9 @@ Line-Mode Somas
 - **Visibility floor**: tagged line soma spheres smaller than
   ``LINE_SOMA_MIN_VISIBLE_FRACTION`` (0.0055) of the frozen scene's longest
   axis are grown to the floor at save time -- a physical soma is a
-  few-pixel dot at whole-CNS overview.
+  few-pixel dot at whole-CNS overview. A sphere with NO extent is left alone:
+  scaling a zero vector cannot produce one, and dividing by it used to abort
+  ``save_figure`` and cost stage 4 the entire scene.
 
 Performance Notes
 -----------------
@@ -7307,6 +7309,14 @@ class VisualizeSkeleton:
         if 'label' in nodes.columns:
             labels = pd.to_numeric(nodes['label'], errors='coerce')
             marked = nodes.loc[labels == 1]
+            if 'radius' in marked.columns:
+                # A marker with no thickness renders as a sphere whose vertices
+                # all coincide, which is both invisible and unrescalable (see
+                # `_enforce_line_soma_visibility`), so it is not a usable
+                # marker — fall through to the tiers that can find a real one.
+                marked = marked.loc[
+                    pd.to_numeric(marked['radius'],
+                                  errors='coerce') > 0]
             if not marked.empty:
                 if 'radius' in marked.columns:
                     ranked = pd.to_numeric(marked['radius'],
@@ -7489,6 +7499,15 @@ class VisualizeSkeleton:
                 continue
             radius = self._trace_sphere_radius(trace)
             if radius is None or radius >= floor:
+                continue
+            if radius <= 0:
+                # A sphere whose vertices all coincide — what a marker node with
+                # radius 0 renders as — has no extent to scale UP: multiplying a
+                # zero vector by any factor stays zero, so the only honest move
+                # is to leave it. This division used to raise straight through
+                # `save_figure` and cost stage 4 the WHOLE scene (measured on
+                # the 2026-09-24 male-cns family run: `! scene s-CPDN3A failed:
+                # float division by zero`, and again for s-CPDN3D).
                 continue
             scale = floor / radius
             for axis in ('x', 'y', 'z'):
