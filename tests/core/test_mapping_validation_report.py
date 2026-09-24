@@ -644,7 +644,8 @@ POOL_HEADER = ["target_bodyId", "target_type", "leaf", "best_source_bodyId",
                "best_source_type", "jaccard", "jaccard_rank", "rank_union",
                "window_size", "size_nm3", "size_universe_percentile",
                "in_scope", "n_sources", "dup", "morph_gate",
-               "morph_similarity", "morph_bar", "morph_qualified",
+               "morph_bar_kind", "morph_similarity", "morph_pool_ref",
+               "morph_bar", "morph_qualified",
                "mapper_cell", "mapper_verdict"]
 
 XVAL = {
@@ -676,13 +677,20 @@ XVAL = {
 }
 
 
+def _plain(html: str) -> str:
+    """Report markup as a reader sees it: tags out, whitespace collapsed, so an
+    assertion names the sentence rather than the span layout that carries it."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+
+
 def _pool_row(**kw):
     r = {"target_bodyId": 500, "target_type": "DLp11",
          "leaf": "DLp11(out-map)", "best_source_bodyId": 101,
          "best_source_type": "s-LNv", "jaccard": 0.31, "jaccard_rank": 2,
          "rank_union": 0.44, "window_size": 16, "size_nm3": 120000.0,
          "size_universe_percentile": 61.0, "in_scope": True, "n_sources": 2,
-         "dup": 1, "morph_gate": "scored", "morph_similarity": 0.66,
+         "dup": 1, "morph_gate": "scored", "morph_bar_kind": "null_bar",
+         "morph_similarity": 0.66, "morph_pool_ref": None,
          "morph_bar": 0.55, "morph_qualified": True,
          "mapper_cell": "type_miss", "mapper_verdict": ""}
     r.update(kw)
@@ -730,7 +738,8 @@ def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     assert "type_miss 1" in html and "type_new 1" in html
     assert "graded matched/verified that this gate did not admit" in html
     assert "500" in html and "DLp11(out-map)" in html
-    assert "0.660 vs bar 0.550 ✓" in html
+    assert "0.660 vs 0.550 ✓" in html
+    assert "morph_pool_ref" in html      # the hover names where the number came from
     assert "The harvest, by target type" in html
     assert "No cell is a recall measure." in html
     # what the last gate ACTUALLY measured, and what it could not
@@ -743,6 +752,42 @@ def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     assert "git abcdef12 · target universe 101995" in html
     assert "mapper snapshot 123456 B @ 2026-09-20 01:02 UTC" in html
     assert '@ None' not in html       # an unrendered key must never ship
+
+
+def test_a_native_row_prints_the_pair_the_gate_graded(run_dir: Path):
+    """The native track decides a `scored` row by its pool reference against
+    the native floor, NOT by its Track-A number.
+
+    Measured on the 2026-09-24 male-cns pooling run: 14 of 41 scored rows
+    published `morph_similarity` below their published `morph_bar` while
+    `morph_qualified` said yes, because the bar column carried the per-source
+    NULL bar under a `native` kind label — a passing row that reads as a broken
+    gate.  The cell now prints the deciding pair, and the ✓ is recomputable
+    from the numbers beside it.
+    """
+    _as_pooling_run(run_dir, pool=[_pool_row(
+        morph_bar_kind="native", morph_similarity=0.054,
+        morph_pool_ref=0.42, morph_bar=0.296, morph_qualified=True)])
+    text = _plain(build_report_document(collect_run_data(run_dir)))
+    assert "native 0.420 vs 0.296 ✓" in text
+    assert "0.054" not in text          # the Track-A number is not the grade
+    # a refusal still reads as one, with the same pair named
+    _as_pooling_run(run_dir, pool=[_pool_row(
+        morph_bar_kind="native", morph_similarity=0.054,
+        morph_pool_ref=0.12, morph_bar=0.296, morph_qualified=False)])
+    text = _plain(build_report_document(collect_run_data(run_dir)))
+    assert "native 0.120 vs 0.296 ✗" in text
+    # and a scored row the native track has no evidence for is named as a
+    # missing measurement, never as a refusal (decision 3 keeps those apart)
+    _as_pooling_run(run_dir, pool=[_pool_row(
+        morph_bar_kind="native", morph_similarity=0.054,
+        morph_pool_ref=None, morph_bar=0.296, morph_qualified=None)])
+    text = _plain(build_report_document(collect_run_data(run_dir)))
+    assert "native: no evidence for this pair" in text
+    # the row itself carries no refusal mark (the column hover legitimately
+    # explains what a scored ✗ would have meant)
+    row = text.split('500 DLp11(out-map)')[1].split('type_miss')[0]
+    assert "✗" not in row
 
 
 def test_the_scored_against_line_names_what_it_cannot_record(run_dir: Path):
@@ -816,7 +861,7 @@ def test_the_pool_table_has_no_cross_dataset_agreement_column(run_dir: Path):
     assert row.count("</td>") == 6        # the split drops the first opening tag
     assert "cross-target" not in html
     # the morphology cell still keeps a no-verdict row apart from a refusal
-    assert "0.660 vs bar 0.550 ✓" in row
+    assert "0.660 vs 0.550 ✓" in row
 
 
 def test_an_untouched_morph_gate_is_a_word_not_a_cross(run_dir: Path):

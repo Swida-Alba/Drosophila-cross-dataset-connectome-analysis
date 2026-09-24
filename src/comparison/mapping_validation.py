@@ -1102,13 +1102,14 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'jaccard', 'jaccard_rank', 'rank_union', 'rank_union_rank',
         'window_size', 'in_scope', 'leaf', 'size_nm3',
         'size_universe_percentile', 'morph_gate', 'morph_bar_kind',
-        'morph_similarity', 'morph_bar', 'morph_qualified', 'mapper_cell',
-        'mapper_verdict'],
+        'morph_similarity', 'morph_pool_ref', 'morph_bar',
+        'morph_qualified', 'mapper_cell', 'mapper_verdict'],
     'pooling_pool.csv': [
         'target_bodyId', 'target_type', 'leaf', 'best_source_bodyId',
         'best_source_type', 'jaccard', 'jaccard_rank', 'rank_union',
         'window_size', 'size_nm3', 'size_universe_percentile', 'in_scope',
-        'n_sources', 'dup', 'morph_gate', 'morph_similarity', 'morph_bar',
+        'n_sources', 'dup', 'morph_gate', 'morph_bar_kind',
+        'morph_similarity', 'morph_pool_ref', 'morph_bar',
         'morph_qualified', 'mapper_cell', 'mapper_verdict'],
 }
 

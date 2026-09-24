@@ -47,6 +47,7 @@ COLUMN_GLOSSARY = {
     "morph_null_p95": ("Per-query null bar: the p95 of this query's vector_v2 scores against ~200 seeded random target neurons.", "number"),
     "morph_z": ("morph_v2 expressed in null-distribution standard deviations above the null median.", "number"),
     "morph_bar_kind": ("Which bar family gated this row: 'null_bar' (null percentile + offset), 'native' (mapping-referenced pool floor), or 'track_a' (pool baseline B_b minus Δ).", "text"),
+    "morph_pool_ref": ("A candidate's similarity to the source's own reference pool (native Track B). When morph_bar_kind is 'native' THIS is the number morph_bar was applied to — read the verdict as morph_pool_ref >= morph_bar; on other kinds the graded score is the row's Track-A column.", "number"),
     "morph_bar": ("The bar this row's morph_v2 was compared against, per morph_bar_kind.", "number"),
     "morph_null_level": ("The null percentile the bar sits at when morph_bar_kind is 'null_bar' (default 95).", "integer"),
     "morph_qualified": ("Whether the visualized candidate passed the morph bar (morph_v2 >= morph_bar). Failing candidates are excluded from the rendered scenes but keep their result rows.", "boolean"),
@@ -2210,8 +2211,14 @@ TOOL_GUIDE_SPECS = {
                             "pair that passed the ABSOLUTE connectivity gate "
                             "(jaccard / rank_union floors, a rank window "
                             "scaled to the source type's own population) "
-                            "with the morph verdict, the shared leaf token "
-                            "and the post-hoc mapper_cell (confirmed / "
+                            "with the morph verdict — `morph_bar_kind` names "
+                            "the rule that graded the pair, `morph_bar` its "
+                            "binding value, `morph_similarity` the Track-A "
+                            "score and `morph_pool_ref` the native pool "
+                            "reference a native floor is applied to, so every "
+                            "verdict recomputes from its own row — plus the "
+                            "shared leaf token and the post-hoc mapper_cell "
+                            "(confirmed / "
                             "type_miss / type_new). The mapper decides none "
                             "of it — it is joined afterwards. Includes the "
                             "targets the morphology gate refused, so the "
@@ -2221,7 +2228,9 @@ TOOL_GUIDE_SPECS = {
                             "to one row per candidate target neuron on the "
                             "ordering chain (chain-best source, n_sources, "
                             "dup), AFTER the morphology gate — a scored "
-                            "candidate below its bar is not here."},
+                            "candidate below its bar is not here. Carries "
+                            "the same four morph columns as the per-pair "
+                            "file."},
             {"pattern": "pooling/pooling_cross_validation.json",
              "description": "--mode pooling only: the unsupervised pool "
                             "compared with the mapper's claim sets, the gate "
@@ -2230,7 +2239,9 @@ TOOL_GUIDE_SPECS = {
                             "than a quality bar), the morph record "
                             "(attempted / scored / qualified / no-score / "
                             "capped, plus gate_applied and dropped_targets — "
-                            "how many targets the bar refused), the input "
+                            "how many targets the bar refused — and the "
+                            "target-vector store's ledger: loaded / "
+                            "stale_dropped / saved), the input "
                             "fingerprint the scores came from, and the "
                             "reading notes that say which cells are NOT "
                             "recall measures."},

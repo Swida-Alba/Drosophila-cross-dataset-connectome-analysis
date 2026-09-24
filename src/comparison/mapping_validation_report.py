@@ -95,8 +95,12 @@ TERM_DEFS: Dict[str, str] = {
         'Pooling\'s last gate, on the connectivity survivors only. It is a '
         'GATE: a `scored` row below its bar leaves the exported pool and the '
         'scene root, and the count of those refusals is published as '
-        '`targets refused`. `scored` carries a similarity and a bar, '
-        '`inactive` means the AUC gate suspended morphology, `disabled` means '
+        '`targets refused`. `scored` carries the numbers of the pair the bar '
+        'was applied to: `morph_bar_kind` names the rule, `morph_bar` is its '
+        'binding value, and the score is `morph_pool_ref` for a native row '
+        'and `morph_similarity` otherwise, so the verdict can always be '
+        'recomputed from the row. `inactive` means the AUC gate suspended '
+        'morphology, `disabled` means '
         'the run asked for none, and the three absences are kept apart on '
         'purpose — `not-selected` (this row is not the chain-best row of its '
         'target, the verdict lives on that row), `not-attempted-cap` (the '
@@ -3279,9 +3283,26 @@ def _pooling_tab(d: Dict) -> str:
     for r in pool:
         mg = str(r.get('morph_gate') or '')
         if mg == 'scored':
-            mcell = (f"{_f(r.get('morph_similarity'), 3)} vs bar "
-                     f"{_f(r.get('morph_bar'), 3)} "
-                     f"{'✓' if _truthy(r.get('morph_qualified')) else '✗'}")
+            # Name the pair the verdict was actually made from.  A `native`
+            # row is graded by its pool reference against the native floor;
+            # showing its Track-A number beside that floor made a passing row
+            # read as a broken gate (see apply_morph_gate).  A missing verdict
+            # is never drawn as a refusal — the pool kept such a row on
+            # purpose.
+            kind = str(r.get('morph_bar_kind') or 'null_bar')
+            deciding = _as_num(r.get('morph_pool_ref')
+                               if kind == 'native'
+                               else r.get('morph_similarity'))
+            q = str(r.get('morph_qualified') or '').strip().lower()
+            if deciding is None:
+                mcell = (f"<span class='missing'>{_esc(kind)}: no "
+                         'evidence for this pair</span>')
+            else:
+                mark = ('✓' if q in TRUE_STR else
+                        '✗' if q in ('false', '0', 'no') else 'no verdict')
+                mcell = (f"<span class='mv-note'>{_esc(kind)}</span> "
+                         f"{deciding:.3f} vs {_f(r.get('morph_bar'), 3)} "
+                         f'{mark}')
         else:
             mcell = (f"<span class='missing'>{_esc(mg or '—')}</span>")
         n_src = _cnt(r.get('n_sources'))
@@ -3316,11 +3337,14 @@ def _pooling_tab(d: Dict) -> str:
               'candidate passed, plus the window that bounded its ranks.')
         + _th('sources', 'How many queried sources reach this target (the '
               'extra ones are listed in pooling_candidates.csv).')
-        + _th('morphology', 'The LAST gate: similarity against the '
-              'persisted reference bar, ✓ at or above it. With the gate on, '
-              'a scored ✗ row has already left this pool — so the only '
-              'absence words here (`no-score`, `not-attempted-cap`) name a '
-              'look not taken, never a rejection.')
+        + _th('morphology', 'The LAST gate, printed as the pair it actually '
+              'graded: `native` compares the candidate\'s similarity to the '
+              'source\'s own reference pool (`morph_pool_ref`) against the '
+              'native floor, `track_a` and `null_bar` compare the Track-A '
+              'pair score against their bar — ✓ at or above. With the gate '
+              'on, a scored ✗ row has already left this pool, so the only '
+              'absences here (`no-score`, `not-attempted-cap`, "no evidence '
+              'for this pair") name a look not taken, never a rejection.')
         + _th('mapper_cell', 'The post-hoc comparison with the mapping, '
               'with the supervised verdict where one exists.')
     ) if trs else _empty(

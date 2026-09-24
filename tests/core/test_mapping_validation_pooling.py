@@ -235,6 +235,7 @@ def test_morph_budget_names_what_it_dropped(monkeypatch):
         warnings = []
         scores = {(1, 1): 0.9, (1, 2): 0.1}
         ref_bars = {}
+        native_scores = {}
 
         def bar(self, s):
             return 0.5
@@ -270,6 +271,7 @@ def test_the_three_absences_are_three_labels(monkeypatch):
         warnings = []
         scores = {(1, 7): 0.9}           # (1, 8) was never scored
         ref_bars = {}
+        native_scores = {}
 
         def bar(self, s):
             return 0.5
@@ -314,6 +316,7 @@ def test_pooling_grades_candidates_the_mapper_also_claims(monkeypatch):
         warnings = []
         scores = {(1, 7): 0.9, (1, 8): 0.8}   # 7 is also a mapper pool member
         ref_bars = {}
+        native_scores = {}
 
         def bar(self, s):
             return 0.5
@@ -365,6 +368,7 @@ def test_morphology_refusals_leave_the_pool_and_are_counted(monkeypatch):
         warnings = []
         scores = {(1, 100): 0.9, (1, 101): 0.1, (1, 102): 0.1}
         ref_bars = {}
+        native_scores = {}
 
         def bar(self, s):
             return 0.5
@@ -414,6 +418,7 @@ def test_an_unscored_candidate_is_never_a_refusal(monkeypatch):
         warnings = []
         scores = {(1, 100): 0.9}                   # 101 never scored
         ref_bars = {}
+        native_scores = {}
 
         def bar(self, s):
             return 0.5

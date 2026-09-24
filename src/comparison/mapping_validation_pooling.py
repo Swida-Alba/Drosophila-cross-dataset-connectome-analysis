@@ -265,6 +265,7 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
         r['morph_gate'] = ('not-attempted-cap' if key in capped
                            else 'not-selected')
         r['morph_similarity'] = None
+        r['morph_pool_ref'] = None
         r['morph_bar'] = None
         r['morph_bar_kind'] = ''
         r['morph_qualified'] = None
@@ -300,9 +301,20 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
         score = mq.scores.get(key)
         r['morph_gate'] = ('no-score' if score is None else
                            ('scored' if mq.active else 'inactive'))
+        # Publish the record the verdict was actually made from, exactly as the
+        # supervised enrichment does: `morph_bar` is the BINDING bar of the kind
+        # named in `morph_bar_kind`, and the native track's number rides along
+        # in `morph_pool_ref`.  Reading the per-source NULL bar beside a
+        # native-track verdict made a passing row look like a broken gate —
+        # measured on 2026-09-24 as 14 of 41 scored rows whose published score
+        # sat below their published bar while `morph_qualified` said yes.
+        kind = rb.get('kind') or 'null_bar'
         r['morph_similarity'] = score
-        r['morph_bar'] = mq.bar(key[0])
-        r['morph_bar_kind'] = rb.get('kind') or 'null'
+        r['morph_pool_ref'] = (mq.native_scores or {}).get(key)
+        r['morph_bar_kind'] = kind
+        r['morph_bar'] = (rb['native_floor'] if kind == 'native'
+                          else rb.get('backup_floor') if kind == 'track_a'
+                          else mq.bar(key[0]))
         r['morph_qualified'] = mq.is_qualified(*key)
     # `scored` counts PAIRS THE SCORER RETURNED a verdict for, not the pairs it
     # was asked about: an attempted target can still come back `no-score` (no
@@ -348,7 +360,9 @@ def pool_by_target(rows: List[Dict]) -> List[Dict]:
             # the morph fields exist only once that gate has run; a pool row
             # must not depend on the gate having been reached
             'morph_gate': b.get('morph_gate'),
+            'morph_bar_kind': b.get('morph_bar_kind'),
             'morph_similarity': b.get('morph_similarity'),
+            'morph_pool_ref': b.get('morph_pool_ref'),
             'morph_bar': b.get('morph_bar'),
             'morph_qualified': b.get('morph_qualified'),
             'mapper_cell': b['mapper_cell'],
