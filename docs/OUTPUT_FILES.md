@@ -40,7 +40,7 @@ Pulled NeuPrint datasets are stored under `datasets/<dataset>/` with a
 
     Readers (`statvis.roi_count_table_path`, `roi_screening`) also accept a
     legacy `<dataset>_allneurons_roi_count_df.csv` from older pulls;
-    `scripts/ConvertRoiCountToParquet.py` migrates existing CSVs.
+    `scripts/maintenance/ConvertRoiCountToParquet.py` migrates existing CSVs.
 
 
 ## Related Documentation

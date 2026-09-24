@@ -12,16 +12,16 @@
      bottleneck emission, and a bitten run keeps exactly
      {bottleneck >= tau} (verified against an unbudgeted enumeration).
 
-Run:  python3 scripts/verify_production_real_data.py [scenario A|C|all]
+Run:  python3 scripts/harness/verify_production_real_data.py [scenario A|C|all]
 """
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "vispath-subproject" / "src"))
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "harness"))
 
 import polars as pl                                        # noqa: E402
 import coana                                               # noqa: E402

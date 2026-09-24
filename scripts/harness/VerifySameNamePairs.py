@@ -20,7 +20,7 @@ resolver-level census now shows confirm_unique for the formerly shadowed
 pairs and conflict for the formerly overridden ones.
 
 Usage:
-    python3 scripts/VerifySameNamePairs.py [--workspace PATH] [--out DIR]
+    python3 scripts/harness/VerifySameNamePairs.py [--workspace PATH] [--out DIR]
 
 Writes ``same_name_audit.csv`` and prints the per-direction summary.
 Requires the local dataset tables (datasets/<release>/) and the cached
@@ -33,7 +33,7 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / 'src'))
 
 UNTYPED = {'nan', 'none', 'unknown', ''}

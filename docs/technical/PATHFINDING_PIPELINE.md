@@ -647,10 +647,11 @@ memory shape.
 
 ## 6. Measured performance (FAFB v783, weight ≥ 3)
 
-Validation harnesses: `scripts/verify_budget_fit_pruning.py` (synthetic
-+ brute force, 11/11), `scripts/compare_budget_fit_real_data.py`
+Validation harnesses (all three live under `scripts/harness/`, the tier of
+verification probes with no CLI contract): `scripts/harness/verify_budget_fit_pruning.py`
+(synthetic + brute force, 11/11), `scripts/harness/compare_budget_fit_real_data.py`
 (prototype comparison incl. million-scale), and
-`scripts/verify_production_real_data.py` (production code paths).
+`scripts/harness/verify_production_real_data.py` (production code paths).
 
 | Scenario | Cone after lossless prune | Result |
 | --- | --- | --- |

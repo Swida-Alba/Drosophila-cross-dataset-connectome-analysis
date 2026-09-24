@@ -23,7 +23,7 @@ Validated invariants:
  10. literal ledger divergence (allowance inflates, threshold ratchets to bottom)
  11. medium-graph performance sanity (probe count, wall time)
 
-Run:  python3 scripts/verify_budget_fit_pruning.py
+Run:  python3 scripts/harness/verify_budget_fit_pruning.py
 """
 import random
 import sys

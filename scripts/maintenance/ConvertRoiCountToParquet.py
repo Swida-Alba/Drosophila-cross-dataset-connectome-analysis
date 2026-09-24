@@ -6,8 +6,8 @@ verifies the round-trip, and only then deletes the CSV. Readers keep CSV
 fallback, so skipping or interrupting this migration is always safe.
 
 Usage (from anywhere):
-    python scripts/ConvertRoiCountToParquet.py            # all datasets
-    python scripts/ConvertRoiCountToParquet.py male-cns_v1_0   # one dataset folder
+    python scripts/maintenance/ConvertRoiCountToParquet.py            # all datasets
+    python scripts/maintenance/ConvertRoiCountToParquet.py male-cns_v1_0   # one dataset folder
 """
 
 import sys
@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 import polars as pl
 
-DATASETS_DIR = Path(__file__).parent.parent / 'datasets'
+DATASETS_DIR = Path(__file__).resolve().parents[2] / 'datasets'
 
 
 def convert(csv_path: Path) -> bool:

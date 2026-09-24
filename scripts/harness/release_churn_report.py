@@ -9,11 +9,11 @@ blocks: ConnectivityProfiler profiles + ProfileComparator scoring — the
 same backend the Connectivity and Cross-Dataset tabs use.
 
 Example:
-    python scripts/release_churn_report.py \
+    python scripts/harness/release_churn_report.py \
         --old male-cns:v0.9 --new male-cns:v1.0 \
         --bodyids 12211,12517,12737,12740
 
-    python scripts/release_churn_report.py \
+    python scripts/harness/release_churn_report.py \
         --old male-cns:v0.9 --new male-cns:v1.0 --type aMe12 --top 20
 
 Output: one CSV row per neuron with per-version type/instance identity,
@@ -26,7 +26,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 
 import pandas as pd  # noqa: E402
 
@@ -124,7 +124,7 @@ def main() -> None:
         # Unique 4-char labels, version-suffixed on same-family collisions
         # (churn_MCNS_v0_9_to_MCNS_v1_0_...) — filename-safe, no colons.
         old_label, new_label = make_unique_dataset_labels([args.old, args.new])
-        out_path = (Path(__file__).parent.parent / 'local_data' / 'release_churn'
+        out_path = (Path(__file__).resolve().parents[2] / 'local_data' / 'release_churn'
                     / f"churn_{old_label}_to_{new_label}_{stamp}.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)

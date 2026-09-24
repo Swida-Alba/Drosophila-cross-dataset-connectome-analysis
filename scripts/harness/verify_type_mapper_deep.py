@@ -20,7 +20,7 @@ from the cached index columns and the two are compared exhaustively:
 4. CSV inspection: matched-entries exports parsed and cross-checked against
    the raw indexes (uniform field counts, neuron counts, bridge columns).
 
-Exit code 1 on any failure.  Run:  python scripts/verify_type_mapper_deep.py
+Exit code 1 on any failure.  Run:  python scripts/harness/verify_type_mapper_deep.py
 """
 
 import csv
@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 

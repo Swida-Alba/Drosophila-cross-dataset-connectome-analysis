@@ -99,7 +99,7 @@ Datasets prepared before the `flywire_BANC_*` -> `banc_*` rename are
 migrated with:
 
 ```bash
-python scripts/migrate_banc_dataset_names.py [--dry-run]
+python scripts/maintenance/migrate_banc_dataset_names.py [--dry-run]
 ```
 
 Old spellings keep working even without the migration (every dataset-name

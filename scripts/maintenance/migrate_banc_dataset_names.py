@@ -26,7 +26,7 @@ import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 RENAMES = [
     ("flywire_BANC_v626", "banc_v626"),

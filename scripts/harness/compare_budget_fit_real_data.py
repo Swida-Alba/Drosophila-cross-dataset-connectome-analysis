@@ -8,22 +8,22 @@ early stop in 'all' mode), the initial lossless hop-budget prune, then:
 
   - one-shot: floor at w1 + 1, drop, ONE lossless pass   (apply_edge_budget_floor)
   - budget-fit: gallop + bisection over weight tiers, single-pass probes
-    (fit_budget from scripts/verify_budget_fit_pruning.py)
+    (fit_budget from scripts/harness/verify_budget_fit_pruning.py)
 
 Payoff metric: run the real FastGraph.find_paths_strongest_first on each
 kept cone with the SAME path budget and compare emitted paths / tau —
 more paths at the same memory cap is the utilization win.
 
-Run:  python3 scripts/compare_budget_fit_real_data.py
+Run:  python3 scripts/harness/compare_budget_fit_real_data.py
 """
 import resource
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "vispath-subproject" / "src"))
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "harness"))
 
 import polars as pl                                       # noqa: E402
 from vispath_pkg.fast_graph_core import FastGraph          # noqa: E402

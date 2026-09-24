@@ -10,11 +10,11 @@ executes the optional bulk conversion, verification, compaction and the
 interactive first-run question.
 
 Run (from the repository root):
-    python scripts/flywire_fafb_v783_skeleton_recompression.py pack
-    python scripts/flywire_fafb_v783_skeleton_recompression.py verify
-    python scripts/flywire_fafb_v783_skeleton_recompression.py info
-    python scripts/flywire_fafb_v783_skeleton_recompression.py compact
-    python scripts/flywire_fafb_v783_skeleton_recompression.py prompt
+    python scripts/maintenance/flywire_fafb_v783_skeleton_recompression.py pack
+    python scripts/maintenance/flywire_fafb_v783_skeleton_recompression.py verify
+    python scripts/maintenance/flywire_fafb_v783_skeleton_recompression.py info
+    python scripts/maintenance/flywire_fafb_v783_skeleton_recompression.py compact
+    python scripts/maintenance/flywire_fafb_v783_skeleton_recompression.py prompt
 
 Options:
     --dataset-dir PATH   dataset folder (default: datasets/flywire_FAFB_v783)
@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))

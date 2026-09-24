@@ -13,7 +13,7 @@ Runs the SAME cross-dataset query twice — once with the replay batch
   ('run date', 'fetched_at', ...) are ignored.
 
 Usage (repo root, drocat env):
-    python scripts/run_replay_golden_master.py \
+    python scripts/harness/run_replay_golden_master.py \
         --datasets "male-cns:v1.0" "flywire_FAFB_v783" \
         --source Mi1,Tm3 --target l-LNv \
         --thresholds 3,5,10 --max-interlayer 2
@@ -31,7 +31,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import pandas as pd  # noqa: E402
