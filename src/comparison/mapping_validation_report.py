@@ -430,6 +430,7 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
         'out of scope', 'morph_gate', 'branch bar', 'mapper_cell',
         'jaccard floor'],
     'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate'],
+    'pooling/pooling_sources.csv': ['pooling', 'admission bar', 'morph_gate'],
     'pooling/pooling_cross_validation.json': ['pooling', 'mapper_cell',
                                               'morph_gate'],
     'validation/pair_summary.csv': ['gap', 'verdict'],
@@ -472,9 +473,13 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
      'out-of-branch sources pointing into each branch pool, tagged '
      'in-map/out-map (advisory)'),
     ('pooling/pooling_candidates.csv',
-     'POOLING mode: every (source, target) pair that passed the absolute '
-     'connectivity gate, with the morph verdict and the post-hoc mapper '
-     'cell; includes the targets the morphology gate refused'),
+     'POOLING mode: every (source, target) pair the admission bar kept, with '
+     'the morph verdict and the post-hoc mapper cell; includes the targets the '
+     'morphology gate refused'),
+    ('pooling/pooling_sources.csv',
+     'POOLING mode: one row per QUERIED source — its chain-best finding, that '
+     'row\'s tier, how many targets it admitted vs kept, and no_finding when '
+     'the bar admitted nothing'),
     ('pooling/pooling_pool.csv',
      'POOLING mode: one row per candidate target neuron the LAST GATE '
      'admitted (chain-best source)'),
@@ -495,6 +500,13 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
 ]
 
 TRUE_STR = {'true', '1', 'yes'}
+#: Pooling's per-row ladder, ordered best-first.  The report stays standalone
+#: (it regenerates any past folder from the folder alone, so it imports no
+#: pipeline module); this mirrors
+#: `mapping_validation_pooling.POOLING_TIERS`, and
+#: `test_pooling_tab_headlines_the_source_axis` pins the two against the
+#: vocabulary a real run exports.
+POOLING_TIERS = ('matched', 'verified', 'nominated')
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +780,9 @@ def collect_run_data(run_dir: Path,
         _run_file(run_dir, 'pooling_cross_validation.json')) or {}
     pooling_pool = _read_csv_rows(_run_file(run_dir, 'pooling_pool.csv'))
     pooling_rows = _read_csv_rows(_run_file(run_dir, 'pooling_candidates.csv'))
+    # the mode's own unit: one row per queried source, so a source that found
+    # nothing is present with an empty finding rather than missing
+    pooling_sources = _read_csv_rows(_run_file(run_dir, 'pooling_sources.csv'))
 
     # -- stage 5d backward homolog evidence (advisory; connectivity only) --
     backward_rows = _read_csv_rows(_run_file(run_dir, 'backward_matches.csv'))
@@ -1058,6 +1073,7 @@ def collect_run_data(run_dir: Path,
         'pooling_xval': pooling_xval,
         'pooling_pool': pooling_pool,
         'pooling_rows': pooling_rows,
+        'pooling_sources': pooling_sources,
         'backward_rows': backward_rows,
         'backward_bins': backward_bins,
         'backward_by_bid': backward_by_bid,
@@ -1395,7 +1411,7 @@ def _hero(d: Dict) -> str:
     covered = tcov.get('in_branch_pool')
     mapped_set = tcov.get('mapped_target_set')
     if total and covered is not None:
-        headline = (
+        supervised = (
             f'{_esc(total)} source neurons → <b>{_esc(covered)}</b> '
             f'{_esc(params.get("target_dataset", ""))} neurons '
             f'{_term("map-covered")} (of {_esc(mapped_set)} in-map; '
@@ -1404,8 +1420,34 @@ def _hero(d: Dict) -> str:
             f'{_esc(scov.get("assigned", "—"))} · fill-proposed '
             f'+{_esc(scov.get("fill_proposed_only", "—"))}')
     else:
-        headline = ('Coverage artifacts absent — the run produced no '
-                    'set-level coverage (see the Log tab).')
+        supervised = ('Coverage artifacts absent — the run produced no '
+                      'set-level coverage (see the Log tab).')
+
+    # On a pooling run the ladder above is NOT the run's answer — the mode is
+    # parallel to it, and its own result lives on the source axis.  Leading
+    # with the supervised numbers made the headline quote one mode's levels for
+    # another mode's run, two screens above the answer (issue 13), so the
+    # headline now names the level it is quoting and puts the pool first.
+    headline = supervised
+    px = (d.get('pooling_xval') or {}) if str(mode) == 'pooling' else {}
+    psrc = d.get('pooling_sources') or []
+    if px and psrc:
+        def _pi(r, k):
+            return int(_as_num(r.get(k)) or 0)
+
+        kept = sum(1 for r in psrc if _pi(r, 'n_in_pool') > 0)
+        n_pool = sum(1 for r in (d.get('pooling_pool') or [])
+                     if str(r.get('in_pool') or '').strip().lower()
+                     in TRUE_STR)
+        headline = (
+            f"<b>{_esc(len(psrc))}</b> {_term('pooling', 'queried sources')} → "
+            f"{_esc(px.get('seed', {}).get('sources_with_a_candidate', '—'))} "
+            f"reached ≥1 candidate · <b>{_esc(kept)}</b> kept one after "
+            f"morphology · <b>{_esc(n_pool)}</b> distinct pooled targets "
+            f"(pool/source {_f(px.get('pool_per_source'), 2)}) — the "
+            'unsupervised pool, which the mapper decides none of'
+            f"<br><span class='mv-note'>Supervised ladder, same run: "
+            f'{supervised}</span>')
 
     return (
         '<header class="report-hero">'
@@ -3286,6 +3328,54 @@ def _pooling_tab(d: Dict) -> str:
                   "<div class='mv-callout mv-warn'>⚠️ "
                   f"{_esc(pool_warn)}</div>")
 
+    # The mode's own axis. `pooling_pool.csv` answers "which targets were
+    # found"; this answers the question the run was actually asked — "for each
+    # queried neuron, what did it find, and did anything survive". A source
+    # that found nothing is a ROW here, never an absence, which is the whole
+    # reason the file exists (plan §5).
+    srcs = d.get('pooling_sources') or []
+    src_block = ''
+    if srcs:
+        def _n(r, k):
+            return int(_as_num(r.get(k)) or 0)
+
+        admitted = [r for r in srcs if _n(r, 'n_admitted') > 0]
+        kept = [r for r in srcs if _n(r, 'n_in_pool') > 0]
+        lost = [r for r in admitted if _n(r, 'n_in_pool') == 0]
+        none = [r for r in srcs
+                if str(r.get('no_finding') or '').strip()]
+        claimed = [r for r in srcs
+                   if str(r.get('source_claimed') or '').strip().lower()
+                   in TRUE_STR]
+        tiers = {t: sum(1 for r in srcs
+                        if str(r.get('tier') or '') == t)
+                 for t in POOLING_TIERS}
+        src_rows = [
+            (_term('pooling', 'Queried sources'),
+             f"{_cnt(len(srcs))} · across {_cnt(len({str(r.get('source_type')) for r in srcs}))} "
+             'source types'),
+            ('Reached ≥1 target',
+             f"{_cnt(len(admitted))} of {_cnt(len(srcs))} · "
+             f"{_cnt(sum(_n(r, 'n_admitted') for r in srcs))} admitted rows "
+             'total'),
+            ('Tier of each source\'s best finding',
+             ' · '.join(f"{t} {_cnt(tiers.get(t, 0))}" for t in POOLING_TIERS)
+             + (f" · {_cnt(len(none))} found nothing" if none else '')),
+            ('Kept ≥1 after morphology',
+             f"{_cnt(len(kept))} of {_cnt(len(srcs))}"
+             + (f" · {_cnt(len(lost))} saw every finding refused by the bar"
+                if lost else '')),
+            ('Claimed by the mapper',
+             f"{_cnt(len(claimed))} — post-hoc advice only; the mapper named "
+             'none of these rows'),
+            ('Pool per source',
+             f"{_f(x.get('pool_per_source'), 3)} targets per queried source"
+             + (f" · {_esc(str(x.get('pool_size_warning')))}"
+                if x.get('pool_size_warning') else
+                ' · inside the [0.5, 2.0] band this bar aims for')),
+        ]
+        src_block = _kv_block('Per source — the mode\'s own axis', src_rows)
+
     head = (_section_card(
         'Pooling — the unsupervised scan',
         'Every neuron the query names, scanned against the whole target '
@@ -3296,9 +3386,9 @@ def _pooling_tab(d: Dict) -> str:
         error_note + gate_block + cells_block
         + _kv_block('Morphology — the last gate', [
             (_term('morph_gate', 'morphology'), ' · '.join(morph_bits)),
-        ]) + warn_block + notes_block,
+        ]) + src_block + warn_block + notes_block,
         ['pooling', 'mapper_cell', 'morph_gate',
-         'jaccard floor', 'ordering chain']))
+         'jaccard floor', 'admission bar', 'ordering chain']))
 
     miss = x.get('pool_miss_by_type') or {}
     miss_tot = sum(int(v or 0) for v in miss.values())
@@ -3389,6 +3479,7 @@ def _pooling_tab(d: Dict) -> str:
         'has no connectivity finding in the target universe. Raising '
         'pooling_bar_top_n or widening pooling_bar_metric is the knob, not a '
         'different verdict — the floors are flags and were never the knob.')
+
     return head + _section_card(
         f'Pooling pool — {len(pool)} candidate target'
         f'{"s" if len(pool) != 1 else ""}',

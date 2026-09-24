@@ -714,7 +714,7 @@ def _pool_row(**kw):
 
 
 def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
-                    flat=False):
+                    flat=False, sources=None):
     params = json.loads((run_dir / "parameters.json").read_text())
     params.update({"validation_mode": mode, "pooling_jaccard_floor": 0.1,
                    "pooling_rank_union_floor": 0.0,
@@ -732,9 +732,56 @@ def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
                ["source_bodyId", "target_bodyId", "jaccard", "mapper_cell"],
                [[r["best_source_bodyId"], r["target_bodyId"], r["jaccard"],
                  r["mapper_cell"]] for r in rows])
+    # the source axis, on the header `pool.apply_morph_gate`/`pool_by_source`
+    # really writes — the tab reads it by name, so a fixture that renames a
+    # column tests a file no run produces.
+    _write_csv(out / "pooling_sources.csv", SOURCES_HEADER,
+               [[r.get(k, "") for k in SOURCES_HEADER]
+                for r in (sources if sources is not None
+                          else _default_sources())])
     (out / "pooling_cross_validation.json").write_text(
         json.dumps(xval if isinstance(xval, dict) else {}))
     return run_dir
+
+
+SOURCES_HEADER = [
+    "source_bodyId", "source_type", "n_admitted", "n_in_pool", "n_refused",
+    "tier", "best_target_bodyId", "best_bar_rank", "jaccard", "jaccard_rank",
+    "rank_union", "rank_union_rank", "supported_by", "single_metric_support",
+    "source_claimed", "morph_gate", "morph_bar_kind", "morph_similarity",
+    "morph_pool_ref", "morph_bar", "morph_qualified", "verdict_for_pair",
+    "no_finding"]
+
+
+def _source_row(**kw):
+    r = {"source_bodyId": 101, "source_type": "s-LNv", "n_admitted": 3,
+         "n_in_pool": 2, "n_refused": 1, "tier": "matched",
+         "best_target_bodyId": 500, "best_bar_rank": 1, "jaccard": 0.31,
+         "jaccard_rank": 1, "rank_union": 0.44, "rank_union_rank": 2,
+         "supported_by": "jaccard+rank_union", "single_metric_support": False,
+         "source_claimed": True, "morph_gate": "scored",
+         "morph_bar_kind": "null_bar", "morph_similarity": 0.66,
+         "morph_pool_ref": "", "morph_bar": 0.55, "morph_qualified": True,
+         "verdict_for_pair": "", "no_finding": ""}
+    r.update(kw)
+    return r
+
+
+def _default_sources():
+    return [_source_row(),
+            # a source whose every finding the morphology bar refused: it
+            # admitted rows and keeps none of them
+            _source_row(source_bodyId=102, source_type="DN1a",
+                        tier="verified", n_admitted=2, n_in_pool=0,
+                        n_refused=2, source_claimed=False),
+            # a source the bar admitted NOTHING for: present with a named
+            # absence, never missing from the file
+            _source_row(source_bodyId=103, source_type="DN1pA", tier="",
+                        n_admitted=0, n_in_pool=0, n_refused=0,
+                        best_target_bodyId="", best_bar_rank="", jaccard="",
+                        morph_gate="", morph_qualified="",
+                        source_claimed=False,
+                        no_finding="no-admitted-target")]
 
 
 def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
@@ -775,6 +822,50 @@ def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     assert "git abcdef12 · target universe 101995" in html
     assert "mapper snapshot 123456 B @ 2026-09-20 01:02 UTC" in html
     assert '@ None' not in html       # an unrendered key must never ship
+
+
+def test_pooling_tab_headlines_the_source_axis(run_dir: Path):
+    """The target pool answers "which neurons were found"; the mode's own
+    question is per QUERIED SOURCE, and a source that found nothing must show
+    up as a named absence rather than a smaller denominator.
+
+    The tier counts here are per source (each source's chain-best finding), so
+    they sum to the queried population — NOT to the row-level `tiers` the
+    cross-validation record publishes, which count rows. Reading one as the
+    other is the mistake this block exists to prevent.
+    """
+    _as_pooling_run(run_dir)
+    text = _plain(build_report_document(collect_run_data(run_dir)))
+    # (the block TITLE goes through `_esc`, so assert on a span of it that has
+    # no apostrophe to escape)
+    assert "Per source — the mode" in text and "own axis" in text
+    assert "3 · across 3 source types" in text
+    assert "2 of 3 · 5 admitted rows total" in text
+    assert "matched 1 · verified 1 · nominated 0 · 1 found nothing" in text
+    assert "1 of 3 · 1 saw every finding refused by the bar" in text
+    assert "1 — post-hoc advice only" in text
+    assert "0.750 targets per queried source" in text
+    # the ladder's vocabulary is pooling's own: no `borderline`, no `relative`
+    assert "borderline" not in text.split("Per source")[1][:400]
+
+
+def test_a_pooling_run_leads_its_own_answer_not_the_ladder(run_dir: Path):
+    """Issue 13: the hero quoted the supervised levels (map-covered /
+    mutual-best / fill-proposed) for a run whose mode is parallel to that
+    ladder, while the pool itself sat two screens down.
+
+    The headline now leads with the source axis and names the ladder as what
+    it is — the same run's supervised path, not this mode's answer.
+    """
+    _as_pooling_run(run_dir)
+    html = build_report_document(collect_run_data(run_dir))
+    hero = html.split('<p class="report-subtitle">', 1)[1].split('</p>', 1)[0]
+    assert "queried sources" in hero and "reached ≥1 candidate" in hero
+    assert "kept one after morphology" in hero and "distinct pooled targets" in hero
+    assert "Supervised ladder, same run:" in hero
+    # the ladder is still published, just not mistaken for the headline
+    assert "map-covered" in hero
+    assert hero.index("distinct pooled targets") < hero.index("map-covered")
 
 
 def test_a_native_row_prints_the_pair_the_gate_graded(run_dir: Path):
