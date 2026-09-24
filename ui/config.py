@@ -516,7 +516,9 @@ DEFAULTS = {
     "run_guide_format": "html",
     # Default dataset selections
     "default_dataset": "male-cns:v1.0",
-    "default_target_dataset": "male-cns:v0.9",
+    # FAFB target default (user 2026-09-25): homolog search lands on
+    # flywire_FAFB_v783 unless a Settings override says otherwise.
+    "default_target_dataset": "flywire_FAFB_v783",
     # 3D skeleton rendering defaults
     "skeleton_mode": "tube",
     "analysis_skeleton_mode": "line",
@@ -716,7 +718,7 @@ DEFAULT_SETTING_SPECS = {
         "group": "dataset_search",
         "kind": "select",
         "options": DATASETS,
-        "hint": "Target dataset preselected in Connectivity → Find Similar.",
+        "hint": "Target dataset preselected in Connectivity → Find Homolog.",
     },
     "search_columns": {
         "label": "Search Columns",
