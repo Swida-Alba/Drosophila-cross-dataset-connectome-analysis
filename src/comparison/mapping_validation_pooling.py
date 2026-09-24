@@ -458,6 +458,10 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
     cap = int(cfg.pooling_max_morph_targets or 0)
     take, dropped = (units, []) if cap <= 0 or len(units) <= cap \
         else (units[:cap], units[cap:])
+    # `units` is published because `attempted` and `capped` are a SPLIT of it,
+    # not a sum that belongs to `attempted`: without it a reader cannot tell
+    # how much of the bar the budget never looked at.
+    info['units'] = len(units)
     info['attempted'] = len(take)
     info['capped'] = len(dropped)
     capped_pairs = {(int(r['source_bodyId']), int(r['target_bodyId']))

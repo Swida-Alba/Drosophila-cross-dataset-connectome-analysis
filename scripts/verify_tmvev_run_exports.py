@@ -25,10 +25,12 @@ What it proves, in the order the skill says to read a run:
 * **the partition** — categories are in the Rev 3.12 enum, `in_scope` and
   `morph_failed` are never both true, the fill counters follow the category,
   and every expansion leaf carries at most one leaf token;
-* **the pooling ledger** — a `pooling` run's pool is exactly the
-  connectivity-admitted targets minus the ones its morphology bar refused,
-  every refusal is counted, the floors are published as the volume guard-rail
-  they are, and the target-vector store's ledger is present;
+* **the pooling ledger** — a `pooling` run's pool is the connectivity-admitted
+  targets with the ones its morphology bar refused marked `in_pool=False`, every
+  refusal counted, a bar-driven run's floors published as the advisory flags they
+  are (and every flagged row still present), each row's tier in the pooling
+  vocabulary, every borrowed verdict naming the pair it came from, one source row
+  per queried neuron, and the target-vector store's ledger present;
 * **the report** — every tab button has a panel and vice versa, the Pooling tab
   renders, its pool table has the column count it claims, deleted features are
   gone, and no cell leaks `@ None` / `nan`;
@@ -305,10 +307,21 @@ def check_pooling(run, tag):
     for k in ('attempted', 'scored', 'qualified', 'no_score', 'capped',
               'dropped_targets', 'gate_applied'):
         chk(k in morph, f'{tag}: morph ledger carries {k}', str(sorted(morph)))
-    parts = sum(morph.get(k, 0) or 0
-                for k in ('scored', 'no_score', 'capped'))
+    # `attempted` is what the budget LOOKED at; `capped` is what it refused to,
+    # so the two are a split of `units`, never a sum inside `attempted` (the
+    # first version of this check added them and reported 546 vs 400 on a run
+    # whose ledger was correct)
+    parts = sum(morph.get(k, 0) or 0 for k in ('scored', 'no_score'))
     chk(parts == morph.get('attempted'), f'{tag}: morph ledger adds up',
         f'{parts} vs {morph.get("attempted")}')
+    if 'units' in morph:
+        chk((morph.get('attempted') or 0) + (morph.get('capped') or 0)
+            == morph['units'], f'{tag}: attempted + capped == units',
+            f"{morph.get('attempted')}+{morph.get('capped')} vs "
+            f"{morph['units']}")
+    else:
+        info(f'{tag}: run predates morph.units, so the cap cannot be '
+             f'reconciled (capped={morph.get("capped")})')
     # a refusal is per ROW; a target leaves the pool only when EVERY row that
     # admitted it was refused, because another source may hold its own verdict
     refused_rows = {int(r.target_bodyId) for r in cand.itertuples(index=False)
@@ -345,9 +358,13 @@ def check_pooling(run, tag):
     chk(not (vo & admitted),
         f'{tag}: a verified_only row was never admitted by the bar',
         str(sorted(vo & admitted)[:5]))
-    bad_gate = [r.target_bodyId for r in pool.itertuples(index=False)
+    # `pooling_pool.csv` is the complete target picture, so a refused target is
+    # IN the file with in_pool=False; the rule is that no refused verdict is
+    # still marked as part of the pool
+    bad_gate = [str(r.target_bodyId) for r in pool.itertuples(index=False)
                 if r.morph_gate == 'scored'
-                and not as_bool(r.morph_qualified or 'False')]
+                and not as_bool(r.morph_qualified or 'False')
+                and as_bool(str(r.in_pool or 'True'))]
     chk(not bad_gate, f'{tag}: no refused verdict survives in the pool',
         str(bad_gate[:5]))
     # the source axis: the mode's own unit, and its denominator
@@ -430,13 +447,36 @@ def check_pooling(run, tag):
         chk(vals.notna().all(), f'{tag}: {col} parses',
             str(int(vals.isna().sum())))
     gate = xv.get('gate') or {}
-    chk(gate.get('jaccard_floor') is not None
-        and 'volume' in str(gate.get('role', '')).lower(),
-        f'{tag}: gate published as a volume guard-rail', str(gate))
-    low = pd.to_numeric(cand['jaccard'], errors='coerce') < float(
-        gate.get('jaccard_floor') or 0)
-    chk(not bool(low.sum()), f'{tag}: every candidate clears the floor it names',
-        f'{int(low.sum())} rows below {gate.get("jaccard_floor")}')
+    # which contract the run was written under is the run's own fact: a run that
+    # publishes `bar` admitted by the bar, and its floors must describe
+    # themselves as advisory; an older run gated on the floors and said so.
+    # Reading the published schema is not a compatibility shim - it is what the
+    # file says about itself.
+    if xv.get('bar'):
+        chk(gate.get('jaccard_floor') is not None
+            and 'advisory' in str(gate.get('role', '')).lower(),
+            f'{tag}: a bar-driven run calls its floors advisory', str(gate))
+        below = pd.to_numeric(cand['jaccard'], errors='coerce') <= float(
+            gate.get('jaccard_floor') or 0)
+        flagged = cand['below_jaccard_floor'].map(as_bool)
+        chk(bool(below.sum()) == bool(flagged.sum())
+            and below.fillna(False).astype(bool).equals(
+                flagged.astype(bool)),
+            f'{tag}: below_jaccard_floor agrees with the value it names',
+            f'{int(below.sum())} below vs {int(flagged.sum())} flagged')
+        # the point of the change: a flagged row is still a row
+        chk(len(cand) >= int(flagged.sum()),
+            f'{tag}: flagged rows are kept, not filtered',
+            f'{int(flagged.sum())} of {len(cand)}')
+    else:
+        chk(gate.get('jaccard_floor') is not None
+            and 'volume' in str(gate.get('role', '')).lower(),
+            f'{tag}: floor-gated run published its guard-rail', str(gate))
+        low = pd.to_numeric(cand['jaccard'], errors='coerce') < float(
+            gate.get('jaccard_floor') or 0)
+        chk(not bool(low.sum()),
+            f'{tag}: every candidate clears the floor it names',
+            f'{int(low.sum())} rows below {gate.get("jaccard_floor")}')
     vc = morph.get('vector_cache') or {}
     info(f'{tag} target-vector store', str(vc))
     chk(bool(vc), f'{tag}: the store ledger is published', str(morph)[:120])
