@@ -171,6 +171,25 @@ def check_layout(run, tag):
             bad.append(f"{fname}: +{sorted(set(head) - set(cols))} "
                        f"-{sorted(set(cols) - set(head))}")
     chk(not bad, f'{tag}: CSV schemas match the registry', '; '.join(bad[:3]))
+    # A scene folder is created before the figure is written, so a render that
+    # dies halfway leaves a directory with `parameters.txt` and the layer CSVs
+    # but no HTML — indistinguishable from a success on disk. Either the page and
+    # its manifest are there, or a SCENE_FAILED.txt says they are not (found
+    # this way: 5 of 21 parent scenes on a male-cns family run were empty
+    # folders while the audit still reported a clean run).
+    scenes = sorted((run / 'visualization').glob('plot-3d_*')) \
+        if (run / 'visualization').is_dir() else []
+    broken = []
+    for folder in scenes:
+        html = list(folder.glob('*.html'))
+        marked = (folder / 'SCENE_FAILED.txt').exists()
+        if not html and not marked:
+            broken.append(folder.name)
+        elif html and not (folder / 'visualization_manifest.json').exists():
+            broken.append(f'{folder.name} (html, no manifest)')
+    chk(not broken, f'{tag}: every scene folder rendered or says it failed',
+        f'{len(scenes)} folders; incomplete: {broken[:6]}' if broken
+        else f'{len(scenes)} folders')
     for name in ('README.txt', 'report.html', 'parameters.json',
                  'set_coverage.json', 'pipeline_progress.jsonl',
                  '_UserGuide_please_read_me.html'):

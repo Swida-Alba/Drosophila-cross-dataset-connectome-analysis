@@ -644,6 +644,36 @@ def plan_scene_parents(parents: Dict[Tuple[str, str], List],
     return scenes, []
 
 
+def _write_scene_failure_marker(folder, src_type, exc, tb) -> bool:
+    """Say so IN the folder when a scene dies part-way through.
+
+    ``VisualizeSkeleton`` creates its save folder before the figure is written,
+    so a failed render leaves a directory holding ``parameters.txt`` and the
+    layer CSVs but no HTML and no manifest — on disk that is
+    indistinguishable from a scene that succeeded. Measured on the 2026-09-24
+    male-cns family run: 5 of its 21 parent scenes were exactly such empty
+    folders, and nothing downstream noticed.
+
+    Returns whether a marker was written. An unwritable folder is not worth
+    raising over: the run log already carries the error and its traceback.
+    """
+    if not folder:
+        return False
+    try:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        (Path(folder) / 'SCENE_FAILED.txt').write_text(
+            'this scene did not render\n'
+            f'parent type: {src_type}\n'
+            f'error: {type(exc).__name__}: {exc}\n'
+            'No branches_*.html, no PNG and no visualization_manifest.json '
+            'was written; everything else in this folder is a partial '
+            'artifact of the attempt.\n\n'
+            f'{tb}\n', encoding='utf-8')
+    except OSError:
+        return False
+    return True
+
+
 def render_pair_scenes(validator, per_pair_res: Dict) -> None:
     """Render one branch-structured scene per parent mapping group."""
     import navis
@@ -1281,4 +1311,11 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
         except Exception as exc:  # noqa: BLE001
             import traceback
             validator.log(f'    ! scene {src_type} failed: {exc}')
-            validator.log(traceback.format_exc())
+            tb = traceback.format_exc()
+            validator.log(tb)
+            # `viz` is bound inside the guarded block, so a constructor failure
+            # leaves it unbound — and no folder to mark, since the constructor
+            # is what makes it.
+            failed_viz = locals().get('viz')
+            _write_scene_failure_marker(getattr(failed_viz, 'save_folder', None),
+                                        src_type, exc, tb)

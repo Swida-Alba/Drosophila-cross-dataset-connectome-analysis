@@ -992,3 +992,30 @@ def test_skeleton_preflight_is_cache_first_bounded_and_fails_open(monkeypatch,
     v.notes = []
     assert v._preflight_target_skeletons('dsB', [11])['fetched'] == 0
     assert any('skeleton pre-flight unavailable' in n for n in v.notes)
+
+
+def test_a_failed_scene_marks_its_own_folder(tmp_path):
+    """A scene that dies halfway must not leave a folder that looks finished.
+
+    `VisualizeSkeleton` makes its save folder before writing the figure, so a
+    render raising at save time leaves `parameters.txt` and the layer CSVs with
+    no HTML — and nothing on disk says the page is missing. Measured on the
+    2026-09-24 male-cns family run, where 5 of 21 parent scenes were exactly
+    that, and `verify_tmvev_run_exports.py` still read the run as clean.
+    """
+    from comparison.mapping_validation_visualize import (
+        _write_scene_failure_marker)
+
+    folder = tmp_path / 'plot-3d_FAFB_branches_s-LNv_20260924_124443'
+    folder.mkdir()                          # the constructor makes it first
+    (folder / 'parameters.txt').write_text('Show Soma: True\n',
+                                           encoding='utf-8')
+    exc = ZeroDivisionError('float division by zero')
+    assert _write_scene_failure_marker(folder, 's-LNv', exc, 'Traceback...\n')
+    text = (folder / 'SCENE_FAILED.txt').read_text(encoding='utf-8')
+    assert 's-LNv' in text and 'ZeroDivisionError' in text
+    assert 'did not render' in text
+
+    # No folder means nothing to mark (the constructor failed, so it never
+    # existed) — and that must not raise.
+    assert _write_scene_failure_marker(None, 's-LNv', exc, '') is False

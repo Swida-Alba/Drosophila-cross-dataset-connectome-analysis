@@ -1180,6 +1180,14 @@ TOOL_GUIDE_SPECS = {
              "description": "Degraded copy of the interactive scene, written "
                             "only when the full page was too large for the "
                             "browser export. Re-export from the main page."},
+            {"pattern": "SCENE_FAILED.txt",
+             "description": "This scene did NOT render: the page, PNG and "
+                            "manifest are absent and everything else in the "
+                            "folder is a partial artifact. Names the parent "
+                            "type, the error and the traceback. Written "
+                            "because the folder is created before the figure, "
+                            "so a mid-render failure otherwise looks like a "
+                            "finished scene on disk."},
             {"pattern": "visualization_manifest.json",
              "description": "Machine-readable record of the run: dataset, "
                             "canonical viewer page, legend mode, freeze "
