@@ -7271,6 +7271,12 @@ class VisualizeSkeleton:
             return
         if not getattr(self, 'show_soma', True):
             return
+        # A cross-dataset overlay neuron keeps its source dataset in
+        # `_drocat_source_dataset`; a BANC source never carries soma signal,
+        # whatever scene it is rendered in.
+        source_ds = getattr(neuron, '_drocat_source_dataset', None)
+        if source_ds and is_banc_dataset(source_ds):
+            return
         nodes = getattr(neuron, 'nodes', None)
         if not isinstance(nodes, pd.DataFrame) or nodes.empty \
                 or 'radius' not in nodes.columns:
@@ -13184,6 +13190,13 @@ class VisualizeSkeleton:
             # Overlay layer: inject the caller-provided neurons directly.
             if is_custom_layer:
                 raw_neuron_vols = navis.NeuronList(custom_layer_neurons)
+                # Overlay neurons skip every _process_* stage, so the
+                # line-mode soma fallback must be applied here directly —
+                # otherwise an injected neuron without an SWC label==1
+                # marker loses its soma in line mode.
+                if (self.skeleton_mode == 'line' and self.show_soma):
+                    for n in custom_layer_neurons:
+                        self._ensure_line_soma(n)
 
             # Fetch missing neurons (only those not in the mesh cache when
             # the FAFB or NeuPrint mesh cache is in use)
