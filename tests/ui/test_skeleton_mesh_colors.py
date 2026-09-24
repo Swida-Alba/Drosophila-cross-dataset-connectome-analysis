@@ -58,3 +58,64 @@ def test_the_tab_builds_one_trio_per_half():
     for label in ('Brain Mesh Color', 'Brain Opacity',
                   'VNC Mesh Color', 'VNC Opacity'):
         assert label in labels, f'{label} is missing from the Skeleton tab'
+
+
+def test_the_two_halves_line_up_in_one_four_track_grid():
+    """The block is a table, not a wrapping row.
+
+    It began as a flat flex row of seven controls, which wrapped the cord's own
+    trio across two lines -- so the two halves did not read as the pair of
+    independent knobs they are. Measured live, that row also overflowed its card
+    on a narrow window once the fields carried fixed widths. Both are pinned
+    here structurally: the two colour inputs must sit in the *same* param grid,
+    and that grid must declare four tracks, which is what puts one half on each
+    row with the columns aligned.
+    """
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.tabs.visualization import create_skeleton_tab
+
+    client = Client(page('/mesh-color-grid'))
+    with client:
+        create_skeleton_tab()
+
+    def field(label):
+        hits = [el for el in client.elements.values()
+                if getattr(el, '_props', {}).get('label') == label]
+        assert hits, f'{label} is not on the tab'
+        return hits[0]
+
+    def labels_under(element):
+        out = set()
+        stack = [element]
+        while stack:
+            el = stack.pop()
+            label = getattr(el, '_props', {}).get('label')
+            if label:
+                out.add(label)
+            slot = getattr(el, 'default_slot', None)
+            stack.extend(getattr(slot, 'children', None) or [])
+        return out
+
+    wanted = {'Brain Mesh Color', 'Brain Opacity',
+              'VNC Mesh Color', 'VNC Opacity'}
+    grids = [el for el in client.elements.values()
+             if 'drocat-param-grid' in set(getattr(el, '_classes', ()) or ())
+             and wanted <= labels_under(el)]
+    assert grids, (
+        'no single param grid holds both mesh trios -- they are back in a '
+        'wrapping row, or split so their columns cannot line up')
+    assert len(grids) == 1, f'the trios sit in {len(grids)} grids, expected 1'
+
+    style = ' '.join(f'{k}: {v}' for k, v in
+                     (getattr(grids[0], '_style', None) or {}).items())
+    tracks = style.count('minmax(0,')
+    assert tracks == 4, (
+        f'the mesh grid declares {tracks} tracks, not 4 -- one row per half '
+        f'needs a label, colour, opacity and auto column ({style!r})')
+    # A fixed field width is what overflowed the card at 720 px; the tracks
+    # have to be able to shrink, so the fields flow inside them.
+    for label in wanted:
+        css = ' '.join(f'{k}: {v}' for k, v in
+                       (getattr(field(label), '_style', None) or {}).items())
+        assert 'width:' not in css, f'{label} still pins its own width: {css!r}'

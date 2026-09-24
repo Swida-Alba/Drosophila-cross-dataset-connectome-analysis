@@ -526,33 +526,42 @@ def create_skeleton_tab():
                         except Exception:
                             el.set_visibility(visible)
 
-                # Mesh extras share one compact row: the VNC toggle plus one
-                # color trio per half (Auto follows the background adaptively;
-                # unchecking pins the picked color + opacity). The VNC color
-                # also paints the nerve cord a male-cns/banc page embeds
-                # without showing it, which is the half a viewer reveals from
-                # the legend tree. Per-ROI colors live in the ROI panel's
+                # Mesh appearance reads as a table, one row per half. The flat
+                # flex row this replaces wrapped the cord's own trio across two
+                # lines, so the two halves -- which are independent knobs, and
+                # the VNC one also paints the cord a male-cns/banc page embeds
+                # without showing -- did not line up as a pair. The left cell
+                # names the half: for the cord that cell *is* its show/hide
+                # checkbox, while the brain's is decided by the Brain Mesh menu
+                # two fields above. Per-ROI colors live in the ROI panel's
                 # palette editor.
                 def _sync_mesh_color(color, opacity, auto):
                     enabled = not auto.value
                     color.set_enabled(enabled)
                     opacity.set_enabled(enabled)
 
-                with ui.row().classes("w-full items-end gap-6 flex-wrap"):
-                    vnc_mesh = checkbox_input(
-                        "VNC Mesh", False,
-                        hint="Show the ventral nerve cord mesh (male-cns / manc datasets).",
-                    )
+                with ui.grid(columns=4).classes(
+                        "w-full drocat-param-grid items-start").style(
+                        'grid-template-columns: minmax(0, 1.15fr) '
+                        'minmax(0, 1.35fr) minmax(0, 0.85fr) '
+                        'minmax(0, 0.95fr)'):
+                    # Every field is fluid inside its track: a fixed 11rem
+                    # colour input is what pushed this block past the card's
+                    # ~590 px on a narrow window.
+                    with ui.column().classes("gap-0 pt-1"):
+                        ui.label("Brain outline").classes("font-semibold")
+                        ui.label("drawn by the Brain Mesh menu").classes(
+                            "text-caption drocat-muted")
                     brain_mesh_color = ui.color_input(
                         "Brain Mesh Color", value="#74A8D6",
-                    ).props("dense").classes("drocat-input").style("width: 11rem")
+                    ).props("dense").classes("drocat-input w-full")
                     brain_mesh_color_opacity = number_input(
                         "Brain Opacity", 0.04, 0, 1, 0.01,
                         hint=(
                             "Outline opacity for the picked color. Defaults "
                             "to 0.04 (4%); only used when Auto is off."
                         ),
-                    ).props("dense").classes("drocat-input").style("width: 7rem")
+                    ).props("dense").classes("drocat-input w-full")
                     brain_mesh_color_auto = checkbox_input(
                         "Auto", True,
                         hint=(
@@ -562,9 +571,16 @@ def create_skeleton_tab():
                             "outline mesh."
                         ),
                     )
+                    with ui.column().classes("gap-0"):
+                        vnc_mesh = checkbox_input(
+                            "VNC Mesh", False,
+                            hint="Show the ventral nerve cord mesh (male-cns / manc datasets).",
+                        )
+                        ui.label("male-cns / banc datasets").classes(
+                            "text-caption drocat-muted")
                     vnc_mesh_color = ui.color_input(
                         "VNC Mesh Color", value="#74A8D6",
-                    ).props("dense").classes("drocat-input").style("width: 11rem")
+                    ).props("dense").classes("drocat-input w-full")
                     vnc_mesh_color_opacity = number_input(
                         "VNC Opacity", 0.04, 0, 1, 0.01,
                         hint=(
@@ -572,7 +588,7 @@ def create_skeleton_tab():
                             "nerve cord whether the mesh checkbox shows it or "
                             "the page only embeds it hidden."
                         ),
-                    ).props("dense").classes("drocat-input").style("width: 7rem")
+                    ).props("dense").classes("drocat-input w-full")
                     vnc_mesh_color_auto = checkbox_input(
                         "VNC Auto", True,
                         hint=(
