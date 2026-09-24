@@ -57,15 +57,16 @@ def create_nb_find_neuron_tab():
                     True,
                     hint="Generate optional 3D skeleton visualizations of matched neurons.",
                 )
-                visualization_settings = skeleton_visualization_settings(
-                    default_top_n=10,
-                    top_n_label="Visualize Top N",
-                    top_n_hint="Number of top types or bodyIds to render in 3D.",
-                    default_visualize_by="type",
-                    show_high_quality_warning=True,
-                    default_show_fig=False,
-                    default_export_views=True,
-                )
+            visualization_settings = skeleton_visualization_settings(
+                default_top_n=10,
+                top_n_label="Visualize Top N",
+                top_n_hint="Number of top types or bodyIds to render in 3D.",
+                default_visualize_by="type",
+                show_high_quality_warning=True,
+                default_show_fig=False,
+                default_export_views=True,
+                card_id="card-nb-findneuron-advanced-viz",
+            )
             _, detail_flags = output_detail_control(
                 "Full keeps every exported file. Compact drops the "
                 "bodyId-level match tables (all_neurons.csv, {line}_neurons.csv, "

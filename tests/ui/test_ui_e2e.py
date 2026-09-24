@@ -648,10 +648,21 @@ class TestRunner:
         assert by_label["Visualize By"].value == DEFAULTS["morph_visualize_by"]
         # Analysis panels now default to the fast pipeline (0.90 removal).
         assert by_label["Mesh Simplification"].value == 0.90
-        assert any(
-            getattr(el, "_props", {}).get("label") == "Advanced Visualization"
-            for el in client.elements.values()
-        )
+        # The Advanced Visualization editor renders as a drocat-card section
+        # (same pattern as the Skeleton tab's appearance blocks), one per
+        # sub-tab, not a bare inline expander beside the Visualize checkbox.
+        advanced_viz = [
+            el for el in client.elements.values()
+            if getattr(el, "_props", {}).get("label") == "Advanced Visualization"
+        ]
+        assert len(advanced_viz) == 2  # Find Similar + Comparison sub-tabs
+        for expansion in advanced_viz:
+            assert "drocat-section-expansion" in getattr(expansion, "_classes", [])
+            card = expansion.parent_slot.parent
+            assert "drocat-card" in getattr(card, "_classes", [])
+            assert str(getattr(card, "_props", {}).get("id", "")).endswith(
+                "-advanced-viz"
+            )
 
         # The two sub-tabs are independent, outlined buttons rather than
         # one segmented toggle, so each remains easy to target and read.

@@ -73,16 +73,17 @@ def create_nb_colabel_tab():
                     False,
                     hint="Render optional 3D skeletons of top co-labeled types.",
                 )
-                visualization_settings = skeleton_visualization_settings(
-                    default_top_n=5,
-                    top_n_label="Visualize Top N Types",
-                    top_n_hint="Number of top co-labeled types to visualize in 3D.",
-                    default_visualize_by="type",
-                    default_show_fig=False,
-                    default_export_views=True,
-                    dataset_provider=lambda: "" if dataset.value in (None, "(all)") else dataset.value,
-                    dataset_watchers=[dataset],
-                )
+            visualization_settings = skeleton_visualization_settings(
+                default_top_n=5,
+                top_n_label="Visualize Top N Types",
+                top_n_hint="Number of top co-labeled types to visualize in 3D.",
+                default_visualize_by="type",
+                default_show_fig=False,
+                default_export_views=True,
+                dataset_provider=lambda: "" if dataset.value in (None, "(all)") else dataset.value,
+                dataset_watchers=[dataset],
+                card_id="card-nb-colabel-advanced-viz",
+            )
             _, detail_flags = output_detail_control(
                 "Full keeps every exported file. Compact drops the row-level "
                 "source data (line_labeled_neurons/ and "

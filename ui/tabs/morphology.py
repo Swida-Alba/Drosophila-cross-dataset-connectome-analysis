@@ -269,18 +269,19 @@ def create_morphology_tab():
                         DEFAULTS["morph_visualize_top_n"] > 0,
                         hint="Render optional 3D skeletons for the highest-ranked results.",
                     )
-                    visualization_settings = skeleton_visualization_settings(
-                        default_top_n=DEFAULTS["morph_visualize_top_n"],
-                        top_n_label="Visualize Top N Types / Neurons",
-                        top_n_hint=(
-                            "Number of top results to render. The grouping choice "
-                            "controls whether types or individual bodyIds are shown."
-                        ),
-                        default_visualize_by=DEFAULTS["morph_visualize_by"],
-                        show_high_quality_warning=True,
-                        dataset_provider=lambda: dataset.value,
-                        dataset_watchers=[dataset],
-                    )
+                visualization_settings = skeleton_visualization_settings(
+                    default_top_n=DEFAULTS["morph_visualize_top_n"],
+                    top_n_label="Visualize Top N Types / Neurons",
+                    top_n_hint=(
+                        "Number of top results to render. The grouping choice "
+                        "controls whether types or individual bodyIds are shown."
+                    ),
+                    default_visualize_by=DEFAULTS["morph_visualize_by"],
+                    show_high_quality_warning=True,
+                    dataset_provider=lambda: dataset.value,
+                    dataset_watchers=[dataset],
+                    card_id="card-morphology-advanced-viz",
+                )
 
             def refresh_roi_options():
                 # ROI data availability differs per dataset (male-cns has 114
@@ -400,6 +401,7 @@ def create_morphology_tab():
                             dataset_provider=lambda: (
                                 list(comparison_datasets.value or [None])[0]),
                             dataset_watchers=[comparison_datasets],
+                            card_id="card-morphology-comparison-advanced-viz",
                         ))
                 # --- cross-dataset-only parameters (two or more datasets) ---
                 with ui.column().classes("w-full gap-1") as cross_params_box:

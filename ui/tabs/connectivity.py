@@ -166,21 +166,22 @@ def create_connectivity_tab():
                         True,
                         hint="Generate 3D skeleton visualizations of the top matches.",
                     )
-                    visualization_settings = skeleton_visualization_settings(
-                        default_top_n=5,
-                        top_n_label="Visualize Top N Candidates",
-                        top_n_hint="Number of top candidates to render as 3D skeletons.",
-                        default_visualize_by="type",
-                        show_high_quality_warning=True,
-                        # Similar searches render many candidates at once; do
-                        # not pop the figure open unless the user asks for it.
-                        default_show_fig=False,
-                        dataset_provider=lambda: [
-                            source_dataset.value,
-                            target_dataset.value,
-                        ],
-                        dataset_watchers=[source_dataset, target_dataset],
-                    )
+                visualization_settings = skeleton_visualization_settings(
+                    default_top_n=5,
+                    top_n_label="Visualize Top N Candidates",
+                    top_n_hint="Number of top candidates to render as 3D skeletons.",
+                    default_visualize_by="type",
+                    show_high_quality_warning=True,
+                    # Similar searches render many candidates at once; do
+                    # not pop the figure open unless the user asks for it.
+                    default_show_fig=False,
+                    dataset_provider=lambda: [
+                        source_dataset.value,
+                        target_dataset.value,
+                    ],
+                    dataset_watchers=[source_dataset, target_dataset],
+                    card_id="card-connectivity-advanced-viz",
+                )
                 saveas = ui.input(
                     label="Save Folder Name (optional)",
                     placeholder="e.g., aMe12_similar",
