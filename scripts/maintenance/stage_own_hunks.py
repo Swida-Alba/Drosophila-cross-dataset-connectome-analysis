@@ -103,7 +103,7 @@ def main(argv=None):
             print(f'    -> staged {len(keep)}/{len(hs)} hunks')
         else:
             out = dump / (path.replace('/', '_') + '.patch')
-            out.write_text(patch)
+            out.write_text(patch, encoding='utf-8')
             print(f'    -> {len(keep)}/{len(hs)} hunks selected; patch {out}')
     if problems:
         print('\n== unresolved ==')
