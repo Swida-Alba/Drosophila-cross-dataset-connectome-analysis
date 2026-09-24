@@ -135,8 +135,10 @@ def parse_args(argv=None):
                         'neurons within this per-metric rank are '
                         'considered (Rev 3.8; default 25)')
     p.add_argument('--deep-cap', type=int, default=10,
-                   help='max deep-window candidates kept per source '
-                        'neuron (Rev 3.8; default 10)')
+                   help='max candidate-window rows kept per source neuron '
+                        'and PER BAND — the borderline and deep bands each '
+                        'draw on a budget of this size, so a wider mode only '
+                        'adds rows (Rev 3.8; default 10)')
     p.add_argument('--pooling-jaccard-floor', type=float, default=0.10,
                    help='--mode pooling: absolute Jaccard floor — a VOLUME '
                         'guard-rail on how wide the connectivity scan may '

@@ -235,6 +235,9 @@ class MappingValidationConfig:
     aggressive_expansion: bool = False
     pool_widen: bool = False
     candidate_window: int = 25
+    #: Per source and PER BAND: the borderline window (`rank_top_k`) and the
+    #: deep window (`candidate_window`) each draw on a budget of this size, so
+    #: widening the mode only ever adds rows (see `_scan_pair`'s window block).
     deep_cap: int = 10
     # ------------------------------------------------------------------
     # `pooling` mode (plan-tmvev-pooling-mode.md): the UNSUPERVISED candidate
@@ -1227,10 +1230,13 @@ def select_null_sample(per_source: Dict[int, pd.DataFrame],
 
     Per source, the candidates are the scanned targets OUTSIDE the pool
     with ``jaccard <= null_jaccard_max`` (provably unrelated by
-    connectivity) that no earlier bin consumed (``seen_null`` carries the
-    deep-window rows).  Selection sorts by ``target_bid`` before the
-    per-source cap, so the sample is a pure function of the scan rows —
-    immune to DataFrame/scan order.
+    connectivity) that the invader feed did not already claim
+    (``seen_null``).  The exclusion is deliberately MODE-INVARIANT: what
+    this mode's candidate window consumed must not decide the backdrop,
+    or the bar moves with the mode and re-grades rows that sit near it.
+    Selection sorts by ``target_bid`` before the per-source cap, so the
+    sample is a pure function of the scan rows — immune to
+    DataFrame/scan order.
 
     Design stance (user 2026-09-17): the null bar gates an arbitrary
     floor — connectivity ranks, the user verifies — so a small sampled
@@ -2529,35 +2535,58 @@ class MappingValidator:
         # borderline window `--rank-top-k`; restrictive keeps its documented
         # invader-only feed.
         deep_rows: List[Dict] = []
+        # TWO windows, TWO budgets.  The borderline window every family run
+        # reads and the deep window only aggressive reads used to share ONE
+        # per-source cap, so widening the mode spent that budget on deep rows
+        # and never reached the tight rows the narrower mode had kept —
+        # measured 2026-09-24 as 110 of 189 shared (source, target) pairs
+        # displaced on male-cns and 262 of 408 on BANC, which then deleted their
+        # `relative` rows (129 → 49 targets) and shrank the layered gap-fill
+        # report (153 → 63 rows): the wider question reported LESS evidence.
+        # The two bands now also run as two PASSES, because one per-source
+        # budget per band is not enough on its own: a row's band is its rank in
+        # the metric that surfaced it, and within a tie on the chain's leading
+        # metric a deep-band row can be reached — and can spend the budget —
+        # before the borderline row it is tied with.  Measured on the
+        # post-fix 2026-09-24 male-cns run, 63 of family's 189 borderline pairs
+        # still vanished that way.  Reading the borderline band first, with the
+        # filter family uses, makes the displacement impossible rather than
+        # unlikely: aggressive adds its deep band on top of what is left.
+        tight_per_src: Dict[int, int] = {}
         deep_per_src: Dict[int, int] = {}
         null_rows: List[Dict] = []
-        deep_cap_null = 0
-        seen_deep = {int(r['ahead_target_bodyId']) for r in sus_rows}
+        sus_targets = {int(r['ahead_target_bodyId']) for r in sus_rows}
+        seen_deep = set(sus_targets)
         wide = cfg.mode_at_least('aggressive')
-        window_k = cfg.candidate_window if wide else cfg.rank_top_k
-        if cfg.mode_at_least('family'):
+
+        def window_pass(k, budget, band, borderline):
+            """One band's rows, in chain order, under one per-source budget."""
             for sbid, df in per_source.items():
                 src_best = best_by_src.get(sbid)
                 if src_best is None:
                     continue
-                # The chain's leading metric fills the shared per-source cap
-                # first (J1): rank_union-first here let it consume the budget
-                # before the Jaccard window was ever read.
+                # The chain's leading metric fills the budget first (J1):
+                # rank_union-first here let it consume the budget before the
+                # Jaccard window was ever read.
                 for metric in ('jaccard', 'rank_union'):
-                    if deep_per_src.get(sbid, 0) >= cfg.deep_cap:
-                        break
+                    if budget.get(sbid, 0) >= cfg.deep_cap:
+                        continue
                     window = df[(~df['target_bid'].isin(pool_set))
                                 & df[f'{metric}_rank'].notna()
-                                & (df[f'{metric}_rank'] <= window_k)]
-                    # Read the window in chain order so WHICH rows survive
-                    # the shared per-source cap never moves with the
-                    # incoming frame order.
+                                & (df[f'{metric}_rank'] <= k)]
+                    # Read the window in chain order so WHICH rows survive a
+                    # per-source budget never moves with the frame order.
                     window = order_by_chain(window)
                     for r in window.itertuples(index=False):
                         bid = int(r.target_bid)
                         if bid in seen_deep or bid in pool_set:
                             continue
-                        if deep_per_src.get(sbid, 0) >= cfg.deep_cap:
+                        rank = float(getattr(r, f'{metric}_rank'))
+                        if borderline and rank > cfg.rank_top_k:
+                            continue     # this pass reads the borderline band
+                        if not borderline and rank <= cfg.rank_top_k:
+                            continue     # the deep band never re-reads it
+                        if budget.get(sbid, 0) >= cfg.deep_cap:
                             break
                         size_ratio = None
                         if sizes and pool_best_size > 0:
@@ -2571,28 +2600,27 @@ class MappingValidator:
                         if size_ratio is not None \
                                 and size_ratio < cfg.target_min_size_ratio:
                             continue
-                        deep_per_src[sbid] = deep_per_src.get(sbid, 0) + 1
+                        budget[sbid] = budget.get(sbid, 0) + 1
                         seen_deep.add(bid)
                         row = self._sus_row(
                             pair, sbid, r, src_best, metric,
                             getattr(r, 'rank_union_rank', None),
                             getattr(r, 'jaccard_rank', None), target_id2type)
-                        # Tagged by the ROW's own rank, not the mode, so a
-                        # tight-window neuron is a candidate in aggressive
-                        # MODE too (modes nest; a shared neuron keeps its
-                        # category).
-                        tight = (float(getattr(r, f'{metric}_rank'))
-                                 <= cfg.rank_top_k)
                         row.update({
                             'ahead_size': (sizes.get(bid) if sizes else None),
                             'pool_best_size': pool_best_size,
                             'size_ratio': (_f(size_ratio)
                                            if size_ratio is not None else None),
                             'size_filtered': False,
-                            'candidate_source': ('top_window' if tight
-                                                 else 'deep_window'),
+                            'candidate_source': band,
                         })
                         deep_rows.append(row)
+
+        if cfg.mode_at_least('family'):
+            window_pass(cfg.rank_top_k, tight_per_src, 'top_window', True)
+            if wide:
+                window_pass(cfg.candidate_window, deep_per_src,
+                            'deep_window', False)
         # Rev 3.9 null sample for the Track-A bar calibration: window
         # rows with near-zero jaccard are provably unrelated by
         # connectivity — their Track-A morph distribution IS the
@@ -2602,7 +2630,17 @@ class MappingValidator:
         # deterministic (sorted by target bid, user 2026-09-17: a small
         # sampled set is enough for the arbitrary floor gate — no
         # cross-run persistence).
-        seen_null = seen_deep
+        # The backdrop excludes only what is MODE-INVARIANT: the invader feed
+        # and the pool.  It used to share `seen_deep`, which accumulates this
+        # mode's own window, so the eligible pool shrank as the mode widened and
+        # the p95 moved with it (0.143561 / 0.143123 / 0.150580 on male-cns,
+        # 2026-09-24) — enough to flip the category of any row sitting inside
+        # that drift: one BANC pair holds `morph_v2_similarity` 0.2642521 in all
+        # three runs and reads `candidates` / out-of-scope / `candidates` as its
+        # bar moves 0.263224 → 0.264533 → 0.256532.  A candidate that is also
+        # near-zero-connectivity belongs in the backdrop by the stated criterion,
+        # so sharing the exclusion bought nothing and cost the invariant.
+        seen_null = set(sus_targets)
         eligible = {s: df for s, df in per_source.items()
                     if best_by_src.get(s) is not None}
         for sbid, bid in select_null_sample(

@@ -1565,6 +1565,145 @@ def test_deep_window_candidates_below_pool_best():
     assert 302 in buckets['candidates']['ids']
 
 
+def _nesting_fixture(mode):
+    """One source, one pool best, four borderline rows, twelve near-zero rows
+    that only the wide window reaches, and TWO homologs that are borderline
+    only in rank_union.
+
+    The shape is the point. Under a SHARED per-source budget the wide window
+    spends it on the near-zero rows before the rank_union loop is ever read,
+    which is how a real run lost 110 (male-cns) / 262 (BANC) borderline rows
+    to the wider mode. And if a row's BAND follows whichever metric's loop
+    reaches it first, the wide loop can charge a rank_union-borderline row to
+    the deep band and the second loop can no longer count it — that is 430,
+    jaccard rank 6 and rank_union rank 4.
+    """
+    import pandas as pd
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(
+        source_dataset='dsA', target_dataset='dsB', query_types=['T'],
+        morph_enabled=False, visualize=False, validation_mode=mode,
+        candidate_window=25, deep_cap=10)
+    v.mapper = None
+    v.notes = []
+
+    class FakeProfiler:
+        def get_profile(self, bid, dataset):
+            return None
+
+        def get_types_for_bodyids(self, bids, dataset):
+            return {b: 'TX' for b in bids}
+
+    v.profiler = FakeProfiler()
+    pair = TypePair('dsA', 'T', [1], 'dsB', 'T', [11])
+    rows = [{'target_bid': 11, 'jaccard': 0.90, 'jaccard_rank': 1,
+             'rank_union': 0.90, 'rank_union_rank': 1}]
+    # 301-304: tight by jaccard (ranks 2-5)
+    for i, b in enumerate((301, 302, 303, 304)):
+        rows.append({'target_bid': b, 'jaccard': 0.80 - 0.02 * i,
+                     'jaccard_rank': 2 + i, 'rank_union': 0.30 - 0.02 * i,
+                     'rank_union_rank': 12 + i})
+    # 430: deep by jaccard AND early in that window, borderline by rank_union
+    rows.append({'target_bid': 430, 'jaccard': 0.735, 'jaccard_rank': 6,
+                 'rank_union': 0.35, 'rank_union_rank': 4})
+    # 305-308: deep by jaccard
+    for i, b in enumerate((305, 306, 307, 308)):
+        rows.append({'target_bid': b, 'jaccard': 0.40 - 0.02 * i,
+                     'jaccard_rank': 7 + i, 'rank_union': 0.20 - 0.02 * i,
+                     'rank_union_rank': 16 + i})
+    # 600-611: only inside the WIDE window (jaccard ranks 11-22), and each is
+    # near-zero enough to be backdrop material
+    for i, b in enumerate(range(600, 612)):
+        rows.append({'target_bid': b, 'jaccard': 0.05 - 0.001 * i,
+                     'jaccard_rank': 11 + i, 'rank_union': 0.05 - 0.001 * i,
+                     'rank_union_rank': 30 + i})
+    rows.append({'target_bid': 501, 'jaccard': 0.02, 'jaccard_rank': 23,
+                 'rank_union': 0.02, 'rank_union_rank': 42})
+    rows.append({'target_bid': 502, 'jaccard': 0.015, 'jaccard_rank': 24,
+                 'rank_union': 0.015, 'rank_union_rank': 43})
+    # 420: rank 3 by rank_union, last by jaccard — reachable only through
+    # the second metric's loop
+    rows.append({'target_bid': 420, 'jaccard': 0.008, 'jaccard_rank': 25,
+                 'rank_union': 0.60, 'rank_union_rank': 3})
+    # 440 against 620-631: one borderline row TIED on jaccard with twelve deep
+    # rows, and the weakest rank_union of the tie. Chain order puts it last, so
+    # a single loop that stops the moment its deep budget is full never reaches
+    # it — which is exactly how the post-fix 2026-09-24 run still lost 63 of
+    # family's 189 borderline pairs. Reading the bands as separate passes is
+    # what makes it reach.
+    rows.append({'target_bid': 440, 'jaccard': 0.15, 'jaccard_rank': 5,
+                 'rank_union': 0.05, 'rank_union_rank': 60})
+    for i, b in enumerate(range(620, 632)):
+        rows.append({'target_bid': b, 'jaccard': 0.15,
+                     'jaccard_rank': 6 + i, 'rank_union': 0.30 - 0.01 * i,
+                     'rank_union_rank': 44 + i})
+    scans = {1: pd.DataFrame(rows)}
+    return v.validate_pair(
+        pair, scans,
+        {11: 'T', 420: 'TX', 430: 'TX', 440: 'TX', 501: 'TX', 502: 'TX',
+         **{b: 'TX' for b in list(range(301, 309)) + list(range(600, 633))}})
+
+
+def test_widening_the_mode_never_displaces_a_borderline_row():
+    """The modes NEST, so aggressive may only ADD to what family reported.
+
+    Two ways this broke, both measured on the 2026-09-24 `circadian_clock`
+    ladder: the borderline and deep bands shared ONE per-source budget, so
+    aggressive spent it on its 25-wide jaccard window and the rank_union loop
+    was never read (110 of 189 pairs displaced on male-cns, 262 of 408 on
+    BANC, their `relative` rows and their layered gap-fill entries with them —
+    153 rows → 63); and a row's band followed whichever metric reached it
+    first, so the wide loop could charge a rank_union-borderline row to the
+    deep band. Here 420 is the first victim and 430 the second.
+    """
+    fam = _nesting_fixture('family')
+    agg = _nesting_fixture('aggressive')
+    fam_rows = {(d['ahead_target_bodyId'], d['candidate_source'])
+                for d in fam['deep']}
+    agg_rows = {(d['ahead_target_bodyId'], d['candidate_source'])
+                for d in agg['deep']}
+    # family reads only the borderline window: the four tight rows, the row
+    # tied at its boundary, and the two caught through their rank_union
+    assert {b for b, _ in fam_rows} == {301, 302, 303, 304, 440, 430, 420}
+    assert {src for _, src in fam_rows} == {'top_window'}
+    # aggressive keeps every one of them, IN THE SAME BAND
+    assert fam_rows <= agg_rows, f'displaced: {sorted(fam_rows - agg_rows)}'
+    for b in (440, 430, 420):
+        assert (b, 'top_window') in agg_rows, f'{b} lost its band'
+    # and everything it adds is deep-band, under its own budget
+    added = {b for b, src in agg_rows if src == 'deep_window'}
+    assert added and added.isdisjoint({b for b, _ in fam_rows})
+    assert sum(1 for _b, src in agg_rows if src == 'deep_window') == 10
+    assert len(fam['deep']) == 7
+    assert len(agg['deep']) == 17
+    assert fam['summary']['deep_candidates'] == 7
+    assert agg['summary']['deep_candidates'] == 17
+
+
+def test_the_null_backdrop_is_the_same_sample_in_every_mode():
+    """The no-homology backdrop gates every null-kind bar, so which rows a
+    mode's own window happened to consume must not decide it.
+
+    It used to: the sample excluded `seen_deep`, which accumulates the
+    window, so the p95 moved 0.143561 → 0.143123 → 0.150580 across the ladder
+    on male-cns and re-graded any row sitting inside that drift (one BANC pair
+    holds similarity 0.2642521 in all three runs and reads `candidates` /
+    out-of-scope / `candidates` as its bar moves).  600-611 are the same
+    test: near-zero connectivity, and aggressive's wide window also reaches
+    them.
+    """
+    fam = _nesting_fixture('family')
+    agg = _nesting_fixture('aggressive')
+    pick = lambda res: sorted((r['source_bodyId'], r['ahead_target_bodyId'])
+                              for r in res['null'])
+    assert pick(fam) == pick(agg)
+    # every backdrop slot is filled from the same eligible set in both modes
+    assert {r['ahead_target_bodyId'] for r in fam['null']} == {
+        420, 501, 502, 600, 601}
+    assert {r['ahead_target_bodyId'] for r in agg['null']} == {
+        420, 501, 502, 600, 601}
+
+
 def test_deep_window_off_by_default():
     """Rev 3.9 scope: without aggressive_expansion the deep window is
     inert — no deep rows even when below-pool homologs exist."""
