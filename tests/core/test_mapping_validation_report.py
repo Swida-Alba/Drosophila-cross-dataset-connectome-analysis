@@ -27,6 +27,8 @@ from comparison.mapping_validation_report import (  # noqa: E402
     build_report_document,
     collect_run_data,
     collect_warnings,
+    _scene_failures,
+    _scenes_tab,
     _viewport,
 )
 
@@ -885,3 +887,40 @@ def test_pooling_artifacts_resolve_from_a_flat_run_folder(run_dir: Path):
     html = build_report_document(collect_run_data(run_dir))
     assert "Pooling — the unsupervised scan" in html
     assert "jaccard &gt; 0.1000 (configured)" in html
+
+
+def test_an_attempted_scene_that_crashed_is_named_not_counted_away(run_dir: Path):
+    """A crash must not be reported as the "nothing renderable" policy.
+
+    The Scenes tab used to say "N scenes rendered — only types with renderable
+    expansion content get a scene" whatever the reason, so a male-cns family run
+    that lost five parents to a ZeroDivisionError read as a design decision. Both
+    records of the crash now surface it: the run log's `! scene X failed:` line
+    (which is what archived runs have) and the folder's SCENE_FAILED.txt (which
+    is what new runs write).
+    """
+    readme = run_dir / "README.txt"
+    lines = readme.read_text(encoding="utf-8").splitlines()
+    # the parser only reads `!` lines from inside the "Run log:" block, so the
+    # failure goes there, after a whole log line (the fixture's own log lines
+    # wrap, so a substring splice would cut one in half)
+    at = next(i for i, ln in enumerate(lines) if 'self-check [A]' in ln)
+    lines.insert(at + 1, '    ! scene s-LNv failed: float division by zero')
+    readme.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    marker = run_dir / "visualization" / "plot-3d_stub_branches_q1_x"
+    marker.mkdir()
+    (marker / "SCENE_FAILED.txt").write_text(
+        "this scene did not render\nparent type: q1\n"
+        "error: ZeroDivisionError: float division by zero\n",
+        encoding="utf-8")
+
+    d = collect_run_data(run_dir)
+    assert any('scene s-LNv failed' in ln
+               for ln in d['readme']['bang_lines'])       # parsed as a warning
+    assert _scene_failures(d) == [
+        ("q1", "ZeroDivisionError: float division by zero"),
+        ("s-LNv", "float division by zero")]
+    html = _scenes_tab(d)
+    assert "s-LNv" in html and "attempted and FAILED" in html
+    # the policy sentence stays, but no longer speaks for the crashes
+    assert "nothing renderable get no scene" in html

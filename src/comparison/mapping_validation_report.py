@@ -3363,6 +3363,35 @@ def _pooling_tab(d: Dict) -> str:
         ['ordering chain', 'mapper_cell', 'morph_gate'])
 
 
+def _scene_failures(d: Dict) -> list:
+    """Parents whose scene was ATTEMPTED and died, as `[(type, error)]`.
+
+    Two sources, unioned: the run log's `! scene X failed: …` line (which works
+    for runs archived before the marker existed), and the folder-level
+    `SCENE_FAILED.txt` the renderer now writes. Without this the Scenes tab
+    attributed a crash to policy — a male-cns family run showed "16 scenes
+    rendered — only types with renderable expansion content get a scene" while
+    five more parents had been attempted and lost to a ZeroDivisionError.
+    """
+    failed: Dict[str, str] = {}
+    for ln in (d.get('readme') or {}).get('bang_lines') or []:
+        m = re.match(r'!\s*scene (.+?) failed:\s*(.*)', ln)
+        if m:
+            failed.setdefault(m.group(1).strip(), m.group(2).strip()
+                              or 'error not recorded')
+    viz = Path(d['run_dir']) / 'visualization' if d.get('run_dir') else None
+    if viz and viz.is_dir():
+        for marker in sorted(viz.glob('plot-3d_*/SCENE_FAILED.txt')):
+            text = marker.read_text(errors='replace')
+            m = re.search(r'parent type:\s*(.+)', text)
+            e = re.search(r'error:\s*(.+)', text)
+            if m:
+                failed.setdefault(m.group(1).strip(),
+                                  (e.group(1).strip() if e else
+                                   'see SCENE_FAILED.txt'))
+    return sorted(failed.items())
+
+
 def _scenes_tab(d: Dict) -> str:
     sc = d['selfcheck']
     statuses: Dict[str, bool] = {}
@@ -3394,10 +3423,20 @@ def _scenes_tab(d: Dict) -> str:
                          f"href='{_esc(s['html'])}'>{inner}</a>")
         else:
             tiles.append(f"<div class='scene-tile'>{inner}</div>")
+    failed = _scene_failures(d)
+    fail_note = ''
+    if failed:
+        fail_note = (
+            f" <b class='mv-warn'>{len(failed)} attempted and FAILED</b>"
+            ' (their folders hold no page; see the Log tab): '
+            + _esc(', '.join(f'{t} — {e}' for t, e in failed[:6]))
+            + ('' if len(failed) <= 6 else f' (+{len(failed) - 6} more)'))
     body = (
         f"<p class='section-summary'>{len(d['scenes'])} scenes rendered "
-        '— only types with renderable expansion content get a scene '
-        '(decided): a scene with nothing rendered is noise.</p>'
+        '— types with nothing renderable get no scene (decided: a scene '
+        'with no content is noise), and every parent that was attempted '
+        'but failed is named below rather than folded into that count.'
+        f'{fail_note}</p>'
         f"<div class='scene-grid'>{''.join(tiles)}</div>"
         "<p class='mv-note'>Scenes render in SOURCE coordinates — read "
         'as anatomy, never as the scoring frame (morph tracks score in '
