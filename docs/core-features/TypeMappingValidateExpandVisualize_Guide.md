@@ -503,6 +503,16 @@ harvest. Only an explicit refusal removes a target: `no-score`,
 `not-attempted-cap`, `not-selected`, `disabled`, `inactive` and `error` all
 stay in the pool and are named as what they are.
 
+**Read a verdict from the four columns that made it.** `morph_bar_kind` names
+the binding rule (`native` / `track_a` / `null_bar`), `morph_bar` is that rule's
+value, and the score it was applied to is `morph_pool_ref` for a native row and
+`morph_similarity` otherwise — so `morph_qualified` is always recomputable from
+the row it sits on, and the Pooling tab's morphology cell prints exactly that
+pair with its kind. An earlier build published the per-source null bar under a
+`native` kind label, which made 14 of 41 scored rows read as a score below its
+own bar with a ✓ beside it: the gate had graded the right pair, the export could
+not show it.
+
 **The floors are a volume guard-rail, and the configured number is the
 number.** `pooling_jaccard_floor` (0.10) and `pooling_rank_union_floor` (0)
 decide how wide connectivity may open, and nothing else: they are not a

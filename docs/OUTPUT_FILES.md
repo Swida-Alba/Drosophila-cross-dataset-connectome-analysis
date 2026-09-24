@@ -815,11 +815,17 @@ pooled target, tagged with its `mapper_cell`).
     pair — scores, both ranks and the window, `leaf` (the same
     `{T}(out-map)` / `{T}>{src}` / `{T}(no_source)` / `untyped` token the
     expansion bins use), `size_nm3` + `size_universe_percentile`, the morph
-    verdict and `mapper_cell`. Rows for targets the morphology gate refused
-    stay here, so a refusal is auditable rather than simply absent.
+    verdict and `mapper_cell`. The verdict is four columns and they always
+    name one another: `morph_bar_kind` is the rule that graded the pair
+    (`native` / `track_a` / `null_bar`), `morph_bar` is that rule's binding
+    value, and the score it was applied to is `morph_pool_ref` for a native
+    row and `morph_similarity` otherwise — so `morph_qualified` can be
+    recomputed from the row it appears on. Rows for targets the morphology
+    gate refused stay here, so a refusal is auditable rather than simply
+    absent.
 *   **`pooling_pool.csv`**: one row per candidate target neuron the LAST GATE
     admitted, the chain-best source winning on the ordering chain, with
-    `n_sources` / `dup`.
+    `n_sources` / `dup` and the same four morph columns.
 *   **`pooling_cross_validation.json`**: the cells — `confirmed` (sits in a
     refined target pool), `type_miss` / `type_new` (the harvest: the mapper
     never named it), `verified_only` (the mapper's pair fails the absolute
@@ -829,7 +835,14 @@ pooled target, tagged with its `mapper_cell`).
     came back with a value) · `qualified` (what cleared the bar) · `no_score`
     (the scorer returned nothing for the pair — a missing measurement) ·
     `capped` (never looked at) · `gate_applied` · `dropped_targets` (pooled
-    targets removed because the bar refused them) · `error` · `warnings`.
+    targets removed because the bar refused them) · `error` · `warnings` ·
+    `vector_cache` (the target-vector store's own ledger: `loaded` rows this
+    run did not have to prepare, `stale_dropped` rows it refused to reuse
+    because the skeleton behind them moved, `saved` for the next run, and
+    `targets`). A stored vector is reused only together with a known
+    hemisphere, and a row is keyed on its skeleton's `(mtime_ns, size)`, so
+    caching geometry cannot quietly re-grade a pair; cold and warm runs score
+    identically and the ledger is where the difference shows.
     `scored` can sit far below `attempted`
     — a pool that was mostly unscored is a MISSING measurement, not a cleared
     pool, so the report's Pooling tab and `user_warning_notes.txt` both

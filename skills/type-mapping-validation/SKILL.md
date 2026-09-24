@@ -1,6 +1,6 @@
 ---
 name: type-mapping-validation
-description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now), per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), the opt-in stage-5d reciprocal homolog evidence (high / medium / low / not-checked — advisory, connectivity-only, graded on how prominently the member's own branch source type ranks), nested modes (restrictive / family / aggressive), two-track morphology, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\", \"reciprocal homolog evidence\", \"backward evidence\"."
+description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now), per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), the opt-in stage-5d reciprocal homolog evidence (high / medium / low / not-checked — advisory, connectivity-only, graded on how prominently the member's own branch source type ranks), nested modes (restrictive / family / aggressive) plus the PARALLEL unsupervised `pooling` mode (absolute volume floors, morphology as the last gate, the mapper joined only afterwards), two-track morphology with per-branch bar kinds (native / Track-A backup / null) and a persisted target-vector store, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\", \"reciprocal homolog evidence\", \"backward evidence\", \"pooling mode\", \"unsupervised homolog scan\"."
 ---
 
 # DROCAT Type-Mapping Validation
@@ -58,6 +58,29 @@ $PY scripts/RunMappingValidation.py \
 - Add `--backward-evidence` when the **fill** is the question (§3): it
   runs the homolog finding in reverse over the `candidates` / `family` /
   `relative` members. Advisory only, connectivity only, default OFF.
+- Floors-v3 knobs: `--morph-track-a-offset` (Δ, default 0.05 — candidate
+  bar = branch Track-A pool baseline − Δ; suspicious bar = baseline − k·Δ),
+  `--morph-suspicious-level` (k, default 3, aggressive deep window),
+  `--pool-ref-floor-margin` (the native floor's margin below the pool's mean
+  pairwise similarity), `--out-map-top-k` (10 — out-map expansion keeps the
+  top-k connectivity-ranked typed targets per unpaired source),
+  `--max-scenes` (0 = one scene per parent type), `--skip-out-map-expansion`,
+  `--skip-profile-build`, `--output-dir` (relocates the run folder, e.g. a
+  shared data root), and `--skeleton-fetch-workers` /
+  `--skeleton-fetch-timeout` (default 8 threads / 120 s of socket
+  inactivity), which bound the stage-5 skeleton pre-flight — the run's only
+  network-bound block. Pooling's own four: `--pooling-jaccard-floor`,
+  `--pooling-rank-union-floor`, `--pooling-window-mult`,
+  `--pooling-max-morph-targets` (400) and `--no-pooling-morph-gate`.
+- Stage 2 pre-flights the TARGET profile cache: typed neurons missing
+  from the cache are built through the profiler backend (cache-first,
+  resumable, ~125 neurons/s measured on banc_v888; fail-open to
+  cache-only on any error). `pipeline_progress.jsonl` in the run folder
+  carries machine-readable progress — the backend log a UI tails.
+- The out-map expansion (on by default) scans every unpaired source
+  neuron against the full target universe and exports the top-k TYPED
+  non-in-map candidates to `expansion/out_map_expansion.csv`
+  (connectivity-ranked, then morph-checked vs the run null bar).
 - Long runs: launch in the background and poll the log. Expected wall
   times (warm caches): small pair ~2–3 min; 50-neuron family ~6 min;
   `circadian_clock` (242 sources) ~35–40 min. A stage-5d run adds roughly
@@ -65,6 +88,17 @@ $PY scripts/RunMappingValidation.py \
   FAFB↔MCNS scale; the r8 out-map expansion measured 207 s / 30 forward
   scans against the same-size universe) — the same price as a forward
   source scan, which is why the caps exist.
+- Read the cost from `pipeline_progress.jsonl`, not from wall-clock
+  folklore — every stage closes with its duration. Per-block costs
+  measured on this tree: the whole target universe is expanded and indexed
+  in ~5 s; the scan loop runs at ~0.14 s per source neuron (28× the
+  per-pair scorer it replaced, on a 103,770-target universe); stage 5's
+  skeleton pre-flight pays ~3 s per COLD target and 0 s warm; scenes are
+  ~10–27 s per parent type and are the first thing to budget for once the
+  caches are warm; a morph pass costs ~4 s per attempted candidate target
+  COLD and about half of that warm, because the persisted target-vector
+  store (§4b) skips skeleton load + render transform + vectorization
+  (0.412 s measured per neuron).
 - Results land in `{output_dir}/type-map-validation_{SRC}_to_{TGT}_{ts}/`
   with SHORT dataset nicknames (`FAFB`, `MCNS`, `BANC`) and a
   `YYYYMMDD_HHMMSS` stamp — the `--label` is recorded in
@@ -91,6 +125,31 @@ then names every dropped parent in the run log and in the report's Branches
 tab, because a silently uncapped-out parent has no review scene at all.
 
 ## 2. Read the outputs (always in this order)
+
+Three shipped tools do the mechanical part of this list — run them first, then
+read by hand (the report is still the thing to look AT, and `report.html` opens
+in a browser, not in a terminal):
+
+```bash
+# schemas vs the registry, the ladder, the partition, the pooling ledger, the
+# report's structure, the per-stage cost table — for run folders or queue dirs
+$PY scripts/verify_tmvev_run_exports.py local_data/<queue-dir> [more…]
+# what differs between two runs (a before/after certification): cell diffs at
+# 6 dp, verdict deltas, category transitions, the backdrop and window feed
+$PY scripts/verify_tmvev_run_parity.py compare <runA> <runB> [--expect-identical]
+$PY scripts/verify_tmvev_run_parity.py table local_data/<queue-dir>
+# the cold/warm gate any morphometry cache must pass, on a private clone
+scripts/maintenance/verify_tmvev_frozen_gate.sh [--target male-cns:v1.0] \
+    [--types l-LNv,APDN3,s-CPDN3A]
+# a whole matrix, sequentially, with a manifest, waiting for an idle machine
+scripts/maintenance/run_tmvev_matrix.sh --targets "male-cns:v1.0,banc_v888" \
+    --modes "restrictive,family,aggressive,pooling" --types circadian_clock
+```
+
+`local_data/` holds DATA — run folders, the frozen harness clone, logs. Tooling
+lives in `scripts/` beside `RunMappingValidation.py`; a script left in
+`local_data/` is a script that gets deleted with the data it was written
+against — `local_data/` is disposable by design.
 
 1. `report.html` — the per-run report: headline + the three coverage
    levels (L1 claim / L2 provenance / L3 validation), branches, fills
@@ -183,7 +242,8 @@ tab, because a silently uncapped-out parent has no review scene at all.
     to one row per candidate target AFTER the morphology gate, and the
     post-hoc comparison with the mapper (`confirmed` / `type_miss` /
     `type_new` / `verified_only`, the morph record with its
-    `gate_applied` / `dropped_targets`, the `reading_notes`).
+    `gate_applied` / `dropped_targets` / `vector_cache` (the target-vector
+    store's ledger), the `reading_notes`).
     `morph_gate` names its absences apart, and only an explicit
     `scored`-below-bar refusal leaves the pool (the refused pair rows stay in
     `pooling_candidates.csv`); there is no cross-dataset agreement column
@@ -201,6 +261,21 @@ tab, because a silently uncapped-out parent has no review scene at all.
   THIS branch's target type) > `relative` (candidate-type mates outside
   the map) > `examinees` (aggressive-only deep window). A target gets
   exactly one; the modes NEST.
+- **"The modes NEST" is a guarantee the code keeps, not a reading
+  convention** — a wider mode may only ADD rows, and a row that survives may
+  not change category. Two things used to break it (both measured on the
+  2026-09-24 `circadian_clock` ladder, both fixed): the borderline and deep
+  candidate windows drew on ONE per-source `deep_cap`, so aggressive spent it
+  before its second metric was read and displaced 110/189 (male-cns) and
+  262/408 (BANC) of family's rows — taking their `relative` bin and their
+  `gap_fill_levels.csv` rows with them (153 → 63); and the null backdrop
+  excluded the mode's own window, so its p95 moved across the ladder and
+  re-graded any row near the bar. Each band now has its own budget, and the
+  backdrop excludes only the invader feed and the pool. Verify on any new
+  dataset pair: `deep_candidates`' `top_window` pairs, `relatives` targets
+  and the level counts must be non-decreasing along the ladder, the
+  `track_a_null_bar` must be identical in all three runs, and no shared row's
+  `category` may move.
 - **One ordered per-bodyId leaf token on every expansion bin**:
   `{T}(out-map)` = the type is an in-map type, so this is an unmapped
   bodyId of a type already in the map (bodyId-level; every `family`
@@ -228,7 +303,10 @@ tab, because a silently uncapped-out parent has no review scene at all.
   measure (a consumer that compares the basis with one literal misreads every
   other row-backed basis), and the type-mapping panel / mapping-CSV hover name
   the source-supplying chain too, so no two views of one mapping claim
-  different bridges.
+  different bridges. The Coverage tab's `Source claim envelope` line states
+  how many queried sources sit in a branch pool and how many are the out-map
+  residue; a residue of 0 over a wide pool means nothing was left outside,
+  not that nothing is missing.
 - **Every rendered member passed the morph rule**: binding native
   pool-ref floor (`pool_ref >= floor`) when the branch has one, else
   the null-calibrated Track-A bar (`track_a_null_bar` = p95 of
@@ -392,7 +470,9 @@ different question alongside them.
   the bar alone would empty the feed at the strongest branches.
 - **`--mode aggressive`** (legacy alias `--aggressive-expansion`): adds
   the deep-window `examinees` bin. Over-expansion prone (r36e review) —
-  flag it clearly in any report.
+  flag it clearly in any report. The deep band draws on its OWN per-source
+  `deep_cap` budget, so adding it never removes the borderline rows a family
+  run reported (§3: the modes nest).
 - **`--verify-suspects`** (default OFF): advisory connectivity check of
   each queried same-name fan-out's rival candidates →
   `suspects_verification.csv` + the report Suspects tab. A rival that
@@ -500,6 +580,40 @@ them.
   also claims — 35 of 41 rows on male-cns), which pooling now disables with
   `prune_pool_refs=False` in
   `comparison/morph_cross_dataset.py::qualify_visualized_pairs`.
+- **A pooling verdict publishes the four columns that made it**:
+  `morph_bar_kind` is the binding rule (`native` / `track_a` / `null_bar`),
+  `morph_bar` is that rule's value, and the score it graded is
+  `morph_pool_ref` for a native row and `morph_similarity` otherwise — so
+  `morph_qualified` is always recomputable from the row beside it, and the
+  Pooling tab's morphology cell prints exactly that pair with its kind. Do
+  not read `morph_similarity` as the number a native row was gated on: it is
+  the Track-A score, kept for the pair's own record. An earlier build
+  published the per-source null bar under a `native` kind, which made 14 of
+  41 scored rows read as a score below its own bar with a ✓ beside it — the
+  gate had graded the right pair and the export could not show it.
+- **Target-vector store** (`morph.vector_cache`): preparing one target neuron
+  costs 0.412 s (skeleton load + render transform + vectorize), so the
+  render-space vectors persist in
+  `cache/<target>/find_similar/morphology/cross_dataset_targetvec_<space>.npz`
+  and a repeat run over the same dataset pair reads them instead. Two rules
+  make that safe rather than fast-and-wrong: a stored vector is reused only
+  together with a known hemisphere (otherwise the render still happens, so
+  `pair_side` cannot change), and every row is keyed on its skeleton's
+  `(mtime_ns, size)`, so a healed or re-fetched skeleton is recomputed, never
+  reused — a cache that could re-grade a pair is a different instrument, not a
+  faster one. And rows are stored at FULL precision with a `vector_dtype`
+  stamp: a `float32` store moved a score in its 8th decimal (162 differing
+  cells on the parity gate), so `load()` refuses a file not stamped `float64`
+  as a unit rather than upcasting its rows. Measured on the frozen harness,
+  cold vs warm with the same query: **0 differing cells** across
+  `pooling_candidates.csv` (139 rows) and `pooling_pool.csv` (40 rows), the
+  same 40-target pool and the same single refusal, and stage `P` 132 s → 56 s.
+  `loaded` / `stale_dropped` / `saved` / `targets` say which a run did (the
+  Pooling tab prints them as *reused · computed · store rows*, because
+  `saved` is the file's row count, not what this run prepared), and a cold
+  run reports `loaded: 0`. The gate is
+  `scripts/maintenance/verify_tmvev_frozen_gate.sh` (it drives a private
+  `local_data/tmvev-harness/` clone, which is data and stays there).
 - **Post-hoc cells** (`pooling/pooling_cross_validation.json`):
   `confirmed` (sits in a refined target pool), `type_miss` / `type_new`
   (the harvest: the mapper never named this neuron), `verified_only`.
