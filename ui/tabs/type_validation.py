@@ -58,7 +58,7 @@ _FALLBACK_DEFAULTS = {
     "pooling_jaccard_floor": 0.10, "pooling_rank_union_floor": 0.0,
     "pooling_window_mult": 2.0,
     "pooling_bar_metric": "either", "pooling_bar_top_n": 3,
-    "pooling_max_morph_targets": 400,
+    "pooling_max_morph_targets": 0,
 }
 _RATIO_FLOATS = {
     "matched_ru_min", "candidate_morph_factor", "suspicious_jaccard_factor",
@@ -306,10 +306,12 @@ def create_type_validation_tab():
                      "x the size of the source neuron's own type population. "
                      "Advisory: it removed nothing even when it was a filter.")
             pooling_budget = number_input(
-                "Morph budget (candidate targets)",
+                "Morph budget (scoring units)",
                 int(_default("pooling_max_morph_targets")), 0, 100000, 1,
-                hint="One network-bound step; rows past the budget read "
-                     "morph_gate='not-attempted-cap', never blank.")
+                hint="0 = auto: 3 x the number of queried source neurons, so the "
+                     "budget scales with the work instead of with a constant. "
+                     "Rows past the budget read morph_gate='not-attempted-cap', "
+                     "never blank, and morph.capped names them.")
 
             def _sync_pooling():
                 pooling_card.set_visibility(mode_value["value"] == "pooling")

@@ -325,7 +325,7 @@ def test_pooling_mounts_a_button_and_a_hidden_gate_card():
     for want in ("Bar depth (top-N per metric)",
                  "Jaccard floor (advisory flag)",
                  "Window multiplier (advisory flag)",
-                 "Morph budget (candidate targets)"):
+                 "Morph budget (scoring units)"):
         assert want in labels, want
     # the fitted-floor checkbox and the corroboration note were deleted with
     # the features themselves — and so is the morphology checkbox: the gate is

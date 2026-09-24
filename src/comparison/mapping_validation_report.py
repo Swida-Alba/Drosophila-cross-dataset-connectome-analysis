@@ -1135,7 +1135,9 @@ def _pooling_warning_line(d: Dict) -> Optional[str]:
                     f'({int(no_score)} `no-score`) — an unscored candidate '
                     'is a missing measurement, never a rejection')
     if capped:
-        bits.append(f'{int(capped)} target(s) past the morph budget were '
+        bits.append(f'{int(capped)} of {int(_as_num(m.get("units")) or capped)} '
+                    'scoring units past the morph budget '
+                    f'({m.get("budget") or "provenance not published"}) were '
                     'never looked at (`morph_gate=not-attempted-cap`)')
     bits += [str(w) for w in (m.get('warnings') or [])]
     if not bits:
@@ -3212,6 +3214,12 @@ def _pooling_tab(d: Dict) -> str:
         # value. Collapsing them printed `scored 8` for a run whose rows
         # held 1 `scored` and 7 `no-score`.
         morph_bits.append(f"no-score {_cnt(morph.get('no_score'))}")
+    if 'units' in morph:
+        # `attempted`/`capped` are a SPLIT of `units`, so the line has to show
+        # the whole or the two halves read as a sum that does not add up.
+        morph_bits.append(f"of {_cnt(morph.get('units'))} units")
+    if morph.get('budget'):
+        morph_bits.append(f"budget {morph['budget']}")
     vc = morph.get('vector_cache') or {}
     if vc:
         # The store's own ledger, beside the counts it changed: `reused` is

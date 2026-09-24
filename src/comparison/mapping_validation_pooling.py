@@ -57,8 +57,14 @@ BAR_METRICS = ('either', 'jaccard', 'rank_union')
 #: `rank_union` ranks tie at exactly 0 across hundreds of targets, so a rank cut
 #: is not a row bound (measured: 17.1 rows/source at N=5, against jaccard's 5.1).
 #: Each source therefore keeps this many x N rows in the chain order, and the
-#: number the cap cut is published (`gate['rows_cut']`).
+#: number the cap cut is published (`bar['rows_cut']`).
 ROW_CAP_MULTIPLE = 2
+#: The auto morph budget, in units per QUERIED SOURCE.  A unit is one pair the
+#: last gate looks at (every tier-1 row, plus each target's chain-best row), so
+#: the default bar measured ~2.3 per source on FAFB->male-cns; 3 leaves headroom
+#: for a pair whose rank_union ties harder, and a cap that still bites reports
+#: itself in `morph.capped` rather than silently shrinking the picture.
+MORPH_UNITS_PER_SOURCE = 3
 POOLING_SOURCES_CSV = 'pooling_sources.csv'
 
 
@@ -422,7 +428,24 @@ def _scoring_units(rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
+def morph_budget(cfg, seed_size: int) -> Tuple[int, str]:
+    """The pass's unit budget, and WHERE it came from.
+
+    `pooling_max_morph_targets` 0 means auto: :data:`MORPH_UNITS_PER_SOURCE` x
+    the queried population, so a 58-source query is not budgeted like a
+    242-source one.  A positive number is the user's own cap.  Either way the
+    provenance is published, because "400 of 546 looked at" means nothing
+    without the "why".
+    """
+    cap = int(getattr(cfg, 'pooling_max_morph_targets', 0) or 0)
+    if cap > 0:
+        return cap, f'configured pooling_max_morph_targets={cap}'
+    return (MORPH_UNITS_PER_SOURCE * int(seed_size),
+            f'auto: {MORPH_UNITS_PER_SOURCE} x {int(seed_size)} queried sources')
+
+
+def apply_morph_gate(validator, rows: List[Dict],
+                     seed_size: int = 0) -> Tuple[List[Dict], Dict]:
     """Morphology as the LAST gate, on the connectivity survivors only, through
     the Find-Homolog fast path (no NBLAST) with the branch-free, persisted
     ``mapping_ref`` bar (plan §3, §4.2).
@@ -450,13 +473,13 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
     check_morphology_mandatory(cfg)
     info = {'attempted': 0, 'scored': 0, 'qualified': 0, 'capped': 0,
             'no_score': 0, 'shared': 0, 'error': ''}
+    cap, info['budget'] = morph_budget(cfg, seed_size or len(rows))
     if not rows:
         return rows, info
     # one verdict per SCORING UNIT (see `_scoring_units`), and every other row
     # says which unit's verdict it is reading
     units = _scoring_units(rows)
-    cap = int(cfg.pooling_max_morph_targets or 0)
-    take, dropped = (units, []) if cap <= 0 or len(units) <= cap \
+    take, dropped = (units, []) if len(units) <= cap \
         else (units[:cap], units[cap:])
     # `units` is published because `attempted` and `capped` are a SPLIT of it,
     # not a sum that belongs to `attempted`: without it a reader cannot tell
@@ -890,7 +913,7 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
                                          j_floor)
     refs = mapper_reference(validator, val_rows)
     rows = annotate(validator, rows, target_id2type, refs)
-    rows, morph = apply_morph_gate(validator, rows)
+    rows, morph = apply_morph_gate(validator, rows, seed_size=len(seed))
     # Morphology is the LAST GATE and the tier is per row: a target leaves the
     # pool only when EVERY row admitting it was refused (`pool_by_target`'s
     # in_pool), which is what lets one target be a claim for one source and
@@ -903,7 +926,8 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     morph['gate_applied'] = True
     morph['mandatory'] = True
     morph['dropped_targets'] = len(refused_targets)
-    morph['scoring_units'] = stats.get('rows_scored_units', morph['attempted'])
+    # `morph['units']` (the record) is the number of scoring units the pass was
+    # offered; `attempted`/`capped` are its split.
     stats.update({'seed': len(seed), 'universe': len(target_bids),
                   'fingerprint': dict(getattr(validator, 'input_fingerprint',
                                               None) or {}),
@@ -917,7 +941,8 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
                   f"rows admitted by the bar "
                   f"({bar['metric']} x top-{bar['top_n']}, "
                   f"{stats.get('rows_cut_by_cap', 0)} cut by the "
-                  f"{ROW_CAP_MULTIPLE}N row cap); {len(pool_all)} distinct "
+                  f"{ROW_CAP_MULTIPLE}N row cap, morph budget "
+                  f"{morph.get('budget')}); {len(pool_all)} distinct "
                   f"targets, {len(refused_targets)} refused by the morphology "
                   f"bar on every row, {xval['cells'][CELL_VERIFIED_ONLY]} "
                   f"mapper-only rows published alongside; "

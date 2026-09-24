@@ -301,6 +301,52 @@ def test_morph_budget_names_what_it_dropped(monkeypatch):
     assert info['qualified'] == 1
 
 
+def test_the_auto_budget_scales_with_the_queried_population():
+    """A constant budget is how the default bar lost 146 of its 546 units on
+    2026-09-24: 400 is neither enough for a 242-source query nor proportionate
+    for a 58-source one.  3 units per queried neuron covers the measured 2.3
+    with headroom for a pair whose rank_union ties harder, and the provenance
+    string says which rule priced the run."""
+    assert pool.morph_budget(_cfg(), 242) == (
+        726, 'auto: 3 x 242 queried sources')
+    assert pool.morph_budget(_cfg(), 58) == (
+        174, 'auto: 3 x 58 queried sources')
+    assert pool.morph_budget(_cfg(pooling_max_morph_targets=400), 242) == (
+        400, 'configured pooling_max_morph_targets=400')
+
+
+def test_the_record_publishes_which_budget_ran(monkeypatch):
+    """`capped: 146` is unreadable without the line saying what the budget WAS
+    and where it came from."""
+    import comparison.morph_cross_dataset as mcd
+
+    class MQ:
+        active = True
+        warnings = []
+        scores = {}
+        ref_bars = {}
+        native_scores = {}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            return True
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
+                        lambda *a, **k: MQ())
+    v = FakeValidator(_cfg(), {})
+    rows = [{**_rows(t)[0], 'source_bodyId': s, 'target_bodyId': t}
+            for s in (1, 2) for t in (7, 8)]
+    rows, info = pool.apply_morph_gate(v, rows, seed_size=5)
+    assert info['budget'] == 'auto: 3 x 5 queried sources'
+    assert info['units'] == 4 and info['capped'] == 0
+    # no seed size is not a zero budget: the pass prices itself on the rows it
+    # was handed instead of silently refusing all of them.
+    _, info2 = pool.apply_morph_gate(v, rows, seed_size=0)
+    assert info2['budget'] == 'auto: 3 x 4 queried sources'
+
+
 def test_the_four_absences_are_four_labels(monkeypatch):
     """`scored` (this row's own pair), `shared` (the verdict was made for the
     pair named in `verdict_for_pair`), `no-score` (the scorer returned nothing)

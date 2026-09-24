@@ -59,7 +59,7 @@ flag at all — the tab is their only entrance.
 | Run Label | `run_label` | `--label` |
 | Output directory | `output_dir` | `--output-dir` |
 | Validation Mode (Restrictive/Family/Aggressive/Pooling) | `validation_mode` | `--mode` |
-| Pooling gate card (visible only in mode Pooling): Jaccard floor / window multiplier / morphology as the last gate / morph budget | `pooling_jaccard_floor` / `pooling_window_mult` / `pooling_morph_gate` / `pooling_max_morph_targets` | `--pooling-jaccard-floor` / `--pooling-window-mult` / `--no-pooling-morph-gate` / `--pooling-max-morph-targets` |
+| Pooling gate card (visible only in mode Pooling): bar metric / bar depth (top-N per metric) / Jaccard floor (advisory flag) / window multiplier (advisory flag) / morph budget | `pooling_bar_metric` / `pooling_bar_top_n` / `pooling_jaccard_floor` / `pooling_window_mult` / `pooling_max_morph_targets` | `--pooling-bar-metric` / `--pooling-bar-top-n` / `--pooling-jaccard-floor` / `--pooling-window-mult` / `--pooling-max-morph-targets` |
 | Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
 | 3D review scenes | `visualize` | `--no-visualize` (negated) |
 | Backward (reciprocal) evidence | `backward_evidence_enabled` | `--backward-evidence` |
@@ -578,10 +578,10 @@ be ranked on). Only
 | `--no-morphology` | skip stage 5 (fast structural pass) |
 | `--mode {restrictive\|family\|aggressive}` | expansion mode (§4); default restrictive |
 | `--mode pooling` | the parallel unsupervised engine (§4) — writes `pooling/` and joins the mapper afterwards; it does not accept a widening flag (`--aggressive-expansion` with it is a usage error) |
-| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | the absolute floors (default 0.10 / 0) — a **volume guard-rail**: the configured number IS the number that gated the run, and it says nothing about whether any pair is a good homolog (§4). Raise it when a pool is too large to review, lower it when the scan finds nothing, and read the cost back off the pool size of that dataset pair |
-| `--pooling-window-mult` | rank window = this × the source type's own queried population (default 2.0; measured selectivity is carried by the floors, not the window — 2 vs 4 moves the pool by ≤ 3 targets) |
-| `--no-pooling-morph-gate` | publish the connectivity-only pool: morphology stops being a gate and `morph.gate_applied` reads false (the morph pass is the run's remaining network-bound cost) |
-| `--pooling-max-morph-targets N` | morph budget, one row per candidate target (default 400); rows past it are labelled `morph_gate=not-attempted-cap`, never blank, and never read as rejections |
+| `--pooling-bar-metric {either\|jaccard\|rank_union}` / `--pooling-bar-top-n N` | **the admission bar** (default `either` / `3`): each queried source keeps the top-N rows of its chosen metric, and `either` is the UNION of both metrics' own top-N — never a merged best-rank ordering, which spends the slots on the two metrics' rank-1 rows and loses the candidates the union recovers |
+| `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | **advisory flags, not filters** (default 0.10 / 0): every admitted row is measured against them and published as `below_jaccard_floor` / `below_rank_union_floor`, and nothing is removed for missing one. They were filters until the rank_union one alone was measured to starve 119 of 242 queried sources |
+| `--pooling-window-mult` | the window the `outside_window` flag measures against = this × the source type's own queried population (default 2.0). Advisory: it removed nothing even when it was a filter |
+| `--pooling-max-morph-targets N` | morph budget in **scoring units** (one network-bound step each; a unit is a tier-1 row, or the chain-best row that owes a target its verdict). Default **0 = auto: 3 × the number of queried source neurons**, so a 58-source query is not budgeted like a 242-source one. Rows past the budget are labelled `morph_gate=not-attempted-cap`, never blank, never read as rejections, and `morph.capped` / `morph.budget` say how many and under which rule |
 | `--backward-evidence` | stage 5d: reverse (target → source) homolog evidence on the `candidates` / `family` / `relative` bins (§2.2c) — **advisory, connectivity-only, default OFF** |
 | `--skip-backward-pass` | force-skip stage 5d even when `--backward-evidence` is set |
 | `--backward-top-n N` | reverse hits kept per neuron — the hover list in the Reciprocal tab (default 5) |

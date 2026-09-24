@@ -322,6 +322,19 @@ def check_pooling(run, tag):
     else:
         info(f'{tag}: run predates morph.units, so the cap cannot be '
              f'reconciled (capped={morph.get("capped")})')
+    # A cap that bites must say what priced it: `capped: 146` on a run whose
+    # budget came from a constant nobody wrote down is the same unreadable
+    # number twice.  The auto rule (3 units per queried source) publishes its
+    # own arithmetic, so `attempted + capped` is checkable against it.
+    budget = str(morph.get('budget') or '')
+    if (morph.get('capped') or 0) > 0 or 'units' in morph:
+        chk(bool(budget), f'{tag}: morph budget states its provenance',
+            f'budget={budget!r} capped={morph.get("capped")}')
+    m = re.search(r'auto: (\d+) x (\d+)', budget)
+    if m and 'units' in morph:
+        chk(morph['units'] <= int(m.group(1)) * int(m.group(2)),
+            f'{tag}: auto budget covers the units it was priced for',
+            f'{budget} vs units={morph["units"]}')
     # a refusal is per ROW; a target leaves the pool only when EVERY row that
     # admitted it was refused, because another source may hold its own verdict
     refused_rows = {int(r.target_bodyId) for r in cand.itertuples(index=False)

@@ -622,16 +622,19 @@ them.
 
 - **The UI can start it; that does not make it a rung**: the mode row of
   **Cross-Dataset › Type Validation** offers a fourth `Pooling` button with
-  its own gate card (`card-tmvev-pooling` — its controls are Jaccard floor,
-  window multiplier, *Morphology as the last gate*, morph budget: there is no
-  floor-fit checkbox and no corroboration option), and
+  its own gate card (`card-tmvev-pooling` — its controls are the admission bar
+  (metric + top-N depth), the two advisory floors, the window multiplier and the
+  morph budget: there is no floor-fit checkbox, no corroboration option, and no
+  checkbox turning morphology off — the gate is mandatory), and
   `ui/tabs/type_validation.py:MODE_OPTIONS` is `VALIDATION_MODES +
   ['pooling']` — pinned beside `POOLING_MODE not in MODE_RANK` by
   `tests/ui/test_type_validation_tab.py`. The CLI route
   (`scripts/RunMappingValidation.py --mode pooling`) sends the same config.
-- **Run it**: `--mode pooling [--pooling-jaccard-floor 0.10]
+- **Run it**: `--mode pooling [--pooling-bar-metric either|jaccard|rank_union]
+  [--pooling-bar-top-n 3] [--pooling-jaccard-floor 0.10]
   [--pooling-rank-union-floor 0] [--pooling-window-mult 2.0]
-  [--no-pooling-morph-gate] [--pooling-max-morph-targets 400]`.
+  [--pooling-max-morph-targets 0]` (`--no-morphology` beside `--mode pooling`
+  is a usage error).
 - **Gate (absolute, never pool-relative — and never fitted)**: `jaccard >`
   floor, `rank_union >` floor, and BOTH metric ranks inside
   `window_mult × the size of that source neuron's own type population`.
@@ -656,7 +659,15 @@ them.
   calibrate it and no provenance line to explain.
 - **Morphology last, and it is a GATE**: the Find-Homolog fast path (no
   NBLAST) with the branch-free persisted `mapping_ref` bar, on the
-  connectivity survivors only, under a budget. A candidate whose chain-best
+  connectivity survivors only, under a budget counted in SCORING UNITS (a unit
+  is a tier-1 row, or the chain-best row that owes a target its verdict). The
+  default budget is AUTO: `3 ×` the queried source population
+  (`--pooling-max-morph-targets 0`), because the constant 400 an earlier build
+  used cut 146 of the 546 units the default bar needed on 242 sources — which
+  cost one tier-1 claim and left 115 rows with no verdict at all. Either way
+  `morph.budget` publishes where the number came from, beside `units` /
+  `attempted` / `capped`, so `capped` is always checkable against a rule
+  (measured need ≈ 2.3 units per source). A candidate whose chain-best
   row is `morph_gate='scored'` with `morph_qualified` false leaves
   `pooling_pool.csv` AND the scene's `pooling · {source type}` root; its
   per-pair rows stay in `pooling_candidates.csv` so the refusal is auditable,

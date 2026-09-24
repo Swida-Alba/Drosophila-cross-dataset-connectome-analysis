@@ -705,8 +705,9 @@ def _as_pooling_run(run_dir: Path, pool=None, xval=XVAL, mode="pooling",
     params = json.loads((run_dir / "parameters.json").read_text())
     params.update({"validation_mode": mode, "pooling_jaccard_floor": 0.1,
                    "pooling_rank_union_floor": 0.0,
-                   "pooling_window_mult": 2.0, "pooling_morph_gate": True,
-                   "pooling_max_morph_targets": 400})
+                   "pooling_window_mult": 2.0, "pooling_bar_metric": "either",
+                   "pooling_bar_top_n": 3,
+                   "pooling_max_morph_targets": 0})
     (run_dir / "parameters.json").write_text(json.dumps(params))
     rows = pool if pool is not None else [_pool_row()]
     out = run_dir if flat else (run_dir / "pooling")

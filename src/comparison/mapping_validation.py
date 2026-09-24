@@ -274,7 +274,14 @@ class MappingValidationConfig:
     #: Morph is the LAST gate and the only network-bound step left in the
     #: path, so the pass is budgeted; rows past the budget say so in
     #: `morph_gate='not-attempted-cap'` rather than reading as rejections.
-    pooling_max_morph_targets: int = 400
+    #: 0 means AUTO: `MORPH_UNITS_PER_SOURCE` x the queried population, so the
+    #: budget scales with the work a run was asked to do instead of with a
+    #: constant nobody could check.  Measured on the default bar (either/3,
+    #: 242 sources): the pass needs 546 units, and the old constant 400 cut
+    #: 146 of them — which cost one tier-1 claim and left 115 rows without any
+    #: verdict because the row that OWED their target its verdict was itself
+    #: cut.  A positive number is an explicit cap.
+    pooling_max_morph_targets: int = 0
     # ------------------------------------------------------------------
     # Stage 5d: backward (target -> source) homolog evidence for the
     # expansion bins.  ADVISORY ONLY — `backward_evidence` labels a row, it

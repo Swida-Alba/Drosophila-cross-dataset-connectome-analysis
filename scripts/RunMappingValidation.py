@@ -167,10 +167,13 @@ def parse_args(argv=None):
                    help='--mode pooling: the window the outside_window flag '
                         'measures against = this x the size of the source '
                         "neuron's own queried type population. Advisory.")
-    p.add_argument('--pooling-max-morph-targets', type=int, default=400,
-                   help='--mode pooling: budget for the morph pass (one '
-                        'network-bound step); rows past the budget are '
-                        "labelled morph_gate='not-attempted-cap', never blank")
+    p.add_argument('--pooling-max-morph-targets', type=int, default=0,
+                   help='--mode pooling: budget for the morph pass, counted in '
+                        'SCORING UNITS (one network-bound step each). 0 (default) '
+                        'means auto: 3 x the number of queried source neurons, so '
+                        'the budget scales with the work asked for. Rows past the '
+                        "budget are labelled morph_gate='not-attempted-cap', never "
+                        'blank, and `morph.capped` says how many.')
     p.add_argument('--backward-evidence', action='store_true',
                    help='stage 5d: reverse (target -> source) scans label '
                         'the expansion bins — ADVISORY only, never gates '
