@@ -78,14 +78,18 @@ For FAFB, the system includes:
 
 Line-Mode Somas
 ---------------
-- **Fallback soma detection**: navis draws line somas only at SWC
-  ``label==1`` nodes, which male-cns skeletons carry for ~66% of neurons
-  only. Before line node reduction the renderer resolves the soma from the
-  neuron's own data when the marker is absent -- the NeuPrint
-  ``somaLocation`` annotation when the layer table carries it, else the
-  fattest radius node (never on BANC, whose skeletons carry no soma
-  signal) -- so every line neuron shows a soma where tube mode shows its
-  radius-profile bulb.
+- **Soma resolution, three tiers**: navis draws a line soma as a sphere at
+  ``neuron.soma``, which it derives from SWC ``label==1`` nodes -- and then
+  throws that answer away, because every DROCAT skeleton loader stamps
+  ``units`` after ``read_swc`` and navis 1.5.0's units setter clears the soma
+  assignment (0 of 150 sampled male-cns and 0 of 150 hemibrain cached
+  skeletons arrive with one). So the renderer resolves it from the neuron's own
+  data before line node reduction: the ``label==1`` row still in the node
+  table first (62.7% of male-cns files carry it; the radius heuristic below
+  disagreed with it on 14% of those), else the NeuPrint ``somaLocation``
+  annotation when the layer table carries it, else the fattest radius node
+  (never on BANC, whose skeletons carry no soma signal). Every line neuron
+  therefore shows a soma where tube mode shows its radius-profile bulb.
 - **Visibility floor**: tagged line soma spheres smaller than
   ``LINE_SOMA_MIN_VISIBLE_FRACTION`` (0.0055) of the frozen scene's longest
   axis are grown to the floor at save time -- a physical soma is a
@@ -7249,15 +7253,21 @@ class VisualizeSkeleton:
     def _ensure_line_soma(self, neuron) -> None:
         """Guarantee a soma marker on a line-mode TreeNeuron.
 
-        navis draws the line-mode soma as a sphere at ``neuron.soma``, which
-        it resolves from SWC ``label == 1`` nodes. The male-cns skeleton
-        product marks only ~66% of neurons that way. For the rest, the soma
-        is resolved from the neuron's own data, in order of authority:
+        navis draws the line-mode soma as a sphere at ``neuron.soma``, which it
+        resolves from SWC ``label == 1`` nodes — but a DROCAT-loaded neuron
+        reaches here with that assignment dropped (see tier 0), so the marker is
+        resolved from the neuron's own data, in order of authority:
 
+        0. its own ``label == 1`` node, read back off the node table;
         1. the NeuPrint ``somaLocation`` annotation from the layer table
            (nearest node to that coordinate), when the table carries it;
         2. the fattest radius node -- the same thickness bump the tube-mode
            radius profile renders as a bulb.
+
+        Only ~63% of male-cns skeletons carry a label-1 row at all (0% of
+        hemibrain, per the real cache), so tier 2 is what puts a soma on the
+        rest, and it agrees with the label-1 marker on 86% of the neurons that
+        have one.
 
         Marking the fallback BEFORE ``simplify_skeleton_nodes`` lets
         ``preserve_nodes`` carry the exact node through node reduction, and
@@ -7284,6 +7294,28 @@ class VisualizeSkeleton:
         soma = getattr(neuron, 'soma', None)
         if soma is not None and len(np.atleast_1d(soma)):
             return
+        # Tier 0: the marker navis itself would have honoured, read back off
+        # the node table. A cached skeleton reaches this point with its
+        # ``label == 1`` row still present but ``.soma`` cleared, because
+        # every DROCAT skeleton loader stamps ``units`` after ``read_swc`` and
+        # navis 1.5.0's units setter drops the soma assignment (measured on
+        # real caches: 0 of 150 male-cns and 0 of 150 hemibrain neurons arrive
+        # with one, while 62.7% of the male-cns files still carry the label-1
+        # row). Falling through to the radius heuristic instead lands on a
+        # DIFFERENT node for 14% of those neurons (17 of 120 sampled), i.e. the
+        # authoritative marker was being discarded to guess.
+        if 'label' in nodes.columns:
+            labels = pd.to_numeric(nodes['label'], errors='coerce')
+            marked = nodes.loc[labels == 1]
+            if not marked.empty:
+                if 'radius' in marked.columns:
+                    ranked = pd.to_numeric(marked['radius'],
+                                           errors='coerce').fillna(-1.0)
+                else:
+                    ranked = pd.Series(0.0, index=marked.index)
+                best = marked.loc[int(ranked.idxmax())]
+                neuron.soma = int(best['node_id'])
+                return
         radii = pd.to_numeric(nodes['radius'], errors='coerce')
         valid = radii.dropna()
         if valid.empty or float(valid.max()) <= 0:

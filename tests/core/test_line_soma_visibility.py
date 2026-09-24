@@ -95,6 +95,48 @@ def test_label1_soma_left_untouched():
     assert int(np.atleast_1d(n.soma)[0]) == 3
 
 
+def test_label1_marker_is_read_back_when_the_units_stamp_cleared_soma():
+    """The way a cached skeleton ACTUALLY arrives: marker row, no `.soma`.
+
+    `test_label1_soma_left_untouched` is self-consistent in a way the real
+    generator is not — it builds its neuron with `navis.TreeNeuron(df)`, which
+    resolves the soma from `label == 1` on the spot. Every DROCAT skeleton
+    loader stamps `units` after `navis.read_swc`, and navis 1.5.0's units
+    setter drops the soma assignment: measured on the local cache, 0 of 150
+    male-cns and 0 of 150 hemibrain neurons arrive with a soma, while 62.7% of
+    those male-cns files still carry the label-1 row. Without tier 0 the
+    fallback resolves by radius and lands on the fatter branch point — 17 of
+    120 sampled neurons that had the marker to begin with.
+    """
+    n = chain_tree(labels={3: 1}, radii={1: 20.0, 2: 90.0, 3: 30.0, 4: 20.0})
+    n.soma = None                      # what the loader hands the renderer
+    make_vis()._ensure_line_soma(n)
+    assert int(np.atleast_1d(n.soma)[0]) == 3
+
+
+def test_label1_wins_over_the_annotation_and_survives_a_radiusless_table():
+    """Precedence is the documented one: marker, then annotation, then radius.
+
+    The annotation tier is a coordinate guess about the same soma; a label-1
+    row names the node. And a marker needs no radius column at all, where the
+    radius heuristic bails — so a label-1 neuron with unusable radii still
+    gets its own soma rather than nothing.
+    """
+    n = chain_tree(labels={3: 1}, radii={1: 20.0, 2: 90.0, 3: 30.0, 4: 20.0})
+    n.soma = None
+    vis = make_vis(neuron_dfs=[pd.DataFrame(
+        {'bodyId': [int(n.id) if n.id is not None else 1],
+         'somaLocation': ['[10.0, 0.0, 0.0]']})])   # node 1's coordinates
+    vis._ensure_line_soma(n)
+    assert int(np.atleast_1d(n.soma)[0]) == 3
+
+    n2 = chain_tree(labels={2: 1}).nodes.drop(columns=['radius'])
+    tree = navis.TreeNeuron(n2)
+    tree.soma = None
+    make_vis()._ensure_line_soma(tree)
+    assert int(np.atleast_1d(tree.soma)[0]) == 2
+
+
 def test_radius_tie_resolves_toward_root():
     # nodes 1 (root) and 4 (deep tip) share the max radius: the root-side
     # node wins because somas sit at the traced origin.

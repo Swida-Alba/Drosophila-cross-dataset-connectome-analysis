@@ -134,15 +134,19 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
 
 ## Notes
 
-- Line-mode somas: navis draws the soma sphere only at the SWC `label==1`
-  node, which male-cns skeletons carry for ~66% of neurons only. Before line
-  node reduction the renderer marks the fallback soma when the marker is
-  absent — the node nearest the NeuPrint `somaLocation` annotation when the
-  layer table carries one, else the fattest radius node (skipped on BANC —
-  its skeletons have no soma signal: labels all `2`, root thinner than
-  neurites) — and at save time any tagged sphere below
-  `LINE_SOMA_MIN_VISIBLE_FRACTION` (0.0055) of the frozen scene's longest
-  axis is grown to that floor. Line soma sizes are display choices, not
+- Line-mode somas: navis draws the soma sphere only at `neuron.soma`, which it
+  derives from the SWC `label==1` node — and then loses, because every DROCAT
+  skeleton loader stamps `units` after `read_swc` and navis 1.5.0's units
+  setter clears the assignment (measured: 0 of 150 sampled male-cns and 0 of
+  150 hemibrain cached skeletons arrive with a soma). So before line node
+  reduction the renderer resolves the marker itself, in order: the `label==1`
+  row still in the node table (62.7% of male-cns files carry it; the radius
+  heuristic below disagreed with it on 14% of those), else the node nearest the
+  NeuPrint `somaLocation` annotation when the layer table carries one, else the
+  fattest radius node (skipped on BANC — its skeletons have no soma signal:
+  labels all `2`, root thinner than neurites) — and at save time any tagged
+  sphere below `LINE_SOMA_MIN_VISIBLE_FRACTION` (0.0055) of the frozen scene's
+  longest axis is grown to that floor. Line soma sizes are display choices, not
   measurements. `show_soma=False` disables all of it.
 - BANC (`banc_v626` / `banc_v888`) is supported and renders in native BANC
   space from the public release bucket (no token): SWC skeletons, ROI meshes
