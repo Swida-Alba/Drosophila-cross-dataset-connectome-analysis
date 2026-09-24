@@ -219,6 +219,20 @@ def _click(element):
         asyncio.run(result)
 
 
+def _parent_of(element):
+    """The element *element* lives in (NiceGUI keeps parents on slots)."""
+    slot = getattr(element, 'parent_slot', None)
+    return slot.parent if slot is not None else None
+
+
+def _workspace_band(element):
+    """The nearest ``drocat-workspace`` row above *element* (None if none)."""
+    parent = _parent_of(element)
+    while parent is not None and 'drocat-workspace' not in parent._classes:
+        parent = _parent_of(parent)
+    return parent
+
+
 def test_card_shows_the_reexport_controls_with_render_parity_defaults(
         monkeypatch):
     """The knobs mirror the live export block, so a re-export can match a run."""
@@ -247,6 +261,41 @@ def test_card_shows_the_reexport_controls_with_render_parity_defaults(
     mine = set(_captions(card))
     theirs = set(_captions(list(client.elements.values()))) - mine
     assert not mine & theirs, f'duplicated captions: {sorted(mine & theirs)}'
+
+
+def test_output_panel_sits_beside_its_own_control_card(monkeypatch):
+    """The re-export pair shares one workspace band, apart from the render pair.
+
+    The control card is the last card of the form column while its output
+    panel used to land second in the results column next to the render panel:
+    the two never lined up, and both sticky panels overlapped on scroll.
+    """
+    client = _build_skeleton_tab(monkeypatch)
+    elements = list(client.elements.values())
+
+    card = _element(
+        elements,
+        lambda el: (getattr(el, '_props', None) or {}).get('id')
+        == 'card-skeleton-reexport',
+        'the re-export card')
+    band = _workspace_band(card)
+    assert band is not None, 'the re-export card sits in no workspace band'
+    assert 'drocat-form' in _parent_of(card)._classes
+    results_cols = [col for col in band.default_slot.children
+                    if 'drocat-results' in col._classes]
+    assert len(results_cols) == 1
+    run_buttons = [el for el in _descendants(results_cols[0])
+                   if type(el).__name__ == 'Button'
+                   and getattr(el, 'text', '') == 'Re-export from Page']
+    assert len(run_buttons) == 1, \
+        'the band must hold the re-export output panel beside its controls'
+
+    render_run = _element(
+        elements,
+        lambda el: type(el).__name__ == 'Button'
+        and getattr(el, 'text', '') == 'Generate 3D Skeleton',
+        'the render run button')
+    assert _workspace_band(render_run) is not band
 
 
 def test_picker_selects_the_newest_page_and_refresh_repicks(monkeypatch,

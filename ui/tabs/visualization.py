@@ -1138,10 +1138,17 @@ def create_skeleton_tab():
     with results_col:
         skeleton_output.create(run_label="Generate 3D Skeleton", run_icon="view_in_ar")
 
-    # The re-export controls ride along at the bottom of the same form column
-    # because the pages they offer are exactly the ones this tab produced; its
-    # own output panel lands under the render panel in the results column.
-    create_skeleton_reexport(form_col, results_col)
+    # The re-export section gets its own workspace band below the main one so
+    # its output panel sits beside the control card it belongs to (the pages
+    # it offers are exactly the ones this tab produced), not at the top of the
+    # results column next to the render panel.
+    with form_col._drocat_page:
+        with ui.row().classes("w-full drocat-workspace items-start").style(
+            "margin-top: 24px"
+        ):
+            reexport_form_col = ui.column().classes("drocat-form gap-3")
+            reexport_results_col = ui.column().classes("drocat-results gap-3")
+    create_skeleton_reexport(reexport_form_col, reexport_results_col)
 
     async def run_panel(
         output_panel,

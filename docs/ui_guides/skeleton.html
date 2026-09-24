@@ -405,8 +405,10 @@
   </ul>
 
   <h2 id="reexport">Re-export from a stored page</h2>
-  <p>The card at the bottom of the form re-renders the outputs of a page that is
+  <p>The card at the bottom of the page re-renders the outputs of a page that is
     already on disk — no dataset query, no skeleton cache, no original script.
+    It sits in a band of its own below the render controls, with the Skeleton
+    Re-export Output panel beside it.
     It reads the figure back out of the page's own <code>Plotly.newPlot(...)</code>
     payload and, when the run wrote one, takes its cameras and background from
     <code>visualization_manifest.json</code>. Pick a page from <b>Stored 3D
