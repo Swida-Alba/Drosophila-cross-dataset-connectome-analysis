@@ -67,6 +67,9 @@ MODE_COLUMNS = ('deep_candidates', 'suspicious_count',
 
 _fails = []
 _infos = []
+#: Queue folders with no `parameters.json` — a run still in flight, skipped on
+#: purpose and named in the report so a subset never reads as a full verdict.
+_INCOMPLETE = []
 
 
 def chk(ok, name, detail=''):
@@ -105,28 +108,44 @@ def table(run, fname):
 
 # ---------------------------------------------------------------- discovery
 def discover(paths):
-    """Run folders from argv, expanding queue dirs through their manifest."""
+    """Run folders from argv, unioned with every folder a queue dir holds.
+
+    The manifest is a BONUS, never the authority: it carries the exit code and
+    mode label the driver recorded, but a queue whose driver was stopped between
+    runs leaves folders with no row at all, and auditing only the manifest would
+    hand back a verdict computed on a subset. So every ``type-map-validation_*``
+    folder under a queue directory is read, and the manifest is consulted only
+    for the rows it actually has.
+    """
     runs = []
     for raw in paths:
         p = Path(raw).expanduser().resolve()
         if p.name.startswith('type-map-validation'):
-            runs.append(p)
-        elif (p / 'manifest.tsv').exists():
-            for line in (p / 'manifest.tsv').read_text().splitlines()[1:]:
-                f = line.split('\t')
-                if len(f) > 4 and f[4] and Path(f[4]).exists():
-                    runs.append((Path(f[4]), f[1], f[2], f[5], f[6]))
-        elif p.is_dir():
-            runs.extend(sorted(p.glob('type-map-validation_*')))
-        else:
+            runs.append((p, None, None, None, None))
+            continue
+        if not p.is_dir():
             chk(False, f'not a run folder or queue dir: {p}')
-    out = []
-    for r in runs:
-        if isinstance(r, tuple):
-            out.append(r)
-        else:
-            out.append((r, None, None, None, None))
-    return out
+            continue
+        seen = set()
+        man = p / 'manifest.tsv'
+        if man.exists():
+            for line in man.read_text().splitlines()[1:]:
+                f = line.split('\t')
+                if len(f) > 6 and f[4] and Path(f[4]).exists():
+                    run = Path(f[4])
+                    runs.append((run, f[1], f[2], f[5], f[6]))
+                    seen.add(run.name)
+        for folder in sorted(p.glob('type-map-validation_*')):
+            if folder.name in seen:
+                continue
+            # A folder without parameters.json is a run still in flight (the
+            # file is written as the run closes); auditing it would read a half
+            # -written export set and report the gap as a defect.
+            if path_of(folder, 'parameters.json').exists():
+                runs.append((folder, None, None, None, None))
+            else:
+                _INCOMPLETE.append(folder)
+    return runs
 
 
 def group_key(run):
@@ -579,6 +598,10 @@ def main(argv=None):
             info(f'{label}: no ladder', f'modes present {sorted(per_mode)}')
     cost_table(entries)
     print('\n== notes ==')
+    if _INCOMPLETE:
+        print(f'  · {len(_INCOMPLETE)} folder(s) skipped, no parameters.json '
+              f'yet (run in flight): '
+              + ', '.join(f.name[-17:] for f in _INCOMPLETE))
     for line in _infos:
         print('  ·', line)
     print(f'\n== {len(_fails)} FAIL ==')
