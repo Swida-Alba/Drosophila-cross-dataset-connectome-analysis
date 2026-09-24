@@ -785,9 +785,12 @@ def output_detail_control(
     method parameters.
     """
     with ui.column().classes("w-full gap-1"):
+        # Segmented-pill look: the app-wide .q-btn-group CSS wraps the toggle
+        # in a bordered pill and the selected segment fills cobalt; the old
+        # `outline` prop drew a border around every segment instead.
         detail = ui.toggle(
             {"full": "Full", "compact": "Compact"}, value="full",
-        ).props("outline no-caps").classes("drocat-select")
+        ).props("dense no-caps")
         ui.label(hint).classes("text-xs opacity-60 w-full").style(
             "line-height:1.35")
 
