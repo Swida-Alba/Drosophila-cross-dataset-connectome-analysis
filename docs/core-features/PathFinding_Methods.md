@@ -222,14 +222,18 @@ be tau-bounded by `max_paths_bodyid`, and the Edge Budget never applies
 ## Measured Evaluation (2026-08)
 
 Benchmarked on real hemibrain v1.2.1 queries (connections ≥ 5 synapses) —
-all algorithms returned **identical path sets** in every scenario:
+all algorithms returned **identical path sets** in every scenario. The
+"(benchmarked default)" tag below is what this table measured in 2026-08; the
+pipeline's default has since moved to **StrongestFirst** (line 4, and
+`coana.py:3088`), which is why the complete enumerators here stay documented
+rather than prescribed:
 
 - **2–3 intermediate layers**: LC → MBON/PPL, 10,331 nodes, 301,443 edges, 4 sources × 5 targets (14 / 2,874 paths)
 - **4–5 intermediate layers**: LPLC1 → MBON01, 24,576 nodes, 722,143 edges, 2 sources × 2 targets (35,819 paths; 5M+ paths at 5 layers, capped)
 
 | Algorithm | 2 layers | 3 layers | 4 layers | 5 layers |
 | :--- | ---: | ---: | ---: | ---: |
-| **MemoizedDFS** (default) | 0.01 s / 0.1 MB | 0.06 s / 1.7 MB | **0.23 s** / 7.6 MB | 4.97 s / 651 MB |
+| **MemoizedDFS** (benchmarked default) | 0.01 s / 0.1 MB | 0.06 s / 1.7 MB | **0.23 s** / 7.6 MB | 4.97 s / 651 MB |
 | **DFS** (backward) | 0.02 s / 0.3 MB | 0.05 s / 1.8 MB | 0.42 s / 9.6 MB | 5.01 s / 612 MB |
 | **MeetInMiddle** | **0.00 s** / 0.3 MB | **0.01 s** / 0.6 MB | 1.25 s / 4.8 MB | 6.18 s / 615 MB |
 | **DP** | 0.06 s / 0.8 MB | 0.02 s / 1.5 MB | 0.44 s / 9.4 MB | 20.2 s / 651 MB |

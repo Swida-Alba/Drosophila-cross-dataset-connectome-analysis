@@ -375,8 +375,8 @@ results = comparer.run()
 
 Ensure the dataset has pre-built connection cache:
 ```bash
-# Build connection cache first
-python build_connection_cache.py --dataset male-cns:v0.9
+# Build connection cache first (the dataset is a POSITIONAL argument)
+python src/build_connection_cache.py male-cns:v0.9
 ```
 
 ### Not Enough Profiles

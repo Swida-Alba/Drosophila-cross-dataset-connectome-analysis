@@ -211,8 +211,9 @@ finder = HomologFinder(
     source_dataset="male-cns:v0.9",
     target_dataset="hemibrain:v1.2.1",
     output_dir="/absolute/output/homologs",
-    similarity_metric="rank_union",
-    top_n=30,
+    similarity_metric="jaccard",   # sorts only — every metric is computed;
+                                   # jaccard/100 are the ctor + UI defaults
+    top_n=100,
     vector_prefiltering=True,
     visualize_skeleton=False,
 )
