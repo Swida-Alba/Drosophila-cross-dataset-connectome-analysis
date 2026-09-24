@@ -784,10 +784,19 @@ them.
   `README.txt` "Start here" list points at `pooling/` for a pooling run. In
   a scene the same pool is the
   `pooling · {source type}` legend root (plum), hosted by the parent group of
-  the source that reached each target best; the root is drawn from the
-  exported pool, so a target the morphology bar refused is not in it either
-  place; a pool whose best source has a type no branch group covers cannot be
-  hosted and is named by a `!` line.
+  the source that reached each target best; each leaf is tagged
+  `{mapper_cell} · {tiers} · morph ✓/✗`. The root is drawn from the rows the
+  export marks `in_pool=True`, so a target the bar refused on EVERY row is out
+  of the picture — but it stays a row of `pooling_pool.csv` with
+  `in_pool=False`, because the refusal is a count the file owes and the scene
+  does not. A pool whose best source has a type no branch group covers cannot
+  be hosted and is named by a `!` line.
+  **The scene answers on the target axis by design** (user, 2026-09-25): a
+  per-source node would need a fourth legend level for every scene in the
+  product, and grouping by each row's own source multiplies the leaves ~4x
+  (1045 pairs vs 222 pooled targets measured) at ≈0.45 MB of page HTML per
+  leaf. The source axis is `pooling_sources.csv` and the report's
+  **Per source** block, where the counts reconcile.
 - A stage-P failure never aborts the run: it lands in
   `pooling_cross_validation.json` as `{"error": …}` and the CSVs come out
   empty.
