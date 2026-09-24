@@ -2790,12 +2790,18 @@ def main_page():
                         item.classes(remove="drocat-theme-item-active")
                 # Persist only on user clicks; the initial restore already
                 # came from the cookie (writing during build would need the
-                # client loop, which UI tests do not run).
+                # client loop, which UI tests do not run). The broadcast
+                # lets already-open docs/ui_guides pages (guide-theme.js)
+                # follow the toggle instead of waiting for their next load.
                 if persist:
+                    mode_value = (
+                        "dark" if mode is True else "light" if mode is False else "auto"
+                    )
                     ui.run_javascript(
-                        "document.cookie = 'drocat_dark="
-                        + ("dark" if mode is True else "light" if mode is False else "auto")
-                        + "; max-age=31536000; path=/; SameSite=Lax'"
+                        "document.cookie = 'drocat_dark=" + mode_value
+                        + "; max-age=31536000; path=/; SameSite=Lax';"
+                        "try{new BroadcastChannel('drocat-theme')"
+                        ".postMessage('" + mode_value + "')}catch(e){}"
                     )
 
             # Highlight the active choice without touching the browser.

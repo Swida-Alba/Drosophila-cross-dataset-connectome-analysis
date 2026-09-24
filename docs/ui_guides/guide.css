@@ -1,4 +1,10 @@
+/* Shared stylesheet for docs/ui_guides/*.html instruction pages.
+   Light tokens mirror the app's DROCAT_CSS :root palette; the dark block
+   mirrors its body.body--dark palette (ui/app.py). The theme itself is
+   resolved by guide-theme.js from the same drocat_dark cookie the app
+   writes, exposed here as <html data-theme="dark|light">. */
 :root {
+  color-scheme: light;
   --canvas: #f7f8fa;
   --surface: #ffffff;
   --soft: #f1f3f6;
@@ -6,18 +12,52 @@
   --muted: #667085;
   --faint: #98a2b3;
   --line: #e2e7ee;
+  --line-strong: #cfd7e3;
+  --line-soft: #eef1f6;
   --cobalt: #145cff;
   --cobalt-soft: #eaf0ff;
   --ok: #10b981;
   --warn: #f59e0b;
   --err: #dc2626;
+  --tip-bg: #ecfdf5;
+  --warn-bg: #fffbeb;
+  --tag-nb-bg: #f3e8ff;
+  --tag-nb-fg: #7c3aed;
+  --tag-sys-bg: #eef2f6;
   --code-bg: #0d1b2e;
   --code-fg: #d7e3f4;
+  --glow: rgba(20, 92, 255, .04);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0c1322;
+  --surface: #131c2e;
+  --soft: #1d2b45;
+  --navy: #e7eef8;
+  --muted: #9aa9c0;
+  --faint: #6b7a93;
+  --line: #25334d;
+  --line-soft: #1e2b44;
+  --cobalt: #5b8cff;
+  --cobalt-soft: #1a2c52;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #f87171;
+  --tip-bg: #152a1d;
+  --warn-bg: #2c2313;
+  --tag-nb-bg: #251a3d;
+  --tag-nb-fg: #c4b5fd;
+  --tag-sys-bg: #1c2637;
+  --code-bg: #0d1b2e;
+  --code-fg: #d7e3f4;
+  --glow: rgba(91, 140, 255, .08);
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
-  background: var(--canvas);
+  background:
+    radial-gradient(circle at 16% 0%, var(--glow), transparent 32%),
+    var(--canvas);
   color: var(--navy);
   font-family: Inter, "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -54,15 +94,15 @@ html, body {
   border-radius: 999px;
   white-space: nowrap;
 }
-.tag.nb { background: #f3e8ff; color: #7c3aed; }
-.tag.sys { background: #eef2f6; color: var(--muted); }
+.tag.nb { background: var(--tag-nb-bg); color: var(--tag-nb-fg); }
+.tag.sys { background: var(--tag-sys-bg); color: var(--muted); }
 h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -.02em; }
 .lede { color: var(--muted); margin: 0 0 26px; font-size: 15px; line-height: 1.6; }
 h2 {
   font-size: 18px;
   margin: 32px 0 10px;
   padding-bottom: 6px;
-  border-bottom: 1px solid #eef1f6;
+  border-bottom: 1px solid var(--line-soft);
 }
 h3 { font-size: 15px; margin: 20px 0 6px; }
 p, li { line-height: 1.68; font-size: 14px; }
@@ -106,8 +146,8 @@ a { color: var(--cobalt); }
   font-size: 13.5px;
   line-height: 1.55;
 }
-.callout.tip { background: #ecfdf5; border-left: 4px solid var(--ok); }
-.callout.warn { background: #fffbeb; border-left: 4px solid var(--warn); }
+.callout.tip { background: var(--tip-bg); border-left: 4px solid var(--ok); }
+.callout.warn { background: var(--warn-bg); border-left: 4px solid var(--warn); }
 .callout.info { background: var(--cobalt-soft); border-left: 4px solid var(--cobalt); }
 .callout b { display: block; margin-bottom: 3px; }
 .example {
@@ -128,7 +168,7 @@ a { color: var(--cobalt); }
 .example p { margin: 6px 0; }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
   margin: 12px 0 18px;
 }
@@ -140,3 +180,44 @@ a { color: var(--cobalt); }
 }
 .card h3 { margin-top: 0; }
 .small { font-size: 12.5px; color: var(--muted); }
+
+/* Floating theme toggle, injected by guide-theme.js. Mirrors the app's
+   header theme button: a flat sun | moon pair, muted until hover, one
+   click flips light/dark. Pinned to the top-right corner. */
+.drocat-guide-theme {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 9999;
+}
+.drocat-guide-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 8px;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+}
+.drocat-guide-theme-toggle:hover { color: var(--cobalt); }
+.drocat-guide-theme-toggle:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
+.drocat-gt-icon { display: inline-flex; }
+.drocat-gt-icon svg { width: 19px; height: 19px; display: block; }
+.drocat-gt-sep {
+  width: 2.5px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+/* Keep the header tag clear of the fixed toggle on narrow windows. */
+@media (max-width: 1160px) {
+  .guide { padding-right: 78px; }
+}
+@media print { .drocat-guide-theme { display: none; } }

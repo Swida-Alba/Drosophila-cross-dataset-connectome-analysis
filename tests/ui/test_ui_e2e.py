@@ -7216,10 +7216,29 @@ class TestApp:
             assert text.lstrip().startswith('<!doctype html>')
             assert '<title>' in text
             assert 'guide.css' in text
+            # Theme support: the guide must load the shared theme resolver
+            # so an opened page matches the app's dark/light mode.
+            assert '<script src="guide-theme.js"></script>' in text
             for target in _re.findall(r'href="([^"]+\.html)"', text):
                 if target == 'guide.css' or target.startswith(('http:', 'https:')):
                     continue
                 assert (guides_dir / target).exists(), f'{html_file.name} -> {target}'
+
+        # The theme resolver reads the app's drocat_dark cookie and exposes
+        # the resolved mode as <html data-theme>, which guide.css themes.
+        # It also injects the app-style top-right toggle: one click flips
+        # light/dark, persists to the same cookie, and broadcasts
+        # 'drocat-theme' so already-open pages follow.
+        theme_js = guides_dir / 'guide-theme.js'
+        assert theme_js.exists()
+        theme_js_text = theme_js.read_text(encoding='utf-8')
+        assert 'drocat_dark' in theme_js_text
+        assert 'data-theme' in theme_js_text
+        assert 'drocat-guide-theme-toggle' in theme_js_text
+        assert 'drocat-theme' in theme_js_text
+        guide_css = (guides_dir / 'guide.css').read_text(encoding='utf-8')
+        assert ':root[data-theme="dark"]' in guide_css
+        assert '.drocat-guide-theme-toggle' in guide_css
 
 
 # =============================================================================
