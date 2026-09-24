@@ -26,10 +26,13 @@ prefixes — so the legend and the CSVs cannot disagree.
     ``pooling · {src_type}``            (``pooling`` mode only: the
                                              unsupervised pool whose best
                                              source has this parent type;
-                                             the leaf token rides with the
-                                             post-hoc ``mapper_cell`` — and
-                                             the morph verdict where the
-                                             gate scored it — as the tag)
+                                             the leaf tag rides with the
+                                             post-hoc ``mapper_cell``, the
+                                             row's own tier, the morph verdict
+                                             where the gate scored it, and a
+                                             trailing ``(shared)`` when that
+                                             verdict belongs to another pair —
+                                             see ``pool_leaf_tag``)
   A standalone ``(dup)`` tag on a leaf marks a bodyId recurring across
   branches.  Leaves inside a root are sorted by ``type + suffix``, and a
   bare-category root always renders even with a single leaf.
@@ -616,6 +619,41 @@ def pool_rows_by_host(pool_rows) -> Dict[str, List[Dict]]:
             continue
         hosts[str(r.get('best_source_type') or '')].append(r)
     return hosts
+
+
+def pool_leaf_tag(row: Dict) -> str:
+    """The pooling leaf's tag: the post-hoc mapper cell, the tiers that reached
+    this target, the morphology verdict where the gate scored it, and
+    `(shared)` LAST.
+
+    The tiers belong here because the scene is the only place a candidate is
+    seen without a column header: a leaf some source called `matched` asserts a
+    homolog and one that is only ever `nominated` is review material, and the
+    picture must not let them look alike. A target is reached by several rows,
+    so `pooling_pool.csv` carries the set (`matched+nominated`), and that is
+    what the leaf shows.
+
+    Measured on the 2026-09-24 male-cns run: all 222 drawn leaves carry a tier
+    and a verdict, and NONE of them reads `(shared)` — `pool_by_target` draws
+    each target's chain-best row, which is by construction a row the gate
+    scored for that pair. The 424 `shared` rows that belong to drawn targets are
+    its NON-best rows, which live in `pooling_candidates.csv` and never reach
+    the scene, so a borrowed number is visible in the CSV and not in the
+    picture. The branch stays because the tag's contract is any pooling row,
+    and a leaf that DID borrow would otherwise print the number as its own.
+    """
+    bits = [str(row.get('mapper_cell') or '')]
+    tiers = str(row.get('tiers') or '')
+    if tiers:
+        bits.append(tiers)
+    gate = str(row.get('morph_gate') or '')
+    if gate in ('scored', 'shared'):
+        mark = 'morph ✓' if row.get('morph_qualified') else 'morph ✗'
+        # attached to the verdict with a space, not joined as its own bit: the
+        # marker qualifies THAT number, and `morph ✗ · (shared)` would read as
+        # a second, unrelated tag on the neuron.
+        bits.append(f'{mark} (shared)' if gate == 'shared' else mark)
+    return ' · '.join(b for b in bits if b)
 
 
 def compute_out_map_sources(branch_list) -> List[int]:
@@ -1245,12 +1283,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         r = by_bid.get(int(n.id)) or {}
                         token = str(r.get('leaf') or r.get('target_type')
                                     or '?')
-                        bits = [str(r.get('mapper_cell') or '')]
-                        if r.get('morph_gate') == 'scored':
-                            bits.append('morph ✓'
-                                        if r.get('morph_qualified')
-                                        else 'morph ✗')
-                        tag = ' · '.join(b for b in bits if b)
+                        tag = pool_leaf_tag(r)
                         p_types[int(n.id)] = token
                         if tag:
                             p_tags[int(n.id)] = tag

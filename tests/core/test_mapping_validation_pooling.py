@@ -908,3 +908,28 @@ def test_a_refused_target_is_not_drawn_but_is_still_counted():
             {'target_bodyId': 502, 'best_source_type': 's-LNv'}]
     hosts = pool_rows_by_host(rows)
     assert [r['target_bodyId'] for r in hosts['s-LNv']] == [500, 502]
+
+
+def test_the_pooling_leaf_tag_names_tiers_and_says_whose_verdict_it_borrows():
+    """A scene shows one candidate with no column header to explain it, so the
+    tag carries what the CSV's columns carry: the mapper cell, the tiers that
+    reached the target, the verdict, and — LAST — the marker saying the verdict
+    was made for another pair (plan §5, round 8).
+
+    The order is the claim: `(shared)` qualifies the verdict beside it, so
+    putting it anywhere but last would read as a tag on the neuron.
+    """
+    from comparison.mapping_validation_visualize import pool_leaf_tag
+    assert pool_leaf_tag({'mapper_cell': 'confirmed',
+                          'tiers': 'matched+nominated',
+                          'morph_gate': 'scored',
+                          'morph_qualified': True}) == \
+        'confirmed · matched+nominated · morph ✓'
+    assert pool_leaf_tag({'mapper_cell': 'type_new', 'tiers': 'nominated',
+                          'morph_gate': 'shared',
+                          'morph_qualified': False}) == \
+        'type_new · nominated · morph ✗ (shared)'
+    # an unscored leaf says nothing about quality — no mark, no ✗
+    assert pool_leaf_tag({'mapper_cell': 'confirmed', 'tiers': 'verified',
+                          'morph_gate': 'no-score'}) == 'confirmed · verified'
+    assert pool_leaf_tag({}) == ''
