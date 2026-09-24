@@ -139,24 +139,34 @@ def parse_args(argv=None):
                         'and PER BAND — the borderline and deep bands each '
                         'draw on a budget of this size, so a wider mode only '
                         'adds rows (Rev 3.8; default 10)')
+    p.add_argument('--pooling-bar-metric', default='either',
+                   choices=['either', 'jaccard', 'rank_union'],
+                   help='--mode pooling: WHICH metric\'s rank admits a '
+                        'candidate. `either` is the union of each metric\'s own '
+                        'top-N (the same reading the matched tier uses), not a '
+                        'merged best-rank ordering — measured, a merged '
+                        'ordering keeps 79 of the 118 targets the union keeps '
+                        '116 of (plan-tmvev-pooling-tiers.md §2).')
+    p.add_argument('--pooling-bar-top-n', type=int, default=3,
+                   help='--mode pooling: how deep each metric\'s rank list goes. '
+                        'The default admits ~1.1 targets per queried source on '
+                        'FAFB->male-cns (272 for 242) and keeps 116 of the 118 '
+                        'targets the old floors found; N>=5 on rank_union opens '
+                        'a tie mass (17 rows/source), which the 2N row cap names.')
     p.add_argument('--pooling-jaccard-floor', type=float, default=0.10,
-                   help='--mode pooling: absolute Jaccard floor — a VOLUME '
-                        'guard-rail on how wide the connectivity scan may '
-                        'open, not a statement about whether any pair is a '
-                        'homolog (plan §5). The configured number is the '
-                        'number the run gates on and publishes.')
+                   help='--mode pooling: ADVISORY flag, not a filter — each '
+                        'floor is evaluated against this number and published '
+                        'per row (below_jaccard_floor), and removes nothing. '
+                        'They were filters until 2026-09-24, when the '
+                        'rank_union one alone was found to starve 119 of 242 '
+                        'queried sources.')
     p.add_argument('--pooling-rank-union-floor', type=float, default=0.0,
-                   help='--mode pooling: absolute rank_union floor '
-                        '(default 0 = strictly positive correlation)')
+                   help='--mode pooling: advisory rank_union flag (default 0 = '
+                        'strictly positive), published per row, never applied')
     p.add_argument('--pooling-window-mult', type=float, default=2.0,
-                   help='--mode pooling: rank window = this x the size of the '
-                        "source neuron's own queried type population. Measured "
-                        'selectivity is carried by the floors, not the window '
-                        '(2 vs 4 moves the pool by <=3 targets).')
-    p.add_argument('--no-pooling-morph-gate', action='store_true',
-                   help='--mode pooling: skip the final morphology gate, so '
-                        'the pool is exactly what connectivity admitted '
-                        '(nothing is refused on shape)')
+                   help='--mode pooling: the window the outside_window flag '
+                        'measures against = this x the size of the source '
+                        "neuron's own queried type population. Advisory.")
     p.add_argument('--pooling-max-morph-targets', type=int, default=400,
                    help='--mode pooling: budget for the morph pass (one '
                         'network-bound step); rows past the budget are '
@@ -216,6 +226,13 @@ def parse_args(argv=None):
                         'suspects_verification.csv + the Suspects tab')
     p.add_argument('--quiet', action='store_true')
     args = p.parse_args(argv)
+    if args.mode == 'pooling' and args.no_morphology:
+        # Every pooling tier is defined morph-qualified, so a run without the
+        # gate would publish connectivity findings under claim-shaped names —
+        # the distinction the mode exists to make. Refuse, like the widening
+        # flags below, rather than degrade silently.
+        p.error('--mode pooling requires morphology: drop --no-morphology, or '
+                'run --mode restrictive for a structural pass')
     if args.mode == 'pooling' and args.aggressive_expansion:
         # A CLI contradiction should read as a usage error (exit 2 + the
         # help), not as a traceback from deep inside the config.
@@ -259,7 +276,8 @@ def main(argv=None):
         pooling_jaccard_floor=args.pooling_jaccard_floor,
         pooling_rank_union_floor=args.pooling_rank_union_floor,
         pooling_window_mult=args.pooling_window_mult,
-        pooling_morph_gate=not args.no_pooling_morph_gate,
+        pooling_bar_metric=args.pooling_bar_metric,
+        pooling_bar_top_n=args.pooling_bar_top_n,
         pooling_max_morph_targets=args.pooling_max_morph_targets,
         backward_evidence_enabled=args.backward_evidence,
         skip_backward_pass=args.skip_backward_pass,

@@ -2231,6 +2231,16 @@ TOOL_GUIDE_SPECS = {
                             "of it — it is joined afterwards. Includes the "
                             "targets the morphology gate refused, so the "
                             "refusals stay auditable."},
+            {"pattern": "pooling/pooling_sources.csv", "preview": True,
+             "description": "--mode pooling only: one row per QUERIED source "
+                            "(the mode's own unit and denominator) — its "
+                            "chain-best finding, that row's tier (matched / "
+                            "verified / nominated), how many targets it "
+                            "admitted and how many survived the morphology "
+                            "bar, source_claimed (mapper-derived, advisory), "
+                            "and no_finding for a source the bar admitted "
+                            "nothing for. A source that found nothing is "
+                            "named, never absent."},
             {"pattern": "pooling/pooling_pool.csv",
              "description": "--mode pooling only: the same pool deduplicated "
                             "to one row per candidate target neuron on the "

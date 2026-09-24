@@ -603,9 +603,17 @@ def pool_rows_by_host(pool_rows) -> Dict[str, List[Dict]]:
     so its source's type is its only scene address — one row per target means
     one host, and a type no branch group covers renders no layer (the render
     pass names those rows rather than dropping them quietly).
+
+    Rows the morphology bar refused on every admitting row (`in_pool=False`) are
+    not in the pool and are not drawn, and the count is reported so a shrunken
+    scene cannot read as a smaller harvest; so are the mapper-only rows, which
+    answer a different question (what the SUPERVISED path claims) and live in
+    `pooling_pool.csv` alone.
     """
     hosts: Dict[str, List[Dict]] = defaultdict(list)
     for r in pool_rows or []:
+        if r.get('in_pool') is False:
+            continue
         hosts[str(r.get('best_source_type') or '')].append(r)
     return hosts
 

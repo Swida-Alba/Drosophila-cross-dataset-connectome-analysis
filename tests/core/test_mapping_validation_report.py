@@ -848,7 +848,7 @@ def test_a_failed_pooling_pass_is_not_a_null_result(run_dir: Path):
     html = build_report_document(collect_run_data(run_dir))
     assert "RuntimeError: boom" in html
     assert "not a universe with no homolog" in html
-    assert "The gate admitted no candidate" in html
+    assert "The bar admitted no candidate" in html
 
 
 def test_the_pool_table_has_no_cross_dataset_agreement_column(run_dir: Path):

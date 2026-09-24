@@ -56,7 +56,8 @@ _FALLBACK_DEFAULTS = {
     "include_untyped_partners": True, "backward_scan_pool_targets": True,
     "scene_selfcheck": False, "verify_suspects": False,
     "pooling_jaccard_floor": 0.10, "pooling_rank_union_floor": 0.0,
-    "pooling_window_mult": 2.0, "pooling_morph_gate": True,
+    "pooling_window_mult": 2.0,
+    "pooling_bar_metric": "either", "pooling_bar_top_n": 3,
     "pooling_max_morph_targets": 400,
 }
 _RATIO_FLOATS = {
@@ -263,33 +264,47 @@ def create_type_validation_tab():
         with ui.card().classes("w-full drocat-card").props('id="card-tmvev-pooling"') as pooling_card:
             section_header("Pooling gate (unsupervised mode)", "public")
             ui.label(
-                "Read only in mode `pooling`: absolute floors over the whole "
-                "target universe, so no branch pool decides a row. The run "
-                "writes pooling/ beside the nested bins and joins the mapper "
-                "afterwards."
+                "Read only in mode `pooling`: every queried source keeps the "
+                "top-N of each chosen metric over the whole target universe, "
+                "so no branch pool decides a row. Morphology then qualifies the "
+                "findings — it is mandatory here, because each tier is defined "
+                "as morph-qualified. The run writes pooling/ beside the nested "
+                "bins and joins the mapper afterwards, as advice only."
             ).classes("text-caption opacity-70 w-full")
+            pooling_bar_metric = ui.select(
+                {'either': 'either metric (the union of both top-N)',
+                 'jaccard': 'jaccard only',
+                 'rank_union': 'rank_union only'},
+                value=str(_default("pooling_bar_metric")), with_input=False,
+            ).classes("w-72").tooltip(
+                "What decides admission. `either` is each metric's own top-N, "
+                "unioned — the same reading the matched tier uses. A merged "
+                "best-rank ordering is NOT used: it spends the slots on the two "
+                "metrics' rank-1 rows and keeps 79 of the 118 targets the union "
+                "keeps 116 of.")
+            pooling_bar_top_n = number_input(
+                "Bar depth (top-N per metric)",
+                int(_default("pooling_bar_top_n")), 1, 100, 1,
+                hint="How deep each metric's rank list goes. The default admits "
+                     "~1.1 targets per queried source on FAFB->male-cns (272 for "
+                     "242). Each source is capped at 2N rows because rank_union "
+                     "ties (17 rows/source at N=5), and the run publishes how "
+                     "many the cap cut.")
             pooling_j_floor = number_input(
-                "Jaccard floor", float(_default("pooling_jaccard_floor")),
+                "Jaccard floor (advisory flag)",
+                float(_default("pooling_jaccard_floor")),
                 0.0, 1.0, 0.01,
-                hint="A VOLUME guard-rail, not a quality bar: it decides how "
-                     "wide the connectivity scan may open, and only the "
-                     "morphology gate below says anything about a pair. Raise "
-                     "it when a pool is too large to review, lower it when the "
-                     "scan finds nothing.")
+                hint="No longer a filter: every admitted row is measured "
+                     "against it and published as below_jaccard_floor, and "
+                     "nothing is removed for missing it. The bar above decides "
+                     "admission; raise this only to read the flag differently.")
             pooling_window_mult = number_input(
-                "Window multiplier", float(_default("pooling_window_mult")),
+                "Window multiplier (advisory flag)",
+                float(_default("pooling_window_mult")),
                 0.5, 20.0, 0.5,
-                hint="Rank window = this x the size of the source neuron's own "
-                     "type population. Measured selectivity sits in the floors, "
-                     "not here (2 vs 4 moves the pool by <=3 targets).")
-            pooling_morph = checkbox_input(
-                "Morphology as the last gate",
-                bool(_default("pooling_morph_gate")),
-                hint="Qualify the connectivity survivors only, through the "
-                     "Find-Homolog fast path (no NBLAST). It is a GATE: a "
-                     "candidate scored below its bar leaves the pool and the "
-                     "scene, and the run publishes how many it refused. "
-                     "Off = publish the connectivity-only pool.")
+                hint="The window the outside_window flag measures against = this "
+                     "x the size of the source neuron's own type population. "
+                     "Advisory: it removed nothing even when it was a filter.")
             pooling_budget = number_input(
                 "Morph budget (candidate targets)",
                 int(_default("pooling_max_morph_targets")), 0, 100000, 1,
@@ -436,7 +451,8 @@ def create_type_validation_tab():
             # CLI's flag names
             "pooling_jaccard_floor": float(pooling_j_floor.value),
             "pooling_window_mult": float(pooling_window_mult.value),
-            "pooling_morph_gate": bool(pooling_morph.value),
+            "pooling_bar_metric": str(pooling_bar_metric.value),
+            "pooling_bar_top_n": int(pooling_bar_top_n.value),
             "pooling_max_morph_targets": int(pooling_budget.value),
             "aggressive_expansion": False,
             "pool_widen": False,

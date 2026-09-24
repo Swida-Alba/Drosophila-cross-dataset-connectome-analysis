@@ -309,27 +309,95 @@ def check_pooling(run, tag):
                 for k in ('scored', 'no_score', 'capped'))
     chk(parts == morph.get('attempted'), f'{tag}: morph ledger adds up',
         f'{parts} vs {morph.get("attempted")}')
-    refused = {r.target_bodyId for r in cand.itertuples(index=False)
-               if r.morph_gate == 'scored'
-               and not as_bool(r.morph_qualified or 'False')}
-    chk(len(refused) == morph.get('dropped_targets'),
-        f'{tag}: dropped_targets counts the refusals',
-        f'{len(refused)} vs {morph.get("dropped_targets")}')
-    seen = set(cand['target_bodyId'])
-    inpool = set(pool['target_bodyId'])
-    chk(inpool <= seen, f'{tag}: every pool target has a candidate row',
-        str(sorted(inpool - seen)[:5]))
-    chk(not (inpool & refused), f'{tag}: no refused target in the pool',
-        str(sorted(inpool & refused)[:5]))
-    chk(seen - refused == inpool, f'{tag}: pool == admitted minus refused',
-        f'{len(seen - refused)} vs {len(inpool)}')
+    # a refusal is per ROW; a target leaves the pool only when EVERY row that
+    # admitted it was refused, because another source may hold its own verdict
+    refused_rows = {int(r.target_bodyId) for r in cand.itertuples(index=False)
+                    if r.morph_gate in ('scored', 'shared')
+                    and not as_bool(r.morph_qualified or 'False')}
+    admitted = {int(r.target_bodyId) for r in cand.itertuples(index=False)}
+    kept = {int(r.target_bodyId) for r in cand.itertuples(index=False)
+            if not (r.morph_gate in ('scored', 'shared')
+                    and not as_bool(r.morph_qualified or 'False'))}
+    dropped = admitted - kept
+    chk(len(dropped) == morph.get('dropped_targets'),
+        f'{tag}: dropped_targets counts the refused targets',
+        f'{len(dropped)} vs {morph.get("dropped_targets")}')
+    chk(refused_rows >= dropped,
+        f'{tag}: every dropped target has a refused row')
+    seen = {int(b) for b in pool['target_bodyId']}
+    in_pool = {int(r.target_bodyId) for r in pool.itertuples(index=False)
+               if as_bool(str(r.in_pool or 'True'))}
+    chk(seen >= admitted,
+        f'{tag}: every admitted target has a pool row',
+        str(sorted(admitted - seen)[:5]))
+    chk(in_pool == kept, f'{tag}: in_pool == admitted minus refused',
+        f'{len(in_pool)} vs {len(kept)}')
     chk(pool['target_bodyId'].is_unique,
         f'{tag}: pool deduped to one row per target')
+    # the supervised-only rows: the same file answers "which target does EITHER
+    # engine claim", so they must be the JSON set, not a count beside a table
+    vo = {int(r.target_bodyId) for r in pool.itertuples(index=False)
+          if r.mapper_cell == 'verified_only'}
+    chk(vo == set(int(b) for b in (xv.get('body_ids') or {}).get(
+        'verified_only', [])),
+        f'{tag}: verified_only rows == the JSON set',
+        f'{len(vo)} vs {len(xv.get("body_ids", {}).get("verified_only", []))}')
+    chk(not (vo & admitted),
+        f'{tag}: a verified_only row was never admitted by the bar',
+        str(sorted(vo & admitted)[:5]))
     bad_gate = [r.target_bodyId for r in pool.itertuples(index=False)
                 if r.morph_gate == 'scored'
                 and not as_bool(r.morph_qualified or 'False')]
     chk(not bad_gate, f'{tag}: no refused verdict survives in the pool',
         str(bad_gate[:5]))
+    # the source axis: the mode's own unit, and its denominator
+    src = table(run, 'pooling_sources.csv')
+    chk(src is not None and len(src) == int(
+        (xv.get('seed') or {}).get('queried_sources') or -1),
+        f'{tag}: pooling_sources.csv is one row per queried source',
+        f'{0 if src is None else len(src)} vs '
+        f'{(xv.get("seed") or {}).get("queried_sources")}')
+    if src is not None:
+        chk(src['source_bodyId'].is_unique,
+            f'{tag}: one pooling source row per bodyId')
+        chk(set(src['tier']) <= {'matched', 'verified', 'nominated', ''},
+            f'{tag}: source tiers use the pooling vocabulary',
+            str(sorted(set(src['tier']))))
+    chk(set(cand['tier']) <= {'matched', 'verified', 'nominated', ''},
+        f'{tag}: candidate tiers use the pooling vocabulary',
+        str(sorted(set(cand['tier']))))
+    # a borrowed verdict must name the pair it came from, and its own row must
+    # not: this is the difference between a measurement and a quotation
+    bad_share = [f'{r.source_bodyId}->{r.target_bodyId}'
+                 for r in cand.itertuples(index=False)
+                 if (r.morph_gate == 'shared') != bool(r.verdict_for_pair)]
+    chk(not bad_share, f'{tag}: every shared verdict names its pair',
+        str(bad_share[:5]))
+    scored_pairs = {(str(r.source_bodyId), str(r.target_bodyId))
+                    for r in cand.itertuples(index=False)
+                    if r.morph_gate == 'scored'}
+    orphan = [r.verdict_for_pair for r in cand.itertuples(index=False)
+              if r.verdict_for_pair
+              and tuple(r.verdict_for_pair.split('->')) not in scored_pairs]
+    chk(not orphan, f'{tag}: every borrowed verdict points at a scored pair',
+        str(orphan[:5]))
+    # the floors are flags: a flagged row is still in the file
+    for col in ('below_jaccard_floor', 'below_rank_union_floor',
+                'outside_window'):
+        chk(col in cand.columns, f'{tag}: candidates carry the {col} flag')
+    flagged = int(pd.to_numeric(
+        cand['below_rank_union_floor'].map(as_bool), errors='coerce').fillna(0)
+        .sum()) if 'below_rank_union_floor' in cand.columns else 0
+    chk(xv.get('floor_flags', {}).get('below_rank_union_floor') == flagged,
+        f'{tag}: floor_flags counts the rows, it removes none',
+        f'{xv.get("floor_flags", {}).get("below_rank_union_floor")} vs '
+        f'{flagged}')
+    # no neuron is ever labelled with the placeholder a float leaves behind
+    labelled = [str(v) for v in list(cand.get('target_type', []))
+                + list(pool.get('target_type', []))
+                if str(v).strip() in ('nan', 'NaN', 'NA')]
+    chk(not labelled, f'{tag}: no exported type is the string nan',
+        str(labelled[:5]))
     pairs = {(r.target_bodyId, r.source_bodyId)
              for r in cand.itertuples(index=False)}
     chk({(r.target_bodyId, r.best_source_bodyId)

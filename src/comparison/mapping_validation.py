@@ -240,25 +240,37 @@ class MappingValidationConfig:
     #: widening the mode only ever adds rows (see `_scan_pair`'s window block).
     deep_cap: int = 10
     # ------------------------------------------------------------------
-    # `pooling` mode (plan-tmvev-pooling-mode.md): the UNSUPERVISED candidate
-    # engine.  Absolute floors plus a window scaled to the source type's own
-    # queried population — no branch pool, no pool-relative bar.  These knobs
-    # are read only when `validation_mode == 'pooling'`.
+    # `pooling` mode (plan-tmvev-pooling-mode.md + plan-tmvev-pooling-tiers.md):
+    # the UNSUPERVISED candidate engine, whose unit is the queried source.
     #
-    # They are a VOLUME control, not a data-quality claim (user 2026-09-23):
-    # what they decide is how wide the connectivity scan may open.  An earlier
-    # build also fitted `pooling_jaccard_floor` to the dataset pair's own
-    # graded evidence; that guarded a quality question the floor does not
-    # answer, so the fit was deleted rather than tuned.
+    # ADMISSION IS THE BAR: every source keeps the top-N of each chosen metric
+    # (`pooling_bar_metric` x `pooling_bar_top_n`), no branch pool and no
+    # pool-relative bar read on the selection path.
+    #
+    # The three FLOOR knobs no longer filter anything (user 2026-09-24).  Each is
+    # still evaluated against its configured number and published per row
+    # (`below_jaccard_floor` / `below_rank_union_floor` / `outside_window`), which
+    # keeps the disclosure and drops the deletion: measured on the landed run,
+    # `pooling_rank_union_floor = 0.0` was the SOLE reason 119 of 242 sources
+    # reported nothing, and a sign test on every pair is not the volume control
+    # these numbers were documented as.  An earlier build also fitted
+    # `pooling_jaccard_floor` to the dataset pair's own graded evidence; that fit
+    # was deleted rather than tuned.
     # ------------------------------------------------------------------
     pooling_jaccard_floor: float = 0.10
     pooling_rank_union_floor: float = 0.0
     pooling_window_mult: float = 2.0
-    #: Morphology is the LAST GATE (decision 3): a candidate the bar refuses
-    #: leaves the exported pool and the scene root, counted as
-    #: `morph['dropped_targets']`.  A candidate with NO verdict never leaves —
-    #: a missing measurement is not a rejection.
-    pooling_morph_gate: bool = True
+    #: The admission bar.  `either` means the UNION of each metric's own top-N —
+    #: not a merged best-rank ordering, which spends the N slots on the two
+    #: metrics' rank-1 rows and was measured to keep only 79 of the 118 targets
+    #: the floors found, where the union keeps 116.
+    pooling_bar_metric: str = 'either'      # either | jaccard | rank_union
+    pooling_bar_top_n: int = 3
+    #: Morphology is MANDATORY here (every tier is defined morph-qualified, so a
+    #: run without it would publish connectivity-only rows under claim-shaped
+    #: names) and it is the LAST GATE: a row the bar refuses leaves the exported
+    #: pool, counted as `morph['dropped_targets']`.  A row with NO verdict never
+    #: leaves — a missing measurement is not a rejection.
     #: Morph is the LAST gate and the only network-bound step left in the
     #: path, so the pass is budgeted; rows past the budget say so in
     #: `morph_gate='not-attempted-cap'` rather than reading as rejections.
@@ -914,6 +926,7 @@ RUN_FILE_LAYOUT: Dict[str, str] = {
     # pooling mode: the unsupervised engine and its post-hoc comparison
     'pooling_candidates.csv': 'pooling',
     'pooling_pool.csv': 'pooling',
+    'pooling_sources.csv': 'pooling',
     'pooling_cross_validation.json': 'pooling',
     # mapping provenance
     'mapping_export.csv': 'mapping',
@@ -1100,20 +1113,40 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'backward_matches.csv': [
         'query', 'branch_source_type', 'branch_target_type',
         'member_bodyId', 'member_type', 'member_category', 'scan_role'],
+    # one row per admitted PAIR: the bar's own decision, the flags the floors
+    # left behind, the tier, and the morphology record that qualified it
     'pooling_candidates.csv': [
         'source_bodyId', 'source_type', 'target_bodyId', 'target_type',
         'jaccard', 'jaccard_rank', 'rank_union', 'rank_union_rank',
-        'window_size', 'in_scope', 'leaf', 'size_nm3',
+        'bar_rank', 'bar_metric', 'bar_top_n', 'tier', 'window_size',
+        'below_jaccard_floor', 'below_rank_union_floor', 'outside_window',
+        'supported_by', 'single_metric_support', 'map_tag', 'source_claimed',
+        'in_scope', 'leaf', 'size_nm3',
         'size_universe_percentile', 'morph_gate', 'morph_bar_kind',
         'morph_similarity', 'morph_pool_ref', 'morph_bar',
-        'morph_qualified', 'mapper_cell', 'mapper_verdict'],
+        'morph_qualified', 'verdict_for_pair', 'mapper_cell',
+        'mapper_verdict'],
+    # one row per distinct TARGET: what the scenes and `(dup)` group on, plus
+    # the mapper-only rows (in_pool=False) so one file answers "which target
+    # neurons does either engine claim?"
     'pooling_pool.csv': [
         'target_bodyId', 'target_type', 'leaf', 'best_source_bodyId',
         'best_source_type', 'jaccard', 'jaccard_rank', 'rank_union',
+        'rank_union_rank', 'best_bar_rank', 'bar_metric', 'bar_top_n',
         'window_size', 'size_nm3', 'size_universe_percentile', 'in_scope',
-        'n_sources', 'dup', 'morph_gate', 'morph_bar_kind',
-        'morph_similarity', 'morph_pool_ref', 'morph_bar',
-        'morph_qualified', 'mapper_cell', 'mapper_verdict'],
+        'map_tag', 'tiers', 'n_sources', 'dup', 'n_rows_refused', 'in_pool',
+        'morph_gate', 'morph_bar_kind', 'morph_similarity', 'morph_pool_ref',
+        'morph_bar', 'morph_qualified', 'verdict_for_pair', 'mapper_cell',
+        'mapper_verdict'],
+    # one row per QUERIED SOURCE — the mode's own unit, and the denominator the
+    # headline reads (a source that found nothing is named, never absent)
+    'pooling_sources.csv': [
+        'source_bodyId', 'source_type', 'n_admitted', 'n_in_pool',
+        'n_refused', 'tier', 'best_target_bodyId', 'best_bar_rank',
+        'jaccard', 'jaccard_rank', 'rank_union', 'rank_union_rank',
+        'supported_by', 'single_metric_support', 'source_claimed',
+        'morph_gate', 'morph_bar_kind', 'morph_similarity', 'morph_pool_ref',
+        'morph_bar', 'morph_qualified', 'verdict_for_pair', 'no_finding'],
 }
 
 # The backward (target -> source) evidence columns ride the three expansion
@@ -1479,7 +1512,7 @@ def classify_category(*, target_bid, branch_pool, in_map, target_type,
     #      membership).  family = THIS branch's target type; relative =
     #      candidate types outside the map.
     if mode in ('family', 'aggressive'):
-        tt = None if target_type in (None, '', '?') else str(target_type)
+        tt = str(target_type) if has_type_name(target_type) else None
         if tt is not None and branch_target_type is not None \
                 and tt == str(branch_target_type):
             return ('family', True, False)
@@ -1496,6 +1529,23 @@ def classify_category(*, target_bid, branch_pool, in_map, target_type,
             return ('examinees', True, False)
         return ('', False, True)
     return ('', False, False)
+
+
+#: Type labels that are not labels.  A missing annotation reaches here as the
+#: float NaN, whose ``str()`` is the four-character string ``'nan'`` — and that
+#: string is truthy, so ``str(v or '')`` keeps it and an unannotated neuron reads
+#: as its own type named "nan".  Measured on the landed pooling run: 6 of 393
+#: rows exported ``target_type='nan'`` with ``in_scope=True`` and the leaf token
+#: ``nan(no_source)``.  Every emptiness test in this mode goes through
+#: :func:`has_type_name` for that reason.
+UNSET_TYPE_LABELS = frozenset({'', '?', 'nan', 'NaN', 'NA', 'None', 'none'})
+
+
+def has_type_name(value) -> bool:
+    """True only when ``value`` is an actual type name."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return False
+    return str(value).strip() not in UNSET_TYPE_LABELS
 
 
 def candidate_annotation(target_type, backward_types, has_type: bool,
@@ -1519,7 +1569,7 @@ def candidate_annotation(target_type, backward_types, has_type: bool,
       out-of-map.
     - ``untyped`` when there is no type annotation at all.
     """
-    if not has_type or target_type in (None, '', '?'):
+    if not has_type or not has_type_name(target_type):
         return 'untyped'
     t = str(target_type)
     if type_in_map:
@@ -1915,6 +1965,13 @@ class MappingValidator:
 
     def __init__(self, cfg: MappingValidationConfig):
         self.cfg = cfg
+        # fail before any stage runs, not after 30 minutes of scanning: a
+        # pooling run without morphology cannot qualify its own tiers (the
+        # CLI refuses it too; this is the backend/UI-payload path)
+        if cfg.effective_mode == 'pooling' and not cfg.morph_enabled:
+            from comparison.mapping_validation_pooling import (
+                check_morphology_mandatory)
+            check_morphology_mandatory(cfg)
         self.mapper = get_type_mapper()
         self.profiler = ConnectivityProfiler(
             datasets=[cfg.source_dataset, cfg.target_dataset],
@@ -3338,7 +3395,7 @@ class MappingValidator:
             cq = (bid in invader_ids.get(k, set())
                   or bid in gapfire_ids.get(k, set())
                   or bid in window_ids.get(k, set()))
-            tt = None if ttype in (None, '', '?') else str(ttype)
+            tt = str(ttype) if has_type_name(ttype) else None
             cat, in_scope, mfail = classify_category(
                 target_bid=bid, branch_pool=branch_pools.get(k),
                 in_map=in_map, target_type=tt,
@@ -3371,7 +3428,7 @@ class MappingValidator:
                 continue
             if str(row.get('category') or ''):
                 continue
-            tt = None if ttype in (None, '', '?') else str(ttype)
+            tt = str(ttype) if has_type_name(ttype) else None
             cat, in_scope, mfail = classify_category(
                 target_bid=bid, branch_pool=branch_pools.get(k),
                 in_map=in_map, target_type=tt,
@@ -3497,7 +3554,7 @@ class MappingValidator:
             if str(row.get('category') or '') != 'candidates':
                 continue
             ann = str(row.get('candidate_annotation') or '')
-            if ann == 'untyped' or ttype in (None, '', '?'):
+            if ann == 'untyped' or not has_type_name(ttype):
                 n_untyped += 1
             elif ann.endswith('(no_source)'):
                 gap_types[str(ttype)] += 1
@@ -5857,6 +5914,8 @@ class MappingValidator:
             _write_run_csv(rd, 'pooling_candidates.csv',
                            pooling.get('candidates') or [])
             _write_run_csv(rd, 'pooling_pool.csv', pooling.get('pool') or [])
+            _write_run_csv(rd, 'pooling_sources.csv',
+                           pooling.get('sources') or [])
             run_file_path(rd, 'pooling_cross_validation.json',
                           create_parent=True).write_text(
                 json.dumps(pooling.get('cross_validation') or {}, indent=2,
@@ -5914,7 +5973,8 @@ class MappingValidator:
             'pooling_jaccard_floor': self.cfg.pooling_jaccard_floor,
             'pooling_rank_union_floor': self.cfg.pooling_rank_union_floor,
             'pooling_window_mult': self.cfg.pooling_window_mult,
-            'pooling_morph_gate': self.cfg.pooling_morph_gate,
+            'pooling_bar_metric': self.cfg.pooling_bar_metric,
+            'pooling_bar_top_n': self.cfg.pooling_bar_top_n,
             'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
             'scene_selfcheck': self.cfg.scene_selfcheck,
             'morph_enabled': self.cfg.morph_enabled,
@@ -6036,6 +6096,7 @@ class MappingValidator:
             # reads as "nothing was found" to anyone working from README.txt
             *([] if self.cfg.effective_mode != POOLING_MODE else [
                 '- pooling/pooling_candidates.csv / pooling_pool.csv / '
+                'pooling_sources.csv / '
                 'pooling_cross_validation.json (this run, --mode pooling) — '
                 'the UNSUPERVISED pool: every queried neuron scanned against '
                 'the whole target universe under absolute floors (a VOLUME '

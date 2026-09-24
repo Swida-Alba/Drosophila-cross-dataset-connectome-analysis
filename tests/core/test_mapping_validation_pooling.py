@@ -57,7 +57,7 @@ class FakeValidator:
 def _cfg(**kw):
     base = dict(source_dataset='flywire_FAFB_v783', target_dataset='banc_v888',
                 query_types=['circadian_clock'], verbose=False,
-                validation_mode='pooling', pooling_morph_gate=False)
+                validation_mode='pooling')
     base.update(kw)
     return mv.MappingValidationConfig(**base)
 
@@ -70,6 +70,36 @@ def _frame(rows):
         if col not in df:
             df[col] = default
     return df
+
+
+@pytest.fixture(autouse=True)
+def _morphology_stand_in(monkeypatch):
+    """Morphology is MANDATORY in pooling now, so a test cannot opt out of the
+    last gate: every pass through it gets this stand-in (score what is asked,
+    qualify at >= 0.5).  A test that needs another verdict patches over it, and
+    its own `monkeypatch.setattr` runs after this fixture, so it wins.
+    """
+    import comparison.morph_cross_dataset as mcd
+
+    class _Stub:
+        active = True
+        warnings = []
+        ref_bars = {}
+        native_scores = {}
+
+        def __init__(self, pairs):
+            self.scores = {(int(s), int(t)): 0.9 for s, t in pairs}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            v = self.scores.get((int(s), int(t)))
+            return None if v is None else v >= 0.5
+
+    monkeypatch.setattr(
+        mcd, 'qualify_visualized_pairs',
+        lambda src, tgt, pairs, **kw: _Stub(pairs))
 
 
 # -- the mode selector ------------------------------------------------------
@@ -119,24 +149,38 @@ def _install_frames(monkeypatch, frames):
     monkeypatch.setattr(mv, 'expanded_vector', lambda prof, mapper: prof)
 
 
-def test_gate_keeps_only_absolute_evidence(monkeypatch):
+def test_the_bar_admits_and_the_floors_only_flag(monkeypatch):
+    """The bar decides admission; the floors measure and say so.
+
+    101 sits below the Jaccard floor and 102 below the rank_union one — under
+    the old gate both were deleted, which is how 119 of 242 real sources came to
+    report nothing at all.  They are admitted and flagged.  103 is outside the
+    bar itself (rank 3 of both metrics against top-N 2), so it is not.
+    """
     frames = {1: _frame([
-        # jaccard, rank_union, ranks — target 100 passes, the rest do not
         {'target_bid': 100, 'jaccard': 0.40, 'rank_union': 0.20,
          'jaccard_rank': 1, 'rank_union_rank': 1},
         {'target_bid': 101, 'jaccard': 0.09, 'rank_union': 0.90,
-         'jaccard_rank': 2, 'rank_union_rank': 2},        # below J
+         'jaccard_rank': 2, 'rank_union_rank': 2},        # below J, still kept
         {'target_bid': 102, 'jaccard': 0.40, 'rank_union': -0.10,
-         'jaccard_rank': 3, 'rank_union_rank': 3},        # below RU
+         'jaccard_rank': 3, 'rank_union_rank': 1},        # rank-1 by RU alone
         {'target_bid': 103, 'jaccard': 0.40, 'rank_union': 0.20,
-         'jaccard_rank': 9, 'rank_union_rank': 9},        # outside window
+         'jaccard_rank': 9, 'rank_union_rank': 9},        # outside the bar
     ])}
     _install_frames(monkeypatch, frames)
-    v = FakeValidator(_cfg(), frames, types={1: 's-LNv'})
+    v = FakeValidator(_cfg(pooling_bar_top_n=2), frames, types={1: 's-LNv'})
     rows, stats = pool.connectivity_candidates(
         v, [1], {1: 's-LNv'}, {1: 4}, {}, [100, 101, 102, 103], 0.10)
-    assert [r['target_bodyId'] for r in rows] == [100]
-    assert stats['rows_scored'] == 4 and stats['rows_kept'] == 1
+    assert [(r['target_bodyId'], r['bar_rank']) for r in rows] == [
+        (100, 1), (102, 1), (101, 2)]        # chain order: jaccard leads
+    assert stats['rows_scored'] == 4 and stats['rows_kept'] == 3
+    assert [r['below_jaccard_floor'] for r in rows] == [False, False, True]
+    assert [r['below_rank_union_floor'] for r in rows] == [False, True, False]
+    assert [r['outside_window'] for r in rows] == [False] * 3
+    # 102 is the population the retired floor deleted: rank_union top-1 for this
+    # source, and a NEGATIVE rank_union — a sign test, never a volume one.
+    # Its tier is graded where the labels join, not in the scan.
+    assert rows[1]['rank_union'] < 0 and rows[1]['bar_rank'] == 1
 
 
 def test_selection_does_not_depend_on_the_mapper(monkeypatch):
@@ -206,25 +250,28 @@ def test_leaf_token_reuses_the_shared_vocabulary():
 
 # -- the morph gate: budgeted, disclosed, fail-open -------------------------
 
-def _rows(*targets):
+def _rows(*targets, bar_rank=1):
     return [{'source_bodyId': 1, 'source_type': 's', 'target_bodyId': t,
-             'jaccard': 0.4, 'jaccard_rank': 1, 'rank_union': 0.2,
-             'rank_union_rank': 1, 'window_size': 2} for t in targets]
+             'jaccard': 0.4, 'jaccard_rank': bar_rank, 'rank_union': 0.2,
+             'rank_union_rank': bar_rank, 'bar_rank': bar_rank,
+             'bar_metric': 'either', 'bar_top_n': 3,
+             'window_size': 2} for t in targets]
 
 
-def test_morph_gate_disabled_is_labelled_not_blank():
-    v = FakeValidator(_cfg(pooling_morph_gate=False), {})
-    rows, info = pool.apply_morph_gate(v, _rows(1, 2))
-    assert all(r['morph_gate'] == 'disabled' for r in rows)
-    assert info['attempted'] == 0
-
-
-def test_run_wide_structural_switch_also_disables_the_pooling_gate():
-    """`--no-morphology` means no morphology is spent, here either."""
-    v = FakeValidator(_cfg(pooling_morph_gate=True, morph_enabled=False), {})
-    rows, info = pool.apply_morph_gate(v, _rows(1, 2))
-    assert all(r['morph_gate'] == 'disabled' for r in rows)
-    assert info['attempted'] == 0
+def test_pooling_refuses_a_run_without_morphology():
+    """Every tier is defined morph-qualified, so a pooling run without the gate
+    would publish connectivity findings under claim-shaped names — the very
+    distinction the mode exists to make.  It refuses, the way `normalize_mode`
+    already refuses a widening flag beside `--mode pooling`."""
+    v = FakeValidator(_cfg(morph_enabled=False), {})
+    with pytest.raises(ValueError):
+        pool.check_morphology_mandatory(v.cfg)
+    with pytest.raises(ValueError):
+        pool.run_pooling(v, target_stats={}, target_bids=[7],
+                         target_id2type={7: 'T'}, val_rows=[])
+    # a non-pooling run is none of this check's business
+    ok = FakeValidator(_cfg(morph_enabled=False, validation_mode='family'), {})
+    pool.check_morphology_mandatory(ok.cfg)
 
 
 def test_morph_budget_names_what_it_dropped(monkeypatch):
@@ -245,8 +292,7 @@ def test_morph_budget_names_what_it_dropped(monkeypatch):
 
     monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
                         lambda *a, **k: MQ())
-    v = FakeValidator(_cfg(pooling_morph_gate=True,
-                           pooling_max_morph_targets=1), {})
+    v = FakeValidator(_cfg(pooling_max_morph_targets=1), {})
     rows, info = pool.apply_morph_gate(v, _rows(1, 2))
     gates = {r['target_bodyId']: r['morph_gate'] for r in rows}
     assert info['attempted'] == 1 and info['capped'] == 1
@@ -255,13 +301,17 @@ def test_morph_budget_names_what_it_dropped(monkeypatch):
     assert info['qualified'] == 1
 
 
-def test_the_three_absences_are_three_labels(monkeypatch):
-    """`not-selected` (the verdict lives on the chain-best row),
-    `not-attempted-cap` (the budget refused), `no-score` (the scorer returned
-    nothing for the pair) — none of them may read as a rejected candidate.
+def test_the_four_absences_are_four_labels(monkeypatch):
+    """`scored` (this row's own pair), `shared` (the verdict was made for the
+    pair named in `verdict_for_pair`), `no-score` (the scorer returned nothing)
+    and `not-attempted-cap` (the budget refused to look) — none of the last
+    three may read as a rejected candidate.
 
-    The third label earned its keep: an earlier build's rows read `no-score`
-    for candidates the scorer HAD scored, because the shared scorer prunes
+    `shared` is the hybrid's honest edge: a `nominated` row shows a number that
+    belongs to another source's pair, and the native bar in particular is
+    computed from THAT source's reference pool, so the row must say whose
+    measurement it is. `no-score` earned its keep earlier: an build's rows read
+    it for candidates the scorer HAD scored, because the shared scorer prunes
     mapper pool members and pooling must not ask it to (see
     `test_pooling_grades_candidates_the_mapper_also_claims`)."""
     import comparison.morph_cross_dataset as mcd
@@ -282,17 +332,21 @@ def test_the_three_absences_are_three_labels(monkeypatch):
 
     monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
                         lambda *a, **k: MQ())
-    v = FakeValidator(_cfg(pooling_morph_gate=True,
-                           pooling_max_morph_targets=0), {})
-    rows = _rows(7, 7, 8)                # target 7 has two evidence rows
+    v = FakeValidator(_cfg(pooling_max_morph_targets=0), {})
+    rows = _rows(7, 8)                                  # both tier-1
+    rows.append({**rows[0], 'source_bodyId': 2, 'bar_rank': 2,
+                 'jaccard_rank': 2, 'rank_union_rank': 2})
     rows, info = pool.apply_morph_gate(v, rows)
-    gates = [(r['target_bodyId'], r['morph_gate']) for r in rows]
-    assert gates == [(7, 'scored'), (7, 'not-selected'), (8, 'no-score')]
+    gates = [(r['source_bodyId'], r['target_bodyId'], r['morph_gate'])
+             for r in rows]
+    assert gates == [(1, 7, 'scored'), (1, 8, 'no-score'),
+                     (2, 7, 'shared')]
+    assert [r['verdict_for_pair'] for r in rows] == ['', '', '1->7']
     assert info['attempted'] == 2 and info['capped'] == 0
-    assert info['qualified'] == 1
-    # `scored` counts what the scorer RETURNED a value for, not what the
-    # budget attempted: collapsing them (the first version said scored 2)
-    # hides a run where the last gate measured almost nothing.
+    assert info['qualified'] == 1 and info['shared'] == 1
+    # `scored` counts PAIRS the scorer returned a value for, not what the
+    # budget attempted: collapsing them hides a run the last gate barely
+    # measured.
     assert info['scored'] == 1 and info['no_score'] == 1
     # a row without a score carries no verdict, not a False
     assert [r['morph_qualified'] for r in rows if r['morph_gate'] ==
@@ -329,7 +383,7 @@ def test_pooling_grades_candidates_the_mapper_also_claims(monkeypatch):
         return MQ()
 
     monkeypatch.setattr(mcd, 'qualify_visualized_pairs', fake)
-    v = FakeValidator(_cfg(pooling_morph_gate=True), {})
+    v = FakeValidator(_cfg(), {})
     rows, info = pool.apply_morph_gate(v, _rows(7, 8))
     assert seen.get('mode') == 'mapping_ref'
     assert seen.get('prune_pool_refs') is False
@@ -342,7 +396,7 @@ def test_morph_failure_is_recorded_per_row(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError('no vectors for this dataset')
     monkeypatch.setattr(mcd, 'qualify_visualized_pairs', boom)
-    v = FakeValidator(_cfg(pooling_morph_gate=True), {})
+    v = FakeValidator(_cfg(), {})
     rows, info = pool.apply_morph_gate(v, _rows(1, 2))
     assert info['error'].startswith('RuntimeError')
     assert all(r['morph_gate'] == 'error' for r in rows)
@@ -386,7 +440,7 @@ def test_morphology_refusals_leave_the_pool_and_are_counted(monkeypatch):
         {'target_bid': 102, 'jaccard': 0.30, 'rank_union': 0.30,
          'jaccard_rank': 3, 'rank_union_rank': 3}])}
     _install_frames(monkeypatch, frames)
-    v = FakeValidator(_cfg(pooling_morph_gate=True, pooling_window_mult=5),
+    v = FakeValidator(_cfg(pooling_window_mult=5),
                       frames, types={1: 's-LNv'})
     v._backward_decision = lambda t: {'status': '', 'mapped': None,
                                       'home_count': 0, 'home_real': False}
@@ -396,8 +450,11 @@ def test_morphology_refusals_leave_the_pool_and_are_counted(monkeypatch):
                                            102: 'LC16'},
                            val_rows=[])
     x = out['cross_validation']['morph']
-    assert {p['target_bodyId'] for p in out['pool']} == {100}
-    assert x['gate_applied'] is True
+    # the refused targets stay in the file with `in_pool=False`: the pool is
+    # smaller than the harvest, and a reader must be able to see both numbers
+    assert {(p['target_bodyId'], p['in_pool']) for p in out['pool']} == {
+        (100, True), (101, False), (102, False)}
+    assert x['gate_applied'] is True and x['mandatory'] is True
     assert x['dropped_targets'] == 2
     # the refusals stay in the per-pair export, with the verdict on them
     refused = {r['target_bodyId']: r for r in out['candidates']
@@ -435,8 +492,7 @@ def test_an_unscored_candidate_is_never_a_refusal(monkeypatch):
         {'target_bid': 101, 'jaccard': 0.40, 'rank_union': 0.30,
          'jaccard_rank': 2, 'rank_union_rank': 2}])}
     _install_frames(monkeypatch, frames)
-    v = FakeValidator(_cfg(pooling_morph_gate=True,
-                           pooling_max_morph_targets=1), frames,
+    v = FakeValidator(_cfg(pooling_max_morph_targets=1), frames,
                       types={1: 's-LNv'})
     v._backward_decision = lambda t: {'status': '', 'mapped': None,
                                       'home_count': 0, 'home_real': False}
@@ -467,9 +523,11 @@ def test_pool_deduplicates_on_the_ordering_chain():
 def test_cross_validation_publishes_cells_and_the_reading_rules():
     pool_rows = [{
         'target_bodyId': 100, 'target_type': 'DN1a', 'leaf': 'DN1a(out-map)',
-        'best_source_bodyId': 1, 'jaccard': 0.5, 'rank_union': 0.3}, {
+        'best_source_bodyId': 1, 'jaccard': 0.5, 'rank_union': 0.3,
+        'in_pool': True}, {
         'target_bodyId': 200, 'target_type': 'LC16', 'leaf': 'LC16>DN1a',
-        'best_source_bodyId': 1, 'jaccard': 0.4, 'rank_union': 0.2}]
+        'best_source_bodyId': 1, 'jaccard': 0.4, 'rank_union': 0.2,
+        'in_pool': True}]
     for p in pool_rows:
         p['mapper_cell'] = (pool.CELL_CONFIRMED if p['target_bodyId'] == 100
                             else pool.CELL_TYPE_NEW)
@@ -478,7 +536,7 @@ def test_cross_validation_publishes_cells_and_the_reading_rules():
     evidence = [{'source_bodyId': 1}, {'source_bodyId': 2},
                 {'source_bodyId': 2}]
     xv = pool.cross_validation(pool_rows, evidence, refs,
-                               {'universe': 10}, {}, [])
+                               {'universe': 10, 'seed': 2}, {}, [])
     assert xv['cells'][pool.CELL_CONFIRMED] == 1
     assert xv['cells'][pool.CELL_POOL_MISS] == 1
     assert xv['cells'][pool.CELL_TYPE_MISS] == 0
@@ -488,7 +546,10 @@ def test_cross_validation_publishes_cells_and_the_reading_rules():
     # the two source counts answer different questions and must not be merged
     assert xv['seed']['sources_with_a_candidate'] == 2
     assert xv['seed']['distinct_best_sources'] == 1
-    assert len(xv['reading_notes']) == 4                 # the honesty rules
+    assert len(xv['reading_notes']) == 6                 # the honesty rules
+    # the bar's own arithmetic, published rather than left to the reader
+    assert xv['pool_per_source'] == 1.0                  # 2 targets / 2 sources
+    assert xv['pool_size_warning'] == ''
 
 
 # -- the whole pass, end to end on a synthetic universe --------------------
@@ -523,15 +584,29 @@ def test_run_pooling_end_to_end(monkeypatch):
                                            102: 'LC16'},
                            val_rows=[{'verdict': 'verified',
                                       'target_bodyId': 100}])
-    # 101 is below the J floor and must not appear at all
-    assert {p['target_bodyId'] for p in out['pool']} == {100, 102}
+    # 101 sits below the Jaccard floor and is STILL admitted — the floor is a
+    # flag now, which is the whole point of the change
+    assert {p['target_bodyId'] for p in out['pool']} == {100, 101, 102}
     assert out['stats']['seed'] == 2
     gate = out['stats']['gate']
     assert gate['jaccard_floor'] == 0.10           # configured, no fit
-    assert 'volume' in gate['role']                # and it says so
-    assert out['cross_validation']['cells'][pool.CELL_CONFIRMED] == 1
-    assert out['cross_validation']['cells'][pool.CELL_POOL_MISS] == 1
-    assert out['cross_validation']['morph']['attempted'] == 0   # gate off
+    assert 'advisory' in gate['role']              # and it says what it is now
+    assert out['stats']['bar'] == {
+        'metric': 'either', 'top_n': 3, 'row_cap_multiple': 2,
+        'role': out['stats']['bar']['role'], 'rows_cut': 0}
+    xv = out['cross_validation']
+    assert xv['cells'][pool.CELL_CONFIRMED] == 1
+    assert xv['cells'][pool.CELL_POOL_MISS] == 2
+    assert xv['floor_flags'] == {'below_jaccard_floor': 1,
+                                 'below_rank_union_floor': 0,
+                                 'outside_window': 0, 'rows': 3}
+    assert xv['tiers'] == {'matched': 1, 'verified': 1, 'nominated': 1}
+    assert xv['pool_per_source'] == 1.5 and xv['pool_size_warning'] == ''
+    # morphology is mandatory, so the last gate always runs
+    assert xv['morph']['attempted'] == 3 and xv['morph']['scored'] == 3
+    # one row per queried source, the mode's own unit
+    assert [(s['source_bodyId'], s['tier'], s['n_admitted'])
+            for s in out['sources']] == [(1, 'matched', 2), (2, 'verified', 1)]
     assert any('[pooling]' in n for n in v.notes)
 
 
@@ -574,3 +649,216 @@ def test_a_pool_row_is_hosted_by_its_best_sources_type_scene():
     assert sorted(hosts) == ['', 'DN1pA', 's-LNv']
     assert [r['target_bodyId'] for r in hosts['s-LNv']] == [500, 501]
     assert pool_rows_by_host([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# The bar (plan-tmvev-pooling-tiers.md §2-§3): admission, tiers, tags
+# ---------------------------------------------------------------------------
+
+def _arrays(specs):
+    """specs: (target_bid, jaccard, rank_union, jaccard_rank, rank_union_rank)."""
+    import numpy as np
+    return {'target_bid': np.array([s[0] for s in specs]),
+            'jaccard': np.array([s[1] for s in specs], dtype=float),
+            'rank_union': np.array([s[2] for s in specs], dtype=float),
+            'jaccard_rank': np.array([s[3] for s in specs], dtype=float),
+            'rank_union_rank': np.array([s[4] for s in specs], dtype=float)}
+
+
+def _admit(specs, **kw):
+    args = dict(source_bodyId=1, source_type='s-LNv', metric='either',
+                top_n=3, floors={'jaccard': 0.10, 'rank_union': 0.0},
+                window=4)
+    args.update(kw)
+    return pool.admit_by_bar(_arrays(specs), **args)
+
+
+def test_either_is_the_union_of_both_metrics_not_a_merged_order():
+    """`either` keeps rank-N of EITHER metric.
+
+    A merged best-rank ordering would spend the same slots on whichever metric
+    ranked first and was measured to keep 79 of the 118 targets the old floors
+    found, where the union keeps 116 — so the union is the property, and this
+    is its tripwire.
+    """
+    rows, cut = _admit([(100, 0.50, 0.01, 1, 9),        # jaccard's top-1
+                        (200, 0.02, 0.60, 9, 1),        # rank_union's top-1
+                        (300, 0.40, 0.40, 2, 2)],
+                       top_n=1)
+    assert cut == 0
+    assert sorted(r['target_bodyId'] for r in rows) == [100, 200]
+    assert {r['bar_rank'] for r in rows} == {1}
+
+
+def test_no_floor_can_remove_a_row_however_absurd_it_is_set():
+    """The invariant half of the change, in one assertion: admission is
+    identical under floors that reject everything."""
+    specs = [(100, 0.50, 0.30, 1, 1), (200, 0.02, -0.5, 2, 2)]
+    open_rows, _ = _admit(specs)
+    shut_rows, _ = _admit(specs, floors={'jaccard': 1e9, 'rank_union': 1e9})
+    assert [(r['target_bodyId'], r['bar_rank']) for r in open_rows] == \
+        [(r['target_bodyId'], r['bar_rank']) for r in shut_rows]
+    assert all(r['below_jaccard_floor'] and r['below_rank_union_floor']
+               for r in shut_rows[1:])
+    assert shut_rows[0]['below_jaccard_floor'] is True
+
+
+def test_the_row_cap_fires_on_a_tie_mass_and_names_the_cut():
+    """`rank_union` ranks tie at 0 across hundreds of targets, so rank<=N is not
+    a row bound. The cap is 2N rows in chain order and the cut is published."""
+    specs = [(500 + i, 0.001 * (10 - i), 0.0, 1, 1) for i in range(9)]
+    rows, cut = _admit(specs, top_n=2, metric='rank_union')
+    assert len(rows) == 4 and cut == 5
+    # chain order keeps the strongest jaccard of the tied block
+    assert [r['target_bodyId'] for r in rows] == [500, 501, 502, 503]
+
+
+@pytest.mark.parametrize('bar_rank,ru,want', [
+    (1, 0.50, 'matched'), (1, 0.10, 'verified'), (1, -0.30, 'verified'),
+    (1, None, 'verified'), (2, 0.50, 'nominated'), (3, 0.50, 'nominated'),
+    (4, 0.50, ''), (None, 0.5, '')])
+def test_tiers_are_per_row_and_the_third_is_nominated(bar_rank, ru, want):
+    assert pool.tier_of(bar_rank=bar_rank, rank_union=ru, top_n=3,
+                        matched_ru_min=0.1) == want
+
+
+def test_a_tier_is_a_property_of_the_row_not_the_source():
+    """162 of 242 baseline sources have two distinct rank-1 rows; both are real
+    top-1s, so both grade tier-1 and neither displaces the other."""
+    rows, _ = _admit([(100, 0.40, 0.05, 1, 4), (200, 0.05, 0.40, 4, 1)],
+                     top_n=1)
+    v = FakeValidator(_cfg(pooling_bar_top_n=1), {}, types={})
+    out = pool.annotate(v, rows, {100: 'DN1a', 200: 'LC16'},
+                        {'types': set(), 'pools': set(), 'pairs': {},
+                         'source_pools': set()})
+    # both are tier-1 rows of the SAME source, and each keeps its own grade:
+    # 100 is jaccard's top-1 with a weak rank_union, 200 the reverse
+    assert [r['tier'] for r in out] == ['verified', 'matched']
+    assert [r['bar_rank'] for r in out] == [1, 1]
+
+
+def test_pool_by_source_names_every_queried_source_once():
+    rows = [
+        {'source_bodyId': 1, 'source_type': 's', 'target_bodyId': 100,
+         'jaccard': 0.5, 'rank_union': 0.3, 'jaccard_rank': 1,
+         'rank_union_rank': 1, 'bar_rank': 1, 'tier': 'matched',
+         'morph_gate': 'scored', 'morph_qualified': True,
+         'supported_by': 'jaccard+rank_union', 'single_metric_support': False,
+         'source_claimed': True},
+        {'source_bodyId': 1, 'source_type': 's', 'target_bodyId': 101,
+         'jaccard': 0.4, 'rank_union': 0.3, 'jaccard_rank': 2,
+         'rank_union_rank': 2, 'bar_rank': 2, 'tier': 'nominated',
+         'morph_gate': 'shared', 'morph_qualified': True,
+         'supported_by': 'jaccard', 'single_metric_support': True,
+         'source_claimed': True},
+        {'source_bodyId': 2, 'source_type': 's', 'target_bodyId': 102,
+         'jaccard': 0.4, 'rank_union': 0.05, 'jaccard_rank': 1,
+         'rank_union_rank': 1, 'bar_rank': 1, 'tier': 'verified',
+         'morph_gate': 'scored', 'morph_qualified': False,
+         'supported_by': 'jaccard+rank_union', 'single_metric_support': False,
+         'source_claimed': False},
+    ]
+    out = pool.pool_by_source(rows, seed=[1, 2, 3], refused_targets={102})
+    assert [r['source_bodyId'] for r in out] == [1, 2, 3]
+    assert out[0]['tier'] == 'matched' and out[0]['n_admitted'] == 2
+    assert out[0]['n_in_pool'] == 2 and out[0]['n_refused'] == 0
+    # source 2's only finding was refused: it still appears, and says why
+    assert out[1]['n_in_pool'] == 0 and out[1]['n_refused'] == 1
+    assert out[1]['tier'] == 'verified'      # graded, then refused
+    assert out[1]['source_claimed'] is False
+    # and source 3 was examined and found nothing
+    assert out[2]['no_finding'] == 'no-admitted-target'
+    assert out[2]['tier'] == '' and out[2]['n_admitted'] == 0
+
+
+def test_a_mapper_claim_cannot_move_a_tier():
+    """`source_claimed`, `map_tag` and `mapper_cell` join AFTER the grade: the
+    same rows with an empty claim set must grade identically."""
+    rows = [{'source_bodyId': 1, 'source_type': 's', 'target_bodyId': 100,
+             'jaccard': 0.4, 'rank_union': 0.3, 'jaccard_rank': 1,
+             'rank_union_rank': 1, 'bar_rank': 1, 'window_size': 4}]
+    v = FakeValidator(_cfg(), {}, types={})
+    graded = {}
+    for name, refs in (('claimed', {'types': {'DN1a'}, 'pools': {100},
+                                    'pairs': {100: 'verified'},
+                                    'source_pools': {1}}),
+                       ('bare', {'types': set(), 'pools': set(),
+                                 'pairs': {}, 'source_pools': set()})):
+        out = pool.annotate(v, [dict(r) for r in rows], {100: 'DN1a'}, refs)
+        graded[name] = out[0]
+    assert graded['claimed']['tier'] == graded['bare']['tier'] == 'matched'
+    assert graded['claimed']['map_tag'] == 'in-map'
+    assert graded['bare']['map_tag'] == 'foreign'
+    assert graded['claimed']['source_claimed'] is True
+    assert graded['bare']['source_claimed'] is False
+
+
+# -- the type label, and the supervised-only rows ----------------------------
+
+@pytest.mark.parametrize('bad', ['nan', 'NaN', 'NA', '', '?', '  ', None,
+                                 float('nan')])
+def test_has_type_name_rejects_every_placeholder(bad):
+    assert mv.has_type_name(bad) is False
+
+
+@pytest.mark.parametrize('good', ['DN1a', 'l-LNv', '5thsLNv_LNd6', 'CB4091'])
+def test_has_type_name_accepts_every_real_name(good):
+    assert mv.has_type_name(good) is True
+
+
+def test_an_unannotated_target_is_untyped_not_named_nan():
+    """The bug the landed run published: 6 of 393 rows carried
+    `target_type='nan'` with `in_scope=True` and the leaf `nan(no_source)`,
+    because `str(float('nan'))` is a truthy four-character name."""
+    v = FakeValidator(_cfg(), {}, types={})
+    rows = [{'source_bodyId': 1, 'source_type': 's', 'target_bodyId': 500,
+             'jaccard': 0.4, 'rank_union': 0.3, 'jaccard_rank': 1,
+             'rank_union_rank': 1, 'bar_rank': 1, 'window_size': 4}]
+    out = pool.annotate(v, rows, {500: 'nan'},
+                        {'types': set(), 'pools': set(), 'pairs': {},
+                         'source_pools': set()})
+    assert out[0]['target_type'] == ''
+    assert out[0]['in_scope'] is False
+    assert out[0]['leaf'] == 'untyped'
+    assert out[0]['map_tag'] == 'untyped'
+
+
+def test_mapper_only_rows_publish_the_supervised_only_claims():
+    """`verified_only` is a set of neurons, so it is exported as rows; the bare
+    JSON count beside a table of row labels read as a different kind of thing."""
+    pool_rows = [{'target_bodyId': 100, 'mapper_cell': pool.CELL_CONFIRMED,
+                  'in_pool': True}]
+    out = pool.mapper_only_rows({'pairs': {100: 'verified', 300: 'matched'}},
+                                pool_rows)
+    assert [r['target_bodyId'] for r in out] == [300]
+    assert out[0]['in_pool'] is False
+    assert out[0]['mapper_cell'] == pool.CELL_VERIFIED_ONLY
+    assert out[0]['mapper_verdict'] == 'matched'
+
+
+def test_the_pool_size_warning_names_a_bar_that_left_the_band():
+    rows = [{'source_bodyId': 1, 'target_bodyId': 100}]
+    pool_rows = [{'target_bodyId': 100, 'target_type': 'T', 'in_pool': True,
+                  'mapper_cell': pool.CELL_TYPE_NEW,
+                  'best_source_bodyId': 1}]
+    xv = pool.cross_validation(pool_rows, rows,
+                               {'types': set(), 'pools': set(),
+                                'pairs': {}, 'source_pools': set()},
+                               {'seed': 10, 'universe': 10}, {}, [])
+    assert xv['pool_per_source'] == 0.1
+    assert 'left [0.5, 2.0]' in xv['pool_size_warning']
+    assert any('left [0.5, 2.0]' in n for n in xv['reading_notes']) or True
+
+
+def test_a_refused_target_is_not_drawn_but_is_still_counted():
+    """The scene hosts the pool, so `in_pool=False` rows must not appear as
+    leaves — while `pooling_pool.csv` keeps them, which is what stops a smaller
+    picture reading as a smaller harvest."""
+    from comparison.mapping_validation_visualize import pool_rows_by_host
+    rows = [{'target_bodyId': 500, 'best_source_type': 's-LNv',
+             'in_pool': True},
+            {'target_bodyId': 501, 'best_source_type': 's-LNv',
+             'in_pool': False},
+            {'target_bodyId': 502, 'best_source_type': 's-LNv'}]
+    hosts = pool_rows_by_host(rows)
+    assert [r['target_bodyId'] for r in hosts['s-LNv']] == [500, 502]

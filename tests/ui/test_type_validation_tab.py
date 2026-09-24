@@ -77,7 +77,8 @@ def test_pooling_widgets_back_real_fields():
     """
     from ui.tabs import type_validation as tv
     assert {"pooling_jaccard_floor", "pooling_rank_union_floor",
-            "pooling_window_mult", "pooling_morph_gate",
+            "pooling_window_mult", "pooling_bar_metric",
+            "pooling_bar_top_n",
             "pooling_max_morph_targets"} <= set(tv._FALLBACK_DEFAULTS)
     # the fit and the sibling join were DELETED (2026-09-23), not hidden: a
     # widget left behind would send a field the dataclass no longer has.
@@ -98,12 +99,14 @@ def _generate(cp):
 def test_generated_script_passes_the_pooling_gate():
     cp = {"source_dataset": "A", "target_dataset": "B", "query_types": ["t"],
           "validation_mode": "pooling", "pooling_jaccard_floor": 0.07,
-          "pooling_window_mult": 3.0, "pooling_morph_gate": False,
+          "pooling_window_mult": 3.0, "pooling_bar_metric": "jaccard",
+          "pooling_bar_top_n": 5,
           "pooling_max_morph_targets": 50}
     s = _generate(cp)
     compile(s, "<gen>", "exec")
     for frag in ("validation_mode='pooling'", "pooling_jaccard_floor=0.07",
-                 "pooling_window_mult=3.0", "pooling_morph_gate=False",
+                 "pooling_window_mult=3.0", "pooling_bar_metric='jaccard'",
+                 "pooling_bar_top_n=5",
                  "pooling_max_morph_targets=50"):
         assert frag in s, frag
     assert 'floor_from_evidence' not in s
@@ -319,15 +322,18 @@ def test_pooling_mounts_a_button_and_a_hidden_gate_card():
     # inputs carry their caption as a `label` prop, checkboxes as `.text`
     labels = ({p.get("label") for p in props}
               | {getattr(e, "text", None) for e in client.elements.values()})
-    for want in ("Jaccard floor",
-                 "Window multiplier", "Morphology as the last gate",
+    for want in ("Bar depth (top-N per metric)",
+                 "Jaccard floor (advisory flag)",
+                 "Window multiplier (advisory flag)",
                  "Morph budget (candidate targets)"):
         assert want in labels, want
     # the fitted-floor checkbox and the corroboration note were deleted with
-    # the features themselves — the card offers a volume knob and a gate, and
-    # no control that would send a field the dataclass no longer has.
+    # the features themselves — and so is the morphology checkbox: the gate is
+    # MANDATORY in pooling (2026-09-24), so no control offers to turn it off,
+    # and no control sends a field the dataclass no longer has.
     assert not [w for w in labels if w and (
-        'Fit the floor' in w or 'corrobor' in w.lower())]
+        'Morphology as the last gate' in w or 'Fit the floor' in w
+        or 'corrobor' in w.lower())]
     assert {"Restrictive", "Family", "Aggressive", "Pooling"} <= {
         p.get("label") for p in props if p.get("label") in
         {"Restrictive", "Family", "Aggressive", "Pooling"}}

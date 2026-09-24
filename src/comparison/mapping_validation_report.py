@@ -3357,10 +3357,10 @@ def _pooling_tab(d: Dict) -> str:
         + _th('mapper_cell', 'The post-hoc comparison with the mapping, '
               'with the supervised verdict where one exists.')
     ) if trs else _empty(
-        'The gate admitted no candidate: with these floors and this window '
-        'the queried population has no connectivity homolog in the target '
-        'universe. Raising pooling_window_mult or lowering '
-        'pooling_jaccard_floor is the knob, not a different verdict.')
+        'The bar admitted no candidate: with this bar the queried population '
+        'has no connectivity finding in the target universe. Raising '
+        'pooling_bar_top_n or widening pooling_bar_metric is the knob, not a '
+        'different verdict — the floors are flags and were never the knob.')
     return head + _section_card(
         f'Pooling pool — {len(pool)} candidate target'
         f'{"s" if len(pool) != 1 else ""}',
@@ -3504,7 +3504,8 @@ def _log_tab(d: Dict) -> str:
              'backward_max_neurons', 'backward_per_branch_cap',
              'backward_scan_pool_targets', 'skip_backward_pass',
              'pooling_jaccard_floor', 'pooling_rank_union_floor',
-             'pooling_window_mult', 'pooling_morph_gate',
+             'pooling_window_mult', 'pooling_bar_metric',
+             'pooling_bar_top_n',
              'pooling_max_morph_targets']
     pl = ' · '.join(f'{_esc(k)}={_esc(params[k])}'
                     for k in order if k in params)
