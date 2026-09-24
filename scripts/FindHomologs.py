@@ -48,9 +48,15 @@ if __name__ == "__main__":
         target_dataset='hemibrain:v1.2.1',
         
         output_dir='../local_data/homolog_finding',
-        visualize_skeleton=True,  # Enable to visualize top candidates
+        # Off by default, like the ctor (profile_comparator.py:2580): this
+        # opens one browser page per visualized candidate, and a template that
+        # turns it on ships five tabs to a run that came for a CSV.
+        visualize_skeleton=False,  # True to plot the top candidates in 3D
         visualize_top_n=5,         # Number of candidates to visualize
         verbose=True,
+        # jaccard/100 are the ctor and UI defaults
+        # (ui/config.py:546 SIMILARITY_METRICS leads with jaccard); every
+        # metric is computed regardless, this only sorts the table.
         similarity_metric='jaccard',
         top_n=100,
         vector_prefiltering=True,

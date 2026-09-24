@@ -31,7 +31,10 @@ vs = VisualizeSkeleton(
     synapse_alpha = 0.6,
     skeleton_mode = 'tube',
     synapse_mode = 'cone',
-    legend_mode='type',  # 'single', 'type', 'tree', or 'layer'
+    legend_mode='tree',  # 'single', 'type', 'tree', or 'layer' — 'tree' is the
+                        # UI default (ui/config.py DEFAULTS); the backend's own
+                        # default is 'layer', so this line is what makes the
+                        # template reproduce the tab.
     
     export_views=True,
     show_fig=True,

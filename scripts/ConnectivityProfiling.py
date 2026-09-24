@@ -70,11 +70,19 @@ if __name__ == "__main__":
         query=['aMe12', 'aMe10', 'aMe9'],
         
         # --- Dataset ---
+        # `dataset` is the intra-dataset form; the ctor also takes
+        # `datasets=[...]` for the cross-dataset N×M comparison the
+        # Connectivity tab builds (ui/tabs/connectivity.py:579), with
+        # `aggregation_level` ('type' default) and `use_cache` (True).
         dataset='male-cns:v0.9',
         # dataset='flywire_FAFB_v783',
-        
+        # datasets=['male-cns:v0.9', 'hemibrain:v1.2.1'],   # cross-dataset
+
         # --- Profile Construction ---
-        top_k=15,  # Top K partners per direction
+        # 25 is what the Connectivity tab sends (ui/config.py DEFAULTS);
+        # the class itself defaults to 15, so the old value here profiled
+        # fewer partners per direction than the same query in the UI.
+        top_k=25,  # Top K partners per direction
         top_m=5,   # Minimum unique types to ensure
         
         # --- Comparison ---

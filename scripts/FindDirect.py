@@ -29,7 +29,10 @@ if __name__ == '__main__':
         use_cache=True,  # Enable caching for faster subsequent runs
         network_layout='distributed',
         output_format='csv',  # 'xlsx' (default) or 'csv'
-        edgeN_limit=50,
+        # 500 is both the dataclass default (coana.py:3366) and the UI's; the
+        # 50 here silently cut the visualised edge budget below what any UI run
+        # would have produced.
+        edgeN_limit=500,
     )
 
     fc.InitializeNeuronInfo()
