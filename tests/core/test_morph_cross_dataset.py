@@ -256,7 +256,8 @@ class TestQualifyVisualizedPairs:
                 list(range(1000, 1100)))
 
         def fake_score(source, target, query_neurons, query_bids, target_bids,
-                       project_root=None, vector_cache=None, verbose=False):
+                       project_root=None, vector_cache=None,
+                       side_cache=None, verbose=False):
             rows = []
             rng = np.random.default_rng(7)
             for qb in query_bids:
@@ -293,7 +294,8 @@ class TestQualifyVisualizedPairs:
 
         def score_without_nulls(source, target, query_neurons, query_bids,
                                 target_bids, project_root=None,
-                                vector_cache=None, verbose=False):
+                                vector_cache=None, side_cache=None,
+                                verbose=False):
             # only candidate rows, never the null sample rows
             rows = [{"source_bodyId": qb, "target_bodyId": tb,
                      "morph_v2_similarity": 0.9}
@@ -428,7 +430,8 @@ class TestCrossDatasetMorphComparer:
                 ([f"n-{src}-{b}" for b in skel], list(skel.keys())))
 
         def fake_score(source, target, query_neurons, query_bids, target_bids,
-                       project_root=None, vector_cache=None, verbose=False):
+                       project_root=None, vector_cache=None,
+                       side_cache=None, verbose=False):
             rows = []
             rng = np.random.default_rng(11)
             for qb in query_bids:
@@ -843,3 +846,104 @@ class TestMorphQualificationModeLevel:
         mq2.scores[(1, 100)] = 0.55
         merged2 = merge_morph_columns(df, mq2)
         assert list(merged2['morph_bar_kind']) == ['null_bar']
+
+
+class TestTargetVectorStoreSeam:
+    """The persisted target-vector store must be read BEFORE the scorer runs and
+    written ONCE after it, with the hemisphere riding along: that is what turns
+    the measured 0.412 s/neuron of render + transform + vectorize into a file
+    read on the next run. `MorphQualification.vector_cache` is the ledger that
+    makes the speed-up auditable instead of felt.
+    """
+
+    class FakeStore:
+        #: the last instance built, so a test can assert the opt-out
+        built = None
+
+        def __init__(self, vectors, sides):
+            self._v, self._s = dict(vectors), dict(sides)
+            self.calls = []
+            self.stats = {'loaded': len(vectors), 'stale_dropped': 0,
+                          'saved': 0}
+            TestTargetVectorStoreSeam.FakeStore.built = self
+
+        def load(self):
+            self.calls.append('load')
+            return dict(self._v), dict(self._s)
+
+        def update(self, vectors, sides=None):
+            self.calls.append('update')
+            self.saved = (dict(vectors), dict(sides or {}))
+            self.stats['saved'] = len(vectors)
+
+    def _install(self, monkeypatch, store_cls):
+        import comparison.morph_cross_dataset as mcd
+        monkeypatch.setattr(mcd, 'fetch_source_skeletons',
+                            lambda ds, bids, project_root=None, log=None,
+                            allow_fetch=True:
+                            {int(b): object() for b in bids})
+        monkeypatch.setattr(
+            mcd, 'transform_queries',
+            lambda src, tgt, skel, validate_bounds=False, log=None:
+            (['neuron-a', 'neuron-b'], [1, 2]))
+        monkeypatch.setattr(mcd, 'dataset_bodyids',
+                            lambda ds, project_root=None:
+                            list(range(1000, 1100)))
+        monkeypatch.setattr(mcd, 'TargetVectorStore', store_cls)
+        seen = {}
+
+        def fake_score(source, target, query_neurons, query_bids, target_bids,
+                       project_root=None, vector_cache=None,
+                       side_cache=None, verbose=False):
+            seen['vector_cache'] = dict(vector_cache or {})
+            seen['side_cache'] = dict(side_cache or {})
+            rng = np.random.default_rng(5)
+            rows = []
+            for qb in query_bids:
+                for tb in target_bids:
+                    score = (0.9 if int(tb) == 100 else
+                             float(rng.uniform(0.05, 0.35)))
+                    rows.append({'source_bodyId': qb, 'target_bodyId': tb,
+                                 'morph_v2_similarity': score})
+            return pd.DataFrame(rows)
+
+        monkeypatch.setattr(mcd, 'score_pairs', fake_score)
+        return seen
+
+    def test_the_store_feeds_the_scorer_and_is_written_once(self, monkeypatch,
+                                                            fafb_mcns):
+        import comparison.morph_cross_dataset as mcd
+        mcns, fafb = fafb_mcns
+        vec = {100: np.ones(4), 7777: np.zeros(4)}
+        seen = self._install(
+            monkeypatch,
+            lambda ds, root=None: self.FakeStore(vec, {100: 'left'}))
+        state = mcd.qualify_visualized_pairs(mcns, fafb, [(1, 100)],
+                                            null_k=30, project_root='.')
+        assert state.active
+        # the stored vector and its side reach the scorer, so a hit can skip
+        # the render entirely
+        assert seen['vector_cache'].keys() >= {100, 7777}
+        assert seen['side_cache'] == {100: 'left'}
+        built = self.FakeStore.built
+        assert built.calls == ['load', 'update'], built.calls
+        assert built.saved[0].keys() >= {100}
+        assert state.vector_cache['loaded'] == 2
+        assert state.vector_cache['saved'] >= 1
+
+    def test_use_vector_store_false_touches_no_file(self, monkeypatch,
+                                                    fafb_mcns):
+        """The caller can opt out, and then nothing is read or written — a
+        reproducibility run against a cold store has to be reachable."""
+        import comparison.morph_cross_dataset as mcd
+
+        def explode(*a, **k):
+            raise AssertionError('the store must not be constructed')
+
+        mcns, fafb = fafb_mcns
+        self._install(monkeypatch, explode)
+        state = mcd.qualify_visualized_pairs(mcns, fafb, [(1, 100)],
+                                            null_k=30, project_root='.',
+                                            use_vector_store=False)
+        assert state.active
+        assert state.vector_cache == {}

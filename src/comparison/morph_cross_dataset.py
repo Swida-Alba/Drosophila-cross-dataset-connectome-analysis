@@ -507,11 +507,14 @@ def score_pairs(source_dataset: str, target_dataset: str,
                 target_bids: Sequence[int],
                 project_root: Optional[str] = None,
                 vector_cache: Optional[Dict[int, Any]] = None,
+                side_cache: Optional[Dict[int, str]] = None,
                 verbose: bool = False) -> pd.DataFrame:
     """Production vector_v2 scores for (query, target) pairs — the shared
     scoring path. Thin wrapper over
     ``morphology.compute_morph_similarity_vs_queries(compute_nblast=False)``
-    with an optional persistent target-vector cache."""
+    with an optional persistent target-vector cache. ``side_cache`` is that
+    cache's hemisphere column: a stored vector lets the scorer skip the target
+    render only when the side is answerable too, so the two travel together."""
     if not len(query_neurons) or not len(target_bids):
         return pd.DataFrame()
     from morphology import compute_morph_similarity_vs_queries
@@ -522,6 +525,7 @@ def score_pairs(source_dataset: str, target_dataset: str,
         query_bids=[int(b) for b in query_bids],
         source_dataset=source_dataset,
         target_vector_cache=vector_cache,
+        target_side_cache=side_cache,
     )
 
 
@@ -553,28 +557,47 @@ def _scoring_bounds(target_dataset: str,
     return None
 
 
-class NullVectorStore:
-    """Persistent render-space vectors for the shared null sample.
+class TargetVectorStore:
+    """Persisted render-space vectors for one target dataset, shared by every
+    caller that scores against it — the null sample AND the candidates.
 
-    A small npz sidecar per (dataset, render space) so cross-space targets
-    (male-cns) do not re-transform + re-vectorize the same K neurons on
-    every run. Invalidated when the population bounds change.
+    A small npz sidecar per (dataset, render space) so a cross-space target
+    (male-cns) does not re-transform and re-vectorize the same neurons on every
+    run: measured at 0.412 s per neuron, which is most of what a morph
+    qualification costs. Rows carry each neuron's hemisphere, because a stored
+    vector only lets the scorer skip the RENDER if the side is answerable
+    without it (see `compute_morph_similarity_vs_queries`).
+
+    Invalidated in layers. A whole-file signature of the population bounds, the
+    render space and the V2 vector-cache version drops everything the moment
+    the frame changes; so does a `vector_dtype` that is not full precision,
+    since a truncated row would re-grade the score instead of only speeding it
+    up. Per bodyId, the backing skeleton's `(mtime_ns, size)`
+    drops a row whose geometry was healed or re-fetched underneath the store —
+    without that, a run would score the old neuron and the report would claim
+    the new one. Rows stored with no resolvable path (a FAFB target served from
+    the release bundle) fall back on the file signature alone, exactly as
+    before: the file's `stats` say how many rows were dropped as stale, so the
+    gap is visible rather than assumed away.
     """
 
     def __init__(self, dataset: str, project_root: Optional[str] = None):
         self.dataset = dataset
         self.root = Path(project_root or DEFAULT_PROJECT_ROOT)
-        folder = str(dataset).replace(':', '_').replace('.', '_')
         from morphology import _dataset_folder
         self.dir = (self.root / 'cache' / _dataset_folder(dataset)
                     / 'find_similar' / 'morphology')
-        del folder
         try:
             from visualize_skeleton import dataset_render_space
             self.space = dataset_render_space(dataset)
         except Exception:  # noqa: BLE001
             self.space = 'native'
-        self.path = self.dir / f'cross_dataset_nullvec_{self.space}.npz'
+        self.path = self.dir / f'cross_dataset_targetvec_{self.space}.npz'
+        #: what this store did: rows loaded, rows dropped as stale, rows saved
+        self.stats: Dict[str, int] = {'loaded': 0, 'stale_dropped': 0,
+                                      'saved': 0}
+        self._raw_cache = None
+        self._raw_cache_tried = False
 
     def _bounds_signature(self) -> str:
         # Signature includes the V2 vector-cache version: sidecar vectors
@@ -588,35 +611,114 @@ class NullVectorStore:
         return hashlib.sha1(np.asarray(bounds, dtype=float).tobytes()
                             + tag).hexdigest()[:16]
 
-    def load(self) -> Dict[int, Any]:
+    def _provenance(self, bid: int) -> Tuple[int, int]:
+        """`(mtime_ns, size)` of the skeleton this row was computed from, or
+        `(-1, -1)` when no file backs it — the value load() treats as
+        unverifiable rather than as a mismatch."""
+        if not self._raw_cache_tried:
+            self._raw_cache_tried = True
+            try:
+                from morphology import is_fafb_dataset
+                if not is_fafb_dataset(self.dataset):
+                    from morphology import find_similar_raw_cache
+                    self._raw_cache = find_similar_raw_cache(
+                        self.dataset, project_root=str(self.root),
+                        verbose=False)
+            except Exception:  # noqa: BLE001
+                self._raw_cache = None
+        if self._raw_cache is None:
+            return (-1, -1)
+        try:
+            p = self._raw_cache.find_skeleton_file(int(bid))
+            if p is None:
+                return (-1, -1)
+            st = Path(p).stat()
+            return (int(st.st_mtime_ns), int(st.st_size))
+        except Exception:  # noqa: BLE001
+            return (-1, -1)
+
+    def load(self) -> Tuple[Dict[int, Any], Dict[int, str]]:
+        """`(vectors, sides)` for the rows still valid in this frame."""
+        vectors: Dict[int, Any] = {}
+        sides: Dict[int, str] = {}
         try:
             with np.load(self.path, allow_pickle=False) as z:
                 if str(z['space']) != self.space:
-                    return {}
+                    return vectors, sides
                 if str(z['bounds_sig']) != self._bounds_signature():
-                    return {}
+                    return vectors, sides
+                # A float32 sidecar truncates the vector, and upcasting the
+                # truncated row would re-grade every score it serves. The
+                # store is a speed-up, never a re-grading, so a file not
+                # written at full precision is refused whole.
+                if str(z['vector_dtype']) != 'float64':
+                    return vectors, sides
                 bids = np.asarray(z['bodyIds'])
                 mat = np.asarray(z['matrix'], dtype=float)
-                return {int(b): mat[i] for i, b in enumerate(bids)}
-        except Exception:  # noqa: BLE001
-            return {}
+                stored_side = np.asarray(z['sides']) if 'sides' in z else None
+                mt = (np.asarray(z['mtimes'], dtype=np.int64)
+                      if 'mtimes' in z else None)
+                sz = (np.asarray(z['sizes'], dtype=np.int64)
+                      if 'sizes' in z else None)
+        except Exception:  # noqa: BLE001 - no file, unreadable, legacy shape
+            return vectors, sides
+        for i, b in enumerate(bids):
+            key = int(b)
+            if stored_side is None or mt is None or sz is None:
+                # a store written before rows carried a side or provenance is
+                # not a partial answer: it cannot prove the geometry current
+                self.stats['stale_dropped'] += 1
+                continue
+            if int(mt[i]) >= 0:
+                now = self._provenance(key)
+                if now != (int(mt[i]), int(sz[i])):
+                    self.stats['stale_dropped'] += 1
+                    continue
+            vectors[key] = mat[i]
+            side = str(stored_side[i] or '')
+            if side:
+                sides[key] = side
+        self.stats['loaded'] = len(vectors)
+        return vectors, sides
 
-    def update(self, vectors: Dict[int, Any]) -> None:
+    def update(self, vectors: Dict[int, Any],
+               sides: Optional[Dict[int, str]] = None) -> None:
         rows = {int(b): np.asarray(v, dtype=float)
                 for b, v in (vectors or {}).items()
                 if v is not None and len(v)}
         if len(rows) < 8:
             return  # not worth a file
         try:
+            from morphology import VECTOR_V2_DIM
             self.dir.mkdir(parents=True, exist_ok=True)
-            bids = np.array(sorted(rows), dtype=np.int64)
-            mat = np.vstack([rows[int(b)] for b in bids]).astype(np.float32)
+            existing: Dict[int, Any] = {}
+            existing_sides: Dict[int, str] = {}
+            if self.path.exists():
+                existing, existing_sides = self.load()
+            existing = {k: v for k, v in existing.items()
+                        if np.asarray(v).shape == (VECTOR_V2_DIM,)}
+            existing.update({k: v for k, v in rows.items()
+                             if v.shape == (VECTOR_V2_DIM,)})
+            merged_sides = dict(existing_sides)
+            merged_sides.update({int(k): str(v) for k, v in (sides or {}).items()
+                                 if v})
+            bids = np.array(sorted(existing), dtype=np.int64)
+            mat = np.vstack([np.asarray(existing[int(b)], dtype=float)
+                              for b in bids])
+            side_arr = np.array([merged_sides.get(int(b), '') for b in bids],
+                                dtype='U8')
+            prov = [self._provenance(int(b)) for b in bids]
+            mt = np.array([p[0] for p in prov], dtype=np.int64)
+            sz = np.array([p[1] for p in prov], dtype=np.int64)
             tmp = self.path.with_suffix('.npz.tmp')
             with open(tmp, 'wb') as fh:
-                np.savez(fh, bodyIds=bids, matrix=mat,
+                np.savez(fh, bodyIds=bids, matrix=mat, sides=side_arr,
+                         mtimes=mt, sizes=sz,
                          space=np.array(self.space),
+                         vector_dtype=np.array(mat.dtype.name),
                          bounds_sig=np.array(self._bounds_signature()))
             tmp.replace(self.path)
+            self.stats['saved'] = int(len(bids))
         except Exception:  # noqa: BLE001
             pass
 
@@ -626,17 +728,22 @@ def null_baselines(source_dataset: str, target_dataset: str,
                    candidate_bids: Sequence[int], null_k: int = NULL_K_DEFAULT,
                    project_root: Optional[str] = None,
                    vector_cache: Optional[Dict[int, Any]] = None,
+                   side_cache: Optional[Dict[int, str]] = None,
                    level: int = 95,
                    exclude: Sequence[int] = (),
                    log=None) -> Tuple[Dict[int, Dict[str, float]], List[int]]:
     """Score the shared null sample against every query; per-query stats.
 
     Returns ``({source_bid: {p95, median, std, mean, n}}, sample_bids)``.
-    The null sample is deterministic per (dataset, k, candidates) and its
-    vectors persist in the NullVectorStore sidecar. ``exclude`` removes
-    extra bodyIds from the sample on top of the candidates — the query
+    The null sample is deterministic per (dataset, k, candidates). ``exclude``
+    removes extra bodyIds from the sample on top of the candidates — the query
     bids for intra-dataset runs, where the queries live in the target
     universe and could otherwise draw themselves into the null.
+
+    Persistence is the CALLER's business: it seeds ``vector_cache`` /
+    ``side_cache`` from a `TargetVectorStore` and writes them back once, so the
+    null sample and the candidate scoring share one read and one write instead
+    of each paying for the sidecar.
     """
     sample = null_sample(target_dataset, k=null_k,
                          exclude=list(candidate_bids) + list(exclude),
@@ -646,13 +753,11 @@ def null_baselines(source_dataset: str, target_dataset: str,
         return stats, []
     if vector_cache is None:
         vector_cache = {}
-    store = NullVectorStore(target_dataset, project_root)
-    if not vector_cache:
-        vector_cache.update(store.load())
+    if side_cache is None:
+        side_cache = {}
     df = score_pairs(source_dataset, target_dataset, query_neurons,
                      query_bids, sample, project_root=project_root,
-                     vector_cache=vector_cache)
-    store.update(vector_cache)
+                     vector_cache=vector_cache, side_cache=side_cache)
     sample_set = set(int(b) for b in sample)
     if df is not None and not df.empty:
         for src_bid, group in df.groupby('source_bodyId'):
@@ -708,6 +813,11 @@ class MorphQualification:
     # mapping_ref mode: per-pair native candidate evidence
     # {(source_bid, target_bid): max native sim to the source's pool}
     native_scores: Dict[Tuple[int, int], float] = field(default_factory=dict)
+    # what the persisted target-vector store did for this pass:
+    # {'loaded', 'stale_dropped', 'saved', 'targets'} — empty when the caller
+    # turned it off. A speed-up that is not reported is indistinguishable from
+    # a run that recomputed everything.
+    vector_cache: Dict[str, int] = field(default_factory=dict)
 
     def bar(self, source_bid: int) -> Optional[float]:
         stats = self.null_stats.get(int(source_bid))
@@ -1062,6 +1172,7 @@ def qualify_visualized_pairs(
         level: int = 95,
         source_types: Optional[Dict[int, str]] = None,
         prune_pool_refs: bool = True,
+        use_vector_store: bool = True,
         log=None) -> MorphQualification:
     """Score the visualized (source, target) pairs + shared null sample.
 
@@ -1090,6 +1201,13 @@ def qualify_visualized_pairs(
     (`r != tgt`), so a pool member is measured against the OTHER refs, exactly
     like an outsider. (Found on 2026-09-23: `pooling` lost 35 of its 41
     verdicts this way and labelled them `no-score`.)
+
+    ``use_vector_store`` (default True) shares the persisted
+    `TargetVectorStore` of this target across the null sample and the
+    candidates, so a repeat run over the same dataset pair does not re-render
+    and re-vectorize neurons it has already measured. What it loaded, dropped
+    as stale and saved rides on `MorphQualification.vector_cache`, so a speedup
+    is reported rather than felt.
     """
     mq = MorphQualification(source_dataset=source_dataset,
                             target_dataset=target_dataset,
@@ -1164,9 +1282,20 @@ def qualify_visualized_pairs(
                                project_root=project_root, log=log)
 
     vector_cache: Dict[int, Any] = {}
+    side_cache: Dict[int, str] = {}
+    # ONE store for the null sample and the candidates, written once after both.
+    # It is what the 0.412 s/neuron preparation is for: a repeat run over the
+    # same dataset pair reaches the same targets and must not re-pay for them.
+    store = (TargetVectorStore(target_dataset, project_root)
+             if use_vector_store else None)
+    if store is not None:
+        v, s = store.load()
+        vector_cache.update(v)
+        side_cache.update(s)
     stats, sample = null_baselines(
         source_dataset, target_dataset, neurons, bids, unique_targets,
         null_k=null_k, project_root=project_root, vector_cache=vector_cache,
+        side_cache=side_cache,
         level=level, exclude=bids, log=log)
     mq.null_stats = stats
     if not stats:
@@ -1183,7 +1312,13 @@ def qualify_visualized_pairs(
                          | {int(b) for b in sample})
     df = score_pairs(source_dataset, target_dataset, neurons, bids,
                      targets_all, project_root=project_root,
-                     vector_cache=vector_cache)
+                     vector_cache=vector_cache, side_cache=side_cache)
+    if store is not None:
+        # written before the emptiness checks, because whatever this call did
+        # measure is worth keeping; `stats` rides on to the run's record
+        store.update(vector_cache, side_cache)
+        mq.vector_cache = dict(store.stats)
+        mq.vector_cache['targets'] = len(vector_cache)
     if df is None or df.empty:
         mq.warnings.append('Candidate scoring produced no rows; '
                            'qualification inactive.')
@@ -1817,13 +1952,18 @@ class CrossDatasetMorphComparer:
                                    allow_fetch=self.fetch_online)
 
         vector_cache: Dict[int, Any] = {}
-        if self.use_cache:
-            vector_cache.update(NullVectorStore(
-                target, self.project_root).load())
+        side_cache: Dict[int, str] = {}
+        store = (TargetVectorStore(target, self.project_root)
+                 if self.use_cache else None)
+        if store is not None:
+            v, s = store.load()
+            vector_cache.update(v)
+            side_cache.update(s)
         stats, sample = null_baselines(
             source, target, query_neurons, query_bids, tgt_bids,
             null_k=self.null_k, project_root=self.project_root,
-            vector_cache=vector_cache, log=self._log)
+            vector_cache=vector_cache, side_cache=side_cache,
+            log=self._log)
         del sample
         pair_info['baseline'] = stats
 
@@ -1831,9 +1971,9 @@ class CrossDatasetMorphComparer:
         # computed inside null_baselines against the shared vector cache.
         df = score_pairs(source, target, query_neurons, query_bids,
                          tgt_bids, project_root=self.project_root,
-                         vector_cache=vector_cache)
-        if self.use_cache:
-            NullVectorStore(target, self.project_root).update(vector_cache)
+                         vector_cache=vector_cache, side_cache=side_cache)
+        if store is not None:
+            store.update(vector_cache, side_cache)
         rows = []
         if df is not None and not df.empty:
             for _idx, row in df.iterrows():

@@ -95,12 +95,12 @@ def test_v2_file_level_gate():
     assert inst._default_basis() == morph.VECTOR_BASIS_RAW
 
 
-def test_null_vector_store_signature_tracks_cache_version(tmp_path,
-                                                          monkeypatch):
+def test_target_vector_store_signature_tracks_cache_version(tmp_path,
+                                                            monkeypatch):
     """A V2 cache-version bump must invalidate existing sidecars."""
-    from comparison.morph_cross_dataset import NullVectorStore
+    from comparison.morph_cross_dataset import TargetVectorStore
 
-    store = NullVectorStore("np:v1", project_root=str(tmp_path))
+    store = TargetVectorStore("np:v1", project_root=str(tmp_path))
     before = store._bounds_signature()
     monkeypatch.setattr(morph, "VECTOR_CACHE_V2_VERSION",
                         morph.VECTOR_CACHE_V2_VERSION + 1)

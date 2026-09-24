@@ -81,8 +81,9 @@ def main() -> int:
     parser.add_argument("--delete", action="store_true",
                         help="permanently delete simp90 files")
     parser.add_argument("--purge-sidecars", action="store_true",
-                        help="also delete morph-cross null-vector sidecars "
-                             "(cross_dataset_nullvec_*.npz)")
+                        help="also delete morph-cross target-vector "
+                             "sidecars (cross_dataset_nullvec_*.npz, "
+                             "cross_dataset_targetvec_*.npz)")
     args = parser.parse_args()
     if args.delete and args.quarantine:
         parser.error("--delete and --quarantine are mutually exclusive")
@@ -121,8 +122,13 @@ def main() -> int:
 
     if args.purge_sidecars:
         removed = 0
-        for sidecar in sorted((root / "cache").glob(
-                "*/find_similar/morphology/cross_dataset_nullvec_*.npz")):
+        # both generations of the sidecar: the target-vector store was
+        # named for its first use (the null sample), then widened
+        patterns = ("*/find_similar/morphology/cross_dataset_nullvec_*.npz",
+                    "*/find_similar/morphology/cross_dataset_targetvec_*.npz")
+        sidecars = sorted(p for pat in patterns
+                          for p in (root / "cache").glob(pat))
+        for sidecar in sidecars:
             sidecar.unlink()
             removed += 1
             print(f"  removed sidecar: {sidecar.relative_to(root)}")

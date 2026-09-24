@@ -9192,6 +9192,7 @@ def compute_morph_similarity_vs_queries(
     query_bids: Optional[List[int]] = None,
     source_dataset: Optional[str] = None,
     target_vector_cache: Optional[Dict[int, object]] = None,
+    target_side_cache: Optional[Dict[int, str]] = None,
 ) -> pd.DataFrame:
     """Pairwise morphological similarity of transformed query neurons vs
     target neurons, in the target scene's render space.
@@ -9223,6 +9224,13 @@ def compute_morph_similarity_vs_queries(
     cross-dataset comparison / homolog morph qualification) persist the
     null-sample vectors across runs. Vectors must describe the same frame
     this call derives; the caller owns frame-keyed invalidation.
+
+    ``target_side_cache`` maps bodyId -> 'left' / 'right' for the same frame
+    and makes a cache hit complete: with a stored vector but no answerable
+    side, the geometric fallback still has to RENDER the skeleton, so the
+    skip is only taken when the side is known (from the neuron index or this
+    cache). That keeps `pair_side` byte-identical either way, and it is
+    written back for every neuron this call renders.
     """
     import navis
 
@@ -9467,13 +9475,34 @@ def compute_morph_similarity_vs_queries(
     t_dps = {}
     for tb in target_bids:
         tb = int(tb)
-        try:
-            tn = _render_target(tb)
-        except Exception:
-            tn = None
-        if tn is None:
-            continue
-        t_side = _index_side(target_dataset, tb) or _side(tn)
+        # A stored vector PLUS an answerable side means this target needs no
+        # skeleton at all: load + transform + vectorize measured 0.412 s per
+        # neuron, re-paid on every run before the store existed. The side is
+        # part of the hit condition on purpose — without it the geometric
+        # fallback needs the neuron, and skipping the render would turn a real
+        # `pair_side` into 'unknown'. NBLAST needs the geometry either way, so
+        # that caller never takes the skip.
+        t_side = (_index_side(target_dataset, tb)
+                  or (target_side_cache or {}).get(tb) or '')
+        cached = None if compute_nblast else (target_vector_cache or {}).get(tb)
+        usable_hit = (cached is not None and t_side
+                      and np.asarray(cached).ndim == 1
+                      and len(cached) == VECTOR_V2_DIM)
+        tn = None
+        if usable_hit:
+            t_vecs[tb] = np.asarray(cached, dtype=float)
+        else:
+            try:
+                tn = _render_target(tb)
+            except Exception:
+                tn = None
+            if tn is None:
+                continue
+            t_side = t_side or _side(tn)
+            if target_side_cache is not None and t_side:
+                # every rendered neuron teaches the store a side, which is what
+                # lets the NEXT run skip the render
+                target_side_cache[tb] = t_side
         if compute_nblast and tb not in t_dps:
             try:
                 t_dps[tb] = navis.make_dotprops(

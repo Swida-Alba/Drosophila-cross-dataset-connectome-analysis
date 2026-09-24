@@ -3199,6 +3199,23 @@ def _pooling_tab(d: Dict) -> str:
         # value. Collapsing them printed `scored 8` for a run whose rows
         # held 1 `scored` and 7 `no-score`.
         morph_bits.append(f"no-score {_cnt(morph.get('no_score'))}")
+    vc = morph.get('vector_cache') or {}
+    if vc:
+        # The store's own ledger, beside the counts it changed: `reused` is
+        # neuron preparation this run did NOT pay for, `computed` what it paid
+        # for, `store rows` what the next run starts from.  Those three are
+        # different numbers and the old line conflated the first with the last
+        # by calling the file size "saved".  `stale` is geometry the store
+        # refused to reuse because the skeleton behind it moved.
+        _load = _as_num(vc.get('loaded')) or 0
+        _tgt = _as_num(vc.get('targets'))
+        morph_bits.append(
+            f"target vectors reused {_cnt(_load)}"
+            + (f" · computed {_cnt(max(_tgt - _load, 0))}"
+               if _tgt is not None else '')
+            + f" · store rows {_cnt(vc.get('saved'))}"
+            + (f" · {_cnt(vc.get('stale_dropped'))} stale"
+               if _as_num(vc.get('stale_dropped')) else ''))
     if _as_num(morph.get('capped')):
         morph_bits.append(f"budget-capped {_cnt(morph.get('capped'))}"
                           ' (no look taken, not a rejection)')

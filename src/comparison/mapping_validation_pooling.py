@@ -315,6 +315,11 @@ def apply_morph_gate(validator, rows: List[Dict]) -> Tuple[List[Dict], Dict]:
     info['no_score'] = sum(1 for r in take if r['morph_gate'] == 'no-score')
     info['qualified'] = sum(1 for r in take if r['morph_qualified'])
     info['warnings'] = list(mq.warnings or [])
+    # What the persisted target-vector store did for this pass, published next
+    # to the counts it changed: `loaded` is preparation this run did NOT pay
+    # for, `stale_dropped` is geometry the store refused to reuse because the
+    # skeleton behind it moved, `saved` is what the next run starts from.
+    info['vector_cache'] = dict(getattr(mq, 'vector_cache', {}) or {})
     for w in info['warnings']:
         validator.log(f'[pooling/morph] {w}')
     return rows, info

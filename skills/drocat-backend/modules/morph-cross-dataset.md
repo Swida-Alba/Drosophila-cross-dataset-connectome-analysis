@@ -82,9 +82,24 @@ Semantics:
   empty rows.
 - **Null baseline**: each ordered pair reports the p95/median of the same
   queries against `null_k` seeded random target neurons (dataset-level
-  seed — the sample and its render-space vectors are shared across
-  queries and runs via a sidecar under
-  `cache/<ds>/find_similar/morphology/`).
+  seed — the sample is shared across queries and runs).
+- **Target-vector store**: the render-space 256-dim vectors live in one npz
+  sidecar per (dataset, render space) under
+  `cache/<ds>/find_similar/morphology/cross_dataset_targetvec_<space>.npz`,
+  shared by the null sample AND the candidates, because preparing a target
+  neuron costs 0.412 s (skeleton load + render transform + vectorize) and every
+  repeat run used to pay it again. A row is only reused when its hemisphere is
+  known with it (a stored vector without a side still forces the render, so
+  `pair_side` cannot change), and two layers invalidate a row: a file signature
+  over the population bounds + render space + the V2 cache version, and the
+  backing skeleton's `(mtime_ns, size)` — so a healed or re-fetched skeleton
+  cannot score stale geometry while the report claims the new one. Rows whose
+  skeleton has no resolvable file (a FAFB target served from the release
+  bundle) fall back on the file signature, and what a run loaded / dropped as
+  stale / saved is published on `MorphQualification.vector_cache` rather than
+  left felt. `--purge-sidecars` in
+  `scripts/maintenance/purge_legacy_simp90_cache.py` clears both generations of
+  the sidecar.
 - **Offline runs** (`fetch_online=False`): FAFB sources still resolve
   network-free from the local release sources (repair caches, raw cache,
   healed zip — the CAVE extrusion pass is skipped), so strict-offline
