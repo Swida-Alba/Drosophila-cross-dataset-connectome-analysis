@@ -2049,8 +2049,9 @@ class MappingValidator:
         self.run_dir: Optional[Path] = None
         self.notes: List[str] = []
         self.pairs: List[TypePair] = []
-        # What the scan actually scored against, published to
-        # parameters.json — see _record_scan_universe().
+        # What the run actually scored against, published to parameters.json —
+        # the scan's stores in _record_scan_universe(), the morphology stores in
+        # _record_morph_stores().
         self.input_fingerprint: Dict[str, Any] = {}
 
     def log(self, msg=''):
@@ -5107,11 +5108,11 @@ class MappingValidator:
                               ) -> None:
         """Populate the advisory backward view (plan-
         backward-source-status.md): `source-` statuses per in-branch
-        source (column view of the same pair scores) and the
+        source (column view of the same pair scores).  The
         source-candidates regroup (foreign sources whose qualified
-        sibling rows point into a branch pool)."""
+        sibling rows point into a branch pool) is populated separately,
+        post-finalize, by ``_collect_source_candidates``."""
         all_source_status: List[Dict] = []
-        source_candidates: Dict[Tuple[str, str, str], List[Dict]] = {}
         target_branch: Dict[int, Tuple] = {}
         for key, res in per_pair_res.items():
             for t in (res.get('_pool_set') or []):

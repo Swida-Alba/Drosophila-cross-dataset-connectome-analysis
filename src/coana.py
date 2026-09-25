@@ -17452,7 +17452,7 @@ class FindNeuronConnection:
                             layer_nodes.extend(layer_conn['bodyId_post'].astype(str).unique().tolist())
                     except Exception:
                         continue
-                node_ids = list(set(layer_nodes))
+                node_ids = sorted(set(layer_nodes))
 
             if not node_ids:
                 self._vprint('⚠️  find_reciprocal=True but no nodes found in graph.', level='always')
