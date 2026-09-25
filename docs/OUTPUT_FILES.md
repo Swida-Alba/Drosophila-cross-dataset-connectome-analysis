@@ -984,9 +984,11 @@ and no other dataset's agreement is joined into this mode's pool.
     the scene's `out-map query` branch expansion). Top `out_map_top_k` (default 10) typed
     targets per source outside the in-map claims (untyped/orphan
     neurons filtered); connectivity-ranked, then
-    morph-checked against the run null bar (`morph_v2_similarity` /
-    `morph_qualified`); failing rows stay in the file, the scene renders
-    morph-passing targets only; exploratory — never fills.
+    morph-checked against the run null bar — `morph_v2_similarity`
+    against `morph_bar` (kind `null`), which is what makes
+    `morph_qualified`'s ✓/✗ recomputable from the row; failing rows stay
+    in the file, the scene renders morph-passing targets only;
+    exploratory — never fills.
 *   **`pipeline_progress.jsonl`**: machine-readable run progress — the
     backend log a future UI tails. Every stage a run opens now closes:
     `stage_start`/`stage_done` for `1` resolve, `2` scans, `5` morphology,
@@ -1098,7 +1100,9 @@ and no other dataset's agreement is joined into this mode's pool.
 *   **`source_candidates.csv`** (re-aimed 2026-09-18, user option 2):
     the D-B8 backward mirror of candidate admission — sources claimed by
     NO branch whose best-ranked scan hits land in a branch pool AND pass
-    the run null bar (morph), attributed to the branch owning that pool,
+    the run null bar (morph — `morph_bar` + `morph_bar_kind` ride along
+    with the score, since every row here is a pass and the bar is the
+    whole content of its ✓), attributed to the branch owning that pool,
     with `dup` for multi-branch sources. Advisory; the scenes'
     `source-candidates` roots render these rows. (Older runs derived
     this surface from sibling rows — those were other branches' query

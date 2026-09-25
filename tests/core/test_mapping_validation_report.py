@@ -165,17 +165,20 @@ def run_dir(tmp_path: Path) -> Path:
                ["query", "source_bodyId"], [["q1", "500"]])
     _write_csv(rd / "relatives.csv",
                ["query", "source_bodyId"], [["q1", "600"]])
+    # the header mirrors the schema the writer produces, including the bar
+    # columns #61 added — a fixture that keeps an old header tests a file no
+    # run writes
     _write_csv(rd / "out_map_expansion.csv",
                ["query", "source_type", "source_bodyId", "target_bodyId",
                 "target_type", "rank_union", "rank_union_rank", "jaccard",
-                "jaccard_rank", "in_map", "morph_v2_similarity",
-                "morph_qualified"],
+                "jaccard_rank", "in_map", "morph_v2_similarity", "morph_bar",
+                "morph_bar_kind", "morph_qualified"],
                [["q1", "C", "201", "801", "T1", -0.1, 1, 0.2, 1, False,
-                 0.4, True],
+                 0.4, 0.143, "null", True],
                 ["q1", "C", "201", "802", "T2", -0.2, 2, 0.1, 2, False,
-                 -0.1, False],
+                 -0.1, 0.143, "null", False],
                 ["q1", "D", "202", "803", "T1", -0.3, 1, 0.0, 1, False,
-                 0.05, False]])
+                 0.05, 0.143, "null", False]])
     (rd / "morphology_calibration.json").write_text(json.dumps({
         "auc": 0.54, "calibrated": False, "note": "gate INACTIVE",
         "auc_floor": 0.65, "track_a_null_bar": 0.23,
@@ -315,6 +318,9 @@ def test_scenes_status_and_outmap(run_dir: Path):
     assert "2/3 pass" in html or "1/3 pass" in html
     # out-map: per-source best candidate row (rank_union_rank == 1)
     assert "<td>801 T1</td>" in html
+    # …and the cell prints the bar its ✓ was measured against (#61), so the
+    # mark is recomputable from the row instead of from prose
+    assert "vs 0.143" in _plain(html)
 
 
 def test_null_advisory_rendered(run_dir: Path):
@@ -355,6 +361,7 @@ def test_out_map_expansion_keeps_morph_columns(tmp_path: Path):
            "target_bodyId": 2, "target_type": "X", "rank_union": 0.1,
            "rank_union_rank": 1, "jaccard": 0.2, "jaccard_rank": 1,
            "in_map": False, "morph_v2_similarity": 0.5,
+           "morph_bar": 0.143, "morph_bar_kind": "null",
            "morph_qualified": True}
     v._write_outputs([], [], [], [], None, None, [], [],
                      out_map_rows=[row])
@@ -363,6 +370,8 @@ def test_out_map_expansion_keeps_morph_columns(tmp_path: Path):
     text = run_file_path(tmp_path, "out_map_expansion.csv").read_text(
         encoding="utf-8")
     assert "morph_v2_similarity" in text and "morph_qualified" in text
+    assert "morph_bar,morph_bar_kind" in text, text
+    assert "0.143" in text and "null" in text
 
 
 def test_no_scene_run_display(run_dir: Path):

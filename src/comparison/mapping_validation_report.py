@@ -2355,6 +2355,13 @@ def _outmap_tab(d: Dict) -> str:
     for item in d['per_source_best']:
         r = item['row']
         q = '✓' if _truthy(r.get('morph_qualified')) else '✗'
+        # A mark beside a number the mark was not compared against is the
+        # defect #58/#61 exist for: the row now carries its bar, so print it.
+        # An archived export has no `morph_bar`, and inventing one there would
+        # grade a run that never published its floor.
+        bar = _f(r.get('morph_bar'))
+        vs = f' vs {bar}' if r.get('morph_bar') not in (None, '') and bar \
+            else ''
         rows.append(
             f"<tr><td>{_esc(r.get('source_type'))} {_esc(item['src'])}"
             f'</td>'
@@ -2362,7 +2369,7 @@ def _outmap_tab(d: Dict) -> str:
             f"{_esc(r.get('target_type'))}</td>"
             f"<td>{_f(r.get('rank_union'))}</td>"
             f"<td>{_f(r.get('jaccard'))}</td>"
-            f"<td>{_f(r.get('morph_v2_similarity'))} {q}</td>"
+            f"<td>{_f(r.get('morph_v2_similarity'))}{vs} {q}</td>"
             f"<td>{item['n_q']}/{item['n_total']}</td></tr>")
     table = _viewport(
         rows,
@@ -2374,7 +2381,10 @@ def _outmap_tab(d: Dict) -> str:
               'not nothing.')
         + _th('jaccard', 'Shared-partner jaccard of the pair.')
         + _th('morph ✓/✗', 'morph_v2_similarity against the run null '
-              'bar: ✓ passes, ✗ does not.')
+              'bar: ✓ passes, ✗ does not. The cell prints the bar it was '
+              'graded against (`morph_bar`, `null` kind) so the mark is '
+              'recomputable from the row; an export older than that column '
+              'prints the score alone.')
         + _th('qualified', "Of the source's top-k candidates, how many "
               'pass the null bar over how many were scored.'))
     return _section_card(

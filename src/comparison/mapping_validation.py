@@ -1190,13 +1190,14 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'selected', 'n_rivals', 'rivals', 'reason'],
     'source_candidates.csv': [
         'source_bodyId', 'source_type', 'target_bodyId', 'target_type',
-        'rank_union', 'jaccard', 'morph_v2_similarity', 'morph_qualified',
+        'rank_union', 'jaccard', 'morph_v2_similarity', 'morph_bar',
+        'morph_bar_kind', 'morph_qualified',
         'query', 'branch_source_type', 'branch_target_type', 'dup'],
     'out_map_expansion.csv': [
         'query', 'source_type', 'source_bodyId', 'target_bodyId',
         'target_type', 'rank_union', 'rank_union_rank', 'jaccard',
-        'jaccard_rank', 'in_map', 'morph_v2_similarity',
-        'morph_qualified'],
+        'jaccard_rank', 'in_map', 'morph_v2_similarity', 'morph_bar',
+        'morph_bar_kind', 'morph_qualified'],
     'backward_matches.csv': [
         'query', 'branch_source_type', 'branch_target_type',
         'member_bodyId', 'member_type', 'member_category', 'scan_role'],
@@ -4853,6 +4854,14 @@ class MappingValidator:
                     r['morph_qualified'] = bool(
                         r['morph_v2_similarity'] is not None
                         and r['morph_v2_similarity'] >= self._track_a_null_bar)
+                    # the verdict's own record: `morph_qualified` is a
+                    # comparison, and the number it was compared against lived
+                    # only in `morphology_calibration.json` until 2026-09-25, so
+                    # a reader could not recompute the ✓/✗ from the row. The
+                    # kind is the supervised ladder's `null` (morph_bars), not
+                    # pooling's `null_bar`: this bar is the run null backdrop.
+                    r['morph_bar'] = self._track_a_null_bar
+                    r['morph_bar_kind'] = 'null'
                     if not r.get('in_map'):
                         n_pass += r['morph_qualified']
                 self.log(f'[TMVEV] out-map expansion morph check: '
@@ -5268,6 +5277,10 @@ class MappingValidator:
                 'rank_union': r.get('rank_union'),
                 'jaccard': r.get('jaccard'),
                 'morph_v2_similarity': r.get('morph_v2_similarity'),
+                # every row here is qualified by construction (the filter
+                # above), so the bar is the whole content of its ✓
+                'morph_bar': r.get('morph_bar'),
+                'morph_bar_kind': r.get('morph_bar_kind'),
                 'morph_qualified': True,
             })
         cand_count: Counter = Counter()

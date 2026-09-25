@@ -452,7 +452,8 @@ def test_source_candidates_expansion_route():
         {'source_bodyId': 999, 'source_type': 'sX',
          'target_bodyId': 601, 'target_type': 'T1',
          'rank_union': 0.6, 'jaccard': 0.5,
-         'morph_v2_similarity': 0.4, 'morph_qualified': True,
+         'morph_v2_similarity': 0.4, 'morph_bar': 0.143,
+         'morph_bar_kind': 'null', 'morph_qualified': True,
          'in_map': True, 'branch_key': ('q', 'sA', 'T1')},
         # unqualified hit -> never a candidate
         {'source_bodyId': 888, 'source_type': 'sY',
@@ -473,6 +474,11 @@ def test_source_candidates_expansion_route():
     by = {c['source_bodyId']: c for c in cands[('q', 'sA', 'T1')]}
     assert set(by) == {999}          # unqualified 888 dropped
     assert by[999]['morph_qualified'] is True
+    # the ✓ travels with the number it was compared against: the row is
+    # recomputable (`morph_v2_similarity >= morph_bar`), which it was not
+    # until 2026-09-25
+    assert by[999]['morph_bar'] == 0.143
+    assert by[999]['morph_bar_kind'] == 'null'
     assert v._source_candidates_multi == {999}
     assert any('distinct out-of-map source(s)' in n for n in v.notes)
 
@@ -576,3 +582,46 @@ def test_empty_exports_are_header_only(tmp_path):
     hdr = run_file_path(
         tmp_path, 'same_name_excluded.csv').read_text().strip()
     assert hdr.startswith('query,source_type')
+
+
+def test_a_published_verdict_travels_with_the_bar_it_was_made_against(tmp_path):
+    """#58 proved the rule on pooling, #61 applies it to the two exports that
+    were still missing it: a ✓/✗ whose bar lives only in
+    `morphology_calibration.json` cannot be recomputed from the row.
+
+    The pairing is asserted on the SCHEMA, because that is where a column can
+    silently stop being filled: `morph_qualified` without `morph_bar` beside it
+    is the shape of the defect, not any one run's numbers.
+    """
+    import comparison.mapping_validation as mv
+    for name in ('out_map_expansion.csv', 'source_candidates.csv'):
+        cols = mv._RUN_CSV_SCHEMAS[name]
+        i = cols.index('morph_qualified')
+        assert cols[i - 1] == 'morph_bar_kind', (name, cols[max(0, i - 2):i + 1])
+        assert cols[i - 2] == 'morph_bar', (name, cols[max(0, i - 2):i + 1])
+        assert cols[i - 3] == 'morph_v2_similarity', name
+    # and an empty export still writes the header, so a reader of a
+    # header-only file sees the columns exist
+    mv._write_run_csv(tmp_path, 'out_map_expansion.csv', [])
+    head = (tmp_path / 'expansion' / 'out_map_expansion.csv').read_text(
+        encoding='utf-8').splitlines()[0]
+    assert 'morph_bar,morph_bar_kind,morph_qualified' in head
+
+
+def test_a_bar_value_never_ships_without_the_rule_that_produced_it():
+    """#62's invariant, in the form a future export cannot dodge.
+
+    A row may carry a bar VALUE without a bar NAME only where the name is
+    published under another column: `gap_fill_levels.csv` calls it `evidence`
+    (its `high`/`medium`/`low` level is derived from that same kind). Measured
+    on the 2026-09-24 aggressive and 2026-09-25 family runs, no exported row
+    breaks the pairing — this test is what keeps it that way.
+    """
+    import comparison.mapping_validation as mv
+    for name, cols in mv._RUN_CSV_SCHEMAS.items():
+        if 'bar_value' not in cols:
+            continue
+        assert ('bar_kind' in cols or 'evidence' in cols), (
+            name, [c for c in cols if c.startswith('bar_') or c == 'evidence'])
+    assert 'bar_kind' not in mv._RUN_CSV_SCHEMAS[
+        'gap_fill_levels.csv']    # the kind rides on `evidence`, by design
