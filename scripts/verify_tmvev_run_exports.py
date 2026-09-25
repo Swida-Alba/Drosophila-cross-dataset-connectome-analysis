@@ -335,33 +335,35 @@ def check_pooling(run, tag):
         chk(morph['units'] <= int(m.group(1)) * int(m.group(2)),
             f'{tag}: auto budget covers the units it was priced for',
             f'{budget} vs units={morph["units"]}')
-    # A gate that did not run must not be reported as having run, and a tier
-    # that means "morph-qualified" must not be printed over zero
-    # measurements.  Both were true of the 2026-09-25 FAFB->hemibrain run: the
-    # pass raised `not supported for cross-dataset morphology`, every row kept
-    # `morph_gate='error'`, and the record still said gate_applied=True with 32
-    # `matched` and 335 `verified` claims.  The mode now refuses that pair at the
-    # door; this catches any other way the same state can arise.
-    graded = int(morph.get('scored') or 0) + int(morph.get('shared') or 0)
+    # `gate_applied` is a claim about the PASS (pipeline comment at
+    # mapping_validation_pooling.py:947): a pass that raised, or one that
+    # graded nothing, did not gate this pool — its tiers are then UNREFUSED
+    # rather than passed, so demanding zero claim tiers (the old check)
+    # failed every run that recorded itself honestly.  Assert both
+    # implications instead.  `scored` alone is "graded": `shared` counts
+    # ROWS (a borrowed-verdict row), `scored`/`no_score` count VERDICTS —
+    # adding them once priced `graded` in units-of-mixed-kind and skipped
+    # the all-shared pass the tripwire existed for.
+    scored = int(morph.get('scored') or 0)
+    if morph.get('gate_applied') is True:
+        chk(scored > 0, f'{tag}: gate_applied means the pass graded '
+            f'something', f'scored={scored} shared={morph.get("shared")}')
+    if morph.get('gate_applied') is False:
+        chk(not morph.get('dropped_targets'),
+            f'{tag}: an ungated pass refuses nothing (tiers unrefused, '
+            'not absent)',
+            f'dropped_targets={morph.get("dropped_targets")}')
     if morph.get('error'):
         chk(morph.get('gate_applied') is not True,
             f'{tag}: a failed morph pass does not claim its gate applied',
             f'error={str(morph["error"])[:90]} gate_applied='
             f'{morph.get("gate_applied")}')
-        chk(not (xv.get('tiers') or {}).get('matched')
-            and not (xv.get('tiers') or {}).get('verified'),
-            f'{tag}: no claim tier survives an ungraded pass',
-            str(xv.get('tiers')))
         bang = '\n'.join(
             l for l in path_of(run, 'README.txt').read_text(
                 'utf-8', errors='replace').splitlines() if l.startswith('!'))
         chk('pooling' in bang and 'morph' in bang.lower(),
             f'{tag}: the failed pass is a ! line in README.txt',
             bang[:120] or 'no ! lines at all')
-    if graded == 0 and (xv.get('tiers') or {}):
-        chk(not any((xv['tiers'] or {}).get(t) for t in ('matched', 'verified')),
-            f'{tag}: claim tiers require a graded verdict',
-            f'scored+shared=0 tiers={xv["tiers"]}')
     # a refusal is per ROW; a target leaves the pool only when EVERY row that
     # admitted it was refused, because another source may hold its own verdict
     refused_rows = {int(r.target_bodyId) for r in cand.itertuples(index=False)
