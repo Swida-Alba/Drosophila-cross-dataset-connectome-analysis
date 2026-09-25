@@ -44,11 +44,21 @@ _VSPATH_HINT = (
     "pip install ./vispath-subproject")
 
 
-def __getattr__(name):
-    if name in ("FastGraph", "DiGraph"):
-        try:
-            from vispath_pkg.fast_graph_core import FastGraph, DiGraph
-            return {"FastGraph": FastGraph, "DiGraph": DiGraph}[name]
-        except ImportError as exc:
-            raise ImportError(f"Pathfinding enumeration {_VSPATH_HINT}") from exc
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+class _MissingFastGraph:
+    """Placeholder when the subproject is absent: constructing or touching
+    any class attribute raises the install hint."""
+
+    def __init__(self, *args, **kwargs):
+        raise ImportError(f"Pathfinding enumeration {_VSPATH_HINT}")
+
+    def __getattr__(self, name):
+        raise ImportError(f"Pathfinding enumeration {_VSPATH_HINT}")
+
+
+try:
+    from vispath_pkg.fast_graph_core import FastGraph, DiGraph
+    __all__ = ["FastGraph", "DiGraph"]
+except ImportError:  # wheel install without the subproject
+    FastGraph = _MissingFastGraph
+    DiGraph = _MissingFastGraph
+    __all__ = ["FastGraph", "DiGraph"]

@@ -89,20 +89,34 @@ _VSPATH_HINT = (
     'pip install ./vispath-subproject')
 
 
-def __getattr__(name):
-    if name == 'VisualizePath':
-        try:
-            from vispath_pkg import VisualizePath
-            return VisualizePath
-        except ImportError as exc:
-            raise ImportError(f'Visualization {_VSPATH_HINT}') from exc
-    if name == 'FastGraph':
-        try:
-            from vispath_pkg.fast_graph_core import FastGraph
-            return FastGraph
-        except ImportError as exc:
-            raise ImportError(f'Pathfinding enumeration {_VSPATH_HINT}') from exc
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+class _MissingVispathMeta(type):
+    """Any class-attribute touch on a missing-subproject placeholder raises
+    the install hint (not a confusing AttributeError)."""
+
+    def __getattr__(cls, name):
+        raise ImportError(f'{cls._what} {_VSPATH_HINT}')
+
+
+class _MissingVispath(metaclass=_MissingVispathMeta):
+    _what = 'This entry point'
+
+    def __init__(self, *args, **kwargs):
+        raise ImportError(f'{self._what} {_VSPATH_HINT}')
+
+
+try:
+    from vispath_pkg import VisualizePath
+    from vispath_pkg.fast_graph_core import FastGraph
+except ImportError:  # wheel install without the subproject: analysis
+    # imports fine; enumeration/visualization raise the hint on first use.
+    class _MissingVisualizePath(_MissingVispath):
+        _what = 'Visualization'
+
+    class _MissingFastGraph(_MissingVispath):
+        _what = 'Pathfinding enumeration'
+
+    VisualizePath = _MissingVisualizePath
+    FastGraph = _MissingFastGraph
 
 from connection_map import ThresholdedConnectionMap
 

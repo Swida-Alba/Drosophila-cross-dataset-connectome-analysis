@@ -119,14 +119,16 @@ def test_coana_imports_without_vispath_subprocess():
         sys.meta_path.insert(0, _Block())
         import coana
         import core.fast_graph  # module import must not require vispath
+        # placeholders: attribute access is fine, USE raises the hint
+        for attr in ("FastGraph", "VisualizePath"):
+            try:
+                getattr(coana, attr)()
+                raise SystemExit(f"{attr} construction did not raise")
+            except ImportError as exc:
+                assert "vispath-subproject" in str(exc), exc
         try:
-            coana.FastGraph
-            raise SystemExit("FastGraph resolved despite block")
-        except ImportError as exc:
-            assert "vispath-subproject" in str(exc), exc
-        try:
-            core.fast_graph.DiGraph
-            raise SystemExit("DiGraph resolved despite block")
+            core.fast_graph.DiGraph()
+            raise SystemExit("DiGraph construction did not raise")
         except ImportError as exc:
             assert "vispath-subproject" in str(exc), exc
         print("lazy-import contract OK")
