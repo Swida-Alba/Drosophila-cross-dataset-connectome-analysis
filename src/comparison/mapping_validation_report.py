@@ -3397,7 +3397,7 @@ def _pooling_tab(d: Dict) -> str:
     if morph.get('gate_applied') is not None:
         if _truthy(morph.get('gate_applied')):
             gate_word = 'applied'
-        elif _as_num(morph.get('attempted')) or 0 > 0:
+        elif (_as_num(morph.get('attempted')) or 0) > 0:
             # the pass RAN and graded nothing: not disabled, unapplied
             gate_word = 'unapplied (0 measurements)'
         else:

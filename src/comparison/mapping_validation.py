@@ -2228,11 +2228,13 @@ class MappingValidator:
 
     def _refine_pair_branch(self, pair: TypePair) -> bool:
         """Replace the pair's pools with the selected bridge's refined
-        subsets when a supported chain exists.  Returns True when the
-        pair keeps a refined pool; fail-open to full pools otherwise
-        (Revision 3.3: evidence_only branches without a supported chain
-        are DROPPED by the caller instead — a wide fan-out must not be
-        validated against full populations)."""
+        subsets when a supported chain exists — and only when that chain
+        ENDS at the pair's own target type (the prioritizer otherwise
+        falls back to any supported chain of the source type).  Returns
+        True when the pair keeps a refined pool; fail-open to full pools
+        otherwise (Revision 3.3: evidence_only branches without a supported
+        bridge are DROPPED by the caller instead — a wide fan-out must not
+        be validated against full populations)."""
         from ui.neuron_index import resolve_prioritized_bridge_pool
         try:
             chains = self.mapper.get_type_bridges(
