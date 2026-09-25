@@ -528,9 +528,15 @@ def apply_morph_gate(validator, rows: List[Dict],
         info['error'] = f'{type(exc).__name__}: {exc}'
         for r in rows:
             r['morph_gate'] = 'error'
-        validator.log(f'[pooling/morph] qualification unavailable, rows stay '
-                      f'unqualified: {info["error"]}')
+        # the `!` is what the README's self-check greps for: a mandatory gate
+        # that did not run is a failure of the run, not an empty result
+        validator.log(f'[pooling/morph] ! qualification unavailable, rows '
+                      f'stay unqualified: {info["error"]}')
         return rows, info
+    # The native verdict is read out of the target's vector cache, so the run
+    # that made it says which cache it read: two runs of one query differ in a
+    # `morph_pool_ref` only if these stores did (see `_morph_store_identity`).
+    validator._record_morph_stores()
     verdicts: Dict[tuple, Dict] = {}
     for r in take:
         key = (int(r['source_bodyId']), int(r['target_bodyId']))
@@ -938,7 +944,15 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
                        if not p.get('in_pool')}
     sources = pool_by_source(rows, seed, refused_targets)
     pool = pool_all + mapper_only_rows(refs, pool_all)
-    morph['gate_applied'] = True
+    # `gate_applied` is a claim about the PASS, not about the mode: a pass that
+    # raised, or one that graded nothing, did not gate this pool — the tiers
+    # below are then unrefused rather than passed. The 2026-09-25 FAFB->hemibrain
+    # run published gate_applied=True over 32 `matched` and 335 `verified`
+    # claims with every row still `morph_gate='error'`. `scored` alone decides:
+    # a `shared` count can be built entirely from borrowed `no-score` verdicts,
+    # which graded nothing.
+    morph['gate_applied'] = (not morph.get('error')
+                             and int(morph.get('scored') or 0) > 0)
     morph['mandatory'] = True
     morph['dropped_targets'] = len(refused_targets)
     # `morph['units']` (the record) is the number of scoring units the pass was

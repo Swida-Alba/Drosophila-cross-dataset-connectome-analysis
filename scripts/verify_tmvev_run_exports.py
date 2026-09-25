@@ -5,8 +5,8 @@ Usage
     python scripts/verify_tmvev_run_exports.py [PATH ...]
 
 Each PATH is a run folder (`type-map-validation_*`) or a directory holding a
-`manifest.tsv` of them (a queue run); with no PATH the newest queue directory
-under `local_data/` is used. Every check is derived from the run folder itself,
+`manifest.tsv` of them (a queue run); with no PATH the newest `tmvev-*`
+queue directory under `local_data/` is used. Every check is derived from the run folder itself,
 so this is what to point at any TM VEV result — the ladder claims below are
 checked per (source, target, query) group and runs of different queries are
 never compared to each other.
@@ -529,7 +529,7 @@ def check_pooling(run, tag):
     # the verdict has to be recomputable from the row it appears on: the score
     # the bar was applied to depends on the kind, and a published score below a
     # published bar with a ✓ beside it is the bug this check exists for
-    graded = {
+    score_column_by_kind = {
         'native': 'morph_pool_ref', 'track_a': 'morph_similarity',
         'track_a_backup': 'morph_similarity', 'null_bar': 'morph_similarity',
         'null': 'morph_similarity', '': 'morph_similarity'}
@@ -537,7 +537,8 @@ def check_pooling(run, tag):
     for r in cand.itertuples(index=False):
         if r.morph_gate != 'scored':
             continue
-        col = graded.get(str(r.morph_bar_kind or ''), 'morph_similarity')
+        col = score_column_by_kind.get(str(r.morph_bar_kind or ''),
+                                       'morph_similarity')
         score = float(getattr(r, col) or 'nan')
         bar = float(r.morph_bar or 'nan')
         if score != score or bar != bar:
@@ -590,6 +591,35 @@ def check_pooling(run, tag):
         f'{tag}: reading notes explain the gate')
     chk(bool(xv.get('input_fingerprint')),
         f'{tag}: input_fingerprint published', str(xv)[:80])
+    # The native score is read out of the TARGET's V2 vector cache, which the
+    # profile caches above do not cover, so a fingerprint that stops at them
+    # cannot explain a `morph_pool_ref` that moved between two runs of one
+    # query — measured 2026-09-25 on FAFB->BANC as 107 of 1266 rows.
+    fp = xv.get('input_fingerprint') or {}
+    stores = fp.get('morph_stores') or {}
+    if stores:
+        tgt = stores.get('target') or {}
+        # Only a pass that actually graded native verdicts owes a target
+        # vector-store identity: a Track-A-only pass can publish a target
+        # store entry with no counts (falsy values are dropped by the
+        # identity writer), and demanding the counts there would fail a
+        # healthy run.
+        native_rows = sum(
+            1 for r in cand.itertuples(index=False)
+            if str(r.morph_bar_kind or '') == 'native')
+        if native_rows:
+            chk(bool((tgt.get('vector_cache') or {}).get('bytes')),
+                f'{tag}: the vector cache a native verdict came out of is named',
+                str(tgt)[:120])
+            chk(bool(tgt.get('skeleton_files')),
+                f'{tag}: the skeleton store the pass fetched into is counted',
+                str(tgt)[:120])
+        else:
+            info(f'{tag}: no native verdicts — the target vector store is '
+                 'not part of this pass\'s explanation')
+    else:
+        info(f'{tag}: fingerprint names no morph_stores (a run before '
+             '2026-09-25) — a moved morph_pool_ref is unattributable here')
 
 
 # ---------------------------------------------------------------- ladder
@@ -864,7 +894,7 @@ def cost_table(entries):
 def main(argv=None):
     paths = argv or sys.argv[1:]
     if not paths:
-        queues = sorted((REPO / 'local_data').glob('tmvev-clock-*'),
+        queues = sorted((REPO / 'local_data').glob('tmvev-*'),
                         key=lambda p: p.stat().st_mtime)
         paths = [str(queues[-1])] if queues else []
         if paths:

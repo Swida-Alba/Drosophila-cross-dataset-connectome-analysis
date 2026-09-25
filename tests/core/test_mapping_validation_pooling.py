@@ -42,6 +42,13 @@ class FakeValidator:
         self.notes = []
         self._target_sizes = sizes or {}
         self.seed = sorted(int(b) for b in frames)
+        # what the run would have published as its `input_fingerprint`
+        self.input_fingerprint = {}
+
+    def _record_morph_stores(self):
+        """The real validator names the vector caches a native verdict came out
+        of; the fake records that the call happened."""
+        self.morph_stores_recorded = True
 
     def log(self, msg=''):
         self.notes.append(str(msg))
@@ -1024,3 +1031,162 @@ def test_the_pooling_leaf_tag_names_tiers_and_says_whose_verdict_it_borrows():
     assert pool_leaf_tag({'mapper_cell': 'confirmed', 'tiers': 'verified',
                           'morph_gate': 'no-score'}) == 'confirmed · verified'
     assert pool_leaf_tag({}) == ''
+
+
+def test_a_run_names_the_stores_a_morph_verdict_came_out_of(tmp_path):
+    """`input_fingerprint` named the profile caches and the mapper snapshot —
+    what the SCAN reads — so a `morph_pool_ref` that moved between a run and
+    its repeat could not be attributed from the run folder at all.
+
+    Measured 2026-09-25 on FAFB->BANC: the cold run and its warm repeat
+    published different native scores for 107 of 1266 rows, and every
+    fingerprint cell said the inputs were identical. The native track reads the
+    target's V2 vector cache, its whitener and the raw skeleton store, so the
+    fingerprint says those too.
+    """
+    from comparison.mapping_validation import _morph_store_identity
+    import morphology as morph
+
+    empty = _morph_store_identity('np:v1', str(tmp_path))
+    assert empty == {}, 'a dataset with nothing cached records nothing'
+
+    cache = morph.find_similar_dataset_cache_v2('np:v1',
+                                                project_root=str(tmp_path),
+                                                verbose=False)
+    cache.skeleton_dir.mkdir(parents=True, exist_ok=True)
+    (cache.skeleton_dir / '101.pkl').write_bytes(b'x')
+    (cache.skeleton_dir / '202.pkl').write_bytes(b'x')
+    cache.parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    cache.parquet_path.write_bytes(b'x' * 12)
+    cache.meta_path.write_text('{}', encoding='utf-8')
+
+    ident = _morph_store_identity('np:v1', str(tmp_path))
+    assert ident['vector_cache']['bytes'] == 12
+    assert ident['vector_meta']['path'].endswith('meta_v2.json')
+    assert ident['skeleton_files'] == 2
+    assert ident['newest_skeleton_mtime_s'] > 0
+    # an absent sidecar is absent, not a zero-filled placeholder: a reader has
+    # to be able to tell "no whitener fitted yet" from "a whitener of 0 bytes"
+    assert 'whitener' not in ident
+
+
+def test_the_pooling_morph_pass_records_the_stores_it_read(monkeypatch):
+    """The record is written by the pass that scores, not by stage 2: the
+    fingerprint the scan writes is taken before stage 5 fetches a single
+    skeleton, so a `morph_pool_ref` divergence would name stores the run never
+    read."""
+    import comparison.morph_cross_dataset as mcd
+
+    class MQ:
+        active = True
+        warnings = []
+        scores = {}
+        ref_bars = {}
+        native_scores = {}
+        vector_cache = {}
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            return True
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs', lambda *a, **k: MQ())
+    v = FakeValidator(_cfg(), {})
+    pool.apply_morph_gate(v, _rows(1, 2), seed_size=1)
+    assert v.morph_stores_recorded, \
+        'the pass that grades a candidate is the pass that names its stores'
+
+
+def test_a_morph_pass_that_did_not_grade_cannot_claim_its_gate_applied(
+        monkeypatch):
+    """`gate_applied` is a claim about the PASS.
+
+    The 2026-09-25 FAFB->hemibrain run raised inside the qualification
+    (`hemibrain is not supported for cross-dataset morphology`), left every row
+    `morph_gate='error'`, and still published `gate_applied: True` beside 32
+    `matched` and 335 `verified` claims — an ungraded pool read as a pool the
+    morphology bar had passed. The pair is refused at the door now; this pins
+    what the record says when some other way of failing happens, and that the
+    failure is loud in the run log (`!` is what the README self-check greps).
+    """
+    import comparison.morph_cross_dataset as mcd
+
+    def boom(*a, **k):
+        raise RuntimeError('not supported for cross-dataset morphology')
+
+    frames = _e2e_frames(monkeypatch)
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs', boom)
+    v = FakeValidator(
+        _cfg(pooling_window_mult=2.0), frames,
+        types={1: 's-LNv', 2: 's-LNv'},
+        pairs=[mv.TypePair(source_dataset='a', source_type='s-LNv',
+                           source_pool=[1], target_dataset='b',
+                           target_type='DN1a', target_pool=[100])],
+        sizes={100: 9.0e6, 102: 3.0e7})
+    v._backward_decision = lambda t: {'status': '', 'mapped': None,
+                                      'home_count': 0, 'home_real': False}
+    out = pool.run_pooling(v, target_stats={}, target_bids=[100, 101, 102],
+                           target_id2type={100: 'DN1a', 101: '',
+                                           102: 'LC16'},
+                           val_rows=[{'verdict': 'verified',
+                                      'target_bodyId': 100}])
+    morph = out['cross_validation']['morph']
+    assert morph['error'].startswith('RuntimeError:'), morph['error']
+    assert morph['gate_applied'] is False
+    assert morph['mandatory'] is True, 'the gate is still required'
+    assert morph['scored'] == 0 and morph['dropped_targets'] == 0
+    assert any('[pooling/morph] !' in n for n in v.notes), \
+        'a failed mandatory gate is a failure of the run, not an empty result'
+
+
+def test_borrowed_no_score_verdicts_do_not_claim_the_gate(monkeypatch):
+    """`shared` rows are not evidence the gate graded anything (F-CODE-011).
+
+    A pass whose only measurement came back `no-score`, borrowed by a second
+    row for the same target, publishes `shared >= 1` — the pre-fix expression
+    `scored + shared > 0` then claimed `gate_applied: True` over a pass that
+    graded nothing, the exact case the WIP comment says it excludes.
+    """
+    import comparison.morph_cross_dataset as mcd
+
+    class _NoScore:
+        active = True
+        warnings = []
+        ref_bars = {}
+        native_scores = {}
+        scores = {}                       # every measurement: no score
+
+        def bar(self, s):
+            return 0.5
+
+        def is_qualified(self, s, t):
+            return None
+
+    monkeypatch.setattr(mcd, 'qualify_visualized_pairs',
+                        lambda src, tgt, pairs, **kw: _NoScore())
+    frames = {1: _frame([{'target_bid': 100, 'jaccard': 0.50,
+                          'rank_union': 0.30, 'jaccard_rank': 1,
+                          'rank_union_rank': 1}]),
+              2: _frame([{'target_bid': 100, 'jaccard': 0.44,
+                          'rank_union': 0.10, 'jaccard_rank': 2,
+                          'rank_union_rank': 2}])}
+    _install_frames(monkeypatch, frames)
+    v = FakeValidator(
+        _cfg(pooling_window_mult=2.0, pooling_max_morph_targets=1), frames,
+        types={1: 's-LNv', 2: 's-LNv'},
+        pairs=[mv.TypePair(source_dataset='a', source_type='s-LNv',
+                           source_pool=[1], target_dataset='b',
+                           target_type='DN1a', target_pool=[100])],
+        sizes={100: 9.0e6})
+    v._backward_decision = lambda t: {'status': '', 'mapped': None,
+                                      'home_count': 0, 'home_real': False}
+    out = pool.run_pooling(v, target_stats={}, target_bids=[100],
+                           target_id2type={100: 'DN1a'},
+                           val_rows=[{'verdict': 'verified',
+                                      'target_bodyId': 100}])
+    morph = out['cross_validation']['morph']
+    assert morph['scored'] == 0
+    assert morph['shared'] >= 1, 'fixture must exercise the borrow path'
+    assert morph['gate_applied'] is False, (
+        'a pass whose only verdicts were no-score did not gate this pool')
