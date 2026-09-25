@@ -39,7 +39,7 @@ The plan is based on the current repository structure and the reported v4.5.0 ru
 | Execution | `ui/runner.py:303-511` and `:786-930` manage subprocesses, streamed output, and result metadata. | Separate job ownership from browser/page presentation. |
 | Reusable styling | `ui/app.py` contains the global CSS and design tokens. | Consolidate tokens and component states before broad visual changes. |
 | Existing UI coverage | `tests/ui/test_ui_e2e.py` has substantial server-side component/layout coverage. | Add browser-level refresh, reconnect, accessibility, and visual checks. |
-| Existing design work | `docs/UI_REDESIGN_AND_BACKEND_REPORT.md` documents the current workspace/output-panel direction. | Extend the established visual language instead of introducing a second design system. |
+| Existing design work | `docs/archive/UI_REDESIGN_AND_BACKEND_REPORT.md` documents the current workspace/output-panel direction. | Extend the established visual language instead of introducing a second design system. |
 
 ## 3. Prioritized findings
 

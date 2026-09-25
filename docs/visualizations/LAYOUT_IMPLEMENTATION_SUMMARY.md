@@ -109,7 +109,7 @@ All advanced layout algorithms have been successfully implemented with an intera
 
 ## 🔧 Code Changes
 
-### File: `src/vispath.py`
+### File: `src/vispath.py` (since moved to `vispath-subproject/src/vispath_pkg/vispath.py`; line numbers below are historical)
 
 #### 1. Updated Layout Map (Line ~2862)
 **Before:**

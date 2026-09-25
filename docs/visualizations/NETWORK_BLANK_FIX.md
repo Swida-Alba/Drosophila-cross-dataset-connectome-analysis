@@ -56,7 +56,7 @@ const displayWeight = data.is_negative === 1 ? -data.weight : data.weight;
 ```
 
 ## Files Modified
-- `src/vispath.py`:
+- `vispath-subproject/src/vispath_pkg/vispath.py` (historically `src/vispath.py`):
   - Lines 2940-2944: Added min/max scaled width calculation
   - Line 2933: Changed `is_negative` from boolean to numeric (1/0)
   - Line 3568: Updated mapData in edge selector

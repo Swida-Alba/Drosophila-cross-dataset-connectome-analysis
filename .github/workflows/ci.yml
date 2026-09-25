@@ -1,0 +1,105 @@
+# Minimal, green-first CI (audit F-CONFIG-004, 2026-09-25).
+#
+# Scope is deliberately narrow so the workflow is green on its first run:
+# static gates that need no dataset and no network, a packaging check that
+# would have caught the py-modules regression (19 modules missing from the
+# wheel), and a curated fast test slice. The full 6,000+ test battery needs
+# local datasets and stays a local concern (scripts/maintenance/
+# wait_then_full_suite.py).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static:
+    name: static gates (undefined names, docs links, pins)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pyflakes
+        run: python -m pip install --quiet pyflakes
+      - name: No undefined names in src/
+        # The 2026-09-25 audit found two silently-swallowed NameErrors
+        # shipped this way; pyflakes' full output stays informational, but
+        # an undefined name is always a defect. (The pattern quotes the
+        # name so the star-import notice "unable to detect undefined
+        # names" does not trip the gate.)
+        run: |
+          if python -m pyflakes src 2>/dev/null | grep -q "undefined name '"; then
+            python -m pyflakes src 2>/dev/null | grep "undefined name '"
+            exit 1
+          fi
+      - name: Documentation references resolve
+        run: python scripts/maintenance/check_docs_links.py
+      - name: Dependency pins agree across packaging files
+        run: python scripts/maintenance/check_pin_consistency.py
+
+  packaging:
+    name: wheel carries every top-level src module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build wheel (no deps)
+        run: python -m pip wheel . --no-deps -w dist
+      - name: Every flat src module and package is inside
+        # py-modules once omitted 19 of the 33 top-level modules and a
+        # non-editable install failed at 'import coana'.
+        run: |
+          python - <<'EOF'
+          import pathlib, sys, zipfile
+          wheel = sorted(pathlib.Path('dist').glob('drocat-*.whl'))[-1]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          missing = [
+              str(p) for p in pathlib.Path('src').glob('*.py')
+              if p.name != '__init__.py' and f'{p.stem}.py' not in names
+          ] + [
+              str(d) for d in pathlib.Path('src').iterdir()
+              if d.is_dir() and not d.name.startswith(('.', '_'))
+              and d.name not in {n.split('/')[0] for n in names
+                                 if '/' in n}
+              and (d / '__init__.py').exists()
+          ]
+          if missing:
+              print('wheel is missing:', missing)
+              sys.exit(1)
+          print(f'wheel OK: {wheel.name}')
+          EOF
+
+  tests-sample:
+    name: fast test slice (offline fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project (editable, core deps)
+        run: python -m pip install --quiet -e .
+      - name: Install test runner
+        run: python -m pip install --quiet pytest
+      - name: Collect the whole suite (no collection errors)
+        run: python -m pytest --collect-only -q
+      - name: Curated offline slice
+        # Files whose fixtures are synthetic (tmp_path/monkeypatch): the
+        # 2026-09-25 audit-fix regressions plus always-fast neighbors.
+        run: >
+          python -m pytest tests/core/test_path_node_parsing.py
+          tests/core/test_audit_fixes.py
+          tests/core/test_hop_budget_pruning.py
+          tests/core/test_morphology_comparison.py
+          tests/core/test_morph_cross_dataset.py
+          tests/core/test_connectivity_profiler_coverage.py
+          tests/core/test_neuronbridge_finder_coverage.py
+          tests/core/test_cached_neuron_search.py
+          tests/core/test_search_query_performance.py
+          -q -p no:cacheprovider
