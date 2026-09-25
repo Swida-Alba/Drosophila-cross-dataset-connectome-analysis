@@ -238,11 +238,12 @@ For the complete operation catalog and recipes, see
 
 The VisPath subproject (`vispath-subproject/`) reuses the same environment.
 The UI loads it from `vispath-subproject/src` directly — no separate install
-needed. Note for non-editable installs: the `drocat` wheel does not contain
-`vispath_pkg` (it ships from this subproject's own packaging), and `coana`
-imports it unconditionally — install the subproject too
-(`pip install ./vispath-subproject`) when using a built wheel rather than a
-repo checkout. To use it as a library:
+needed. For non-editable installs: the `drocat` wheel does not contain
+`vispath_pkg` (it ships from this subproject's own packaging). `import coana`
+works without it; pathfinding enumeration (FastGraph) and visualization
+(VisualizePath) resolve it on first use and raise an actionable error if it
+is missing — `pip install ./vispath-subproject` provides both. To use it as
+a library:
 
 ```bash
 cd vispath-subproject && pip install -e .

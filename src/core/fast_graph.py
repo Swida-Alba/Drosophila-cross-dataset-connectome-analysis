@@ -32,10 +32,23 @@ from pathlib import Path
 
 # Add vispath-subproject to path for import
 _vispath_path = Path(__file__).parent.parent.parent / "vispath-subproject" / "src"
-if str(_vispath_path) not in sys.path:
+if _vispath_path.is_dir() and str(_vispath_path) not in sys.path:
     sys.path.insert(0, str(_vispath_path))
 
-# Import and re-export FastGraph from vispath_pkg
-from vispath_pkg.fast_graph_core import FastGraph, DiGraph
+# Re-export FastGraph/DiGraph from vispath_pkg, resolved lazily (PEP 562):
+# vispath_pkg ships from the subproject's own packaging and is not inside
+# the drocat wheel, so importing this shim must not hard-require it.
+_VSPATH_HINT = (
+    "requires the vispath subproject (vispath_pkg). In a repo checkout it "
+    "is loaded automatically; with a wheel install run: "
+    "pip install ./vispath-subproject")
 
-__all__ = ['FastGraph', 'DiGraph']
+
+def __getattr__(name):
+    if name in ("FastGraph", "DiGraph"):
+        try:
+            from vispath_pkg.fast_graph_core import FastGraph, DiGraph
+            return {"FastGraph": FastGraph, "DiGraph": DiGraph}[name]
+        except ImportError as exc:
+            raise ImportError(f"Pathfinding enumeration {_VSPATH_HINT}") from exc
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
