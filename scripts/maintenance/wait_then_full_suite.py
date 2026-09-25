@@ -42,7 +42,7 @@ E2E_STAGE = ('e2e', ['tests/e2e'])
 # The project env, not whatever python happens to be on PATH: the base env
 # carries pytest 7.4 while this one carries 9.1, and the suite is maintained
 # against the project env the app itself runs in.
-def _project_env_python() -> str:
+def _project_env_name() -> str:
     # The versioned env name follows ui/config.py's APP_VERSION, so a bump
     # does not silently detach this script from the env it should run in.
     env = 'drocat-4.5.0'
@@ -54,7 +54,21 @@ def _project_env_python() -> str:
             env = f'drocat-{m.group(1)}'
     except OSError:
         pass
-    return f'/Users/apple/anaconda3/envs/{env}/bin/python'
+    return env
+
+
+def _project_env_python() -> str:
+    """The project env's interpreter, derived per platform.
+
+    macOS (the dev host) keeps envs at ~/anaconda3/envs/<env>/bin/python;
+    the Windows test hosts (see the retest notes) use
+    %USERPROFILE%\anaconda3\envs\<env>\python.exe. Both derive the env
+    name from APP_VERSION so a version bump cannot detach the script.
+    """
+    name = _project_env_name()
+    if sys.platform.startswith('win'):
+        return str(Path.home() / 'anaconda3' / 'envs' / name / 'python.exe')
+    return str(Path.home() / 'anaconda3' / 'envs' / name / 'bin' / 'python')
 
 
 _PROJECT_PY = _project_env_python()
@@ -67,11 +81,12 @@ PYTEST_PY = os.environ.get('DROCAT_TEST_PYTHON') or (
 # user's calls, 2026-09-22, after an idle `ui/app.py` held the queue for 10 h
 # and a static `http.server` held it again for minutes). My own process tree is
 # excluded in competing(), so the suite never blocks on itself.
+# Any interpreter from the project env counts as a competitor: match the
+# env directory itself (envs[/\]drocat-<ver>) so the posix and the Windows
+# command-line spellings both hit.
 COMPETITOR = re.compile(
     r'(?:[-/]m\s+pytest(?:\s|$)|(?<![\w./])pytest\s+tests|'
-    'envs/' + re.escape(_project_env_python().rsplit('/envs/', 1)[-1]
-                        .removesuffix('/bin/python'))
-    + '/bin/python)')
+    'envs[/\\\\]' + re.escape(_project_env_name()) + ')')
 
 IDLE_SERVER = re.compile(
     r'(?:ui[/\\]app\.py|-m http\.server|wait_then_full_suite|'
