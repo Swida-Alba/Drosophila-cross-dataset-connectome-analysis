@@ -536,3 +536,37 @@ def test_shortest_run_exports_budget_metadata_and_no_floor(
                 encoding='utf-8').read()
     assert 'edge_weight_floor:' in text
     assert 'n/a' in text  # floor rendered as n/a for shortest mode
+
+
+def test_reconcile_quarantines_instead_of_deleting(tmp_path, monkeypatch):
+    """REPO-1 (2026-09-25 handoff): the reconcile's _replace_with_marker
+    rmtree'd a "redundant" data folder, while plan §10 (user-CONFIRMED)
+    promises "data is never deleted, only renamed" — and the plan's own §4
+    documents the mislabeled-folder bugs that can make a "duplicate"
+    grouping wrong.  The folder must move to _replaced/ beside the marker,
+    invisible to every minsyn_-prefix scan, and recoverable by rename-back."""
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    base = tmp_path / 'ds_out'
+    folder = base / 'minsyn_50'
+    folder.mkdir(parents=True)
+    (folder / 'connections.csv').write_text('keep me')
+    analyzer = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
+    marker_calls = []
+    logs = []
+    monkeypatch.setattr(
+        analyzer, '_write_skipped_marker',
+        lambda ds, req, m: marker_calls.append((ds, req)))
+    monkeypatch.setattr(analyzer, '_log', lambda msg='': logs.append(msg))
+    analyzer._replace_with_marker('ds', 50, 19, str(folder))
+    assert marker_calls == [('ds', 50)]
+    assert not folder.exists(), 'the original name is vacated for the marker'
+    replaced = list((base / '_replaced').iterdir())
+    assert len(replaced) == 1 and replaced[0].name.startswith('minsyn_50_')
+    assert (replaced[0] / 'connections.csv').read_text() == 'keep me'
+    # every folder scan keys on the minsyn_ prefix: the quarantined copy
+    # is invisible to the reconcile and to data_loader's threshold listing
+    visible = [n for n in os.listdir(base) if n.startswith('minsyn_')]
+    assert visible == [], f'quarantine leaked into scans: {visible}'
+    # a second call on an already-vacated folder is a no-op, never a raise
+    analyzer._replace_with_marker('ds', 50, 19, str(folder))
+    assert any('nothing is deleted' in m for m in logs)

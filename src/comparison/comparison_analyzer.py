@@ -2101,7 +2101,6 @@ class ComparisonAnalyzer:
         out_root = getattr(self.parameters, 'full_output_path', None)
         if not out_root:
             return
-        import shutil as _shutil
         manifest = {}
         for dataset in self.parameters.get_dataset_names():
             requested = list(
@@ -2192,11 +2191,11 @@ class ComparisonAnalyzer:
                                 rq = entry[2] if entry[2] is not None \
                                     else applied
                                 self._replace_with_marker(
-                                    dataset, int(rq), applied, entry[1],
-                                    _shutil)
+                                    dataset, int(rq), applied, entry[1])
                                 actions.append(
                                     (entry[0],
-                                     f'minsyn_{rq}_skipped', 'marker'))
+                                     f'minsyn_{rq}_skipped',
+                                     'marker+quarantined'))
                                 break
                     try:
                         os.rename(keep[1], target_path)
@@ -2220,11 +2219,10 @@ class ComparisonAnalyzer:
                     if run_requested is None:
                         run_requested = applied
                     self._replace_with_marker(
-                        dataset, int(run_requested), applied, entry[1],
-                        _shutil)
+                        dataset, int(run_requested), applied, entry[1])
                     actions.append(
                         (entry[0], f'minsyn_{run_requested}_skipped',
-                         'marker'))
+                         'marker+quarantined'))
                 # Register the lookup for the applied value and every
                 # requested threshold that resolves to it.
                 self.parameters.set_applied_folder_lookup(
@@ -2280,16 +2278,42 @@ class ComparisonAnalyzer:
         return None
 
     def _replace_with_marker(self, dataset: str, requested: int,
-                             applied: Optional[int], folder: str,
-                             shutil_mod) -> None:
-        """Replace a redundant data folder (same applied set as the kept
-        one) with its ``_skipped`` marker."""
+                             applied: Optional[int], folder: str) -> None:
+        """Retire a redundant data folder (same applied set as the kept one)
+        under its ``_skipped`` marker — RENAME ONLY, never delete.
+
+        Plan §10 (cross-dataset-threshold-display-coordination, user-CONFIRMED):
+        "data is never deleted, only renamed … the only irreversible action
+        is a rename".  The folder's data moves to ``_replaced/`` beside the
+        marker (the reconcile/data-loader scans key on the ``minsyn_``
+        prefix, so a quarantined name is invisible to them) — a mis-grouped
+        "duplicate" (the §4 mislabeled-folder bugs) must cost a rename-back,
+        not a re-capture."""
         self._write_skipped_marker(
             dataset, requested, {requested: applied})
+        if not os.path.isdir(folder):
+            return
+        import time as _time
+        folder = folder.rstrip('/') or folder
+        base = os.path.dirname(folder) or '.'
+        quarantine = os.path.join(base, '_replaced')
+        target = os.path.join(
+            quarantine,
+            f"{os.path.basename(folder)}_{_time.strftime('%Y%m%d_%H%M%S')}")
         try:
-            shutil_mod.rmtree(folder, ignore_errors=True)
-        except Exception:
-            pass
+            os.makedirs(quarantine, exist_ok=True)
+            os.rename(folder, target)
+            self._log(
+                f"  Reconcile: {os.path.basename(folder)} duplicates the "
+                f"applied set — data kept at "
+                f"{os.path.relpath(target, base)} beside the skipped marker "
+                f"(nothing is deleted)")
+        except OSError as e:
+            # Bookkeeping must never fail a run: the marker is already
+            # written, so the folder simply stays where it is.
+            self._log(
+                f"  Warning: could not quarantine redundant "
+                f"{os.path.basename(folder)}: {e}")
 
 
     def _folder_applied_threshold(self, folder: str) -> Optional[int]:
