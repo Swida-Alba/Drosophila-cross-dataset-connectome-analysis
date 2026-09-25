@@ -3653,15 +3653,21 @@ class SkeletonVectorCache:
                         result[j] = np.nan
         if computed:
             self.append_vectors(computed, vector_basis=basis)
-            if data is None or data.get("mean") is None:
-                # This call CREATED the basis (no cache yet, or a cache whose
-                # meta carried no statistics), so the rows it just vectorized
-                # are now persisted and standardized by statistics that did not
-                # exist an instant ago. Re-read them: what a call hands back has
-                # to be what the NEXT call hands back for the same bodyIds, or
-                # a dataset's first run grades its own cold neurons in one space
-                # and every later run in another (measured 2026-09-25 on an
-                # empty cache: raw 33.31, 12, 1, 10 then standardized 1, -1, 1, 1).
+            # The store's META is the pin, not `data["mean"]`: `load()`
+            # ALWAYS publishes statistics (falling back to the current rows
+            # when meta is silent), so the old guard `data.get("mean") is
+            # None` was reachable only with no cache at all.  A LEGACY cache
+            # — rows present, meta without mean/std — served its computed
+            # rows standardized by N-row statistics while append_vectors
+            # pinned N+M statistics into meta: one cold/warm divergence per
+            # legacy store (the V1 Find-Similar path, 413 rows).  Re-read
+            # whenever this call CREATED the basis or the pin: what a call
+            # hands back has to be what the NEXT call hands back for the
+            # same bodyIds, or a dataset's first run grades its own cold
+            # neurons in one space and every later run in another (measured
+            # 2026-09-25 on an empty cache: raw 33.31, 12, 1, 10 then
+            # standardized 1, -1, 1, 1).
+            if data is None or not ((data.get("meta") or {}).get("mean")):
                 after = self.load()
                 if after is not None:
                     index = {self._canonical_body_id(b): i

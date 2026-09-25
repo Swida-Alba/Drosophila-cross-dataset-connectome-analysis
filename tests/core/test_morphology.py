@@ -3991,6 +3991,41 @@ class TestVectorPersistence:
                             cache._feature_columns()].to_numpy(float)[0]
         assert not np.allclose(later[1], raw202)
 
+    def test_legacy_meta_cache_reprojects_after_append(self, tmp_path):
+        """A LEGACY store — rows present, meta without mean/std — is the case
+        the basis pin was written for (the V1 Find-Similar path, 413 rows).
+
+        `load()` always publishes statistics (current-rows fallback), so the
+        pre-fix re-read guard `data.get("mean") is None` never fired here:
+        the call standardized its computed rows by N-row statistics while
+        append_vectors pinned N+M statistics into meta — one cold/warm
+        divergence per legacy store. The guard now reads the STORE'S meta.
+        """
+        import json as _json
+        write_skeleton(tmp_path, "np:v1", 101, line_neuron(length=20))
+        write_skeleton(tmp_path, "np:v1", 201, bushy_y_neuron())
+        cache = morph.SkeletonVectorCache(
+            "np:v1", project_root=str(tmp_path), verbose=False
+        )
+        cache.build()
+        # strip the pin: the store becomes a legacy one
+        meta = _json.loads(cache.meta_path.read_text("utf-8"))
+        meta.pop("mean", None)
+        meta.pop("std", None)
+        cache.meta_path.write_text(_json.dumps(meta), encoding="utf-8")
+        # a third neuron appears: cold for this call, cached for the next
+        write_skeleton(tmp_path, "np:v1", 303, line_neuron(length=55))
+        cold, mask_cold, _ = cache.vectors_for([101, 201, 303],
+                                               compute_missing=True)
+        warm, mask_warm, _ = cache.vectors_for([101, 201, 303],
+                                               compute_missing=True)
+        assert mask_cold.tolist() == mask_warm.tolist() == [True] * 3
+        np.testing.assert_allclose(cold, warm, rtol=0, atol=1e-15)
+        # the append pinned the basis into meta, and the cold call already
+        # served the row in that pinned space
+        pinned = _json.loads(cache.meta_path.read_text("utf-8"))
+        assert pinned.get("mean") and pinned.get("std")
+
     def test_profile_first_persists_transient_fetch_vector(self, tmp_path, monkeypatch):
         """A transiently-fetched skeleton (never written to the skeleton
         cache) still persists its VECTOR; the next run reuses the vector
