@@ -867,7 +867,11 @@ set. The complete per-run record is in
 `comparison_results/pathfinding_provenance.csv`; the same values are included
 in `threshold_sensitivity.csv`, `unified_summary.csv`, each delegated
 `dataset_data/.../minsyn_N/parameters.txt` and `all_attributes.json`, and the
-root `effective_thresholds.json` notice.
+root `effective_thresholds.json` notice. In **edge mode** this provenance
+describes the side-effect path runs, not the edge data: the edge comparison
+itself is exactly `weight >= requested`, so `effective_thresholds.json`
+reports `applied_threshold = requested` for every dataset (tau/budget fields
+null; the side-run numbers live in each row's `side_path_run` block).
 
 In Custom combination mode, `threshold_combinations.csv` is the
 canonical query/dataset join: it adds `query_id`, the requested cell, and the

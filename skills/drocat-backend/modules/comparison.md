@@ -359,7 +359,13 @@ The comparison root additionally exports:
 
 - `effective_thresholds.json` — the UI/run-guide notice with one `runs` row
   per dataset and requested threshold, plus `queries`/`combinations` with
-  requested threshold maps and applied per-dataset provenance.
+  requested threshold maps and applied per-dataset provenance. In edge mode
+  the edge data is exactly `weight >= requested`, so rows report
+  `applied_threshold = requested` (tau/budget null; the side-effect path
+  runs' numbers sit under `side_path_run`). Each `dataset_data/.../minsyn_N`
+  folder also carries `connections_edge.fingerprint.json` — the query
+  fingerprint of the cached edge list; a cached folder is reused only on a
+  fingerprint match.
 - `comparison_results/pathfinding_provenance.csv` — the complete machine-
   readable row set. Use `applied_threshold` for the canonical equivalent Min
   Synapse Count; `tau` is the StrongestFirst landing/collapse bound, not

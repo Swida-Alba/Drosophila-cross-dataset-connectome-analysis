@@ -225,6 +225,11 @@ class ComparisonParameters:
     remains available through ``get_thresholds_for_dataset`` so historical
     scripts do not silently change meaning; new code should use
     ``get_threshold_queries``.
+
+    Note: an explicitly EMPTY list for one dataset (``{'ds': []}``) is
+    treated as "no override" and falls through to the global threshold
+    list — a legacy behavior kept for old-config replay; pass an explicit
+    non-empty schedule if that dataset should deviate.
     """
     
     source_labels: Union[str, List[str]] = ''

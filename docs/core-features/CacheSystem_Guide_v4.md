@@ -237,6 +237,21 @@ result = fnc.build_connectivity_profile_cache(
 print(f"Built {result['total_profiles']} profiles")
 ```
 
+### Profile-cache validity (config hash)
+
+Profile rows persist a `config_hash` (an 8-hex digest of the config that
+shaped them: `min_synapse_threshold`, `top_k_bodyid`,
+`include_untyped_partners`, and the fuzzy-match toggles). A cached profile is
+reused only when the reader's config hash matches the row's — changing Min
+Synapse Threshold (or the untyped/fuzzy toggles) rebuilds profiles instead of
+silently scoring under the old filter. Rows written before 2026-09-25 carry
+no hash and stay accepted (legacy caches are not invalidated wholesale).
+
+If the main `connectivity_profiles.parquet` is ever unreadable (torn write,
+disk error), consolidation does **not** overwrite or delete it: the file is
+renamed aside as `connectivity_profiles.corrupt-<timestamp>.parquet` for
+manual recovery, the failure is logged, and the batch files are kept.
+
 ### Command-Line Cache Building
 
 ```bash

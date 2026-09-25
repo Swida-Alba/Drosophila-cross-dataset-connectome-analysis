@@ -182,7 +182,10 @@ writes both files.
   `parameters.txt`, `all_attributes.json`, and `data_details/parameters.csv`.
 - The comparison root writes `effective_thresholds.json` for the UI notice and
   `comparison_results/pathfinding_provenance.csv` with one complete row per
-  dataset/requested raw threshold. `threshold_scope` distinguishes scalar
+  dataset/requested raw threshold. (Edge mode: the edge data is exactly
+  `weight >= requested`, so `applied_threshold` equals the request there —
+  the tau/budget fields describe the side-effect path runs only, kept under
+  `side_path_run`.) `threshold_scope` distinguishes scalar
   rows from query cells. In that row, `applied_threshold` is the
   canonical equivalent Min Synapse Count, `tau` is the StrongestFirst landing
   bound, `w0`/`w1` are the Edge Budget floor/landing tier, `w2` is the strongest
