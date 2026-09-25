@@ -9,6 +9,7 @@ so the parity between this form and the dataclass is what keeps the tab honest.
 
 import glob
 import json
+import logging
 import os
 
 from nicegui import ui
@@ -554,8 +555,11 @@ def create_type_validation_tab():
                 else:
                     output_panel.set_notice(
                         f"Completed — {n_branches} branch(es) validated.")
-        except Exception:
-            pass
+        except Exception as exc:
+            # This reader includes the ONLY signal for a successful-but-empty
+            # run (unsupported dataset pair); a silent drop leaves a bare
+            # "Completed". Keep the UI stable but leave a trace.
+            logging.debug("set-coverage notice unavailable: %s", exc)
 
         # Cap-and-warn (§3.2): surface the backend's scenes cap as a
         # persistent notice (user decision 2026-09-19: cap properly and tell
@@ -565,8 +569,8 @@ def create_type_validation_tab():
                 cap_line = _scene_cap_line(run_dir)
                 if cap_line:
                     output_panel.set_notice(cap_line)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.debug("scene-cap notice unavailable: %s", exc)
 
         # Record query chips into the shared history (single-dataset scope).
         if rc == 0:

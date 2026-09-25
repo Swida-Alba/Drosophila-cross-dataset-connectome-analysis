@@ -1567,8 +1567,9 @@ def _render_index(
                     dataset, str(search_input.value or "").strip(),
                     matched_values=list(last_matched_values),
                     prefix_only_search=current_prefix_only_search())
-            except Exception:
-                csv_text = ""
+            except Exception as exc:
+                ui.notify(f"Export failed: {exc}", type="negative")
+                return
             if not csv_text:
                 ui.notify("No matched entries to export.", type="info")
                 return

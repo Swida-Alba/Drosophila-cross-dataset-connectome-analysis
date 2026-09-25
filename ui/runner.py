@@ -1228,8 +1228,11 @@ def open_folder(path: str):
             subprocess.run(["explorer", str(path)])
         else:
             subprocess.run(["xdg-open", str(path)])
-    except Exception:
-        pass
+    except Exception as exc:
+        # A silent no-op leaves the user clicking a button that appears
+        # broken; say what failed instead.
+        from nicegui import ui
+        ui.notify(f"Could not open folder {path}: {exc}", type="negative")
 
 
 def open_file(path: str):
@@ -1246,8 +1249,9 @@ def open_file(path: str):
             os.startfile(str(path))
         else:
             subprocess.run(["xdg-open", str(path)])
-    except Exception:
-        pass
+    except Exception as exc:
+        from nicegui import ui
+        ui.notify(f"Could not open file {path}: {exc}", type="negative")
 
 
 # NOTE: the old tkinter-based pick_directory/pick_file helpers were removed.

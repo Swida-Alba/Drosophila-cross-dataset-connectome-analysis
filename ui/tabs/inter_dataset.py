@@ -1,6 +1,7 @@
 """Cross-Dataset Comparison Tab - runs ComparisonAnalyzer over N datasets."""
 
 import json
+import logging
 import os
 
 from nicegui import ui
@@ -762,8 +763,11 @@ def create_inter_dataset_tab():
                     output_panel.clear_notice()
             else:
                 output_panel.clear_notice()
-        except Exception:
-            pass
+        except Exception as exc:
+            # The banner is the only surface for threshold-collapse
+            # provenance; dropping it silently hides exactly the confusing
+            # outcome. Keep the UI stable but leave a trace.
+            logging.debug("threshold provenance notice unavailable: %s", exc)
 
         # Each dataset-level path analysis initializes its neuron sets before
         # comparing them. Record only when at least one source/target pair was

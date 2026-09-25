@@ -4885,6 +4885,12 @@ def collect_zero_hit_matches_in_process(
     )
 
 
+def _suggestion_debug(stage: str, exc: Exception) -> None:
+    """Best-effort suggestion enrichment fails silently by design; a
+    persistently broken mapper still deserves a trace."""
+    logging.debug("suggestion %s unavailable: %s", stage, exc)
+
+
 def _collect_zero_hit_matches(
     dataset: str,
     search: str,
@@ -4911,14 +4917,15 @@ def _collect_zero_hit_matches(
     try:
         enrich_native_type_matches(
             native, dataset, should_abort=should_abort)
-    except Exception:
-        pass
+    except Exception as exc:
+        _suggestion_debug("native type enrichment", exc)
     if should_abort is not None and should_abort():
         return {"native": [], "mapped": [], "value_mapped": [],
                 "guidance": []}
     try:
         mapped = collect_alias_matches(dataset, search, datasets)
-    except Exception:
+    except Exception as exc:
+        _suggestion_debug("alias matches", exc)
         mapped = []
     value_mapped: List[Dict[str, Any]] = []
     guidance: List[Dict[str, Any]] = []
@@ -4927,13 +4934,14 @@ def _collect_zero_hit_matches(
         try:
             value_mapped, guidance = collect_value_mapped_matches(
                 dataset, matched_values, datasets)
-        except Exception:
+        except Exception as exc:
+            _suggestion_debug("value-mapped matches", exc)
             value_mapped, guidance = [], []
         try:
             enrich_native_type_matches(
                 value_mapped, dataset, should_abort=should_abort)
-        except Exception:
-            pass
+        except Exception as exc:
+            _suggestion_debug("value-mapped type enrichment", exc)
     return {
         "native": native,
         "mapped": mapped,
@@ -5050,8 +5058,8 @@ def collect_value_mapped_matches(
                             name = str(cand.get("name") or "").strip()
                             if name:
                                 foreign.setdefault(name, set()).add(local_type)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _suggestion_debug("type candidates", exc)
                 try:
                     chains = mapper.get_type_bridges(local_type, dataset, ds)
                     for chain in chains or []:
@@ -5176,8 +5184,8 @@ def build_matches_csv(
                 dataset, matched_values, datasets)
             enrich_native_type_matches(value_blocks, dataset)
             native = native + value_blocks
-        except Exception:
-            pass
+        except Exception as exc:
+            _suggestion_debug("value-block merge", exc)
     try:
         mapped = collect_alias_matches(dataset, search, datasets)
     except Exception:

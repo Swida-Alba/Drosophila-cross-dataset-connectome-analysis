@@ -264,9 +264,13 @@ def create_connectivity_tab():
                     # Same-dataset (intra) runs qualify too — the identity
                     # chain; only the target family is restricted.
                     # mapping_ref needs a cross-dataset pair (mapper branch
-                    # pools), so it greys out when Target = Source.
+                    # pools), so it greys out when Target = Source — and its
+                    # value resets, so a greyed-out mapping_ref never reaches
+                    # the run record as this run's mode.
                     morph_qualify.set_enabled(allowed)
                     morph_mode.set_enabled(allowed and cross)
+                    if allowed and not cross and morph_mode.value == "mapping_ref":
+                        morph_mode.value = "null"
                     if tgt and not allowed:
                         morph_scope_warning.set_text(
                             "Morph qualification supports FAFB, "
@@ -358,7 +362,7 @@ def create_connectivity_tab():
                         ui.label(
                             "All six similarity matrices are generated: overall, Jaccard, "
                             "weighted Jaccard, cosine, rank correlation, and rank-correlation "
-                            "union (same metric set as the Find Similar sub-tab). Overall "
+                            "union (same metric set as the Find Homolog sub-tab). Overall "
                             "combines upstream and downstream connectivity."
                         ).classes("text-caption drocat-muted")
                         cluster_heatmap = checkbox_input(
@@ -368,7 +372,12 @@ def create_connectivity_tab():
                         with param_grid(3):
                             min_synapse_threshold_cmp = number_input(
                                 "Min Synapse Threshold", get_user_default("min_synapse_num"), 1, 100,
-                                hint="Minimum synapse count for a connection to enter a profile.",
+                                hint="Minimum synapse count for a connection to enter the profile.",
+                            )
+                            use_cache_cmp = checkbox_input(
+                                "Use Cache", get_user_default("use_cache"),
+                                hint="Cache profiles and connections locally for faster repeat comparisons "
+                                     "(same setting as the Find Homolog panel above).",
                             )
                             aggregation_level = select_input(
                                 "Aggregation Level", ["type", "bodyid", "custom group"], "type",
@@ -586,7 +595,7 @@ def create_connectivity_tab():
                 "generate_heatmaps": cluster_heatmap.value,
                 "show_figures": show_figures.value,
                 "verbose": True,
-                "use_cache": get_user_default("use_cache"),
+                "use_cache": use_cache_cmp.value,
                 "aggregation_level": {
                     "type": "type",
                     "bodyid": "bodyid",

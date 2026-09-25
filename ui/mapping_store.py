@@ -20,6 +20,7 @@ For a run, the selected preset is exported to a dedicated JSON file
 so it can be passed straight to ``LabelMapper(overall_mapping_json=...)``.
 """
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -48,14 +49,24 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> bool:
-    """Persist the whole store; returns success."""
+    """Persist the whole store atomically; returns success.
+
+    A crash mid-write must not truncate every saved preset away (the other
+    stores' invariant: tmp + replace, see history_store).
+    """
+    tmp = _store_file.with_suffix(f".tmp{os.getpid()}")
     try:
         _store_dir.mkdir(parents=True, exist_ok=True)
-        _store_file.write_text(
+        tmp.write_text(
             json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        os.replace(tmp, _store_file)
         return True
     except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
 
 

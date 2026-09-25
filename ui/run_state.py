@@ -219,7 +219,7 @@ class RunStateStore:
                 record = None
             if record is None:
                 candidates = []
-                for path in self.manifest_dir.glob("*.json"):
+                for path in self._manifests_snapshot():
                     candidate = self._read_json(path)
                     if (
                         candidate
@@ -236,6 +236,24 @@ class RunStateStore:
                     default=None,
                 )
         return deepcopy(record) if record else None
+
+    def _manifests_snapshot(self) -> list:
+        """Directory listing for the scan fallback, memoized per mtime.
+
+        The header activity poll lands here every 2 s per tab when the index
+        has no current-session run (worst right after a server restart); the
+        glob is the expensive part and the directory rarely changes between
+        ticks, so cache the listing keyed on its mtime.
+        """
+        try:
+            mtime = self.manifest_dir.stat().st_mtime_ns
+        except OSError:
+            return []
+        cache = self.__dict__.setdefault("_manifests_snapshot_cache", (None, []))
+        if cache[0] != mtime:
+            cache = (mtime, sorted(self.manifest_dir.glob("*.json")))
+            self._manifests_snapshot_cache = cache
+        return cache[1]
 
     def latest_for_tabs(
         self,
@@ -300,7 +318,7 @@ class RunStateStore:
             except (OSError, TypeError, ValueError):
                 pass
 
-    def read_logs(self, run_id: str, limit: int = 500) -> list[tuple[str, str]]:
+    def read_logs(self, run_id: str, limit: int = 5000) -> list[tuple[str, str]]:
         events = []
         with self._lock:
             try:
