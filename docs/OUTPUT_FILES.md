@@ -988,7 +988,10 @@ and no other dataset's agreement is joined into this mode's pool.
     against `morph_bar` (kind `null`), which is what makes
     `morph_qualified`'s ✓/✗ recomputable from the row; failing rows stay
     in the file, the scene renders morph-passing targets only;
-    exploratory — never fills.
+    exploratory — never fills. An empty `morph_v2_similarity` is NO
+    measurement (the skeleton was unobtainable), which the row keeps apart
+    from a measured `False`: the bar is published either way, so the two read
+    differently.
 *   **`pipeline_progress.jsonl`**: machine-readable run progress — the
     backend log a future UI tails. Every stage a run opens now closes:
     `stage_start`/`stage_done` for `1` resolve, `2` scans, `5` morphology,
