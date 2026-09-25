@@ -159,6 +159,9 @@ def _multivalue_marker(mapper, type_name: str, dataset: str) -> str:
     return f" 🧩 multi ({'|'.join(str(p) for p in parts)})"
 
 
+_HELD_REASON_CACHE: Dict[Tuple[int, str, str, str], str] = {}
+
+
 def _held_same_name_reason(mapper, type_name: str, origin: str,
                            target: str) -> str:
     """Why a same-name fan-out was NOT selected, or "" when not applicable.
@@ -166,8 +169,22 @@ def _held_same_name_reason(mapper, type_name: str, origin: str,
     Reads the mapper's own verdict (``same_name_first_fires``); used to
     explain an orphan that is really a HELD pair.  Observation-only wording:
     the mapper never verifies, so this states which rivals lack a 1-to-1
-    pairing of their own — never a verdict about them.
+    pairing of their own — never a verdict about them.  Verdicts are cached
+    per (mapper id, type, origin, target) — the probe behind this runs the
+    unindexed conflict scan, and the panel calls it per orphan per target.
     """
+    key = (id(mapper), type_name, origin, target)
+    hit = _HELD_REASON_CACHE.get(key)
+    if hit is not None:
+        return hit
+    result = _held_same_name_reason_uncached(
+        mapper, type_name, origin, target)
+    _HELD_REASON_CACHE[key] = result
+    return result
+
+
+def _held_same_name_reason_uncached(mapper, type_name: str, origin: str,
+                                    target: str) -> str:
     try:
         fired = mapper.same_name_first_fires(type_name, origin, target)
     except Exception:

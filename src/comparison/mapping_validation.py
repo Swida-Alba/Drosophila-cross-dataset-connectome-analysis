@@ -783,7 +783,11 @@ def load_source_type_counts(dataset: str,
             tdf = pd.read_csv(base.with_suffix('.csv'), low_memory=False)
         else:
             return {}, {}
-    except Exception:
+    except Exception as exc:
+        # TMV-5: with no source counts every backward invader reads
+        # 'hollow-backward' instead of 'backward' — say so once.
+        print(f'[TMVEV] ! source type counts unavailable ({exc}): '
+              'backward invaders will classify hollow-backward', flush=True)
         return {}, {}
     type_counts: Dict[str, int] = {}
     if 'type' in tdf.columns:
@@ -2266,7 +2270,12 @@ class MappingValidator:
             return False
         per_linker = list(pool.get('per_linker') or [])
         pair.pool_basis = pool.get('source_basis') or 'linker rows'
-        pair.target_pool_basis = pool.get('target_basis') or 'linker rows'
+        # TMV-7: a supported chain that resolves ZERO target bodyIds leaves
+        # the pair on its full-population target pool — the basis must say
+        # so (the exports claimed 'linker rows' over a full population).
+        pair.target_pool_basis = (
+            pool.get('target_basis') or 'linker rows') if tgt_ids \
+            else 'full population'
         pair.source_chain = [dict(h) for h in pool['selected_chain']]
         # PER-SIDE BASIS (plan-tmvev-jaccard-primary-bodyid-ranking.md
         # §15.3): `selected_chain` is the best single DERIVATION, and the
@@ -2457,8 +2466,14 @@ class MappingValidator:
             pair.parent_source_pool = list(pair.source_pool)
             pair.parent_target_pool = list(pair.target_pool)
             if not self._refine_pair_branch(pair) \
-                    and status == 'evidence_only':
-                self.log(f'  - {src_type} -> {tgt_type}: evidence_only '
+                    and status in ('evidence_only', 'valid_split_evidence'):
+                # TMV-2 (2026-09-26): the Rev 3.3 rationale — a wide
+                # fan-out must not be validated against full populations —
+                # covers split branches too.  A split branch whose chain
+                # is unsupported used to stay on the full population (and
+                # lose its disjointness annotation silently) beside
+                # linker-row verdicts for its siblings.
+                self.log(f'  - {src_type} -> {tgt_type}: {status} '
                          'without a supported bridge — dropped')
                 continue
             pairs.append(pair)
@@ -3206,8 +3221,14 @@ class MappingValidator:
                     counts.append(n)
                     dec['home_count'] = max(dec['home_count'], n)
                 dec['home_real'] = any(n > 0 for n in counts)
-            except Exception:
-                pass
+            except Exception as exc:
+                # TMV-5: a silent mapper failure reads every invader as
+                # 'unmapped' with zero trace — log the first one per run.
+                if not getattr(self, '_backward_fail_logged', False):
+                    self._backward_fail_logged = True
+                    self.log(f'[backward] decision lookup failed for '
+                             f'{atype!r} ({exc}); further failures stay '
+                             'silent — invaders read unmapped')
         cache[atype] = dec
         return dec
 
@@ -5715,6 +5736,11 @@ class MappingValidator:
             # SAME scan frames — advisory, separate accumulators.
             if cfg.verify_suspects:
                 try:
+                    # TMV-4: stamp THIS type's query — stage 1 left
+                    # `_current_query` at the last type it resolved, and
+                    # the suspects rows inherited that stale value.
+                    self._current_query = (
+                        plist[0].query if plist else src_type)
                     self._verify_suspects_for_type(
                         src_type, pool, scans,
                         self._suspects_decision(src_type),
@@ -5888,18 +5914,24 @@ class MappingValidator:
             snf_excluded = getattr(self, '_same_name_excluded', []) or []
             extra = {}
             if snf_excluded:
-                held = [r for r in snf_excluded
-                        if r.get('disposition') == 'gated_held']
-                excl = [r for r in snf_excluded
-                        if r.get('disposition') == 'excluded_evidence_only']
-                multi = [r for r in snf_excluded
-                         if r.get('reason') == 'multivalue_cell']
+                # TMV-8: a type reachable from TWO query tokens is recorded
+                # twice — count TYPES, not records (the record list itself
+                # keeps the per-query provenance).
+                seen_types = {r.get('source_type') for r in snf_excluded}
+                held = {r.get('source_type') for r in snf_excluded
+                        if r.get('disposition') == 'gated_held'}
+                excl = {r.get('source_type') for r in snf_excluded
+                        if r.get('disposition') == 'excluded_evidence_only'}
+                multi = {r.get('source_type') for r in snf_excluded
+                         if r.get('reason') == 'multivalue_cell'}
                 if held:
                     extra['same_name_first_held'] = len(held)
                 if excl:
                     extra['same_name_first_excluded'] = len(excl)
                 if multi:
                     extra['multivalue_types'] = len(multi)
+                extra.setdefault('same_name_first_types_total',
+                                 len(seen_types))
             if getattr(self, '_multivalue_target_skips', 0):
                 extra['multivalue_target_types'] = int(
                     self._multivalue_target_skips)

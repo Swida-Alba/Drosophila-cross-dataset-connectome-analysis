@@ -702,15 +702,20 @@ def build_merge_policy(
             # rivals per branch label: other home-namespace source
             # types whose 1-to-N conflicts list the branch name.
             contested: Dict[str, Set[str]] = {}
+            # POL-9: one crosswalk scan per (home, ds) — the old loop
+            # re-scanned per BRANCH per dataset (O(branches x datasets)
+            # where O(datasets) suffices).
+            pair_conflicts_by_ds: Dict[str, list] = {}
+            for ds in datasets:
+                try:
+                    pair_conflicts_by_ds[ds] = conflicts_fn(home, ds) or []
+                except Exception:  # noqa: BLE001 — no mapper = no contest
+                    pair_conflicts_by_ds[ds] = []
             for branch in group.branches:
                 branch_name = str(branch.label)
                 rivals: Set[str] = set()
                 for ds in datasets:
-                    try:
-                        pair_conflicts = conflicts_fn(home, ds) or []
-                    except Exception:  # noqa: BLE001 — no mapper = no contest
-                        continue
-                    for conflict in pair_conflicts:
+                    for conflict in pair_conflicts_by_ds[ds]:
                         if str(getattr(conflict, 'relationship', '')) \
                                 != '1-to-N':
                             continue
@@ -735,6 +740,15 @@ def build_merge_policy(
                     f'merges with neither claimant and stays out of '
                     f'the {group.label} row')
             kept_branches = []
+            # POL-4 (2026-09-26, resolved for the name scope): the
+            # 2026-09-25 audit proposed (dataset, name)-scoped pruning,
+            # but the pinned contract says the contested NAME leaves the
+            # group EVERYWHERE — a branch's members legitimately live in
+            # datasets other than `home` (the branch chains fold them in),
+            # and a branch is a group-specific concept: an "unrelated
+            # same-named member" would have arrived through this group's
+            # own claims, which is exactly the ambiguity the contest
+            # flags.  (test_globally_contested_branch_stays_out_of_parent_row)
             for branch in group.branches:
                 if str(branch.label) in contested:
                     group.branch_pools.pop(branch.label, None)
@@ -750,6 +764,11 @@ def build_merge_policy(
                     del group.members[ds]
 
     # ---- canonical group ids + key map ----------------------------------
+    # POL-8: the fan-in / global-contest prunes can leave a group with
+    # NO members — an empty group still received an id, a label in
+    # policy.labels and a topology row, so group_by_label could resolve
+    # to a group that keys nothing.
+    groups = [g for g in groups if any(g.members.values())]
     groups.sort(key=lambda g: (g.anchor[0], g.anchor[1], g.label))
     # Deduplicate identical groups (same label AND same member set): in a
     # span run a leaf chip's own group and a parent's unified branch can
@@ -775,9 +794,19 @@ def build_merge_policy(
                 continue
             policy.key_map[(ds, name)] = group.label
         # identity entries: a label already written by the synthesized
-        # lane re-keys to itself at the canonical-map stage.
+        # lane re-keys to itself at the canonical-map stage.  POL-10: when
+        # a DIFFERENT group pre-empted the pair, say so — key_for silently
+        # resolving this group's label into a rival's row (blanking its own
+        # mapping row) was undiscoverable.
         for ds in sorted(group.members):
-            policy.key_map.setdefault((ds, group.label), group.label)
+            pre = policy.key_map.get((ds, group.label))
+            if pre is not None and pre != group.label:
+                warnings.append(
+                    f'[merge key] {ds} {group.label}: the name is already '
+                    f'keyed under group {pre!r}; label_for_name resolves '
+                    f'there (custom label mapper can override)')
+                continue
+            policy.key_map[(ds, group.label)] = group.label
 
     policy.groups = groups
     policy.fan_in = fan_in
@@ -897,8 +926,9 @@ def auto_only_edges(mapper, types, datasets) -> List[Dict[str, Any]]:
                     verified = support.get('verified_votes') or {}
                     if not votes or verified:
                         continue
-                    if not support.get('winner_derived_from_auto'):
-                        continue
+                    # POL-5: same condition as the build path — a branch
+                    # whose votes are manual-but-unverified is ALSO
+                    # chain-terminal and belongs in this disclosure.
                     key = (source_ds, source_type, target_ds, target_type)
                     if key in seen:
                         continue

@@ -723,14 +723,20 @@ def mapper_only_rows(refs: Dict[str, Any], pool: List[Dict]) -> List[Dict]:
 
 
 def pool_by_source(rows: List[Dict], seed: Sequence[int],
-                   refused_targets: set = frozenset()) -> List[Dict]:
+                   refused_targets: set = frozenset(),
+                   source_types: Optional[Dict[int, str]] = None) -> List[Dict]:
     """One row per QUERIED SOURCE — the mode's own unit, and the table the
     headline reads.
 
     Every queried source appears, including the ones that found nothing and the
     ones whose findings morphology refused: a missing row would read as "not
     examined", which is a different claim than "examined, found nothing".
-    """
+
+    POL-11: ``source_types`` names a queried source even when it admitted
+    no rows (an empty source used to publish ``source_type: ''``).
+    ``n_refused`` counts rows absent from the published pool — the bar's
+    own refusals AND rows whose TARGET another source's refusal removed
+    (the per-target rule); the two are not distinguished in the CSV."""
     by: Dict[int, List[Dict]] = {}
     for r in rows:
         by.setdefault(int(r['source_bodyId']), []).append(r)
@@ -747,7 +753,8 @@ def pool_by_source(rows: List[Dict], seed: Sequence[int],
         src = group[0] if group else None
         out.append({
             'source_bodyId': bid,
-            'source_type': (src or {}).get('source_type', '') if src else '',
+            'source_type': ((src or {}).get('source_type', '')
+                            if src else (source_types or {}).get(bid, '')),
             'n_admitted': len(group), 'n_in_pool': len(kept),
             'n_refused': len(group) - len(kept),
             'tier': (head or {}).get('tier', '') if head else '',
@@ -951,7 +958,8 @@ def run_pooling(validator, *, target_stats, target_bids, target_id2type,
     pool_all = pool_by_target(rows)
     refused_targets = {int(p['target_bodyId']) for p in pool_all
                        if not p.get('in_pool')}
-    sources = pool_by_source(rows, seed, refused_targets)
+    sources = pool_by_source(rows, seed, refused_targets,
+                             source_types=source_types)
     pool = pool_all + mapper_only_rows(refs, pool_all)
     # `gate_applied` is a claim about the PASS, not about the mode: a pass that
     # raised, or one that graded nothing, did not gate this pool — the tiers

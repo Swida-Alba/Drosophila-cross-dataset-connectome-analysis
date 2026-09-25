@@ -1670,10 +1670,25 @@ class CrossDatasetMorphComparer:
                 f'({getattr(resolution, "reason", "") or "unresolved"}); '
                 'no automatic target (fail closed)')
             return [], notes
-        names = list(expansion_targets(resolution))             if expansion_targets is not None else []
+        names = list(expansion_targets(resolution)) if expansion_targets is not None else []
+        if not names and status == 'evidence_only' and (
+                getattr(resolution, 'target_types', ()) or ()):
+            # RES-1 follow-up (2026-09-26): the resolver now keeps an
+            # evidence-only union UNLICENSED (no equivalence key), but
+            # member ENUMERATION here may still use its convergence
+            # members — this is the aggregation answer ('APDN3 in MCNS is
+            # carried by these N types'), disclosed as such and never a
+            # unique mapping.  claimed stays no-members (the dataset does
+            # not carry the claimed name at all).
+            names = [str(t) for t in resolution.target_types]
+            notes.append(
+                f'{text}: one of N in {dataset} '
+                f'({"/".join(names)}) — aggregation members, not a '
+                'unique mapping')
         if not names:
-            # claimed / evidence_only: a verdict the target dataset cannot
-            # fulfil — no expansion, explicit note (not silently empty).
+            # claimed / anything else without targets: a verdict the
+            # target dataset cannot fulfil — no expansion, explicit note
+            # (not silently empty).
             claimed = tuple(getattr(resolution, 'target_types', ()) or ())
             notes.append(
                 f'{text}: {"claim" if status == "claimed" else status} '

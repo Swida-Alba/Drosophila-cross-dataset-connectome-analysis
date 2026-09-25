@@ -758,7 +758,14 @@ def _own_type_hit(usable: pd.DataFrame, id2type: Optional[Dict],
         sub = usable[usable[col].notna()]
         if sub.empty:
             continue
-        for r in sub.nsmallest(top_k, col).itertuples(index=False):
+        # POL-2: window on CHAIN POSITIONS, not the rank column — a
+        # method='min' tie block at rank 1 with 4+ members kept only the
+        # 3 chain-first rows under nsmallest, hiding a same-type member
+        # sitting 4th inside the tie (the class classify_backward_scan
+        # already fixed for backward_n_out_of_branch, D-B).
+        ordered = sub.sort_values(col, kind='mergesort')
+        in_top = ordered[col].rank(method='min') <= top_k
+        for r in ordered[in_top].itertuples(index=False):
             try:
                 bid = int(getattr(r, 'target_bid'))
             except (TypeError, ValueError):
@@ -1293,12 +1300,20 @@ class BodyIdResolver:
                     if not cmap:
                         continue
                     members = pool_map[gid][ds]
-                    sizes = [cmap.get(b, 0.0) for b in members]
-                    best = max(sizes) if sizes else 0.0
+                    # POL-3: a bodyId ABSENT from the allneurons table
+                    # (19% of both BANC tables read zero/NaN volume, which
+                    # loads as 0.0) is not a TINY bodyId — the validation
+                    # gate treats a missing size as 'no measurement' and
+                    # keeps the member; the prefilter silently dropped
+                    # ~19% of BANC branch members as if they were
+                    # fragments.
+                    sizes = [cmap.get(b) for b in members]
+                    known = [s for s in sizes if s is not None]
+                    best = max(known) if known else 0.0
                     if best <= 0:
                         continue
-                    kept = [b for b in members
-                            if cmap.get(b, 0.0) >= 0.1 * best]
+                    kept = [b for b, s in zip(members, sizes)
+                            if s is None or s >= 0.1 * best]
                     dropped = len(members) - len(kept)
                     if dropped:
                         caliber_dropped[gid] = caliber_dropped.get(gid, 0) \
@@ -1404,6 +1419,11 @@ class BodyIdResolver:
                             and not tprof.downstream_partners:
                         continue
                     tgt_stats = _SideStats(expanded_vector(tprof, self.mapper))
+                    if not tgt_stats.vec:
+                        # POL-7: an empty target side is 'no pool', not a
+                        # scoreable 0 — the reference scorer returns None
+                        # for it and so does the contract here.
+                        continue
                     m = score_one_candidate_fast(src_stats, tgt_stats)
                     if m is None:
                         continue

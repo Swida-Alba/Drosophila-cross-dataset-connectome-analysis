@@ -209,7 +209,13 @@ def get_mapper_snapshot(
     force_reload: bool = False,
     requested: bool = True,
 ) -> MapperSnapshot:
-    """Snapshot the process-wide mapper (or the given one) for one run."""
+    """Snapshot the process-wide mapper (or the given one) for one run.
+
+    RES-18 (latent, documented 2026-09-26): ``force_reload`` only
+    constructs a fresh mapper when NO mapper is passed — with a mapper in
+    hand the snapshot wraps the caller's object as-is.  A constructed-but-
+    unloaded mapper reads as unavailable here by design; every mapper
+    public API lazy-loads, so state heals on the next decision."""
     if mapper is None:
         try:
             mapper = get_type_mapper(workspace_path=workspace_path,

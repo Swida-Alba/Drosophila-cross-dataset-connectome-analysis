@@ -3207,7 +3207,16 @@ def annotate_branch_records(records: List[Dict[str, Any]]) -> None:
 
     disjoint = None
     if len(targets) > 1 and selected:
-        pool_sets = [set(map(int, r.get('source_body_ids') or []))
+        def _int_set(values):
+            ids = set()
+            for v in (values or []):
+                try:
+                    ids.add(int(v))
+                except (TypeError, ValueError):
+                    continue  # RES-20: one stray token must not abort the
+                    # whole record set's annotation
+            return ids
+        pool_sets = [_int_set(r.get('source_body_ids'))
                      for r in selected
                      if r.get('source_body_ids') is not None]
         if len(pool_sets) == len(selected) and pool_sets:
