@@ -720,6 +720,7 @@ def resolve_flow_status(
     target_dataset: str,
     *,
     bridge_end_count: int = 0,
+    bridge_ends: Optional[Tuple[str, ...]] = None,
     snapshot: Optional[MapperSnapshot] = None,
     cache: Optional[Dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
@@ -730,11 +731,22 @@ def resolve_flow_status(
     ``unmapped`` edge is relabeled ``valid_split_evidence`` when the
     caller's bridge discovery found MORE THAN ONE end (a licensed split)
     and ``bridged`` for a single end; every other status passes through.
+
+    ``bridge_ends`` (RES-3): the discovered end NAMES, stored into
+    ``target_types`` on a relabel.  Without them a relabeled flow carried
+    ``target_types=[]`` and every bridge-only flow was excluded from the
+    claim sets as 'not adopted' while the panel's resolver-validated half
+    counted the same ends as mapped — the two halves of one summary
+    disagreed.
+
+    RES-13: ``bridge_end_count`` participates in the cache key — it is the
+    only parameter that changes the relabel answer.
     Returns ``(status, fields)`` where ``fields`` carries ``relationship``,
     ``target_types``, and ``conflicts`` from the scoped decision.
     """
     snap = snapshot if snapshot is not None else MapperSnapshot(mapper)
-    cache_key = (str(source_dataset), str(type_name), str(target_dataset))
+    cache_key = (str(source_dataset), str(type_name), str(target_dataset),
+                 int(bridge_end_count))
     if cache is not None and cache_key in cache:
         return cache[cache_key]
 
@@ -750,12 +762,14 @@ def resolve_flow_status(
     decision = snap.decision(type_name, source_dataset, target_dataset,
                              include_bridges=False)
     status = decision.get('status', STATUS_UNMAPPED)
-    if status == STATUS_UNMAPPED:
+    relabeled = status == STATUS_UNMAPPED
+    if relabeled:
         status = (STATUS_VALID_SPLIT if bridge_end_count > 1
                   else STATUS_BRIDGED)
     result = (status,
               {'relationship': decision.get('relationship'),
-               'target_types': list(decision.get('target_types') or []),
+               'target_types': (list(bridge_ends or ()))
+               if relabeled else list(decision.get('target_types') or []),
                'conflicts': list(decision.get('conflicts') or []),
                # Same-name-first disclosure for the UI flow record
                # (plan-ui-type-mapper-alignment §3): the selection flag and

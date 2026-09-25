@@ -370,9 +370,18 @@ def build_mapping_flows(entries, source_dataset: str,
                 # conflicts marked for skipping and bridge-only edges
                 # relabeled by their end count.
                 from comparison.type_resolver import resolve_flow_status
+                # RES-2: this flow's OWN end count — the dict's length is
+                # the FOREIGN type's fan-in (its mapped local targets), so
+                # every flow of a 2-target foreign fan-in used to relabel
+                # as a split that exists on the other side.
+                flow_ends = tuple(sorted({
+                    str(c[-1].get('value'))
+                    for c in (bridges_by_target.get(target) or [])
+                    if c and c[-1].get('value')}))
                 mapping_status, decision_fields = resolve_flow_status(
                     mapper, target, source_dataset, foreign,
-                    bridge_end_count=len(bridges_by_target or {}))
+                    bridge_end_count=len(flow_ends),
+                    bridge_ends=flow_ends)
                 if mapping_status == "conflict":
                     # Bridge discovery may retain a same-name or other
                     # diagnostic chain, but a scoped vote conflict is not an
@@ -514,9 +523,13 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
                 continue
             seen.add(pair)
             # Shared resolver flow policy (see build_mapping_flows).
+            # RES-3: pass the end names so a relabeled flow carries them
+            # as its target_types (flow_is_claimed then sees the same
+            # claim set the panel's resolver-validated half counts).
             mapping_status, decision_fields = resolve_flow_status(
                 mapper, type_name, origin_dataset, target_dataset,
-                bridge_end_count=len(by_end))
+                bridge_end_count=len(by_end),
+                bridge_ends=tuple(sorted(by_end)))
             if mapping_status == "conflict":
                 # Keep unresolved BANC/annotation conflicts out of accepted
                 # flow and coverage totals even when a bare same-name chain

@@ -22,6 +22,7 @@ from comparison.type_resolver import (
     MapperSnapshot,
     canonical_merge_key,
     expand_profile_types,
+    resolve_flow_status,
     resolve_valid_targets,
     _severity,
     _STATUS_SEVERITY,
@@ -185,3 +186,33 @@ def test_res10_member_targets_needs_unique_or_split():
             return []
 
     assert _member_targets(UniqueMapper(), 'ST', MCNS, FAFB) == ['UNIQ']
+
+
+def test_res3_relabel_populates_target_types_and_res13_cache_key():
+    """RES-3: a relabeled (unmapped→bridged/valid_split) flow carries the
+    discovered end names as its target_types — flow_is_claimed excluded
+    every relabeled flow while the panel's other half counted the same
+    ends as mapped.  RES-13: bridge_end_count participates in the cache
+    key — it is the only parameter that changes the relabel."""
+    m = EvidenceOnlyMapper()   # get_mapping_decision: QX → evidence_only on MCNS
+    m.get_mapping_decision = lambda t, s, tg, *, include_bridges=True: (
+        {'status': 'unmapped', 'target_type': None, 'target_types': [],
+         'conflicts': [], 'support': None})
+    m.get_type_bridges = lambda *a, **k: []
+    cache = {}
+    s1, f1 = resolve_flow_status(m, 'QX', MCNS, FAFB,
+                                 bridge_end_count=1,
+                                 bridge_ends=('FA',), cache=cache)
+    assert s1 == 'bridged'
+    assert f1['target_types'] == ['FA']
+    # same edge, different end count → NOT a cache hit on the first answer
+    s2, f2 = resolve_flow_status(m, 'QX', MCNS, FAFB,
+                                 bridge_end_count=2,
+                                 bridge_ends=('FA', 'FB'), cache=cache)
+    assert s2 == 'valid_split_evidence'
+    assert f2['target_types'] == ['FA', 'FB']
+    # a non-relabel keeps the decision's own target_types verbatim
+    m2 = StaleClaimMapper()
+    s3, f3 = resolve_flow_status(m2, 'ST', MCNS, FAFB,
+                                 bridge_end_count=1, bridge_ends=('X',))
+    assert s3 == 'mapped' and f3['target_types'] == ['GHOST']
