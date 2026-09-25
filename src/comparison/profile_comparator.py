@@ -11019,9 +11019,16 @@ class ConnectivityProfileComparer:
         )
         if self._mapper_snapshot is None:
             self._mapper_snapshot = get_mapper_snapshot(self._type_mapper)
+        if getattr(self, '_walk_caches', None) is None:
+            # RES-7: one alias/bridge cache pair per comparison — the
+            # auto-detected source namespace re-ran the get_type_bridges
+            # BFS and get_alias_candidates walk on every (item x dataset).
+            self._walk_caches = ({}, {})
+        alias_cache, bridge_cache = self._walk_caches
         res = resolve_valid_targets(
             self._type_mapper, item_str, None, dataset,
-            snapshot=self._mapper_snapshot)
+            snapshot=self._mapper_snapshot,
+            alias_cache=alias_cache, bridge_cache=bridge_cache)
         targets = list(expansion_targets(res))
         self.mapping_resolution_record.setdefault(dataset, {})[item_str] = {
             'status': res.status, 'targets': targets,

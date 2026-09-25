@@ -1837,6 +1837,25 @@ def _render_index(
                     def _annotation_text(ann) -> str:
                         if not ann:
                             return "— no counterpart in this dataset"
+                        # RES-6: a `claimed` annotation is evidence, not a
+                        # mapping — the claimed target does not exist in
+                        # this dataset and must not read as "maps to".
+                        if ann.get("status") == "claimed":
+                            return ("— crosswalk claims "
+                                    f"'{ann['targets'][0]}', but this "
+                                    "dataset carries no such type "
+                                    "(evidence only)")
+                        # RES-16: the suspects note comes before the kind
+                        # dispatch — a FIRED selection with a rename kind
+                        # used to display as a bare "maps to" with no
+                        # rivals note.
+                        if ann.get("suspects"):
+                            _n = len(ann.get("suspect_rivals") or [])
+                            _sel = (ann["targets"][0]
+                                    if ann.get("targets") else "selected")
+                            return (f"— same-name-first selection of "
+                                    f"'{_sel}'; {_n} rival candidate(s) "
+                                    "not selected (expand Suspects)")
                         if ann["kind"] == "one of N":
                             return "— here: one of " + ", ".join(ann["targets"])
                         if ann["kind"] == "renamed":
@@ -1858,11 +1877,6 @@ def _render_index(
                             # same-name-first selections were both labelled
                             # "no metadata verification" (plan-ui-type-
                             # mapper-alignment §5.1 / U7).
-                            if ann.get("suspects"):
-                                _n = len(ann.get("suspect_rivals") or [])
-                                return (f"— same-name-first selection; {_n} "
-                                        "rival candidate(s) not selected "
-                                        "(expand Suspects)")
                             if ann.get("curated_identity"):
                                 return ("— same name, backed by a curated "
                                         "cross-dataset relation")

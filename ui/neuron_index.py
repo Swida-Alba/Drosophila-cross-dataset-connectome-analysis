@@ -4496,6 +4496,7 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
                                                    Optional[Dict[str, Any]]]] = None,
                         bridge_cache: Optional[Dict[Tuple[str, str, str],
                                                       List[List[Dict[str, str]]]]] = None,
+                        snapshot: Optional[Any] = None,
                         ) -> Optional[Dict[str, Any]]:
     """Canonical mapped-target resolution — the UI adapter.
 
@@ -4516,7 +4517,8 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
 
     res = resolve_valid_targets(
         mapper, foreign_type, foreign_ds, selected_ds,
-        alias_cache=alias_cache, bridge_cache=bridge_cache)
+        alias_cache=alias_cache, bridge_cache=bridge_cache,
+        snapshot=snapshot)
     if res.status == STATUS_MAPPER_UNAVAILABLE:
         return None
     if res.status == STATUS_CONFLICT:
@@ -4585,12 +4587,21 @@ def enrich_native_type_matches(
     # direction as well as name; mapper results are immutable for the life of
     # this worker and repeating the walk was a major R1 memory/time multiplier.
     bridge_cache: Dict[Tuple[str, str, str], List[List[Dict[str, str]]]] = {}
+    # RES-7: one shared snapshot for the whole walk — a fresh
+    # MapperSnapshot per row re-stat'd the mapper table and re-created the
+    # decision cache on every call.
+    try:
+        from comparison.type_resolver import MapperSnapshot
+        snapshot = MapperSnapshot(mapper)
+    except Exception:
+        snapshot = None
 
     def _annotation_for(foreign_type: str, foreign_ds: str) \
             -> Optional[Dict[str, Any]]:
         return mapped_type_targets(
             mapper, foreign_type, foreign_ds, selected_dataset,
-            alias_cache=cache, bridge_cache=bridge_cache)
+            alias_cache=cache, bridge_cache=bridge_cache,
+            snapshot=snapshot)
 
     for entry in native_matches:
         if should_abort is not None and should_abort():
@@ -4635,7 +4646,11 @@ def enrich_native_type_matches(
         for cand in types_iter:
             cand["mapped"] = _annotation_for(cand["name"], foreign_ds)
             if cand["mapped"]:
-                mapped_names.update(cand["mapped"]["targets"])
+                # RES-6: a `claimed` annotation is evidence, not a mapping —
+                # its target does not exist in the selected dataset and must
+                # not seed the mapped-view search.
+                if cand["mapped"].get("status") != "claimed":
+                    mapped_names.update(cand["mapped"]["targets"])
                 cand["map_used"] = "; ".join(
                     f"{target}: {_map_used(target, cand['name'])}"
                     for target in cand["mapped"]["targets"]
@@ -4657,7 +4672,8 @@ def enrich_native_type_matches(
                 covered["mapped"] = _annotation_for(
                     covered["name"], foreign_ds)
                 if covered["mapped"]:
-                    mapped_names.update(covered["mapped"]["targets"])
+                    if covered["mapped"].get("status") != "claimed":
+                        mapped_names.update(covered["mapped"]["targets"])
                     covered["map_used"] = "; ".join(
                         f"{bridge_target}: {_map_used(bridge_target, covered['name'])}"
                         for bridge_target in covered["mapped"]["targets"]
@@ -4758,26 +4774,45 @@ def collect_alias_matches(
             # Same-name disclosure for the alias list (plan-ui-type-mapper-
             # alignment §5.1/§5.3).  ONE scoped decision per (search -> ds)
             # pair: the mapper's own verdict, never re-derived.  Disclosure
-            # only — never a merge, never a selection change.
+            # only — never a merge, never a selection change.  RES-5: the
+            # decision is scoped from the DETECTED query namespace (the
+            # candidates were derived from it — the selected dataset is
+            # usually NOT the query's home in this zero-hit context), and
+            # `curated_identity` requires the decision to actually name
+            # THIS candidate (a namespace echo or a rename to a different
+            # type must not read as curation); held fan-outs carry their
+            # rivals, same as the mapped lane.
+            query_ns = None
+            try:
+                query_ns = mapper._detect_type_source(
+                    mapper._split_hemi_suffix(search)[0])
+            except Exception:
+                query_ns = None
             _decision: Dict[str, Any] = {}
             try:
                 _decision = mapper.get_mapping_decision(
-                    search, dataset, ds, include_bridges=False) or {}
+                    search, query_ns or dataset, ds,
+                    include_bridges=False) or {}
             except Exception:
                 _decision = {}
             _fired = bool(_decision.get('suspects'))
-            _curated = bool(_decision.get('status') == 'mapped'
-                            and _decision.get('target_type'))
+            _snf = _decision.get('same_name_first') or {}
+            _held_rivals = (list(_snf.get('rivals') or [])
+                            if _snf.get('disposition') in
+                            ('gated_held', 'excluded_evidence_only') else [])
             for cand in info.get("candidates", []):
                 _cand_extra: Dict[str, Any] = {}
                 if cand["kind"] == "same name":
                     if _fired:
                         _cand_extra["suspects"] = True
                         _cand_extra["suspect_rivals"] = list(
-                            (_decision.get('same_name_first') or {}
-                             ).get('rivals') or ())
-                    elif _curated:
-                        # The scoped decision resolves this pair — the alias
+                            _snf.get('rivals') or [])
+                    elif _held_rivals:
+                        _cand_extra["held_rivals"] = _held_rivals
+                    elif (_decision.get('status') == 'mapped'
+                          and str(_decision.get('target_type') or '')
+                          == str(cand["name"])):
+                        # The scoped decision resolves THIS pair — the alias
                         # list must not call that "no metadata verification".
                         _cand_extra["curated_identity"] = True
                 entry["candidates"].append({
@@ -5049,25 +5084,39 @@ def collect_value_mapped_matches(
             continue
         foreign: Dict[str, set] = {}
         if mapper is not None:
+            # RES-4: resolve through the shared validity backend like every
+            # other lane — the old hand-rolled alias+bridge union had NO
+            # conflict gate, so a vote-conflicted type could surface as a
+            # value-mapped counterpart.  Expansion targets only: claimed /
+            # evidence-only / conflicts contribute nothing.
+            try:
+                from comparison.type_resolver import MapperSnapshot
+                snapshot = MapperSnapshot(mapper)
+            except Exception:
+                snapshot = None
+            alias_cache: Dict[Any, Any] = {}
+            bridge_cache: Dict[Any, Any] = {}
             for local_type in local_types:
                 try:
-                    res = mapper.get_alias_candidates(local_type, [ds])
-                    info = res.get(ds) or {}
-                    if info.get("outcome") == "matched":
-                        for cand in info.get("candidates") or []:
-                            name = str(cand.get("name") or "").strip()
-                            if name:
-                                foreign.setdefault(name, set()).add(local_type)
+                    res = mapped_type_targets(
+                        mapper, local_type, dataset, ds,
+                        alias_cache=alias_cache,
+                        bridge_cache=bridge_cache,
+                        snapshot=snapshot)
                 except Exception as exc:
-                    _suggestion_debug("type candidates", exc)
-                try:
-                    chains = mapper.get_type_bridges(local_type, dataset, ds)
-                    for chain in chains or []:
-                        end = str((chain[-1] or {}).get("value") or "").strip()
-                        if end:
-                            foreign.setdefault(end, set()).add(local_type)
-                except Exception:
-                    pass
+                    _suggestion_debug("value-mapped resolution", exc)
+                    continue
+                if not res:
+                    continue
+                if res.get("status") in ("claimed", "conflict"):
+                    continue
+                if res.get("status") in ("one of N", "splits into"):
+                    # disclosure-only shapes: name them without counts
+                    continue
+                for name in res.get("targets") or ():
+                    name = str(name or "").strip()
+                    if name:
+                        foreign.setdefault(name, set()).add(local_type)
         if not foreign:
             continue
         names = sorted(foreign, key=lambda name: (name.casefold(), name))
