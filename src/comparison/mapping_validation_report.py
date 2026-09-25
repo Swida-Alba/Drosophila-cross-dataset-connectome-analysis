@@ -3197,7 +3197,8 @@ def _morph_tab(d: Dict) -> str:
             'itself raw beside standardized pool refs and moved 107 '
             'rows of a real BANC run); '
             '<code>input_fingerprint.morph_stores</code> names the '
-            'vector cache this run scored out of, so compare it before '
+            'vector cache this run scored out of (keyed by pass — '
+            'supervised / pooling), so compare it before '
             'comparing two runs\' bars.</div>')
     return _section_card(
         'Morphology record',
@@ -3276,8 +3277,13 @@ def _pooling_tab(d: Dict) -> str:
         # A native (`morph_pool_ref`) verdict is read out of the target's V2
         # vector cache, which the profile caches above do not cover: name it,
         # or a reader comparing two runs cannot see that the scores came from
-        # different stores.
-        tgt_stores = (fp.get('morph_stores') or {}).get('target') or {}
+        # different stores.  `morph_stores` is keyed by pass (supervised /
+        # pooling — both name the same run-baseline store); pre-2026-09-25
+        # runs carry the older flat shape.
+        _stores = fp.get('morph_stores') or {}
+        if 'target' not in _stores and 'source' not in _stores:
+            _stores = next(iter(_stores.values()), {}) or {}
+        tgt_stores = _stores.get('target') or {}
         vec = tgt_stores.get('vector_cache') or {}
         if isinstance(vec, dict) and vec.get('bytes'):
             parts.append(f"morph vector cache {vec['bytes']} B @ "
@@ -3389,9 +3395,15 @@ def _pooling_tab(d: Dict) -> str:
     # refusals is the only trace they keep, so it is named rather than left as
     # an absent row.
     if morph.get('gate_applied') is not None:
+        if _truthy(morph.get('gate_applied')):
+            gate_word = 'applied'
+        elif _as_num(morph.get('attempted')) or 0 > 0:
+            # the pass RAN and graded nothing: not disabled, unapplied
+            gate_word = 'unapplied (0 measurements)'
+        else:
+            gate_word = 'off'
         morph_bits.append(
-            'gate '
-            + ('applied' if _truthy(morph.get('gate_applied')) else 'off')
+            'gate ' + gate_word
             + (f", {_cnt(morph.get('dropped_targets'))} target(s) refused "
                'for scoring below the bar'
                if _as_num(morph.get('dropped_targets')) else ''))

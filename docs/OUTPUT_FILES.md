@@ -472,8 +472,10 @@ Example: `morph_cross_MCNS_FAFB_aMe12_aMe26_l-LNv_20260916_023121/`
     vector_v2 renders on a diverging blue–white–red scale (the whitened
     cosine can be negative).
 *   **`parameters.json` / `README.txt`**: Run config (queries, datasets,
-    member caps, `null_k`, `generate_heatmaps`, reference template,
-    warnings) and the layout description.
+    member caps, `null_k`, `generate_heatmaps`, reference template, the
+    scene drop policy (`max_scenes`, recorded since 2026-09-25 — a run
+    that dropped nothing can now prove it), warnings) and the layout
+    description.
 *   **`overview.csv`**: Queried type × dataset pair: the best target-type
     mean score, the winning target type, and the pair's baseline p95.
 *   **`members_summary.csv`**: Number of compared members per queried
@@ -918,7 +920,9 @@ admitted nothing, so a source that found nothing is named rather than absent.
     `input_fingerprint` names the stores the scores came from — git rev, target
     universe, mapper snapshot, and `morph_stores` (the target's V2 vector cache
     + pending + meta, its whitener sidecar, the raw skeleton count, and the
-    rendered target-vector store, per side) — because the cells are only
+    rendered target-vector store, per side; KEYED BY PASS — `supervised` and,
+    in a pooling run, `pooling` — since 2026-09-25, when the pooling record
+    stopped overwriting the supervised one) — because the cells are only
     comparable across runs that read the same ones. A `morph_pool_ref` that
     differs between two runs of one query is a `morph_stores` difference, not a
     code difference: until 2026-09-25 the fingerprint could not say so, and a

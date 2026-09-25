@@ -1385,6 +1385,38 @@ def test_summary_verdicts_resync_after_demotion():
     assert summary['verdict_skipped'] == 0
 
 
+def test_morph_stores_recorded_per_pass_not_overwritten():
+    """WIP-D (2026-09-25): a pooling run runs two morph passes, and the old
+    flat `morph_stores` assignment let the pooling record erase the
+    supervised one.  Both passes are now keyed side by side, from one
+    memoized store identity (the walk stats every skeleton file — twice per
+    pass was pure cost)."""
+    import comparison.mapping_validation as mv
+    from comparison.mapping_validation import MappingValidator
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(source_dataset='flywire_FAFB_v783',
+                                    target_dataset='banc_v888',
+                                    query_types=['x'], visualize=False)
+    fp = {}
+    v._fingerprint = lambda: fp
+    calls = []
+    orig = mv._morph_store_identity
+
+    def counted(dataset, project_root=None):
+        calls.append(dataset)
+        return {'vector_cache': {'bytes': 1}, 'dataset': dataset}
+
+    mv._morph_store_identity = counted
+    try:
+        v._record_morph_stores()                # supervised stage 5
+        v._record_morph_stores('pooling')       # pooling qualification
+    finally:
+        mv._morph_store_identity = orig
+    assert set(fp['morph_stores']) == {'supervised', 'pooling'}
+    # one identity walk per DATASET for the whole run, not per pass
+    assert sorted(calls) == ['banc_v888', 'flywire_FAFB_v783']
+
+
 def test_mapper_gap_report_in_readme():
     """Mapper-gap evidence is never silently absent — after the slim
     README (template `_plan/tmvev-run-report-template.md`, D1), the

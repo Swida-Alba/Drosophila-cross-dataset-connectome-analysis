@@ -536,7 +536,16 @@ def apply_morph_gate(validator, rows: List[Dict],
     # The native verdict is read out of the target's vector cache, so the run
     # that made it says which cache it read: two runs of one query differ in a
     # `morph_pool_ref` only if these stores did (see `_morph_store_identity`).
-    validator._record_morph_stores()
+    # KEYED as the pooling pass (a pooling run also ran the supervised stage
+    # 5 — both identities belong in one fingerprint), and guarded like
+    # everything else in this gate: bookkeeping must never kill a run.
+    _record = getattr(validator, '_record_morph_stores', None)
+    if _record is not None:
+        try:
+            _record('pooling')
+        except Exception as exc:  # noqa: BLE001
+            validator.log(f'[pooling/morph] morph-store recording failed: '
+                          f'{exc}')
     verdicts: Dict[tuple, Dict] = {}
     for r in take:
         key = (int(r['source_bodyId']), int(r['target_bodyId']))

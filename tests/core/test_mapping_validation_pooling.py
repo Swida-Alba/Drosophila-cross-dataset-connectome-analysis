@@ -45,10 +45,14 @@ class FakeValidator:
         # what the run would have published as its `input_fingerprint`
         self.input_fingerprint = {}
 
-    def _record_morph_stores(self):
+    def _record_morph_stores(self, pass_name='supervised'):
         """The real validator names the vector caches a native verdict came out
-        of; the fake records that the call happened."""
+        of, keyed by pass (supervised / pooling); the fake records that the
+        call happened and for which pass."""
         self.morph_stores_recorded = True
+        if not hasattr(self, 'morph_stores_passes'):
+            self.morph_stores_passes = []
+        self.morph_stores_passes.append(pass_name)
 
     def log(self, msg=''):
         self.notes.append(str(msg))

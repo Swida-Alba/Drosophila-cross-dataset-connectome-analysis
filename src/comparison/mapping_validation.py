@@ -5492,16 +5492,32 @@ class MappingValidator:
                         lambda: None)()),
         })
 
-    def _record_morph_stores(self) -> None:
-        """Name the morphology stores this run scores out of.
+    def _record_morph_stores(self, pass_name: str = 'supervised') -> None:
+        """Name the morphology stores this run scores out of, KEYED BY PASS.
 
-        Recorded when the first morph pass runs, not at stage 2: the scan's
-        fingerprint is taken before stage 5 fetches anything, and what decides
-        a native verdict is the store as it stands at scoring time."""
+        Recorded when a morph pass runs, not at stage 2: the scan's
+        fingerprint is taken before stage 5 fetches anything, and what
+        decides a native verdict is the store as it stands at scoring time.
+        A pooling run runs two passes (the supervised stage 5 and the
+        pooling qualification); the old flat assignment let the second
+        erase the first, so `parameters.json`'s `morph_stores` meant
+        different things per mode — both passes are now named side by side,
+        from the run-baseline store state (first observation; the identity
+        walk stats every skeleton file, so a two-pass run walks each store
+        once, not twice)."""
         cfg = self.cfg
-        self._fingerprint()['morph_stores'] = {
-            'target': _morph_store_identity(cfg.target_dataset),
-            'source': _morph_store_identity(cfg.source_dataset),
+        memo = getattr(self, '_morph_store_identity_memo', None)
+        if memo is None:
+            memo = self._morph_store_identity_memo = {}
+
+        def _identity(dataset: str) -> Dict[str, Any]:
+            if dataset not in memo:
+                memo[dataset] = _morph_store_identity(dataset)
+            return memo[dataset]
+
+        self._fingerprint().setdefault('morph_stores', {})[pass_name] = {
+            'target': _identity(cfg.target_dataset),
+            'source': _identity(cfg.source_dataset),
         }
 
     def _suspects_only_pass(self) -> None:
@@ -6175,6 +6191,7 @@ class MappingValidator:
             'pooling_bar_metric': self.cfg.pooling_bar_metric,
             'pooling_bar_top_n': self.cfg.pooling_bar_top_n,
             'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
+            'max_scenes': self.cfg.max_scenes,
             'scene_selfcheck': self.cfg.scene_selfcheck,
             'morph_enabled': self.cfg.morph_enabled,
             'morph_auc_floor': self.cfg.morph_auc_floor,
@@ -6304,7 +6321,10 @@ class MappingValidator:
                 'nothing), then the morphology bar as the last gate — a '
                 'refusal leaves the pool and is counted in '
                 '`morph.dropped_targets`, while a candidate with no verdict '
-                'stays and is named; `morph.budget` says what priced the pass. '
+                'stays and is named; a pass that raised or graded nothing '
+                'did NOT gate this pool (`morph.gate_applied` false — its '
+                'tiers are unrefused, not passed); `morph.budget` says what '
+                'priced the pass. '
                 'The mapper is joined afterwards. Read the report\'s Pooling '
                 'tab, whose Per-source block is the mode\'s own axis.']),
             '- validation/pair_summary.csv — per-branch pools / gap / '

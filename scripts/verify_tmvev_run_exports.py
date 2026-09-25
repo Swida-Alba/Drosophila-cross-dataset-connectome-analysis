@@ -599,6 +599,11 @@ def check_pooling(run, tag):
     # query — measured 2026-09-25 on FAFB->BANC as 107 of 1266 rows.
     fp = xv.get('input_fingerprint') or {}
     stores = fp.get('morph_stores') or {}
+    if stores and 'target' not in stores and 'source' not in stores:
+        # keyed by pass (supervised / pooling, 2026-09-25 WIP-D): both keys
+        # name the same run-baseline store, so any one of them answers
+        jobs = stores
+        stores = next(iter(jobs.values()), {}) or {}
     if stores:
         tgt = stores.get('target') or {}
         # Only a pass that actually graded native verdicts owes a target

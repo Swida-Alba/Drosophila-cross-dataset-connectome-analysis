@@ -2288,7 +2288,8 @@ TOOL_GUIDE_SPECS = {
                             "scanned universes, both profile caches, the mapper "
                             "snapshot, and `morph_stores` — the vector cache, "
                             "whitener and skeleton count a native verdict was "
-                            "read out of), and the "
+                            "read out of, keyed by pass (supervised / "
+                            "pooling)), and the "
                             "reading notes that say which cells are NOT "
                             "recall measures."},
             {"pattern": "morphology_calibration.json",
