@@ -78,7 +78,7 @@ $PY scripts/RunMappingValidation.py \
   `--pooling-rank-union-floor`, `--pooling-window-mult` (the last three are
   ADVISORY flags now) and `--pooling-max-morph-targets` (0 = auto: 3 scoring
   units per queried source). Morphology is mandatory in this mode, so
-  `--no-morphology` beside `--mode pooling` is a usage error.
+  `--no-morphology` beside `--mode pooling` is a usage error, as is a target outside FAFB / male-cns / BANC.
 - Stage 2 pre-flights the TARGET profile cache: typed neurons missing
   from the cache are built through the profiler backend (cache-first,
   resumable, ~125 neurons/s measured on banc_v888; fail-open to
@@ -644,7 +644,11 @@ them.
   [--pooling-bar-top-n 3] [--pooling-jaccard-floor 0.10]
   [--pooling-rank-union-floor 0] [--pooling-window-mult 2.0]
   [--pooling-max-morph-targets 0]` (`--no-morphology` beside `--mode pooling`
-  is a usage error).
+  is a usage error, and so is a TARGET the morph scorer cannot score:
+  `dataset_scope()` admits only FAFB / male-cns / BANC, so hemibrain is refused
+  before stage 1 — a run that got past it published 32 `matched` and 335
+  `verified` rows over 0 graded verdicts, because the pass raised inside stage
+  P, the engine recorded the error per row, and the tiers stayed).
 - **Admission is the BAR, per source (never pool-relative)**: each queried
   source keeps the top-N rows of `pooling_bar_metric` at depth
   `pooling_bar_top_n` (default `either`/3). `either` is the **UNION of each
