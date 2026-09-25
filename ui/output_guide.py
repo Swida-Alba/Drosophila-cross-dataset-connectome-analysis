@@ -2123,11 +2123,15 @@ TOOL_GUIDE_SPECS = {
                             "borderline / unmatched) with the chain "
                             "claimant's best evidence."},
             {"pattern": "validation/examinees.csv",
-             "description": "Expansion rows with the Revision 3.12 "
+             "description": "Per-pair pool-edge expansion rows (the "
+                            "`examinee rows=` of the pair log; "
+                            "mode-invariant set) with the Revision 3.12 "
                             "category partition (tier / sibling / "
                             "candidates / family / relative / examinees "
-                            "- renamed from suspicious_candidates.csv), "
-                            "leaf tokens, bars, and out-of-scope flags."},
+                            "- renamed from suspicious_candidates.csv). "
+                            "The `examinees` BIN lives in "
+                            "deep_candidates.csv, not here. "
+                            "Leaf tokens, bars, and out-of-scope flags."},
             {"pattern": "mapping/same_name_excluded.csv",
              "description": "Queried types whose same-name fan-out was "
                             "held/excluded by the mapper, or multi-value "

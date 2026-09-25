@@ -960,8 +960,13 @@ and no other dataset's agreement is joined into this mode's pool.
     (`matched` / `verified` / `borderline` / `unmatched`) with the
     best-evidence metrics of its chain-claimant source (`best_source_bodyId`)
     and `size`.
-*   **`examinees.csv`** (renamed from `suspicious_candidates.csv`):
-    every expansion row with
+*   **`examinees.csv`** (renamed from `suspicious_candidates.csv`): the
+    per-pair pool-edge expansion table — the rows the pair log counts as
+    `examinee rows=`.  Despite the name it is NOT the `examinees` bin: that
+    category lives in `deep_candidates.csv` (`candidate_source='deep_window'`
+    rows binned `examinees`; 0 in restrictive, first present in family).
+    This file's set is mode-invariant, so it is byte-comparable across
+    restrictive/family/aggressive.  Key columns:
     `category`, `in_scope`, `morph_failed`, `candidate_annotation`,
     `counts_toward_restrictive_fill` / `counts_toward_family_fill`, the
     caliber columns, the legacy `invader_class`/`invader_label`, and both
@@ -969,7 +974,8 @@ and no other dataset's agreement is joined into this mode's pool.
 *   **`deep_candidates.csv`**: candidate-window rows below the pool best.
     `candidate_source='top_window'` is the `rank_top_k` band (family mode
     and up; connectivity evidence, so it can reach `candidates`);
-    `'deep_window'` is the wider aggressive band (the `examinees` bin).
+    `'deep_window'` is the wider aggressive band (the `examinees` bin —
+    the bin's rows live HERE, not in `examinees.csv`).
 *   **`noise_filtered_candidates.csv`**: gate-dropped rows with
     `noise_reason` (`spatial_caliber`, `negative_rank_union`,
     `jaccard_below_pool`, `tie_margin`).

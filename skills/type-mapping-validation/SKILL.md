@@ -185,7 +185,10 @@ against — `local_data/` is disposable by design.
    against Mapped, since a source can carry a verdict without being
    paired; hovering either cell gives both numbers.
 4. `validation/examinees.csv` (renamed from `suspicious_candidates.csv`) — the
-   expansion rows. Key columns:
+   per-pair pool-edge expansion rows (`examinee rows=` in the pair log).
+   NOT the `examinees` bin: that category lives in `deep_candidates.csv`
+   (`deep_window` rows binned `examinees`, first present in family); this
+   file's set is mode-invariant. Key columns:
    `category` (the Rev 3.12 bin — see §3), `in_scope` / `morph_failed`
    (out-of-scope rows are connectivity-only, kept for reconciliation),
    `candidate_annotation` (`{T}(out-map)` / `{T}>{src}` /
