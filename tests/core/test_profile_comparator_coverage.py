@@ -1359,13 +1359,29 @@ def test_direct_comparison_static_strict_types(monkeypatch):
         },
         bodyids={('T', DS_A): [1], ('T', DS_B): [3]},
     )
+    # Cross-dataset (F-XD-001): per-bodyId scoring intersects partner
+    # bodyIds across two ID spaces — not a defined metric — so strict mode
+    # compares at the type level with standardized partner names instead.
     out = ProfileComparator.direct_comparison(
         'T', 'T', dataset_a=DS_A, dataset_b=DS_B,
         profiler=fake, comparison_mode='strict', verbose=False)
     assert out['comparison_mode'] == 'strict'
-    assert 'type_summary' in out and 'bodyid_results' in out
-    assert len(out['results']) == 1
-    assert out['results'].iloc[0]['n_source_bodyIds'] == 1
+    assert 'bodyid_results' not in out
+    # Same-dataset strict still delegates to the per-bodyId core.
+    fake_same = _FakeProfilerFull(
+        profiles={
+            ('1', DS_A): bodyid_profile(1, DS_A),
+            ('3', DS_A): bodyid_profile(3, DS_A),
+        },
+        bodyids={('T', DS_A): [1, 3]},
+    )
+    out_same = ProfileComparator.direct_comparison(
+        'T', 'T', dataset_a=DS_A, dataset_b=DS_A,
+        profiler=fake_same, comparison_mode='strict', verbose=False)
+    assert out_same['comparison_mode'] == 'strict'
+    assert 'type_summary' in out_same and 'bodyid_results' in out_same
+    assert len(out_same['results']) == 1
+    assert out_same['results'].iloc[0]['n_source_bodyIds'] >= 1
 
 
 def test_direct_comparison_static_all_bodyid(monkeypatch):

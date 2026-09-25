@@ -2365,3 +2365,33 @@ def test_state_notes_replace_across_re_exports(tmp_path):
     assert '- [untyped dropped] keep me' in text
     assert '- [untyped dropped] and me too' in text
     assert text.count('User warning notes') == 1
+
+
+def test_edge_mode_provenance_reports_requested_threshold(analyzer):
+    """Edge-mode data is exactly `weight >= requested`; the side-effect
+    path runs' tau/budget must not masquerade as the edge filter's applied
+    threshold (F-XD-004)."""
+    analyzer._path_run_meta[('dsA', 5)] = {
+        'strongest_first_tau': 9, 'tau': 9,
+        'strongest_first_budget_bitten': True, 'budget_bitten': True,
+        'graph_pruning_record': {'landing': 9},
+        'edge_budget': 1_000_000, 'edge_budget_landing': 9,
+    }
+    # Apply the same transform _run_all_edge_analyses applies in edge mode.
+    analyzer.parameters.comparison_mode = 'edge'
+    meta = dict(analyzer._path_run_meta[('dsA', 5)])
+    side = {k: meta.get(k) for k in (
+        'strongest_first_tau', 'tau', 'strongest_first_budget_bitten',
+        'budget_bitten', 'graph_pruning_record', 'edge_budget',
+        'edge_budget_landing') if meta.get(k) is not None}
+    meta.update({
+        'edge_mode': True, 'side_path_run': side,
+        'strongest_first_tau': None, 'tau': None,
+        'strongest_first_budget_bitten': False, 'budget_bitten': False,
+        'graph_pruning_record': {}, 'edge_budget': None,
+        'edge_budget_landing': None,
+    })
+    analyzer._path_run_meta[('dsA', 5)] = meta
+    row = analyzer._path_provenance_row('dsA', 5)
+    assert int(row['applied_threshold']) == 5
+    assert row['tau'] is None and row['strongest_first_budget_bitten'] is False

@@ -1915,6 +1915,7 @@ class ProfileComparator:
         include_untyped_partners: bool = True,
         min_common_partners: Optional[int] = None,
         same_label_only: bool = False,
+        type_mapper: Optional[Any] = None,
         verbose: bool = True
     ) -> Dict[str, Any]:
         """
@@ -2101,8 +2102,17 @@ class ProfileComparator:
                 resolved_b.append(nb)
         _log(f"Comparing {len(resolved_a)} neuron(s) from {dataset_a} vs {len(resolved_b)} from {dataset_b} (mode={mode})")
 
-        # Strict mode on type names: delegate to bodyId core for per-bodyId coverage
-        if mode == 'strict' and not all_bodyid_input and hasattr(ProfileComparator, 'compare_types_bodyid_core'):
+        # Strict mode on type names: delegate to bodyId core for per-bodyId
+        # coverage — but only WITHIN one dataset. The bodyId core scores
+        # partners by bodyId identity (combined_score_intra_dataset), a key
+        # that is only meaningful inside one connectome's ID space; across
+        # two datasets, colliding integer bodyIds would count unrelated
+        # neurons as shared partners (F-XD-001), so cross-dataset strict
+        # falls through to the type-level standardized comparison below.
+        same_dataset = (canonical_dataset_name(str(dataset_a))
+                        == canonical_dataset_name(str(dataset_b)))
+        if (mode == 'strict' and not all_bodyid_input and same_dataset
+                and hasattr(ProfileComparator, 'compare_types_bodyid_core')):
             strict_types = sorted(set(str(t) for t in resolved_a) & set(str(t) for t in resolved_b))
             if strict_types:
                 bodyid_df, type_summary = ProfileComparator.compare_types_bodyid_core(
@@ -2159,6 +2169,11 @@ class ProfileComparator:
                     'comparison_mode': mode,
                 }
 
+        if mode == 'strict' and not all_bodyid_input and not same_dataset:
+            _log("Strict mode across two datasets: per-bodyId scoring is not "
+                 "defined across ID spaces — comparing at the type level "
+                 "with standardized partner names instead.")
+
         # Build profiles for loose mode or bodyId-driven strict comparisons
         profiles_a: Dict[str, ConnectivityProfile] = {}
         profiles_b: Dict[str, ConnectivityProfile] = {}
@@ -2212,7 +2227,8 @@ class ProfileComparator:
                 source_profile=profile_a,
                 target_profiles=profiles_b,
                 candidate_map=candidate_map,
-                direction=direction
+                direction=direction,
+                type_mapper=type_mapper
             )
             
             # Handle case where source profile is empty (batch_results will be empty)
@@ -3741,17 +3757,21 @@ class HomologFinder:
         except Exception:
             pass
         
-        # Step 1: Pre-warm caches to avoid repeated disk reads
+        # Step 1: Pre-warm caches to avoid repeated disk reads. A broken
+        # cache is exactly what these failures would reveal — log them, do
+        # not drop them silently (F-XD-006).
         self._log(f"Pre-loading connection cache for {dataset}...")
         try:
             self.profiler._get_cached_conn_df(dataset)
             self._log(f"Connection cache ready for {dataset}")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"WARNING: connection cache pre-warm failed for "
+                      f"{dataset}: {e!r}")
         try:
             self.profiler._load_cache_dataframe(dataset)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"WARNING: profile cache pre-load failed for "
+                      f"{dataset}: {e!r}")
         
         # Step 2: Check which profiles are already cached with sufficient top-k
         cached_count = 0
@@ -3815,6 +3835,8 @@ class HomologFinder:
                 leave=True
             )
             
+            build_failures: List[str] = []
+            first_build_error: Optional[BaseException] = None
             for bid in pbar:
                 try:
                     profile = self.profiler.get_profile(bid, dataset)
@@ -3822,6 +3844,8 @@ class HomologFinder:
                         profiles[bid] = profile
                         built_in_batch += 1
                         total_built += 1
+                    # profile None = the neuron has no data (a normal
+                    # outcome), NOT a build failure; only exceptions count.
                     
                     # Save cache at batch boundaries (silently)
                     if built_in_batch >= self._batch_size:
@@ -3835,10 +3859,25 @@ class HomologFinder:
                         # Re-enable deferred writes for next batch
                         self.profiler._defer_cache_writes = True
                         built_in_batch = 0
-                except Exception:
-                    pass
+                except Exception as e:
+                    build_failures.append(f"{bid}: {e!r}")
+                    if first_build_error is None:
+                        first_build_error = e
                     
             pbar.close()
+            if build_failures:
+                shown = '; '.join(build_failures[:5])
+                more = f" (+{len(build_failures) - 5} more)" \
+                    if len(build_failures) > 5 else ''
+                self._log(f"WARNING: {len(build_failures)}/{n_to_build} "
+                          f"{label} profiles failed to build: {shown}{more}")
+            if total_built == 0 and build_failures and n_to_build > 0:
+                # Every single build failed — an empty/partial result here
+                # would read as 'no homologs' instead of 'broken run'.
+                raise RuntimeError(
+                    f"profile build failed for every requested bodyId of "
+                    f"{dataset} ({len(build_failures)} failures); first "
+                    f"error: {first_build_error!r}") from first_build_error
         except KeyboardInterrupt:
             interrupted = True
             self._log(f"\n⚠️  Interrupted! Saving {len(profiles)} profiles built so far...")

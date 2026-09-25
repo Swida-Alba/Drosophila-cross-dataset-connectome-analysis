@@ -1527,6 +1527,14 @@ class ConnectivityProfiler:
         quarantined = main_cache_path.with_name(
             f"{main_cache_path.stem}.corrupt-{stamp}"
             f"{main_cache_path.suffix}")
+        suffix_n = 1
+        while quarantined.exists():
+            # Two corruptions inside one wall-clock second must not overwrite
+            # the earlier recovery copy (POSIX rename would clobber silently).
+            quarantined = main_cache_path.with_name(
+                f"{main_cache_path.stem}.corrupt-{stamp}-{suffix_n}"
+                f"{main_cache_path.suffix}")
+            suffix_n += 1
         try:
             main_cache_path.rename(quarantined)
         except OSError as rename_error:
@@ -1915,11 +1923,16 @@ class ConnectivityProfiler:
         """
         required_k = required_top_k or self.config.top_k_bodyid
         neuron_id_str = str(neuron_id)
+        current_hash = self._get_config_hash()
         
         # Tier 1: Check memory cache first (instant O(1))
         cache_key = (neuron_id_str, dataset)
         if cache_key in self._memory_cache:
             cached = self._memory_cache[cache_key]
+            if getattr(cached, '_config_hash', current_hash) != current_hash:
+                # Built under a different config (min synapse threshold,
+                # untyped/fuzzy toggles) - stale for this reader.
+                return None
             # Check if cached profile has sufficient top_k
             if cached.top_k_bodyid_used >= required_k:
                 return cached
@@ -1942,7 +1955,17 @@ class ConnectivityProfiler:
                 try:
                     # Direct row access by index (O(1))
                     row_data = cache_df.iloc[row_idx]
+                    row_hash = row_data.get('config_hash')
+                    if row_hash is not None and pd.notna(row_hash) \
+                            and str(row_hash) != current_hash:
+                        # Persisted under a different config - rebuild
+                        # rather than reuse (rows without the column are
+                        # legacy and stay accepted).
+                        return None
                     profile = self._row_to_profile(row_data)
+                    profile._config_hash = (str(row_hash) if row_hash is not None
+                                            and pd.notna(row_hash)
+                                            else current_hash)
                     
                     # Check if cached profile has sufficient top_k
                     if profile.top_k_bodyid_used >= required_k:
@@ -2027,6 +2050,9 @@ class ConnectivityProfiler:
     def _profile_to_row(self, profile: ConnectivityProfile) -> dict:
         """Convert a ConnectivityProfile to a flat dict for parquet storage."""
         data = profile.to_dict()
+        # Provenance for cache gating (F-XD-002): a row is only reusable
+        # when the config that shaped it matches the reader's config.
+        data['config_hash'] = self._get_config_hash()
         
         # Convert nested dicts to JSON strings for parquet storage
         # Use empty JSON object '{}' instead of None to avoid parquet struct/non-struct mixing error
@@ -2062,6 +2088,7 @@ class ConnectivityProfiler:
         """
         # Memory cache (always, no lock needed for dict assignment)
         cache_key = (str(profile.neuron_id), profile.dataset)
+        profile._config_hash = self._get_config_hash()
         self._memory_cache[cache_key] = profile
         
         # Only save bodyId-level profiles to disk (neuron_id must be an integer)
@@ -2205,8 +2232,10 @@ class ConnectivityProfiler:
             return
         
         # Memory cache update (all profiles, including type-level)
+        current_hash = self._get_config_hash()
         for neuron_id, profile in profiles.items():
             cache_key = (str(neuron_id), dataset)
+            profile._config_hash = current_hash
             self._memory_cache[cache_key] = profile
         
         # Disk cache using batch file approach (one file for all profiles)
@@ -2310,7 +2339,12 @@ class ConnectivityProfiler:
                     profiles[neuron_id_str] = profile
                     loaded += 1
                     
-                    # Add to memory cache
+                    # Add to memory cache (stamped with the config the row
+                    # was persisted under, so tier-1 gating can re-check)
+                    profile._config_hash = (str(row.get('config_hash'))
+                                            if row.get('config_hash') is not None
+                                            and pd.notna(row.get('config_hash'))
+                                            else self._get_config_hash())
                     cache_key = (neuron_id_str, dataset)
                     self._memory_cache[cache_key] = profile
                     
@@ -2336,7 +2370,12 @@ class ConnectivityProfiler:
                     profiles[neuron_id] = profile
                     loaded += 1
                     
-                    # Also add to memory cache
+                    # Also add to memory cache (stamped with the row's
+                    # config hash for tier-1 re-checking)
+                    profile._config_hash = (str(row.get('config_hash'))
+                                            if row.get('config_hash') is not None
+                                            and pd.notna(row.get('config_hash'))
+                                            else self._get_config_hash())
                     cache_key = (str(neuron_id), dataset)
                     self._memory_cache[cache_key] = profile
                     

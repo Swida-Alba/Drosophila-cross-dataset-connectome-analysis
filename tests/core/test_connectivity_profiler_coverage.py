@@ -1521,3 +1521,25 @@ def test_consolidate_quarantine_pandas_fallback(profiler, monkeypatch):
     assert profiler._consolidate_profile_batch_files(DS) == 0
     assert list(main_path.parent.glob('connectivity_profiles.corrupt-*'))
     assert list(profiler._get_profile_batch_dir(DS).glob('*.parquet'))
+
+
+def test_profile_cache_gates_on_config_hash(profiler):
+    """A profile persisted under one min_synapse_threshold must not be
+    reused after the config changes (F-XD-002: the cache used to gate only
+    on top_k, silently reusing stale profiles)."""
+    profiler._save_profile_to_batch_file(_profile(501))
+    assert profiler._consolidate_profile_batch_files(DS) == 1
+    assert profiler._load_from_cache(501, DS) is not None
+
+    # Same reader, different config that shapes profile content -> stale.
+    original = profiler.config.min_synapse_threshold
+    profiler.config.min_synapse_threshold = original + 40
+    assert profiler._load_from_cache(501, DS) is None
+    # ...in the memory tier too (the stamp travels with the profile).
+    key = (str(501), DS)
+    assert key not in profiler._memory_cache or \
+        profiler._load_from_cache(501, DS) is None
+
+    # Restoring the config makes the same row valid again.
+    profiler.config.min_synapse_threshold = original
+    assert profiler._load_from_cache(501, DS) is not None

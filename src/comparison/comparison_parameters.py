@@ -547,6 +547,25 @@ class ComparisonParameters:
         if isinstance(self.datasets, str):
             self.datasets = [self.datasets]
 
+        # F-XD-008: two dataset spellings that sanitize to the same folder
+        # (e.g. 'hemibrain:v1.2.1' and 'hemibrain_v1_2_1', or a plain
+        # duplicate) would collide in dataset_data/, caches and profile
+        # stores while alignment treats them as separate columns.
+        raw_names = []
+        for ds in self.datasets:
+            raw_names.append(ds if isinstance(ds, str)
+                             else str(getattr(ds, 'dataset', ds)))
+        safe_map: dict = {}
+        for raw in raw_names:
+            safe = self._sanitize_name(raw)
+            if safe in safe_map and safe_map[safe] != raw:
+                raise ValueError(
+                    f"datasets {safe_map[safe]!r} and {raw!r} both map to "
+                    f"the sanitized name {safe!r} — their output folders "
+                    "and caches would collide. Pass each dataset once, "
+                    "under one spelling.")
+            safe_map[safe] = raw
+
         # 1. Enforce Exclusivity: overall_label_mapper vs source/target LabelMappers
         has_overall = self.overall_label_mapper is not None
         is_source_mapper = isinstance(self.source_neurons, LabelMapper)

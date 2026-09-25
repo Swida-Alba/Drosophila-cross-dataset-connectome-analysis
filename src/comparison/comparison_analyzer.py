@@ -2784,8 +2784,12 @@ class ComparisonAnalyzer:
         datasets = self.parameters.get_dataset_names()
         materialized = {
             ds: self.get_applied_thresholds(ds) for ds in datasets}
-        non_empty = [set(v) for v in materialized.values() if v]
-        common = sorted(set.intersection(*non_empty)) if non_empty else []
+        # A dataset that materialized NOTHING has no comparable threshold:
+        # including it (as an empty set) is what makes `common` honest —
+        # excluding it would let 'comparable across all datasets' print
+        # while one dataset is absent (F-XD-007).
+        sets = [set(v) for v in materialized.values()]
+        common = sorted(set.intersection(*sets)) if sets else []
         pairwise_common = {}
         for i, a in enumerate(datasets):
             for b in datasets[i + 1:]:
@@ -3897,6 +3901,32 @@ class ComparisonAnalyzer:
                 for threshold in tqdm(remaining_thresholds, desc=f"  {dataset_name} thresholds", leave=False, unit="thr"):
                     self.run_path_analysis(dataset_name, threshold, verbose_mode='silent')
 
+        # Edge-mode truth (F-XD-004): the compared data is exactly
+        # `weight >= requested` — the path runs above exist for output
+        # consistency, and their tau/budget provenance must not masquerade
+        # as the edge filter's applied threshold. Neutralize the path-run
+        # state so the shared formula reports applied == requested, and keep
+        # the side-run numbers under a clearly-labeled key.
+        if self.parameters.comparison_mode == 'edge':
+            for (ds_name, t), meta in list(self._path_run_meta.items()):
+                meta = dict(meta or {})
+                side = {k: meta.get(k) for k in (
+                    'strongest_first_tau', 'tau', 'strongest_first_budget_bitten',
+                    'budget_bitten', 'graph_pruning_record', 'edge_budget',
+                    'edge_budget_landing') if meta.get(k) is not None}
+                meta.update({
+                    'edge_mode': True,
+                    'side_path_run': side,
+                    'strongest_first_tau': None,
+                    'tau': None,
+                    'strongest_first_budget_bitten': False,
+                    'budget_bitten': False,
+                    'graph_pruning_record': {},
+                    'edge_budget': None,
+                    'edge_budget_landing': None,
+                })
+                self._path_run_meta[(ds_name, t)] = meta
+
         self._complete_path_run_meta()
         self._export_untyped_drop_records()
         self._export_effective_threshold_banner()
@@ -4541,6 +4571,47 @@ class ComparisonAnalyzer:
         
         return pd.DataFrame(rows)
     
+    def _query_fingerprint(self) -> dict:
+        """Identity of the current comparison query for cache validation.
+
+        A cached ``connections_edge.csv`` is only a valid answer for the
+        query that produced it; reusing a folder across queries (or modes)
+        must not silently load the previous answer (F-XD-003).
+        """
+        p = self.parameters
+        def _digest(value) -> str:
+            import hashlib
+            joined = "|".join(sorted(str(v) for v in value)) \
+                if isinstance(value, (list, tuple, set)) else str(value)
+            return hashlib.md5(joined.encode("utf-8", "surrogatepass")) \
+                .hexdigest()[:12]
+        return {
+            'source_neurons': _digest(getattr(p, 'source_neurons', None) or []),
+            'target_neurons': _digest(getattr(p, 'target_neurons', None) or []),
+            'comparison_mode': str(getattr(p, 'comparison_mode', '')),
+            'max_interlayer': getattr(p, 'max_interlayer', None),
+            'pathfinding': str(getattr(p, 'pathfinding', '')),
+        }
+
+    def _cached_result_matches_query(self, dirpath: str) -> bool:
+        """Validate a dataset-threshold folder against the current query.
+
+        Sidecar absent (legacy folder) -> accepted with a debug note; the
+        fingerprint only starts protecting folders it was written to.
+        """
+        import json as _json
+        sidecar = os.path.join(dirpath, "connections_edge.fingerprint.json")
+        if not os.path.exists(sidecar):
+            self._log("Cached result has no query fingerprint "
+                      "(legacy folder) — accepting", 'debug')
+            return True
+        try:
+            with open(sidecar, "r", encoding="utf-8") as fh:
+                recorded = _json.load(fh)
+        except (OSError, ValueError):
+            return False
+        return recorded == self._query_fingerprint()
+
     def _try_load_cached(self, dataset_name: str, threshold: int) -> Optional[pd.DataFrame]:
         """Try to load cached result from disk."""
         if not self.parameters.output_folder:
@@ -4551,13 +4622,18 @@ class ComparisonAnalyzer:
         # First try our own cached connections_edge.csv (edge mode output)
         filepath = os.path.join(output_dir, "connections_edge.csv")
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-            try:
-                df = self._read_csv(filepath)
-                if not df.empty:
-                    self._log(f"Loading cached: {dataset_name} @ {threshold}", 'debug')
-                    return df
-            except (pd.errors.EmptyDataError, Exception):
-                pass  # File is empty or corrupted, try other sources
+            if not self._cached_result_matches_query(output_dir):
+                self._log(
+                    f"Cached {dataset_name} @ {threshold} was written for a "
+                    "different query — ignoring it", 'always')
+            else:
+                try:
+                    df = self._read_csv(filepath)
+                    if not df.empty:
+                        self._log(f"Loading cached: {dataset_name} @ {threshold}", 'debug')
+                        return df
+                except (pd.errors.EmptyDataError, Exception):
+                    pass  # File is empty or corrupted, try other sources
         
         # Also try legacy paths.csv (for backward compatibility)
         filepath = os.path.join(output_dir, "paths.csv")
@@ -4618,6 +4694,13 @@ class ComparisonAnalyzer:
         # Save to connections_edge.csv (edge mode cached version)
         filepath = os.path.join(dirpath, "connections_edge.csv")
         self._save_csv(df, filepath)
+        try:
+            with open(os.path.join(dirpath,
+                                   "connections_edge.fingerprint.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump(self._query_fingerprint(), fh, indent=2)
+        except (OSError, TypeError, ValueError):
+            pass
         self._log_file(filepath)
     
     def _save_edge_mode_result(self, dataset_name: str, threshold: int, df: pd.DataFrame):
@@ -6076,7 +6159,9 @@ class ComparisonAnalyzer:
         low-confidence classes (plan §7E, rev 2)."""
         try:
             records = self.resolve_query_inputs()
-        except Exception:
+        except Exception as e:
+            self._log(f"WARNING: query resolution records not exported: "
+                      f"{e!r}")
             return
         if not records:
             return
@@ -11134,6 +11219,8 @@ class ComparisonAnalyzer:
             direction=direction,
             comparison_mode=comparison_mode,
             label_mapper=self.label_mapper,
+            type_mapper=(self.parameters._auto_type_mapper
+                         if self.parameters.auto_type_mapping else None),
             score_weights=p.verification_score_weights,
             verbose=self.verbose
         )
@@ -11254,6 +11341,8 @@ class ComparisonAnalyzer:
                     direction=direction,
                     comparison_mode=comparison_mode,
                     label_mapper=self.label_mapper,
+                    type_mapper=(self.parameters._auto_type_mapper
+                                 if self.parameters.auto_type_mapping else None),
                     score_weights=score_weights,
                     top_k=top_k,
                     top_m=top_m,
