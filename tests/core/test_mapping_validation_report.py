@@ -67,7 +67,12 @@ def run_dir(tmp_path: Path) -> Path:
                                     "fill_proposed": 0,
                                     "unpaired_unproposed": 0}}},
         "target": {"mapped_target_set": 4, "in_branch_pool": 3,
-                 "reached_as_candidates_only": 1, "holes": 1,
+                 # the set-level count spans EVERY candidate-reached bodyId
+                 # whatever its type, while `per_type` exists only for mapped
+                 # types — so the two scopes differ by construction (measured
+                 # 27 vs 10 on the 2026-09-25 male-cns family run). The fixture
+                 # keeps that shape on purpose.
+                 "reached_as_candidates_only": 3, "holes": 1,
                  "family_material": [900, 901],
                  "per_type": {
                      "X": {"mapped_population": 2, "in_pool": 2,
@@ -782,6 +787,22 @@ def _default_sources():
                         morph_gate="", morph_qualified="",
                         source_claimed=False,
                         no_finding="no-admitted-target")]
+
+
+def test_the_two_candidate_scopes_are_not_printed_as_one_number(run_dir: Path):
+    """`mapped − in_pool = reached_as_candidates_only + holes` is a PER-TYPE
+    identity, and the set-level field of the same name counts a wider set: every
+    candidate-reached bodyId, including types the map never asserts. On the
+    2026-09-25 male-cns family run the report printed 27 between "map-covered
+    204" and "holes 5", so subtracting gave 15 ≠ 32 and the row looked like an
+    arithmetic bug in the coverage engine. The engine is right; the row has to
+    say which scope it is quoting, and show the term the identity uses.
+    """
+    html = build_report_document(collect_run_data(run_dir))
+    tip = html.split("Reached only as candidates", 1)[1].split("</span>", 6)[0]
+    assert "Two scopes" in tip
+    assert "sums to 1" in tip          # Σ over per_type, the identity's term
+    assert "INCLUDING types the map does not assert" in tip
 
 
 def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):

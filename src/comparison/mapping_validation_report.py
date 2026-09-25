@@ -1489,6 +1489,9 @@ def _hero(d: Dict) -> str:
 
 def _coverage_tab(d: Dict) -> str:
     scov, tcov = d['src'], d['tgt']
+    #: the per-type identity's own term, summed over mapped types only
+    _in_map_cand = sum(int((v or {}).get('reached_as_candidates_only') or 0)
+                       for v in (tcov.get('per_type') or {}).values())
     cards = []
     if scov and tcov:
         # §1 the three coverage levels
@@ -1506,8 +1509,23 @@ def _coverage_tab(d: Dict) -> str:
             (_term('map-covered', 'Map-covered (branch pools)'),
              f"{_esc(tcov.get('in_branch_pool', '—'))} "
              f'({_pct(tcov.get("in_branch_pool"), tcov.get("mapped_target_set"))})'),
+            # The set-level count is NOT the identity's term. `reached_tgt` spans
+            # every candidate-reached bodyId whatever its type, while the per-type
+            # rows exist only for mapped types — so 27 here ⊃ the 10 that
+            # `mapped − in_pool = candidates_only + holes` sums to. Printing the
+            # big number between "map-covered" and "holes" invited the reader to
+            # subtract, and the arithmetic then failed (219 − 204 = 15 ≠ 27 + 5).
             ('Reached only as candidates',
-             _esc(tcov.get('reached_as_candidates_only', '—'))),
+             _hover(
+                 f"{_esc(tcov.get('reached_as_candidates_only', '—'))}",
+                 '<b>Two scopes, one number each</b>'
+                 "This is every candidate-reached target neuron outside a "
+                 "branch pool, INCLUDING types the map does not assert. The "
+                 "term the per-type identity uses — "
+                 "`mapped_population − in_pool = reached_as_candidates_only + "
+                 "holes` — counts only in-map types, and sums to "
+                 + _cnt(_in_map_cand) + " here. The difference is out-of-map "
+                 "candidate material, which can never be a hole.")),
             (_term('hole', 'Holes (never map-covered)'),
              f"{_esc(tcov.get('holes', '—'))} ▸ Targets tab"),
             (_term('family material'),
