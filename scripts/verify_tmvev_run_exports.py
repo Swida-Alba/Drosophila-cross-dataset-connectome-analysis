@@ -195,6 +195,10 @@ def check_layout(run, tag):
     for name in ('README.txt', 'report.html', 'parameters.json',
                  'set_coverage.json', 'pipeline_progress.jsonl',
                  '_UserGuide_please_read_me.html'):
+        if name == 'set_coverage.json' and not path_of(run, name).exists():
+            # check_coverage names the explained-empty case; the layout
+            # sweep must not re-fail it
+            continue
         if not path_of(run, name).exists():
             chk(False, f'{tag}: missing {name}')
     # the old name must not exist; narrating the rename in prose is fine
@@ -255,7 +259,21 @@ def check_report(run, tag, mode):
 
 
 def check_coverage(run, tag):
-    cov = json.loads(path_of(run, 'set_coverage.json').read_text('utf-8'))
+    cov_path = path_of(run, 'set_coverage.json')
+    if not cov_path.exists():
+        # An empty run (every queried type fail-closed at stage 1, e.g. a
+        # category that does not exist on the source side) writes no
+        # coverage artifact at all — the README's own log says so.  That is
+        # an explained outcome, not an unauditable run (the POL-1 class:
+        # a legitimate run must not fail its auditor).
+        notes = path_of(run, 'README.txt')
+        explained = notes.exists() and 'no valid type pairs' in notes.read_text(
+            'utf-8', errors='replace')
+        if explained:
+            info(f'{tag}: no set_coverage.json — the run resolved no type '
+                 'pairs (README records the fail-closed query)')
+            return
+    cov = json.loads(cov_path.read_text('utf-8'))
     src, tgt = cov.get('source') or {}, cov.get('target') or {}
     bad = []
     # per type: mapped_population - in_pool == reached_as_candidates_only +
