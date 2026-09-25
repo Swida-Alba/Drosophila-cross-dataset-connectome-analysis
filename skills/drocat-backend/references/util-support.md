@@ -7,8 +7,10 @@ or local-file setup.
 ## token_manager (`src/utils/token_manager.py`)
 
 ```python
-from src.utils.token_manager import get_access_token, get_cave_token
-# never print the returned values
+from utils.token_manager import token_manager  # never print the values
+token_manager.get_neuprint_token()    # NeuPrint
+token_manager.get_token("cave")       # CAVE (FlyWire)
+token_manager.get_auto_token(prefer_type="cave")  # config/env resolution
 ```
 
 - Precedence (tokens live in `config.json` — wins per key; the gitignored

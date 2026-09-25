@@ -83,7 +83,9 @@ CAVE. See
 ## Tokens
 
 ```python
-from src.utils.token_manager import get_access_token, get_cave_token  # no values printed
+from utils.token_manager import token_manager  # never print the token values
+token_manager.get_neuprint_token()    # NeuPrint (hemibrain / male-CNS / ...)
+token_manager.get_token("cave")       # CAVE (FlyWire / FAFB remote fetch)
 ```
 
 Set `neuprint` and `cave` in the `tokens` section of `config.json` (wins per key)
