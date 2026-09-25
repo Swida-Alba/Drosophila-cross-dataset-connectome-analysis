@@ -783,6 +783,42 @@ def check_partition(runs, label):
                 str(tok_bad[:3]))
 
 
+def check_verdict_bars(runs, label):
+    """A published morph verdict must be recomputable from its own row.
+
+    #58 gave pooling's rows their bar; #61 gave the two remaining exports the
+    same record. Before that, `out_map_expansion.csv` and
+    `source_candidates.csv` printed ✓/✗ while the threshold lived only in
+    `morphology_calibration.json` — a reader could not check a single mark.
+    An export older than the columns is named, not failed: the file is what it
+    is, and the run predates the contract.
+    """
+    for m, run in runs.items():
+        for fname in ('out_map_expansion.csv', 'source_candidates.csv'):
+            df = table(run, fname)
+            if df is None or not len(df):
+                continue
+            if 'morph_bar' not in df.columns:
+                info(f'{label}/{m}/{fname}: predates the bar columns '
+                     f'(#61) — its ✓/✗ cannot be checked from the row')
+                continue
+            verdicts = df[df.morph_qualified.astype(str).str.len() > 0]
+            missing = int((verdicts.morph_bar.astype(str) == '').sum())
+            chk(missing == 0, f'{label}/{m}/{fname}: every verdict carries '
+                f'its bar', f'{missing} of {len(verdicts)}')
+            wrong = []
+            for r in verdicts.itertuples(index=False):
+                try:
+                    got = float(r.morph_v2_similarity) >= float(r.morph_bar)
+                except (TypeError, ValueError):
+                    continue
+                if got != (str(r.morph_qualified).lower() == 'true'):
+                    wrong.append((r.target_bodyId, r.morph_v2_similarity,
+                                  r.morph_bar, r.morph_qualified))
+            chk(not wrong, f'{label}/{m}/{fname}: the verdict recomputes from '
+                'score >= bar', str(wrong[:2]))
+
+
 def cost_table(entries):
     print('\n== cost (pipeline_progress.jsonl, seconds) ==')
     rows, order, labels = {}, [], {}
@@ -862,6 +898,7 @@ def main(argv=None):
         label = f'{src}->{tgt} [{",".join(queries)}]'
         per_mode = {m: r for m, r in runs.items() if m != '_entries'}
         check_partition(per_mode, label)
+        check_verdict_bars(per_mode, label)
         if all(m in per_mode for m in LADDER):
             check_ladder(per_mode, label)
         else:
