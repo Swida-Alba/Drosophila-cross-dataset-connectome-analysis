@@ -87,7 +87,9 @@ $PY scripts/RunMappingValidation.py \
 - The out-map expansion (on by default) scans every unpaired source
   neuron against the full target universe and exports the top-k TYPED
   non-in-map candidates to `expansion/out_map_expansion.csv`
-  (connectivity-ranked, then morph-checked vs the run null bar).
+  (connectivity-ranked, then morph-checked vs the run null bar — the row
+  carries `morph_bar` + `morph_bar_kind` beside the score, so its
+  `morph_qualified` ✓/✗ recomputes from the file).
 - Long runs: launch in the background and poll the log. Expected wall
   times (warm caches): small pair ~2–3 min; 50-neuron family ~6 min;
   `circadian_clock` (242 sources) ~35–40 min. A stage-5d run adds roughly
@@ -561,7 +563,9 @@ Estimation recipe (family mode recommended for gap questions):
 3. **Expansion advice**: `expansion/out_map_expansion.csv` —
    connectivity-ranked typed targets for the unclaimed sources (top
    `--out-map-top-k`, default 10 per source), where `morph_qualified`
-   marks passes vs the run null bar (reference: R1-R6 fail 528/530, CB4091
+   marks passes vs the run null bar — `morph_bar` (kind `null`) prints the
+   threshold beside the score, so a ✓ is checkable without opening
+   `morphology_calibration.json` (reference: R1-R6 fail 528/530, CB4091
    pass 132/132 — the column is what separates photoreceptor/orphan noise
    from same-family targets). A scene renders only the passing ones, under
    its `out-map candidates · {type}` branch beside the `out-map query ·
