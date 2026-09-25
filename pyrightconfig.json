@@ -3,7 +3,6 @@
         "src",
         "vispath-subproject/src",
         "scripts",
-        "archive/scripts_local",
         "archive/examples"
     ],
     "exclude": [
