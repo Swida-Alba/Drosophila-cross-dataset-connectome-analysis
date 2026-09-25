@@ -384,9 +384,9 @@ print(df['weight'].isna().any())
 ### Test Suite
 
 Run comprehensive tests:
-```bash
-python tests/test_heatmap_clustering.py
-```
+(The standalone `tests/test_heatmap_clustering.py` file has been
+removed; the clustering implementation lives in
+`src/comparison/interactive_heatmap.py`.)
 
 **Tests included**:
 1. Simple 3-group network

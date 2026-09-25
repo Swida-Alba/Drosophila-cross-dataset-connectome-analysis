@@ -202,7 +202,9 @@ When metrics are detected:
 
 ## Testing
 
-Comprehensive test suite available in `tests/test_enhanced_edgelist.py`:
+The historical test suite (`tests/test_enhanced_edgelist.py`) was
+removed; the living equivalent is
+[`tests/ui/test_edge_list_editor.py`](../../tests/ui/test_edge_list_editor.py):
 
 - Test 1: Standard format (source/target/weight)
 - Test 2: Pre/Post format
@@ -216,7 +218,7 @@ Comprehensive test suite available in `tests/test_enhanced_edgelist.py`:
 
 Run tests:
 ```bash
-python tests/test_enhanced_edgelist.py
+python -m pytest tests/ui/test_edge_list_editor.py
 ```
 
 ## Examples
@@ -310,7 +312,7 @@ Potential improvements:
 - [FilterBy_Feature.md](../core-features/FilterBy_Feature.md) - Filtering pathway data
 - [EDGE_WIDTH_SCALING.md](EDGE_WIDTH_SCALING.md) - Edge visualization controls
 - [examples/Example_SimpleEdgeList.py](../../archive/examples/visualization/input_formats/Example_SimpleEdgeList.py) - Complete examples
-- tests/test_enhanced_edgelist.py - Test suite
+- [tests/ui/test_edge_list_editor.py](../../tests/ui/test_edge_list_editor.py) - Test suite (the edge-list editor)
 
 ## Version History
 

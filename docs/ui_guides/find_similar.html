@@ -28,11 +28,11 @@
     is never used for comparison.</p>
   <table>
     <tr><th>Method</th><th>Cost</th><th>Notes</th></tr>
-    <tr><td><b>Vector</b> (recommended)</td><td>&lt;10 ms per query</td>
+    <tr><td><b>Vector (spatial)</b> (recommended)</td><td>&lt;10 ms per query</td>
       <td>Each neuron is reduced to a 256-dim shape + spatial feature
         vector. Scores are per-block cosine (0.30/0.70) on standardized +
         ZCA-whitened vectors, cached at
-        <code>find_similar/morphology/skeleton__vectors_v2.parquet</code>; if a
+        <code>find_similar/morphology/skeleton_vectors.parquet</code>; if a
         row is missing it is fetched online and vectorized.</td></tr>
     <tr><td><b>NBLAST</b></td><td>~5–15 s for 100 prefiltered candidates</td>
       <td>Canonical Costa et al. 2016 pairwise score via navis on raw
@@ -213,9 +213,11 @@
     simplification.
   </div>
   <p>When multiple queries are entered, the tab runs them sequentially and
-    saves each query in its own run folder. Morphological output is saved next
+    saves each query in its own run folder (keep the query to 50 neurons or
+    fewer, and note the search works best on <b>male-cns:v1.0</b>).
+    Morphological output is saved next
     to its results in
-    <code>{run_folder}/plot-3d_{ABBREV}_{dataset_folder}/</code>. Each scene
+    <code>{run_folder}/plot-3d_{dataset_folder}/</code>. Each scene
     starts with a query reference layer, followed by up to the requested top-N
     result layers. Each layer is colored per type and labeled
     <code>r{rank}_{type}_x{N}</code> (rank = similarity rank of the type,

@@ -15,13 +15,17 @@
   </header>
   <h1>Input File Formats</h1>
   <p class="lede">
-    Every upload menu accepts the formats below. The same rules apply to
+    This guide covers the neuron-list upload menus (the <b>File format
+    instructions</b> link inside chip inputs). The same rules apply to
     entries typed into the chip input; use a file when loading a larger list.
+    Other uploads (mapping JSON, edge-list CSV, layer-style CSV, path files)
+    have their own formats, described in their own guides.
   </p>
 
   <h2>Neuron lists (CSV / TSV / Excel)</h2>
-  <p>Used by Find Path, Direct Connections, Connectivity &rarr; Comparison
-    and Cross-Dataset panels.</p>
+  <p>Used by the neuron query boxes with an upload menu: Complete Paths,
+    Shortest Paths, Find Network, Connectivity &rarr; Comparison,
+    Cross-Dataset, Type Validation and more.</p>
   <table>
     <tr><th>Format</th><th>Rule</th><th>Example</th></tr>
     <tr><td>CSV / TSV</td><td>One neuron per row. The
@@ -60,7 +64,9 @@ DN1p
 PPL.*
 KC.*</code></pre>
     <p class="small">Numeric bodyIds stay integers; patterns are applied
-      according to the panel's Filter mode.</p>
+      according to the panel's <b>Match by</b> mode. Blank rows are skipped;
+      a wrong extension (or any parse failure) shows an error and clears the
+      previously loaded list.</p>
   </div>
 
   <h2>Accepted neuron entries</h2>
@@ -69,14 +75,14 @@ KC.*</code></pre>
     <tr><td>Neuron type</td><td><code>aMe12</code></td><td>Matches all bodyIds of that type</td></tr>
     <tr><td>BodyId</td><td><code>720575940610453042</code></td><td>Kept as an integer</td></tr>
     <tr><td>Instance</td><td><code>aMe12_R</code></td><td>Hemisphere-specific instance</td></tr>
-    <tr><td>Regex pattern</td><td><code>KC.*</code>, <code>PPL.*</code>, <code>.*_R</code></td><td>Use with Filter mode = Regex (or the built-in modes)</td></tr>
+    <tr><td>Regex pattern</td><td><code>KC.*</code>, <code>PPL.*</code>, <code>.*_R</code></td><td>Use with Match by = Regex (or the other Match by modes)</td></tr>
   </table>
 
-  <h2>Path files (Find All Paths output)</h2>
-  <p>Used by the Path Network (PlotPath) panel. Upload one of:</p>
+  <h2>Path files (Complete Paths output)</h2>
+  <p>Used by the Net-Viz (PlotPath) panel. Upload one of:</p>
   <ul>
     <li><code>*_allpaths_type.csv</code> - type-level paths (recommended)</li>
-    <li><code>*_allpaths_bodyId.csv</code> - bodyId-level paths</li>
+    <li><code>*_allpaths_bodyId_paths.csv</code> - bodyId-level paths</li>
     <li><code>*_allpaths_info.xlsx</code> - Excel workbook with path sheets</li>
   </ul>
   <p>The file must contain either a path column (<code>path_block</code> or
@@ -89,17 +95,23 @@ KC.*</code></pre>
 
   <h2>Neuron layers (3D skeleton)</h2>
   <p>The Skeleton tab arranges neurons into display layers with the
-    built-in <b>layer tree editor</b> — no CSV upload needed. Drag layer
+    built-in <b>layer tree editor</b> — no upload needed for the editor
+    itself. Drag layer
     rows to reorder them and drag neuron chips between layers; each layer
     accepts types, instances, bodyIds or regex patterns, and an optional
-    custom name. The editor serializes to the same nested-list format the
+    custom name. A third editor mode, <b>File upload</b>, loads a
+    <b>custom-layer CSV</b> instead (columns <code>layer, neuron</code>, plus
+    optional <code>color</code>, <code>synapse_color</code>,
+    <code>pre_synaptic_color</code>, <code>post_synaptic_color</code>;
+    <code>layer</code> may start at 0 or 1). The editor serializes to the same nested-list format the
     script-level <code>layer_map_csv</code> parser produces, so a scene
     built in the UI is identical to one built from a mapping file.
     See the <a href="skeleton.html">3D Skeleton guide</a>.</p>
 
   <div class="callout warn">
     <b>Common mistakes</b>
-    - Saving CSV with BOM/UTF-16 - use UTF-8.
+    - Saving CSV as UTF-16 — the reader expects UTF-8 (a UTF-8 BOM is fine;
+    UTF-16 yields garbled entries rather than an error).
     - Putting neurons in the second column - only the first column is read.
     - Uploading a path file with only <code>path</code> and no
     <code>weights</code> column.

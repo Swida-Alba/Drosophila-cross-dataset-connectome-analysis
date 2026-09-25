@@ -147,9 +147,12 @@
   </div>
 
   <h2>Options</h2>
-  <p>The form is organized into four independent blocks, each with its own
-    card: <b>General Appearance</b>, <b>Neuron Colors</b>, <b>Synapse
-    Colors</b> and <b>Brain Region ROIs</b>.</p>
+  <p>The render controls live in a <b>General Appearance</b> card with three
+    expansions &mdash; <b>Neuron Skeleton Appearance</b>, <b>Synapse
+    Appearance</b> and <b>Brain Region ROIs (independent)</b> &mdash; beside
+    the <b>Export Video / GIF</b>, <b>Individual Profiles (PDF / PPTX)</b> and
+    <b>Advanced Settings</b> cards; the re-export band sits below them all.
+    The four blocks below mirror those expansions.</p>
   <div class="grid">
     <div class="card">
       <h3>General Appearance</h3>
@@ -165,6 +168,9 @@
           to that floor at save time, so the soma stays a visible dot at
           whole-CNS overview; line soma sizes are display choices, not
           measurements.</li>
+        <li><b>Normalized Tube Radius</b> (BANC datasets only): scale BANC
+          tube radii to a normalized diameter; <b>Radius Target (nm)</b>
+          (default 240, range 10–1000) sets the target diameter.</li>
         <li><b>Neuron Legend Mode</b>: layer, type, tree, or single. ROI
           meshes always keep independent legend entries and rank after every
           neuron entry (brain mesh, then VNC mesh, last).</li>
@@ -258,8 +264,8 @@
         <li><b>Theme switch in the exported HTML</b>: the main viewer HTML
           (and its <code>_simplified.html</code> copy) carries a floating
           🌙/☀️ button (top-right, or press <code>T</code>) that flips the
-          page between light and dark for viewing — background, legend,
-          dropdown/hint text, and the auto brain/VNC mesh color all follow.
+          page between light and dark for viewing — background, legend and
+          dropdown/hint text all follow.
           It always opens with the configured Background; static exports
           (view PNGs, per-neuron files, video) keep the fixed background, and
           neuron/synapse colors stay as generated.</li>
@@ -276,8 +282,9 @@
           template (FAFB the brain, hemibrain the half-brain outline), so
           nothing extra is embedded. Neither hidden half is added to the
           downloadable mesh model. <b>Brain Mesh Color</b> and <b>VNC Mesh
-          Color</b> each default to <b>Auto</b> (adaptive: light tone on white
-          background, dark tone on black); uncheck either to pick a fixed
+          Color</b> each default to <b>Auto</b> — the fixed adaptive outline
+          <code>#74A8D6</code> at 4% opacity on any background; uncheck either
+          to pick a fixed
           outline color and opacity for that half alone. The two halves sit as
           <b>one row each</b>, columns aligned, so a trio cannot be read as
           belonging to the wrong side — the left cell names the half, and for
@@ -321,21 +328,24 @@
         <li><b>Synapse Mode</b>: an outlined dropdown — <code>synapse</code>
           (paired markers between consecutive layers), <code>pre-post
           sites</code> (the input/output <i>sites</i> of the queried neurons),
-          or <code>skip</code> (hide markers). The cutoff <b>Min Synapse
-          Count</b> sits beside it.</li>
+          or <code>skip</code> (hide markers; the BANC default — the first
+          pre/post render there triggers a one-time ~3.9&nbsp;GB synapse
+          download, warned in-app). The cutoff <b>Synapse Threshold</b> sits
+          beside it.</li>
         <li><b>Synapse Shape</b> (synapse mode): cone / scatter / sphere /
           tetrahedron.</li>
         <li><b>Pre/post shape</b> (pre-post sites mode): solid (post/input
           sites as spheres, pre/output as cones) or scatter (post/input as
-          circles, pre/output as squares).</li>
+          circles, pre/output as diamonds).</li>
         <li><b>Synapse Threshold</b> (formerly Min Synapse Count): minimum
           synapse weight for a marker to be shown; in pre-post site mode only
           sites whose connection with a neighbour meets this threshold are
           shown. It sits to the right of the Synapse Mode box, below the
           layer-editor buttons.</li>
-        <li><b>Synapse Size</b> (a fold of the real pre&rarr;post distance:
-          <code>real</code> = 1x; any number or <code>Nx real</code> can be
-          typed). In pre/post-site mode every site is uniform and uses the
+        <li><b>Synapse Size</b> (an integer 1&ndash;12, a fold of the real
+          pre&rarr;post distance: 1 = the real distance; scatter mode defaults
+          to 1 and mesh renders to 3&times; real). In pre/post-site mode every
+          site is uniform and uses the
           full mean real connector distance as its glyph size because each
           sphere/cone is centered on its own pre- or post-synaptic site; a
           one-layer view estimates it from sampled upstream/downstream pairs.
@@ -345,7 +355,7 @@
           synapses between adjacent layers, this renders the pre- and
           post-synaptic <i>sites</i> of every queried neuron. Post-synaptic
           (input) sites draw as spheres, pre-synaptic (output) sites as cones
-          (or circle/square scatter markers, see Pre/post shape), both colored
+          (or circle/diamond scatter markers, see Pre/post shape), both colored
           by the neuron's layer and given separate
           <i>pre &lt;layer&gt;</i> / <i>post &lt;layer&gt;</i> legends. It is
           not a paired-synapse view: the partner is not restricted to the
@@ -376,22 +386,32 @@
   </div>
 
   <h2>Advanced</h2>
+  <p><b>Export Video / GIF</b> and <b>Individual Profiles (PDF / PPTX)</b>
+    are their own collapsible cards above Advanced Settings; the Advanced
+    Settings expansion holds:</p>
   <ul>
     <li><b>Cache Neurons/Synapses</b>: faster repeat renders.</li>
-    <li><b>Smooth Skeleton</b>, <b>Show Soma</b>, <b>Show Connectors</b>.</li>
+    <li><b>Show Figure</b>: open the interactive page in the browser after
+      the render (on by default in this tab).</li>
     <li><b>Simplification Method</b> (NeuPrint tube mode): <code>fast</code>
       is the default direct path with render-time mesh simplification.
       <code>fine</code> is the FAFB-style transform rebuilt from the shared raw
       <code>.swc.zst</code> cache; fine meshes are not persisted. <code>artistic</code>
       uses vertex-cluster mesh decimation. All methods
       use batched parallel online skeleton fetching across layers. The selector is available
-      for NeuPrint and FAFB tube renders; BANC uses its public SWC path and line mode bypasses it.</li>
+      for NeuPrint and FAFB/BANC tube renders; line mode bypasses it.</li>
     <li><b>Mesh Simplification</b>: defaults to 90% faces removed for fast and
       95% for fine/artistic in this tab, including FAFB/FlyWire;
-      line mode does not apply mesh simplification.</li>
+      line mode does not apply mesh simplification. <b>Use Default Mesh
+      Simplification</b> reverts a custom value to those defaults.</li>
     <li><b>Export Method</b>: webdriver (fast, needs Chrome 109+) or kaleido
       (stable fallback). <b>Export Scale</b> and <b>Export Views</b>.</li>
-    <li><b>Individual Profiles</b>: PDF/PPTX per neuron, with images per page
+    <li><b>Summary Format</b>: choose which profile document formats to write.</li>
+  </ul>
+  <p>The two cards above Advanced Settings:</p>
+  <ul>
+    <li><b>Individual Profiles (PDF / PPTX)</b>: PDF/PPTX per neuron, with
+      images per page
       and camera views. <b>Profile Granularity</b> decides how far the legend
       tree is walked to form one profile group: <i>Per legend entry</i>
       (<code>legend</code>, the default and the historical behaviour) follows
@@ -401,7 +421,7 @@
       because they read the identity every trace carries (<code>body</code>
       gives one profile per neuron leaf, so it can be many files). Companion
       soma meshes and pre/post sites always follow their owner's profile.</li>
-    <li><b>Rotating Video / GIF</b>: fps, degrees per frame, rotation axis,
+    <li><b>Export Video / GIF</b>: fps, degrees per frame, rotation axis,
       GIF scale.</li>
   </ul>
 

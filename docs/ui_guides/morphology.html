@@ -20,26 +20,29 @@
   </p>
   <ul>
     <li><b>Find Similar</b> — query-vs-all <b>morphological</b> similarity
-      search within one dataset (Vector or NBLAST method).
+      search within one dataset (Vector (spatial) or NBLAST method).
       <a href="find_similar.html">Find Similar guide</a></li>
     <li><b>Comparison</b> — N×N morphology comparison of already-identified
-      neurons within one dataset (type-level + bodyId-level matrices,
-      heatmaps, report).
+      neurons, within one dataset <b>or across datasets</b> (type-level +
+      bodyId-level matrices, heatmaps, report).
       <a href="morphology_comparison.html">Comparison guide</a></li>
   </ul>
 
-  <div class="callout warning">
-    <b>Cross-dataset vs intra-dataset:</b> morphological search and comparison
-    are <b>intra-dataset only</b> — skeletons are scored in one dataset's
-    coordinate space, and the vector caches are per-dataset. Cross-dataset
-    workflows belong in the <a href="connectivity.html">Connectivity</a> tab.
+  <div class="callout info">
+    <b>Cross-dataset vs intra-dataset:</b> Find Similar is intra-dataset.
+    The <b>Comparison</b> sub-tab switches to <b>cross-dataset morphology</b>
+    when two or more datasets are selected: it scores cross-dataset pairs with
+    the shared raw-basis vector engine (per-dataset caches, so no shared
+    coordinate space is needed) and writes one merged report — see the
+    <a href="cross_dataset_morphology.html">Cross-Dataset guide</a>.
   </div>
 
   <h2>Which sub-tab do I need?</h2>
   <table>
     <tr><th>Goal</th><th>Sub-tab</th></tr>
     <tr><td>Find neurons with similar skeleton shape to a query</td><td><b>Find Similar</b></td></tr>
-    <tr><td>Compare shapes of 2+ known neurons (same dataset)</td><td><b>Comparison</b></td></tr>
+    <tr><td>Compare shapes of 2+ known neurons (same dataset)</td><td><b>Comparison</b> (one dataset)</td></tr>
+    <tr><td>Compare neuron shapes across two or more datasets (homologs)</td><td><b>Comparison</b> (2+ datasets → cross-dataset mode)</td></tr>
   </table>
 
   <h2>Output</h2>

@@ -159,7 +159,9 @@ Progress: 25/50 sources (50.0%) |
 
 ## Documentation & Testing
 
-2. **docs/PathfindingOptimization_DFS.md** (new)
+2. **docs/PathfindingOptimization_DFS.md** (planned; never shipped —
+   see [PATHFINDING_PIPELINE.md](PATHFINDING_PIPELINE.md) for the shipped
+   algorithm documentation)
    - Complete documentation of the optimization
    - Algorithm explanation with examples
    - Performance analysis

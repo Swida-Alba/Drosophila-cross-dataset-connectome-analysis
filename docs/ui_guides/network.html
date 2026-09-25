@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Network - DROCAT Instructions</title>
+  <title>Net-Viz - DROCAT Instructions</title>
   <link rel="stylesheet" href="guide.css">
   <script src="guide-theme.js"></script>
 </head>
@@ -13,9 +13,9 @@
     <a class="back" href="README.html">&larr; Back to guides</a>
     <span class="tag">Network</span>
   </header>
-  <h1>Network (PlotPath)</h1>
+  <h1>Net-Viz (PlotPath)</h1>
   <p class="lede">
-    The <b>Network</b> tab turns pathway data into interactive graphs: a
+    The <b>Net-Viz</b> tab turns pathway data into interactive graphs: a
     Sankey flow diagram, a connection heatmap and a draggable Cytoscape network,
     plus an editable empty drawing canvas. It runs
     <code>vispath_pkg.VisualizePath</code> in the background. For neuron
@@ -24,7 +24,7 @@
 
   <h2>Quick start - path network</h2>
   <ol>
-    <li>Run <b>Find All Paths</b> first.</li>
+    <li>Run <b>Complete Paths</b> first.</li>
     <li>Upload its <code>*_allpaths_type.csv</code> (or
       <code>*_allpaths_info.xlsx</code>) file.</li>
     <li>Click <b>Generate Network</b>.</li>
@@ -59,13 +59,13 @@
   <h2 id="input-files">Network input files - full specification</h2>
   <p>The upload button accepts <b>CSV, XLSX and XLS</b> files. The backend
     (<code>VisualizePath</code>) auto-detects one of <b>three data
-    formats</b> inside the file, so you can feed it Find All Paths output, a
+    formats</b> inside the file, so you can feed it Complete Paths output, a
     simple edge list, or a connection matrix. Only one file is loaded at a
     time; uploading a new file replaces the previous one.</p>
 
-  <h3>Format 1 - Path-based (Find All Paths output)</h3>
+  <h3>Format 1 - Path-based (Complete Paths output)</h3>
   <p>Each row is one complete multi-hop path. This is the format produced by
-    the <a href="find_path.html">Find All Paths</a> tab.</p>
+    the <a href="find_path.html">Complete Paths</a> tab.</p>
   <table>
     <tr><th>Column</th><th>Required</th><th>Accepted names</th><th>Meaning</th></tr>
     <tr>
@@ -115,12 +115,12 @@ aMe12-&gt;PPL101-&gt;MBON01,"[63, 22]"</code></pre>
       hop; here <code>min_weight</code> would be 47 and 22 respectively.</p>
   </div>
 
-  <h4>Find All Paths files at a glance</h4>
+  <h4>Complete Paths files at a glance</h4>
   <table>
     <tr><th>File</th><th>Content</th></tr>
     <tr><td><code>{source}_to_{target}_allpaths_type.csv</code></td>
       <td>Type-level paths (<b>recommended</b> for visualization).</td></tr>
-    <tr><td><code>{source}_to_{target}_allpaths_bodyId.csv</code></td>
+    <tr><td><code>{source}_to_{target}_allpaths_bodyId_paths.csv</code></td>
       <td>bodyId-level paths (finer grain, more rows).</td></tr>
     <tr><td><code>{source}_to_{target}_allpaths_info.xlsx</code></td>
       <td>Excel workbook; the <code>path_type</code> /
@@ -316,9 +316,8 @@ PPL101,0,0,22</code></pre>
       CSV when unnamed) and feeds it straight to PlotPath, so the table must
       contain at least one complete edge (source, target, weight).</li>
     <li><b>Export CSV</b> downloads the draft as
-      <code>{name}_edge_list_{timestamp}.csv</code> through the browser;
-      when a Path Output Directory is set, a local copy with the same
-      timestamped name is saved there too. Optional columns are written only
+      <code>{name}_edge_list_{timestamp}.csv</code> through the browser.
+      Optional columns are written only
       when at least one row uses them. The pending-export marker is
       cleared.</li>
   </ul>
@@ -328,7 +327,7 @@ PPL101,0,0,22</code></pre>
     <li><b>Source buttons</b>: <b>Edge list editor</b> (build/edit an
       auto-saved edge list; default), <b>Empty canvas</b> (create an empty
       drawing canvas with the <b>Create Empty Canvas</b> button or the main
-      run button), or <b>File upload</b> (load Find All Paths output or any
+      run button), or <b>File upload</b> (load Complete Paths output or any
       format above).</li>
     <li><b>Path Output Directory</b>: every run creates its own
       <code>plot-network_{name}_{timestamp}/</code> subfolder inside it.</li>

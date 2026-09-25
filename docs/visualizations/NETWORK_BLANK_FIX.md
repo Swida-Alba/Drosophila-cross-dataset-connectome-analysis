@@ -67,8 +67,10 @@ const displayWeight = data.is_negative === 1 ? -data.weight : data.weight;
 
 ## Testing
 ```bash
-python scripts/PlotPath_TestNegatives.py
+python -m pytest tests/core/test_audit_fixes.py -k negative
 ```
+
+(The one-off `scripts/PlotPath_TestNegatives.py` harness has been removed.)
 
 **Expected Results**:
 - ✅ Network displays correctly (not blank)

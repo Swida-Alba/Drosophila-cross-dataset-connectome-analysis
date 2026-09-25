@@ -128,10 +128,6 @@ User Entry Points
 
 ---
 
-```
-
----
-
 ## Path Finding Methods
 
 ### [Path Finding Methods](./PathFinding_Methods.md)
@@ -205,6 +201,10 @@ profile = profiler.get_profile('aMe12', 'hemibrain:v1.2.1')
 print(profile.upstream_partners)
 print(profile.downstream_partners)
 ```
+
+**Confidence Thresholds**:
+- **Jaccard**: >0.5 Very High, >0.3 High, >0.2 Medium, >0.1 Low
+- **Rank Correlation**: ≥0.85 Very High, 0.7-0.85 High, 0.5-0.7 Medium, 0.3-0.5 Low
 
 ---
 
@@ -285,49 +285,6 @@ results = analyzer.run_comparison()
 ```
 
 **Example Script**: [`examples/Example_InterDatasetComparison.py`](../../archive/examples/comparison/Example_InterDatasetComparison.py)
-
----
-
-## ✨ Connectivity Profiling (NEW)
-
-### [ConnectivityProfiler Guide](./ConnectivityProfiler_Guide.md)
-Complete guide to building connectivity profiles with the 1-hop/2-hop hybrid approach.
-
-**Key Topics**:
-- Extracting connectivity profiles (upstream/downstream partners)
-- Similarity metrics: Jaccard, rank correlation, cosine
-- Batch verification with confidence levels
-- HTML reports with similarity matrices
-- Directional analysis (upstream vs downstream)
-
-**Quick Start**:
-```python
-from comparison import ConnectivityProfiler, ProfilerConfig
-
-# Configure profiler
-config = ProfilerConfig(
-    top_k_bodyid=20,        # Top 20 connections per direction
-    top_m_type=5,           # Ensure at least 5 unique partner types
-    min_synapse_threshold=3 # Filter weak connections
-)
-
-# Create profiler
-profiler = ConnectivityProfiler(
-    datasets=['hemibrain:v1.2.1', 'male-cns:v0.9'],
-    config=config
-)
-
-# Build profiles for a neuron type across datasets
-profiles = profiler.get_type_profiles(
-    'aMe12',
-    datasets=['hemibrain:v1.2.1', 'male-cns:v0.9']
-)
-print(profiles)
-```
-
-**Confidence Thresholds**:
-- **Jaccard**: >0.5 Very High, >0.3 High, >0.2 Medium, >0.1 Low
-- **Rank Correlation**: ≥0.85 Very High, 0.7-0.85 High, 0.5-0.7 Medium, 0.3-0.5 Low
 
 ---
 

@@ -130,8 +130,7 @@ print(f"Total: {cmat.size}")
 ### Want More Details?
 
 See comprehensive docs:
-- `docs/HEATMAP_OPTIMIZATION.md` - User guide with examples
-- `docs/HEATMAP_BACKEND_OPTIMIZATION.md` - Technical deep dive
+- [HEATMAP_OPTIMIZATION.md](HEATMAP_OPTIMIZATION.md) - User guide with examples
 
 ## Quality Trade-offs
 

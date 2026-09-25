@@ -314,7 +314,7 @@ connectivity-profile comparison. The policy per case:
   target is kept; profile weights distribute evenly across the branches
   instead of picking an arbitrary one. (Separately, the Cross-Dataset
   tab's Type Mapping panel can resolve a queried split **per neuron** —
-  see [AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md), "BodyId-level split
+  see [AUTO_TYPE_MAPPING](../AUTO_TYPE_MAPPING.md), "BodyId-level split
   resolution"; that view is informational and does not change run
   semantics.)
 - **Bridge-derived targets**: single bridge-derived targets are used and
@@ -364,7 +364,7 @@ the report's Type Mapping section; `auto_type_mapping.csv` gains additive
 `anchor_group`/`auto_only` columns (tagged only when every endpoint of a
 row belongs to that same group), and merged neuron-count rows carry their
 raw composition in a `group_members` column. Details:
-[AUTO_TYPE_MAPPING](AUTO_TYPE_MAPPING.md), "The query-anchored merge
+[AUTO_TYPE_MAPPING](../AUTO_TYPE_MAPPING.md), "The query-anchored merge
 policy".
 
 > **UI:** the web UI manages the same mappings as reusable presets —

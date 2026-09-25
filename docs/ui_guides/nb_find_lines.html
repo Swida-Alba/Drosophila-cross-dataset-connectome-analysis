@@ -50,8 +50,9 @@
       (e.g. <code>male-cns:v1.0 → male-cns:v0.9</code>,
       <code>manc:v1.2.3 → manc:v1.2.1</code>); expansion searches the hosted
       release's names.</li>
-    <li><b>Not hosted (disabled)</b> — BANC and optic-lobe have no
-      NeuronBridge records; runs targeting them warn but never block, in case
+    <li><b>Not hosted (disabled)</b> — datasets with no NeuronBridge records
+      (e.g. BANC, optic-lobe, fib19, mushroombody) are greyed out; runs
+      targeting them warn but never block, in case
       a snapshot is stale or the refresh failed.</li>
   </ul>
 
@@ -67,13 +68,13 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Datasets</td><td>the hosted releases</td><td>Multi-select; <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
+    <tr><td>Datasets</td><td>the hosted releases</td><td>Multi-select (labeled "Datasets ('(all)' or empty searches everywhere)"); <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
     <tr><td>Expand query names across datasets</td><td>on</td><td>Expand each name through the cross-dataset type mapper into every hosted release before searching (splits expand to all branch names, conflicts to none, unmapped keeps the raw name)</td></tr>
     <tr><td>Algorithm</td><td>cds</td><td>cds (fast), pppm (precise), both</td></tr>
     <tr><td>Top Lines for Images</td><td>30</td><td>When image download is enabled, download images only for the top N ranked lines (per category in separate mode); the search CSVs still contain all matches</td></tr>
-    <tr><td>Separate Split-GAL4</td><td>on</td><td>GAL4/LexA and Split-GAL4 summarized separately</td></tr>
+    <tr><td>Separate Split-GAL4 Results</td><td>on</td><td>GAL4/LexA and Split-GAL4 summarized separately</td></tr>
     <tr><td>Region</td><td>Brain</td><td>Brain, VNC, or All (image downloads)</td></tr>
-    <tr><td>Max Workers</td><td>8</td><td>Parallel API workers; lower if rate-limited</td></tr>
+    <tr><td>Max Workers</td><td>8</td><td>Parallel API workers; lower if rate-limited. These last four rows sit behind the collapsed <b>Advanced Settings</b> expansion</td></tr>
     <tr><td>Sort By</td><td>max</td><td>max score or completeness (coverage)</td></tr>
     <tr><td>Output detail</td><td>Full</td><td>Expanded Compact runs keep the newest N runs' match tables (default 1), prune older Compact runs' tables, and remove the downloaded images after the PDF/PPTX is generated (audited in <code>cleanup_audit.json</code>); a plain (non-expanded) Compact run deletes its match tables immediately once the summaries are written</td></tr>
     <tr><td>Compact: Keep Last N Runs' Match Tables</td><td>1</td><td>Rolling window for Compact: the newest N expanded runs keep their bodyId-level match tables; older Compact runs are pruned. 0 deletes immediately. Full ignores this.</td></tr>
@@ -89,9 +90,15 @@
     <li><b>Max Images / Line</b>: download cap per line.</li>
     <li><b>FlyLight Collections</b>: searched in priority order; missing lines
       automatically fall back to MCFO, RawImages, then NeuronBridge.</li>
-    <li><b>Simple Mode</b>: fewer representative files.</li>
-    <li><b>Organize by Region</b>: Brain/VNC subfolders.</li>
-    <li><b>PDF Summary</b> layout and background color.</li>
+    <li><b>Simple Mode</b> (labeled "Simple Mode (fewer files)"): fewer
+      representative files.</li>
+    <li><b>Organize by Region</b>: Brain/VNC subfolders; <b>Flat Folder
+      Structure</b> saves files directly instead.</li>
+    <li><b>PDF Summary</b> (on), <b>PPTX Summary</b> (off), <b>Summary
+      Background</b> (black / white), and the <b>PDF Images Per Page</b>
+      (cols 3 / rows 2) layout.</li>
+    <li>The <b>Output Directory</b> control (it inherits your saved default
+      otherwise) sits above the run button.</li>
   </ul>
 
   <h2>Output</h2>

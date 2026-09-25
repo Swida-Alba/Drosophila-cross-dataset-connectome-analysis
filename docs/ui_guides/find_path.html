@@ -37,9 +37,9 @@
     <tr><td><code>aMe12</code>, <code>aMe10</code> (source)</td><td>Two source types: all their bodyIds are starting points</td></tr>
     <tr><td><code>PPL101</code>, <code>PPL103</code> (target)</td><td>Two target types</td></tr>
     <tr><td><code>all_neurons</code> (source or target)</td><td>Loads the full (typed) neuron set on that side to fetch all adjacent neurons at the given thresholds. Replaces every other chip, and forces <b>Max Intermediate Layers = 0</b> (direct connections only). Source and target cannot both be <code>all_neurons</code>.</td></tr>
-    <tr><td><code>KC.*</code> with Filter = Starts with</td><td>Expands to <code>KC.*</code> - all KC types</td></tr>
+    <tr><td><code>KC.*</code> with Match by = Regex</td><td>Expands to all types starting with <code>KC</code> — pattern matching needs the <b>Match by = Regex</b> option (Starts with would match the literal string <code>KC.*</code>)</td></tr>
     <tr><td><code>720575940610453042</code></td><td>A single bodyId (kept as integer)</td></tr>
-    <tr><td><code>aMe12, aMe10</code> pasted</td><td>Both added as chips, duplicates removed</td></tr>
+    <tr><td><code>aMe12</code> then <code>aMe10</code>, Enter after each</td><td>Two chips — the whole typed text becomes <b>one</b> chip (commas are kept inside a name, never treated as separators); commit each entry with Enter</td></tr>
   </table>
 
   <h2 id="all-neurons-queries">All-neurons queries (<code>all_neurons</code>)</h2>
@@ -69,7 +69,7 @@
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th><th>Example</th></tr>
     <tr><td>Max Intermediate Layers</td><td>2</td><td>Path length: 0 = direct, 2 = two intermediates</td><td>3 finds longer circuits but is slower</td></tr>
     <tr><td>Min Synapse Count</td><td>3</td><td>Connections below this weight are removed</td><td>10 keeps only strong edges</td></tr>
-    <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap: maximum edges drawn per visualization (network / Sankey / heatmap, incl. the network_early preview); never changes fetching, the graph, or path outputs — a single complete path may exceed it to stay intact, and bodyId-level and type-level visualizations share the same cap</td><td>50 for very dense regions</td></tr>
+    <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap: maximum edges drawn per visualization (network / Sankey / heatmap); never changes fetching, the graph, or path outputs — a single complete path may exceed it to stay intact, and bodyId-level and type-level visualizations share the same cap</td><td>50 for very dense regions</td></tr>
     <tr><td>Edge Budget</td><td>1,000,000</td><td>Graph-level floor ('all' mode only). Fix D (budget-fit search): after the lossless prunes, a discovery cone exceeding this many bodyId edges is floored at the weakest weight tier whose lossless-closed cone still fits the cap — exactly equivalent to raising Min Synapse Count, reported as <code>edge_weight_floor</code> together with the residual slack and probe trace; when even the full closed cone fits, no floor is applied. 0 = off</td><td>0 to keep the full lossless-pruned cone</td></tr>
     <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight, threshold-free); no longer filters</td><td>—</td></tr>
     <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td><td>—</td></tr>
@@ -106,22 +106,30 @@
   <h2>Advanced options</h2>
   <ul>
     <li><b>Custom source/target names</b>: labels used in file and folder
-      names (e.g. <code>aMe_clock</code>).</li>
+      names (e.g. <code>aMe_clock</code>), plus <b>Save Folder Name</b> for a
+      custom output folder instead of the auto name — both live in the
+      Output Options card.</li>
     <li><b>Keywords to exclude</b>: paths containing e.g. <code>None</code>
       or <code>unknown</code> are removed.</li>
     <li><b>Skip BodyId in Output</b>: only type-level results are saved.</li>
-    <li><b>Cache Only (Offline)</b>: never contacts the server; requires a
+    <li><b>Use Cache</b>: reuse cached connection data (on by default);
+      <b>Cache Only (Offline)</b>: never contacts the server; requires a
       pre-built cache.</li>
-    <li><b>Save Folder Name</b>: custom output folder instead of the auto
-      name.</li>
+    <li><b>Show Figure</b>: open the interactive figures in the browser as
+      they are generated.</li>
+    <li><b>Custom Grouping</b>: map neurons into custom groups before the
+      comparison — see the <a href="label_mapper.html">label-mapper
+      guide</a>.</li>
+    <li><b>Find Reciprocal Connections</b> (a standalone Core Parameters
+      checkbox, off by default): also enumerate the reverse-direction paths
+      and write the <code>find_reciprocal/</code> outputs.</li>
     <li><b>Hemisphere analysis</b>: separate L/R labels, a left/right filter,
-      symmetry outputs, keep only hemisphere-conserved edges, find reciprocal
-      connections. See <a href="#hemisphere-analysis">Hemisphere analysis</a>
-      below.</li>
+      symmetry outputs, and keep only hemisphere-conserved edges. See
+      <a href="#hemisphere-analysis">Hemisphere analysis</a> below.</li>
   </ul>
 
   <h2 id="hemisphere-analysis">Hemisphere analysis</h2>
-  <p>Both Find All Paths and Find Direct can restrict or split the analysis
+  <p>Both Complete Paths and Shortest Paths can restrict or split the analysis
     by brain hemisphere. Hemisphere assignment is done automatically per
     neuron:</p>
   <ol>

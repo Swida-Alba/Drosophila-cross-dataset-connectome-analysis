@@ -18,14 +18,15 @@
     Compare connectivity profiles of neuron types (or bodyIds / custom groups)
     using identical metrics — Jaccard, weighted Jaccard, cosine, raw rank
     correlation and rank-correlation union (same metric set as the sibling
-    Find Similar sub-tab) — within one dataset or across several datasets at once.
+    Find Homolog sub-tab) — within one dataset or across several datasets at once.
   </p>
 
   <h2>Quick start</h2>
   <ol>
     <li>Enter 2+ neurons (e.g. <code>aMe12</code>, <code>aMe10</code>,
       <code>aMe9</code>).</li>
-    <li>Pick one or more datasets (two or more enables the cross-dataset mode).</li>
+    <li>Pick one or more datasets (one dataset with multiple thresholds is also
+      supported; two or more datasets enable the cross-dataset mode).</li>
     <li>Click <b>Run Comparison</b>; open <b>report.html</b> in the output folder
       for the overall summary of all heatmaps.</li>
   </ol>
@@ -35,7 +36,7 @@
     <tr><th>Query</th><th>Meaning</th></tr>
     <tr><td><code>aMe12, aMe10, aMe9</code></td><td>Three types compared pairwise</td></tr>
     <tr><td><code>720575940610453042, aMe12</code></td><td>BodyId vs type (mixed allowed)</td></tr>
-    <tr><td><code>KC.*</code> (Filter = Starts with)</td><td>All KC types compared — under <b>Aggregation Level = type</b> each matched KC type becomes its own independent row; under <b>custom group</b> the query is taken literally</td></tr>
+    <tr><td><code>KC.*</code> (Match by = Starts with)</td><td>All KC types compared — under <b>Aggregation Level = type</b> each matched KC type becomes its own independent row; under <b>custom group</b> the neuron query above is ignored (the board's groups fill the rows)</td></tr>
   </table>
 
   <h2>Multi-dataset (cross-dataset) mode</h2>
@@ -62,10 +63,10 @@
   <h2>Profile construction</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Top K Partners</td><td>15</td><td>Top partners per direction by synapse weight</td></tr>
+    <tr><td>Top K Partners</td><td>25</td><td>Top partners per direction by synapse weight</td></tr>
     <tr><td>Min Unique Types (M)</td><td>5</td><td>Minimum partner types; K expands automatically if fewer</td></tr>
     <tr><td>Min Synapse Threshold</td><td>3</td><td>Connection weight cutoff for profiles</td></tr>
-    <tr><td>Aggregation Level</td><td>type</td><td><b>type</b> (each matched type is one row; patterns expand to independent types), <b>bodyid</b> (per neuron), or <b>custom group</b> (rows from a LabelMapper preset — select one in the card that appears, managed in Settings)</td></tr>
+    <tr><td>Aggregation Level</td><td>type</td><td><b>type</b> (each matched type is one row; patterns expand to independent types), <b>bodyid</b> (per neuron), or <b>custom group</b> (rows from the <b>Custom Groups (LabelMapper)</b> panel that appears — define groups inline or reload them from history; see the <a href="label_mapper.html">label-mapper guide</a>)</td></tr>
     <tr><td>Direction</td><td>both</td><td>upstream, downstream, or both</td></tr>
   </table>
 
@@ -73,7 +74,7 @@
   <p>Let A and B be two connectivity profiles (a dict of partner type →
     weight, restricted to top-K partners per direction), and let ρ denote the
     Spearman rank correlation of two weight vectors. The metrics are the same
-    set used by the Find Similar sub-tab; rank correlations are raw (−1 to 1)
+    set used by the Find Homolog sub-tab; rank correlations are raw (−1 to 1)
     and there is no normalized 0–1 variant and no <code>combined</code> score.
     The <code>overall</code> matrix averages upstream and downstream
     connectivity.</p>
@@ -96,7 +97,8 @@
   <ul>
     <li><b>BodyId-Level Computation</b>: auto (skip over 1000 bodyIds),
       skip, or compute always.</li>
-    <li><b>Cluster Heatmaps (Ward)</b>: hierarchical reordering of matrices.</li>
+    <li><b>Generate Heatmaps</b>: hierarchical (Ward) reordering of matrices,
+      written as editable VisPath heatmaps plus Plotly heatmaps in the report.</li>
     <li><b>Show Figures</b>: open heatmaps in the browser.</li>
     <li><b>Pre-build Full Dataset Cache</b>: OFF by default - leave it off;
       the tool uses connections already cached. Turning it on fetches every

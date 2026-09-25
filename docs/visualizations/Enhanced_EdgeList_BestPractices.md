@@ -522,4 +522,4 @@ df['custom_metric'] = [...]   # Preserved for export
 - [Enhanced_EdgeList_Format.md](Enhanced_EdgeList_Format.md) - Complete documentation
 - [Enhanced_EdgeList_QuickRef.md](Enhanced_EdgeList_QuickRef.md) - Quick reference
 - [examples/Example_SimpleEdgeList.py](../../archive/examples/visualization/input_formats/Example_SimpleEdgeList.py) - Working examples
-- tests/test_enhanced_edgelist.py - Test suite
+- [tests/ui/test_edge_list_editor.py](../../tests/ui/test_edge_list_editor.py) - Test suite (the edge-list editor)

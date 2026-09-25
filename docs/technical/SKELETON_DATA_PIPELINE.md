@@ -18,7 +18,8 @@ Generators: `generate_skeleton_flows.py` in the same directory.
 
 This report merges and supersedes
 `docs/visualizations/FAFB_NEUPRINT_SKELETON_PIPELINE_PLAN.md` and the
-pipeline sections of `docs/visualizations/Skeleton_Data_Pipeline.md`.
+pipeline sections of `docs/visualizations/Skeleton_Data_Pipeline.md`
+(both superseded files have since been removed).
 
 ---
 

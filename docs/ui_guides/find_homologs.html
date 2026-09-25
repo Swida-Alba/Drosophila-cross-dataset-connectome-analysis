@@ -28,17 +28,19 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Enter one or more <b>Source Neurons</b> (types or bodyIds). Each
-      input is searched independently and receives its own output folder.</li>
+    <li>Enter one or more <b>Source Neurons</b> (types or bodyIds). All inputs
+      are expanded per type and aggregated into <b>one grouped output
+      folder</b> for the run.</li>
     <li>Choose <b>Source Dataset</b> and <b>Target Dataset</b> (set Target =
-      Source for a within-dataset search).</li>
+      Source for a within-dataset search) and, if needed, an <b>Output
+      Directory</b> (it inherits your saved default otherwise).</li>
     <li>Click <b>Find Homologs</b> (Fast Search is on by default).</li>
   </ol>
 
   <h2>Inputs &amp; examples</h2>
   <table>
     <tr><th>Source</th><th>Datasets</th><th>Result</th></tr>
-    <tr><td><code>aMe12</code></td><td>male-cns:v0.9 → hemibrain:v1.2.1</td><td>Top 30 hemibrain candidates ranked by profile similarity</td></tr>
+    <tr><td><code>aMe12</code></td><td>male-cns:v0.9 → hemibrain:v1.2.1</td><td>Top hemibrain candidates ranked by profile similarity (default top 100)</td></tr>
     <tr><td><code>720575940610453042</code></td><td>hemibrain:v1.2.1 → male-cns:v1.0</td><td>Candidates for one bodyId</td></tr>
     <tr><td><code>KC.*</code></td><td>same dataset twice</td><td>Intra-dataset redundancy check</td></tr>
   </table>
@@ -46,11 +48,11 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Top N Candidates</td><td>30</td><td>Number of ranked candidates returned</td></tr>
-    <tr><td>Top K Partners</td><td>15</td><td>Partners per direction in the profile</td></tr>
+    <tr><td>Top N Candidates</td><td>100</td><td>Number of ranked candidates returned</td></tr>
+    <tr><td>Top K Partners</td><td>25</td><td>Partners per direction in the profile</td></tr>
     <tr><td>Min Types (M)</td><td>5</td><td>Minimum unique partner types</td></tr>
     <tr><td>Min Synapse Threshold</td><td>3</td><td>Connection weight cutoff</td></tr>
-    <tr><td>Sort By</td><td>cosine</td><td>Ordering metric for the candidate list (top-N cut) — jaccard, cosine, rank_corr, rank_union. Sorting only: ALL metrics are always computed (same metric set as the sibling Comparison sub-tab).</td></tr>
+    <tr><td>Sort By</td><td>jaccard</td><td>Ordering metric for the candidate list (top-N cut) — jaccard, rank_union, cosine (rank_corr is always computed but not selectable). Sorting only: ALL metrics are always computed (same metric set as the sibling Comparison sub-tab).</td></tr>
   </table>
 
   <h2>Similarity metric formulas</h2>
@@ -91,7 +93,11 @@
     <li><b>Vector Pre-filtering</b>: cosine pre-filter for speed.</li>
     <li><b>2-Hop Expansion</b>: include untyped partners via 2-hop typed
       partners.</li>
-    <li><b>Visualize Candidates</b>: render the queried neuron plus the top-N
+    <li><b>Use Cache</b>: reuse cached connection profiles (on by default;
+      the Settings tab's skeleton-cache callout explains what is cached).</li>
+    <li><b>Visualize Top N Candidates</b>: how many ranked matches to render
+      (default 5) when visualization is on — render the queried neuron plus
+      the top-N
       matches as 3D skeletons. For cross-dataset searches, the query is
       transformed into the target brain and rendered inside the target scenes
       as the <code>query_transformed_*</code> overlay layer (a standalone

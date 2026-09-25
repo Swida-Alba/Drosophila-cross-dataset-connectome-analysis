@@ -15,8 +15,8 @@
   </header>
   <h1>Settings</h1>
   <p class="lede">
-    Tokens, dataset availability, default output directory, persistent tab
-    defaults and dataset preparation.
+    Tokens, dataset availability, custom type mappings, default output
+    directory, persistent tab defaults and dataset preparation.
   </p>
 
   <h2>API tokens</h2>
@@ -41,14 +41,13 @@
 
   <h2>Dataset availability</h2>
   <p>Local dataset folders are shown as soon as the page opens. Click
-    <b>Refresh</b> to re-check converted tables and query server metadata. The
-    status column shows:</p>
+    <b>Refresh</b> to re-check converted tables and query server metadata.
+    Each dataset row shows its source badge (NeuPrint / FAFB / BANC), a
+    neuron-count figure, and two status chip groups:</p>
   <table>
-    <tr><th>Status</th><th>Meaning</th></tr>
-    <tr><td>✓ local</td><td>Full local data files ready</td></tr>
-    <tr><td>◐ cached</td><td>Partial local cache exists</td></tr>
-    <tr><td>☁ server</td><td>Available online (token required)</td></tr>
-    <tr><td>not ready</td><td>No token or no data</td></tr>
+    <tr><th>Chip group</th><th>States</th><th>Meaning</th></tr>
+    <tr><td>server</td><td>available / no token / timeout / unreachable / hidden / unknown</td><td>Result of the online metadata probe (token, reachability, or intentionally hidden from the selector)</td></tr>
+    <tr><td>metadata · connectivity · viz</td><td>ready / on-demand / partial / missing</td><td>Local data readiness per layer: prepared tables, the connection cache, and visualization assets</td></tr>
   </table>
 
   <h2>Dataset and connection cache</h2>
@@ -73,7 +72,11 @@
     affect progress granularity; larger batches only reduce the repeated
     per-batch metadata queries. The <b>Parallel workers</b> field above sets how
     many skeleton fetches run concurrently - raising it is the main speed
-    lever (up to what the server tolerates). The connection pull uses the
+    lever (up to what the server tolerates). A running pull (dataset or
+    skeletons) can be stopped with its <b>Cancel</b> button. FAFB is the one
+    dataset <b>Download All Skeletons</b> cannot fetch: FAFB skeletons require
+    the manual Codex download described in the preparation section below
+    (BANC skeletons come from its public release bucket). The connection pull uses the
     batched builder and shared
     <code>cache/&lt;dataset&gt;/connections.parquet</code> cache, so it
     can resume an interrupted pull. Enable <b>Force rebuild</b> only when the
@@ -126,12 +129,21 @@
     timestamped subfolder.</p>
 
   <h2>App settings</h2>
-  <p>The <b>Input Auto-Suggestion</b> toggle controls the type-ahead
-    suggestions in every neuron query box (the analysis tabs, the mapping and
-    layer panels) and in the Advanced Layer Editor's neuron cells: dataset type
-    / instance / bodyId names while typing, plus a Recent/Frequent query
-    history when the field is empty. A pick adds its chip and then keeps that
-    query's rows on screen, and the history marks them the same way: a name
+  <p>Two toggles control the shared chip inputs (the analysis tabs, the
+    mapping and
+    layer panels, and the Advanced Layer Editor's neuron cells):</p>
+  <ul>
+    <li><b>Input Auto-Suggestion</b> controls the type-ahead suggestions:
+      dataset type /
+      instance / bodyId names while typing. Disabling it restores plain chip
+      inputs (the query-history list below is unaffected).</li>
+    <li><b>Show Query History</b> controls the Recent/Frequent list that
+      appears when the field is empty. Disabling it hides the history list
+      but keeps live type-ahead suggestions.</li>
+  </ul>
+  <p>While a suggestion/history list is open, a pick adds its chip and then
+    keeps that
+    query's rows on screen, and the list marks them the same way: a name
     already in the input stays listed, tinted and ticked — so several entries can
     be handled from one list without retyping and the rows never shift under the
     pointer. Clicking a ticked row takes that chip back out, exactly like the
@@ -142,8 +154,7 @@
     leaves it from the first row; <b>Enter</b> adds the highlighted entry — or
     removes it, when that row is ticked — and moves the highlight to the next
     one, so a run of picks works without the
-    mouse. Disabling the toggle restores plain chip inputs. The change is
-    saved immediately and applies to every input.</p>
+    mouse. Both toggles are saved immediately and apply to every input.</p>
 
   <h2>Default Settings</h2>
   <p>Tool-tab selections remain one-time: changing a control inside a tab
@@ -160,7 +171,7 @@
     <tr><td>Connection Thresholds</td><td>Min Synapse Count, Visualization Edge Limit (Min Connection Ratio / Min Traversal Probability were removed — F9 readout columns)</td><td>Find Path, Find Shortest, Network, Cross-Dataset, Connectivity (Find Homolog + Comparison), Morphology</td></tr>
     <tr><td>Cache &amp; Data</td><td>Connection Cache (Use Cache), Cache Only, Skeleton Cache (Cache Neurons), Cache Synapses, Auto Type Mapping</td><td>Pathfinding tabs, similarity searches, skeleton rendering</td></tr>
     <tr><td>Pathfinding &amp; Output</td><td>Skip BodyId-Level Export, Output Format, Run Guide Format, Network Layout, Max Paths (BodyId) (path-output budget, reported tau), Edge Budget (graph-level floor, 'all' mode only), Drop Untyped Neurons (neuron-label filter, on by default), Show Figure, Max Intermediate Layers (the Pathfinding Algorithm entry was removed — StrongestFirst is built-in)</td><td>Pathfinding, Cross-Dataset and export surfaces</td></tr>
-    <tr><td>3D Skeleton Rendering</td><td>Skeleton Mode, Simplification Method, Show Soma, Legend Mode, Background, Brain Mesh, Export Views</td><td>Visualization → Skeleton tab and the Advanced Visualization editor in analysis tabs</td></tr>
+    <tr><td>3D Skeleton Rendering</td><td>Skeleton Mode, Simplification Method, Legend Mode, Background, Brain Mesh, Export Views</td><td>Visualization → Skeleton tab and the Advanced Visualization editor in analysis tabs</td></tr>
     <tr><td>Similarity &amp; Comparison Search</td><td>Top N/K/M, Similarity Metric, Fast Search, Vector Pre-filtering, Candidate Cap/Source, NeuronBridge controls</td><td>Connectivity (Find Homolog), Morphology (Find Similar), NeuronBridge tabs</td></tr>
   </table>
   <div class="callout tip">
@@ -181,6 +192,20 @@
     <b>disabled</b> to skip writing it. The environment variable
     <code>DROCAT_RUN_GUIDE_FORMAT</code> overrides this setting.
   </div>
+
+  <h2>Custom Type Mappings</h2>
+  <p>The <b>Custom Type Mappings</b> card holds the same group editor the
+    tool tabs mount as <b>Custom Mapping</b> / <b>Custom Grouping</b>: pick
+    the <b>Target datasets</b>, then build aligned custom groups on the board
+    (one row per label, one member input per selected dataset — see the
+    <a href="label_mapper.html">label-mapper guide</a> for the editor, the
+    history pulldown and the file format). The card adds an outlined
+    <b>Save Mapping</b> action: it writes the stable <code>Custom
+    Mapping</code> preset to <code>cache/user_mappings.json</code> and
+    exports it to <code>cache/user_mappings/</code>. Saving does <b>not</b>
+    attach the preset to future runs — no tab auto-loads saved presets;
+    reload the exported JSON onto any board with the editor's <b>Load…</b>
+    button.</p>
 
   <h2>Dataset preparation</h2>
   <div class="callout info">

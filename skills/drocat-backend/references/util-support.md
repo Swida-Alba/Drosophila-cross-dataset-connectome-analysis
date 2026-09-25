@@ -26,7 +26,7 @@ from src.utils.neuron_filter import ...   # apply filter-by mode (bodyId / type)
 ```
 
 Used by the pathfinding tabs to convert raw chips into resolved queries
-(`apply_filter_mode`). Check the module for the exact helpers.
+(`NeuronFilter`, `parse_neuron_query`). Check the module for the exact helpers.
 
 ## flywire_readiness (`src/utils/flywire_readiness.py`)
 

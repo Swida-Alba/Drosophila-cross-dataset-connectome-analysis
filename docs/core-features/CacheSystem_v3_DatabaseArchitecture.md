@@ -1,5 +1,7 @@
 # Cache System v3.0: Database Architecture
 
+> **⚠️ Superseded by the v4 cache** — see [CacheSystem_Guide_v4.md](./CacheSystem_Guide_v4.md) and [CacheSystem_v4_Implementation.md](./CacheSystem_v4_Implementation.md) for the current architecture. Kept for history.
+
 ## Overview
 
 **Cache System v3.0** introduces a database-style architecture with **neuron registry** and **query index**, enabling flexible local search and eliminating the need for neuron count in cache keys.

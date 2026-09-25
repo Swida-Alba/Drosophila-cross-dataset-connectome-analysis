@@ -35,16 +35,33 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Select <b>two or more datasets</b> (the list is limited to the
-      eligible ones).</li>
+    <li>Select <b>two or more datasets</b> (the list shows every dataset;
+      pairs without a bridging transform are refused at run time with the
+      red banner).</li>
     <li>Enter the <b>Neurons to Compare</b> — types or patterns (e.g.
-      <code>APDN3</code>, <code>aMe.*</code>). Each type is resolved in
-      every dataset by same-name/pattern; a type missing in one dataset
-      shows up as an explicit empty row in the report.</li>
+      <code>APDN3</code>, <code>aMe.*</code>). With <b>Auto Type Mapping</b>
+      on (the default), types are resolved through the shared validity-aware
+      resolver — curated renames (e.g. APDN3 → SLP249) and valid splits
+      resolve across datasets, and conflicted types fail closed; a type
+      missing in one dataset shows up as an explicit empty row in the
+      report. Turn the mapping off to fall back to raw same-name/pattern
+      resolution.</li>
     <li>Optionally pick a <b>Reference Template</b> for the overlay scenes
       (defaults to the first selected dataset).</li>
-    <li>Click <b>Run Cross-Dataset Comparison</b>.</li>
+    <li>Click <b>Run Comparison</b> (the same button as the intra-dataset
+      mode — two or more selected datasets switch it to this mode).</li>
   </ol>
+
+  <h2>Cross-dataset options</h2>
+  <ul>
+    <li><b>Auto Type Mapping</b> (on): validity-aware cross-dataset type
+      resolution, as described above.</li>
+    <li><b>Null Sample Size</b> (default 200, range 10–1000): how many
+      seeded random target neurons per query feed the null baseline.</li>
+    <li><b>3D Overlay Scenes</b> (on): render the bridged overlay scenes.</li>
+    <li><b>Fetch Missing Skeletons Online</b> (on): fetch skeletons that are
+      not in the local cache.</li>
+  </ul>
 
   <h2>How scoring works</h2>
   <ul>

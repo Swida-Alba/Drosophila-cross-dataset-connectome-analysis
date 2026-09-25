@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Network - DROCAT Instructions</title>
+  <title>Find Network - DROCAT Instructions</title>
   <link rel="stylesheet" href="guide.css">
   <script src="guide-theme.js"></script>
 </head>
@@ -25,16 +25,19 @@
     <b>Limited scope:</b> the network contains only direct connections whose
     BOTH endpoints are in the queried set — intermediate neurons are never
     involved. For a more complete network that also involves intermediate
-    neurons, use the <b>Find Path</b> tab with <b>Find Reciprocal
+    neurons, use the <b>Complete Paths</b> tab with <b>Find Reciprocal
     Connections</b> enabled.
   </div>
 
   <h2>Quick start</h2>
   <ol>
+    <li>Pick the <b>dataset</b> and, if needed, an <b>Output Directory</b>
+      (it inherits your saved default otherwise).</li>
     <li>Add the <b>Query Neurons</b> (e.g. <code>aMe12</code>,
       <code>PPL101</code>, or an uploaded list).</li>
-    <li>Set <b>Min Synapse Count</b> (plus ratio/probability thresholds if
-      needed).</li>
+    <li>Set <b>Min Synapse Count</b>. Optionally define <b>Custom Groups</b>
+      (label-mapper panel) or set a <b>Custom Group Name</b> / <b>Save Folder
+      Name</b> for the run.</li>
     <li>Click <b>Find Network</b>.</li>
   </ol>
 
@@ -42,12 +45,14 @@
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
     <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight</td></tr>
-    <tr><td>Min Connection Ratio</td><td>0.0</td><td>Minimum weight/post ratio</td></tr>
-    <tr><td>Min Traversal Prob.</td><td>0.0</td><td>Traversal probability threshold</td></tr>
-    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names</td></tr>
+    <tr><td>Min Connection Ratio</td><td>hidden</td><td>Hidden control; the run always sends 0.0. A readout column only — it no longer filters</td></tr>
+    <tr><td>Min Traversal Prob.</td><td>hidden</td><td>Hidden control; the run always sends 0.0. A readout column only — it no longer filters</td></tr>
+    <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
+    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names (Advanced Settings)</td></tr>
+    <tr><td>Use Cache / Cache Only / Drop Untyped Neurons</td><td>on / off / checked</td><td>Advanced Settings: reuse cached connections, force offline, and drop edges touching untyped neurons (same shared predicate as the path tabs)</td></tr>
     <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
     <tr><td>Skip BodyId in Output</td><td>on</td><td>Skip the bodyId-level connection table</td></tr>
-    <tr><td>Hemisphere options</td><td>off</td><td>Same semantics as Find All Paths — see
+    <tr><td>Hemisphere options</td><td>off</td><td>Same semantics as Complete Paths — see
       <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a></td></tr>
   </table>
 
@@ -77,7 +82,7 @@
     parameters.csv
     connection_info_bodyId.csv      # (when Skip BodyId is off)
     connection_custom_groups.csv    # (when a custom grouping is used)
-    hemisphere_unconserved_edges.csv# (when the conserved filter is on)
+    hemisphere_unconserved_edges.csv (when the conserved filter is on)
   visualization/
     Network_*.html, Heatmap_*.html  # NO Sankey
     visualization_data/             # *_data_connections.csv,
@@ -85,9 +90,9 @@
                                     # network_edges_input.csv
   user_warning_notes.txt            # (when any output-affecting option applied)</code></pre>
 
-  <h2>Find Network vs Find Path + Find Reciprocal</h2>
+  <h2>Find Network vs Complete Paths + Find Reciprocal</h2>
   <table>
-    <tr><th></th><th>Find Network</th><th>Find Path + Find Reciprocal</th></tr>
+    <tr><th></th><th>Find Network</th><th>Complete Paths + Find Reciprocal</th></tr>
     <tr><td>Node set</td><td>exactly the queried neurons</td><td>queried neurons + all discovered intermediates</td></tr>
     <tr><td>Edges</td><td>direct connections within the query set</td><td>path edges, plus ALL direct connections among path-graph nodes</td></tr>
     <tr><td>Depth</td><td>1 hop only</td><td>up to Max Layers</td></tr>

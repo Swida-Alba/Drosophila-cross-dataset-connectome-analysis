@@ -1,5 +1,7 @@
 # Cache Storage Optimization: Why We Only Store BodyId Pairs
 
+> **⚠️ Superseded by the v4 cache** — see [CacheSystem_Guide_v4.md](./CacheSystem_Guide_v4.md) and [CacheSystem_v4_Implementation.md](./CacheSystem_v4_Implementation.md) for the current architecture. Kept for history.
+
 ## The Key Insight
 
 **Neuron metadata (type, instance) is already stored locally!**

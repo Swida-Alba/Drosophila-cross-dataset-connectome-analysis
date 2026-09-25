@@ -377,7 +377,7 @@ Finds morphologically similar neurons (vectorized skeleton comparison).
 Example: `similar-morphology_flywire_FAFB_v783_aMe12_20260815_143601/`
 
 ### Key Output Files
-*   **`results.csv`**: BodyId-level similarity results — columns `rank`, `target_bodyId`, `target_type`, `target_instance`, `similarity`, `type_coverage`, `profile_similarity`, `roi_similarity`, `is_same_type`, `intra_type_similarity`, `method`, `metric` (column order mirrors `type_summary.csv`; `sim_shape`/`sim_spatial` per-block scores and `source_bodyId`/`source_type`/`pool_stage` appear when applicable (the removed `sim_topology`/`sim_roi` columns no longer occur)). All pair rows are kept — including contralateral NBLAST scores, which are unreliable (mirror arbors score at chance) and therefore excluded from type means only
+*   **`results.csv`**: BodyId-level similarity results — columns `rank`, `target_bodyId`, `target_type`, `target_instance`, `similarity`, `type_coverage`, `profile_similarity`, `roi_similarity`, `is_same_type`, `intra_type_similarity`, `method`, `metric` (column order mirrors `type_summary.csv`; `sim_shape`/`sim_spatial` per-block scores and `source_bodyId`/`source_type`/`pool_stage` appear when applicable (`sim_topology` no longer occurs; `sim_roi` still appears whenever the ROI scoring block is present)). All pair rows are kept — including contralateral NBLAST scores, which are unreliable (mirror arbors score at chance) and therefore excluded from type means only
 *   **`type_summary.csv`**: Type-level summary — columns `rank`, `target_type`, `similarity`, `n_bodyids`, `profile_similarity`, `roi_similarity`, `is_intra_type`, `intra_type_similarity`, `method`, `metric` (vector_v2 adds `similarity_raw`, `similarity_max`, `type_coverage`, and the `sim_*` per-block means; vector_v2 type scores are weighted continuously by `sqrt(type_coverage)`). NBLAST type means aggregate **ipsilateral pairs only** — opposite-side pairs are excluded, types with exclusively contralateral evidence are omitted from the ranking, and `n_bodyids` counts ipsilateral + unknown-side members; the vector method lateral-normalizes, so both sides count
 *   **`README.txt`**: Run summary
 
@@ -1253,7 +1253,7 @@ full requested top-N, including matches below the cutoff; see
 
 ---
 
-## 10. FlyLight Image Downloader (FlyLightDownloader)
+## 11. FlyLight Image Downloader (FlyLightDownloader)
 
 The `FlyLightDownloader` class (in `src/flylight_downloader.py`) downloads confocal images for driver lines.
 
@@ -1273,7 +1273,7 @@ Example: `flylight-downloads_SS01015_VT037867_SS46115_20260815_145503/`
 
 ---
 
-## 11. CrossDatasetTypeMapper (Type Mapping Utility)
+## 12. CrossDatasetTypeMapper (Type Mapping Utility)
 
 The `CrossDatasetTypeMapper` class (in `src/comparison/cross_dataset_type_mapper.py`) provides automatic type name mapping across datasets.
 
@@ -1301,7 +1301,7 @@ When resolving types, the priority is: male-cns > flywire > manc > hemibrain > o
 
 ---
 
-## 12. Exported Run User Guide (`_UserGuide_please_read_me`)
+## 13. Exported Run User Guide (`_UserGuide_please_read_me`)
 
 Every successful UI run exports a self-contained guide into the run folder
 root: **`_UserGuide_please_read_me.html`** by default (the leading `_` keeps

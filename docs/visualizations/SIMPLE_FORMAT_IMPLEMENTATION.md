@@ -294,7 +294,7 @@ Potential additions:
 - [SIMPLE_INPUT_FORMAT.md](SIMPLE_INPUT_FORMAT.md) - Complete format guide
 - [README.md](README.md) - Updated with examples
 - [VISPATH_FILE_SUPPORT.md](VISPATH_FILE_SUPPORT.md) - File handling
-- [docs/VisualizeSelectedPaths_Guide.md](VisualizeSelectedPaths_Guide.md) - Full class documentation
+- [VISPATH_FILE_SUPPORT.md](VISPATH_FILE_SUPPORT.md) - File handling and format support
 
 ---
 

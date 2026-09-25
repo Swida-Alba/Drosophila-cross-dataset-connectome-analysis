@@ -146,7 +146,8 @@ link = dict(
 - **Weight Range**: -105 to +220
 
 ### Test Script
-- **File**: `scripts/PlotPath_TestNegatives.py`
+- **File**: `scripts/PlotPath_TestNegatives.py` (removed; the contract
+  is now covered by `tests/core/test_audit_fixes.py::test_negative_values_are_folder_safe`)
 - **Output**: `test_negative_output/` directory
 - **Validations**:
   - Network displays correctly (not blank)

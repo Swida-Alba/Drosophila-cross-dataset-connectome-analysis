@@ -15,40 +15,47 @@
   </header>
   <h1>Custom Type Mappings</h1>
   <p class="lede">
-    Group neuron types across datasets into reusable presets for
-    cross-dataset comparison and pathfinding (LabelMapper format).
+    Group neuron types across datasets into custom groups for cross-dataset
+    comparison and pathfinding (LabelMapper format).
   </p>
 
   <h2>UI workflow</h2>
-  <p>Mappings are managed as <b>reusable presets</b> — no scripting needed:</p>
+  <p>Mappings are built <b>inline on each tab</b> — no scripting needed:</p>
   <ol>
-    <li><b>Settings tab &rarr; Custom Type Mappings</b>: choose the
-      <b>Target datasets</b> on the left, then open <b>Custom Mapping</b> on the
-      right — one row per custom group, one aligned member input per selected
-      dataset, outlined chip fields, dataset-aware type-ahead with a Recent list
-      in each member input (a pick keeps that query's rows on screen and ticks
-      the names already added &mdash; in either list, and a ticked row takes its
-      chip back out on the next click &mdash; and a Recent row hints at the
-      column's own
-      dataset when that name actually exists there), and a
-      <b>See available neurons</b> lookup.
-      The outlined <b>Save Mapping</b> action sits in the group action row,
-      saves the stable <code>Custom Mapping</code> preset, and makes it active in
-      <code>cache/user_mappings.json</code> (gitignored); it also exports it to
-      <code>cache/user_mappings/</code> for runs.</li>
-    <li><b>Cross-Dataset tab &rarr; Custom Type Mapping</b>: the chosen preset
-      is passed to the comparison as <code>overall_mapping_json</code>. It acts
-      as a mapping <b>overlay</b>: your explicit source/target neuron queries
-      stay, and only neurons matching the mapping are renamed to their custom
-      groups (unmapped neurons keep their identifiers).</li>
-    <li><b>Find All Paths / Network / Shortest Paths / Connectivity
-      &rarr; Comparison sub-tab &rarr; Custom Grouping</b>: the same
-      preset is passed as <code>custom_mapping_file</code>; mapped neurons are
-      grouped at type level via <code>EnrichConnectionTable</code>
-      (custom_group columns).</li>
+    <li><b>Open the tab's mapping panel.</b> The <b>Cross-Dataset
+      Comparison</b> tab mounts it as <b>Custom Mapping</b>; <b>Complete
+      Paths</b>, <b>Network</b>, <b>Shortest Paths</b> and <b>Connectivity's
+      Comparison sub-tab</b> mount it as <b>Custom Grouping</b> (the Settings
+      tab's <b>Custom Type Mappings</b> card offers the same editor). Choose the
+      <b>Target datasets</b> where offered, then edit the board — one row per
+      custom group, one aligned member input per selected dataset, outlined chip
+      fields, dataset-aware type-ahead with a Recent list in each member input
+      (a pick keeps that query's rows on screen and ticks the names already
+      added &mdash; in either list, and a ticked row takes its chip back out on
+      the next click &mdash; and a Recent row hints at the column's own dataset
+      when that name actually exists there), and a <b>See available
+      neurons</b> lookup.</li>
+    <li><b>Define your groups and run.</b> At run time the board is exported to
+      <code>cache/user_mappings/_inline/&lt;tab&gt;_&lt;timestamp&gt;.json</code>
+      and passed to the run — as <code>overall_mapping_json</code> on the
+      Cross-Dataset tab, where it acts as a mapping <b>overlay</b> (your
+      explicit source/target neuron queries stay, and only neurons matching the
+      mapping are renamed to their custom groups; unmapped neurons keep their
+      identifiers), or as <code>custom_mapping_file</code> on the path/network
+      tabs, where mapped neurons are grouped at type level via
+      <code>EnrichConnectionTable</code> (custom_group columns).</li>
+    <li><b>Reuse a mapping later</b> via <b>Load…</b> (parses any mapping JSON
+      back onto the board, so a run is exactly reproducible from its exported
+      file) or the <b>history pulldown</b> (below).</li>
+    <li><b>Optional — save a named copy in Settings.</b> The Settings tab's
+      <b>Custom Type Mappings</b> card adds a <b>Save Mapping</b> action that
+      writes the stable <code>Custom Mapping</code> preset to
+      <code>cache/user_mappings.json</code> (gitignored) and exports it to
+      <code>cache/user_mappings/</code>. Saving does <b>not</b> attach the
+      preset to future runs — no tab auto-loads saved presets; bring the JSON
+      back onto a board with <b>Load…</b> when you want it.</li>
   </ol>
-  <p>The <code>Custom Mapping</code> preset can be overwritten by saving an
-    updated board; runs always consume the exported file, so results stay reproducible
+  <p>Runs always consume the exported file, so results stay reproducible
     (<code>label_map.json</code> / <code>parameters.json</code> record the
     mapping used).</p>
 
@@ -99,8 +106,8 @@
     happy when a label has members in only some datasets.
   </div>
 
-  <h2>Preset file format (JSON)</h2>
-  <p>The exported preset uses LabelMapper's native JSON schema — one mapping
+  <h2>Mapping file format (JSON)</h2>
+  <p>The exported mapping uses LabelMapper's native JSON schema — one mapping
     per role, a <code>custom_label</code> list of group names, and one list of
     group lists per dataset:</p>
   <pre>{
@@ -148,7 +155,7 @@
 
   <div class="callout tip">
     <b>Reproducibility</b>: each run records the mapping file it consumed
-    (<code>label_map.json</code> / <code>parameters.json</code>), so a preset
+    (<code>label_map.json</code> / <code>parameters.json</code>), so a mapping
     can be edited later without invalidating past results.
   </div>
 </main>

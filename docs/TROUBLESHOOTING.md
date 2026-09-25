@@ -11,7 +11,7 @@ Comprehensive troubleshooting guide for the Drosophila Connectome Analysis Toolk
   - [Platform-Specific Issues](#platform-specific-issues)
 - [Server & Connection Issues](#server--connection-issues)
 - [Authentication & API Issues](#authentication--api-issues)
-- [FlyWire Data Download Issues](#flywire-data-download-issues)
+- [FAFB and BANC Release Preparation Issues](#fafb-and-banc-release-preparation-issues)
 - [3D Visualization Issues](#3d-visualization-issues)
   - [WebDriver Export Errors](#webdriver-export-errors)
   - [Kaleido Export Errors](#kaleido-export-errors)

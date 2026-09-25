@@ -463,7 +463,9 @@ that makes the claim lookups raise:
   mapper-claimed → pool/source with its band — then the harvest by target type
   and one row per pooled target); the tab names
   the STORES the cells were scored against (§P7a's `input_fingerprint`: git
-  rev, target universe, mapper snapshot), because the scores
+  rev, target universe, mapper snapshot, and — since 2026-09-25 — the
+  morphology stores a native score was read out of: the target's V2 vector
+  cache, its whitener sidecar and the raw skeleton count), because the scores
   and the comparison both read stores that can move, so a cell is only
   comparable with another run that read the same ones — and it says so when a
   run predates the fingerprint. On a pooling run the report's HERO leads with
@@ -937,6 +939,32 @@ source-side rows) and cost one doomed skeleton fetch per swapped row. With the
 orientation fixed the same hemibrain pair scores **76 of 76** requested pairs
 with the null bar unchanged (`p95 = 0.319, n = 55`), and two consecutive runs
 are byte-equal on every graded value.
+
+**A first run's native scores are now the same numbers its repeat prints.**
+Byte-equality across consecutive runs held only once BOTH runs were warm, and
+the 2026-09-25 FAFB→BANC pooling pair exposed why: `SkeletonVectorCache
+.vectors_for(body_ids, compute_missing=True)` answered in two spaces at once —
+rows already persisted came back standardized by the cache's `mean`/`std`,
+while rows the call vectorized itself were handed back RAW. Every native-track
+caller (`_finalize_mapping_ref_bars`, the supervised floors at
+`mapping_validation.run_morphology`, the cross-dataset enrichment) whitens what
+it is given and takes a per-block cosine, so a cold neuron was graded against
+its own reference pool across a space break. One run measured this directly:
+the cold run and its warm repeat — byte-identical `input_fingerprint` on every
+cell the fingerprint carried — disagreed on **107 of 1266** exported rows and
+**16 `in_pool` decisions**, with single scores moving up to 0.85. Re-feeding
+the same vectors through the same scorer reproduced the cold run's published
+value for all 681 scoring units when exactly the 34 ids that call had to
+vectorize were passed raw, and the warm run's for all 681 with nothing raw
+(max residual 3.3e-16, i.e. float summation order). The target-vector store was
+ruled out first: its A/B arms (`use_vector_store` on/off) agree to 16 digits.
+The method now returns ONE space per call — `space='standardized'` by default,
+`space='raw'` for the caller that applies its own statistics — it persists the
+raw row and hands back the standardized one, and
+`input_fingerprint.morph_stores` names the vector cache, pending file, meta,
+whitener, skeleton count and rendered target-vector store for both sides, so a
+remaining native difference is visible in the run folder instead of becoming
+folklore about unstable bars.
 
 **Qualification rule v3 — one bar engine, two currencies**
 (`comparison/morph_bars.py`; `morph_qualified` / `morph_qualified_suspicious`,

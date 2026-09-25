@@ -106,7 +106,8 @@ Successfully implemented fast hierarchical clustering with interactive toggle fo
 
 ### Test Suite
 
-**Created**: `tests/test_heatmap_clustering.py` (120 lines)
+**Created**: `tests/test_heatmap_clustering.py` (later removed; the
+clustering implementation lives in `src/comparison/interactive_heatmap.py`)
 
 **Test Cases**:
 
@@ -128,9 +129,7 @@ Successfully implemented fast hierarchical clustering with interactive toggle fo
 
 ### Test Results
 
-```bash
-$ python tests/test_heatmap_clustering.py
-```
+(The standalone test file has been removed.)
 
 **Output**:
 ```

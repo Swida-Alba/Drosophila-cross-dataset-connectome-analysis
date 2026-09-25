@@ -20,8 +20,9 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Enter one or more <b>Driver Line Names</b> (e.g.
-      <code>VT037867</code>, <code>R10A06</code>, <code>SS00731</code>).</li>
+    <li>Enter one or more <b>Driver Line Names</b> as chips — type a name and
+      press Enter to commit it (e.g. <code>VT037867</code>, then
+      <code>R10A06</code>, then <code>SS00731</code>).</li>
     <li>Click <b>Find EM Neurons</b>.</li>
   </ol>
 
@@ -32,7 +33,12 @@
     <tr><td><code>R10A06</code></td><td>Gen1 GAL4 line</td></tr>
     <tr><td><code>SS00731</code></td><td>Split-GAL4 line</td></tr>
   </table>
-  <p>Multiple names can be comma/newline separated; each line is processed
+  <p>Each chip input takes <b>one line name at a time</b>: commit with Enter
+    (or by leaving the field) and the whole typed text becomes one chip —
+    commas and spaces inside a name are preserved, never treated as
+    separators. The input keeps a Recent/Frequent history (recorded on
+    successful queries), a live <i>N lines</i> count badge, a Clear button,
+    and an Expand/Collapse toggle for long lists. Each line is processed
     independently.</p>
 
   <h2>Parameters</h2>
@@ -42,22 +48,26 @@
     <tr><td>Top N Matches Per Line</td><td>50</td><td>Ranked matches retained per line; this count is applied before the score cutoff</td></tr>
     <tr><td>Score Cutoff</td><td>30000</td><td>Threshold for score-based annotations; top-N result files retain lower-scoring matches</td></tr>
     <tr><td>Visualize Top Neurons</td><td>on</td><td>Render top matches in 3D</td></tr>
+    <tr><td>Visualize Top N</td><td>10</td><td>How many top matches to render (1–100) in the Advanced Visualization expansion</td></tr>
     <tr><td>Visualize By</td><td>type</td><td>Group visualizations by type or bodyId</td></tr>
     <tr><td>Sort By</td><td>max_score</td><td>max_score or type_avg_score</td></tr>
-    <tr><td>PDF Summary</td><td>on</td><td>Individual profile PDF/PPTX</td></tr>
+    <tr><td>PDF Summary</td><td>on</td><td>Individual profile PDF/PPTX; <b>Profile Images Per Page (cols/rows)</b> (4/3) and <b>Profile Background</b> (white/black) tune its layout — the PDF layout controls sit in Advanced Settings, next to the <b>Output Directory</b> (which inherits your saved default)</td></tr>
   </table>
   <div class="callout warning">
     Result visualizations default to <b>Skeleton Mode = line</b> for speed.
     For high-quality morphology, open <b>Visualization → Skeleton</b>, or
     select <b>tube</b> with the <b>fine</b> method and 95% simplification.
+    The full render controls (modes, palettes, meshes, synapses, export)
+    live in the tab's <b>Advanced Visualization</b> expansion.
   </div>
 
   <h2>Output</h2>
   <pre><code>{output_dir}/NB-find-neurons_SS01015_20260815_143937/
   all_neurons.csv                       # combined matches across datasets
   {line}_neurons.csv                    # all matches for the line
-  {line}_{dataset_folder}_neurons.csv   # per-dataset matches
-  {line}_{dataset_folder}_types.csv     # per-dataset type aggregates
+  by_dataset/
+    {line}_{dataset_folder}_neurons.csv   # per-dataset matches
+    {line}_{dataset_folder}_types.csv     # per-dataset type aggregates
   {line}_type_mapped.csv                # cross-dataset type mapping
   labeling_distribution.html            # score distribution
   user_warning_notes.txt                 # cutoff interpretation notes (when applicable)

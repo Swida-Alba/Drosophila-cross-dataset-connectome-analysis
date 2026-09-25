@@ -17,9 +17,8 @@
    - Best practices and workflows
 
 3. **Documentation:**
-   - `docs/VisualizePath_Architecture.md` - Design philosophy and class relationships
-   - `docs/VisualizePath_QuickRef.md` - Quick reference guide
-   - Updated `docs/VisualizeSelectedPaths_Guide.md` - Full usage guide
+   - `docs/VisualizePath_Architecture.md` - Design philosophy (removed)
+   - `docs/VisualizePath_QuickRef.md` - Quick reference guide (removed)
    - Updated `README.md` - Added VisualizePath to table of contents
 
 ### Modified Files
@@ -242,9 +241,9 @@ Each visualization run creates:
 ## Documentation
 
 ### Quick Reference
-- **Quick Start**: `docs/VisualizePath_QuickRef.md`
-- **Full Guide**: `docs/VisualizeSelectedPaths_Guide.md`
-- **Architecture**: `docs/VisualizePath_Architecture.md`
+- **File Handling**: [VISPATH_FILE_SUPPORT.md](VISPATH_FILE_SUPPORT.md)
+- **Integration**: [VISPATH_INTEGRATION_SUMMARY.md](VISPATH_INTEGRATION_SUMMARY.md)
+- **Full Usage**: the `VisualizePath` sections of the main [README](../../README.md)
 
 ### Examples
 - **Standalone**: `Example_VisualizeSelectedPaths_Standalone.py`

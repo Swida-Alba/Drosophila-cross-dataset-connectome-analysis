@@ -254,9 +254,7 @@ print(f"Heatmap created: {heatmap}")
 
 Run the test script to see examples:
 
-```bash
-python scripts/test_custom_ordering.py
-```
+(The one-off `scripts/test_custom_ordering.py` harness has been removed.)
 
 This generates 5 heatmaps with different orderings:
 1. Default (alphabetical)

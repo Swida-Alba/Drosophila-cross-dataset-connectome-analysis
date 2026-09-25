@@ -569,10 +569,11 @@ is wider: `ui/tabs/type_validation.py:MODE_OPTIONS` is
 MODE_RANK` by a test. The result reads in the report's **Pooling** tab (§2.0)
 and, inside a scene, as the `pooling · {source type}` legend root (§2.1). The
 tab's *Scored against* line names the stores the cells were measured in
-(`input_fingerprint`: git rev, target universe, mapper snapshot) — cells from
-runs that read different stores are not the same measurement, and a run that
-predates the fingerprint says so instead of implying a comparison it cannot
-support. The run's `README.txt` "Start here" list names `pooling/` for a
+(`input_fingerprint`: git rev, target universe, mapper snapshot, plus the
+morphology stores a native verdict was read out of — the target's V2 vector
+cache, its whitener and the raw skeleton count) — cells from runs that read
+different stores are not the same measurement, and a run that predates the
+fingerprint says so instead of implying a comparison it cannot support. The run's `README.txt` "Start here" list names `pooling/` for a
 pooling run.
 
 The mode is recorded in `parameters.json` (`validation_mode`, plus

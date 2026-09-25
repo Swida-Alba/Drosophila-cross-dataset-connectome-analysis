@@ -1,5 +1,7 @@
 # Cache System v4.0: Pair-Level Caching (Proposal)
 
+> **⚠️ Design proposal, not the shipped system** — see [CacheSystem_v4_Implementation.md](./CacheSystem_v4_Implementation.md) and [CacheSystem_v4_Complete.md](./CacheSystem_v4_Complete.md) for what shipped. Kept for design history.
+
 ## Overview
 
 **Proposed improvement**: Shift from **query-level caching** (caching entire neuron populations) to **pair-level caching** (caching individual neuron connections). This enables maximum cache reuse across different queries.

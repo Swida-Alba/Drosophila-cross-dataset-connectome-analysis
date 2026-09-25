@@ -74,6 +74,4 @@ vis.create_heatmap(custom_row_order=priority)
 
 ## Quick Test
 
-```bash
-python scripts/test_custom_ordering.py
-```
+(The one-off `scripts/test_custom_ordering.py` harness has been removed.)

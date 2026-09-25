@@ -674,7 +674,7 @@ result = finder.run(
 `expansion_map.csv` (chip → expanded name → hosted release → mapping
 status), `expansion_summary.json` (original selection + coverage routing +
 cleanup audit), and `user_warning_notes.txt` (coverage warnings carry a
-`coverage:` prefix). See [Output Files](OUTPUT_FILES.md) §9a-bis.
+`coverage:` prefix). See [Output Files](../OUTPUT_FILES.md) §9a-bis.
 
 **Output detail — Full vs Compact:** Full (default) keeps every file.
 Compact keeps the newest N expanded runs' match tables (default N=1 —

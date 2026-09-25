@@ -76,8 +76,11 @@ PN_I → LHN_J: weight = -85
 ## Running Tests
 
 ```bash
-python scripts/PlotPath_TestNegatives.py
+python -m pytest tests/core/test_audit_fixes.py -k negative
 ```
+
+(The one-off `scripts/PlotPath_TestNegatives.py` harness has been removed;
+the folder-safety contract lives in the pytest suite above.)
 
 Output: `test_negative_output/` with all visualization types
 

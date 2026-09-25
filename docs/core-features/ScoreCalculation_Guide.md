@@ -10,7 +10,7 @@ This document provides comprehensive explanations of all score and probability c
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [The Dₜ Graph Model](#the-dₜ-graph-model)
-    - [Threshold Semantics](#threshold-semantics)
+    - [Threshold Semantics](#threshold-selection-guide)
     - [Per-Cutoff Aggregates (ThresholdedConnectionMap)](#per-cutoff-aggregates-thresholdedconnectionmap)
   - [Connection-Level Metrics](#connection-level-metrics)
     - [Connection Ratio](#connection-ratio)

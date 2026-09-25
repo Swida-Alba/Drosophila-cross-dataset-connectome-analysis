@@ -15,7 +15,7 @@ proposals only; the mapping is never rewritten.
   generator additionally installs a `log` wrapper that announces the run folder
   and emits `[DROCAT][progress]` steps; a direct script call does not need it.
 - **class:** `MappingValidator` (var unused; `run()` returns the folder)
-- **CLI:** `scripts/RunMappingValidation.py` (sets 43 of the 53 fields; see
+- **CLI:** `scripts/RunMappingValidation.py` (sets 51 of the 61 fields; see
   the flag↔field table in the user guide §1b).
 
 ## The payload speaks FIELD names, not CLI flags

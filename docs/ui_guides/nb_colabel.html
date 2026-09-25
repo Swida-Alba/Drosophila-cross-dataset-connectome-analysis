@@ -22,8 +22,8 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Enter at least two <b>Driver Lines</b> (e.g.
-      <code>VT037867</code>, <code>R10A06</code>).</li>
+    <li>Enter at least two <b>Driver Line Names</b> as chips (e.g.
+      <code>VT037867</code>, then <code>R10A06</code>, Enter after each).</li>
     <li>Keep Jaccard and Weighted Jaccard enabled.</li>
     <li>Click <b>Run Co-Labeling</b>.</li>
   </ol>
@@ -31,13 +31,18 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Similarity methods</td><td>jaccard, weighted_jaccard</td><td>Binary vs score-weighted overlap</td></tr>
+    <tr><td>Algorithm</td><td>cds</td><td>Match algorithm: cds, pppm, or both</td></tr>
+    <tr><td>Similarity methods</td><td>Jaccard + Weighted Jaccard (both on)</td><td>Binary vs score-weighted overlap (checkboxes)</td></tr>
     <tr><td>Top N Matches Per Line</td><td>50</td><td>Ranked matches retrieved per line before score filtering</td></tr>
     <tr><td>Score Cutoff</td><td>30000</td><td>Filters expression/labeling matrices and similarity inputs after top-N retrieval</td></tr>
-    <tr><td>Min Type Avg Score</td><td>10000</td><td>Minimum average score to include a type</td></tr>
+    <tr><td>Min Type Avg Score</td><td>10000</td><td>Additional filter for the co-labeling similarity matrices; it does <b>not</b> filter the expression matrix</td></tr>
     <tr><td>Heatmaps / HTML Report</td><td>on</td><td>Interactive outputs</td></tr>
-    <tr><td>3D Skeleton</td><td>off</td><td>Render top co-labeled types</td></tr>
+    <tr><td>3D Skeleton</td><td>off</td><td>Render top co-labeled types; <b>3D Dataset</b> (default <b>(all)</b>) limits which dataset the optional 3D output draws from, and enabling it reveals the <b>Advanced Visualization</b> expansion (Visualize Top N = 5 by default, Visualize By type/bodyId, appearance, synapse/region and export settings)</td></tr>
+    <tr><td>Sort By</td><td>max_score</td><td>Advanced Settings: max_score or type_avg_score ordering</td></tr>
+    <tr><td>Profile Background / Images Per Page</td><td>white / 3 cols × 2 rows</td><td>Advanced Settings: PDF/PPTX profile layout</td></tr>
   </table>
+  <p>The <b>Output Directory</b> control (it inherits your saved default
+    otherwise) sits above the run button.</p>
 
   <h2>Output</h2>
   <pre><code>{output_dir}/NB-colabeling_SS01015_VT037867_SS46115_20260815_145150/
@@ -52,6 +57,7 @@
   line_summary.csv            (specificity statistics)
   line_labeled_neurons/...    # per-line neuron details
   colabeling_report.html
+  plot-3d_{dataset}/...       # 3D views (when Visualize Top N > 0)
   user_warning_notes.txt      # cutoff interpretation notes
   parameters.json</code></pre>
 

@@ -18,9 +18,17 @@
     Find only the shortest (minimum hop-count) paths between source and
     target neuron groups. For every reachable pair, all tied shortest paths
     are kept. Discovery starts from target neurons and follows incoming
-    branches to enrolled source bodyIds. Runs on the full Find All Paths pipeline (discovery,
+    branches to enrolled source bodyIds. Runs on the full pathfinding pipeline (discovery,
     enrichment, outputs, visualization) with shortest-only enumeration.
   </p>
+
+  <div class="callout info">
+    <b>Per-pair minimum:</b> the minimum is enforced per exact
+    <i>(source bodyId, target bodyId)</i> pair, before any type aggregation —
+    not a single global path-length cutoff. A type-level row can therefore mix
+    pairs of different hop counts: each pair contributes its own shortest
+    paths.
+  </div>
 
   <h2>Quick start</h2>
   <ol>
@@ -63,7 +71,7 @@
 
   <h2>Depth cap (default: 5 intermediate layers)</h2>
   <ul>
-    <li><b>Max Intermediate Layers (optional) = 0</b> means direct connections
+    <li><b>Max Intermediate Layers = 0</b> means direct connections
       only. For a positive value <code>M</code>, paths are capped at
       <code>M + 1</code> hops.</li>
     <li>The tab default is 5 (deeper than the Complete Paths default of 2),
@@ -79,13 +87,16 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Max Intermediate Layers (optional)</td><td>5</td><td>0 = direct only; &gt;0 caps path length at <i>layers + 1</i> edges</td></tr>
+    <tr><td>Max Intermediate Layers</td><td>5</td><td>0 = direct only; &gt;0 caps path length at <i>layers + 1</i> edges</td></tr>
     <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight</td></tr>
     <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>Path-output budget. StrongestFirst budget on min-hop paths: when the search exceeds it, all min-hop paths above the achieved strength cutoff (tau) are kept and tau is reported; unbitten runs are the complete min-hop set</td></tr>
     <tr><td>Drop Untyped Neurons</td><td>checked</td><td>Neuron-label filter (same shared predicate as Complete Paths and Cross-Dataset Comparison, <code>utils.label_utils.is_untyped_type_label</code>): removes edges touching untyped neurons — empty, Unknown/None/NaN sentinel (case-insensitive), or all-digit bodyId-fallback labels — after label enrichment and BEFORE the graph is built, so an untyped neuron can never be an intermediate node of a returned path or visualization. Dropped rows: <code>data_details/untyped_dropped_records.csv</code> (only when something was dropped); counts in <code>user_warning_notes.txt</code></td></tr>
     <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight); no longer filters</td></tr>
     <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td></tr>
-    <tr><td>Edge Budget</td><td>off in shortest mode</td><td>Shortest mode is never floored (the tab disables the input) — flooring would raise the threshold and can inflate shortest distances</td></tr>
+    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving source/target names: <code>auto</code> = all columns (bodyId → type → instance → …), or restrict to <code>type</code> / <code>instance</code> / <code>bodyId</code>. Only <code>auto</code>/<code>type</code> scopes trigger the multi-source advisory; numeric bodyId chips are exempt</td></tr>
+    <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
+    <tr><td>Show Figure</td><td>off</td><td>Open the interactive figures in the browser as they are generated</td></tr>
+    <tr><td>Edge Budget</td><td>not applicable</td><td>Shortest mode is never floored (the tab omits the Edge Budget control and always sends 0) — flooring would raise the threshold and can inflate shortest distances</td></tr>
     <tr><td>Visualization Edge Limit</td><td>500</td><td>Maximum edges drawn in each network/Sankey/heatmap visualization; does not alter shortest-path discovery</td></tr>
     <tr><td>Filter By</td><td>bodyId</td><td>bodyId or type aggregation</td></tr>
     <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
@@ -121,7 +132,7 @@
     merge across targets — polynomial in graph size per pair. (The
     <code>find_paths_shortest_backward</code> exporter also exists in
     FastGraph, but the pipeline does not call it.) The branching^depth
-    explosion of Find All Paths does not exist here, but the total number
+    explosion of Complete Paths does not exist here, but the total number
     of min-hop paths can still grow quickly at depth (tied routes multiply
     at every layer).
   </div>
@@ -141,8 +152,8 @@
     exponential path count) does not apply to shortest enumeration, and
     flooring (a threshold raise) preserves pair <i>reachability</i> but not
     <i>shortest distance</i> — a dropped weak edge can silently inflate a
-    reported distance. The tab disables the Edge Budget input in shortest
-    mode; API callers passing <code>graph_edge_limit_bodyid</code> still get
+    reported distance. The tab has no Edge Budget input at all and always
+    sends 0; API callers passing <code>graph_edge_limit_bodyid</code> still get
     the full un-floored graph here because the setting is ignored. The <b>Max Paths (BodyId)</b> input is the
     knob that bounds this mode.
   </div>
@@ -175,14 +186,20 @@
     <code>user_warning_notes.txt</code>. Check the root-level
     <code>source_neurons.csv</code> (<code>isInPath</code>) and
     <code>target_neurons.csv</code> (<code>Checked</code>, <code>Layer</code>).
-    Run Shortest Paths with <b>Skip BodyId</b> off for specific bodyId pairs,
+    <b>Skip BodyId ships on</b>; run Shortest Paths with <b>Skip BodyId</b> off
+    for specific bodyId pairs,
     or use <b>Complete Paths</b> to enumerate all paths under a chosen depth.</p>
 
   <h2>Advanced options</h2>
   <ul>
-    <li><b>Keywords to Exclude from Paths</b> — same semantics as Find All Paths.</li>
-    <li><b>Custom source/target names</b>, <b>Cache Only (Offline)</b>,
-      <b>Save Folder Name</b>.</li>
+    <li><b>Keywords to Exclude from Paths</b> — same semantics as Complete
+      Paths. These, with <b>Filter By</b>, live in the Advanced Settings
+      expansion, together with <b>Use Cache</b> (reuse cached connection data,
+      on by default) and <b>Cache Only (Offline)</b>.</li>
+    <li><b>Custom source/target names</b> and <b>Save Folder Name</b> live in
+      the Output Options card.</li>
+    <li><b>Custom Grouping</b> — map neurons into custom groups before the
+      comparison; see the <a href="label_mapper.html">label-mapper guide</a>.</li>
     <li><b>Hemisphere options</b>: separate L/R labels, hemisphere filter,
       keep conserved edges, symmetry analysis — see
       <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a>.</li>
@@ -191,7 +208,7 @@
   </ul>
 
   <h2>Output</h2>
-  <p>Same layout as Find All Paths (see the Complete Paths guide):</p>
+  <p>Same layout as Complete Paths (see the Complete Paths guide):</p>
   <pre><code>{output_dir}/find-paths-shortest_MCNS_aMe12_to_PPL101_L1w3_20260815_142717/
   aMe12_to_PPL101_allpaths_type.csv  # shortest paths (same columns)
   source_neurons.csv, target_neurons.csv  # enrollment/status details

@@ -192,4 +192,4 @@ For 50 lines with ~100 types each, computation takes ~30-60 seconds (dominated b
 
 ## Examples
 
-See `tests/test_colabeling_similarity.py` for a complete example testing all three methods.
+See `tests/core/test_neuronbridge_colabeling.py` for a complete example testing all three methods.

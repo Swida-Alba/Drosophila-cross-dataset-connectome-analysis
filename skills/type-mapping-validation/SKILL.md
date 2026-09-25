@@ -398,7 +398,7 @@ against — `local_data/` is disposable by design.
   review tiers; all proposals are evidence — the mapping is never
   rewritten.
 - **Backward `source-` statuses are advisory** (column view of the same
-  pair scores; plan `plan-backward-source-status.md`): an unpaired
+  pair scores; plan `_plan/checked/plan-backward-source-status.md`): an unpaired
   source is typically a column runner-up of an already matched/verified
   target (population surplus + N-to-1 convergence), NOT a mapping
   failure. They never gate and never enter the dedup.

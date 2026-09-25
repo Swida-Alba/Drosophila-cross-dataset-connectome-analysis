@@ -26,7 +26,8 @@
   <h2>Where it fits</h2>
   <p>
     This is the validation counterpart to the
-    <a href="cross_dataset.html">Paths</a> tab. Paths compares connectivity
+    <a href="cross_dataset.html">Cross-Dataset Comparison (Paths)</a> tab.
+    Paths compares connectivity
     across datasets; Type Validation checks whether a proposed type mapping
     between a source and a target dataset actually holds at the neuron level.
     Read the type-level preview, then validate at bodyId resolution.
@@ -35,14 +36,15 @@
   <h2>Quick start</h2>
   <ol>
     <li>Pick a <b>Source Dataset</b> and a <b>Target Dataset</b>. They must
-      differ; same-dataset pairs usually resolve no cross-dataset branches.</li>
+      differ &mdash; the run refuses same-dataset pairs at the door.</li>
     <li>Add one or more <b>Source Types / Categories</b> as chips: a neuron
       type (<code>APDN3</code>, <code>s-CPDN3A</code>) or a coarse
       <code>cell_type</code> category (<code>circadian_clock</code>). A query is
-      required - an empty query runs but produces an empty report.</li>
+      required &mdash; an empty query is rejected before the run starts.</li>
     <li>Choose a <b>Validation Mode</b>: <code>restrictive</code> &sube;
       <code>family</code> &sube; <code>aggressive</code>. Wider modes admit more
-      candidate bins and run slower. The fourth button, <code>pooling</code>, is
+      candidate bins (aggressive adds the deep-window <b>examinees</b> bin) and
+      run slower. The fourth button, <code>pooling</code>, is
       <b>not</b> a wider rung: it is a parallel unsupervised search that scans
       the queried population against the whole target universe, keeps each
       source&rsquo;s top-N rows under its own admission bar, writes its result
@@ -56,13 +58,22 @@
       the window are then measured against every admitted row and exported as
       flags that remove nothing &mdash; they were filters until one of them, at
       its own default, was measured starving 119 of 242 queried sources.
-      Morphology is the last gate and a mandatory one: a candidate
-      scored below its bar leaves the exported pool and the scene root, and the
-      budget that priced the pass is published with its rule (0 = auto, three
+      Every pooling export prints a per-row <code>tier</code> on the ladder
+      <b>matched / verified / nominated</b>. Morphology is the last gate and a
+      mandatory one &mdash; a pooling run with Morphology off is refused at the
+      door: a candidate scored below its bar leaves the exported pool and the
+      scene root, while a row whose target morphology produced <b>no verdict</b>
+      (no measurement, e.g. past the budget&rsquo;s not-attempted cap) never
+      leaves &mdash; a missing measurement is not a rejection. The budget that
+      priced the pass is published with its rule (0 = auto, three
       scoring units per queried source).</li>
     <li>Toggle <b>Stages</b> as needed (morphology, 3D scenes, backward
-      reciprocal evidence, out-map expansion) and set the offline behaviour in
-      <b>Data &amp; Offline</b>.</li>
+      reciprocal evidence, out-map expansion, <b>verify suspects</b> &mdash; an
+      advisory re-check written to <code>mapping/suspects_verification.csv</code>)
+      and set the offline behaviour in
+      <b>Data &amp; Offline</b>. The collapsed <b>Advanced Settings</b> card
+      holds the deeper knobs (morph AUC floor, neuron alpha, per-stage
+      numerics); the defaults are fine for a first pass.</li>
     <li>Click <b>Run Validation</b>. When it completes, open
       <code>report.html</code>, the run folder, or the latest 3D scene from the
       action row.</li>
@@ -89,7 +100,21 @@
     <b>Render 3D review scenes</b> off (stage-2 profiles, morph vectors and
     skeleton loads are what reach the network). An unsupported dataset pair is
     not an error - it resolves to zero branches and an empty run, so check the
-    log for &ldquo;no type pairs resolved&rdquo;.
+    log for &ldquo;no valid type pairs resolved; nothing to validate&rdquo; &mdash;
+    the UI also raises a persistent <i>Completed, but nothing resolved</i>
+    notice and a <b>Set coverage</b> banner driven by
+    <code>set_coverage.json</code>.
+  </p>
+
+  <h2>The report</h2>
+  <p>
+    <code>report.html</code> carries eleven tabs, including <b>Coverage</b>
+    (the three-level L1 claim / L2 provenance / L3 validation counts), the
+    per-bin results, <b>Out-map</b> (fill proposals for unclaimed sources),
+    <b>Backward</b> (reciprocal grades) with a separate <b>Backward source
+    status</b> view (per-source statuses over the target pool), <b>Morph</b>
+    and <b>Scenes</b>. Terms carry hover glossary entries; warnings are also
+    collected in <code>user_warning_notes.txt</code>.
   </p>
 
   <h2>Backward (reciprocal) evidence</h2>
@@ -123,7 +148,7 @@
     <code>gap_fill_dedup.csv</code> are previewable in the Output Files panel.
   </p>
 
-  <p class="footnote"><a href="cross_dataset.html">Cross-Dataset Paths</a>
+  <p class="footnote"><a href="cross_dataset.html">Cross-Dataset Comparison (Paths)</a>
     &middot; <a href="README.html">All guides</a></p>
 </main>
 </body>
