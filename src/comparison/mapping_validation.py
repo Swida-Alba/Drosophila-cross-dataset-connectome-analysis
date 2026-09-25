@@ -891,6 +891,85 @@ def _store_identity(path) -> Optional[Dict[str, Any]]:
             'mtime_s': int(st.st_mtime)}
 
 
+def _morph_store_identity(dataset: str,
+                          project_root: Optional[str] = None) -> Dict[str, Any]:
+    """What a dataset's morphology stores looked like when a verdict was made.
+
+    The native track scores a candidate against its source's reference pool
+    out of the target's V2 vector cache, and the Track-A scores come out of the
+    rendered target-vector store — so a run's morphology record is a function of
+    those files the same way the scan is a function of the profile caches.
+    Before 2026-09-25 the fingerprint named only the latter, and a cold-vs-warm
+    difference in a `morph_pool_ref` could not be attributed from the run folder
+    (it cost 107 rows of one FAFB->BANC pooling run to find the cause).
+
+    A skeleton store is reported as a COUNT plus its newest file: the store
+    holds thousands of small files, so per-file identity would swamp the record
+    while a count still says whether a run scored against a fuller store than
+    its repeat.
+    """
+    out: Dict[str, Any] = {}
+    try:
+        from morphology import find_similar_dataset_cache_v2
+        cache = find_similar_dataset_cache_v2(dataset,
+                                              project_root=project_root,
+                                              verbose=False)
+    except Exception:  # noqa: BLE001 — bookkeeping never takes a stage down
+        return out
+    # Name what the cache object actually exposes: a unit-test double carries
+    # none of these paths and a half-built cache carries some, and this record
+    # must never be the reason a scored run fails.
+    for key, label in (('parquet_path', 'vector_cache'),
+                       ('pending_path', 'vector_pending'),
+                       ('meta_path', 'vector_meta'),
+                       ('whiten_path', 'whitener')):
+        path = getattr(cache, key, None)
+        if path is not None:
+            identity = _store_identity(path)
+            if identity:
+                out[label] = identity
+    newest = 0
+    n_files = 0
+    try:
+        for path in cache._discover_skeleton_files():
+            n_files += 1
+            try:
+                newest = max(newest, int(Path(str(path)).stat().st_mtime))
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    out['skeleton_files'] = n_files or None
+    out['newest_skeleton_mtime_s'] = newest or None
+    try:
+        from comparison.morph_cross_dataset import TargetVectorStore
+        out['target_vector_store'] = _store_identity(
+            TargetVectorStore(dataset, project_root).path)
+    except Exception:  # noqa: BLE001
+        pass
+    return {k: v for k, v in out.items() if v}
+
+
+def _git_dirty() -> Optional[bool]:
+    """Whether the run's code was NOT the committed tree.
+
+    A run is attributed by `git_rev`, but a dirty worktree means that rev names
+    a different code state than the one that scored — measured 2026-09-25, where
+    the run certifying the `vectors_for` one-space fix printed the pre-fix rev
+    because the fix was still uncommitted. None when git cannot answer.
+    """
+    try:
+        import subprocess
+        out = subprocess.run(['git', 'status', '--porcelain'],
+                             cwd=str(Path(__file__).resolve().parents[2]),
+                             capture_output=True, text=True, timeout=20)
+    except Exception:  # noqa: BLE001 (a source zip has no git)
+        return None
+    if out.returncode != 0:
+        return None
+    return bool((out.stdout or '').strip())
+
+
 def _git_rev() -> Optional[str]:
     """Short HEAD rev of the tree this code was executed from."""
     try:
@@ -3909,6 +3988,7 @@ class MappingValidator:
                'note': 'morphology disabled'}
         if not cfg.morph_enabled:
             return out
+        self._record_morph_stores()
         # Rev 3.12 fix (review 2026-09-16): the pool reference pairs must
         # be Track-A scored.  Without them the reference-tier mean (B_b)
         # and the floors-v3 bars are computed over a biased subset (or
@@ -5354,6 +5434,7 @@ class MappingValidator:
         cfg = self.cfg
         self._fingerprint().update({
             'git_rev': _git_rev(),
+            'git_dirty': _git_dirty(),
             'scanned_target_universe': len(target_stats),
             'target_vectors_built': len(vectors),
             'profile_cache_source': _store_identity(
@@ -5364,6 +5445,18 @@ class MappingValidator:
                 getattr(self.mapper, '_mapper_snapshot_path',
                         lambda: None)()),
         })
+
+    def _record_morph_stores(self) -> None:
+        """Name the morphology stores this run scores out of.
+
+        Recorded when the first morph pass runs, not at stage 2: the scan's
+        fingerprint is taken before stage 5 fetches anything, and what decides
+        a native verdict is the store as it stands at scoring time."""
+        cfg = self.cfg
+        self._fingerprint()['morph_stores'] = {
+            'target': _morph_store_identity(cfg.target_dataset),
+            'source': _morph_store_identity(cfg.source_dataset),
+        }
 
     def _suspects_only_pass(self) -> None:
         """P3 for a run whose EVERY queried type was fail-closed (e.g. a

@@ -914,9 +914,16 @@ admitted nothing, so a source that found nothing is named rather than absent.
     pool, so the report's Pooling tab and `user_warning_notes.txt` both
     publish the ratio from one builder (`[pooling] … scored 4/8 attempted
     targets …`).
-    `input_fingerprint` names the stores the scores came from (git rev, target
-    universe, mapper snapshot) because the cells are only comparable across
-    runs that read the same ones.
+    `input_fingerprint` names the stores the scores came from — git rev, target
+    universe, mapper snapshot, and `morph_stores` (the target's V2 vector cache
+    + pending + meta, its whitener sidecar, the raw skeleton count, and the
+    rendered target-vector store, per side) — because the cells are only
+    comparable across runs that read the same ones. A `morph_pool_ref` that
+    differs between two runs of one query is a `morph_stores` difference, not a
+    code difference: until 2026-09-25 the fingerprint could not say so, and a
+    cold run's native scores (rows whose vector the call itself had to
+    vectorize) were computed in the raw feature space while cached rows were
+    standardized, which moved 107 of 1266 rows on a real FAFB→BANC pooling run.
 
 `morph_gate` keeps its absences apart on purpose (`shared`,
 `not-attempted-cap`, `no-score`) and none of them is a rejection — only an

@@ -530,6 +530,20 @@ not):
   the MODE (§3's mode-invariant exclusion), so any remaining run-to-run
   drift in a null-kind branch verdict is cache growth or a healed
   skeleton — read `input_fingerprint` before comparing two runs' bars.
+- **A native score used to move between a run and its warm repeat, and that
+  was a bug, not cache growth**: `SkeletonVectorCache.vectors_for` handed back
+  cached rows STANDARDIZED by the cache's mean/std and rows it computed during
+  the same call RAW, so a first run whitened a cold neuron against its pool in
+  two spaces. Measured 2026-09-25 on FAFB→BANC pooling: 107 of 1266 rows and
+  16 `in_pool` decisions moved; re-feeding exactly the ids the call had to
+  compute reproduced every moved value to ~1e-16 (and the target-vector store
+  was ruled out by A/B — arms with and without it agree to 16 digits). Fixed:
+  one call returns one space (`space='standardized'` default, `space='raw'`
+  for a caller that standardizes itself), the cold==warm invariant is pinned by
+  `test_vectors_for_returns_one_space_cold_matches_warm`, and
+  `input_fingerprint.morph_stores` now names the vector cache, whitener and
+  skeleton store a verdict was read out of. **Read `morph_stores` before
+  blaming a `morph_pool_ref` difference on the code.**
 
 ## 3c. Gap-fill estimation — under different confidence levels
 
@@ -794,8 +808,10 @@ them.
   nested tabs are empty on a pooling run BY CONSTRUCTION, so quoting "0
   candidates" from them is wrong. The tab's *Scored against* line names the
   stores the cells came from (`input_fingerprint`: git rev, target universe,
-  mapper snapshot); before comparing two runs' cells, read it — cells from
-  runs that read different stores are not the same measurement. The run's
+  mapper snapshot, and the morphology stores a native verdict was read out of —
+  the target's V2 vector cache, whitener and skeleton count); before comparing
+  two runs' cells, read it — cells from runs that read different stores are not
+  the same measurement. The run's
   `README.txt` "Start here" list points at `pooling/` for a pooling run. In
   a scene the same pool is the
   `pooling · {source type}` legend root (plum), hosted by the parent group of

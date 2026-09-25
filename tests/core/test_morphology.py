@@ -3900,12 +3900,62 @@ class TestVectorPersistence:
         assert len(data["bodyIds"]) == 2
         X2, mask2, _ = cache.vectors_for([202], compute_missing=True)
         assert mask2[0]
-        # the stored row is the same RAW vector, standardized on load
+        # what was persisted is the RAW row, and what the call handed back is
+        # that same row in the cache's standardized space (never the raw one:
+        # see test_vectors_for_returns_one_space_cold_matches_warm)
         idx = int(np.where(data["bodyIds"] == 202)[0][0])
         meta = data["meta"]
         raw_recovered = (data["X"][idx] * np.asarray(meta["std"])
                          + np.asarray(meta["mean"]))
-        np.testing.assert_allclose(raw_recovered, X[1], rtol=1e-6)
+        assert np.isfinite(raw_recovered).all()
+        # the row 202 had when it was still only in memory IS the row the warm
+        # call serves from the cache — one space, so a repeat run cannot
+        # re-grade a neuron it already measured
+        np.testing.assert_allclose(X[1], data["X"][idx], rtol=0, atol=1e-15)
+        np.testing.assert_allclose(X2[0], data["X"][idx], rtol=0, atol=1e-15)
+
+    def test_vectors_for_returns_one_space_cold_matches_warm(self, tmp_path):
+        """`vectors_for` hands back cached rows and rows it computes itself in
+        ONE space, so a cold run grades a neuron exactly as its warm repeat
+        does.
+
+        The rows it computes used to come back RAW while cached rows came back
+        standardized by the meta mean/std. Any caller that whitened the result
+        — every native-track scorer — then compared a cold neuron against the
+        pool in two different spaces. Measured 2026-09-25 on the real
+        FAFB->BANC pooling run: 107 of 1266 exported rows and 16 pool
+        decisions moved between the run and its warm repeat, and re-feeding
+        exactly the ids the call had computed reproduced every moved value to
+        ~1e-16.
+        """
+        write_skeleton(tmp_path, "np:v1", 101, line_neuron(length=20))
+        write_skeleton(tmp_path, "np:v1", 201, line_neuron(length=40))
+        cache = morph.SkeletonVectorCache(
+            "np:v1", project_root=str(tmp_path), verbose=False
+        )
+        cache.build()
+        # a third neuron appears after the build: cold for this call, cached
+        # for the next one
+        write_skeleton(tmp_path, "np:v1", 303, bushy_y_neuron())
+        cold, mask_cold, _ = cache.vectors_for([101, 201, 303],
+                                               compute_missing=True)
+        warm, mask_warm, _ = cache.vectors_for([101, 201, 303],
+                                               compute_missing=True)
+        assert mask_cold.tolist() == mask_warm.tolist() == [True, True, True]
+        np.testing.assert_allclose(cold, warm, rtol=0, atol=1e-15)
+        # the standardized space is the default, and it is NOT the raw one
+        data = cache.load()
+        raw = data["raw"][int(np.where(data["bodyIds"] == 303)[0][0])]
+        assert not np.allclose(cold[2], raw)
+        # 'raw' asks for the persisted rows and gets them for EVERY row, so a
+        # caller that standardizes itself is never handed a mixed matrix
+        raws, _, _ = cache.vectors_for([101, 201, 303], compute_missing=True,
+                                       space='raw')
+        np.testing.assert_allclose(raws[2], raw, rtol=0, atol=1e-15)
+        np.testing.assert_allclose(raws, np.vstack(
+            [data["raw"][int(np.where(data["bodyIds"] == b)[0][0])]
+             for b in (101, 201, 303)]), rtol=0, atol=1e-15)
+
 
     def test_profile_first_persists_transient_fetch_vector(self, tmp_path, monkeypatch):
         """A transiently-fetched skeleton (never written to the skeleton

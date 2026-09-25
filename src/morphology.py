@@ -3360,6 +3360,11 @@ class SkeletonVectorCache:
             "df": df,
             "raw": raw,
             "X": X,
+            # The statistics ``X`` was z-scored with, published so a row
+            # computed later in the same query can join that same space
+            # (``vectors_for``) instead of being scored raw beside it.
+            "mean": mean,
+            "std": std,
             "bodyIds": body_ids,
             "types": df.get("type", pd.Series([""] * len(df))).fillna("").astype(str).tolist(),
             "instances": df.get("instance", pd.Series([""] * len(df))).fillna("").astype(str).tolist(),
@@ -3534,9 +3539,27 @@ class SkeletonVectorCache:
                 lock_fd.close()
 
     # ------------------------------------------------------------ vectors_for
-    def vectors_for(self, body_ids: List[int], compute_missing: bool = True
+    def vectors_for(self, body_ids: List[int], compute_missing: bool = True,
+                    space: str = "standardized"
                     ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """Return standardized vectors for bodyIds.
+        """Return vectors for bodyIds — every row in ONE space.
+
+        ``space='standardized'`` (default) hands back rows z-scored by the
+        cache's own mean/std, which is the space :func:`apply_whitening` and
+        therefore every native-track scorer expects. ``space='raw'`` hands
+        back the persisted feature rows as stored, for a caller that applies
+        its own statistics.
+
+        The one-space rule is the contract. Rows this call computes used to be
+        returned RAW while cached rows came back STANDARDIZED, so a cold
+        neuron was whitened and scored in a different space from the pool it
+        was being graded against: measured 2026-09-25 on the FAFB->BANC pooling
+        run, that moved 107 of 1266 exported rows and 16 pool decisions between
+        the run and its warm repeat, and every one of those rows was
+        reproducible to ~1e-16 by re-feeding exactly the ids the call had to
+        compute. A cache with no statistics to standardize with (nothing
+        persisted yet) returns raw rows for the whole call, which is still one
+        space.
 
         Rows missing from the cache are computed on the fly when a skeleton
         file of the cache's representation AND simplification level exists
@@ -3559,7 +3582,8 @@ class SkeletonVectorCache:
                 self._canonical_body_id(b): i
                 for i, b in enumerate(data["bodyIds"])
             }
-            X = data["X"]
+            X = data["raw"] if space == "raw" else data["X"]
+            mu, sd = data.get("mean"), data.get("std")
             dataset_rep = data.get("dataset_rep", "")
             basis = ((data.get("meta") or {}).get("vector_basis")
                      or self._default_basis())
@@ -3597,11 +3621,13 @@ class SkeletonVectorCache:
                         if dataset_rep and row_rep != dataset_rep:
                             continue  # different representation: never mix
                         _, vec = self._vectorize_neuron(neuron)
+                        # Persist the RAW row (that is what the parquet holds);
+                        # hand back the row in the space this call promised.
+                        computed.append((bid, vec, row_rep))
+                        if space != "raw" and mu is not None and sd is not None:
+                            vec = (vec - mu) / sd
                         result[j] = vec
                         reps[j] = row_rep
-                        # Persist the vector: later queries reuse it without
-                        # re-loading and re-vectorizing the skeleton file.
-                        computed.append((bid, vec, row_rep))
                     except Exception:
                         result[j] = np.nan
         if computed:
@@ -6923,14 +6949,14 @@ class MorphologyComparer:
             cache.append_vectors(fetched_vectors, vector_basis=cache_basis)
 
         # Resolve all local-file misses in one call, then reload the cache.
-        # ``vectors_for`` can return raw vectors for rows it computes during
-        # that call, while cached rows are standardized.  Scoring that mixed
-        # result was the first-run/warm-cache inconsistency: the online batch
-        # had already appended standardized rows before this function used
-        # its stale ``cache_data`` snapshot.  The fresh snapshot below makes
-        # every row use the same persisted representation and statistics.
+        # The reload is what makes the snapshot complete: a row this call
+        # vectorized is persisted, and the snapshot below reads it back in the
+        # cache's own space. ``space='raw'`` is asked for because the rows this
+        # returns are only used as the transient fallback for an id that could
+        # NOT be persisted, and the standardization block below supplies that
+        # transform itself.
         pre_X, pre_mask, pre_reps = cache.vectors_for(
-            all_load_ids, compute_missing=True
+            all_load_ids, compute_missing=True, space='raw'
         )
         cache_data = cache.load()
         cache_ids = (set(self._body_ids(cache_data["bodyIds"]))

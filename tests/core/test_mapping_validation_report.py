@@ -322,6 +322,12 @@ def test_null_advisory_rendered(run_dir: Path):
     assert d["null_used"] is True   # B->Y candidate_kind == null
     html = build_report_document(d)
     assert "Null-sample" in html and "run-sensitive" in html
+    # The same callout used to reassure the reader that native-floor bars were
+    # "unaffected" across runs — the 2026-09-25 cold/warm BANC divergence
+    # (107 rows) was exactly a native-floor bar moving. The sentence now names
+    # the invariant and where to check it.
+    assert "one vector-cache read returns one space" in html
+    assert "morph_stores" in html
 
 
 # ---------------------------------------------------------------------------
@@ -687,13 +693,30 @@ XVAL = {
               "warnings": ["BANC morphology is experimental: public "
                            "skeleton products mix L2 / full / µm sources"]},
     "input_fingerprint": {"git_rev": "abcdef1234567890",
+                          "git_dirty": False,
                           "scanned_target_universe": 101995,
                           # the REAL shape `_store_identity` writes: epoch
                           # seconds under `mtime_s`. A fixture that invents a
                           # prettier key (`mtime`) lets a `@ None` ship — which
                           # is what a 2026-09-23 real-data run caught.
                           "mapper_snapshot": {"bytes": 123456,
-                                              "mtime_s": 1789866123}},
+                                              "mtime_s": 1789866123},
+                          # the shape `_record_morph_stores` writes, from the
+                          # 2026-09-25 FAFB->BANC run's own parameters.json
+                          "morph_stores": {
+                              "target": {
+                                  "vector_cache": {
+                                      "path": "/c/banc_v888/find_similar/"
+                                              "morphology/skeleton__vectors_v2"
+                                              ".parquet",
+                                      "bytes": 2625339, "mtime_s": 1790199390},
+                                  "vector_meta": {
+                                      "path": "/c/banc_v888/find_similar/"
+                                              "morphology/meta_v2.json",
+                                      "bytes": 14892, "mtime_s": 1790268866},
+                                  "skeleton_files": 2607,
+                                  "newest_skeleton_mtime_s": 1790268617},
+                              "source": {}}},
     "reading_notes": ["No cell is a recall measure."],
 }
 
@@ -842,7 +865,21 @@ def test_pooling_tab_carries_the_gate_cells_and_the_pool(run_dir: Path):
     # comparable across runs that read the same ones
     assert "git abcdef12 · target universe 101995" in html
     assert "mapper snapshot 123456 B @ 2026-09-20 01:02 UTC" in html
+    # the native score's OWN store, which the profile caches do not cover
+    assert ("morph vector cache 2625339 B @ 2026-09-23 21:36 UTC "
+            "· 2607 skeletons") in html
     assert '@ None' not in html       # an unrendered key must never ship
+
+
+def test_a_dirty_worktree_says_so_beside_the_rev(run_dir: Path):
+    """`git_rev` names the COMMIT, not the code that scored when the tree carries
+    uncommitted edits — the run that certified the `vectors_for` one-space fix
+    printed the pre-fix rev for exactly that reason."""
+    _as_pooling_run(run_dir)
+    d = collect_run_data(run_dir)
+    d['pooling_xval']['input_fingerprint']['git_dirty'] = True
+    html = build_report_document(d)
+    assert "git abcdef12-dirty" in html
 
 
 def test_pooling_tab_headlines_the_source_axis(run_dir: Path):

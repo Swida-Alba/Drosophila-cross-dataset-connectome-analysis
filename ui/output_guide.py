@@ -2283,7 +2283,11 @@ TOOL_GUIDE_SPECS = {
                             "listing the pool_miss and verified_only targets, "
                             "`pool_miss_by_type` and `map_tags` (the harvest by "
                             "target type), the input "
-                            "fingerprint the scores came from, and the "
+                            "fingerprint the scores came from (git rev, the "
+                            "scanned universes, both profile caches, the mapper "
+                            "snapshot, and `morph_stores` — the vector cache, "
+                            "whitener and skeleton count a native verdict was "
+                            "read out of), and the "
                             "reading notes that say which cells are NOT "
                             "recall measures."},
             {"pattern": "morphology_calibration.json",

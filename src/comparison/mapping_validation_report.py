@@ -3181,8 +3181,14 @@ def _morph_tab(d: Dict) -> str:
             'sampled differently (e.g. 0.593/n=72). Null-kind branch '
             'bars are run-sensitive until the deterministic '
             'per-dataset null sample lands — do not compare null-kind '
-            'bars ACROSS runs (native-floor branches are '
-            'unaffected).</div>')
+            'bars ACROSS runs. A native-floor bar is stable across runs '
+            'only because one vector-cache read returns one space '
+            '(2026-09-25: a cold run graded the neurons it vectorized '
+            'itself raw beside standardized pool refs and moved 107 '
+            'rows of a real BANC run); '
+            '<code>input_fingerprint.morph_stores</code> names the '
+            'vector cache this run scored out of, so compare it before '
+            'comparing two runs\' bars.</div>')
     return _section_card(
         'Morphology record',
         'Per-branch bars live in the Branches tab; this section only '
@@ -3242,8 +3248,14 @@ def _pooling_tab(d: Dict) -> str:
     parts = []
     if fp:
         rev = fp.get('git_rev')
-        parts.append(f"git {_esc(str(rev)[:8])}" if rev
-                     else 'git rev not recorded')
+        # A dirty worktree means the rev names a DIFFERENT code state than the
+        # one that scored, so the run says so beside the rev instead of letting
+        # a reader line up two runs that did not share a tree.
+        if rev:
+            dirty = '-dirty' if fp.get('git_dirty') else ''
+            parts.append(f'git {_esc(str(rev)[:8])}{dirty}')
+        else:
+            parts.append('git rev not recorded')
         if fp.get('scanned_target_universe') is not None:
             parts.append('target universe '
                          f"{_cnt(fp.get('scanned_target_universe'))}")
@@ -3251,6 +3263,17 @@ def _pooling_tab(d: Dict) -> str:
             stamp = _store_stamp(snap.get('mtime_s'))
             parts.append(f"mapper snapshot {snap['bytes']} B"
                          + (f' @ {stamp}' if stamp else ''))
+        # A native (`morph_pool_ref`) verdict is read out of the target's V2
+        # vector cache, which the profile caches above do not cover: name it,
+        # or a reader comparing two runs cannot see that the scores came from
+        # different stores.
+        tgt_stores = (fp.get('morph_stores') or {}).get('target') or {}
+        vec = tgt_stores.get('vector_cache') or {}
+        if isinstance(vec, dict) and vec.get('bytes'):
+            parts.append(f"morph vector cache {vec['bytes']} B @ "
+                         f"{_store_stamp(vec.get('mtime_s'))}"
+                         + (f" · {_cnt(tgt_stores['skeleton_files'])} skeletons"
+                            if tgt_stores.get('skeleton_files') else ''))
     comparability = ' · '.join(parts) or (
         'not recorded — this run predates the input fingerprint, so these '
         'cells cannot be lined up with another run\'s')
