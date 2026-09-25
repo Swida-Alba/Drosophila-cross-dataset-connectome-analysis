@@ -318,8 +318,14 @@ def _resolve_type_token(token, datasets, mapper, *, role,
         if res.status in (TR_MAPPED, TR_BRIDGED) and res.equivalence_key:
             # Cross-dataset resolution that returns the SAME name is a
             # name echo (mapper tier 6 / bare bridge), not evidence-based
-            # equivalence — surface it as an explicit fallback.
-            if str(res.equivalence_key) == token:
+            # equivalence — surface it as an explicit fallback.  RES-9:
+            # except a FIRED same-name-first selection (`suspects`), which
+            # is the mapper's deliberate pick, not an echo.  A curated
+            # rename never reaches this branch (its target differs from
+            # the token), and a name-only identity — curated flag or not —
+            # stays flagged (the pinned echo contract).
+            if (str(res.equivalence_key) == token
+                    and not getattr(res, 'suspects', False)):
                 out.append(_same_name(
                     token, ds, role,
                     'Same-name echo only (mapper tier 6); low confidence.'))
@@ -481,15 +487,17 @@ def _member_targets(mapper, member, hit_ds, ds) -> List[str]:
         res = resolve_valid_targets(mapper, member, hit_ds, ds)
     except Exception:
         return []
-    if res.status in (STATUS_MAPPED, STATUS_BRIDGED, STATUS_VALID_SPLIT):
+    # RES-10: only a UNIQUE equivalence or a licensed split contributes —
+    # a multi-target `mapped` union is one-of-N evidence (RES-1 keeps that
+    # status evidence-only), never a defensible query expansion.
+    if res.status == STATUS_VALID_SPLIT:
         return [str(t) for t in (res.target_types or ())]
+    if res.status == STATUS_MAPPED and res.equivalence_key is not None:
+        return [str(res.equivalence_key)]
+    if res.status == STATUS_BRIDGED and len(res.target_types or ()) == 1:
+        return [str(res.target_types[0])]
     return []
 
-
-try:
-    from utils.label_utils import UntypedLabelPolicy
-except ImportError:  # pragma: no cover - direct src/ execution
-    from src.utils.label_utils import UntypedLabelPolicy
 
 try:
     from utils.label_utils import UntypedLabelPolicy

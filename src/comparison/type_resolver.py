@@ -92,6 +92,9 @@ _UNIQUE_EQUIVALENCE_STATUSES = frozenset({STATUS_MAPPED, STATUS_BRIDGED})
 #: types contribute to one canonical key.
 _STATUS_SEVERITY = (
     STATUS_CONFLICT,
+    # claims license nothing (a target the dataset does not carry must not
+    # be absorbed by a mapped label merging over it)
+    STATUS_CLAIMED,
     STATUS_EVIDENCE_ONLY,
     STATUS_VALID_SPLIT,
     STATUS_UNMAPPED,
@@ -457,7 +460,11 @@ def resolve_valid_targets(
                     equivalence_key=raw,
                     secondary_targets=tuple(sorted(ends - {raw})),
                     evidence=evidence,
-                    curated_identity=True,
+                    # RES-8: the curated relation names a DIFFERENT type
+                    # (that is why the claim is stale) — it cannot confirm
+                    # this identity.  A verified-native identity, not a
+                    # curated confirmation.
+                    curated_identity=False,
                     reason=(f'curated claim {d_target!r} is absent from the '
                             'target dataset; native same-name realized'),
                     **base)
@@ -548,10 +555,24 @@ def resolve_valid_targets(
     targets = set(ends)
     if ann:
         targets.update(ann.get('targets') or ())
+    # The decision's own targets belong in the union when the decision
+    # itself licensed them as evidence: a valid-split's branches or an
+    # evidence-only convergence's members are exactly what the bridge ends
+    # should be read beside (audit RES-1: the union used to drop them, so
+    # an evidence-only relation with one coinciding bridge end collapsed
+    # into a unique "mapped" equivalence — a refusal resurrected).
+    if decision.get('status') in (STATUS_VALID_SPLIT, STATUS_EVIDENCE_ONLY):
+        targets.update(str(t) for t in (decision.get('target_types') or ()))
     targets = tuple(sorted(targets))
     if len(targets) == 1 and ann:
         kind = ann['kind']
         status = ann.get('status') or STATUS_MAPPED
+        # §stale claims applies here too: a single alias candidate the
+        # target dataset does not carry is a claim, not a mapping.
+        if (status == STATUS_MAPPED
+                and _is_stale_claim(mapper, raw, source_dataset,
+                                    target_dataset, targets[0])):
+            status = STATUS_CLAIMED
         return TypeResolution(
             status=status, kind=kind, target_types=targets,
             equivalence_key=targets[0]
@@ -563,6 +584,11 @@ def resolve_valid_targets(
     evidence_only = bool(decision.get('status') == STATUS_EVIDENCE_ONLY)
     if split_evidence and len(targets) > 1:
         kind, status = 'splits into', STATUS_VALID_SPLIT
+    elif evidence_only:
+        # the decision refused a canonical target; bridge ends widen the
+        # review set but never promote it to a licensed mapping — at any
+        # arity (one coinciding end included, audit RES-1)
+        kind, status = 'one of N', STATUS_EVIDENCE_ONLY
     elif len(targets) > 1:
         kind, status = 'one of N', STATUS_MAPPED
     else:
@@ -830,7 +856,14 @@ def canonical_merge_key(
                              include_bridges=False)
     status = decision.get('status', STATUS_UNMAPPED)
     if status == STATUS_MAPPED and decision.get('target_type'):
-        return _cached(str(decision['target_type']), STATUS_MAPPED)
+        target = str(decision['target_type'])
+        if _is_stale_claim(mapper, raw, resolved_source, target_ds, target):
+            # RES-11: a claim the target namespace cannot fulfil must not
+            # become the MERGE KEY either — two datasets would merge under
+            # a name neither carries (the resolver demotes the same edge
+            # to `claimed`); the raw name keeps the rows dataset-local.
+            return _cached(raw, STATUS_CLAIMED)
+        return _cached(target, STATUS_MAPPED)
     if status == STATUS_CONFLICT:
         return _cached(f'{resolved_source}:{raw}', STATUS_CONFLICT)
     return _cached(raw, status)
@@ -944,6 +977,14 @@ def expand_profile_types(
         status = d.get('status', STATUS_UNMAPPED)
         if status == STATUS_MAPPED:
             tgt = d.get('target_type')
+            if tgt and _is_stale_claim(mapper, base_key, source_dataset,
+                                       target_ds, str(tgt)):
+                # RES-11: profile weight must not land on a canonical key
+                # no namespace carries — keep the raw name dataset-local
+                # (the merge-key lane demotes the same edge to `claimed`).
+                _add(prefix + base_key, weight, STATUS_CLAIMED)
+                status_counts[STATUS_CLAIMED] += 1
+                return
             if tgt:
                 _add(prefix + str(tgt), weight, STATUS_MAPPED)
             else:
@@ -976,7 +1017,8 @@ def expand_profile_types(
                 excluded[base_key] = (
                     STATUS_EVIDENCE_ONLY
                     + ' (display-only; no automatic equivalence)')
-                fallback_used = True
+                # RES-19: an exclusion is not a raw fallback — nothing was
+                # re-keyed, so `raw_fallback_used` must not claim one.
             status_counts[STATUS_EVIDENCE_ONLY] += 1
         elif status == STATUS_CONFLICT:
             excluded[base_key] = STATUS_CONFLICT
