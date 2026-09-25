@@ -122,23 +122,47 @@ Documentation = "https://github.com/Swida-Alba/Drosophila-cross-dataset-connecto
 
 [tool.setuptools]
 # Package discovery - src layout (v2.1.0 reorganization)
-# Core modules are in src/: coana.py, statvis.py, vispath.py
+# Core modules are the flat top-level files in src/ (coana.py, statvis.py,
+# morphology.py, ...; vispath.py lives in vispath-subproject and ships from
+# its own pyproject). py-modules MUST list every top-level src/*.py: a
+# module missing here is silently absent from a non-editable install, and
+# packaged modules import each other flat (e.g. coana imports
+# connection_map unconditionally).
 # Executable scripts are in scripts/: FindPath.py, FindDirect.py, etc.
 package-dir = {"" = "src"}
 py-modules = [
     "BANC_file_converter",
     "FAFB_file_converter",
+    "banc_public_data",
     "build_connection_cache",
     "build_connectivity_profile_cache",
+    "build_seed_indexes",
     "cave_data_fetcher",
     "coana",
+    "connection_map",
+    "fafb_bundle",
     "fafb_utils",
-    "flywire_ids",
     "flylight_downloader",
+    "flywire_ids",
+    "flywire_mesh_cache",
+    "morphology",
+    "morphology_comparison",
+    "neuron_index_builder",
+    "neuron_search",
     "neuronbridge_client",
     "neuronbridge_cache",
+    "neuronbridge_coverage",
     "neuronbridge_finder",
+    "neuronbridge_output_policy",
+    "neuronbridge_query_expansion",
+    "roi_screening",
+    "roi_sensitive_segmentation",
+    "skeleton_provenance",
+    "skeleton_simplification",
     "statvis",
+    "storage_inventory",
+    "synapse_cache",
+    "visualization_options",
     "visualize_skeleton",
 ]
 
