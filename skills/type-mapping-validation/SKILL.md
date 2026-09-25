@@ -264,7 +264,9 @@ against — `local_data/` is disposable by design.
     `tiers`, `pool_per_source` with its band, the morph record with its
     `units` / `budget` / `capped` / `gate_applied` / `dropped_targets` /
     `vector_cache` (the target-vector
-    store's ledger), the `reading_notes`).
+    store's ledger), the `reading_notes`).  `gate_applied` claims the PASS:
+    true only when `scored > 0` — a pass that raised or graded nothing did
+    not gate the pool, and its tiers are then unrefused, not passed.
     `morph_gate` names its absences apart, and only an explicit
     `scored`-below-bar refusal leaves the pool (the refused pair rows stay in
     `pooling_candidates.csv`); there is no cross-dataset agreement column
@@ -547,8 +549,10 @@ not):
   for a caller that standardizes itself), the cold==warm invariant is pinned by
   `test_vectors_for_returns_one_space_cold_matches_warm`, and
   `input_fingerprint.morph_stores` now names the vector cache, whitener and
-  skeleton store a verdict was read out of. **Read `morph_stores` before
-  blaming a `morph_pool_ref` difference on the code.**
+  skeleton store a verdict was read out of, KEYED BY PASS (`supervised`, and
+  `pooling` in a pooling run — both name the same run-baseline store).
+  **Read `morph_stores` before blaming a `morph_pool_ref` difference on the
+  code.**
 
 ## 3c. Gap-fill estimation — under different confidence levels
 

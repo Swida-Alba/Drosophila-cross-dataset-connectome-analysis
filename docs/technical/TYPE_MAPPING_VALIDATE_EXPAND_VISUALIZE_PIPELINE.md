@@ -419,7 +419,9 @@ that makes the claim lookups raise:
   `attempted` (what the budget allowed
   to be looked at) · `capped` · `scored` (what came back with a value) ·
   `qualified` ·
-  `no_score` · `shared` · `budget` · `gate_applied` · `dropped_targets` ·
+  `no_score` · `shared` · `budget` · `gate_applied` (a claim about the
+  PASS — true only when `scored > 0`; when false the tiers are unrefused,
+  not passed) · `dropped_targets` ·
   `error` ·
   `warnings` — because `scored` can sit far below `attempted` (one BANC run
   recorded `attempted 8 / scored 8` while
@@ -964,7 +966,9 @@ The method now returns ONE space per call — `space='standardized'` by default,
 `space='raw'` for the caller that applies its own statistics — it persists the
 raw row and hands back the standardized one, and
 `input_fingerprint.morph_stores` names the vector cache, pending file, meta,
-whitener, skeleton count and rendered target-vector store for both sides, so a
+whitener, skeleton count and rendered target-vector store for both sides —
+keyed by pass (`supervised` / `pooling`) since 2026-09-25, so a two-pass run
+names both — so a
 remaining native difference is visible in the run folder instead of becoming
 folklore about unstable bars.
 
