@@ -1311,7 +1311,7 @@ class WebDriverExportSession:
         if self.driver:
             try:
                 self.driver.quit()
-            except:
+            except Exception:
                 pass
         return False
     
@@ -1768,7 +1768,7 @@ class WebDriverExportSession:
         if img is not None:
             try:
                 img.close()
-            except:
+            except Exception:
                 pass
         img = None
         
@@ -6715,7 +6715,7 @@ class VisualizeSkeleton:
             if temp_html and not temp_html.endswith('_simplified.html'):
                 try:
                     os.remove(temp_html)
-                except:
+                except Exception:
                     pass
         
         return exported_views
@@ -13972,7 +13972,7 @@ class VisualizeSkeleton:
                             try:
                                 vid = str(neuron_vols[source_index].id)
                                 neuron_type = neuron_type_map.get(vid, None)
-                            except:
+                            except Exception:
                                 pass
 
                             # If still not found, try using the name from source neuron
@@ -13980,7 +13980,7 @@ class VisualizeSkeleton:
                                 try:
                                     vname = str(neuron_vols[source_index].name)
                                     neuron_type = neuron_type_map.get(vname, None)
-                                except:
+                                except Exception:
                                     pass
 
                         # Caller override (plan-type-mapping-validation-
@@ -20287,7 +20287,7 @@ class VisualizeSkeleton:
             if temp_html and not temp_html.endswith('_simplified.html'):
                 try:
                     os.remove(temp_html)
-                except:
+                except Exception:
                     pass
             
             if result['success']:
@@ -21038,7 +21038,7 @@ class VisualizeSkeleton:
                 # normalized, byte, and percentage notation consistently.
                 a = extract_rgba_tuple(set_alpha(color, alpha))[3]
             c = np.array([r, g, b, max(0.0, min(1.0, a))], dtype=float)
-        except:
+        except Exception:
             c = np.array([128.0, 128.0, 128.0, 255.0], dtype=float)
             return c.astype(np.uint8)
 
@@ -21787,7 +21787,7 @@ class VisualizeSkeleton:
                 # Clean up temp HTML
                 try:
                     os.remove(temp_html)
-                except:
+                except Exception:
                     pass
                 
             if actual_export_method == 'kaleido' or use_kaleido_fallback:
@@ -21988,7 +21988,7 @@ class VisualizeSkeleton:
                             signal.alarm(0)  # Cancel any pending alarm
                             if old_handler is not None:
                                 signal.signal(signal.SIGALRM, old_handler)
-                        except:
+                        except Exception:
                             pass
             
             if frame_export_failed:

@@ -18953,7 +18953,7 @@ class FindNeuronConnection:
                             # Try int if key is int
                             try:
                                 node_type = type_lookup.get(int(node_str))
-                            except:
+                            except Exception:
                                 pass
                         
                         if node_type:

@@ -796,3 +796,35 @@ class TestOfflineRenderFilter:
         filtered, skipped = comparer._offline_render_filter(
             {"aMe12": [7, 8]})
         assert filtered == {} and len(skipped) == 2
+
+
+# ------------------------------------------------- diagonal pairing alignment
+def test_type_level_matrix_diagonal_pairs_align(monkeypatch):
+    """A member missing from the body matrix must not shift the diagonal
+    subscripts (regression: ids[] was filtered but members[a][ii] was not,
+    so NBLAST pair exclusion checked the wrong neurons)."""
+    import warnings
+
+    cmp = mc.MorphologyProfileComparer(
+        dataset="hemibrain:v1.2.1", method="nblast", verbose=False,
+        generate_heatmaps=False)
+    # 10(L) and 11(R) are contralateral; 12(L) is missing from the matrix.
+    monkeypatch.setattr(
+        mc, "_dataset_soma_side_map",
+        lambda *a, **k: {10: "left", 11: "right", 12: "left"})
+
+    labels = [10, 11, 99]                      # 12 has no matrix row
+    body_matrix = np.array([
+        [1.0, 0.9, 0.1],
+        [0.8, 1.0, 0.2],
+        [0.1, 0.2, 1.0],
+    ])
+    members = {"T": [10, 12, 11]}              # middle member uncached
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        out = cmp._type_level_matrix(body_matrix, labels, members)
+
+    # The only matrix-present pair (10, 11) is contralateral and must be
+    # excluded: cohesion is NaN, never the mean of matrix[0,1]/[1,0].
+    assert np.isnan(out.loc["T", "T"])

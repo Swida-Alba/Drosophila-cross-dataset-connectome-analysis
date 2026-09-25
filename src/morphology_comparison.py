@@ -503,20 +503,26 @@ class MorphologyProfileComparer:
         for a in types:
             for b in types:
                 if a == b:
-                    ids = [pos[self._body_id(x)] for x in members[a]
-                           if self._body_id(x) in pos]
-                    if len(ids) <= 1:
-                        out.loc[a, a] = 1.0 if ids else np.nan
+                    # Keep member identity and matrix index locked together:
+                    # members absent from the matrix must not shift the
+                    # subscripts (the old code indexed members[a][ii] with a
+                    # filtered-list ii, misattributing pairs).
+                    pairs = [(self._body_id(x), pos[self._body_id(x)])
+                             for x in members[a]
+                             if self._body_id(x) in pos]
+                    if len(pairs) <= 1:
+                        out.loc[a, a] = 1.0 if pairs else np.nan
                         continue
                     vals = []
-                    for ii in range(len(ids)):
-                        for jj in range(len(ids)):
+                    for ii in range(len(pairs)):
+                        for jj in range(len(pairs)):
                             if ii == jj:
                                 continue
-                            xa, xb = members[a][ii], members[a][jj]
+                            xa, xb = pairs[ii][0], pairs[jj][0]
                             if not _pair_ok(xa, xb):
                                 continue
-                            vals.append(body_matrix[ids[ii], ids[jj]])
+                            vals.append(body_matrix[pairs[ii][1],
+                                                    pairs[jj][1]])
                     out.loc[a, a] = _block_mean(vals)
                 elif pd.isna(out.loc[a, b]):
                     vals = []

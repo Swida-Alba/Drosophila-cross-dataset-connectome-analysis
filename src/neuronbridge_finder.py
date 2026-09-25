@@ -545,7 +545,7 @@ class NeuronBridgeFinder:
                     # Progress bars in this module use stdout so the UI
                     # runner receives messages and bar redraws in order.
                     tqdm.write(msg, end=end, file=sys.stdout)
-                except:
+                except Exception:
                     print(msg, end=end, flush=True)
             else:
                 print(msg, end=end, flush=True)
@@ -4339,6 +4339,9 @@ class NeuronBridgeFinder:
         # Parallel loading with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(load_single, bi) for bi in body_info_list]
+            body_by_future = {f: bi.get('bodyId') for f, bi
+                              in zip(futures, body_info_list)}
+            failed_loads = []  # (bodyId, error) — cache reads that raised
 
             if HAS_TQDM and self.verbose:
                 from tqdm import tqdm as tqdm_progress
@@ -4360,8 +4363,8 @@ class NeuronBridgeFinder:
                             loaded_body_ids.append(body_id)
                             loaded_dfs.append(df)
                         pbar_cache.set_postfix_str(f"{body_id}")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        failed_loads.append((body_by_future.get(future), exc))
                 pbar_cache.close()
             else:
                 for future in as_completed(futures):
@@ -4370,8 +4373,19 @@ class NeuronBridgeFinder:
                         if df is not None:
                             loaded_body_ids.append(body_id)
                             loaded_dfs.append(df)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        failed_loads.append((body_by_future.get(future), exc))
+            if failed_loads:
+                # A failed cache read must not vanish silently: the match
+                # table would be incomplete with no trace of why.
+                ids = [str(b) for b, _ in failed_loads[:8]]
+                more = f" (+{len(failed_loads) - 8} more)" \
+                    if len(failed_loads) > 8 else ""
+                first = failed_loads[0][1]
+                self._vprint(
+                    f"⚠️  {len(failed_loads)} cached bodyIds failed to load "
+                    f"({', '.join(ids)}{more}): {first!r} — they are absent "
+                    "from the loaded set", force=True)
         
         # Concatenate all Polars DataFrames
         if loaded_dfs:

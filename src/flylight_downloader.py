@@ -1052,7 +1052,7 @@ class FlyLightDownloader:
             req = _create_request(file.http_url, method='HEAD')
             with urllib.request.urlopen(req, timeout=10) as response:
                 return response.status == 200
-        except:
+        except Exception:
             return False
     
     def list_vt_files(

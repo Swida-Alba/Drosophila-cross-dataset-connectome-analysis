@@ -1573,7 +1573,7 @@ class ConnectivityProfiler:
             if temp_file.exists():
                 try:
                     temp_file.unlink()
-                except:
+                except Exception:
                     pass
             self._log(f"Warning: Could not save profile batch file: {e}")
     
@@ -1678,12 +1678,12 @@ class ConnectivityProfiler:
                 for bf in batch_files:
                     try:
                         bf.unlink()
-                    except:
+                    except Exception:
                         pass
                 # Remove batch directory if empty
                 try:
                     batch_dir.rmdir()
-                except:
+                except Exception:
                     pass
             
             self._log(f"Consolidated {consolidated_count} profiles into main cache ({len(combined)} total)")
@@ -1727,11 +1727,11 @@ class ConnectivityProfiler:
                 for bf in batch_files:
                     try:
                         bf.unlink()
-                    except:
+                    except Exception:
                         pass
                 try:
                     batch_dir.rmdir()
-                except:
+                except Exception:
                     pass
             
             return len(batch_files)
@@ -1795,7 +1795,7 @@ class ConnectivityProfiler:
             self._log(f"Warning: Corrupt cache parquet for {dataset}, removing: {e}")
             try:
                 cache_path.unlink()
-            except:
+            except Exception:
                 pass
             return None
         
@@ -1966,7 +1966,11 @@ class ConnectivityProfiler:
                 return val
             try:
                 return json.loads(val)
-            except:
+            except (TypeError, ValueError) as e:
+                # A malformed JSON cell silently drops that partner map;
+                # log it so a systematically broken column is discoverable.
+                self._log(f"Warning: unparseable JSON profile column "
+                          f"value ({str(val)[:60]!r}): {e}")
                 return None
         
         def parse_int_key_mapping(val):
@@ -2175,7 +2179,7 @@ class ConnectivityProfiler:
             if temp_file.exists():
                 try:
                     temp_file.unlink()
-                except:
+                except Exception:
                     pass
             self._log(f"Warning: Could not save profiles batch file: {e}")
     
@@ -2532,7 +2536,7 @@ class ConnectivityProfiler:
                             conn_df = self._get_cached_conn_df(dataset)
                             if conn_df is not None:
                                 rows = len(conn_df)
-                        except:
+                        except Exception:
                             pass
                     
                     status[dataset] = {

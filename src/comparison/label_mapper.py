@@ -460,7 +460,7 @@ class LabelMapper:
                     try:
                         if neuron_id.isdigit():
                             neuron_id = int(neuron_id)
-                    except:
+                    except Exception:
                         pass
                     
                     # Add to mapping (rows with same custom_label are aggregated)
@@ -523,7 +523,7 @@ class LabelMapper:
                         try:
                             if neuron_id.isdigit():
                                 neuron_id = int(neuron_id)
-                        except:
+                        except Exception:
                             pass
                         
                         if neuron_id not in mapping[std_label][dataset]:

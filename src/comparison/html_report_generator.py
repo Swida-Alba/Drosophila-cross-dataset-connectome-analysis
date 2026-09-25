@@ -2832,7 +2832,7 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                 prob_data = analyzer._get_prob_data_for_threshold(t)
                 if not prob_data.empty and d in prob_data.columns:
                     # Only include paths where this dataset has non-zero probability
-                    # This ensures we don't dilute the average with 0s from paths in other datasets
+                    # This ensures we don't dilute the average with 0s from other datasets' paths
                     dataset_probs = prob_data[d]
                     non_zero_probs = dataset_probs[dataset_probs > 0]
                     if len(non_zero_probs) > 0:
@@ -2843,7 +2843,11 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                         avg_prob = 0.0
                 else:
                     avg_prob = 0.0
-            except:
+            except Exception as e:
+                # The value lands in used_data/avg_prob_data.csv; a silent
+                # 0.0 would read as "no probability" rather than "failed".
+                print(f"[HTML Report] Warning: Failed to get probability "
+                      f"data for {nick} at threshold {t}: {e}")
                 avg_prob = 0.0
             avg_prob_data.append({'dataset': nick, 'threshold': t, 'prob': avg_prob})
     
@@ -3883,7 +3887,7 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
                     <strong>{self_edge_count}</strong> self-edges (type→same type) exist in the edge matrix
                     but are excluded from path analysis (FindAllPath requires source≠target). {reason}</span>
                 </div>'''
-    except:
+    except Exception:
         pass
     
     html_parts = []
@@ -4850,7 +4854,7 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
         tgt_list = analyzer.parameters._ensure_flat_list(analyzer.parameters.target_neurons)
         source_neurons.update(src_list)
         target_neurons.update(tgt_list)
-    except:
+    except Exception:
         pass
     
     # If label mapper is available, ALSO include the mapped keys
@@ -5591,7 +5595,7 @@ def _generate_dataset_network(analyzer, dataset: str, thresholds: List[int],
             tgt_list = analyzer.parameters._ensure_flat_list(analyzer.parameters.target_neurons)
             source_neurons = set(src_list)
             target_neurons = set(tgt_list)
-        except:
+        except Exception:
             pass
     
     # Helper to extract canonical name from display name like "MeVPaMe1(MTe46)" -> "MeVPaMe1"
@@ -9034,7 +9038,7 @@ def _generate_cosine_similarity_trend_plot(analyzer, dataset_names: List[str], t
     for threshold in thresholds:
         try:
             aligned = analyzer.get_aligned_data(threshold)
-        except:
+        except Exception:
             continue
         
         if aligned is None or aligned.empty:
@@ -9161,7 +9165,7 @@ def _generate_path_rank_correlation_plot(analyzer, dataset_names: List[str], thr
     for threshold in thresholds:
         try:
             path_df = analyzer._get_path_data_for_threshold(threshold)
-        except:
+        except Exception:
             continue
         
         if path_df is None or path_df.empty:

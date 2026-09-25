@@ -1493,7 +1493,7 @@ class ProfileComparator:
                     try:
                         rank_corr, _ = spearmanr(weights_a, weights_b)
                         rank_corr = float(rank_corr) if not np.isnan(rank_corr) else np.nan
-                    except:
+                    except Exception:
                         rank_corr = np.nan
                 else:
                     rank_corr = np.nan
@@ -1510,7 +1510,7 @@ class ProfileComparator:
                     try:
                         rank_union, _ = spearmanr(weights_a_union, weights_b_union)
                         rank_union = float(rank_union) if not np.isnan(rank_union) else np.nan
-                    except:
+                    except Exception:
                         rank_union = np.nan
                 else:
                     rank_union = np.nan
@@ -3679,7 +3679,7 @@ class HomologFinder:
             safe_name = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
             if safe_name in _PROFILER_CONN_CACHE:
                 _PROFILER_CONN_CACHE[safe_name] = {}
-        except:
+        except Exception:
             pass
         
         # Clear FNC's module-level cache
@@ -3691,7 +3691,7 @@ class HomologFinder:
                     _FNC_CACHE[safe_name]['conn_df'] = None
                 # Keep indexes info but clear the data
                 _FNC_CACHE[safe_name] = {}
-        except:
+        except Exception:
             pass
         
         # Clear our local cache
@@ -4991,7 +4991,7 @@ class HomologFinder:
                 process = psutil.Process(os.getpid())
                 mem = process.memory_info().rss / 1024 / 1024
                 self._log(f"Memory after cache check for {dataset}: {mem:.1f} MB")
-            except:
+            except Exception:
                 pass
             
             if total_neurons > 0:
@@ -8007,7 +8007,7 @@ class HomologFinder:
                         # Try to convert to string for other types
                         try:
                             serializable_stats[k] = str(v)
-                        except:
+                        except Exception:
                             pass
                 
                 json.dump(serializable_stats, f, indent=2)
@@ -9749,7 +9749,7 @@ class HomologFinder:
             try:
                 iterator = tqdm(iterator, desc="Shuffle iterations",
                                 disable=progress_bars_disabled(show_progress, self.verbose))
-            except:
+            except Exception:
                 pass
         
         for i in iterator:
@@ -11943,7 +11943,7 @@ class ConnectivityProfileComparer:
                 try:
                     rank_corr, _ = spearmanr(weights_a, weights_b)
                     rank_corr = float(rank_corr) if not np.isnan(rank_corr) else np.nan
-                except:
+                except Exception:
                     rank_corr = np.nan
             else:
                 rank_corr = np.nan
@@ -11961,7 +11961,7 @@ class ConnectivityProfileComparer:
                 try:
                     rank_union, _ = spearmanr(weights_a_union, weights_b_union)
                     rank_union = float(rank_union) if not np.isnan(rank_union) else np.nan
-                except:
+                except Exception:
                     rank_union = np.nan
             else:
                 rank_union = np.nan

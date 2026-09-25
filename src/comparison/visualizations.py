@@ -337,7 +337,7 @@ class ComparisonVisualizer:
                             if edge_key not in all_data:
                                 all_data[edge_key] = {}
                             all_data[edge_key][col_name] = aligned.loc[edge_key, dataset]
-            except:
+            except Exception:
                 continue
         
         if not all_data:
@@ -1357,7 +1357,7 @@ class ComparisonVisualizer:
                 if path_data_func:
                     try:
                         path_data_t = path_data_func(threshold)
-                    except:
+                    except Exception:
                         pass
                 
                 if similarity_func:
@@ -2254,7 +2254,7 @@ class ComparisonVisualizer:
                                 if path_data_func:
                                     try:
                                         path_data_t = path_data_func(threshold)
-                                    except:
+                                    except Exception:
                                         pass
                                 sim_t = metrics.calculate_all_pairwise_similarities(
                                     aligned_t, datasets, threshold=1, path_data=path_data_t
@@ -2270,7 +2270,7 @@ class ComparisonVisualizer:
                                         vis_data_dir,
                                         f"similarity_{point_stem(threshold)}.csv"),
                                     index=False)
-                    except:
+                    except Exception:
                         pass
                 if all_sim_data:
                     # Save both individual similarity_matrix.csv (all thresholds combined) 
@@ -3513,7 +3513,7 @@ class ComparisonVisualizer:
         for threshold in sorted_thresholds:
             try:
                 aligned = align_func(threshold)
-            except:
+            except Exception:
                 continue
             
             if aligned is None or aligned.empty:
@@ -3825,7 +3825,7 @@ class ComparisonVisualizer:
                         if available_ds:
                             is_common = (aligned[available_ds] > 0).all(axis=1)
                             c_edge = int(is_common.sum())
-                except:
+                except Exception:
                     pass
             common_edge_counts.append(c_edge)
             

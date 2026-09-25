@@ -1242,33 +1242,6 @@ def _cache_rejection_reason(
     return None
 
 
-def _report_cache_fallback(
-    cache: CachedNeuronSearch,
-    frame: Any,
-    frame_index: FrameBodyIdIndex,
-    verbose: bool,
-) -> None:
-    """Explain, at most once per reason, why the sidecar was rejected.
-
-    The dataframe scan is the correctness fallback but also the slow path; a
-    silent downgrade turns every later query into a full-table scan with
-    nothing in the log saying why.
-    """
-    if not verbose:
-        return
-    reason = _cache_rejection_reason(cache, frame, frame_index)
-    if not reason:
-        return
-    key = (str(cache.index_path), reason)
-    if key in _FALLBACK_DIAGNOSTICS_EMITTED:
-        return
-    _FALLBACK_DIAGNOSTICS_EMITTED.add(key)
-    print(
-        f'\033[33mℹ️  neuron search sidecar unused for "{cache.dataset}": '
-        f'{reason}. Falling back to the dataframe scan (slower).\033[0m'
-    )
-
-
 def resolve_cached_or_dataframe_query(
     cache: Optional[CachedNeuronSearch],
     frame: Any,

@@ -3208,7 +3208,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
                     row_type = type_lookup['pre'].get(row_id, 'Unknown')
                     col_type = type_lookup['post'].get(col_id, 'Unknown')
                     hover_row.append(f'<b>Source:</b> {row_label} ({row_type})<br><b>Target:</b> {col_label} ({col_type})<br><b>{metric_type.capitalize()}:</b> {value_str}')
-                except:
+                except Exception:
                     # Fall back to label-only display if type lookup fails
                     hover_row.append(f'<b>Source:</b> {row_label}<br><b>Target:</b> {col_label}<br><b>{metric_type.capitalize()}:</b> {value_str}')
             else:

@@ -2632,3 +2632,39 @@ def test_convenience_functions(monkeypatch):
     df2 = find_neurons_for_line("VT037867", match_type="pppm")
     assert list(df2["bodyId"]) == ["5813128953"]
     assert created["verbose"] is False
+
+
+def test_bulk_cache_load_failure_is_reported(tmp_path, monkeypatch, capsys):
+    """A cache read that raises must be reported, not silently dropped
+    (regression: the as_completed loops used except-pass, so failed
+    bodyIds just vanished from the loaded set)."""
+    if not nbf_mod.HAS_POLARS:
+        pytest.skip("polars not installed")
+    monkeypatch.setattr(nbf_mod, "NBClient", _DummyClient)
+    f = NeuronBridgeFinder(
+        datasets_path=str(tmp_path / "datasets"),
+        cache_folder=str(tmp_path / "cache"),
+        use_cache=True, verbose=True, max_workers=1,
+    )
+    good = pd.DataFrame(
+        {"line": ["VT037867"], "library": ["L"], "score": [100.0],
+         "image_id": ["lm-1"], "match_type": ["cds"]})
+    f._save_to_cache(
+        "id_to_lines", f._get_id_to_lines_cache_key(123, "cds",
+                                                    "hemibrain:v1.2.1"), good)
+    real = f._load_from_cache_polars
+
+    def flaky(cache_type, cache_key):
+        if "456" in str(cache_key):
+            raise OSError("corrupt parquet read")
+        return real(cache_type, cache_key)
+
+    monkeypatch.setattr(f, "_load_from_cache_polars", flaky)
+    combined, ids = f._load_cached_neurons_bulk_polars(
+        [{"bodyId": 123, "dataset": "hemibrain:v1.2.1"},
+         {"bodyId": 456, "dataset": "hemibrain:v1.2.1"}],
+        "cds",
+    )
+    assert ids == [123]  # 456 failed to load...
+    out = capsys.readouterr().out
+    assert "456" in out and "failed to load" in out  # ...and says so

@@ -4248,7 +4248,7 @@ class ComparisonAnalyzer:
                         q = f"MATCH (n:Neuron) WHERE n.`{roi}` = true RETURN count(n) AS count"
                         result = client.fetch_custom(q)
                         roi_counts[roi] = int(result.iloc[0]['count']) if not result.empty else 0
-                    except:
+                    except Exception:
                         pass
             
             metadata = {
@@ -4312,12 +4312,12 @@ class ComparisonAnalyzer:
         if os.path.exists(neuron_parquet):
             try:
                 neuron_df = pd.read_parquet(neuron_parquet)
-            except:
+            except Exception:
                 pass
         if neuron_df is None and os.path.exists(neuron_file):
             try:
                 neuron_df = self._read_csv(neuron_file)
-            except:
+            except Exception:
                 pass
         
         if neuron_df is None:
@@ -4357,12 +4357,12 @@ class ComparisonAnalyzer:
         if os.path.exists(roi_parquet):
             try:
                 roi_df = pd.read_parquet(roi_parquet)
-            except:
+            except Exception:
                 pass
         if roi_df is None and os.path.exists(roi_file):
             try:
                 roi_df = self._read_csv(roi_file)
-            except:
+            except Exception:
                 pass
 
         if roi_df is not None:
@@ -4372,7 +4372,7 @@ class ComparisonAnalyzer:
                 rois = roi_cols
                 for col in roi_cols[:20]:  # Limit
                     roi_counts[col] = int((roi_df[col] > 0).sum())
-            except:
+            except Exception:
                 pass
         
         metadata = {
@@ -5452,7 +5452,7 @@ class ComparisonAnalyzer:
                     path_rate = (common_paths / total_paths * 100) if total_paths > 0 else 0
                 else:
                     total_paths, common_paths, path_rate = 0, 0, 0
-            except:
+            except Exception:
                 total_paths, common_paths, path_rate = 0, 0, 0
             
             lines.append(f"{threshold:>10} | {total_edges:>12} | {common_edges:>10} | {edge_rate:>9.1f}% | {total_paths:>12} | {path_rate:>9.1f}%")
@@ -8962,7 +8962,7 @@ class ComparisonAnalyzer:
                         try:
                             path_df = self._read_csv(path_file)
                             break
-                        except:
+                        except Exception:
                             continue
                 
                 if path_df is None or path_df.empty:
@@ -8996,7 +8996,7 @@ class ComparisonAnalyzer:
                         elif path_str.startswith('['):
                             try:
                                 path_nodes = ast.literal_eval(path_str)
-                            except:
+                            except Exception:
                                 continue
                         else:
                             continue
@@ -9047,7 +9047,7 @@ class ComparisonAnalyzer:
                             try:
                                 hw = [float(w.strip()) for w in weights_str.split(',')]
                                 all_paths[path_key][hop_weights_col] = f"[{', '.join(str(int(w)) for w in hw)}]"
-                            except:
+                            except Exception:
                                 pass
         
         if not all_paths:
@@ -9459,12 +9459,12 @@ class ComparisonAnalyzer:
                         if weights_str.startswith('['):
                             try:
                                 hop_weights_list = ast.literal_eval(weights_str)
-                            except:
+                            except Exception:
                                 pass
                         elif ',' in weights_str:
                             try:
                                 hop_weights_list = [float(w.strip()) for w in weights_str.split(',')]
-                            except:
+                            except Exception:
                                 pass
                     
                     if hop_weights_list:
@@ -9511,7 +9511,7 @@ class ComparisonAnalyzer:
                     # Parse list format like "['aMe12', 'KCg-d', 'PPL101']"
                     try:
                         path_nodes = ast.literal_eval(path_str)
-                    except:
+                    except Exception:
                         continue
                 else:
                     continue
@@ -9553,12 +9553,12 @@ class ComparisonAnalyzer:
                     if weights_str.startswith('['):
                         try:
                             hop_weights_list = ast.literal_eval(weights_str)
-                        except:
+                        except Exception:
                             pass
                     elif ',' in weights_str:
                         try:
                             hop_weights_list = [float(w.strip()) for w in weights_str.split(',')]
-                        except:
+                        except Exception:
                             pass
                 
                 # Store hop weights
