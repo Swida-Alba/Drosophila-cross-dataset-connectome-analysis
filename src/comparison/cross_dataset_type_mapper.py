@@ -1096,13 +1096,15 @@ class CrossDatasetTypeMapper:
         """Split hemisphere suffix (_L/_R/_U) from a type name.
 
         Returns (base, suffix) where suffix includes leading underscore.
+        Delegates to the shared ``utils.naming_utils`` implementation
+        (MAP-6: the local copy drifted by construction — one suffix set,
+        one place).
         """
-        if not isinstance(type_name, str):
-            return type_name, ''
-        for suffix in ('_L', '_R', '_U'):
-            if type_name.endswith(suffix):
-                return type_name[:-2], suffix
-        return type_name, ''
+        try:
+            from ..utils.naming_utils import split_hemi_suffix
+        except ImportError:  # pragma: no cover - direct package imports
+            from utils.naming_utils import split_hemi_suffix
+        return split_hemi_suffix(type_name)
 
     @staticmethod
     def _split_type_cell(value) -> List[str]:
@@ -4303,9 +4305,13 @@ class CrossDatasetTypeMapper:
         base = self._split_hemi_suffix(str(raw_type or '').strip())[0]
         if not base:
             return None
+        # MAP-3: iterate SORTED candidates — a set's hash order made the
+        # representative for a shared base (e.g. {TmY18, TmY18_R}) vary
+        # ACROSS PROCESSES, and the co-base variant silently vanished from
+        # the rivals.
         cand_map = {}
-        for cand in candidates or ():
-            text = str(cand).strip()
+        for cand in sorted(str(c) for c in (candidates or ())):
+            text = cand.strip()
             if text:
                 cand_map.setdefault(
                     self._split_hemi_suffix(text)[0], text)
@@ -4578,11 +4584,22 @@ class CrossDatasetTypeMapper:
                     }
                 else:
                     selected = _snf['selected']
+                    # MAP-2: every other mapped path re-applies the
+                    # source's hemisphere suffix onto the target
+                    # (get_mapped_type / get_alias_candidates); the fired
+                    # selection dropped it, so the suffix lane differed by
+                    # which path answered.
+                    _, hemi_suffix = self._split_hemi_suffix(raw_type)
+                    if hemi_suffix and not selected.endswith(hemi_suffix):
+                        selected = f'{selected}{hemi_suffix}'
                     result['status'] = 'mapped'
                     result['target_type'] = selected
                     # DEFAULT: suspects stay OUT of target_types (they are
-                    # not candidates for this source).  The opt-in restores
-                    # [selection] + rivals for in-pipeline TM VEV checks.
+                    # not candidates for this source).  TEST-ONLY knob: no
+                    # production code sets it — the TM VEV pipeline reads
+                    # the `same_name_first` field below instead.  Do not
+                    # flip it on the shared singleton: it changes the
+                    # decision shape for every concurrent consumer.
                     if self.include_suspects_in_targets:
                         result['target_types'] = [selected] + [
                             r for r in sorted(conflict.target_types)
@@ -5641,10 +5658,9 @@ class CrossDatasetTypeMapper:
                     idx = len(labels) - 1
                     while len(mapping_dict[ds]) < idx:
                         mapping_dict[ds].append([])
-                    if len(mapping_dict[ds]) == idx:
-                        mapping_dict[ds].append([mapped_type])
-                    else:
-                        mapping_dict[ds][idx].append(mapped_type)
+                    # MAP-8: after the pad loop the list is exactly `idx`
+                    # long, so a plain append is the only reachable case.
+                    mapping_dict[ds].append([mapped_type])
         
         # Create LabelMapper based on role
         if role == 'source':
@@ -6868,11 +6884,33 @@ class CrossDatasetTypeMapper:
         mapped = self.get_mapped_type(type_name, source_dataset, 'male-cns:v1.0')
         return mapped if mapped else type_name
     
+    def _resolve_banc_prefix_release(
+            self, base_type: str,
+            banc_release: Optional[str] = None) -> str:
+        """Which BANC release namespace a 'BANC_'-prefixed column means.
+
+        MAP-1: the expression matrix prefixes BOTH releases 'BANC_' while
+        each release renames types independently (§version control).  An
+        explicitly named release wins; otherwise prefer the release whose
+        own primary type table carries the name (a v888-only rename must
+        not resolve through the v626 tables).  When both carry it the
+        releases share the name and either namespace answers identically.
+        Falls back to the historical v626 default for unknown names.
+        """
+        if banc_release in BANC_RELEASE_KEYS:
+            return banc_release
+        primaries = getattr(self, '_flywire_primaries', {}) or {}
+        for key in sorted(BANC_RELEASE_KEYS, reverse=True):
+            if base_type in primaries.get(key, ()):
+                return key
+        return 'banc_v626'
+
     def get_merge_mapping_for_types(
         self,
         prefixed_types: List[str],
         queried_name: Optional[str] = None,
         verbose: bool = False,
+        banc_release: Optional[str] = None,
     ) -> Dict[str, str]:
         """
         Build a merge mapping for prefixed type names (e.g., 'MCNS_aMe12', 'FAFB_MTe07').
@@ -6915,7 +6953,13 @@ class CrossDatasetTypeMapper:
             
             prefix, base_type = parts
             
-            # Determine source dataset from prefix
+            # Determine source dataset from prefix.
+            # MAP-1: the NeuronBridge expression matrix prefixes BOTH BANC
+            # releases 'BANC_' — routing v888 columns through the v626
+            # tables broke §version control (each release renames types
+            # independently).  The caller names the hosted BANC release;
+            # the default keeps the historical v626 for prefixed types no
+            # release was named for.
             source_ds = None
             prefix_upper = prefix.upper()
             if prefix_upper in ['MCNS', 'MALECNS', 'MALE-CNS']:
@@ -6923,7 +6967,8 @@ class CrossDatasetTypeMapper:
             elif prefix_upper in ['FAFB', 'FLYWIRE', 'FW']:
                 source_ds = 'flywire_FAFB_v783'
             elif prefix_upper in ['BANC']:
-                source_ds = 'banc_v626'
+                source_ds = self._resolve_banc_prefix_release(
+                    base_type, banc_release)
             elif prefix_upper in ['HEMI', 'HEMIBRAIN', 'HB']:
                 source_ds = 'hemibrain:v1.2.1'
             elif prefix_upper in ['MANC']:
@@ -6941,8 +6986,19 @@ class CrossDatasetTypeMapper:
             
             # Track aggregation warnings
             if canonical != base_type:
-                # Check if this is an N-to-1 or 1-to-N case
+                # Check if this is an N-to-1 or 1-to-N case.
+                # MAP-5: names recur across namespaces (SMP227, CB1449) —
+                # scope the scan to the prefix's source namespace and the
+                # canonical target namespace instead of the bare name.
+                src_key = self._get_type_mapping_key(source_ds)
+                tgt_key = self._get_type_mapping_key('male-cns:v1.0')
                 for conflict in self._conflicts:
+                    if self._get_type_mapping_key(
+                            conflict.source_dataset) != src_key:
+                        continue
+                    if self._get_type_mapping_key(
+                            conflict.target_dataset) != tgt_key:
+                        continue
                     if base_type == conflict.source_type or base_type in conflict.target_types:
                         aggregation_warnings.append((prefixed, base_type, canonical, conflict))
                         break
@@ -7033,8 +7089,15 @@ class CrossDatasetTypeMapper:
                     base, _ = self._split_hemi_suffix(str(name).strip())
                     if base:
                         counts[base] = counts.get(base, 0) + 1
-        except Exception:
+        except Exception as exc:
             counts = {}
+            # MAP-7: a silent swallow disabled the population-asymmetry
+            # flag for a whole dataset once before (the 2026-09-16
+            # legacy-alias bug) and nothing in the log said so.
+            self._log(f'[mapper] population counts unavailable for '
+                      f'{dataset}: the >=10x same-name asymmetry flag is '
+                      f'disabled there ({type(exc).__name__}: {exc})',
+                      level='warn')
         self._type_population_counts_cache[dataset] = counts
         return counts
 
