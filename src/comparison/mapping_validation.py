@@ -2248,6 +2248,16 @@ class MappingValidator:
         if pool.get('resolution_status') != 'supported' \
                 or not pool.get('selected_chain'):
             return False
+        # The prioritizer falls back to ANY supported chain of the source
+        # type when no chain ends at the requested target; a chain that
+        # reaches a different type never narrowed THIS pair.  Accepting it
+        # recorded provenance for a bridge that does not describe the pair
+        # (44 MCNS->FAFB + 3 FAFB->hemibrain real cases, 2026-09-25) and
+        # would substitute another type's neurons the day such a chain
+        # resolves target rows — so fail open to the full pools instead.
+        if str(pool['selected_chain'][-1].get('value') or '') \
+                != str(pair.target_type):
+            return False
         src_ids = [int(b) for b in (pool.get('source_body_ids') or [])]
         tgt_ids = [int(b) for b in (pool.get('target_body_ids') or [])]
         if not src_ids:

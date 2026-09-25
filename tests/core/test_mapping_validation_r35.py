@@ -1308,6 +1308,53 @@ def test_rev311_widen_retired_pool_unchanged():
     assert pair.pool_basis == 'linker rows'
 
 
+def test_refine_rejects_wrong_endpoint_chain():
+    """TMV-1 (2026-09-25 audit): `resolve_prioritized_bridge_pool` falls back
+    to ANY supported chain of the source type when none ends at the requested
+    target; a chain reaching a different type never narrowed THIS pair, so
+    refinement must fail open to the full pools instead of recording
+    provenance for — or substituting neurons of — another type (measured
+    real shape: MCNS AVLP460 -> AVLP460b whose chains end at AVLP460)."""
+    from comparison.mapping_validation import MappingValidator
+    from comparison.mapping_validation import TypePair as TP
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(source_dataset='male-cns:v1.0',
+                                    target_dataset='flywire_FAFB_v783',
+                                    query_types=['AVLP460'], visualize=False,
+                                    morph_enabled=False)
+    v.notes = []
+
+    class FakeMapper:
+        def get_type_bridges(self, parent, src, tgt, max_bridges=0):
+            return [[{'dataset': src, 'column': 'type', 'value': parent},
+                     {'dataset': tgt, 'column': 'type', 'value': parent}]]
+
+    v.mapper = FakeMapper()
+    import ui.neuron_index as ni
+    orig = ni.resolve_prioritized_bridge_pool
+
+    def wrong_endpoint(src, tgt, chains, stype, ttype):
+        return {'resolution_status': 'supported',
+                'selected_chain': chains[0],
+                'source_body_ids': [1, 2],
+                'target_body_ids': [99, 98],
+                'source_basis': 'linker rows',
+                'target_basis': 'linker rows'}
+
+    ni.resolve_prioritized_bridge_pool = wrong_endpoint
+    try:
+        pair = TP('male-cns:v1.0', 'AVLP460', [1, 2, 3],
+                  'flywire_FAFB_v783', 'AVLP460b', [7, 8])
+        ok = v._refine_pair_branch(pair)
+    finally:
+        ni.resolve_prioritized_bridge_pool = orig
+    assert ok is False
+    assert pair.source_pool == [1, 2, 3]   # untouched — fail open
+    assert pair.target_pool == [7, 8]
+    assert pair.selected_chain == []        # no misleading provenance
+    assert pair.pool_basis == 'full population'
+
+
 def test_mapper_gap_report_in_readme():
     """Mapper-gap evidence is never silently absent — after the slim
     README (template `_plan/tmvev-run-report-template.md`, D1), the
