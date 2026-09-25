@@ -248,6 +248,19 @@ def _is_native(record: Dict[str, Any]) -> bool:
 
 
 def _decision(mapper, source_type: str, source_ds: str, target_ds: str):
+    """The policy's decision probe — BRIDGES INCLUDED BY DESIGN (POL-6,
+    resolved as documentation 2026-09-26).
+
+    The 2026-09-25 audit proposed include_bridges=False to match the
+    canonical merge fallback.  The test suite says otherwise: bridge-derived
+    branch membership is the DESIGNED behavior this policy exists for
+    (17+ tests pin it — e.g. the 5thsLNv->LNd6 linker chain that motivated
+    the per-side basis), with the auto-only chain-terminal and fan-in/
+    global-contest lanes as its guardrails.  "Byte-identical to the
+    canonical fallback" holds for UNGOVERNED types (which never reach this
+    probe), not for governed chips.  The morph cross-dataset ref pools
+    make the same choice, consistently with TM VEV validating bridged
+    pairs forward."""
     try:
         return mapper.get_mapping_decision(source_type, source_ds, target_ds)
     except Exception:  # noqa: BLE001 — decision failures mean "no relation"

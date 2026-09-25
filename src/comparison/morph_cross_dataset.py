@@ -1067,6 +1067,11 @@ def _mapper_ref_pools(source_types: Dict[int, str], source_dataset: str,
             if not stype or stype in ('?', 'nan', 'None'):
                 continue
             try:
+                # POL-6 (resolved as documentation 2026-09-26): bridges
+                # stay INCLUDED in the ref pools on purpose — the pool is
+                # 'what a mapping could validate against', and TM VEV
+                # validates bridged pairs forward; excluding bridge-only
+                # ends would let the bar lag the validation it prices.
                 dec = mapper.get_mapping_decision(stype, source_dataset,
                                                   target_dataset)
                 targets = list(dec.get('target_types') or [])
