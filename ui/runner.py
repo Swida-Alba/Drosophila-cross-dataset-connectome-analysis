@@ -144,12 +144,10 @@ TOOL_REGISTRY: Dict[str, dict] = {
         "init_method": "InitializeNeuronInfo",
         "methods": {
             "find_path": "fc.FindPath()",
-            # Keep the UI constructor toggle when FindAllPath's method-level
-            # default would otherwise overwrite it with False.
-            "find_all_path": (
-                "fc.FindAllPath(forward_only=True, "
-                "find_reciprocal=fc.find_reciprocal)"
-            ),
+            # find_reciprocal defers to the constructor field (the method
+            # parameter defaults to None); the old explicit
+            # find_reciprocal=fc.find_reciprocal workaround is retired.
+            "find_all_path": "fc.FindAllPath(forward_only=True)",
         },
     },
     "find_shortest": {
@@ -159,10 +157,7 @@ TOOL_REGISTRY: Dict[str, dict] = {
         "var": "fc",
         "init_method": "InitializeNeuronInfo",
         "methods": {
-            "find_shortest": (
-                "fc.FindShortestPath(forward_only=True, "
-                "find_reciprocal=fc.find_reciprocal)"
-            ),
+            "find_shortest": "fc.FindShortestPath(forward_only=True)",
         },
     },
     "find_network": {

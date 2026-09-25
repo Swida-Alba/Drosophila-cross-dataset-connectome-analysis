@@ -72,11 +72,37 @@ except ImportError:
             letters = "".join(c for c in ds.split(":")[0] if c.isalpha())
             return (letters[:4] or "DS").upper()
 
-# Add vispath-subproject to path for VisualizePath import
+# Add vispath-subproject to path for the vispath_pkg imports. The imports
+# themselves are deferred (PEP 562): vispath_pkg ships from the
+# subproject's own packaging and is NOT inside the drocat wheel, so hard
+# top-level imports made `import coana` fail on every non-editable install.
+# Importing coana works without it; pathfinding enumeration (FastGraph)
+# and visualization (VisualizePath) resolve it on first use, with an
+# actionable install hint.
 vispath_src = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vispath-subproject', 'src')
-if vispath_src not in sys.path:
+if os.path.isdir(vispath_src) and vispath_src not in sys.path:
     sys.path.insert(0, vispath_src)
-from vispath_pkg import VisualizePath
+
+_VSPATH_HINT = (
+    'requires the vispath subproject (vispath_pkg). In a repo checkout it '
+    'is loaded automatically; with a wheel install run: '
+    'pip install ./vispath-subproject')
+
+
+def __getattr__(name):
+    if name == 'VisualizePath':
+        try:
+            from vispath_pkg import VisualizePath
+            return VisualizePath
+        except ImportError as exc:
+            raise ImportError(f'Visualization {_VSPATH_HINT}') from exc
+    if name == 'FastGraph':
+        try:
+            from vispath_pkg.fast_graph_core import FastGraph
+            return FastGraph
+        except ImportError as exc:
+            raise ImportError(f'Pathfinding enumeration {_VSPATH_HINT}') from exc
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 from connection_map import ThresholdedConnectionMap
 
@@ -1489,7 +1515,9 @@ def clear_fnc_cache(dataset: str = None):
         del _FNC_CACHE[dataset]
 
 
-from core.fast_graph import FastGraph
+# FastGraph resolves lazily via module __getattr__ (vispath subproject);
+# 'from core.fast_graph import FastGraph' also works — that shim is
+# lazy the same way.
 
 try:
     from .flywire_ids import (
@@ -3081,9 +3109,13 @@ class FindNeuronConnection:
 
     find_reciprocal: bool = False
     '''
-    If True, FindAllPath will enrich the path graph by finding all direct
-    connections among nodes in the path graph and saving them in a
-    find_reciprocal subfolder.
+    If True, FindAllPath / FindShortestPath (and the multi-threshold
+    variant) enrich the path graph by finding all direct connections among
+    nodes in the path graph and saving them in a find_reciprocal subfolder.
+    The methods' ``find_reciprocal`` parameter defaults to None and defers
+    to this field; an explicit True/False argument always wins. The
+    run's user_warning_notes entry reports whether the enrichment actually
+    executed, not just what the field requested.
     '''
 
     separate_hemispheres: bool = False
@@ -13658,7 +13690,10 @@ class FindNeuronConnection:
                 '- [symmetry] symmetry_analysis=True: ipsilateral/contralateral '
                 'outputs were generated.'
             )
-        if getattr(self, 'find_reciprocal', False):
+        _ran = getattr(self, '_find_reciprocal_ran', None)
+        _reciprocal_requested = (getattr(self, 'find_reciprocal', False)
+                                 if _ran is None else _ran)
+        if _reciprocal_requested:
             notes.append(
                 '- [enrichment] find_reciprocal=True: reciprocal direct connections '
                 'were added to the path graph.'
@@ -14803,7 +14838,7 @@ class FindNeuronConnection:
         )
     
     def FindAllPath(self, find_bodyId_path=True, forward_only=True, exclude_searched_neurons=None, 
-                    use_graph_cache=True, find_reciprocal: bool = False):
+                    use_graph_cache=True, find_reciprocal: Optional[bool] = None):
         '''Find all paths between source and target neurons within max_interlayer.
 
         Thin wrapper over the shared pathfinding pipeline
@@ -14823,7 +14858,7 @@ class FindNeuronConnection:
         )
 
     def FindShortestPath(self, find_bodyId_path=True, forward_only=True, exclude_searched_neurons=None,
-                         use_graph_cache=True, find_reciprocal: bool = False):
+                         use_graph_cache=True, find_reciprocal: Optional[bool] = None):
         '''
         Find ONLY the shortest paths between source and target neurons.
 
@@ -15345,7 +15380,7 @@ class FindNeuronConnection:
 
     def FindAllPathMultiThreshold(self, thresholds, find_bodyId_path=True,
                                   forward_only=True, use_graph_cache=True,
-                                  find_reciprocal: bool = False):
+                                  find_reciprocal: Optional[bool] = None):
         """Enumerate ONCE at the lowest threshold, materialize the rest.
 
         Feature F (threshold-alignment spec §9.3): for thresholds
@@ -15708,7 +15743,7 @@ class FindNeuronConnection:
 
     def _find_paths_core(self, path_mode, find_bodyId_path=True, forward_only=True,
                          exclude_searched_neurons=None,
-                         use_graph_cache=True, find_reciprocal: bool = False):
+                         use_graph_cache=True, find_reciprocal: Optional[bool] = None):
         '''
         Shared pathfinding pipeline for FindAllPath (``path_mode='all'``)
         and FindShortestPath (``path_mode='shortest'``).
@@ -15764,6 +15799,10 @@ class FindNeuronConnection:
         # Untyped-neuron drop accumulators (drop_untyped) reset per run so
         # sequential calls never mix records across runs.
         self._reset_untyped_drop_tracking()
+        # Run-truth for the reciprocal note: the field says what was
+        # REQUESTED, this says whether the enrichment actually executed
+        # (an explicit method-level False overrides a True field).
+        self._find_reciprocal_ran = False
         # Per-run shortest-discovery cache diagnostics (incoming cache).
         self._shortest_cache_stats = {
             'posts_cache_complete': 0, 'posts_online': 0,
@@ -17493,6 +17532,7 @@ class FindNeuronConnection:
 
         # Optional: find reciprocal/direct connections among nodes in the graph
         if find_reciprocal:
+            self._find_reciprocal_ran = True
             if self.min_synapse_num <= 1:
                 self._vprint('⚠️  find_reciprocal=True with min_synapse_num=1 may be very large.', level='always')
 

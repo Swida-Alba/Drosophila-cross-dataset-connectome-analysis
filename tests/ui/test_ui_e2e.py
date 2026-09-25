@@ -262,7 +262,9 @@ class TestRunner:
         script = sr._generate_script("find_path", {"dataset": "male-cns:v0.9"}, "find_all_path", None)
         assert "from coana import FindNeuronConnection" in script
         assert "FindAllPath" in script
-        assert "find_reciprocal=fc.find_reciprocal" in script
+        # find_reciprocal defers to the constructor field at the method
+        # level; the explicit forwarding workaround is retired.
+        assert "find_reciprocal=fc.find_reciprocal" not in script
         assert "male-cns:v0.9" in script
 
     def test_generate_find_shortest_script(self):
