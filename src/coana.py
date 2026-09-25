@@ -12197,6 +12197,16 @@ class FindNeuronConnection:
             self.conn_df['bodyId_post'] = self.conn_df['bodyId_post'].astype(str)
             self.conn_df = self.conn_df[self.conn_df['bodyId_post'].isin(target_bodyIds)].copy()
 
+        # Untyped-neuron drop (drop_untyped) — REPO-2 (2026-09-25): the
+        # shared predicate every other coana entry point applies after label
+        # enrichment; FindDirectConnections was the one without it, so
+        # untyped edges entered its matrices and summaries. Runs BEFORE the
+        # enrollment marks so isInPath/Checked describe the analysis set,
+        # and an all-untyped result falls into the no-connection branch
+        # below like every other empty case.
+        self._reset_untyped_drop_tracking()
+        self.conn_df = self._filter_untyped_pandas(self.conn_df, 'direct')
+
         # Keep the resolved enrollment visible at the run root for every
         # direct/path analysis, including the no-connection case.  ``Layer=1``
         # records that a target has a direct source connection.
@@ -12469,7 +12479,12 @@ class FindNeuronConnection:
                     self.conn_matrix_ratio_bodyId.transpose().to_excel(dataWriter,sheet_name='connectionRatioMat_bodyId')
                     self.ratioMat_full_bodyId.transpose().to_excel(dataWriter,sheet_name='ratioMat_bodyId_full')
             print(f'  ✓ Saved to: {output_bodyid_excel}')
-        
+
+        # REPO-2 companion: publish what the untyped drop removed, exactly
+        # like the path/network tools (user_warning_notes.txt +
+        # data_details/untyped_dropped_records.csv).
+        self._write_user_warning_notes(self.direct_folder)
+        self._export_untyped_drop_records(self.direct_folder)
         print('Done\n')
         self.VisualizeDirectConnections_simple()
         return 0

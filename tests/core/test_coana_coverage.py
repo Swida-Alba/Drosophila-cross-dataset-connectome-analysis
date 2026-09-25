@@ -976,6 +976,34 @@ class TestFindDirectConnections:
         assert len(pd.read_csv(unconserved)) == 1
 
 
+    def test_untyped_edges_dropped_from_direct_outputs(self, monkeypatch, tmp_path):
+        """REPO-2 (2026-09-25): FindDirectConnections was the one coana entry
+        point without the drop_untyped filter — untyped edges entered its
+        matrices and summaries. The shared predicate now runs after the
+        target-set filter (before the enrollment marks), and the removal is
+        published like every other tool (warning note + records CSV)."""
+        types = {"S": "TS", "A": "TA", "U": "Unknown"}
+        fc, _ = _make_direct_fc(
+            monkeypatch, tmp_path,
+            [("S", "A", 10), ("S", "U", 5)],
+            types=types, target_ids=["A", "U"])
+        assert fc.FindDirectConnections() == 0
+        folder = Path(fc.direct_folder)
+        body = pd.read_csv(folder / "src_to_tgt_bodyId_connections_snp1.csv")
+        got = set(zip(body["bodyId_pre"].astype(str),
+                      body["bodyId_post"].astype(str)))
+        assert got == {("S", "A")}, "the untyped target edge is gone"
+        # enrollment describes the analysis set: U was never 'checked'
+        tgt = pd.read_csv(folder / "target_neurons.csv")
+        checked = set(tgt.loc[tgt["Checked"].astype(bool), "bodyId"].astype(str))
+        assert checked == {"A"}
+        # the removal is published like the path/network tools
+        rec = pd.read_csv(folder / "data_details" / "untyped_dropped_records.csv",
+                          dtype=str)
+        assert set(rec["bodyId_post"]) == {"U"}
+        notes = (folder / "user_warning_notes.txt").read_text()
+        assert "untyped dropped" in notes
+
 # =============================================================================
 # FindPath offline pipeline (layer discovery + path reconstruction)
 # =============================================================================
