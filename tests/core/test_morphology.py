@@ -3957,6 +3957,40 @@ class TestVectorPersistence:
              for b in (101, 201, 303)]), rtol=0, atol=1e-15)
 
 
+    def test_the_standardization_basis_is_frozen_at_first_write(self, tmp_path):
+        """A cache CREATED by a query must not re-base the vectors it already
+        served.
+
+        `load()` falls back to the CURRENT population's mean/std when meta
+        carries none, so without a stamp every later append moves every row's
+        standardized space — the cold/warm defect class in the case dc32a6d
+        left open (an empty cache, where the first call had no statistics to
+        standardize with and handed back raw rows: 33.31, 12, 1, 10 where its
+        repeat served 1, -1, 1, 1).
+        """
+        write_skeleton(tmp_path, "np:v1", 101, line_neuron(length=20))
+        cache = morph.SkeletonVectorCache(
+            "np:v1", project_root=str(tmp_path), verbose=False
+        )
+        assert not cache.cache_exists()
+        first, _, _ = cache.vectors_for([101], compute_missing=True)
+        meta = cache._load_meta() or {}
+        assert meta.get("mean") and meta.get("std"), "the basis was never stamped"
+        write_skeleton(tmp_path, "np:v1", 202, bushy_y_neuron())
+        write_skeleton(tmp_path, "np:v1", 203, line_neuron(length=55))
+        later, mask, _ = cache.vectors_for([101, 202, 203], compute_missing=True)
+        assert mask.tolist() == [True, True, True]
+        # the row the empty cache served is unchanged after the population
+        # tripled, and the fresh rows arrive in THAT space, not raw
+        np.testing.assert_allclose(later[0], first[0], rtol=0, atol=1e-15)
+        stored = pd.read_parquet(
+            cache.pending_path if cache.pending_path.exists()
+            else cache.parquet_path)
+        stored["bodyId"] = stored["bodyId"].astype("int64")
+        raw202 = stored.loc[stored.bodyId == 202,
+                            cache._feature_columns()].to_numpy(float)[0]
+        assert not np.allclose(later[1], raw202)
+
     def test_profile_first_persists_transient_fetch_vector(self, tmp_path, monkeypatch):
         """A transiently-fetched skeleton (never written to the skeleton
         cache) still persists its VECTOR; the next run reuses the vector

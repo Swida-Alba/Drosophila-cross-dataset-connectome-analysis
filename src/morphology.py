@@ -3558,9 +3558,11 @@ class SkeletonVectorCache:
         run, that moved 107 of 1266 exported rows and 16 pool decisions between
         the run and its warm repeat, and every one of those rows was
         reproducible to ~1e-16 by re-feeding exactly the ids the call had to
-        compute. A cache with no statistics to standardize with (nothing
-        persisted yet) returns raw rows for the whole call, which is still one
-        space.
+        compute. A call that finds no statistics to standardize with — no
+        cache yet, or one whose meta predates the key — persists its rows,
+        stamps the basis they are now stored under, and re-reads them, so its
+        answer is the answer the NEXT call gives too. One space means one space
+        ACROSS runs, not only inside a call.
 
         Rows missing from the cache are computed on the fly when a skeleton
         file of the cache's representation AND simplification level exists
@@ -3625,14 +3627,35 @@ class SkeletonVectorCache:
                         # Persist the RAW row (that is what the parquet holds);
                         # hand back the row in the space this call promised.
                         computed.append((bid, vec, row_rep))
-                        if space != "raw" and mu is not None and sd is not None:
-                            vec = (vec - mu) / sd
+                        if space != "raw" and data is not None:
+                            # `load()` always publishes the statistics it
+                            # standardized `X` with, so the row computed here
+                            # joins that same space.
+                            vec = (vec - data["mean"]) / data["std"]
                         result[j] = vec
                         reps[j] = row_rep
                     except Exception:
                         result[j] = np.nan
         if computed:
             self.append_vectors(computed, vector_basis=basis)
+            if data is None or data.get("mean") is None:
+                # This call CREATED the basis (no cache yet, or a cache whose
+                # meta carried no statistics), so the rows it just vectorized
+                # are now persisted and standardized by statistics that did not
+                # exist an instant ago. Re-read them: what a call hands back has
+                # to be what the NEXT call hands back for the same bodyIds, or
+                # a dataset's first run grades its own cold neurons in one space
+                # and every later run in another (measured 2026-09-25 on an
+                # empty cache: raw 33.31, 12, 1, 10 then standardized 1, -1, 1, 1).
+                after = self.load()
+                if after is not None:
+                    index = {self._canonical_body_id(b): i
+                             for i, b in enumerate(after["bodyIds"])}
+                    proj = after["raw"] if space == "raw" else after["X"]
+                    for j, bid in enumerate(body_ids):
+                        i = index.get(bid)
+                        if i is not None:
+                            result[j] = proj[i]
         mask = ~np.isnan(result[:, 0])
         return result, mask, reps
 
