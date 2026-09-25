@@ -4107,3 +4107,13 @@ def test_seed_index_fallback_active_once_dataset_is_local(tmp_path):
 
     index = morph._load_neuron_type_map("np:v1", project_root=str(tmp_path))
     assert index[0] == {101: "A", 102: "B"}
+
+
+def test_vectors_for_rejects_unknown_space(tmp_path):
+    """A typo'd space name must raise, not silently score in the other
+    space (F-CODE-012: any non-'raw' string used to fall through to the
+    standardized branch)."""
+    cache = morph.SkeletonVectorCache("hemibrain:v1.2.1",
+                                      project_root=str(tmp_path))
+    with pytest.raises(ValueError, match="space must be"):
+        cache.vectors_for([1], compute_missing=False, space="standarized")

@@ -3511,6 +3511,15 @@ class SkeletonVectorCache:
             meta["n_rows"] = (self._vector_row_count()
                                if self.parquet_path.exists() else len(combined))
             meta["pending_appends"] = int(meta.get("pending_appends") or 0) + 1
+            if not (meta.get("mean") and meta.get("std")):
+                # Fix the standardization basis the first time a population
+                # exists. Without it `load()` falls back to the CURRENT rows'
+                # stats, so every later append re-bases the vectors it already
+                # served and the same bodyId scores differently run to run.
+                after = self.load()
+                if after is not None:
+                    meta["mean"] = [float(v) for v in after["mean"]]
+                    meta["std"] = [float(v) for v in after["std"]]
             meta.setdefault("version", self._cache_version())
             meta.update(self._meta_extra())
             meta["built_at"] = datetime.now().isoformat(timespec="seconds")
@@ -3576,9 +3585,15 @@ class SkeletonVectorCache:
         'mesh' | '').
         """
         body_ids = [self._canonical_body_id(b) for b in body_ids]
+        if space not in ("standardized", "raw"):
+            # a typo'd space name would otherwise fall through to the
+            # standardized branch and silently return the wrong space
+            raise ValueError(
+                f"space must be 'standardized' or 'raw', not {space!r}")
         data = self.load()
         known: Dict[int, int] = {}
         X = np.zeros((0, self._vector_dim()))
+        mu = sd = None
         dataset_rep = ""
         basis = self._default_basis()
         if data is not None:
@@ -3587,7 +3602,6 @@ class SkeletonVectorCache:
                 for i, b in enumerate(data["bodyIds"])
             }
             X = data["raw"] if space == "raw" else data["X"]
-            mu, sd = data.get("mean"), data.get("std")
             dataset_rep = data.get("dataset_rep", "")
             basis = ((data.get("meta") or {}).get("vector_basis")
                      or self._default_basis())
