@@ -813,6 +813,41 @@ def check_partition(runs, label):
                 str(tok_bad[:3]))
 
 
+def check_summary_rows(run, tag):
+    """pair_summary verdict counters must equal the row distribution (TMV-3).
+
+    Stage 5's AUC demotion rewrote row verdicts after `_summary` froze its
+    counters, so the Branches tab and the Validation tab of one report
+    disagreed (matrix-measured 2026-09-25: banc l-LNv -> l-LNv summary
+    strong=2/verified=6 against 8/8 plain `verified` rows).  The resync
+    landed with this check; a run that still shows drift carries the bug
+    (pre-fix runs re-audited with this script fail it — that is the point).
+    """
+    ps = table(run, 'pair_summary.csv')
+    vr = table(run, 'validation_results.csv')
+    if ps is None or vr is None or not len(ps) or not len(vr):
+        return
+    from collections import Counter
+    counts = {}
+    for r in vr.itertuples(index=False):
+        counts.setdefault(
+            (r.query, r.source_type, r.target_type), Counter())[r.verdict] += 1
+    bad = []
+    for s in ps.itertuples(index=False):
+        key = (s.query, s.source_type, s.target_type)
+        got = counts.get(key)
+        if got is None:
+            continue
+        for verdict in ('verified_strong', 'verified', 'borderline',
+                        'unmatched', 'skipped'):
+            want = int(getattr(s, f'verdict_{verdict}', 0) or 0)
+            have = got.get(verdict, 0)
+            if want != have:
+                bad.append((key, verdict, want, have))
+    chk(not bad, f'{tag}: pair_summary verdicts equal the row distribution',
+        str(bad[:3]))
+
+
 def check_verdict_bars(runs, label):
     """A published morph verdict must be recomputable from its own row.
 
@@ -917,6 +952,7 @@ def main(argv=None):
         check_layout(run, tag)
         check_report(run, tag, mode)
         check_coverage(run, tag)
+        check_summary_rows(run, tag)
         check_placeholder_types(run, tag)
         if mode == 'pooling':
             check_pooling(run, tag)

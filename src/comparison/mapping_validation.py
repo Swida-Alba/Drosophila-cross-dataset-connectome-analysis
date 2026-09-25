@@ -3036,6 +3036,29 @@ class MappingValidator:
             **g,
         }
 
+    def _resync_summary_verdicts(self, per_pair_res: Dict) -> None:
+        """Recompute each pair summary's verdict counters from its final
+        rows (TMV-3, matrix-measured 2026-09-25).
+
+        Stage 5's AUC demotion rewrites ``row['verdict']`` AFTER
+        ``_summary`` froze its counters, so ``pair_summary.csv`` reported
+        pre-demotion counts while ``validation_results.csv`` carried the
+        demoted rows (banc l-LNv -> l-LNv: summary strong=2/verified=6
+        against 8/8 plain ``verified`` rows, ``demoted: 2``).  The summary
+        dicts are shared with ``per_pair_res`` and its rows are the same
+        objects stage 5 mutated, so this patches the counters in place —
+        the Branches tab and the Validation tab then agree.
+        """
+        for res in per_pair_res.values():
+            summary = (res or {}).get('summary') or {}
+            rows = (res or {}).get('rows') or []
+            if not summary or not rows:
+                continue
+            for verdict in ('verified_strong', 'verified', 'borderline',
+                            'unmatched', 'skipped'):
+                summary[f'verdict_{verdict}'] = sum(
+                    r.get('verdict') == verdict for r in rows)
+
     def _gap_fill(self, pair: TypePair, per_source: Dict[int, pd.DataFrame],
                   assigned: List[Tuple[int, int]], val_rows: List[Dict],
                   pool_set: set,
@@ -5769,6 +5792,10 @@ class MappingValidator:
                 morph_info = {'note': f'stage failed: {exc}'}
             self.log(f'    {morph_info}')
             self.progress.emit('stage_done', stage='5', label='morphology')
+            # Stage 5 may have demoted verified_strong rows below the AUC
+            # threshold — refresh the frozen summary counters so
+            # pair_summary.csv matches validation_results.csv (TMV-3).
+            self._resync_summary_verdicts(per_pair_res)
 
         # Revision 3.12: compute the category partition + query-level
         # dedup AFTER morphology (qualification is now known).  This sets

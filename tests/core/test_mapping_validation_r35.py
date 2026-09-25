@@ -1355,6 +1355,36 @@ def test_refine_rejects_wrong_endpoint_chain():
     assert pair.pool_basis == 'full population'
 
 
+def test_summary_verdicts_resync_after_demotion():
+    """TMV-3: stage 5's AUC demotion rewrites row verdicts AFTER _summary
+    froze its counters, so pair_summary.csv disagreed with
+    validation_results.csv (matrix-measured: banc l-LNv -> l-LNv summary
+    strong=2/verified=6 vs 8/8 plain-verified rows).  The resync patches the
+    SHARED summary dicts from the same row objects the demotion mutated."""
+    from comparison.mapping_validation import MappingValidator
+    v = MappingValidator.__new__(MappingValidator)
+    summary = {'query': 'circadian_clock', 'source_type': 'l-LNv',
+               'target_type': 'l-LNv',
+               'verdict_verified_strong': 2, 'verdict_verified': 2,
+               'verdict_borderline': 0, 'verdict_unmatched': 0,
+               'verdict_skipped': 0}
+    rows = [{'verdict': 'verified_strong'},
+            {'verdict': 'verified'},
+            {'verdict': 'verified'},
+            {'verdict': 'unmatched'}]
+    # stage 5 demotes one strong row below the AUC threshold
+    rows[0]['verdict'] = 'verified'
+    rows[0]['flags'] = 'morph_below_threshold'
+    per_pair_res = {('circadian_clock', 'l-LNv', 'l-LNv'):
+                    {'summary': summary, 'rows': rows}}
+    v._resync_summary_verdicts(per_pair_res)
+    assert summary['verdict_verified_strong'] == 0
+    assert summary['verdict_verified'] == 3
+    assert summary['verdict_unmatched'] == 1
+    assert summary['verdict_borderline'] == 0
+    assert summary['verdict_skipped'] == 0
+
+
 def test_mapper_gap_report_in_readme():
     """Mapper-gap evidence is never silently absent — after the slim
     README (template `_plan/tmvev-run-report-template.md`, D1), the
