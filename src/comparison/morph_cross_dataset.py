@@ -1445,7 +1445,7 @@ def ensure_population_artifacts(
     cache_v2._spatial_bounds = bounds
     cache_v2._bounds_resolved = True
 
-    # Pass 2: vectorize with the cache's own recipe (relevel + v2 features).
+    # Pass 2: vectorize with the cache's own recipe (raw basis + v2 features).
     rows: List[Tuple[int, List[float], str]] = []
     for bid, neuron in loaded:
         row = cache_v2._in_memory_vector_row(bid, neuron)
