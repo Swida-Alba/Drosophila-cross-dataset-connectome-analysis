@@ -624,12 +624,23 @@ already asserted*. Pooling asks *what do connectivity and morphology say
 is a homolog of the queried population, over the whole opposite universe*,
 and only then compares that answer with the mapper. It is a fourth mode
 VALUE, NOT a wider rung: it is absent from `VALIDATION_MODES` /
-`MODE_RANK`, so a pooling run publishes `validation_mode: pooling` with NO
-`mode_rank`, and `--mode pooling` with a widening flag is a usage error
+`MODE_RANK`, so a pooling run publishes `validation_mode: pooling` with
+`mode_rank: null` (the key is always written; the mode simply has no rung), and `--mode pooling` with a widening flag is a usage error
 (it does not nest, so that pair is a contradiction, not a precedence
 question). It writes `pooling/` beside the nested bins and changes none of
 them.
 
+- **Its own three tiers, per ROW** (`pooling_candidates.csv`/`pooling_sources.csv`
+  column `tier`, first-match down, and `pooling_pool.csv` carries the SET of tiers
+  its admitting rows reached, e.g. `matched+nominated`): `matched` (the row is
+  some metric's top-1 AND its `rank_union` clears `matched_ru_min`), `verified`
+  (top-1 on either metric), `nominated` (ranks 2..N inside the bar). All three
+  are morph-qualified by definition, which is why morphology is mandatory.
+  `nominated` is POOLING-ONLY — it is in no `TIER_CATEGORIES`,
+  `EXPANSION_CATEGORIES` or `DEDUP_RANK`, so it cannot widen the supervised
+  partition — and pooling has no `borderline` and no `relative`: the deep window
+  and the type-mate bins belong to the nested modes. A pooling `matched` is
+  therefore NOT the mapper's asserted tier, despite the shared name.
 - **The UI can start it; that does not make it a rung**: the mode row of
   **Cross-Dataset › Type Validation** offers a fourth `Pooling` button with
   its own gate card (`card-tmvev-pooling` — its controls are the admission bar

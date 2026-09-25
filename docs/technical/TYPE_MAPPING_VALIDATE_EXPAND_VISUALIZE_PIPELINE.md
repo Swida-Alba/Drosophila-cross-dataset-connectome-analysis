@@ -362,6 +362,18 @@ that makes the claim lookups raise:
   across hundreds of targets, a rank cut is not a row bound (17.1 rows/source at
   N=5 against jaccard's 5.1), so each source holds at most `2N` rows in the
   chain order and the number the cap cut is published as `bar.rows_cut`.
+- **tiers are per ROW, and they are pooling's own** — `matched` (the row is some
+  metric's top-1 AND its `rank_union` clears `matched_ru_min`, the same criterion
+  the ladder's `matched` uses, kept for cross-mode identity), `verified` (top-1
+  on either metric), `nominated` (ranks 2..N inside the bar). First-match down,
+  so one row gets one tier; `pooling_pool.csv` carries the SET its admitting rows
+  reached (`matched+nominated`), which is what a scene leaf shows. All three are
+  morph-qualified by definition — the reason morphology is mandatory here.
+  `nominated` lives in no `TIER_CATEGORIES` / `EXPANSION_CATEGORIES` /
+  `DEDUP_RANK`, so the pooling vocabulary cannot widen the supervised partition,
+  and pooling has no `borderline` and no `relative`. A pooling `matched` is not
+  the mapper's asserted tier despite the shared name (see `pooling tier` in the
+  report glossary).
 - **the floors are flags, not filters** — `jaccard >` floor, `rank_union >`
   floor, and both ranks inside `window_mult` × the size of THAT SOURCE TYPE's
   queried population are still evaluated and exported per row
