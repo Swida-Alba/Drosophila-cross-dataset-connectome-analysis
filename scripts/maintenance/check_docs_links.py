@@ -22,7 +22,7 @@ CODE_PATH = re.compile(
     r'`((?:docs|scripts|tests|skills|src|ui)/[A-Za-z0-9_./-]+\.(?:md|py|sh|json))`')
 REMOVED_HINT = re.compile(
     r'removed|never shipped|retired|superseded|planned; never|'
-    r'has since been removed|since moved|historical',
+    r'has since been removed|since moved|historical|now lives at',
     re.I)
 
 
