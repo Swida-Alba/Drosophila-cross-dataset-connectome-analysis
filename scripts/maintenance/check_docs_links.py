@@ -13,10 +13,30 @@ Usage
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+
+
+def _is_local_only(target: Path) -> bool:
+    """Whether the path is covered by a gitignore rule.
+
+    References to deliberately local-only files (``ui/local_config.json``,
+    the untracked audit records under ``docs/audits/``) are documentation
+    of machine-local conventions: they exist on a developer worktree and
+    are absent on a fresh clone BY DESIGN. The repo's own ignore rules
+    decide, so this checker and CI agree everywhere.
+    """
+    try:
+        rel = target.resolve().relative_to(REPO)
+    except ValueError:
+        return False
+    result = subprocess.run(
+        ['git', 'check-ignore', '-q', str(rel)],
+        cwd=REPO, capture_output=True)
+    return result.returncode == 0
 MD_LINK = re.compile(r'\]\(([^)#\s]+\.md)\)')
 CODE_PATH = re.compile(
     r'`((?:docs|scripts|tests|skills|src|ui)/[A-Za-z0-9_./-]+\.(?:md|py|sh|json))`')
@@ -39,6 +59,8 @@ def check_file(path: Path) -> list:
             continue
         if not _target_in_repo(ref, path.parent).exists():
             line = text[:match.start()].count('\n') + 1
+            if _is_local_only(_target_in_repo(ref, path.parent)):
+                continue
             broken.append(f"{path}:{line} -> {ref}")
     for match in CODE_PATH.finditer(text):
         ref = match.group(1)
@@ -49,6 +71,10 @@ def check_file(path: Path) -> list:
             continue
         if not (REPO / ref).exists():
             line = text[:match.start()].count('\n') + 1
+            if _is_local_only(REPO / ref):
+                # documented local-only path (gitignored by design) —
+                # valid on a worktree, absent on a fresh clone
+                continue
             broken.append(f"{path}:{line} -> {ref}")
     return broken
 

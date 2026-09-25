@@ -83,8 +83,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install project (editable, core deps)
-        run: python -m pip install --quiet -e .
+      - name: Install project (editable, core + ui deps)
+        # the ui extra (nicegui) is required for tests/ui COLLECTION; the
+        # first runner run failed collecting 25 ui files without it.
+        run: python -m pip install --quiet -e ".[ui]"
       - name: Install test runner
         run: python -m pip install --quiet pytest
       - name: Collect the whole suite (no collection errors)
