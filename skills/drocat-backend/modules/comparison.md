@@ -85,7 +85,10 @@ from comparison import LabelMapper
 
 # Preferred: the shared validity-aware resolver (what the panel, viewer,
 # homolog finding, and profile comparison all use) — preserves status,
-# fails closed on conflicts, expands valid splits.
+# fails closed on conflicts, expands valid splits.  An evidence-only
+# union stays evidence_only at ANY arity (bridge ends widen the review
+# set, they never license a mapping); a curated target the dataset does
+# not carry demotes to `claimed` (merge keys keep the raw name).
 res = resolve_valid_targets(mapper, 'MeVPLo2', 'male-cns:v1.0', 'flywire_FAFB_v783')
 
 labeler = LabelMapper()                # explicit per-dataset override (wins)
@@ -157,8 +160,10 @@ fires only when every rival candidate has its own 1-to-1 pairing; an
 `evidence_only` N-to-1 fan-out is excluded.  Fired shape: `status='mapped'`,
 `target_type=<same name>`, `relationship='suspects'`, `suspects=True`,
 `fan_out_candidates=<rivals>`, `target_types=[selection]` (the
-`include_suspects_in_targets` opt-in restores `[selection] + rivals` for
-in-pipeline TM VEV verification).  The rivals are exported one row each to
+`include_suspects_in_targets` knob is TEST-ONLY — no production code sets
+it; the TM VEV pipeline reads the `same_name_first` field, and flipping it
+on the shared singleton changes the decision shape for every concurrent
+consumer).  The rivals are exported one row each to
 `auto_type_mapping_suspects.csv` with the mapper's own crosswalk
 observations (`rival_has_own_clean_pair`, `rival_pair_status` =
 `own_1to1_pair` / `no_own_1to1_pair` — observations, never verdicts; words

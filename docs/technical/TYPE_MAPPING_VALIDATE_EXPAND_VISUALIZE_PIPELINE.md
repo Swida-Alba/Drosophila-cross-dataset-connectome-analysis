@@ -46,6 +46,10 @@ source sub-pool ↔ target type), not the parent type pool:
 - `get_mapping_decision(source_type, src_ds, tgt_ds)` enumerates
   candidate targets (fail-closed: `conflict`/`unmapped` excluded,
   `evidence_only` kept with all targets).
+- A branch whose bridge pool is UNSUPPORTED is dropped for BOTH wide
+  statuses (2026-09-26, TMV-2): `evidence_only` (Rev 3.3 doctrine) and
+  `valid_split_evidence` — a wide fan-out is never validated against a
+  full population beside linker-row verdicts for its siblings.
 - `resolve_prioritized_bridge_pool` (`ui.neuron_index`) refines both
   pools through the selected bridge chain: the source pool is the
   linker-refined subset (basis "linker rows"); no-chain (same-name)

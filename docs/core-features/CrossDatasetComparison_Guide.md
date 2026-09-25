@@ -85,7 +85,9 @@ confidence and evidence for every pair.
   cross-dataset relation: `confirmed`, `contradicted` (identity kept, the
   curated counterpart is shown) or `none` (name only). Otherwise the mapper's
   evidence applies — unique renames are followed, licensed splits query all
-  branches, and a bare name echo is a flagged `same_name_fallback`.
+  branches, and a bare name echo is a flagged `same_name_fallback`
+  (a FIRED same-name-first selection is `mapped` instead — its rivals are
+  disclosed, and it is the mapper's deliberate pick, not an echo).
 - **Taxonomy tokens**: a value of a dataset's taxonomy columns (e.g. FAFB
   `cell_type=circadian_clock`) expands to its member types in the datasets
   that have it (`taxonomy`), and the other datasets bridge the concept by
@@ -94,6 +96,47 @@ confidence and evidence for every pair.
   nothing outside its home dataset.
 - **bodyIds** stay dataset-scoped; **patterns** pass through to each
   dataset's identity search.
+
+### Type coverage: the union resolved into every dataset
+
+Query resolution covers the tokens you typed. **Type coverage** extends the
+same resolution to the full union of types that *appeared* in any dataset's
+results: alignment only ever sees the types a dataset's own pathfinding
+recruited, so a type another dataset surfaced would otherwise be a bare `—`
+(zero) everywhere else. After the run, every union type is resolved into
+EVERY dataset via the type mapper, and each absence gets an explicit
+verdict:
+
+| Status            | Meaning                                                                    |
+| ----------------- | -------------------------------------------------------------------------- |
+| `present`         | the type appears in this dataset's searched graph for the query            |
+| `below_threshold` | neurons exist; edges to the searched graph exist but all < applied threshold (`detail` carries the max weight) |
+| `not_recruited`   | a ≥ threshold edge exists but pathfinding/budget did not include the type  |
+| `no_edges`        | neurons exist but no edges touch the searched graph                        |
+| `not_in_dataset`  | the resolved name has no neurons in the dataset                            |
+| `unmapped` / `conflict` / `evidence_only` / `claimed` / `mapper_unavailable` | the resolver's own verdicts, verbatim |
+| `resolved_absent` | resolves, but diagnosis inputs (neuron table / connection cache / searched-graph list) were unavailable |
+
+Where it surfaces:
+
+- **`comparison_results/type_resolution_union.csv`** — one row per
+  (query, type, dataset): `present`, `resolved_type`, `resolution_status`,
+  `detail`.
+- **Edge presence matrices / `unified_edge_comparison.csv`** — per-endpoint
+  `source_status_{dataset}` / `target_status_{dataset}` columns.
+- **HTML report** — absent edge hovers read
+  `MCNS: — (APL: below threshold (max connected edge weight 2 < threshold 3))`,
+  node tooltips gain a `Coverage:` line, and each query tab has a
+  "Type coverage" card.
+- **`comparison_report.txt`** — a TYPE COVERAGE section listing the absent
+  (dataset, type) pairs per query.
+
+Example: a run where APL clears the threshold in BANC but its inbound
+aMe→APL edges are weight 1–2 in male-cns/FAFB — the matrix shows
+`MCNS: —`, and the coverage pass explains exactly that:
+`below_threshold (max edge weight from path sources 2 < threshold 3)`
+(its big KC→APL inputs do not count: the entry leg into a path search is
+the edge from the path-source neurons).
 
 ### Datasets Supported
 
