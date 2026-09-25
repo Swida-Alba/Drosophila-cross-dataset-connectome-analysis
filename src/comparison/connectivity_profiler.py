@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -1512,7 +1513,34 @@ class ConnectivityProfiler:
         """Get path to batch directory for per-profile files (interruption-safe)."""
         safe_dataset = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
         return self.cache_dir / safe_dataset / '_profile_batch_files'
-    
+
+    def _quarantine_unreadable_cache(self, main_cache_path: Path,
+                                     error: Exception) -> Optional[Path]:
+        """Rename an unreadable main cache aside and announce it loudly.
+
+        The unreadable file may hold consolidated rows that exist in no
+        batch file, so it is preserved (never overwritten or deleted) for
+        manual recovery.  Returns the quarantine path, or ``None`` when the
+        rename itself failed (the original stays in place either way).
+        """
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        quarantined = main_cache_path.with_name(
+            f"{main_cache_path.stem}.corrupt-{stamp}"
+            f"{main_cache_path.suffix}")
+        try:
+            main_cache_path.rename(quarantined)
+        except OSError as rename_error:
+            self._log(
+                f"ERROR: main profile cache {main_cache_path} is unreadable "
+                f"({error}) and could not be quarantined ({rename_error}); "
+                "leaving it in place - consolidation aborted.")
+            return None
+        self._log(
+            f"ERROR: main profile cache {main_cache_path} was unreadable "
+            f"({error}); moved to {quarantined} for recovery. "
+            "Consolidation aborted - batch files were kept.")
+        return quarantined
+
     def _save_profile_to_batch_file(self, profile: ConnectivityProfile):
         """
         Save a single profile to its own batch file (interruption-safe).
@@ -1587,7 +1615,12 @@ class ConnectivityProfiler:
                     existing_df = pl.read_parquet(str(main_cache_path))
                     all_dfs.append(existing_df)
                 except Exception as e:
-                    self._log(f"Warning: Could not read existing cache, will rebuild: {e}")
+                    # The unreadable main cache may hold rows that are in
+                    # no batch file: merging batch-only rows and deleting
+                    # the batches would silently destroy them.  Quarantine
+                    # for recovery and abort without touching the batches.
+                    self._quarantine_unreadable_cache(main_cache_path, e)
+                    return 0
             
             # Load all batch files
             for bf in batch_files:
@@ -1664,23 +1697,28 @@ class ConnectivityProfiler:
             if main_cache_path.exists():
                 try:
                     all_dfs.append(pd.read_parquet(main_cache_path))
-                except:
-                    pass
-            
+                except Exception as e:
+                    # Same protection as the polars path above: never
+                    # overwrite/delete around an unreadable main cache.
+                    self._quarantine_unreadable_cache(main_cache_path, e)
+                    return 0
+
             for bf in batch_files:
                 try:
                     all_dfs.append(pd.read_parquet(bf))
-                except:
-                    pass
-            
+                except Exception as e:
+                    self._log(f"Warning: Skipping corrupt batch file {bf.name}: {e}")
+
             if not all_dfs:
                 return 0
-            
+
             combined = pd.concat(all_dfs, ignore_index=True)
             combined = combined.drop_duplicates(subset=['neuron_id'], keep='last')
-            
+
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            combined.to_parquet(main_cache_path, index=False)
+            temp_path = main_cache_path.with_suffix('.parquet.tmp')
+            combined.to_parquet(temp_path, index=False)
+            temp_path.rename(main_cache_path)
             
             self._disk_cache_df[dataset] = combined
             self._build_disk_cache_index(dataset)

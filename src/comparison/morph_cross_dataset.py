@@ -1508,6 +1508,24 @@ def _safe_name(text: str, limit: int = 40) -> str:
     return safe.strip('_')[:limit] or 'neuron'
 
 
+def _tag_scene_members(members, type_name, abbrev, dataset):
+    """Name bridged-scene members uniquely and tag their source dataset.
+
+    Each entry of ``members`` is a ``(body_id, neuron)`` pair; the returned
+    list preserves that order.  Unique per-member name: navis uniquifies
+    duplicate names inside a NeuronList, which defeats the plotly
+    trace-identity resolution (legend leaves collapse and indices can slip
+    past the neuron count, crashing the layer loop).
+    """
+    named = []
+    for body_id, neuron in members:
+        neuron.name = (f'{_safe_name(type_name, 20)}_{abbrev}'
+                       f'_{int(body_id)}')
+        neuron._drocat_source_dataset = dataset
+        named.append(neuron)
+    return named
+
+
 def _dataset_abbrev(dataset: str) -> str:
     family = _dataset_family(dataset)
     if family == 'FAFB':
@@ -2289,22 +2307,11 @@ class CrossDatasetMorphComparer:
                 skeletons = fetch_source_skeletons(
                     ds, shown, project_root=self.project_root, log=self._log,
                     allow_fetch=self.fetch_online)
-                neurons = [skeletons[int(b)] for b in shown
+                members = [(int(b), skeletons[int(b)]) for b in shown
                            if int(b) in skeletons]
-                if not neurons:
+                if not members:
                     continue
-                for n in neurons:
-                    try:
-                        # Unique per-member name: navis uniquifies duplicate
-                        # names inside a NeuronList, which defeats the
-                        # plotly trace-identity resolution (legend leaves
-                        # collapse and indices can slip past the neuron
-                        # count, crashing the layer loop).
-                        n.name = (f'{_safe_name(type_name, 20)}_{abbrev}'
-                                  f'_{int(b)}')
-                        n._drocat_source_dataset = ds
-                    except Exception:  # noqa: BLE001
-                        pass
+                neurons = _tag_scene_members(members, type_name, abbrev, ds)
                 native = dataset_native_space(ds)
                 if native == ref_render:
                     custom_neurons.append((label, neurons))

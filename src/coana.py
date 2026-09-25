@@ -1,5 +1,6 @@
 # connectome analysis module -- coana
 import os
+import ast
 import threading
 from typing import Callable, List, Optional
 import sys
@@ -511,6 +512,34 @@ def _id_set_digest(ids) -> str:
     import hashlib
     joined = "|".join(sorted({str(i) for i in ids}))
     return hashlib.md5(joined.encode("utf-8", "surrogatepass")).hexdigest()[:24]
+
+
+def _parse_path_nodes(path_str_val):
+    """Parse a path-column value into its node sequence.
+
+    A value may already be a sequence (fresh in-memory frame), a Python
+    list-literal string (parquet/CSV round-trip), or an ``'A->B->C'``
+    joined string.  Parsing must never execute code, hence
+    ``ast.literal_eval`` — never ``eval`` — for persisted strings.
+    """
+    if not isinstance(path_str_val, str):
+        return path_str_val
+    try:
+        return ast.literal_eval(path_str_val)
+    except (ValueError, SyntaxError):
+        return path_str_val.split('->')
+
+
+def _path_has_unconserved_edge(path_str_val, conserved_edge_set):
+    """Whether a path contains any edge outside the conserved edge set."""
+    if path_str_val is None:
+        return True
+    nodes = _parse_path_nodes(path_str_val)
+    for i in range(len(nodes) - 1):
+        edge = (str(nodes[i]).strip(), str(nodes[i + 1]).strip())
+        if edge not in conserved_edge_set:
+            return True
+    return False
 
 
 def _findallpath_cache_key(
@@ -18219,32 +18248,16 @@ class FindNeuronConnection:
             
             def path_has_unconserved_edge(path_str_val):
                 """Check if a path contains any unconserved edge."""
-                if path_str_val is None:
-                    return True
-                # path_str is a list of node names like ['A_L', 'B_L', 'C_L']
-                if isinstance(path_str_val, str):
-                    # Try to parse as list representation
-                    try:
-                        nodes = eval(path_str_val)
-                    except:
-                        nodes = path_str_val.split('->')
-                else:
-                    nodes = path_str_val
-                
-                # Check each edge in the path
-                for i in range(len(nodes) - 1):
-                    edge = (str(nodes[i]).strip(), str(nodes[i+1]).strip())
-                    if edge not in conserved_edge_set:
-                        return True
-                return False
-            
+                return _path_has_unconserved_edge(path_str_val,
+                                                  conserved_edge_set)
+
             # Determine which column has the path nodes
             path_col = None
             for col in ['path_str', 'path', 'path_block', 'nodes']:
                 if col in path_df_type.columns:
                     path_col = col
                     break
-            
+
             if path_col:
                 before_filter = len(path_df_type)
                 path_df_type = path_df_type[~path_df_type[path_col].apply(path_has_unconserved_edge)]

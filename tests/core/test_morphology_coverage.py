@@ -93,10 +93,11 @@ def test_load_flywire_soma_positions_parquet_and_csv(tmp_path):
     })
     frame.to_parquet(ds_dir / f"{folder}_allneurons_neuron_df.parquet",
                      index=False)
-    # BUG REPORTED: explicit body_ids hits an undefined
-    # ``normalize_flywire_body_ids`` (plural, never imported) at line 246,
-    # so the filtered path always swallows a NameError and returns {}.
-    assert M._load_flywire_soma_positions("flywire", tmp_path, [fid]) == {}
+    # Filtered load returns only the requested id (the historical
+    # ``normalize_flywire_body_ids`` NameError bug is fixed).
+    filtered = M._load_flywire_soma_positions("flywire", tmp_path, [fid])
+    assert set(filtered) == {fid}
+    assert np.allclose(filtered[fid], [1.0, 2.0, 3.0])
     # Unfiltered load parses valid rows and skips unparseable positions.
     out = M._load_flywire_soma_positions("flywire", tmp_path)
     assert fid in out and np.allclose(out[fid], [1.0, 2.0, 3.0])
@@ -2136,23 +2137,21 @@ def test_soma_positions_table_variants(tmp_path):
     pd.DataFrame({"bodyId": ["720575940614131061"]}).to_parquet(
         ds_dir / f"{folder}_allneurons_neuron_df.parquet", index=False)
     assert M._load_flywire_soma_positions("flywire", root) == {}
-    # CSV table with a position column exercises the CSV branch. The
-    # filtered-load path still hits the reported
-    # normalize_flywire_body_ids NameError (BUG REPORTED, line 246) and
-    # returns {}; the unfiltered load reaches the loop but the same bug
-    # fires before it, so {} is expected here too.
+    # CSV table with a position column exercises the CSV branch for both
+    # the unfiltered and the filtered (explicit body_ids) load.
     (ds_dir / f"{folder}_allneurons_neuron_df.parquet").unlink()
     pd.DataFrame({
         "bodyId": ["720575940614131061"],
         "position": ["[1.0, 2.0, 3.0]"],
     }).to_csv(ds_dir / f"{folder}_allneurons_neuron_df.csv", index=False)
-    # Unfiltered load parses the CSV row successfully (lines 235-256).
+    # Unfiltered load parses the CSV row successfully.
     positions = M._load_flywire_soma_positions("flywire", root)
     assert set(positions) == {"720575940614131061"}
-    # Filtered load hits the reported normalize_flywire_body_ids NameError
-    # (BUG REPORTED, line 246) and therefore returns {}.
-    assert M._load_flywire_soma_positions(
-        "flywire", root, body_ids=["720575940614131061"]) == {}
+    # Filtered load honors the requested ids (NameError bug fixed).
+    filtered = M._load_flywire_soma_positions(
+        "flywire", root, body_ids=["720575940614131061"])
+    assert set(filtered) == {"720575940614131061"}
+    assert np.allclose(filtered["720575940614131061"], [1.0, 2.0, 3.0])
 
 
 def test_local_dataset_presence_variants(tmp_path):

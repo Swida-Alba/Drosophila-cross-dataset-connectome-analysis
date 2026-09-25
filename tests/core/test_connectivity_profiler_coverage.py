@@ -1487,3 +1487,37 @@ def test_get_hybrid_profile_vector(profiler, monkeypatch):
     assert 'downstream' in hybrid
     up_only = profiler.get_hybrid_profile_vector('H', DS, direction='upstream')
     assert 'downstream' not in up_only
+
+
+def test_consolidate_quarantines_unreadable_main_cache(profiler):
+    """An unreadable main cache must never be overwritten or lost: it is
+    quarantined aside, consolidation aborts, and batch files survive
+    (regression: the old path dropped the unreadable cache, replaced it
+    with batch-only rows, then deleted the batches)."""
+    main_path = profiler._get_cache_parquet_path(DS)
+    main_path.parent.mkdir(parents=True, exist_ok=True)
+    main_path.write_bytes(b'this is not a parquet file')
+    profiler._save_profile_to_batch_file(_profile(301))
+    batch_files = list(profiler._get_profile_batch_dir(DS).glob('*.parquet'))
+    assert batch_files
+
+    assert profiler._consolidate_profile_batch_files(DS) == 0
+
+    # original path no longer holds the corrupt bytes; a quarantine copy does
+    assert not main_path.exists() or main_path.read_bytes() != b'this is not a parquet file'
+    quarantined = list(main_path.parent.glob('connectivity_profiles.corrupt-*'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b'this is not a parquet file'
+    # batch files were kept for the next (post-recovery) consolidation
+    assert list(profiler._get_profile_batch_dir(DS).glob('*.parquet'))
+
+
+def test_consolidate_quarantine_pandas_fallback(profiler, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'polars', None)
+    main_path = profiler._get_cache_parquet_path(DS)
+    main_path.parent.mkdir(parents=True, exist_ok=True)
+    main_path.write_bytes(b'corrupt')
+    profiler._save_profile_to_batch_file(_profile(401))
+    assert profiler._consolidate_profile_batch_files(DS) == 0
+    assert list(main_path.parent.glob('connectivity_profiles.corrupt-*'))
+    assert list(profiler._get_profile_batch_dir(DS).glob('*.parquet'))

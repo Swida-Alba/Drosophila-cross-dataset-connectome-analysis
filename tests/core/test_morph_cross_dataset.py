@@ -947,3 +947,28 @@ class TestTargetVectorStoreSeam:
                                             use_vector_store=False)
         assert state.active
         assert state.vector_cache == {}
+
+
+# ---------------------------------------------------------------------------
+# bridged-scene member tagging
+# ---------------------------------------------------------------------------
+
+def test_tag_scene_members_names_and_tags():
+    """Every bridged-scene member gets a unique bodyId-suffixed name and a
+    source-dataset tag, in input order (regression: the inline loop used an
+    out-of-scope ``b`` and the swallowed NameError skipped both)."""
+    members = [
+        (720575940614131061, SimpleNamespace(name='old-a')),
+        (720575940614131062, SimpleNamespace(name='old-b')),
+    ]
+    out = mcd._tag_scene_members(members, 'PFN (A-sector)', 'FAFB', 'flywire')
+    assert [n.name for n in out] == [
+        'PFN__A-sector_FAFB_720575940614131061',
+        'PFN__A-sector_FAFB_720575940614131062',
+    ]
+    assert len({n.name for n in out}) == 2
+    assert all(n._drocat_source_dataset == 'flywire' for n in out)
+    # body ids that are already ints pass through int() unchanged
+    out2 = mcd._tag_scene_members([(1, SimpleNamespace()), (2, SimpleNamespace())],
+                                  't', 'BANC', 'banc_v888')
+    assert [n.name for n in out2] == ['t_BANC_1', 't_BANC_2']

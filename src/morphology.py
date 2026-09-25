@@ -90,6 +90,7 @@ try:
         is_local_connectome_dataset,
         neuprint_dataset_name,
         normalize_flywire_body_id,
+        normalize_flywire_body_ids,
         normalize_flywire_id_columns,
     )
 except ImportError:
@@ -100,6 +101,7 @@ except ImportError:
         is_local_connectome_dataset,
         neuprint_dataset_name,
         normalize_flywire_body_id,
+        normalize_flywire_body_ids,
         normalize_flywire_id_columns,
     )
 
@@ -379,21 +381,24 @@ def _load_flywire_soma_positions(
             if pos_col is None:
                 return {}
             frame = pd.read_csv(table, usecols=["bodyId", pos_col])
-        requested = (
-            set(normalize_flywire_body_ids(body_ids))
-            if body_ids is not None else None
-        )
-        out = {}
-        for body_id, value in zip(frame["bodyId"], frame[pos_col]):
-            key = normalize_flywire_body_id(body_id)
-            if requested is not None and key not in requested:
-                continue
-            position = parse_soma_position(value)
-            if position is not None:
-                out[key] = position
-        return out
     except Exception:
+        # The soma table is optional: an unreadable one degrades to no
+        # anchoring instead of failing the whole skeleton fetch.  Only the
+        # table IO lives here — filtering bugs below must surface.
         return {}
+    requested = (
+        set(normalize_flywire_body_ids(body_ids))
+        if body_ids is not None else None
+    )
+    out = {}
+    for body_id, value in zip(frame["bodyId"], frame[pos_col]):
+        key = normalize_flywire_body_id(body_id)
+        if requested is not None and key not in requested:
+            continue
+        position = parse_soma_position(value)
+        if position is not None:
+            out[key] = position
+    return out
 
 
 def _has_local_dataset_presence(dataset: str, root: Path) -> bool:
