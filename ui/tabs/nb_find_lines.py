@@ -81,7 +81,7 @@ def create_nb_find_lines_tab():
             section_header("Query Neurons", "search")
             query_input = neuron_list_input(
                 label="EM Neurons (bodyId, type, or instance)",
-                hint="Enter EM neuron identifiers. Use filter mode for pattern matching across types.",
+                hint="Enter EM neuron identifiers. Use Match by for pattern matching across types.",
                 suggestions=_type_suggest,
                 available_neurons=lambda: _selected_datasets() or DATASETS,
                 show_history_datasets=True,

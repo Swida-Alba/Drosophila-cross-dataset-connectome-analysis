@@ -3416,7 +3416,8 @@ class SkeletonVectorCache:
         """Persist freshly-computed vectors (raw feature rows) into the cache.
 
         ``vector_basis=None`` resolves to the cache's own default basis
-        (raw for V1, simp90 for the V2 schema cache).
+        (raw for both caches since the raw-basis flip — V1 and the V2
+        schema cache alike; simplification is visualization-only).
 
         Called when a vector was computed from a cached skeleton file or from
         an online-fetched skeleton that was NOT persisted: the VECTOR is
@@ -3705,11 +3706,13 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
     both vector schemas — V1 rows also stay available for the vector-cache
     prefilter and ``enrich_homolog_results``) but keeps SEPARATE
     parquet/meta/pending files. Vectors are :data:`VECTOR_V2_DIM`-dim (V1's
-    124 features + spatial + topology blocks). Meta additionally records
+    124 features + the spatial block; the topology block was removed in
+    schema v4). Meta additionally records
     the population spatial bounds used by the histogram block; a ZCA
     whitening matrix fitted on the standardized population lives in a
-    ``*_whiten_v2.npz`` sidecar and is (re)computed lazily when the
-    population outgrows the last fit.
+    ``*_whiten_v2.npz`` sidecar (identity below
+    :data:`MIN_ROWS_FOR_WHITENING` rows; reused while ``fit_version``
+    matches; refit otherwise; deleted on a full ``build()``).
     """
 
     def __init__(self, dataset: str, project_root: Optional[str] = None,

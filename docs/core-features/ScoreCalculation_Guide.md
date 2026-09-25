@@ -427,7 +427,7 @@ The `show_top_n_paths` parameter limits output to the highest-probability paths.
 
 These metrics score a pair of connectivity profiles (a dict of
 partner-type → weight, restricted to the top-K partners per direction). They
-are the same six metrics used by the **Connectivity → Find Similar** and
+are the same six metrics used by the **Connectivity → Find Homolog** and
 **Connectivity → Comparison** tabs,
 and are computed for every pair regardless of the chosen sort metric.
 In the tables below `A` and `B` are the two profiles' partner-type sets, `w_a`/`w_b`

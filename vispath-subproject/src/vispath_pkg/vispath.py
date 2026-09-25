@@ -2791,8 +2791,9 @@ class VisualizePath:
             
             # Determine edge color
             if is_negative:
-                # Red color for negative edges (overrides NT coloring)
-                edge_colors.append('rgba(231, 76, 60, 0.4)')
+                # Light blue for negative edges (overrides NT coloring) —
+                # the same value the final styling pass applies below
+                edge_colors.append('rgba(74, 144, 226, 0.4)')
             elif self.color_edges_by_nt and nt is not None:
                 # Use NT-based color
                 edge_colors.append(get_nt_color(nt, opacity=0.6))

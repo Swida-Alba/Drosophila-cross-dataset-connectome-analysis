@@ -1,6 +1,6 @@
-# FlyLight Image Download (flylight)
+# FlyLight Downloader (flylight)
 
-Reproduce the **FlyLight** UI tab as a direct backend call. Uses
+Reproduce the **FlyLight Downloader** UI tab as a direct backend call. Uses
 `FlyLightDownloader` to download expression images/metadata for driver lines,
 optionally generating PDF/PPTX summaries.
 

@@ -2,6 +2,14 @@
 
 ## Date: October 30, 2024
 
+> **Superseded in part (2026-09-25):** the live vispath renderer later
+> REMOVED the compact-hover mechanism ("no compact mode — always show
+> full information"); today's size control is the lazy JS transforms +
+> sparse COO storage of `DeepBackendOptimizations.md` /
+> `VISPATH_OPTIMIZATION_PLAN.md`. The UI-layout and precision-reduction
+> halves below remain accurate. Read "Current Status" as a statement
+> about 2024, not today.
+
 ## Overview
 This document summarizes the optimizations made to reduce HTML file size for bodyId heatmaps and improve UI layout consistency.
 

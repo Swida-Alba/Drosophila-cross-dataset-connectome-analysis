@@ -1,4 +1,4 @@
-"""Find Lines tab: dataset-aware query box + coverage-aware selector.
+"""Find Driver Lines tab: dataset-aware query box + coverage-aware selector.
 
 Covers the plan
 (`_plan/plan-nb-find-lines-dataset-aware-queries.md` §6) UI contract:

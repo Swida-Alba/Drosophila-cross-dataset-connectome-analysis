@@ -345,7 +345,7 @@ local_data/neuronbridge_finding/NB-find-lines_{query}_{date}/
 ├── line_summary.csv              # All lines ranked by weighted_score
 ├── gal4_lexa_summary.csv         # GAL4/LexA lines only
 ├── split_gal4_summary.csv        # Split-GAL4 lines only
-├── all_lines.csv                 # Row-level matches
+├── {query}_lines.csv             # Per-query row-level matches
 ├── images/                       # Downloaded images
 │   ├── SS01015/                  # One folder per line
 │   └── VT037867/
@@ -588,7 +588,7 @@ local_data/neuronbridge_finding/NB-find-lines_{query}_{timestamp}/
 ├── line_summary.csv                 # Ranked by weighted_score
 ├── gal4_lexa_summary.csv            # GAL4/LexA only
 ├── split_gal4_summary.csv           # Split-GAL4 only
-├── all_lines.csv                    # Row-level matches
+├── {query}_lines.csv                # Per-query row-level matches
 ├── images/                          # Downloaded images
 │   ├── SS01015/
 │   │   ├── SS01015-20x-f-001.jpg

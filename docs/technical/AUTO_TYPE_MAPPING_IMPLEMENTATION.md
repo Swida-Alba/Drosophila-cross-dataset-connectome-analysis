@@ -1,7 +1,7 @@
 # Auto Type Mapping — Implementation Report
 
 *Technical reference for the cross-dataset auto type mapping engine as of
-2026-09-09. Companion to the user-facing `docs/AUTO_TYPE_MAPPING.md`; this
+2026-09-25 (inline user-date markers record later revisions). Companion to the user-facing `docs/AUTO_TYPE_MAPPING.md`; this
 report documents the implementation: components, the bridge-rule algebra,
 the derivation walk, resolution precedence, the shared UI backend, pooling,
 and the visualization contract.*
@@ -226,14 +226,16 @@ analysis consumer imports a UI module, and the UI
   scoring so every step observes the same mapper state.
 - `resolve_valid_targets()` — the typed resolution record
   (`TypeResolution`): status vocabulary `mapped | bridged |
-  valid_split_evidence | evidence_only | conflict | unmapped |
-  mapper_unavailable`, ordered target list, equivalence key, bridge
+  valid_split_evidence | evidence_only | conflict | claimed | unmapped |
+  mapper_unavailable` (`claimed` = a stale pre-2026-09-12 claim), ordered
+  target list, equivalence key, bridge
   provenance, and scoped conflicts. `bridged` is the single bridge-derived
   target case emitted by `get_mapping_decision(include_bridges=True)`; it
   keeps its own status and is never silently rewritten to curated `mapped`.
 - `expansion_targets()` — the analysis policy: mapped/bridged/splits
-  contribute their targets, conflicts and evidence-only relations fail
-  closed, unmapped types keep the raw name as the explicitly counted
+  contribute their targets, conflicts, evidence-only relations and
+  stale `claimed` entries fail closed (claimed → no expansion),
+  unmapped types keep the raw name as the explicitly counted
   long-tail fallback.
 - `expand_profile_types()` — status-aware profile canonicalization for
   scoring: each canonical key records WHICH mapping status produced it,

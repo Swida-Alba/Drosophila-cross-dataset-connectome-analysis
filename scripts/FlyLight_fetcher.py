@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FlyLight_downloader.py - Download FlyLight imagery data by driver line name
+FlyLight_fetcher.py - Download FlyLight imagery data by driver line name
 
 This script downloads images and data from multiple FlyLight sources:
     1. S3 bucket (janelia-flylight-imagery): Gen1 MCFO, Split-GAL4 lines
@@ -10,7 +10,7 @@ The script automatically detects the line type and uses the appropriate source.
 
 Usage:
     Edit the parameters in the script and run directly:
-    python FlyLight_downloader.py
+    python FlyLight_fetcher.py
 
 Key Features:
     - Download by driver line name (e.g., 'R10A06', 'VT037867', 'SS00731')

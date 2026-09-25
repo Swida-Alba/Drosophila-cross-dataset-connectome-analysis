@@ -259,7 +259,7 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 selected[dataset] = index
         return selected
 
-    # §12: resolve every chip under the ACTIVE FILTER MODE (exact /
+    # §12: resolve every chip under the ACTIVE MATCH MODE (exact /
     # startswith / contains / endswith / regex) against each selected
     # dataset's type column; no-hit chips fall back to the staged native
     # search (labels) below.
@@ -672,7 +672,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 # column and dataset(s) ("type · flywire_FAFB_v783") from
                 # the current selection's local pools.
                 history_hint_datasets=lambda: list(get_datasets() or []),
-                hint="One query per chip. The filter modes match the standard "
+                hint="One query per chip. The match modes match the standard "
                      "query (exact / starts with / contains / ends with / "
                      "regex); dataset-aware type suggestions from the "
                      "selected datasets appear as you type. This box keeps "

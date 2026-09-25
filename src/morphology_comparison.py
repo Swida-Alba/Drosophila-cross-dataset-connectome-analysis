@@ -116,7 +116,7 @@ except ImportError:  # pragma: no cover - direct src/ execution
 
 
 # Regex metacharacters that mark a query token as a pattern rather than an
-# exact type name (mirrors the UI filter modes: 'aMe.*', '.*KC.*', ...).
+# exact type name (mirrors the UI match modes: 'aMe.*', '.*KC.*', ...).
 _PATTERN_CHARS = set("*?[](){}|^$.+\\")
 
 # NBLAST builds a dotprop per neuron and scores every pair twice: O(N²)

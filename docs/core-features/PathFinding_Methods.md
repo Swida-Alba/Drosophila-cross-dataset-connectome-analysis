@@ -2,8 +2,8 @@
 
 The `FindAllPath` function in `coana.py` runs on the optimized `FastGraph`
 core. Since 2026-09-05, **StrongestFirst is the built-in 'all'-mode
-algorithm** — the Algorithm selector was removed from the Find All Paths
-and Cross-Dataset tabs. The `pathfinding` parameter survives for
+algorithm** — the Algorithm selector was removed from the Complete Paths
+(and Cross-Dataset) tab. The `pathfinding` parameter survives for
 scripts/API callers (legacy complete enumerators are documented below
 and remain verified), and `max_paths_bodyid` bounds the output with a
 reported τ while `graph_edge_limit_bodyid` is the **Edge Budget** that

@@ -1,5 +1,14 @@
 # Negative Value Handling - Implementation Summary
 
+> **Dated record (v1.0, 2024), with later drift.** The vispath sections
+> remain the accurate mechanism reference (absolute widths, sign-preserving
+> hover, negative-edge styling in `vispath_pkg.vispath`). Two claims are
+> stale relative to the current code: `statvis.SankeyDirect` now DROPS
+> negative matrix entries (no customdata/light-blue path there), and the
+> `FindDirect` class shown in the examples no longer exists — the direct
+> API is `FindNeuronConnection.FindDirectConnections`
+> (`src/coana.py`), and `VisualizePath` imports from `vispath_pkg`.
+
 ## Overview
 This document describes the implementation of negative value handling across all visualization types in the connectome analysis toolkit. The implementation ensures that negative edge weights are correctly displayed with appropriate visual indicators.
 

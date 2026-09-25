@@ -2,13 +2,17 @@
 
 ## Overview
 
-The file picker and sheet selection dialogs now support **multiple GUI backends** with automatic fallback for optimal performance:
+The sheet selection dialog supports **multiple GUI backends** with
+automatic fallback; the file picker uses the same GUI cascade but, when
+NO GUI library is available, it fails with an error (plus a pip-install
+hint) rather than falling back to the terminal — terminal selection is
+sheet-selection only:
 
 1. **PyQt5** (Recommended - Fastest ⚡)
 2. **PyQt6** (Also Fast ⚡)
 3. **wxPython** (Good Performance 👍)
-4. **tkinter** (Slowest, but always available)
-5. **Terminal** (Fallback when no GUI available)
+4. **tkinter** (Slowest GUI, but always available)
+5. **Terminal** (Sheet selection only — no GUI library needed)
 
 ## Performance Comparison
 
@@ -18,7 +22,7 @@ The file picker and sheet selection dialogs now support **multiple GUI backends*
 | **PyQt6** | ⚡⚡⚡ Very Fast | ✅ Excellent | `pip install PyQt6` |
 | **wxPython** | ⚡⚡ Fast | ✅ Good | `pip install wxPython` |
 | **tkinter** | ⚡ Slow | ⚠️ Basic | Built-in (usually) |
-| **Terminal** | ⚡⚡ Fast | ❌ Text only | No dependencies |
+| **Terminal** | N/A (text input) | ❌ Text only | No dependencies |
 
 ## Installation
 
@@ -73,7 +77,7 @@ sudo apt-get install python3-tk
 The system **automatically** selects the best available backend. No configuration needed!
 
 ```python
-from vispath import VisualizePath
+from vispath_pkg import VisualizePath
 
 # File picker will use fastest available backend
 vis = VisualizePath(
@@ -90,7 +94,8 @@ When you trigger a file picker or sheet selection dialog:
 2. **Try PyQt6** - If PyQt5 not available
 3. **Try wxPython** - If no PyQt available
 4. **Try tkinter** - Last GUI option
-5. **Use Terminal** - If no GUI libraries available
+5. **Sheet selection only**: fall back to the terminal prompt; the FILE
+   picker instead raises an error listing the pip-install options
 
 ## Performance Tips
 
@@ -171,9 +176,10 @@ pip install PyQt5
 
 If dialogs don't show up:
 
-1. **Check GUI backend:** System will print which backend it's using
-2. **Try terminal mode:** Set environment variable if needed
-3. **Reinstall GUI library:**
+1. **Check GUI backend:** the backend name appears in the error path
+   when a library fails to import (there is no success-path backend
+   banner, and no environment variable forces terminal mode)
+2. **Reinstall GUI library:**
    ```bash
    pip uninstall PyQt5
    pip install PyQt5

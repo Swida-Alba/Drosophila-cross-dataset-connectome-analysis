@@ -5,7 +5,7 @@ hosted set changes with NeuronBridge data releases (probed live: v3_10_0
 hosts hemibrain:v1.2.1, male-cns:v0.9, manc:v1.2.1 and FlyWire FAFB v783;
 male-cns:v1.0 bodies live only in v0.9 libraries; BANC/optic-lobe are
 absent).  This module keeps an on-disk snapshot of that coverage so the
-Find Lines tab can disable datasets NeuronBridge does not serve and route
+Find Driver Lines tab can disable datasets NeuronBridge does not serve and route
 queries at the releases it does.
 
 Design contract (plan `_plan/plan-nb-find-lines-dataset-aware-queries.md`

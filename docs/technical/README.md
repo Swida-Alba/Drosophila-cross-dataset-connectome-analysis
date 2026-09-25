@@ -14,6 +14,11 @@ This directory contains detailed technical documentation about:
 
 ## Cross-Dataset Validation
 
+### [Auto Type Mapping — Implementation](./AUTO_TYPE_MAPPING_IMPLEMENTATION.md)
+Implementation reference for the validity-aware cross-dataset type
+mapper and resolver: status vocabulary, bridge algebra, precedence
+rules, exports, and the mapper-boundary decision record.
+
 ### [Type-Mapping Validate-Expand-Visualize Pipeline](./TYPE_MAPPING_VALIDATE_EXPAND_VISUALIZE_PIPELINE.md)
 Technical report for the bodyId-level type-mapping validation pipeline
 (FAFB ↔ male-cns): branch-resolved pools, global connectivity scan,
@@ -29,22 +34,22 @@ full export contract.
 ## Performance Optimization
 
 ### [Deep Backend Optimizations](./DeepBackendOptimizations.md)
-Comprehensive guide to backend performance improvements.
+Dated record (Oct 2024) of the deep heatmap-HTML size optimizations.
 
 **Topics**:
-- Query optimization strategies
-- Memory management techniques
-- Database indexing
-- Batch processing
+- Lazy on-demand log₂/log₁₀/√ transforms
+- Sparse COO matrix encoding
+- 66–77 MB → 3.6–5.8 MB heatmap HTML reduction
 
 ### [Heatmap Optimization Summary](./HeatmapOptimization_Summary.md)
-Optimizations specific to heatmap generation and rendering.
+Dated companion record (Oct 2024): heatmap HTML size reduction via
+compact hover data and precision rounding (the compact-hover mechanism
+was later removed from the live vispath renderer — see
+VISPATH_OPTIMIZATION_PLAN.md).
 
 **Key improvements**:
-- Data processing pipeline
-- Clustering algorithm efficiency
-- Rendering performance
-- Memory usage reduction
+- Compact hover data storage
+- Data precision reduction
 
 ### [Pathfinding Pipeline](./PATHFINDING_PIPELINE.md)
 **Start here** — comprehensive current-state report of the pathfinding
@@ -63,7 +68,6 @@ Complete overview of path finding algorithm optimizations.
 
 **Covered optimizations**:
 - Depth-first search improvements
-- Early termination strategies
 - Memory-efficient recursion
 - Progress tracking overhead reduction
 
@@ -95,7 +99,7 @@ real-data examples and comparative measurements across datasets/depths.
 Details on Polars integration and `skip_bodyId` optimization.
 
 **Key improvements**:
-- Polars-based I/O (10-100x faster)
+- Polars-based matrix generation (10-100x faster) and CSV writing (5-10x)
 - Skip bodyId processing for type-level analysis
 - Granular progress tracking
 
@@ -144,6 +148,11 @@ Stage-by-stage specification of the production `vector_v2` morphology score.
 - Cache lifecycle: when the population stats change (and when they don't)
 - Benchmark evidence and code reference map
 
+### [Skeleton Data Pipeline](./SKELETON_DATA_PIPELINE.md)
+How skeletons are acquired, cached, and provenance-tagged across
+NeuPrint / FAFB / BANC — raw `.swc.zst` store, healed FAFB bundle,
+public BANC releases, and the render-only simplification contract.
+
 ---
 
 ## Performance Analysis
@@ -157,20 +166,28 @@ Profiling and optimizing interactive dialogs.
 - Memory usage profiling
 - Lazy loading strategies
 
-### [Dependency Summary](./DEPENDENCY_SUMMARY.md)
-Complete list of package dependencies with version requirements and rationale.
+### [Performance Audit — Pandas/Polars (Aug 2026)](./PerformanceAudit_PandasPolars_Aug2026.md)
+Dated audit record of the pandas→polars I/O and aggregation conversion:
+iterrows elimination, per-layer cache keys, and the measured speedups.
 
-**Key dependencies**:
-- `neuprint-python`: NeuPrint API access
-- `pandas`: Data manipulation
-- `numpy`: Numerical operations
-- `plotly`: Interactive visualizations
-- `networkx`: Graph algorithms
-- `scipy`: Scientific computing (clustering, etc.)
+### [Dependency Summary](./DEPENDENCY_SUMMARY.md)
+Dated snapshot from the v2.0 setup era (installation methods,
+requirements.txt/setup.py rationale, PyQt5 dialogs). For the current
+exact-pinned dependency set see `requirements.txt` and `pyproject.toml`.
 
 ---
 
 ## Implementation Details
+
+### [UI Display & Interaction Refinement Plan](./UI_DISPLAY_INTERACTION_REFINEMENT_PLAN.md)
+Durable run-state plan for the NiceGUI app (teardown-safe updates,
+refresh rehydration, active-tab persistence) with an implemented
+checkpoint record.
+
+### [Vispath Optimization Plan](./VISPATH_OPTIMIZATION_PLAN.md)
+Status-tracked optimization plan for the vispath renderer (CDN banner,
+reverse adjacency index, unified visible-edge definition, localStorage
+eviction cap).
 
 ### Data Structures
 
@@ -185,9 +202,8 @@ Complete list of package dependencies with version requirements and rationale.
 - Edge attributes stored in dictionary
 
 **Cache Database Schema**:
-- SQLite for metadata
-- Parquet for bulk data
-- Indexed queries for fast retrieval
+- Parquet for bulk data (connections.parquet, neuron_index.parquet)
+- JSON sidecars for completion state and metadata
 
 ### Algorithm Complexity
 
@@ -212,15 +228,16 @@ Where:
 
 ```
 src/
-├── findpath.py         # Path finding algorithms
-├── statvis.py          # Statistical visualization (heatmap)
-├── vispath.py          # Network and Sankey visualization
-├── navis_related.py    # 3D skeleton rendering
-├── cache_utils.py      # Cache management
-└── utils/
-    ├── graph_utils.py  # Graph algorithms
-    ├── data_utils.py   # Data processing
-    └── vis_utils.py    # Visualization helpers
+├── coana.py            # FindNeuronConnection: pathfinding + connection pipeline
+├── statvis.py          # CreateHeatmap: statistical visualization
+├── morphology.py       # Find Similar vector/NBLAST similarity + caches
+├── visualize_skeleton.py  # VisualizeSkeleton: 3D rendering
+├── comparison/         # cross-dataset comparison, type mapping, validation
+├── core/               # shared primitives
+├── plotting/           # plotting helpers
+└── utils/              # label_utils, api_utils, threshold_state, ...
+vispath-subproject/src/vispath_pkg/
+└── vispath.py          # VisualizePath: network/Sankey/heatmap HTML
 ```
 
 ### Data Flow
@@ -228,15 +245,15 @@ src/
 ```
 NeuPrint API → Cache Layer → Processing → Visualization
      ↓              ↓            ↓              ↓
-  Raw data    Local SQLite   Analysis      HTML/PNG/SVG
-                + Parquet     Filtering
+  Raw data      Parquet       Analysis      HTML/PNG/SVG
+                 + JSON        Filtering
 ```
 
 ### Caching Strategy
 
 **Three-tier cache**:
-1. **Memory cache**: Most recently used queries (LRU)
-2. **Disk cache**: All previous queries (SQLite + Parquet)
+1. **Memory cache**: module-level dict with dataset-key eviction
+2. **Disk cache**: all previous queries (Parquet + JSON state)
 3. **NeuPrint**: Original data source
 
 **Cache invalidation**:
@@ -306,7 +323,7 @@ profiler = cProfile.Profile()
 profiler.enable()
 
 # Your code here
-fap.find_all_paths()
+fap.FindAllPath()
 
 profiler.disable()
 stats = pstats.Stats(profiler)
@@ -338,18 +355,18 @@ Browser DevTools:
 
 ### Unit Tests
 
-Located in `tests/` directory:
-- `test_pathfinding.py`: Path finding algorithms
-- `test_cache.py`: Cache operations
-- `test_visualization.py`: Visualization generation
-- `test_data_formats.py`: Input/output formats
+Located under `tests/` (organized `tests/core`, `tests/ui`, `tests/e2e`,
+`tests/vispath`, `tests/docs`), e.g.:
+- `tests/core/test_pathfinding.py`: Path finding algorithms
+- `tests/core/test_cache_coverage.py`: Cache operations
+- `tests/core/test_visualize_skeleton_docs.py`: Visualization docs contract
+- `tests/docs/test_pathfinding_doc_consistency.py`: Doc/code consistency
 
 ### Performance Tests
 
-Benchmark scripts:
-- `bench_cache.py`: Cache performance
-- `bench_pathfinding.py`: Path finding speed
-- `bench_visualization.py`: Rendering performance
+Dated benchmark harnesses live under
+`archive/examples/performance/` (e.g. `benchmark_pathfinding.py`);
+runtime measurements are recorded in the dated performance docs above.
 
 ### Integration Tests
 

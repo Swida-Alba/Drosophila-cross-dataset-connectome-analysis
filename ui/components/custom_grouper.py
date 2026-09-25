@@ -23,8 +23,7 @@ Rules baked in here:
   materializes every dataset from the provider as a key (empty groups
   ``[]`` included), so ``ComparisonAnalyzer.validate_datasets`` passes on
   cross-dataset runs.
-- Source and target roles carry identical content (asymmetric per-role
-  grouping stays the Settings preset editor's job); no intermediate role.
+- Source and target roles carry identical content; no intermediate role.
 - Blank labels auto-name to ``Group_N`` at export (mirrors LabelMapper's
   own ``{role}_grp{i}`` auto-naming); cross-dataset tabs make names
   compulsory via ``require_names``.

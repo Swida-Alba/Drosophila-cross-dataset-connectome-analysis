@@ -105,6 +105,14 @@ Decision flow: [malecns_skeleton_flow.html](../visualizations/malecns_skeleton_f
 
 Decision flow: [banc_skeleton_flow.html](../visualizations/banc_skeleton_flow.html).
 
+> Note on morphology scope: BANC is deliberately excluded from
+> INTRA-dataset Find Similar / Comparison pending vector-quality
+> validation of the public L2/full skeletons, yet it DOES participate in
+> CROSS-dataset morphology (one-time bootstrap of its population
+> artifacts from these same public skeletons, with a standing
+> reliability warning). Both stances are intentional; see the
+> [cross-dataset morphology guide](../ui_guides/cross_dataset_morphology.html).
+
 Both standalone releases are supported and fetch from the same public
 products; every skeleton is served by its 888-namespace file name (v626
 bodyIds resolve through the id crosswalk). One SWC per neuron under

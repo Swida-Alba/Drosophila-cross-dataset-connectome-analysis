@@ -201,7 +201,7 @@ results = finder.find_homologs(
     source_dataset='hemibrain:v1.2.1',
     target_dataset='flywire_FAFB_v783',
     top_n=20,
-    metric='combined',
+    metric='jaccard',
     visualize_skeleton=True,
     visualize_top_n=5
 )
@@ -304,23 +304,14 @@ When `output_dir` is set, the `source_status_summary.json` file tracks:
 | `jaccard`            | Partner set overlap       | 0-1     | Quick screening     |
 | `cosine`             | Weight vector similarity  | 0-1     | Weight importance   |
 | `rank` / `rank_corr` | Spearman rank correlation | -1 to 1 | Rank order matching |
-| `combined`           | Weighted average          | 0-1     | General use         |
+| `rank_union`         | Spearman over the union of both partner sets | -1 to 1 | Rank order with full coverage |
 
-### Custom Metric Weighting
+### Custom Metric Weighting (removed)
 
-You can specify custom weights for similarity metrics using a dictionary:
-
-```python
-finder = HomologFinder(
-    similarity_metric={
-        'rank_corr': 0.5,  # 50% weight on rank correlation
-        'jaccard': 0.3,    # 30% weight on Jaccard
-        'cosine': 0.2      # 20% weight on cosine
-    }
-)
-```
-
-When using a dict, results are sorted by the weighted combination of all specified metrics.
+The derived `combined` score is no longer computed, and a dict
+`similarity_metric` / the `score_weights` argument are retained for backward
+compatibility only — they no longer select a weighted score (the comparator
+falls back to `rank_corr` sorting).
 
 ### Interpretation
 
@@ -570,12 +561,12 @@ HomologFinder(
 | `use_cache`             | bool     | True        | Use connection cache                   |
 | `visualize_skeleton`    | bool     | False       | Enable skeleton visualization          |
 | `visualize_top_n`       | int      | 5           | Number of top candidates to visualize  |
-| `similarity_metric`     | str/dict | 'rank_corr' | Metric for sorting results (see below) |
+| `similarity_metric`     | str/dict | 'jaccard'   | Metric for sorting results (see below) |
 | `verbose`               | bool     | True        | Enable verbose logging                 |
 
 **similarity_metric Options:**
-- String: `'rank_corr'`, `'jaccard'`, `'cosine'`, `'combined'`
-- Dict: `{'rank_corr': 0.5, 'jaccard': 0.3, 'cosine': 0.2}` (weighted combination)
+- String: `'jaccard'` (default), `'rank_union'`, `'rank_corr'`, `'cosine'` — all metrics are always computed; this picks the sort. (The UI exposes jaccard / rank_union / cosine; rank_corr is computed but not selectable there.)
+- Dict: accepted for backward compatibility only — it no longer selects a weighted score; the comparator falls back to `rank_corr` sorting.
 
 ### find_homologs()
 
@@ -584,8 +575,8 @@ finder.find_homologs(
     source: Optional[Union[str, int]] = None,
     source_dataset: Optional[str] = None,
     target_dataset: Optional[str] = None,
-    top_n: int = 20,
-    metric: str = 'combined',
+    top_n: Optional[int] = None,
+    metric: str = 'rank_corr',
     direction: str = 'both',
     min_score: float = 0.0,
     show_progress: bool = True,

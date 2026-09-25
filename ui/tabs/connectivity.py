@@ -325,15 +325,15 @@ def create_connectivity_tab():
                         hint="Minimum unique partner types. If top_k yields fewer, K is expanded.",
                     )
 
-                # Custom grouping via LabelMapper presets (only for the
-                # 'custom group' aggregation level)
+                # Custom grouping via the inline LabelMapper-format board
+                # (only for the 'custom group' aggregation level)
                 custom_group_box = ui.card().classes("w-full drocat-card").props('id=card-custom-group')
                 with custom_group_box:
                     section_header("Custom Groups (LabelMapper)", "group_work")
                     mapping_select, _grouper_card, resolve_grouping = custom_grouping_block(
                         label="Custom Grouping Preset",
-                        hint="Saved LabelMapper preset (manage in the Settings tab) or inline "
-                             "groups. Each source-side group becomes one row of the comparison "
+                        hint="Groups from the history menu or defined inline for this query. "
+                             "Each source-side group becomes one row of the comparison "
                              "matrix.",
                         tab_key="profiling",
                         datasets_provider=lambda: list(datasets_select.value or []),
@@ -341,7 +341,7 @@ def create_connectivity_tab():
                         query_inputs={"query": query_input},
                     )
                     ui.label(
-                        "Groups are read from the preset's source mapping: each custom label "
+                        "Groups are read from the grouping board's source mapping: each custom label "
                         "is one group, and its members for the selected datasets fill the rows. "
                         "The neuron query above is ignored in this mode."
                     ).classes("text-caption drocat-muted")
@@ -384,7 +384,7 @@ def create_connectivity_tab():
                                 hint="'type': each matched neuron type is one row — patterns like "
                                      "'aMe.*' or name-filter inputs expand into their independent "
                                      "types. 'bodyid': every individual neuron is one row. "
-                                     "'custom group': rows come from the LabelMapper preset below.",
+                                     "'custom group': rows come from the custom grouping board below.",
                             ).props('id=select-aggregation')
                             skip_bodyid_level = select_input(
                                 "BodyId-Level Computation", ["auto", "skip", "compute"], "auto",
@@ -558,7 +558,7 @@ def create_connectivity_tab():
                 return
             if not mapping_path:
                 ui.notify(
-                    "Select a LabelMapper preset or define inline groups for "
+                    "Define inline groups (or load them from the history menu) for "
                     "the custom groups", type="warning")
                 return
 

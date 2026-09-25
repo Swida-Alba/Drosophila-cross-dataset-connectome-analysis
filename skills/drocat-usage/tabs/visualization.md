@@ -1,6 +1,6 @@
-# 3D Skeleton + Path Network (visualization)
+# 3D Skeleton + Net-Viz (visualization)
 
-Reproduce the **Visualization** UI tab. It drives **two** tools: `plot3d_skeleton`
+Reproduce the **3D Skeleton** and **Net-Viz** UI tabs (Visualization nav group). They drive **two** tools: `plot3d_skeleton`
 (3D neuron morphology via `VisualizeSkeleton`) and `plot_path` (interactive
 network/Sankey/heatmap HTML via `VisualizePath`). They can be run independently;
 in practice you run a pathfinding analysis first, then feed its output to

@@ -1,5 +1,11 @@
 # Performance & Pandas/Polars Interop Audit — August 2026
 
+> **Drift note (2026-09-25):** the separate `statvis_polars` module named
+> below was merged back into `src/statvis.py` (commit b9b03027) —
+> `EnrichConnectionTablePolars`, the mtime-keyed `_NEURON_DF_CACHE`, and
+> `process_paths_streaming` / `process_batch_polars` all live in
+> `statvis.py` now. The measurements remain a valid August 2026 record.
+
 ## Summary
 
 An audit of the longest-running code paths found that most of the wall-clock
@@ -121,7 +127,8 @@ These were replaced with vectorized NumPy/Pandas operations:
 
 ## Validation
 
-New regression suite: `tests/core/test_performance_fixes.py` (14 tests)
+New regression suite: `tests/core/test_performance_fixes.py` (14 tests
+at audit time; 15 as of 2026-09-25 — one test was added afterwards)
 covers the vectorized incoming-weight aggregates against a reference
 implementation, duplicate-ID semantics, label-map correctness, global-ratio
 aggregation, hemisphere vectorization parity with the old scalar logic,

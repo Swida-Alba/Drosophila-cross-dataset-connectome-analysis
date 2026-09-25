@@ -124,7 +124,9 @@ def parse_args(argv=None):
                         'deep-window examinees bin. Those three NEST. '
                         'pooling is a PARALLEL, unsupervised engine: it scans '
                         'the whole queried population against the whole '
-                        'target universe under absolute floors, and joins the '
+                        'target universe, keeping each source\'s top-N rows '
+                        'under its own admission bar (the Jaccard/rank-union '
+                        'floors only FLAG, never filter), and joins the '
                         'type mapper afterwards as a post-hoc comparison '
                         '(plan-tmvev-pooling-mode.md).')
     p.add_argument('--aggressive-expansion', action='store_true',

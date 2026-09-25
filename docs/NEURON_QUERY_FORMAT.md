@@ -107,7 +107,7 @@ fc = FindNeuronConnection(
 ```
 
 The UI exposes the same options in the **Search Columns** selector of the
-Find All Paths, Direct Connections and Cross-Dataset tabs
+Complete Paths, Shortest Paths, Network and Cross-Dataset Comparison tabs
 (`auto` / `type` / `instance` / `bodyId`).
 
 ## Dict Filter Format (Same as type_filter)

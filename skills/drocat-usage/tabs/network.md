@@ -1,6 +1,6 @@
-# Find Network (find_network)
+# Network (find_network)
 
-Reproduce the **Find Network** UI tab as a direct backend call. `FindNetwork`
+Reproduce the **Network** UI tab as a direct backend call. `FindNetwork`
 uses the queried group as **both source and target** (mutual connections), then
 enriches it FindAllPath-style.
 

@@ -471,9 +471,10 @@ def create_inter_dataset_tab():
             # query-specific alignment is exported per run in the
             # threshold_alignment files.
             ui.label(
-                "Rough whole-dataset hint (connection-pair density per neuron): "
-                "BANC ≥ 3 ≈ FAFB ≥ ~6–7 ≈ male-cns ≥ ~7–9; BANC ≥ 5 ≈ FAFB ≥ ~9–11 ≈ "
-                "male-cns ≥ ~12–15 (FAFB v783, male-cns v1.0; BANC v626/v888). "
+                "Rough whole-dataset hint (connection-pair density per neuron, "
+                "measured 2026-09-25 on the cached typed universe): "
+                "BANC ≥ 3 ≈ FAFB ≥ ~8 ≈ male-cns ≥ ~9; BANC ≥ 5 ≈ FAFB ≥ ~11 ≈ "
+                "male-cns ≥ ~15 (FAFB v783, male-cns v1.0; BANC v626/v888). "
                 "Query-specific alignment differs — check the threshold_alignment files "
                 "in your run output."
             ).classes("text-xs opacity-60 w-full").style("line-height:1.35")
@@ -564,7 +565,7 @@ def create_inter_dataset_tab():
                         "Auto Type Mapping", get_user_default("auto_type_mapping"),
                         hint="Auto-map type names across datasets via the male-cns v1.0 "
                              "neuron info (e.g. FAFB MTe07 <-> male-cns MeVPLo2) when no "
-                             "custom LabelMapper preset is selected.",
+                             "Custom Mapping is defined.",
                     )
                 # Feature F: single enumeration + per-threshold replay.
                 replay_paths = checkbox_input(

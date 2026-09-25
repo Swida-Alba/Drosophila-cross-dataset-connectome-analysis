@@ -82,7 +82,7 @@ computed once; reconstruction then enumerates paths through the memo.
   for nodes that can reach a target).
 - **Weaknesses**: memo lists can be large; no shortest-first ordering.
 
-### Meet-in-the-Middle DFS — UI name `MemoizedDFS`
+### Meet-in-the-Middle DFS — UI name `MemoizedDFS` *(pre-naming-fix label; see the audit's naming-fix table — `MemoizedDFS` now routes to the forward memoized DFS)*
 `find_paths_meet_in_the_middle`
 
 For each length ℓ: mid = ⌊ℓ/2⌋. Forward DFS from the sources to depth mid,
@@ -137,9 +137,10 @@ join cost more than a full-depth but fully-pruned, memo-shared walk.
 that the *forward* memoized DFS (`find_paths_memoized_dfs` without
 `direction='backward'`) beats both of the above at every depth: it makes
 no reversed-graph copy and its memo is pruned to the source-side cone
-(measured 0.01 s / 0.1 MB at 2 layers, 0.48 s / 7.5 MB at 4, 5.20 s /
-651 MB at 5, vs 0.99–2.29 s / ~272 MB for the backward/dual-side
-variants). It was never benchmarked before because the routing mislabeled
+(pre-optimization measurements: 0.48 s / 7.5 MB at 4, 5.20 s / 651 MB at
+5; post-2026-08-optimization the §3.1 table reads 0.23 s / 7.6 MB at 4
+and 4.97 s / 651 MB at 5, vs 0.99–2.29 s / ~272 MB for the
+backward/dual-side variants). It was never benchmarked before because the routing mislabeled
 `MemoizedDFS` as meet-in-the-middle — the naming fix (§ audit) exposed
 the best algorithm.
 
@@ -175,7 +176,9 @@ and dead-end-pruned, exactly like the FindAllPath pipeline:
 Times are untraced wall seconds; peak memory is the tracemalloc peak of a
 separate traced run (includes the graph baseline + collected path list +
 tracing overhead, so *differences* are the meaningful part — at 5 layers
-~870 MB of every value is the 5 million collected paths themselves).
+~610 MB of every value is the 5 million collected paths themselves;
+corrected 2026-09-25 from an inconsistent earlier "~870 MB" that exceeded
+four of the five measured values below).
 
 | Algorithm | 2 layers (14 paths) | 3 layers (2,874) | 4 layers (35,819) | 5 layers (5M+) |
 | --- | --- | --- | --- | --- |
@@ -236,22 +239,30 @@ in < 10 ms — for small queries the choice is irrelevant.
 
 ## 4. Recommendations
 
+*(Numbers corrected 2026-09-25 against the §3.1 measured table — the
+block had been written against the pre-optimization audit-era figures
+that the §3.1 "2026-08 optimization" note supersedes.)*
+
 1. **Pipeline default: StrongestFirst** (2026-09-04, not in the measured
    tables below) — budgeted best-first on the path bottleneck; the
    enumerators benchmarked here are its unbounded complete references
-   (script/API only). **Fastest complete enumerator: MemoizedDFS
-   (forward)** — fastest measured at every depth
-   (0.01 s at 2 layers → 5.20 s at 5) with the smallest peak allocation at
+   (script/API only). **Fastest complete enumerator per depth** (table
+   above): MeetInMiddle at 2–3 layers, **MemoizedDFS (forward)** at
+   4 layers (0.23 s) and as the best deep tradeoff, Bidirectional at
+   5 layers — with MemoizedDFS keeping the smallest peak allocation at
    2–4 layers (no reversed-graph copy).
 2. **Few targets, many sources**: **DFS** (backward memoized) starts from
-   the smaller set — fastest at 5 layers (4.91 s), but it pays ~250 MB for
-   the reversed graph.
+   the smaller set — 5.01 s at 5 layers (Bidirectional's 4.54 s is the
+   5-layer winner; see the table), and since the 2026-08 lazy
+   reverse-index optimization it no longer pays a reversed-graph copy
+   (0.3–9.6 MB at 2–4 layers).
 3. **Shallow queries (2–3 layers)**: **MeetInMiddle** or MemoizedDFS —
    within noise of each other.
 4. **Shortest paths first**: **Bidirectional** only if memory is no
-   concern (452 MB at 4 layers, 1.1 GB at 5).
+   concern (194.9 MB at 4 layers, 892 MB at 5 — the highest in every
+   column).
 5. **DP** remains a robust low-memory fallback at shallow depths but
-   degenerates on deep queries (18.5 s at 5 layers).
+   degenerates on deep queries (20.2 s at 5 layers).
 
 ## 5. Reproducibility
 

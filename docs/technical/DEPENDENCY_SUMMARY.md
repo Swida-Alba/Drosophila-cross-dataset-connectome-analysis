@@ -1,5 +1,13 @@
 # Installation & Dependency Management Summary
 
+> **Dated snapshot (v2.0 setup era).** This record describes the
+> installation methods and dependency rationale as of its writing:
+> `setup.py`, `INSTALLATION.md`, and `test_sheet_confirmation.py` no
+> longer exist, extras have changed (see `pyproject.toml`), and
+> `requirements.txt` now carries exact pins (converted from minimum
+> versions on 2026-09-12). For the current dependency set read
+> `requirements.txt` and `pyproject.toml` directly.
+
 ## Created Files
 
 ### 1. `requirements.txt` ✅

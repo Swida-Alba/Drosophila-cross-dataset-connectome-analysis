@@ -27,7 +27,9 @@ The refinement should preserve the current scientific workflows and backend resu
 
 ## 2. Baseline and evidence
 
-The plan is based on the current repository structure and the reported v4.5.0 runtime trace.
+The plan is based on the repository structure as of 2026-09-11 (line
+anchors below are from that baseline) and the reported v4.5.0 runtime
+trace.
 
 | Area | Current evidence | Planning implication |
 |---|---|---|
@@ -43,12 +45,12 @@ The plan is based on the current repository structure and the reported v4.5.0 ru
 
 ## 3. Prioritized findings
 
-| ID | Priority | Finding | User impact | Evidence/confidence |
-|---|---|---|---|---|
-| UI-01 | P0 | A background comparison can finish after its page client is deleted; final UI updates then raise NiceGUI client/slot teardown errors. | Noisy traceback and missing final status even when the backend returns successfully. | `inter_dataset.py:703-740`, `output_panel.py:408-417`, `page_progress.py:353-360`; high confidence. |
-| UI-02 | P0 | Run state is primarily held by page-local `ScriptRunner`/`OutputPanel` instances. | Refreshing the page empties status, progress, logs, and result presentation. | Tab factories plus `runner.py:303+`; high confidence. |
-| UI-03 | P1 | Execution ownership and UI lifecycle are coupled, with repeated run/clear/status code across tabs. | Fixes are inconsistent and future tabs can reintroduce lifecycle bugs. | Repeated tab patterns; high confidence. |
-| UI-04 | P1 | There is no application-wide activity view or durable run history. | Users must inspect tabs individually and can miss a completed or failed run. | Current page/tab structure; high confidence. |
+| ID | Priority | Finding | User impact | Evidence/confidence | Status |
+|---|---|---|---|---|---|
+| UI-01 | P0 | A background comparison can finish after its page client is deleted; final UI updates then raise NiceGUI client/slot teardown errors. | Noisy traceback and missing final status even when the backend returns successfully. | `inter_dataset.py:703-740`, `output_panel.py:408-417`, `page_progress.py:353-360`; high confidence. | ✅ Closed — teardown-safe updates (`_ui_alive` guard), regression-tested `test_output_panel_is_safe_after_client_delete`. |
+| UI-02 | P0 | Run state is primarily held by page-local `ScriptRunner`/`OutputPanel` instances. | Refreshing the page empties status, progress, logs, and result presentation. | Tab factories plus `runner.py:303+`; high confidence. | ✅ Closed — durable `ui/run_state.py` layer + same-session refresh rehydration; regression-tested in `tests/ui/test_run_state.py`. |
+| UI-03 | P1 | Execution ownership and UI lifecycle are coupled, with repeated run/clear/status code across tabs. | Fixes are inconsistent and future tabs can reintroduce lifecycle bugs. | Repeated tab patterns; high confidence. | ✅ Closed (with the run-state layer). |
+| UI-04 | P1 | There is no application-wide activity view or durable run history. | Users must inspect tabs individually and can miss a completed or failed run. | Current page/tab structure; high confidence. | ✅ Closed (Activity view + tab activity indicators; the interaction-contract half is UI-05). |
 | UI-05 | P1 | The form and navigation surfaces expose many controls without one explicit interaction contract for required, advanced, dependent, invalid, and recovering states. | Higher cognitive load and inconsistent feedback between tools. | Shared inputs plus per-tab configuration; medium confidence. |
 | UI-06 | P2 | Output panels can become long log/result surfaces without a uniform hierarchy for summary, details, files, and previews. | Important outcome information is harder to scan. | `output_panel.py:166+`; medium confidence. |
 | UI-07 | P2 | CSS and component state styling are centralized but broad; visual variants and state rules are not fully explicit. | Small changes can cause cross-tab drift or regressions. | `ui/app.py` global stylesheet; medium confidence. |

@@ -134,7 +134,8 @@ User Entry Points
 Detailed comparison of the available pathfinding algorithms in `FindAllPath`.
 
 **Key Topics**:
-- **Memoized DFS (forward)**: The default and fastest measured method (no reversed-graph copy).
+- **StrongestFirst**: The built-in pipeline default since 2026-09-05 (the algorithm selector was removed).
+- **Memoized DFS (forward)**: The fastest measured complete enumerator (API-only; no reversed-graph copy).
 - **Optimized Backward Search (DP)**: Robust fallback; best at shallow depths.
 - **DFS (backward memoized)**: Best for deep paths with few targets.
 - **Meet-in-the-middle**: Fast at shallow depths; competitive for deep paths.
@@ -143,7 +144,7 @@ Detailed comparison of the available pathfinding algorithms in `FindAllPath`.
 **Comparison Table** (2026-08 measured; see [PATHFINDING_ALGORITHM_EVALUATION.md](../technical/PATHFINDING_ALGORITHM_EVALUATION.md)):
 | Algorithm | Speed | Memory | Best Use Case |
 | :--- | :--- | :--- | :--- |
-| **Memoized DFS (forward)** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | **General purpose (default)** |
+| **Memoized DFS (forward)** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | **General purpose (2026-08 benchmark default; StrongestFirst is the pipeline default now)** |
 | **DFS (backward)** | ⭐⭐⭐⭐ | ⭐⭐⭐ | Few targets, deep paths |
 | **Meet-in-the-middle** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Shallow queries |
 | **DP (Backward)** | ⭐⭐⭐ | ⭐⭐⭐⭐ | Robust fallback, shallow |

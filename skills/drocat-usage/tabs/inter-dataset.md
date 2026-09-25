@@ -269,7 +269,7 @@ writes both files.
   resolver: licensed renames merge under the canonical key, valid splits expand,
   and conflicts stay dataset-scoped (never merged by raw same-name). The run's
   `auto_type_mapping.json` records per-status counts and `raw_fallback_used`.
-- The Cross-Dataset tab's **Type Mapping** panel carries the row-based
+- The Cross-Dataset Comparison tab's **Type Mapping** panel carries the row-based
   bodyId-level evidence of every 1-to-N split: per-branch linker-refined
   bodyId pools and label-vote provenance (curated vs `auto:` — e.g. the
   BANC `aMe24` bridge: 1 auto vote vs `s-LNv_a`: 2), a collapsed

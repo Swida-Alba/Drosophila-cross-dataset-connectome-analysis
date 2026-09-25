@@ -47,7 +47,7 @@ def create_network_tab():
             "ℹ️ This tool builds a LIMITED network of direct connections among "
             "the queried neurons only (no intermediate neurons are involved). "
             "For a more complete network that also involves intermediate neurons, "
-            "use the Find Path tab with Find Reciprocal Connections enabled."
+            "use the Complete Paths tab with Find Reciprocal Connections enabled."
         ).classes("text-caption text-amber-8 w-full")
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-dataset"'):

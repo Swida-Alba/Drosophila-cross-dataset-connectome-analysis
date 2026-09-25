@@ -1,6 +1,6 @@
 # Complete Paths (find_path)
 
-Reproduce the **Find Path** UI tab as a direct backend call. Multi-hop
+Reproduce the **Complete Paths** UI tab as a direct backend call. Multi-hop
 pathfinding between two neuron groups.
 
 ## Backend contract

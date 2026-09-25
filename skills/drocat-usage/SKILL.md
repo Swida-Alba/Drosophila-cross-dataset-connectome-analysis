@@ -1,6 +1,6 @@
 ---
 name: drocat-usage
-description: Layer-1 tab-matched direct analyses for DROCAT v4.5.0. Run, explain, debug, and safely execute the exact backend tools each UI tab drives, without reopening the NiceGUI UI. Use when an agent needs to reproduce a specific UI tab's scientific analysis end-to-end — pathfinding (complete/shortest/network), Connectivity tab (find similar via connectivity profiles, profile comparison), Morphology tab (find similar via skeleton shape), cross-dataset comparison, NeuronBridge (lines/neurons/co-labeling), FlyLight download, 3D skeleton / path visualization, or dataset & cache management — from a direct Python call using the tab's own parameters.
+description: Layer-1 tab-matched direct analyses for DROCAT v4.5.0. Run, explain, debug, and safely execute the exact backend tools each UI tab drives, without reopening the NiceGUI UI. Use when an agent needs to reproduce a specific UI tab's scientific analysis end-to-end — pathfinding (complete/shortest/network), Connectivity tab (find homolog via connectivity profiles, profile comparison), Morphology tab (find similar via skeleton shape), cross-dataset comparison, NeuronBridge (lines/neurons/co-labeling), FlyLight download, 3D skeleton / path visualization, or dataset & cache management — from a direct Python call using the tab's own parameters.
 ---
 
 # DROCAT Direct Analysis — Layer 1 (Tab-Matched)
@@ -91,9 +91,9 @@ expected outputs, and a runnable launcher command.
 | --- | --- | --- |
 | Complete Paths | [find-path.md](tabs/find-path.md) | `find_path` → `FindNeuronConnection.FindAllPath` |
 | Shortest Paths | [find-shortest.md](tabs/find-shortest.md) | `find_shortest` → `FindNeuronConnection.FindShortestPath` |
-| Find Network | [network.md](tabs/network.md) | `find_network` → `FindNeuronConnection.FindNetwork` |
+| Network | [network.md](tabs/network.md) | `find_network` → `FindNeuronConnection.FindNetwork` |
 | Connectivity · Comparison | [connectivity-profiling.md](tabs/connectivity-profiling.md) | `connectivity_profiling` → `ConnectivityProfileComparer.run` |
-| Connectivity · Find Similar | [find-homologs.md](tabs/find-homologs.md) | `find_homologs` → `HomologFinder.find_homologs_multi` (cross-dataset homologs; Target = Source for intra-dataset similar search) |
+| Connectivity · Find Homolog | [find-homologs.md](tabs/find-homologs.md) | `find_homologs` → `HomologFinder.find_homologs_multi` (cross-dataset homologs; Target = Source for intra-dataset similar search) |
 | Morphology · Find Similar | [find-similar.md](tabs/find-similar.md) | `find_similar_morphology` → `MorphologyComparer.find_similar` |
 | Morphology · Comparison | [morphology-comparison.md](tabs/morphology-comparison.md) | `morphology_comparison` → `MorphologyProfileComparer.run` |
 | Paths (Cross-Dataset) | [inter-dataset.md](tabs/inter-dataset.md) | `inter_dataset` → `ComparisonParameters` + `ComparisonAnalyzer.run_comparison` |
@@ -101,8 +101,8 @@ expected outputs, and a runnable launcher command.
 | Find Driver Lines | [nb-find-lines.md](tabs/nb-find-lines.md) | `nb_find_lines` → `NeuronBridgeFinder.find_lines_batch`; `nb_find_lines_expanded` → `ExpandedLineFinder.run` (coverage-routed cross-dataset name expansion) |
 | Find EM Neurons | [nb-find-neuron.md](tabs/nb-find-neuron.md) | `nb_find_neuron` → `NeuronBridgeFinder.find_neurons_batch` |
 | Co-Labeling Analysis | [nb-colabel.md](tabs/nb-colabel.md) | `nb_colabel` → `NeuronBridgeFinder.analyze_colabeling` |
-| FlyLight Image Download | [flylight.md](tabs/flylight.md) | `flylight_download` → `FlyLightDownloader.download` |
-| 3D Skeleton + Path Network | [visualization.md](tabs/visualization.md) | `plot3d_skeleton` → `VisualizeSkeleton.plot_neurons`; `plot_path` → `VisualizePath.visualize` |
+| FlyLight Downloader | [flylight.md](tabs/flylight.md) | `flylight_download` → `FlyLightDownloader.download` |
+| 3D Skeleton + Net-Viz | [visualization.md](tabs/visualization.md) | `plot3d_skeleton` → `VisualizeSkeleton.plot_neurons`; `plot_path` → `VisualizePath.visualize` |
 | Settings / Datasets & Cache | [settings.md](tabs/settings.md) | dataset_service, `SkeletonPuller`, cache builders |
 
 ## Standard agent workflow

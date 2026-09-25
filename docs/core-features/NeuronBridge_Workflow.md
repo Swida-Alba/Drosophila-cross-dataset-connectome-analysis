@@ -128,7 +128,7 @@ NeuronBridge_FindLines.py
 │   │   └── Sorting by weighted_score
 │   │
 │   └── Output Generation
-│       ├── all_lines.csv (raw per-match results)
+│       ├── {query}_lines.csv (per-query row-level matches)
 │       ├── line_summary.csv (aggregated, sorted)
 │       ├── gal4_lexa_summary.csv (GAL4/LexA only)
 │       └── split_gal4_summary.csv (Split-GAL4 only)
@@ -425,12 +425,10 @@ query = 'MBON01'
 
 ```
 NB-find-lines_{query}_{timestamp}/
-├── all_lines.csv              # All matches (row-level)
+├── {query}_lines.csv           # Per-query row-level matches
 ├── line_summary.csv           # Aggregated, sorted by weighted_score
 ├── gal4_lexa_summary.csv      # GAL4/LexA only
 ├── split_gal4_summary.csv     # Split-GAL4 only
-├── gal4_lexa_lines.csv        # GAL4/LexA detailed matches
-├── split_gal4_lines.csv       # Split-GAL4 detailed matches
 ├── images/                    # Downloaded images
 │   └── {line_name}/
 │       └── *.png, *.jpg

@@ -731,15 +731,15 @@ def dataset_multi_selector(
 
 
 # =============================================================================
-# Advanced Neuron Input (with filter mode)
+# Advanced Neuron Input (with match mode)
 # =============================================================================
 
 def advanced_neuron_input(
     label: str = "Neurons",
     placeholder: str = "e.g., aMe12, aMe10, DN1p",
-    hint: str = "Enter neuron types, bodyIds, or patterns. Use filter mode for pattern matching.",
+    hint: str = "Enter neuron types, bodyIds, or patterns. Use Match by for pattern matching.",
 ) -> ui.element:
-    """Create an advanced neuron input with filter mode selector."""
+    """Create an advanced neuron input with match mode selector."""
     with ui.column().classes("w-full gap-0") as container:
         with ui.row().classes("w-full items-end gap-2"):
             textarea = ui.textarea(
@@ -3022,7 +3022,7 @@ def _clear_native_select_editor_after_selection(select: ui.select) -> None:
 def chip_list_input(
     label: str = "Items",
     placeholder: str = "Type and press Enter to add",
-    hint: str = "Enter items one by one. Press Enter or comma to add a chip. Click X to remove.",
+    hint: str = "Enter items one by one. Press Enter to add a chip. Click X to remove.",
     initial: Optional[List[str]] = None,
 ) -> ui.select:
     """Create a chip-based input where each entry becomes a removable chip."""

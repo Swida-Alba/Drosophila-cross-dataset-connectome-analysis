@@ -1,7 +1,14 @@
 # Source Path Attribute Addition
 
 **Date:** October 31, 2025  
-**Status:** ✅ COMPLETE
+**Status:** ✅ COMPLETE (dated change record)
+
+> **Drift note (2026-09-25):** `VisualizeSkeleton` has since moved to
+> `src/visualize_skeleton.py` (it is no longer in `coana.py`), the
+> default output folder is now `local_data/connectome_analysis/`
+> (formerly `connection_data/`), `src/vispath.py` now lives at
+> `vispath-subproject/src/vispath_pkg/vispath.py`, and `source_path`
+> currently has no readers — it is write-only provenance metadata.
 
 ## Overview
 

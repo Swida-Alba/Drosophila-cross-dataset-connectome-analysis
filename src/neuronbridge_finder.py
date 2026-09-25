@@ -396,7 +396,7 @@ class NeuronBridgeFinder:
         Whether to cache API results locally. Default: False — NeuronBridge
         queries are large and rarely reused (unlike the connection-data
         caches), so the match cache would grow without ever paying off.
-        The Find Lines / Find EM Neurons / Co-Labeling tabs expose this
+        The Find Driver Lines / Find EM Neurons / Co-Labeling Analysis tabs expose this
         default as the Settings → NeuronBridge Match Cache option.
     cache_folder : str, optional
         Folder for cached results. Default: auto-detect.

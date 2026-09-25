@@ -94,17 +94,21 @@ effect"; see TYPE_AGGREGATION_AND_BODYID_DISCOVERY.md).
 3. **Lossless hop-budget pruning** (`prune_layers_hop_budget`): drops
    edges with `dist_S(u) + 1 + dist_T(v) > max_interlayer + 1` — they
    cannot lie on any admissible path. Lossless by proof; measured
-   39–77% cone reduction on real queries. The pass **iterates on the
+   39–77% cone reduction on the original (hemibrain/BANC-era) queries
+   — FAFB v783 cones prune 95–99.6% (see
+   PATHFINDING_PIPELINE.md §6). The pass **iterates on the
    already-pruned tables until a pass drops nothing** (capped passes):
    still lossless — every admissible path survives every pass — and
-   strictly tighter than a single pass, since distances recomputed on
+   at least as tight as a single pass, strictly tighter whenever a
+   stranded edge actually dies, since distances recomputed on
    the pruned graph can only grow.
 4. **Dead-end node pruning**: nodes that cannot reach any target
-   (post-pruning) are removed. Also lossless. Both passes report a
-   **strongest-retained bottleneck** — the widest-path maximin value
-   W\* = max over source→target paths of the min edge weight — which is
-   *identical* before and after the passes (that is what lossless
-   means), and is printed with the note *"top paths unchanged"*.
+   (post-pruning) are removed. Also lossless. The hop-budget prune
+   reports the **strongest-retained bottleneck** W\* (widest-path
+   maximin value, printed as *"the strongest (top) paths are
+   unchanged"*); the dead-end sweep no longer recomputes it — the
+   definitive measured W\* is taken from the enumerated paths after
+   enumeration.
 5. **StrongestFirst enumeration** (`find_paths_strongest_first`): A*-style
    best-first on the prefix bound `min(running bottleneck,
    W[remaining][node])`. Emits complete intact paths in descending
@@ -145,7 +149,7 @@ type-level group trims.
 
 | mechanism | bounds | measured cost |
 |---|---|---|
-| lossless hop-budget pruning | graph (exact) | O(E); 39–77% of discovery edges removed on real queries |
+| lossless hop-budget pruning | graph (exact) | O(E); 39–77% of discovery edges removed on the original real queries (FAFB v783: 95–99.6%, see PATHFINDING_PIPELINE.md §6) |
 | strongest-first budget | paths + search | work ≈ output + frontier above τ |
 | retired edge trim | graph (lossy) | bounded edges but NOT paths; non-nested across thresholds |
 
@@ -156,7 +160,8 @@ long-path matrix (JO→VNC motor, JO→DN, visual→DN at L4–L5): StrongestFir
 54–186 s where complete MemoizedDFS exceeded 300 s.
 
 Worst case (budget never reached, no ties): cost ≈ complete enumeration
-plus one O(cutoff·E) DP — never asymptotically worse.
+plus one O(cutoff·E) DP — never more than a log factor worse (the heap's
+explored·log H term).
 
 ## 4b. Reading the two numbers: W\* (pruning ceiling) and τ (budget)
 
@@ -189,7 +194,8 @@ with `weight < w0 = w1 + 1` — the **+1 was load-bearing** (edges
 strictly heavier than w1 number fewer than N, so the floored cone
 always fit the budget), but it *discarded the boundary-tie tier* and
 whatever slack the closure left unused, which on real connectomes can
-be most of the cap (measured: 95–98% waste; in one case the one-shot
+be most of the cap (measured: 70–98% waste across real cones — 95–98%
+on the 50k-cap cone, 70% on the 1M-cap cone; in one case the one-shot
 declined entirely where the fit search delivered a valid floor).
 
 The **budget-fit search** (`fit_edge_budget`) now floors at the
@@ -275,10 +281,10 @@ Budget floor. A `[combined threshold]` note is appended to
 - `FastGraph.find_paths_strongest_first(sources, targets, cutoff,
   budget=None, per_pair_k=None, stats=None, verbose=False)` — budgeted
   strongest-first enumeration. `stats` receives `emitted`, `tau`,
-  `budget_bitten`, `last_bound`.
+  `budget_bitten`, `last_bound`, `strongest_dropped` (w2).
 - `FastGraph.find_paths_shortest_strongest_first(targets, sources,
   cutoff=None, budget=None, stats=None, target_cutoffs=None,
-  verbose=False)` — §7.2: budgeted best-first over each target's
+  target_distances=None, verbose=False)` — §7.2: budgeted best-first over each target's
   shortest-path DAG with a per-target maximin DP; per-target streams are
   k-way merged and the global budget drains ties at τ. A bitten run is
   exactly "all min-hop paths with bottleneck ≥ τ"; unbitten runs equal

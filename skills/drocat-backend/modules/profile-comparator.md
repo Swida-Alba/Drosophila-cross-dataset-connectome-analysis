@@ -6,7 +6,7 @@ Module `src/comparison/profile_comparator.py`. Three main classes:
   set (drives the Connectivity tab → Comparison sub-tab).
 - `HomologFinder` — homolog discovery by connectivity-profile similarity,
   cross-dataset or intra-dataset (Target = Source; drives the Connectivity
-  tab → Find Similar sub-tab).
+  tab → Find Homolog sub-tab).
 - `ProfileComparator` — lower-level comparator producing `ComparisonResult` and
   using `DEFAULT_SCORE_WEIGHTS`.
 

@@ -96,7 +96,9 @@ bodyId path realizes the chain. Deriving the type paths from the
 discovered bodyId paths instead guarantees every reported type path is the
 type sequence of a real bodyId path. It also preserves repeated-type
 routes (A→B→A through two distinct B neurons) that a simple-path search on
-the type graph silently drops. Measured on the battery in Section 5: the
+the type graph silently drops. Measured on the same query battery as
+Section 5 (a separate comparison; the Section 5 table shows only the
+OLD-vs-NEW shortcut numbers): the
 old re-search added 0–3 phantom paths per query and missed 0–31 real
 repeated-type paths; the derivation matches the discovered bodyId paths
 exactly.
@@ -230,7 +232,8 @@ type-level pathfinding). Every new-only type path is then checked for a
 simple bodyId route **from a queried source to a queried target** in (a)
 the trimmed discovery graph (what the old pipeline searches) and (b) the
 full untrimmed bodyId graph (routes the bodyId edge-limit trim discarded).
-All queries: 6 sources × 6 targets, `min_synapse_num=3`, seed 7.
+All queries: 6 sources × 6 targets, `min_synapse_num=3`, seed 7 (the
+first row repeats that query at seed 3).
 
 | Query (dataset, L) | bodyId paths | type OLD | type NEW | OLD missing | NEW-only | backed (trimmed) | backed (full only) | **phantom** |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -247,8 +250,9 @@ Three findings:
 1. **Phantom inflation dominates (97 % of new-only paths).** The bundle
    effect is not a corner case: on every query the shortcut reports paths
    with no bodyId route from a queried source to a queried target. At L3
-   the type graph is dense enough that the shortcut explodes (3 281 vs 35
-   backed paths) while staying ~97 % phantom.
+   the type graph is dense enough that the shortcut explodes (3 281
+   shortcut type paths vs the 35 discovery-backed OLD paths) while
+   staying ~97 % phantom.
 
 2. **The shortcut can also LOSE real paths (hemibrain: 233 of 334 old
    paths missing).** The type-level edge limit re-ranks edges by the
@@ -271,7 +275,8 @@ a drop-in replacement for `allpaths`:
 
 - ✅ as a **type-topology overview** of the discovered network (the role
   the `network_early/` / `network_early_bodyId/` early previews play) —
-  it shows which type pairs connect, without claiming any path is real;
+  it shows which type pairs connect (bodyId pairs, in
+  `network_early_bodyId/`), without claiming any path is real;
 - ✅ when bodyId-level data is unavailable and only type-level edges exist;
 - ❌ as the "allpaths" result — its phantom paths have no path metrics, no
   real route, and would silently change downstream analyses that assume

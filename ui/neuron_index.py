@@ -4246,7 +4246,7 @@ def resolve_type_matches(queries, mode: str, datasets,
     """Resolve panel chips to written type names per dataset (§12).
 
     Every chip is matched against each selected dataset's cached index
-    ``type`` column under the active filter mode (see
+    ``type`` column under the active match mode (see
     ``_type_match_expression``).  Returns::
 
         {'origins': {dataset: [written type names]},
@@ -4277,7 +4277,7 @@ def resolve_type_matches(queries, mode: str, datasets,
             type_name, set()).add((column, value or type_name))
 
     def _label_matches_mode(label: str, chip: str, mode: str) -> bool:
-        """Apply the panel's filter mode to one taxonomy label."""
+        """Apply the panel's match mode to one taxonomy label."""
         lab = label.casefold()
         chip_l = chip.casefold()
         if mode == "exact":

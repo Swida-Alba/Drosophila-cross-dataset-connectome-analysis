@@ -55,7 +55,7 @@ flag at all — the tab is their only entrance.
 | UI control | Config field | CLI flag |
 |---|---|---|
 | Source / Target dataset | `source_dataset` / `target_dataset` | `--source` / `--target` |
-| Query chips | `query_types` (comma-split) | `--types` |
+| Query chips | `query_types` (one chip per Enter-committed entry; the CLI flag takes a comma-joined list) | `--types` |
 | Run Label | `run_label` | `--label` |
 | Output directory | `output_dir` | `--output-dir` |
 | Validation Mode (Restrictive/Family/Aggressive/Pooling) | `validation_mode` | `--mode` |

@@ -44,10 +44,10 @@ if __name__ == '__main__':
         edgeN_limit=500,
         output_format='csv',  # 'xlsx' (default) or 'csv'
         # StrongestFirst is the dataclass default (src/coana.py:3088) AND the
-        # value the Find Path tab sends (ui/tabs/find_path.py:345); this line
+        # value the Complete Paths tab sends (ui/tabs/find_path.py:345); this line
         # claimed MemoizedDFS was the default while naming neither.
         pathfinding='StrongestFirst',  # 'StrongestFirst' | 'MemoizedDFS' | 'DFS' | 'MeetInMiddle' | 'DP' | 'Bidirectional'
-        # The two budgets the Find Path tab sends (ui/config.py DEFAULTS):
+        # The two budgets the Complete Paths tab sends (ui/config.py DEFAULTS):
         # 0 = auto, which resolves to the internal 1M cap, and 1,000,000
         # edges. Left unset here they would fall back to the dataclass's None
         # (coana.py:3113,3129), i.e. an unbounded traversal the UI never runs.

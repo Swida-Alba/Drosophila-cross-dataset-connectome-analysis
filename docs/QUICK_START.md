@@ -220,7 +220,7 @@ finder = HomologFinder(
     source_dataset='banc_v626',
     target_dataset='flywire_FAFB_v783',
     output_dir='./homolog_results',
-    similarity_metric='jaccard', # or 'cosine', 'rank'
+    similarity_metric='jaccard', # or 'cosine', 'rank_union'
     visualize_skeleton=True      # Visualize top candidates
 )
 

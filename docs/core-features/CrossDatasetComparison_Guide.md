@@ -367,10 +367,12 @@ raw composition in a `group_members` column. Details:
 [AUTO_TYPE_MAPPING](../AUTO_TYPE_MAPPING.md), "The query-anchored merge
 policy".
 
-> **UI:** the web UI manages the same mappings as reusable presets —
-> **Settings tab → Custom Type Mappings** (table-grid editor, saved in
-> `cache/user_mappings.json`) and **Cross-Dataset tab → Custom Type Mapping**
-> selector. The chosen preset is passed to the run as `overall_mapping_json`
+> **UI:** the web UI builds the same mappings inline — the **Custom Mapping**
+> board on the Cross-Dataset Comparison page (the Settings tab's
+> **Custom Type Mappings** card offers the same editor and can save a stable
+> preset to `cache/user_mappings.json`; no tab auto-loads a saved preset —
+> reuse it via the board's **Load…**). The board's exported mapping is passed
+> to the run as `overall_mapping_json`
 > and acts as an overlay: explicit source/target queries stay, only matching
 > neurons are renamed to their custom groups.
 
@@ -1141,6 +1143,15 @@ ROI rows; denominators are each dataset's bundled neuron-index rows):
 | 5 | 13.4 | 13.4 | 26.8 | 35.6 |
 | 8 | 5.7 | 5.8 | 15.0 | 20.7 |
 | 10 | 4.0 | 4.1 | 11.2 | 15.7 |
+
+**Typed-searched basis** (distinct typed↔typed pairs ÷ typed neurons —
+the universe the searched graph actually scores; measured 2026-09-25
+from the cached tables, same pair rule): BANC v888 19.3 / 10.0 / 5.2 /
+3.8 at t = 3 / 5 / 8 / 10; FAFB 47.3 / 26.8 / 15.0 / 11.2 (≈ the table
+above — FAFB endpoints are ~all typed); male-cns 62.9 / 37.3 / 21.8 /
+16.5. Under this basis BANC sits far BELOW FAFB at t = 3 (the table
+above counts BANC's untyped-endpoint pairs over a curated denominator);
+both bases are reproducible — pick one and stay consistent.
 
 Pre-refresh values, for runs against old caches (2026-08 downloads):
 BANC v626/v888 @3 were 23.2 / 19.2 — i.e. the refresh roughly DOUBLED

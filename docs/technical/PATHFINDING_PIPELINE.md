@@ -146,8 +146,8 @@ t* = min { t : C(t) ≤ cap }      C(t) = | fixpoint-closure of {e : w(e) ≥ t}
   operator as the one-shot's second pass), so accept decisions are
   conservative and probe 0 is bit-identical to the historical one-shot.
 - **Search**: quickselect landing (N-th strongest weight `w1`,
-  canonicalized to the strongest tier it admits — `E(w1+1)` is the same
-  cone) → gallop down the tiers (`i₀+1, +2, +4, …`) → on the first
+  canonicalized to the weakest tier that reproduces the same cone —
+  `E(w1+1)` is that cone) → gallop down the tiers (`i₀+1, +2, +4, …`) → on the first
   overshoot, bisect between the last fitting and first overshooting
   tier. Probe budget `max_probes=8`; zero-count probes count as *fits*
   (a weaker tier can revive the cone); the final set must be non-empty
@@ -174,8 +174,9 @@ t* = min { t : C(t) ≤ cap }      C(t) = | fixpoint-closure of {e : w(e) ≥ t}
   distances.
 
 Search cost is bounded by `max_probes` × one lossless pass over the cone
-and scales linearly: measured +0.2–0.7s at E₀ = 289k, +2–4.6s at E₀ =
-2.05M (pure-Python prototype; the production port is vectorized).
+and scales linearly: measured +0.2–0.7s at E₀ = 289k (prototype harness),
++2–4.6s at E₀ = 2.05M (prototype); the vectorized production
+`fit_edge_budget` measured 1.4s at E₀ = 289k (§6).
 
 ### Stage 4 — Graph build
 Layer tables feed `FastGraph.build_from_dataframe(...,
@@ -185,11 +186,16 @@ summed** — correct for legitimate merges (e.g. type aggregation), and
 with the Stage-1 dedup unreachable as a fetch artifact.
 
 ### Stage 5 — Dead-end node prune (post-build)
-Backward BFS from the targets; `G.subgraph(nodes_that_can_reach_targets)`,
-plus the W\* report. Lossless (no enumerator can use a node that cannot
-reach a target). After the §7.1 fixpoint this sweep removes exactly
+Backward BFS from the targets; `G.subgraph(nodes_that_can_reach_targets)`.
+Lossless (no enumerator can use a node that cannot
+reach a target). W\* is NOT recomputed here — the definitive measured
+value is taken from the enumerated paths after pathfinding; the prune
+stats from Stage 2 survive. After the §7.1 fixpoint this sweep removes
+exactly
 nothing in theory (any node incident to a kept edge lies on an
-admissible walk); it is retained as cheap insurance and can be demoted
+admissible walk — when the fixpoint converged and no floor replaced the
+tables; a floored cone is only single-pass closed, so the sweep can
+still bite there); it is retained as cheap insurance and can be demoted
 to an assertion once the fixpoint settles in.
 
 ### Stage 6 — Enumeration
@@ -215,7 +221,7 @@ to an assertion once the fixpoint settles in.
 - **Fix C routing**: any positive `max_paths_bodyid` routes *any*
   algorithm selection through StrongestFirst; the selector only
   distinguishes the unbounded complete enumerators (script/API, all
-  verified set-equal): `MemoizedDFS` (forward; fastest complete),
+  verified set-equal): `MemoizedDFS` (forward; fastest at depth ≥ 4),
   `DFS` (backward; few targets), `MeetInMiddle`, `DP`, `Bidirectional`,
   `Backtracking` — benchmark table in
   [PATHFINDING_ALGORITHM_EVALUATION.md](PATHFINDING_ALGORITHM_EVALUATION.md).
@@ -325,7 +331,7 @@ Variables: `V`/`E` = nodes/edges of the pruned cone, `L = B` the
 bound, `P = |𝒫|` (or |𝒫_short|) the path count, `H` the live heap peak,
 `X` the explored prefix count (≤ prefixes with κ ≥ the effective
 cutoff), `D` the discovery depth. Per stage: discovery Θ(D · fetch);
-fixpoint prune ≤ 4 passes × Θ(B·E); fit search ≤ 8 probes × Θ(B·E);
+fixpoint prune ≤ 4 passes × Θ(V+E); fit search ≤ 8 probes × Θ(V+E);
 DP Θ(L·E). Enumeration:
 
 | Strategy | Time | Aux memory | Order / bound |
@@ -335,7 +341,7 @@ DP Θ(L·E). Enumeration:
 | MemoizedDFS fwd (API) | O(L·E) + P·L | O(L·E) memo | complete, unordered |
 | DFS bwd (API) | same | O(L·E) | complete; best when T ≪ S |
 | MeetInMiddle (API) | O(b^{L/2}·L) + P·L | O(b^{L/2}·L) | complete; shallow |
-| DP (API) | O(L·E) + P·L | O(L·V) — lowest | complete; degenerates deep |
+| DP (API) | O(L·E) + P·L | O(L·V) — lowest of the pruning algorithms | complete; degenerates deep |
 | Bidirectional (API) | O(L·E) + P·L | O(L·(V+E)) — highest | complete, shortest-first |
 | Backtracking (API) | O(b^L) | O(L) | complete; iterative deepening |
 
@@ -420,7 +426,7 @@ fails. Empirically 2–3 passes converge (cap 4; fit-probes use 1).
 **Complexity.** Per pass: two BFS sweeps Θ(|V| + |E|) + a vectorized
 mask Θ(|E|) (polars `filter` / pandas `loc`; frames are new objects —
 cached graph frames are never mutated). Total
-≤ max_passes · Θ(B·|E|). The W\* report is one extra maximin sweep,
+≤ max_passes · Θ(|V|+|E|). The W\* report is one extra maximin sweep,
 Θ(|E| log |V|).
 
 ### 5.2 The widest-path DP (shared by both StrongestFirst variants)
@@ -584,7 +590,8 @@ closure (Φ applied once — the historical one-shot operator), so accept
 decisions are conservative: single-pass counts ≥ fixpoint counts, and
 probe 0 is bit-identical to the one-shot output. The quickselect
 landing `λ_raw = w₍c₎ + 1` (w₍c₎ = c-th largest order statistic of
-{w(e)}) is canonicalized to `ι₀ = min{ i : 𝒯_i ≥ λ_raw }` — cones
+{w(e)}) is canonicalized to `ι₀ = max{ i : 𝒯_i ≥ λ_raw }` (with 𝒯
+descending, the weakest tier at or above λ_raw) — cones
 depend only on tier membership, so `E(λ_raw) = E(𝒯_{ι₀})` and every
 probe is a tier weight.
 
@@ -676,7 +683,8 @@ suite: 3,599 passed.
   (auto 1M) for the output; read τ to know what you got. Raise
   `min_synapse_num` for the strongest effect.
 - **Shortest at depth ≥ 5–8**: set **Max Paths (BodyId)** on the
-  Shortest tab — it is the only bound that mode has (by design).
+  Shortest tab — it is the only tunable lossy bound that mode has
+  besides depth (by design).
 - Reading a run: `edge_weight_floor` = the strength the cone was
   floored at; τ = the strength the *path list* was cut at; W\* = your
   best route (never removed); effective cutoff = max(τ, t\*).

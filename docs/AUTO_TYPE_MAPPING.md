@@ -456,7 +456,7 @@ header for the same explanation):
 | --- | --- |
 | Matched types | Search terms that matched type names in this dataset. |
 | Neurons | Neurons of the matched types in this dataset — also the issued side: every matched type is issued into the resolution, flowed or orphaned. |
-| Mapped neurons | What this dataset RECEIVES: branch-claimed bodyIds (union of the branches' resolved pools — the claim set), shown as `{N}({m} types)` from 2 distinct received types up, plain `{N}` otherwise. Only pairs the decision **adopted** count; a same-name rival it declined, or a valid-split fan-out it did not adopt, is listed in the pair table as a disclosure row and never enters this number — which is what makes it the same 198-neuron claim the validate-expand-visualize report grades, not 205. A dataset that only issues the query reads 0. |
+| Mapped neurons | What this dataset RECEIVES: branch-claimed bodyIds (union of the branches' resolved pools — the claim set), shown as `{N}({m} types)` from 2 distinct received types up, plain `{N}` otherwise. Only pairs the decision **adopted** count; a same-name rival it declined, or a valid-split fan-out it did not adopt, is listed in the pair table as a disclosure row and never enters this number — which is what makes it the same claim set the validate-expand-visualize report grades (204 bodyIds for the circadian_clock example since the same-name-first adoption; earlier adopted-only readings were 198/205). A dataset that only issues the query reads 0. |
 | Unmapped (orphans) | Matched types here with no realized counterpart in another selected dataset. |
 
 **Claimed versus realized (2026-09-12).** A crosswalk cell can name a

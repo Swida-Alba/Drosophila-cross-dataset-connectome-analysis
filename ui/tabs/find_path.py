@@ -250,10 +250,11 @@ def create_find_path_tab():
                             0, 100000000,
                             hint="Graph filter: after the lossless prunes, discovery "
                                  "cones exceeding this many bodyId edges are floored "
-                                 "just above the N-th strongest edge's weight "
-                                 "(w0 = w1 + 1) — exactly equivalent to raising the "
-                                 "threshold; the applied floor is reported as "
-                                 "edge_weight_floor. This is a graph budget, distinct "
+                                 "at the weakest weight tier whose lossless-closed "
+                                 "cone still fits the budget — exactly equivalent to "
+                                 "raising the threshold; the applied floor is reported "
+                                 "as edge_weight_floor with the residual slack and "
+                                 "probe trace. This is a graph budget, distinct "
                                  "from the drawing-only Visualization Edge Limit. "
                                  "0 = off. Never applied in Shortest Paths.",
                         )

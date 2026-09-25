@@ -3453,7 +3453,7 @@ class VisualizeSkeleton:
     
     The FAFB template mesh has a slight tilt relative to the standard view axes.
     When True (default), a rotation correction is applied to align the brain:
-    - Z-axis rotation: -4 degrees (corrects left-right tilt in front view)
+    - Z-axis rotation: -3 degrees (corrects left-right tilt in front view)
     - Y-axis rotation: -3 degrees (corrects tilt in top view)
     - Rotation is applied around the brain center to preserve position.
     
@@ -4222,7 +4222,7 @@ class VisualizeSkeleton:
             f'<code>{dataset}</code> is plotted with <code>synapse_mode=pre_post</code>: '
             'this shows the pre- and post-synaptic SITES of the queried neurons '
             '(post-synaptic/input sites as spheres, pre-synaptic/output sites as '
-            'cones) - or as circle/square scatter markers when '
+            'cones) - or as circle/diamond scatter markers when '
             '<code>pre_post_scatter</code> is enabled - not the paired synapses '
             'between adjacent layers. The sites of every queried neuron are shown '
             'regardless of which other neuron they connect to, with a separate '
@@ -15730,7 +15730,7 @@ class VisualizeSkeleton:
         Unlike connector (inter-layer) mode, this plots the actual input/output
         sites of all queried neurons across every layer: post-synaptic sites
         (inputs) render as spheres (circles in scatter) and pre-synaptic sites
-        (outputs) as cones (squares in scatter). Each site is colored by its
+        (outputs) as cones (diamonds in scatter). Each site is colored by its
         neuron's layer color (or a per-neuron override) and follows the same
         ``legend_mode`` contract as morphology traces. It is not a
         paired-synapse view: the partner is not restricted to the adjacent
@@ -17673,7 +17673,7 @@ class VisualizeSkeleton:
         -----
         The rotation is applied around the center of the FLYWIRE brain mesh to avoid
         shifting objects. The rotation combines:
-        - Z-axis rotation (-4 degrees) to correct left-right tilt in front view
+        - Z-axis rotation (-3 degrees) to correct left-right tilt in front view
         - Y-axis rotation (-3 degrees) to correct tilt in top view
         """
         import numpy as np

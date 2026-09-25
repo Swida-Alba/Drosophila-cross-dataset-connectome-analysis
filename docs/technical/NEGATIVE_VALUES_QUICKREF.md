@@ -50,8 +50,8 @@ All transform types work with negative values:
 | Transform | Formula | Example |
 |-----------|---------|---------|
 | **Linear** | `v` | `-100` → `-100` |
-| **Log2** | `sign(v) × log₂(|v|)` | `-100` → `-6.64` |
-| **Log10** | `sign(v) × log₁₀(|v|)` | `-100` → `-2.00` |
+| **Log2** | `sign(v) × log₂(|v| + 1)` | `-100` → `-6.66` |
+| **Log10** | `sign(v) × log₁₀(|v| + 1)` | `-100` → `-2.00` |
 | **Sqrt** | `sign(v) × √|v|` | `-100` → `-10.00` |
 
 ## Data Export
@@ -79,10 +79,11 @@ PN_I → LHN_J: weight = -85
 python -m pytest tests/core/test_audit_fixes.py -k negative
 ```
 
-(The one-off `scripts/PlotPath_TestNegatives.py` harness has been removed;
-the folder-safety contract lives in the pytest suite above.)
-
-Output: `test_negative_output/` with all visualization types
+(The one-off `scripts/PlotPath_TestNegatives.py` harness has been removed
+together with its `test_negative_output/` artifacts and the
+`test_data/` sample; the folder-safety contract lives in the pytest suite
+above. That test covers negative PARAMETER formatting, not the
+visualization styling.)
 
 ## Troubleshooting
 
@@ -113,10 +114,12 @@ rgba(74, 144, 226, 0.4)   /* Light Blue */
 
 | Function | Module | Handles Negatives? |
 |----------|--------|-------------------|
-| `VisualizePath.plot()` | vispath | ✅ Yes |
-| `FindDirect.SankeyDirect()` | coana | ✅ Yes |
-| `SankeyDirect()` | statvis | ✅ Yes |
-| `InteractiveHeatmap()` | statvis | ✅ Yes |
+| `VisualizePath.plot()` | `vispath_pkg.vispath` | ✅ Yes |
+| `CreateHeatmap` (signed transforms) | `statvis` | ✅ Yes |
+| `FindNeuronConnection.FindDirectConnections()` | `coana` | ➖ negatives not applicable (weights ≥ 0) |
+
+`statvis.SankeyDirect` DROPS negative entries (`val > 0` filter) — the
+negative-preserving Sankey path is vispath only.
 
 ## Need More Details?
 

@@ -1256,7 +1256,7 @@ TOOL_GUIDE_SPECS = {
         ],
     },
     "find_homologs": {
-        "title": "Connectivity · Find Similar",
+        "title": "Connectivity · Find Homolog",
         "summary": "Similar neurons found by connectivity-profile similarity, "
                    "across datasets (homolog search) or within one dataset "
                    "when Target = Source.",
@@ -2065,14 +2065,15 @@ TOOL_GUIDE_SPECS = {
                    "the mapping is never rewritten.",
         "files": [
             {"pattern": "report.html",
-             "description": "The per-run report's 11 tabs: Coverage "
+             "description": "The per-run report's 12 tabs: Coverage "
                             "(headline + the three coverage levels L1 claim "
                             "/ L2 provenance / L3 validation), Branches "
                             "(marks same-name-first selections), Targets, "
                             "Fill, Reciprocal (stage-5d reverse evidence, "
                             "one row per scanned neuron), Out-map, Backward "
                             "source status, Suspects verification (opt-in "
-                            "runs), Morph, Scenes and Log. Hover any dotted "
+                            "runs), Morph, Pooling, Scenes "
+                            "and Log. Hover any dotted "
                             "term — or any table header, which explains its "
                             "own column — for its definition. Regenerable "
                             "for any past run: python -m "

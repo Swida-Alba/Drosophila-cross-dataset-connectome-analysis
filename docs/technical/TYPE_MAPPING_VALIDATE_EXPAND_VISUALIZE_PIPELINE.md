@@ -738,9 +738,10 @@ qualification), which does not break the mode nesting (§4.5).
 ## 5. Noise gates (rows failing them move to
 `noise_filtered_candidates.csv` with `noise_reason`)
 
-In order — **spatial caliber is PRIMARY, connectivity heuristics
-secondary** (user directive: size/arborization are
-annotation-independent physical facts):
+Four independent gates — **spatial caliber is primary in importance**
+(user directive: size/arborization are annotation-independent physical
+facts); a failing row carries every applicable `noise_reason`, with
+connectivity reasons listed first in the emitted string:
 
 1. **Spatial caliber** (both metrics): candidate `size` (neuron-table
    metadata; MCNS `size`, FAFB `size_nm`; ~100% coverage) below
@@ -861,7 +862,8 @@ target-vector build time.
   future UI tails.  Every stage the run opens now also closes: the
   `stage_start`/`stage_done` pairs are `1` resolve, `2` scans (with one
   `scan_progress` line per source type), `5` morphology, `3` categories,
-  `5d` backward evidence, `3b` coverage accounting, `expansion` out-map,
+  `5d` backward evidence, `3b` coverage accounting, `P` pooling
+  (pooling runs only), `expansion` out-map,
   `4` scenes and `6` report, each carrying a `label` the Log tab prints
   with its duration.  Before that, a 25-minute block sat inside one
   never-closed stage and cost could only be attributed from artifact

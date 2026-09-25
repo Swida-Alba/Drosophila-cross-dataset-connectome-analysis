@@ -120,8 +120,10 @@ localStorage forever with no eviction.
    inverse operations (e.g. `{type:'hide', ids:[...]}`) when graphs exceed
    ~10k elements; keep snapshots for small graphs (simpler and robust).
 10. ✅ **localStorage eviction** (F10): saved-layout keys
-    (`cytoscape_layout_*`, `heatmap_settings_*`) are now capped at the
-    newest 20 per family on page load.
+    (`cytoscape_layout_*`, `heatmap_settings_*`) are capped at the
+    newest 20 per family **when a network page is loaded** (the eviction
+    runs in the cytoscape template; heatmap pages do not evict on their
+    own).
 
 ## Verification status of this session's features
 

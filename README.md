@@ -110,7 +110,7 @@ Every UI panel links to its own instruction guide (see [docs/ui_guides/README.ht
 | **EM↔LM Mapping** | [NeuronBridge Guide](docs/core-features/NeuronBridge_Guide.md) | `NeuronBridge_FindLines.py` |
 | **FlyLight Imagery** | [FlyLight Guide](docs/core-features/FlyLight_Guide.md) | `FlyLight_fetcher.py` |
 | **Cross-Dataset** | [Comparison Guide](docs/core-features/CrossDatasetComparison_Guide.md) | `InterDatasetComparator.py` |
-| **Homolog Finding** | [Homolog Guide](docs/core-features/HomologFinding_Guide.md) | `FindHomologs.py` (Connectivity tab → Find Similar) |
+| **Homolog Finding** | [Homolog Guide](docs/core-features/HomologFinding_Guide.md) | `FindHomologs.py` (Connectivity tab → Find Homolog) |
 | **3D Visualization** | [3D Skeleton Guide](docs/visualizations/3D_Skeleton_Guide.md) | `plot3dSkeleton.py` |
 | **Path Visualization** | [Interaction Guide](docs/visualizations/VisualizePath_Interaction_Guide.md) | `PlotPath.py` |
 | **Web UI Panels** | [docs/ui_guides/README.html](docs/ui_guides/README.html) | All web UI panels |
@@ -161,10 +161,10 @@ All NeuPrint server datasets are supported (verified against `api.neuprint.janel
 - **Cross-Dataset group** — the connection-comparison tab moved into its own top-level **Cross-Dataset** group as **Paths**, alongside the new **Type Validation** tab that runs the TM VEV pipeline (`MappingValidator`) from the UI: bodyId-level validation of a source→target type mapping, candidate expansion, and 3D review scenes (see [type_validation.html](docs/ui_guides/type_validation.html)).
 - **Local FAFB + standalone BANC dataset support** — local-first FAFB caching and public-bucket BANC caching so repeated local-release queries avoid network round-trips entirely; Polars-backed matrix/CSV steps measured 10-100x faster in the [December 2025 benchmarks](docs/technical/PERFORMANCE_OPTIMIZATIONS_DEC2025.md) ([FAFB Integration](docs/FAFB_INTEGRATION.md), [BANC Integration](docs/BANC_INTEGRATION.md)).
 - **NT visualization & grouping** — neurotransmitter edge groups, custom groups, export/import ([Network Features](docs/visualizations/VisualizePath_Network_Features.md)).
-- **Similarity tab reorganization** — the Similarity group is now two main tabs, each with Find Similar / Comparison sub-tabs:
-    - **Connectivity**: find similar is a homolog search across datasets (or within one dataset via Target = Source); comparison is multi-dataset connectivity profiling.
-    - **Morphology**: find similar is an intra-dataset vector/NBLAST search; comparison is an intra-dataset N×N morphology comparison with type-level and bodyId-level matrices, heatmaps, and a report (`vector_v2` or NBLAST scoring, capped at 30 neurons).
-    - The old "Connectivity similarity" mode is folded into Find Similar (it was intra-dataset homolog finding under another name); see the [Connectivity](docs/ui_guides/connectivity.html), [Morphology](docs/ui_guides/morphology.html), and [Comparison](docs/ui_guides/morphology_comparison.html) guides for connectivity-expanded candidates, ROI filtering, dual result tables, and the resumable full-morphology download.
+- **Similarity tab reorganization** — the Similarity group is now two main tabs, each with a similarity-search / Comparison sub-tab pair (Find Homolog on Connectivity, Find Similar on Morphology):
+    - **Connectivity**: Find Homolog is a homolog search across datasets (or within one dataset via Target = Source); comparison is multi-dataset connectivity profiling.
+    - **Morphology**: find similar is an intra-dataset vector/NBLAST search; comparison is an N×N morphology comparison (one dataset) that switches to cross-dataset mode when two or more datasets are selected, with type-level and bodyId-level matrices, heatmaps, and a report (`vector_v2` or NBLAST scoring, NBLAST capped at 30 neurons).
+    - The old "Connectivity similarity" mode is folded into Find Homolog (it was intra-dataset homolog finding under another name); see the [Connectivity](docs/ui_guides/connectivity.html), [Morphology](docs/ui_guides/morphology.html), and [Comparison](docs/ui_guides/morphology_comparison.html) guides for connectivity-expanded candidates, ROI filtering, dual result tables, and the resumable full-morphology download.
 - **Palette editor** — drag-and-drop reordering of discrete palette colors, a range slider applied directly to the displayed palette, a reset button beside the preview, and lateral range labels.
 - **3D Skeleton reorganization** — independent card blocks for general appearance, neuron colors, synapse colors, and brain-region ROIs, with hemisphere-aware options.
 

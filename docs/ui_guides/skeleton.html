@@ -406,13 +406,14 @@
       Simplification</b> reverts a custom value to those defaults.</li>
     <li><b>Export Method</b>: webdriver (fast, needs Chrome 109+) or kaleido
       (stable fallback). <b>Export Scale</b> and <b>Export Views</b>.</li>
-    <li><b>Summary Format</b>: choose which profile document formats to write.</li>
   </ul>
   <p>The two cards above Advanced Settings:</p>
   <ul>
-    <li><b>Individual Profiles (PDF / PPTX)</b>: PDF/PPTX per neuron, with
-      images per page
-      and camera views. <b>Profile Granularity</b> decides how far the legend
+    <li><b>Individual Profiles (PDF / PPTX)</b>: the <b>Export Individual
+      Profiles</b> checkbox (off by default) gates the export, which writes
+      one profile per group — with <b>Summary Format</b> (pdf / pptx) and
+      <b>Images Per Page (cols/rows)</b> (3/2) setting the document layout,
+      plus camera views. <b>Profile Granularity</b> decides how far the legend
       tree is walked to form one profile group: <i>Per legend entry</i>
       (<code>legend</code>, the default and the historical behaviour) follows
       the <b>Neuron Legend Mode</b>; <i>Per layer</i> (<code>layer</code>),

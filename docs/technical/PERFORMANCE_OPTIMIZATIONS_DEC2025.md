@@ -3,6 +3,15 @@
 **Date:** December 7, 2025
 **Version:** 4.1
 
+> **Drift note (2026-09-25):** two mechanisms below were later redefined.
+> (1) `skip_bodyId` semantics changed on 2026-09-04 — bodyId paths are
+> still enumerated in memory and type-level outputs are DERIVED from
+> them; the flag now suppresses bodyId-level *exports* only (and gates
+> interlayer info *saving*, not fetching). (2) The aggregation-internal
+> tqdm bars described in §3 were later disabled — only the path-enrichment
+> bar remains active in `statvis.py`. The measurements remain a valid
+> record of the December 2025 optimization round.
+
 ## Overview
 
 This document details the performance optimizations introduced in version 4.1 to handle large-scale connectome datasets (e.g., FlyWire, whole-brain comparisons). The primary focus was on reducing I/O bottlenecks and memory usage during the data saving and aggregation phases.
@@ -43,7 +52,8 @@ In many cross-dataset comparison workflows, researchers are primarily interested
 ### Solution
 Introduced a new parameter `skip_bodyId` to `ComparisonParameters` and `FindNeuronConnection`.
 
-**How it works:**
+**How it works** *(as introduced in v4.1; see the drift note for the
+current semantics)*:
 When `skip_bodyId=True`:
 1. **Skips Saving**: `connection_info_bodyId.csv` and bodyId-level matrices are not generated.
 2. **Skips Enrichment**: Detailed path analysis at the bodyId level is bypassed.

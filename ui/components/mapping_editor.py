@@ -92,8 +92,8 @@ def selected_mapping_file_path(selection: Optional[str]) -> Optional[str]:
 def custom_grouping_block(
     label: str = "Custom Grouping",
     hint: str = (
-        "Open the grouping panel: reuse a saved custom type mapping (manage "
-        "them in the Settings tab) or define groups inline for this query."
+        "Open the grouping panel: load a recent group from the history "
+        "menu or define groups inline for this query."
     ),
     datasets_provider: Optional[Callable[[], List[str]]] = None,
     require_names: bool = False,
@@ -113,10 +113,10 @@ def custom_grouping_block(
       an optional embedded dataset selector, saved-group loader, and inline
       group board; the button label mirrors the current state (none / inline).
     - ``resolve_mapping_path()`` -> ``(path, ok)``. ``ok=False`` means the
-      run must be aborted (errors were already notified). A selected preset
-      wins; otherwise a non-empty inline board is validated, exported to
+      run must be aborted (errors were already notified). A non-empty inline
+      board is validated, exported to
       the canonical JSON (script-loadable), recorded in the group history,
-      and its path returned. No preset + empty board: ``(None, True)``.
+      and its path returned. An empty board returns ``(None, True)``.
     """
     grouper = LiteCustomGrouper(tab_key=tab_key, require_names=require_names,
                                 query_inputs=query_inputs,

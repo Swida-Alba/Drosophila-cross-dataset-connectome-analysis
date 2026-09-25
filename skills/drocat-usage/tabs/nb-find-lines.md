@@ -3,7 +3,7 @@
 Reproduce the **Find Driver Lines** UI tab (EM → LM). Uses `NeuronBridgeFinder`
 to map EM neurons to GAL4/Split-GAL4 driver lines. No token required.
 
-The tab is dataset-aware: the query box shares the Cross-Dataset tab's
+The tab is dataset-aware: the query box shares the Cross-Dataset Comparison tab's
 auto-suggestion and history (gray hints like `type · male-cns:v1.0`, history
 rows tagged with the datasets where the value actually resolves; the history
 list is click-to-toggle on the focused empty field — click hides, click shows

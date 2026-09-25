@@ -259,7 +259,7 @@ def create_skeleton_tab():
         with ui.card().classes("w-full drocat-card").props('id="card-3d"'):
             section_header("Neuron Selection (3D)", "hub")
             # The three layer/color input modes are mutually exclusive and are
-            # chosen with segmented buttons (mirroring the Similar Neurons tab).
+            # chosen with segmented buttons.
             layer_editor_mode = {"value": "Standard"}
             # Neuron/Synapse palette editors are hidden outside the Standard
             # mode; the ROI palette is mode-independent (the layer editor
@@ -291,7 +291,7 @@ def create_skeleton_tab():
                     hint="'synapse': paired synapses between adjacent layers. "
                          "'pre-post sites': the pre- and post-synaptic SITES of the "
                          "queried neurons (post/input as spheres, pre/output as cones, "
-                         "or circle/square scatter markers). 'skip': hide synapse markers.",
+                         "or circle/diamond scatter markers). 'skip': hide synapse markers.",
                 ).props("outlined").classes("flex-1 min-w-[240px]")
                 synapse_threshold = number_input(
                     "Synapse Threshold", get_user_default("min_synapse_num"), 1, 100,
@@ -448,7 +448,7 @@ def create_skeleton_tab():
                     "Match by",
                     ["exact", "startswith", "contains", "endswith", "regex"],
                     "exact",
-                    hint="The filter mode (exact / starts with / contains / ends with / "
+                    hint="The match mode (exact / starts with / contains / ends with / "
                          "regex) applies to every neuron in the layer tree, matching "
                          "the pathfinding search backend.",
                 )
@@ -1240,7 +1240,7 @@ def create_skeleton_tab():
             # conversion below rewrites them into regex patterns, which are not
             # useful history entries.
             raw_neurons = _flatten_neuron_layers(neuron_layers)
-            # Same search semantics as pathfinding: the filter mode converts
+            # Same search semantics as pathfinding: the match mode converts
             # every neuron into the regex pattern resolved by statvis.getNeurons.
             mode = filter_mode.value
             if mode and mode != "exact":

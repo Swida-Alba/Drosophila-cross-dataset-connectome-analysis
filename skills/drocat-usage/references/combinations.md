@@ -36,7 +36,7 @@ comparer = MorphologyComparer(dataset="male-cns:v0.9", query="aMe12",
                               visualize_top_n=5, verbose=True)
 results = comparer.find_similar()
 
-# Step 2: connectivity-profile similar search (Connectivity tab → Find Similar,
+# Step 2: connectivity-profile similar search (Connectivity tab → Find Homolog,
 # Target = Source for the intra-dataset search)
 from comparison.profile_comparator import HomologFinder
 finder = HomologFinder(source_dataset="male-cns:v0.9", target_dataset="male-cns:v0.9",

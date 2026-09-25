@@ -801,7 +801,8 @@ def create_settings_tab():
             save_defaults_btn.on_click(save_defaults)
             reset_defaults_btn.on_click(reset_defaults)
 
-        # Custom type mappings (LabelMapper presets, reusable across runs).
+        # Custom type mappings (LabelMapper-format groups; saving writes a
+        # reusable JSON preset).
         # Use the same Custom Mapping panel as the tool tabs so Settings and
         # query-local mapping edits share the outlined member fields, aligned
         # dataset rows, and available-neuron viewer.
@@ -810,8 +811,9 @@ def create_settings_tab():
             ui.label(
                 "Define reusable neuron groups across datasets. The shared Custom Mapping "
                 "panel keeps the same aligned member inputs and LabelMapper JSON format "
-                "used by the analysis tabs. Saving updates the reusable Custom Mapping "
-                "preset in cache/user_mappings.json and exports it for runs."
+                "used by the analysis tabs. Saving updates the Custom Mapping "
+                "preset in cache/user_mappings.json and exports its JSON — runs never "
+                "load it automatically; reuse it from a board's Load… action."
             ).classes("text-caption drocat-muted")
 
             mapping_row_action_renderers = []
@@ -953,7 +955,7 @@ def create_settings_tab():
                     <p>Alternatively, select <code>flywire_FAFB_v783</code> in a tool and run it; the first run invokes the same local preparation automatically.</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">4. Verify before running analysis</p>
-                    <p>The dataset root should contain generated files named <code>flywire_FAFB_v783_allneurons_neuron_df.parquet</code> (and CSV) and <code>flywire_FAFB_v783_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>✓ local</b>.</p>
+                    <p>The dataset root should contain generated files named <code>flywire_FAFB_v783_allneurons_neuron_df.parquet</code> (and CSV) and <code>flywire_FAFB_v783_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>ready</b> status chips.</p>
                     <p style="color:var(--drocat-warn)"><b>A CAVE token is not a substitute for these local tables.</b> It is only needed for CAVE API fetching or skeleton fallback; local converted tables and a local skeleton ZIP can be used without it.</p>
                 </div>
                 """)
@@ -970,7 +972,7 @@ def create_settings_tab():
                     <p>Selecting a BANC dataset in any tool triggers the one-time download and conversion — no manual downloads, no CAVE token. Skeletons fetch on demand from the same bucket during 3D visualization.</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">4. Verify before running analysis</p>
-                    <p>The selected dataset root should contain <code>&lt;dataset&gt;_allneurons_neuron_df.parquet</code> (and CSV) and <code>&lt;dataset&gt;_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>✓ local</b>.</p>
+                    <p>The selected dataset root should contain <code>&lt;dataset&gt;_allneurons_neuron_df.parquet</code> (and CSV) and <code>&lt;dataset&gt;_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>ready</b> status chips.</p>
                     <p style="color:var(--drocat-warn)"><b>BANC has no <code>force_API_fetching</code> or CAVE fallback.</b> Pathfinding, network visualization, tabular analysis, and skeleton visualization use the BANC public-release tables/SWCs.</p>
                 </div>
                 """)

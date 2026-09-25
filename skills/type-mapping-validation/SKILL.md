@@ -127,7 +127,7 @@ The **Cross-Dataset › Type Validation** tab runs this same pipeline (tool key
 `type_mapping_validation`; run folders still `type-map-validation_*`). Defaults
 there: source = the Settings default dataset, **target = flywire_FAFB_v783**
 (deliberately independent of the Settings default target, which belongs to
-Connectivity → Find Similar). Mode, morphology / scenes / backward toggles and
+Connectivity → Find Homolog). Mode, morphology / scenes / backward toggles and
 the advanced gates mirror `MappingValidationConfig`. **Max Scenes defaults to 0
 = one scene per parent type**; a positive value clamps to the largest pools and
 then names every dropped parent in the run log and in the report's Branches

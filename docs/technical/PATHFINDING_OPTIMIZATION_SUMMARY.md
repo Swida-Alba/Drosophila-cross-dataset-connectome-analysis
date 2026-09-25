@@ -1,5 +1,12 @@
 # Pathfinding Optimization Implementation Summary
 
+> **Historical record (January 2025) with later annotations.** The
+> `_find_paths_dfs_optimized` function below no longer exists in
+> `coana.py` — enumeration now runs `FastGraph.find_paths_strongest_first`
+> (StrongestFirst, the built-in default since 2026-09-05). The appended
+> 2026-08 sections carry their own corrections. Do not cite the main-body
+> code locations or the complexity table as current behavior.
+
 ## Overview
 
 Successfully implemented DFS (Depth-First Search) with backtracking optimization for the `FindAllPath` method in `coana.py`. This replaces the previous pair-wise searching approach and significantly improves performance when paths share common segments.
@@ -88,13 +95,17 @@ Updated non-parallel code path to use same DFS algorithm.
 | Approach | Complexity | Redundancy |
 |----------|-----------|------------|
 | **Old (pair-wise)** | O(S × T × P) | High - explores shared segments S×T times |
-| **New (DFS)** | O(S × P_total) | Low - explores each segment once per source |
+| **New (DFS)** | single traversal shared across all pairs of one source | Low - explores each segment once per source |
+
+*(Corrected 2026-09-25: the original table said O(S × P_total), but with
+P_total = S·T·P that expression is asymptotically larger than the old
+bound — the intended contrast is per-pair re-exploration vs one shared
+traversal per source, not those two big-O forms.)*
 
 Where:
 - S = number of sources
 - T = number of targets
 - P = average paths per pair
-- P_total = total paths from all sources
 
 ### Expected Speedup
 
@@ -287,7 +298,10 @@ The graph-cache key only contained dataset, source/target sets,
 `max_interlayer` and the hemisphere flag.  A run with different
 `filter_by`, `min_ratio`, `min_traversal_probability` or
 `exclude_intra_type_connections` could silently reuse a graph built under
-different filter conditions and return wrong results.
+different filter conditions and return wrong results. *(Of these,
+`min_ratio` / `min_traversal_probability` later became threshold-free
+readout columns — F9, 2026-09-05 — so they no longer affect any graph;
+they remain in the cache-key digest harmlessly.)*
 
 **Fix**: `_findallpath_cache_key()` now includes every edge-affecting filter.
 The key uses a deterministic digest of the sorted ID sets (instead of
@@ -361,7 +375,9 @@ produce identical path sets. A **lazy reverse-adjacency index** now
 replaces the ~250 MB reversed-graph copies, so every algorithm except
 Bidirectional runs in <10 MB at 2–4 layers (DP: 272 → 9.4 MB;
 MeetInMiddle: 2.17 s / 272 MB → 1.25 s / 4.8 MB). **MemoizedDFS (forward)**
-remains the default (fastest at 4 layers); **MeetInMiddle** is fastest at
+was the fastest complete enumerator at 4 layers *(as an API choice —
+superseded 2026-09-05: StrongestFirst is the built-in pipeline default)*;
+**MeetInMiddle** is fastest at
 2–3 layers; **Bidirectional** is fastest at 5 layers but its layer trees
 dominate memory (18.9 → 892 MB); **DP** degenerates on deep queries. The 2026-08 audit also verified all implementations correct
 (750 randomized runs, zero mismatches) and fixed the routing so names

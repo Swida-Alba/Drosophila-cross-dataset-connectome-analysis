@@ -169,14 +169,14 @@ def create_type_validation_tab():
                     "Source Dataset", default=_setting("default_dataset", None))
                 # Target defaults to FAFB (user 2026-09-22) — deliberately NOT
                 # the Settings default_target_dataset key, which stays owned by
-                # Connectivity → Find Similar. The hint makes the departure
+                # Connectivity → Find Homolog. The hint makes the departure
                 # visible in the UI.
                 target_dataset = dataset_selector(
                     "Target Dataset", default="flywire_FAFB_v783",
                     hint="Defaults to flywire_FAFB_v783. Independent of the "
                          "Settings 'Default Similar-Search Target Dataset' "
                          "(that default belongs to Connectivity → Find "
-                         "Similar).")
+                         "Homolog).")
                 run_label = ui.input("Run Label (optional)").classes("w-full drocat-input")
                 output_dir = dir_input(scope="type_mapping_validation")
             same_pair_note = ui.label(

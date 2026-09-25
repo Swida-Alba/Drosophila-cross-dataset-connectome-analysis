@@ -1,6 +1,6 @@
-# Connectivity · Find Similar (find_homologs)
+# Connectivity · Find Homolog (find_homologs)
 
-Reproduce the **Connectivity tab → Find Similar sub-tab** as a direct backend
+Reproduce the **Connectivity tab → Find Homolog sub-tab** as a direct backend
 call. With different `source_dataset` / `target_dataset` this is the
 cross-dataset homolog search; with `target_dataset == source_dataset` it is
 the within-dataset (intra-dataset) similar-neuron search. Both run the same
@@ -32,10 +32,10 @@ finder = HomologFinder(
     source_dataset="male-cns:v0.9",
     target_dataset="hemibrain:v1.2.1",   # == source_dataset for intra-dataset search
     output_dir="/absolute/output/homologs",
-    top_n=30,
-    top_k=15,
+    top_n=100,
+    top_k=25,
     top_m=5,
-    similarity_metric="rank_union",
+    similarity_metric="jaccard",
     vector_prefiltering=True,
     include_untyped_partners=False,     # expand 2-hop (untyped) partners
     visualize_skeleton=False,
