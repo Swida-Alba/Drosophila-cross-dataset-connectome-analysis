@@ -4717,6 +4717,43 @@ class TestTabs:
             assert sym.value is False, name
             assert keep._props.get("disable") is True, name
 
+    def test_network_tab_unchecks_and_resets_hemisphere_dependents(self):
+        """The Network tab UNCHECKS the dependent checkboxes AND resets the
+        Hemisphere select to 'both' when Hemisphere-aware is off — the
+        backend applies hemisphere_filter independently of
+        separate_hemispheres, so a greyed-out 'left' would silently
+        restrict the queried network (F-UI-001)."""
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.tabs.network import create_network_tab
+
+        client = Client(page("/network-hemi-uncheck"))
+        with client:
+            create_network_tab()
+        by_label = {}
+        for el in client.elements.values():
+            label = (getattr(el, "_props", {}).get("label")
+                     or getattr(el, "text", ""))
+            if label in ("Hemisphere-aware",
+                         "Keep Only Hemisphere-Conserved Edges",
+                         "Symmetry Analysis", "Hemisphere"):
+                by_label[label] = el
+        sep = by_label["Hemisphere-aware"]
+        keep = by_label["Keep Only Hemisphere-Conserved Edges"]
+        sym = by_label["Symmetry Analysis"]
+        hemi = by_label["Hemisphere"]
+
+        sep.value = True
+        keep.value = True
+        sym.value = True
+        hemi.value = "left"
+        sep.value = False
+        assert keep.value is False
+        assert sym.value is False
+        assert hemi.value == "both", hemi.value
+        assert hemi._props.get("disable") is True
+        assert keep._props.get("disable") is True
+
     def test_interdataset_path_enumeration_selector(self):
         """The cross-dataset tab exposes a Path Enumeration selector
         (all / shortest). F1 removed the Pathfinding Algorithm selector

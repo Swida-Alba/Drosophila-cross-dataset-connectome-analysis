@@ -141,6 +141,14 @@ def create_network_tab():
                     symmetry_analysis.enable()
                     hemi_filter.set_enabled(True)
                 else:
+                    # dependent options are unchecked AND disabled so a
+                    # greyed-out value never reaches the backend: the
+                    # backend applies hemisphere_filter independently of
+                    # separate_hemispheres, so a stale 'left'/'right'
+                    # would silently restrict the queried network.
+                    keep_hemi_conserved.value = False
+                    symmetry_analysis.value = False
+                    hemi_filter.value = 'both'
                     keep_hemi_conserved.disable()
                     symmetry_analysis.disable()
                     hemi_filter.set_enabled(False)
