@@ -274,6 +274,29 @@ def test_pooling_refuses_a_run_without_morphology():
     pool.check_morphology_mandatory(ok.cfg)
 
 
+def test_pooling_refuses_a_target_it_cannot_score():
+    """The mandatory-morphology rule has a second half.
+
+    `--no-morphology` was refused, but a TARGET outside the cross-dataset
+    families failed the same way one stage later: the pass raised inside stage
+    P, the engine recorded `morph_gate='error'` on every row and kept going, and
+    the run published claim-shaped tiers over nothing.  Measured on the
+    2026-09-25 FAFB->hemibrain run — 5.4 M pairs scanned, 1027 rows admitted, 0
+    scored, 32 `matched` and 335 `verified` printed as if graded.  A capability
+    the mode requires must fail at the door, not at minute forty.
+    """
+    from types import SimpleNamespace
+    ns = SimpleNamespace(source_dataset='flywire_FAFB_v783',
+                         target_dataset='hemibrain:v1.2.1')
+    with pytest.raises(ValueError, match='not supported for cross-dataset'):
+        mv.check_pooling_target_supported(ns)
+    # the three families the scorer does speak all pass
+    for ok_ds in ('male-cns:v1.0', 'banc_v888', 'flywire_FAFB_v783'):
+        mv.check_pooling_target_supported(
+            SimpleNamespace(source_dataset='flywire_FAFB_v783',
+                            target_dataset=ok_ds))
+
+
 def test_morph_budget_names_what_it_dropped(monkeypatch):
     import comparison.morph_cross_dataset as mcd
 

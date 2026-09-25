@@ -241,6 +241,18 @@ def parse_args(argv=None):
         # help), not as a traceback from deep inside the config.
         p.error('--mode pooling is the unsupervised engine and does not nest '
                 'with --aggressive-expansion')
+    if args.mode == 'pooling':
+        # ... and it needs a target the morph scorer can score. Without this the
+        # run scans for tens of minutes and then records the scorer's
+        # "not supported" per row while still publishing `matched` claims
+        # (measured on FAFB->hemibrain, 2026-09-25).
+        from comparison.mapping_validation import check_pooling_target_supported
+        try:
+            check_pooling_target_supported(
+                argparse.Namespace(source_dataset=args.source,
+                                   target_dataset=args.target))
+        except ValueError as exc:
+            p.error(str(exc))
     return args
 
 

@@ -1571,6 +1571,30 @@ def type_name_of(values, bid, default: str = '?') -> str:
     return value if has_type_name(value) else default
 
 
+def check_pooling_target_supported(cfg) -> None:
+    """Refuse a ``pooling`` run whose TARGET the morphology scorer cannot score.
+
+    Pooling's tiers are defined morph-qualified, so the mode already refuses
+    ``--no-morphology``.  The same invariant has a second half that refusal did
+    not cover: a target outside the cross-dataset families (FAFB / male-cns /
+    BANC) makes the pass raise *inside* stage P, where the engine records the
+    error per row and keeps going — which is right for a transient scorer
+    failure and wrong for a capability the run should never have started with.
+    Measured on the 2026-09-25 FAFB->hemibrain run: 5.4 M pairs scanned, 1027
+    rows admitted, every one ``morph_gate='error'``, and the run still published
+    32 ``matched`` and 335 ``verified``.
+    """
+    from comparison.morph_cross_dataset import dataset_scope
+    for ds in (cfg.source_dataset, cfg.target_dataset):
+        scope = dataset_scope(str(ds))
+        if not scope.get('ok'):
+            raise ValueError(
+                f"--mode pooling needs a morphology the target can actually "
+                f"be scored with, and '{ds}' cannot: {scope.get('reason')} "
+                "Run --mode restrictive/family/aggressive instead, or pick a "
+                "FAFB / male-cns / BANC target.")
+
+
 def candidate_annotation(target_type, backward_types, has_type: bool,
                          home_real: bool = True,
                          type_in_map: bool = False) -> str:
@@ -1995,6 +2019,14 @@ class MappingValidator:
             from comparison.mapping_validation_pooling import (
                 check_morphology_mandatory)
             check_morphology_mandatory(cfg)
+        # ... and the same invariant has a second half: the TARGET must be one
+        # the cross-dataset scorer can score at all.  A hemibrain pooling run
+        # (2026-09-25) scanned 5.4 M pairs, published 32 `matched` and 335
+        # `verified` claims, and had graded NONE of them — the morph pass raised
+        # "not supported for cross-dataset morphology", recorded it per row as
+        # `morph_gate='error'`, and the tiers stayed.
+        if cfg.effective_mode == 'pooling':
+            check_pooling_target_supported(cfg)
         self.mapper = get_type_mapper()
         self.profiler = ConnectivityProfiler(
             datasets=[cfg.source_dataset, cfg.target_dataset],
