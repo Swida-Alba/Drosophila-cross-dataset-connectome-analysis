@@ -59,7 +59,7 @@ def hunks_of(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--select', action='append', default=[],
-                    metavar='PATH:SUBSTR[,SUBSTR…]',
+                    metavar='PATH=SUBSTR[,SUBSTR…]',
                     help='a file to split and what marks a hunk as mine')
     ap.add_argument('--apply', action='store_true',
                     help='stage the selected hunks (default: dry run)')

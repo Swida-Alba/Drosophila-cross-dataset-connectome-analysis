@@ -43,7 +43,7 @@ try:
         load_neuron_table,
     )
 except ImportError:  # pragma: no cover - direct src imports
-    from comparison.metadata_density import (
+    from src.comparison.metadata_density import (
         compute_synapse_density,
         load_neuron_table,
     )

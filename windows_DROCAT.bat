@@ -166,7 +166,15 @@ set "CHOICE="
 set /p "CHOICE=Your choice [1-3]: "
 if "!CHOICE!"=="1" goto pick_new_port
 if "!CHOICE!"=="2" goto stop_all_drocat
+REM Empty input (EOF - agents, CI): when the port owner is DROCAT, parity
+REM with the mac launcher is to open the running instance, not abort.
+if not defined CHOICE if "!OWNER_IS_DROCAT!"=="1" goto open_existing
 goto conflict_abort
+
+:open_existing
+echo Opening the running DROCAT at http://127.0.0.1:!APP_PORT!/ ...
+start "" "http://127.0.0.1:!APP_PORT!/"
+exit /b 0
 
 :other_instances
 call :scan_drocat_instances
@@ -262,17 +270,34 @@ goto :eof
 REM %* = space-separated PIDs to stop. Each PID is ownership-checked again
 REM before taskkill; a listed PID that is gone or is not DROCAT is skipped.
 :stop_pid_list
-for %%p in (%*) do (
-    set "STOP_CMD="
-    for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=%%p' -ErrorAction SilentlyContinue).CommandLine"') do set "STOP_CMD=%%c"
-    if defined STOP_CMD (
-        echo !STOP_CMD! | findstr /I "ui\app.py drocat" >nul
-        if not errorlevel 1 (
-            echo Stopping DROCAT PID %%p...
-            taskkill /PID %%p /F >nul 2>nul
-        )
-    )
+for %%p in (%*) do call :stop_one_pid %%p
+goto :eof
+
+REM Stop one ownership-checked DROCAT PID. Parity with the mac launcher's
+REM SIGTERM-then-wait semantics: ask nicely first (WM_CLOSE lets NiceGUI's
+REM shutdown hook stop the run backends this instance owns), wait up to
+REM 10 s, then force. (Untestable from macOS; kept structurally simple.)
+:stop_one_pid
+set "STOP_PID=%~1"
+set "STOP_CMD="
+for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!STOP_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "STOP_CMD=%%c"
+if not defined STOP_CMD goto :eof
+echo !STOP_CMD! | findstr /I "ui\app.py drocat" >nul
+if errorlevel 1 goto :eof
+echo Stopping DROCAT PID !STOP_PID!...
+taskkill /PID !STOP_PID! >nul 2>nul
+set /a STOP_WAIT=0
+:stop_wait
+if !STOP_WAIT! GEQ 10 goto stop_force
+powershell -NoProfile -Command "if (Get-Process -Id !STOP_PID! -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }" >nul 2>nul
+if errorlevel 1 (
+    timeout /t 1 /nobreak >nul 2>nul
+    set /a STOP_WAIT+=1
+    goto stop_wait
 )
+goto :eof
+:stop_force
+taskkill /PID !STOP_PID! /F >nul 2>nul
 goto :eof
 
 :start_ui

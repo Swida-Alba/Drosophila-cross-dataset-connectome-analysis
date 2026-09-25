@@ -12,7 +12,7 @@ once produce phantom FileNotFoundError failures here. The script therefore:
 3. writes a timestamped log plus a machine-readable summary the caller can
    poll without touching the terminal.
 
-Usage:  python scripts/maintenance/wait_then_full_suite.py [--dry-run] [--with-e2e]
+Usage:  python scripts/maintenance/wait_then_full_suite.py [--dry-run] [--with-e2e] [--stages=...]
 """
 from __future__ import annotations
 
@@ -42,7 +42,22 @@ E2E_STAGE = ('e2e', ['tests/e2e'])
 # The project env, not whatever python happens to be on PATH: the base env
 # carries pytest 7.4 while this one carries 9.1, and the suite is maintained
 # against the project env the app itself runs in.
-_PROJECT_PY = '/Users/apple/anaconda3/envs/drocat-4.5.0/bin/python'
+def _project_env_python() -> str:
+    # The versioned env name follows ui/config.py's APP_VERSION, so a bump
+    # does not silently detach this script from the env it should run in.
+    env = 'drocat-4.5.0'
+    cfg = Path(__file__).resolve().parents[2] / 'ui' / 'config.py'
+    try:
+        m = re.search(r'^APP_VERSION\s*=\s*["\']([\d.]+)["\']',
+                      cfg.read_text(), re.M)
+        if m:
+            env = f'drocat-{m.group(1)}'
+    except OSError:
+        pass
+    return f'/Users/apple/anaconda3/envs/{env}/bin/python'
+
+
+_PROJECT_PY = _project_env_python()
 PYTEST_PY = os.environ.get('DROCAT_TEST_PYTHON') or (
     _PROJECT_PY if Path(_PROJECT_PY).exists() else sys.executable)
 
@@ -54,7 +69,9 @@ PYTEST_PY = os.environ.get('DROCAT_TEST_PYTHON') or (
 # excluded in competing(), so the suite never blocks on itself.
 COMPETITOR = re.compile(
     r'(?:[-/]m\s+pytest(?:\s|$)|(?<![\w./])pytest\s+tests|'
-    r'envs/drocat-4\.5\.0/bin/python)')
+    'envs/' + re.escape(_project_env_python().rsplit('/envs/', 1)[-1]
+                        .removesuffix('/bin/python'))
+    + '/bin/python)')
 
 IDLE_SERVER = re.compile(
     r'(?:ui[/\\]app\.py|-m http\.server|wait_then_full_suite|'
