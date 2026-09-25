@@ -6256,7 +6256,8 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
     '''Add traversal probability, connection ratio, and layer information to the connection table
     
     UNIFIED ENTRY POINT: dispatches to the pandas implementation (below) or the
-    Polars implementation (``statvis_polars.EnrichConnectionTablePolars``)
+    Polars implementation (``EnrichConnectionTablePolars`` — merged into
+    this module from the former statvis_polars)
     based on ``engine`` / the input type. Both engines produce the same
     type-level and group-level output schema (type_pre/type_post or
     custom_group_pre/custom_group_post, weight, connection_ratio,
@@ -7856,6 +7857,32 @@ def prepare_connection_data(conn_data, level='type'):
     
     return df_agg
 
+def _keyword_filter_batch(df_final, keyword_in_path_to_remove):
+    """Split path rows into (excluded, kept) by literal keyword substrings.
+
+    ``keyword_in_path_to_remove=None`` (or empty) is a no-op — callers hand
+    the NORMALIZED keyword filter here (coana's 'None' sentinel must never
+    arrive as a literal keyword: it would drop every path whose type label
+    contains the substring "None", F-PF-001).
+    """
+    excluded = pl.DataFrame()
+    if keyword_in_path_to_remove:
+        if isinstance(keyword_in_path_to_remove, str):
+            keywords = [keyword_in_path_to_remove]
+        else:
+            keywords = keyword_in_path_to_remove
+
+        # Build filter expression
+        filter_expr = pl.lit(False)
+        for kw in keywords:
+            filter_expr = filter_expr | pl.col('path').str.contains(kw,
+                                                                    literal=True)
+
+        excluded = df_final.filter(filter_expr)
+        df_final = df_final.filter(~filter_expr)
+    return excluded, df_final
+
+
 
 def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_remove=None,
                          type_to_label_map=None):
@@ -7990,20 +8017,8 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
     # Here we can keep 'path_nodes' as the list column.
     
     # 7. Filter keywords
-    excluded = pl.DataFrame()
-    if keyword_in_path_to_remove:
-        if isinstance(keyword_in_path_to_remove, str):
-            keywords = [keyword_in_path_to_remove]
-        else:
-            keywords = keyword_in_path_to_remove
-            
-        # Build filter expression
-        filter_expr = pl.lit(False)
-        for kw in keywords:
-            filter_expr = filter_expr | pl.col('path').str.contains(kw, literal=True)
-            
-        excluded = df_final.filter(filter_expr)
-        df_final = df_final.filter(~filter_expr)
+    excluded, df_final = _keyword_filter_batch(df_final,
+                                               keyword_in_path_to_remove)
         
     # Select and rename columns to match statvis output
     # statvis output: path_str (list), path (str), weights, probabilities, ratios, min_weight, path_prob, min_ratio, length

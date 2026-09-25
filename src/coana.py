@@ -526,7 +526,10 @@ def _parse_path_nodes(path_str_val):
         return path_str_val
     try:
         return ast.literal_eval(path_str_val)
-    except (ValueError, SyntaxError):
+    except Exception:
+        # ValueError/SyntaxError for malformed literals; TypeError for
+        # unhashable dict/set keys (e.g. '{[1]: 2}'). Any parse failure
+        # degrades to the '->' split — never propagates, never executes.
         return path_str_val.split('->')
 
 
@@ -553,6 +556,7 @@ def _findallpath_cache_key(
     min_traversal_probability: float,
     exclude_intra_type_connections: bool,
     drop_untyped: bool = True,
+    hemisphere_filter: str = 'both',
 ) -> str:
     """
     Build the FindAllPath graph-cache key.
@@ -560,18 +564,22 @@ def _findallpath_cache_key(
     The key must include every parameter that changes which edges the
     graph contains - not only the topology (source/target/interlayer) but
     also the connection filters applied during fetching (filter_by level,
-    ratio/probability thresholds, intra-type exclusion, hemisphere mode,
-    untyped-neuron drop). Otherwise a later run with different filters
-    would silently reuse a graph built under different filter conditions.
+    ratio/probability thresholds, intra-type exclusion, hemisphere mode —
+    BOTH ``separate_hemispheres`` and ``hemisphere_filter`` (the left/
+    right edge filter runs at fetch time even when hemisphere-aware
+    splitting is off) — and the untyped-neuron drop). Otherwise a later
+    run with different filters would silently reuse a graph built under
+    different filter conditions.
 
     ``max_interlayer=None`` (FindShortestPath) omits the depth from the
-    key: shortest runs stop discovery early, so the fetched depth is a
-    result, not a query parameter; cache entries carry a ``'depth'``
-    field instead and are extended when a deeper fetch is needed.
+    key, but note that shortest mode never READS or WRITES this cache at
+    all: its target-rooted discovery (``use_cached_graph`` is only armed
+    after discovery) makes forward-graph entries non-interchangeable, so
+    the depth field on existing entries is informational only.
     """
     source_hash = _id_set_digest(source_ID)
     target_hash = _id_set_digest(target_ID)
-    hemi_flag = 'hemi' if separate_hemispheres else 'nohemi'
+    hemi_flag = f"hemi-{hemisphere_filter}" if separate_hemispheres else f"nohemi-{hemisphere_filter}"
     filters = (
         f"{filter_by}|{min_ratio}|{min_traversal_probability}|"
         f"{int(bool(exclude_intra_type_connections))}|"
@@ -1293,8 +1301,9 @@ def fit_edge_budget(conn_layers, budget, sources, targets, bound,
             (weight, closed_rows, _time.perf_counter() - p0))
         return closed, closed_rows, _pstats.get('strongest_retained')
 
-    # One-shot landing (quickselect), canonicalized to the strongest tier
-    # weight it admits — E(t_raw) == E(landing_w), so probes are tier weights.
+    # One-shot landing (quickselect), canonicalized to the weakest tier
+    # at or above t_raw — that tier reproduces the same cone
+    # (E(t_raw) == E(landing_w)), so probes are tier weights.
     kth = total - budget
     w1 = float(np.partition(all_weights, kth)[kth])
     t_raw = w1 + 1.0
@@ -1381,7 +1390,10 @@ def fit_edge_budget(conn_layers, budget, sources, targets, bound,
         return conn_layers, stats
 
     if hi_idx is not None:
-        stats['landing'] = distinct[hi_idx]
+        # hi_idx may be the virtual end-of-list boundary (the tail beyond the
+        # bracket was never probed); the honest landing tier is then the
+        # weakest real tier, not distinct[len(distinct)].
+        stats['landing'] = distinct[min(hi_idx, len(distinct) - 1)]
     stats['floor'] = best_t
     stats['edges_after'] = best_rows
     stats['dropped'] = total - best_rows
@@ -13426,7 +13438,9 @@ class FindNeuronConnection:
         for p in iterator:
             seen.add(tuple(node_label(n) for n in p))
         out = []
-        for seq in seen:
+        # Deterministic order (set iteration is hash-order dependent): the
+        # streaming type-path writer emits in input order.
+        for seq in sorted(seen):
             if seq[0] not in source_set or seq[-1] not in target_set:
                 continue
             if all((seq[i], seq[i + 1]) in kept_edges
@@ -13614,11 +13628,31 @@ class FindNeuronConnection:
                 f'- [hemisphere] hemisphere_filter={self.hemisphere_filter}: only '
                 f'neurons of that hemisphere were used.'
             )
+            if getattr(self, 'keep_only_hemisphere_conserved_connections', False) \
+                    and getattr(self, 'separate_hemispheres', False):
+                notes.append(
+                    '- [hemisphere] WARNING: hemisphere_filter!=both together '
+                    'with keep_only_hemisphere_conserved_connections removes '
+                    'the mirror hemisphere at fetch time, so no edge can have '
+                    'a conserved counterpart — expect empty results by '
+                    'construction.'
+                )
         if getattr(self, 'keep_only_hemisphere_conserved_connections', False):
-            notes.append(
-                '- [hemisphere] keep_only_hemisphere_conserved_connections=True: '
-                'only edges conserved between hemispheres were kept.'
-            )
+            if getattr(self, 'separate_hemispheres', False):
+                notes.append(
+                    '- [hemisphere] keep_only_hemisphere_conserved_connections=True: '
+                    'only edges conserved between hemispheres were kept.'
+                )
+            else:
+                # The filter itself only runs with hemisphere-aware splitting
+                # (all four gate sites require separate_hemispheres); the
+                # note must not claim filtering that did not happen.
+                notes.append(
+                    '- [hemisphere] keep_only_hemisphere_conserved_connections=True '
+                    'was IGNORED: the conserved-edge filter requires '
+                    'separate_hemispheres=True. Edges were NOT filtered for '
+                    'hemisphere conservation.'
+                )
         if getattr(self, 'symmetry_analysis', False):
             notes.append(
                 '- [symmetry] symmetry_analysis=True: ipsilateral/contralateral '
@@ -15294,8 +15328,20 @@ class FindNeuronConnection:
                 for line in extra_lines:
                     f.write(f'{line}\n')
                 f.write('\n')
-        except Exception:
-            pass
+        except Exception as exc:
+            # The re-stamp carries the FINAL tau/floor/applied-threshold
+            # block; a silent failure would leave the pre-enumeration
+            # snapshot claiming provenance that was never recorded.
+            self._vprint(
+                f'⚠️  final metadata re-stamp failed for '
+                f'{self.allpath_folder}: {exc!r}', level='always')
+            try:
+                marker = os.path.join(self.allpath_folder,
+                                      '.provenance_incomplete')
+                with open(marker, 'w', encoding='utf-8') as mf:
+                    mf.write(f'metadata re-stamp failed: {exc!r}\n')
+            except OSError:
+                pass
 
     def FindAllPathMultiThreshold(self, thresholds, find_bodyId_path=True,
                                   forward_only=True, use_graph_cache=True,
@@ -15326,6 +15372,12 @@ class FindNeuronConnection:
                 'FindAllPathMultiThreshold requires at least one threshold')
 
         t0 = thresholds[0]
+        # Snapshot the caller's knobs: replay orchestration mutates them
+        # (per-slice thresholds, StrongestFirst unification, auto budget),
+        # and a later call on the same instance must not inherit leftovers.
+        _restore_min_syn = self.min_synapse_num
+        _restore_budget = self.max_paths_bodyid
+        _restore_pathfinding = getattr(self, 'pathfinding', None)
         self.min_synapse_num = t0
         # Directive: unify the pipeline — the replay orchestrator ALWAYS
         # enumerates via the StrongestFirst core (the bottleneck-sorted
@@ -15384,9 +15436,15 @@ class FindNeuronConnection:
 
         if capture is None:
             results['_fallback'] = True
+            self.min_synapse_num = _restore_min_syn
+            self.max_paths_bodyid = _restore_budget
+            self.pathfinding = _restore_pathfinding
             return results
 
         if len(thresholds) == 1:
+            self.min_synapse_num = _restore_min_syn
+            self.max_paths_bodyid = _restore_budget
+            self.pathfinding = _restore_pathfinding
             return results
 
         import numpy as np
@@ -15642,7 +15700,10 @@ class FindNeuronConnection:
                 f'= {eff_tau:g} — output materialized as minsyn_{canon_int}; '
                 f'the intermediate minsyn_{t0} folder was removed.',
                 level='always')
-        
+
+        self.min_synapse_num = _restore_min_syn
+        self.max_paths_bodyid = _restore_budget
+        self.pathfinding = _restore_pathfinding
         return results
 
     def _find_paths_core(self, path_mode, find_bodyId_path=True, forward_only=True,
@@ -15853,6 +15914,8 @@ class FindNeuronConnection:
             self.min_traversal_probability,
             self.exclude_intra_type_connections,
             drop_untyped=getattr(self, 'drop_untyped', True),
+            hemisphere_filter=str(getattr(self, 'hemisphere_filter', 'both')
+                                  or 'both'),
         )
         
         # Shortest mode now owns a target-rooted discovery direction.  Do not
@@ -17436,9 +17499,12 @@ class FindNeuronConnection:
             node_ids = self._extract_nodes_from_path_graph(conn_inpath)
 
             # Fallback: use all nodes from searched layers if no paths found
-            if not node_ids and 'conn_layers' in locals():
+            # (the layer tables arrive as the ``all_connections`` parameter —
+            # the old guard looked for a ``conn_layers`` local that never
+            # existed, so this fallback was dead code).
+            if not node_ids:
                 layer_nodes = []
-                for layer_conn in conn_layers:
+                for layer_conn in all_connections:
                     try:
                         if isinstance(layer_conn, pl.DataFrame):
                             if layer_conn.is_empty():
@@ -18048,7 +18114,7 @@ class FindNeuronConnection:
                 excluded_path=output_path_type_excluded_csv,
                 real_layer_map=real_layer_map_type if forward_only else None,
                 level='type',
-                keyword_in_path_to_remove=self.keyword_in_path_to_remove,
+                keyword_in_path_to_remove=self._normalized_keyword_filter(),
                 verbose=(self.verbose_mode != 'silent')
             )
             
