@@ -5656,7 +5656,15 @@ class TestComponents:
             if type(el).__name__ == "Button"
             and getattr(el, "_props", {}).get("icon") == "close"
         )
-        click = next(l for l in close._event_listeners.values() if l.type == "click")
+        # The prune rides the framework path: the .stop modifier is parsed by
+        # EventListener.to_dict into Vue withModifiers (which stops DOM
+        # propagation before the default emitter ships the click), and no
+        # hand-written js_handler sits on this path.
+        click = next(l for l in close._event_listeners.values()
+                     if l.type == "click.stop")
+        assert click.to_dict()["type"] == "click"
+        assert click.to_dict()["modifiers"] == ["stop"]
+        assert click.to_dict()["js_handler"] is None
         click.handler(None)
         assert "5813" not in hs.recent()
 
@@ -6447,7 +6455,7 @@ class TestComponents:
         # Built into the row and only hidden by CSS, so the reveal rule reaches it.
         assert "drocat-suggest-remove" in button._classes
         next(listener for listener in button._event_listeners.values()
-             if listener.type == "click").handler(SimpleNamespace())
+             if listener.type == "click.stop").handler(SimpleNamespace())
         assert box.get_value() == ("exact", ["aMe12"])
         # Pruning the last entry leaves nothing to offer, so the list closes and
         # rebuilds empty rather than leaving the pruned row mounted behind it.

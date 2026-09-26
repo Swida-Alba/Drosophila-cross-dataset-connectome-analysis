@@ -391,18 +391,27 @@ window.drocatSuggest = {
 // though the overlay div is created later (a IIFE that runs in <head> would find
 // the overlay already gone/not-yet-rendered and skip binding, leaving the items
 // unclickable). A document-level listener catches every .drocat-suggest-item.
+// Scoped to THIS overlay, in both branches: the shared classes also dress the
+// query box's rows and history prune (one reveal rule, one row contract). A
+// capture-phase stopPropagation below document level runs before the query
+// box's own click handlers, so an unscoped match swallowed every prune click
+// there — the event died at the document and the button's own handler never
+// ran, making "Remove from query history" a silent no-op while this overlay's
+// remove(null) fired harmlessly in its place.
 if (!window.drocatSuggestDelegated) {
   window.drocatSuggestDelegated = true;
   document.addEventListener('click', function (ev) {
+    var o = document.getElementById('drocat-suggest-overlay');
+    if (!o || o.style.display === 'none') return;
     var rem = ev.target && ev.target.closest ? ev.target.closest('.drocat-suggest-remove') : null;
-    if (rem) {
+    if (rem && o.contains(rem)) {
       ev.preventDefault();
       ev.stopPropagation();
       window.drocatSuggest.remove(rem.getAttribute('data-value'));
       return;
     }
     var t = ev.target && ev.target.closest ? ev.target.closest('.drocat-suggest-item') : null;
-    if (t) {
+    if (t && o.contains(t)) {
       ev.preventDefault();
       ev.stopPropagation();
       window.drocatSuggest.pick(t.getAttribute('data-value'));

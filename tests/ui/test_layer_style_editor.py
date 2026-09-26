@@ -762,6 +762,16 @@ class TestEditorHandle:
         # keyboard meaning, so neither may add to an option's accessible name.
         assert 'aria-hidden="true">check<' in js
         assert 'drocat-suggest-remove" aria-hidden="true"' in js
+        # The delegated capture listener acts only on ITS OWN overlay: the
+        # shared classes also dress the query box's rows and history prune,
+        # and an unscoped capture-phase stopPropagation runs before that
+        # button's own click handler — it killed every query-box prune click
+        # at the document ("Remove from query history" became a no-op) while
+        # this overlay's remove(null) fired harmlessly in its place.
+        assert "getElementById('drocat-suggest-overlay')" in js
+        assert "o.style.display === 'none'" in js
+        assert "o.contains(rem)" in js
+        assert "o.contains(t)" in js
         # A marked row says out loud what its next click does, because a marked
         # history row also carries a prune x that means something else. The text
         # arrives as a JSON literal substituted at build time.

@@ -1870,7 +1870,7 @@ def neuron_list_input(
 
             def _remove_history_value(value: str):
                 # Removing an item is deliberately independent from picking
-                # it. The client-side stopPropagation below keeps the parent
+                # it. The button's click.stop modifier keeps the parent
                 # q-item from committing the value before this rerender.
                 _remove(value)
                 _show_history(query)
@@ -2055,13 +2055,17 @@ def neuron_list_input(
                         # row is hovered or focused.
                         remove_button.classes(REMOVE_CLASS)
                         remove_button.tooltip("Remove from query history")
+                        # The prune is a separate action from the row pick, so
+                        # the click must not reach the row's on_click. The
+                        # .stop modifier rides NiceGUI's own modifier parsing
+                        # (EventListener.to_dict -> Vue withModifiers), which
+                        # stops DOM propagation before the default emitter
+                        # ships the event; no hand-written js_handler sits on
+                        # this path. The handler ignores the emitted click —
+                        # the value rides the closure.
                         remove_button.on(
-                            "click",
+                            "click.stop",
                             lambda _event, v=value: remove_handler(v),
-                            js_handler=(
-                                "(event) => { event.stopPropagation(); "
-                                "emit(null); }"
-                            ),
                         )
 
         def _on_suggest_input(event):
