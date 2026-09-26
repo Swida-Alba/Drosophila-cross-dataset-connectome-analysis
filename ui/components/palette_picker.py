@@ -12,10 +12,15 @@ Visual color palette tools for DROCAT.
   string. Custom entries are reordered and removed directly in the horizontal
   preview row.
 - ``color_swatch_picker``: single-color swatches with a custom color input.
+- ``category_color_editor``: one labelled color row per named category, for
+  renders whose color is a property of the category rather than of a layer
+  position. Each row is the Skeleton layer editor's color cell — a swatch button
+  that opens the shared ``color_picker_popup`` (palettes + preview + opt-in
+  alpha) beside an editable value.
 """
 
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from nicegui import ui
 
@@ -1090,4 +1095,158 @@ def color_swatch_picker(
 
     container.value = state["value"]
     container.get_value = lambda: state["value"]
+    return container
+
+
+def category_color_editor(
+    label: str,
+    defaults: Dict[str, str],
+    *,
+    hints: Optional[Dict[str, str]] = None,
+    columns: int = 2,
+) -> ui.element:
+    """One labelled color row per category, seeded from the pipeline's own map.
+
+    This is the shape needed when a color is a property of a CATEGORY rather
+    than of a layer position: the caller wants a ``name -> color`` dict back and
+    every row has to say what it paints, which an ordered ``palette_editor``
+    (position-indexed, unnamed) cannot express.
+
+    ``defaults`` must come from the backend that consumes the result, so the UI
+    never owns a second copy of the palette.
+
+    Each row is the same color cell the Skeleton tab's advanced layer editor
+    uses: a swatch button that PREVIEWS the current color and opens the shared
+    ``color_picker_popup`` (Bokeh palettes with strip previews, an inline color
+    grid, and opt-in alpha), beside an editable value that commits on blur or
+    Enter. One popup serves every row through a pending-category pointer, as the
+    layer editor does, so a dozen rows do not build a dozen dialogs.
+
+    A color stays alpha-free unless the picker's Override alpha is used; an
+    explicit alpha then overrides the global opacity for that category alone.
+
+    The returned container gains ``get_colors()`` (the live map),
+    ``get_changed()`` (only the categories the user moved off the default),
+    ``get_default_colors()``, ``reset_to_defaults()`` and ``pick_popup``.
+    """
+    from .color_picker_popup import color_picker_popup
+
+    hints = dict(hints or {})
+    original = {str(k): str(v) for k, v in defaults.items()}
+    state = {"colors": dict(original)}
+    rows: List[Dict[str, object]] = []
+    by_key: Dict[str, Dict[str, object]] = {}
+
+    with ui.column().classes("w-full gap-1") as container:
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label(label).classes("drocat-mini-label")
+            ui.button(
+                icon="restart_alt",
+                on_click=lambda: reset_all(),
+            ).props("flat dense size=sm").tooltip(
+                "Restore every category to the pipeline's own color")
+
+        def _apply(key, raw, *, from_picker=False):
+            """Validate and store one category color, refreshing its row."""
+            row = by_key[key]
+            raw = str(raw or "").strip()
+            if not raw or raw.lower() == original[key].lower():
+                state["colors"][key] = original[key]
+            else:
+                try:
+                    # Store the user's spelling only if the renderer's own
+                    # parser accepts it; otherwise the row reverts.
+                    standardize_color(raw)
+                except (TypeError, ValueError) as exc:
+                    ui.notify(f"{key}: {exc}", type="warning")
+                    state["colors"][key] = original[key]
+                else:
+                    state["colors"][key] = raw
+            current = state["colors"][key]
+            row["swatch"].style(f"background:{current}")
+            if from_picker:
+                # Only the picker writes back into the field: doing it from the
+                # field's own commit handler would re-enter it.
+                row["value"].set_value(current)
+            moved = current.lower() != original[key].lower()
+            row["was"].text = f"was {original[key]}" if moved else ""
+            row["was"].set_visibility(moved)
+            container.value = dict(state["colors"])
+
+        # One shared picker for every row (the layer editor's pattern), keyed by
+        # the label so two editors on one page cannot collide on the DOM id.
+        pending = {"key": None}
+        picker_id = "card-category-color-editor-picker-" + re.sub(
+            r"[^a-z0-9]+", "-", str(label).lower()).strip("-")
+        popup = color_picker_popup(
+            value=next(iter(original.values()), "#145cff"), card_id=picker_id)
+
+        def _submit(color):
+            key = pending["key"]
+            if key is not None:
+                _apply(key, color, from_picker=True)
+
+        popup.on_submit(_submit)
+
+        def _open(key):
+            pending["key"] = key
+            popup.open(state["colors"][key])
+
+        with ui.grid(columns=columns).classes("w-full items-center gap-x-4"):
+            for name in original:
+                with ui.row().classes("w-full items-center no-wrap gap-2"):
+                    with ui.column().classes("gap-0 w-40 shrink-0"):
+                        ui.label(name).classes("text-caption")
+                        was = ui.label("").classes(
+                            "text-caption opacity-70").set_visibility(False)
+                    # The layer editor's own cell markup and CSS: the button's
+                    # background IS the swatch (its content is hidden once a
+                    # value is set) and the field flexes beside it.
+                    with ui.row().classes(
+                            "items-center no-wrap drocat-color-cell flex-grow"):
+                        swatch = ui.button().props(
+                            "flat dense round size=xs").classes(
+                            "drocat-color-cell-picker "
+                            "drocat-color-cell-picker-set")
+                        swatch.style(f"background:{original[name]}")
+                        swatch.tooltip(
+                            "Pick a color — palettes, alpha, preview")
+                        swatch.on("click", lambda _e, k=name: _open(k))
+                        value = ui.input(value=original[name]).props(
+                            "dense borderless hide-bottom-space")
+                row = {"key": name, "swatch": swatch, "value": value,
+                       "was": was}
+                rows.append(row)
+                by_key[name] = row
+                if name in hints:
+                    value.tooltip(hints[name])
+                # Commit on blur / Enter exactly like the layer editor's cell,
+                # not on every keystroke.
+                value.on("blur", lambda _e, k=name: _apply(
+                    k, by_key[k]["value"].value))
+                value.on("keydown.enter", lambda _e, k=name: _apply(
+                    k, by_key[k]["value"].value))
+
+        ui.label(
+            "Colors stay alpha-free unless you opt into Override alpha in the "
+            "picker; an explicit alpha then overrides the global opacity for "
+            "that category alone."
+        ).classes("text-caption drocat-muted")
+
+        def reset_all():
+            for row in rows:
+                key = str(row["key"])
+                state["colors"][key] = original[key]
+                row["swatch"].style(f"background:{original[key]}")
+                row["value"].set_value(original[key])
+                row["was"].set_visibility(False)
+            container.value = dict(state["colors"])
+
+    container.pick_popup = popup
+    container.rows = by_key
+    container.get_colors = lambda: dict(state["colors"])
+    container.get_changed = lambda: {
+        k: v for k, v in state["colors"].items() if v != original[k]}
+    container.get_default_colors = lambda: dict(original)
+    container.reset_to_defaults = reset_all
     return container

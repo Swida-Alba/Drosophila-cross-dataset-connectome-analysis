@@ -47,6 +47,7 @@ from comparison.mapping_validation import (  # noqa: E402
     prep_target_stats,
     run_file_path,
     scan_source,
+    scene_styling_record,
 )
 from comparison.mapping_validation_visualize import (  # noqa: E402
     assign_invader,
@@ -2634,6 +2635,197 @@ def test_rev312_expansion_categories_have_colors():
     assert missing == [], f'expansion categories without a color: {missing}'
 
 
+# --------------------------------------------------------------------------
+# Stage-4 scene styling (the UI's collapsed Advanced Visualization panel)
+# --------------------------------------------------------------------------
+def test_scene_colors_default_to_the_pipeline_palette():
+    """No overrides -> the exact built-in map, so a run that never touched the
+    panel renders byte-identically to before the dicts existed."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, UNASSIGNED_COLOR, resolve_scene_colors)
+    logs = []
+    assert resolve_scene_colors(None, logs.append) == CATEGORY_COLORS
+    assert resolve_scene_colors({}, logs.append) == CATEGORY_COLORS
+    assert logs == []
+    # `unassigned` is one entry the editor paints, not a loose constant.
+    assert UNASSIGNED_COLOR == CATEGORY_COLORS['unassigned']
+
+
+def test_scene_color_override_follows_its_aliases():
+    """A recolor must not leave a legacy alias behind wearing the old color —
+    that is how `relative` vs `relatives` once silently mis-rendered."""
+    from comparison.mapping_validation_visualize import resolve_scene_colors
+    out = resolve_scene_colors({'relative': 'red', 'candidates': '#0000ff',
+                                'query': 'rebeccapurple'})
+    assert out['relatives'] == out['relative'] == 'red'
+    assert out['fill'] == out['candidates'] == '#0000ff'
+    # out-map query is the same source population as query (COLOR_ALIASES).
+    assert out['out-map query'] == out['query'] == 'rebeccapurple'
+    # and an untouched bin keeps its own color.
+    assert out['matched'] == '#17becf'
+
+
+def test_unparseable_scene_color_keeps_the_default_and_logs_once():
+    """Stage 4 swallows a raised exception by losing EVERY scene, so a bad
+    color may only cost its own category — and must say so in the run log."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, resolve_scene_colors)
+    logs = []
+    out = resolve_scene_colors({'pooling': 'not-a-color',
+                                'verified': '', 'borderline': None},
+                               logs.append)
+    assert out['pooling'] == CATEGORY_COLORS['pooling']
+    assert out['verified'] == CATEGORY_COLORS['verified']
+    assert out['borderline'] == CATEGORY_COLORS['borderline']
+    assert len(logs) == 1 and 'pooling' in logs[0]
+
+
+def test_unknown_scene_category_is_named_not_silently_ignored():
+    """A typo parses as a color, merges, and is never looked up — the bin keeps
+    its default and the edit is silently wasted. It must cost a log line."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, resolve_scene_colors)
+    logs = []
+    out = resolve_scene_colors({'matchd': '#ff0000', 'matched': '#00ff00'},
+                               logs.append)
+    assert out['matched'] == '#00ff00'                 # the real key still lands
+    assert 'matchd' not in out                         # the typo never enters
+    assert len(logs) == 1 and 'matchd' in logs[0]
+    # and the rejection is not a side effect of having a log: the provenance
+    # record calls this WITHOUT one, and an accepted typo there would publish a
+    # color the run never wore
+    assert 'matchd' not in resolve_scene_colors({'matchd': '#ff0000'})
+
+
+def test_editable_categories_cover_every_key_the_scene_looks_up():
+    """The UI's editable list plus COLOR_ALIASES must cover every category the
+    render path can color, or a bin exists that the panel cannot reach."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, COLOR_ALIASES, COLOR_EDITABLE_CATEGORIES)
+    aliased = {a for targets in COLOR_ALIASES.values() for a in targets}
+    reachable = set(COLOR_EDITABLE_CATEGORIES) | aliased
+    unreachable = [c for c in CATEGORY_COLORS if c not in reachable]
+    # `backward` is the one exception: reachable only through the pre-3.12
+    # build_invader_buckets, which the live render path no longer calls.
+    assert unreachable == ['backward'], unreachable
+    assert set(COLOR_EDITABLE_CATEGORIES) <= set(CATEGORY_COLORS)
+
+
+def _scene_cfg(scene_viz=None):
+    """A real config carrying only what the scene merge reads (which also
+    proves the two new fields are accepted by the constructor the UI runner
+    calls)."""
+    return MappingValidationConfig(
+        source_dataset='flywire_FAFB_v783', target_dataset='male-cns:v1.0',
+        query_types=['s-CPDN3C'], scene_viz=scene_viz)
+
+
+def test_scene_viz_cannot_unpin_what_the_scene_correctness_depends_on():
+    """The legend tree, the coordinate template, the synapse skip and the layer
+    identity are not offered to a caller — and a caller that sends them anyway
+    is ignored rather than crashing the run's scenes."""
+    from comparison.mapping_validation_visualize import (
+        SCENE_PINNED_KWARGS, scene_render_kwargs)
+    sent = {k: 'X' for k in SCENE_PINNED_KWARGS}
+    sent.update({'legend_mode': 'layer', 'brain_mesh': 'BANC',
+                 'skip_synapse': False, 'skeleton_mode': 'tube'})
+    out = scene_render_kwargs(_scene_cfg(sent))
+    # only the tube request survives, plus the fraction the tube guard injects
+    assert out == {'skeleton_mode': 'tube',
+                   'skeleton_mesh_simplification': 0.9}
+    assert not set(out) & set(SCENE_PINNED_KWARGS)
+
+
+def test_scene_viz_drops_keys_that_are_not_scene_knobs():
+    """neuron_alpha has one owner (the config field), the scene count is Max
+    scenes, and the panel's bookkeeping must not reach the renderer."""
+    from comparison.mapping_validation_visualize import (
+        SCENE_DROPPED_KEYS, scene_render_kwargs)
+    out = scene_render_kwargs(_scene_cfg({k: 'X' for k in SCENE_DROPPED_KEYS}))
+    assert out == {}
+
+
+def test_scene_viz_resolves_the_method_default_simplification():
+    """The shared panel sends None for "use the method default". Custom
+    (injected) layers bypass the renderer's fetch-time default path, and a None
+    that reaches _effective_render_simplification raises — which stage 4 would
+    swallow by losing every scene. Resolve it at this boundary instead."""
+    from comparison.mapping_validation_visualize import scene_render_kwargs
+    out = scene_render_kwargs(_scene_cfg({
+        'skeleton_mode': 'tube', 'skeleton_mesh_simplification': None}))
+    assert out['skeleton_mesh_simplification'] == 0.9
+    # an explicit fraction stands
+    out = scene_render_kwargs(_scene_cfg({
+        'skeleton_mesh_simplification': 0.4}))
+    assert out['skeleton_mesh_simplification'] == 0.4
+
+
+def test_scene_viz_tube_without_a_fraction_still_gets_one():
+    """The renderer's own `skeleton_mesh_simplification` default is None, and a
+    None reaching `_effective_render_simplification` for custom (injected)
+    layers raises — which stage 4 swallows by losing every scene. A caller that
+    asks for tube without a fraction (the CLI's own documented example) must
+    therefore still be given the method default, and line mode must stay
+    untouched so an unset run remains byte-identical."""
+    from comparison.mapping_validation_visualize import scene_render_kwargs
+    out = scene_render_kwargs(_scene_cfg({'skeleton_mode': 'tube'}))
+    assert out['skeleton_mesh_simplification'] == 0.9
+    # the fallback is the RENDERER's own default pipeline, not morphology's
+    # 'fine' — an untouched scene passed neither key, so 'fast'/0.90 is what
+    # was actually in force before any of these knobs existed.
+    import dataclasses
+    from visualize_skeleton import VisualizeSkeleton
+    default_pipeline = next(
+        f.default for f in dataclasses.fields(VisualizeSkeleton)
+        if f.name == 'neuprint_skeleton_pipeline')
+    from comparison.mapping_validation_visualize import _DEFAULT_SCENE_PIPELINE
+    assert _DEFAULT_SCENE_PIPELINE == default_pipeline
+    # an explicit fraction is never overwritten by the guard
+    out = scene_render_kwargs(_scene_cfg({'skeleton_mode': 'tube',
+                                          'skeleton_mesh_simplification': 0.1}))
+    assert out['skeleton_mesh_simplification'] == 0.1
+    # line mode builds no neuron mesh, so nothing is injected
+    assert scene_render_kwargs(_scene_cfg({'skeleton_mode': 'line'})) == {
+        'skeleton_mode': 'line'}
+    assert 'skeleton_mesh_simplification' not in scene_render_kwargs(
+        _scene_cfg({'skeleton_mode': 'line'}))
+
+
+def test_scene_viz_unset_sends_the_renderer_nothing():
+    """The whole feature is inert by default: an unset run passes no extra
+    kwargs at all, so the scene renders exactly as it did pre-panel."""
+    from comparison.mapping_validation_visualize import scene_render_kwargs
+    assert scene_render_kwargs(_scene_cfg(None)) == {}
+    assert scene_render_kwargs(_scene_cfg({})) == {}
+
+
+def test_scene_styling_record_publishes_what_the_run_wore():
+    """`parameters.json` is a run's only provenance (it records no argv), so the
+    scene look it names must be the one the pages actually wear: the panel's
+    "method default" None resolved to its number, and a recolor visible on its
+    legacy alias too. Recording the raw config would understate both."""
+    def _cfg(**kw):
+        return MappingValidationConfig(
+            source_dataset='flywire_FAFB_v783', target_dataset='male-cns:v1.0',
+            query_types=['t'], **kw)
+    rec = scene_styling_record(_cfg(
+        visualize=True,
+        scene_viz={'skeleton_mode': 'tube',
+                   'skeleton_mesh_simplification': None},
+        scene_category_colors={'relative': 'red'}))
+    assert rec['scene_viz']['skeleton_mesh_simplification'] == 0.9
+    assert rec['scene_category_colors']['relative'] == 'red'
+    assert rec['scene_category_colors']['relatives'] == 'red'
+    # an untouched run still records the effective palette, not a bare None
+    plain = scene_styling_record(_cfg(visualize=True))
+    assert plain['scene_viz'] == {}
+    assert plain['scene_category_colors']['matched'] == '#17becf'
+    # scenes off: there was no look to wear, so the raw config is the record
+    off = scene_styling_record(_cfg(visualize=False))
+    assert off == {'scene_viz': None, 'scene_category_colors': None}
+
+
+
 def test_rev312_mapper_gap_counts_follow_annotation_finalization():
     """The mapper-gap report (README `Mapper-gap evidence`) must count
     `(no_source)`/untyped CANDIDATES from the FINALIZED annotations —
@@ -3035,3 +3227,56 @@ def test_scene_planner_renders_every_parent_and_names_a_cap_drop():
     kept, dropped = plan_scene_parents(parents, 2)
     assert [key[1] for key, _ in kept] == ['BIG', 'MID']
     assert dropped == ['SML']
+
+
+def test_an_empty_run_still_says_which_tree_it_ran_on(monkeypatch, tmp_path):
+    """A run that resolves no pairs used to reach `parameters.json` with NO
+    `input_fingerprint` at all: provenance was written by the stage-2 scan,
+    which such a run never reaches. Measured twice on the MCNS->FAFB attempts
+    of 2026-09-25/26 — both published an untraceable run folder, which is
+    backwards, because a run that failed to start is exactly the one a reader
+    has to place. The origin is recorded at stage 1 now, and a worktree that
+    moves mid-run keeps both revs instead of overwriting the first.
+
+    The matrix itself is the reason the second half matters: six runs against
+    the live shared tree published four different revs, and one of them moved
+    while it ran."""
+    import comparison.mapping_validation as mv
+    from types import SimpleNamespace
+
+    class Stub:
+        _fingerprint = mv.MappingValidator._fingerprint
+        _record_run_origin = mv.MappingValidator._record_run_origin
+        _record_scan_universe = mv.MappingValidator._record_scan_universe
+
+        def __init__(self):
+            self.lines = []
+
+        def log(self, msg=''):
+            self.lines.append(str(msg))
+
+    monkeypatch.setattr(mv, '_git_rev', lambda: 'aaaa111')
+    monkeypatch.setattr(mv, '_git_dirty', lambda: False)
+    monkeypatch.setattr(mv, '_store_identity', lambda path: {})
+    v = Stub()
+    v.cfg = SimpleNamespace(source_dataset='s', target_dataset='t')
+    v.profiler = SimpleNamespace(
+        _get_cache_parquet_path=lambda ds: tmp_path / ds)
+    v.mapper = object()
+
+    v._record_run_origin()
+    assert v.input_fingerprint == {'git_rev': 'aaaa111',
+                                   'git_dirty': False}, \
+        'a no-pair run must still carry the tree it ran on'
+
+    # a concurrent session commits into the live tree while this run works
+    monkeypatch.setattr(mv, '_git_rev', lambda: 'bbbb222')
+    monkeypatch.setattr(mv, '_git_dirty', lambda: True)
+    v._record_scan_universe([], [])
+    fp = v.input_fingerprint
+    assert fp['git_rev'] == 'bbbb222' and fp['git_dirty'] is True, \
+        'the primary keys name the tree that actually scored'
+    assert fp['git_rev_at_start'] == 'aaaa111'
+    assert fp['git_dirty_at_start'] is False
+    assert any('worktree moved' in line for line in v.lines), \
+        'a moving tree is a finding, not a silent overwrite'

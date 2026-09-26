@@ -1101,7 +1101,15 @@ and no other dataset's agreement is joined into this mode's pool.
     scoring frames, and the AUC gate record. Every evidence row carries
     its own `bar_kind`.
 *   **`parameters.json`**: every knob incl. `validation_mode` /
-    `mode_rank` and the cutoffs.
+    `mode_rank`, the cutoffs, and the scene look (`neuron_alpha` /
+    `scene_viz` / `scene_category_colors`). With scenes on these are the
+    EFFECTIVE values the pages wore, not an echo of what was sent:
+    `scene_viz` is the resolved kwargs the renderer received (`{}` when the
+    panel was left alone) and `scene_category_colors` is the full legend
+    palette, defaults included and alias-propagated, so a `relative` recolor
+    shows up on `relatives` too. With scenes off the record is what was sent,
+    usually `null`. Either way a run's legend colors, opacity and mesh style
+    are reproducible from its own provenance file.
 *   **`source_status.csv`**: backward `source-` status (matched /
     verified / borderline / unmatched, `source-` prefixed) per in-branch
     source bodyId, with its column rank and best pair — advisory, never a
@@ -1135,7 +1143,11 @@ and no other dataset's agreement is joined into this mode's pool.
     out-map expansion, backward source status, suspects verification
     (opt-in runs), morphology record, scenes, and the file index; a
     same-name-first & multivalue accounting card renders when the run
-    has such content; hover-glossary on every term, and every `!` log
+    has such content; the **Scenes** tab also prints the palette the run
+    actually wore (one chip per category, each recolored bin naming the
+    default it replaced, and no block at all for a run that recorded no
+    palette), because a scene's own tree legend was otherwise the only
+    place a recolor was visible; hover-glossary on every term, and every `!` log
     line reproduced verbatim in its Warnings section.
     Regenerable for any past run:
     `python -m comparison.mapping_validation_report <run_dir>`.
@@ -1158,6 +1170,10 @@ and no other dataset's agreement is joined into this mode's pool.
     leaf carries its reciprocal grade as a trailing `· high` / `· medium`
     / `· low` tag — an unscanned member keeps a bare leaf, so absence
     never reads as a negative. The panel is content-width, capped at 420px.
+    Each category's color is a per-category default from the pipeline's own
+    palette and is adjustable per category (the tab's Advanced Visualization
+    card, or `--scene-colors-json`); a recolor moves the whole bin across every
+    branch and parent in the run, which is what keeps two scenes comparable.
     Scene notes: root groups start **expanded one layer**; `sibling`
     layers start **hidden** (legend row present, traces off — one click
     restores); per parent type an **`out-map query · {type}`** branch

@@ -350,6 +350,16 @@ class MappingValidationConfig:
     # Revision 3.5 Issue 6c: debug self-check — after rendering, verify
     # each legend leaf's geometry bbox matches its labeled neuron's bbox.
     scene_selfcheck: bool = False
+    # The look of the stage-4 branch scenes, as two dicts rather than a dozen
+    # fields: the UI's collapsed Advanced Visualization panel is a
+    # ``VisualizeSkeleton``-keyed snapshot, and the scene colors are a
+    # category -> color map.  Both default None, and the UI runner drops None
+    # keys, so an unset run renders EXACTLY as it did before these existed.
+    # ``render_pair_scenes`` merges each over its own pinned kwargs — the
+    # legend tree, the coordinate template and the synapse skip are not
+    # offered to the caller because the scene's correctness depends on them.
+    scene_viz: Optional[Dict[str, Any]] = None
+    scene_category_colors: Optional[Dict[str, str]] = None
     # plumbing
     # Same-name-first suspects verification (plan-tmvev-samename-first-
     # consumers.md P3): advisory connectivity check of the rival
@@ -387,6 +397,34 @@ class MappingValidationConfig:
     def mode_at_least(self, mode: str) -> bool:
         rank = self.mode_rank
         return False if rank is None else rank >= MODE_RANK[str(mode).lower()]
+
+
+def scene_styling_record(cfg, log=None) -> Dict[str, Any]:
+    """The scene look as the run ACTUALLY wore it, for `parameters.json`.
+
+    Recording the raw config would understate the pages: `scene_viz` can carry
+    the panel's "use the method default" `None` while the scenes rendered at
+    0.95, and a category recolor propagates to its legacy aliases
+    (`relative` -> `relatives`, `query` -> `out-map query`). So the same two
+    helpers stage 4 uses resolve the record, which keeps the provenance and the
+    render from ever disagreeing.  With scenes off there was no look to wear, so
+    the raw config (usually `None`) stands.
+    """
+    raw = {'scene_viz': cfg.scene_viz,
+           'scene_category_colors': cfg.scene_category_colors}
+    if not cfg.visualize:
+        return raw
+    try:
+        from comparison.mapping_validation_visualize import (
+            resolve_scene_colors, scene_render_kwargs)
+    except Exception as exc:  # noqa: BLE001 - provenance never fails a run
+        if log:
+            log(f'[export] scene styling record unavailable ({exc}); '
+                'recording the raw config')
+        return raw
+    return {'scene_viz': scene_render_kwargs(cfg),
+            'scene_category_colors': resolve_scene_colors(
+                cfg.scene_category_colors)}
 
 
 @dataclass
@@ -5535,6 +5573,22 @@ class MappingValidator:
             fp = self.input_fingerprint = {}
         return fp
 
+    def _record_run_origin(self) -> None:
+        """Say WHICH TREE produced this run before anything is scored.
+
+        The fingerprint used to be written by the stage-2 scan, so a run that
+        resolved no pairs at all — the target dataset has no local data, or
+        the query is a lone held fan-out — reached `parameters.json` with no
+        provenance whatsoever: no `git_rev`, no `git_dirty`, nothing to place
+        the empty run. Measured twice on the MCNS->FAFB attempts of
+        2026-09-25/26, both of which published an untraceable run folder.
+        The runs that fail to start are the ones a reader most needs to
+        locate, so the origin is recorded at stage 1."""
+        self._fingerprint().update({
+            'git_rev': _git_rev(),
+            'git_dirty': _git_dirty(),
+        })
+
     def _record_scan_universe(self, vectors, target_stats) -> None:
         """Publish the inputs the scan scored against.
 
@@ -5544,9 +5598,23 @@ class MappingValidator:
         run folder alone, whether the two runs shared one or drifted (a
         concurrent profile merge moves the universe under a run)."""
         cfg = self.cfg
-        self._fingerprint().update({
-            'git_rev': _git_rev(),
-            'git_dirty': _git_dirty(),
+        fp = self._fingerprint()
+        # Stage 1 already named the tree the run started on. If the worktree
+        # moved since (a concurrent session commits into the live tree this
+        # queue runs against), keep BOTH: the primary keys say what scored the
+        # numbers, the `_at_start` pair says what the run believed at first.
+        start_rev, start_dirty = fp.get('git_rev'), fp.get('git_dirty')
+        rev, dirty = _git_rev(), _git_dirty()
+        if start_rev is not None and (start_rev != rev
+                                      or start_dirty != dirty):
+            fp['git_rev_at_start'] = start_rev
+            fp['git_dirty_at_start'] = start_dirty
+            self.log(f'    ! the worktree moved during this run: started '
+                     f'{start_rev}{"-dirty" if start_dirty else ""}, '
+                     f'scanning against {rev}{"-dirty" if dirty else ""}')
+        fp.update({
+            'git_rev': rev,
+            'git_dirty': dirty,
             'scanned_target_universe': len(target_stats),
             'target_vectors_built': len(vectors),
             'profile_cache_source': _store_identity(
@@ -5648,6 +5716,10 @@ class MappingValidator:
                            target_dataset=cfg.target_dataset,
                            query_types=list(cfg.query_types),
                            mode=cfg.effective_mode)
+
+        # Record the tree before stage 1 can end the run: an empty run must
+        # still be placeable.
+        self._record_run_origin()
 
         self.progress.emit('stage_start', stage='1', label='resolve')
         self.log(f'[stage 1] resolving type pairs '
@@ -6272,7 +6344,16 @@ class MappingValidator:
             'pooling_bar_top_n': self.cfg.pooling_bar_top_n,
             'pooling_max_morph_targets': self.cfg.pooling_max_morph_targets,
             'max_scenes': self.cfg.max_scenes,
+            # The Advanced Visualization panel is now the only writer of this
+            # knob, and the scene look is only reproducible from provenance if
+            # all three of its parts are recorded — opacity included.
+            'neuron_alpha': self.cfg.neuron_alpha,
             'scene_selfcheck': self.cfg.scene_selfcheck,
+            # The scene LOOK as this run actually wore it (see
+            # scene_styling_record): the resolved styling kwargs and the full
+            # effective category palette, so the legend swatches and mesh style
+            # of the shipped pages are reproducible from provenance alone.
+            **scene_styling_record(self.cfg, self.log),
             'morph_enabled': self.cfg.morph_enabled,
             'morph_auc_floor': self.cfg.morph_auc_floor,
             'suspicious_per_source_cap': self.cfg.suspicious_per_source_cap,

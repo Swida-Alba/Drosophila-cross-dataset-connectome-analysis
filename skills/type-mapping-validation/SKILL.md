@@ -135,6 +135,39 @@ the advanced gates mirror `MappingValidationConfig`. **Max Scenes defaults to 0
 then names every dropped parent in the run log and in the report's Branches
 tab, because a silently uncapped-out parent has no review scene at all.
 
+**How the scenes look is a config field, not a code edit.** The collapsed
+**Advanced Visualization** card (the shared
+`ui/components/skeleton_visualization_settings.py` panel, scoped) sends
+`scene_viz` (skeleton mode / background / simplification / export) and
+`scene_category_colors` (one color per legend category); `neuron_alpha` is
+written by its Neuron Opacity control and stays a first-class field with one
+owner. The color rows are the Skeleton layer editor's own cell shape:
+`ui/components/palette_picker.py::category_color_editor` renders one swatch
+preview per category and opens ONE shared `color_picker_popup` (Bokeh palettes,
+color grid, opt-in alpha) through a pending-category pointer — so 14 rows do not
+build 14 dialogs, and the popup's DOM id is derived from the editor label. An
+explicit alpha overrides the global opacity for that category alone.
+The dataclass defaults are `None` and the UI runner prunes `None` keys,
+so a CLI run without the scene flags renders exactly as it did before they
+existed. Stage 4 merges them in
+`resolve_scene_colors` / `scene_render_kwargs`, which refuse `legend_mode`,
+`brain_mesh`, `skip_synapse` and the layer identity — the tree legend, the
+coordinate frame and the injected layers are what the scene IS — and resolve the
+panel's `None` "method default" simplification here, because custom (injected)
+layers bypass the renderer's fetch-time default and a raw `None` raises. The same
+guard covers a caller that asks for `tube` with NO fraction at all (the renderer's
+own default is `None`): it is given the method default, because the alternative is
+stage 4 swallowing the exception and shipping a run with zero scenes. The CLI
+takes the same two objects as `--scene-viz-json` / `--scene-colors-json`.
+`parameters.json` records the look through `scene_styling_record`, which runs the
+SAME two helpers — so the provenance names what the pages wore (resolved
+fraction, full merged palette) rather than an echo of what was sent; with scenes
+off there was no look to wear and the raw config is recorded. A run's legend is
+therefore reproducible from its own
+provenance. Recoloring stays PER CATEGORY across the whole run (the
+`COLOR_ALIASES` map keeps `relatives` / `fill` / `out-map query` in step) —
+comparability across scenes is the point of the palette.
+
 ## 2. Read the outputs (always in this order)
 
 Three shipped tools do the mechanical part of this list — run them first, then
@@ -166,7 +199,10 @@ against — `local_data/` is disposable by design.
    levels (L1 claim / L2 provenance / L3 validation), branches, fills
    (with their per-row `reciprocal` column), the Reciprocal tab (stage
    5d, opt-in runs), out-map expansion, morphology record, scenes, file
-   index. Hover any
+   index. The **Scenes** tab prints the palette the run actually wore
+   (`_scene_palette_html`, one chip per `COLOR_EDITABLE_CATEGORIES` bin, each
+   recolored bin naming the default it replaced, no block when nothing was
+   recorded) — read it before concluding a scene's colors are the defaults. Hover any
    dotted term — or any table header, which explains its own column — for
    its definition; every `!` log line is reproduced
    verbatim in its Warnings section, which also quotes the stage-5d
@@ -397,6 +433,20 @@ against — `local_data/` is disposable by design.
   `valid_split_evidence` fan-outs stay listed in the panel as disclosure
   rows and never enter the count; before this rule `circadian_clock →
   banc_v888` read 205 in the panel against 198 here.
+- **The panel's `Out-map (in-map types)` column is NOT the `family` bin**: it
+  is the received types' own populations minus the bridge-claim set (a real
+  set difference, so a `full population` basis reads 0), published per
+  dataset as the deduped union and per matched type as a PER-RECEIVED-TYPE
+  figure summed over that row's accepted target types (a neuron an adopted
+  branch reaches anywhere in that type counts as claimed).
+  On `circadian_clock → male-cns:v1.0` it reads **15** (219 − 204, matching
+  `set_coverage.json`'s `mapped_target_set` / `in_branch_pool`) where
+  `expansion/family_candidates.csv` holds **11** rows — the pipeline lets a
+  morph-qualified candidate close a hole and the panel has no morphology —
+  and the per-branch rows sum to 17 because convergent sources name the same
+  neuron twice. Coverage evidence, never a second mapping. Its CSV twins are
+  the mapping export's `target_out_map` / `target_out_map_body_ids`
+  (extended form only; the legacy 20-column contract is untouched).
 - **Every parent type gets a scene by default** (`max_scenes = 0`): branch
   review is the point of the run, and the old default of 12 silently dropped
   the smallest-pool parents (9 of 21 on a circadian run). A positive cap
@@ -588,7 +638,11 @@ Estimation recipe (family mode recommended for gap questions):
 
 Reference totals (circadian_clock): 16 candidates (15 high + 1 medium) +
 10 family + 17 relatives = <= +43 beyond the 204 claims. For BANC: 3
-candidates (all native), claims 205/205 — the BANC gap is
+candidates (all native), claims 198 of a 200-type-population denominator
+(out-map 2, holes 0 — every BANC run on disk reads `in_branch_pool: 198`;
+the 205 that once appeared here was the pre-`1e377c8` panel headline, which
+also summed the 7 bodyIds of declined rivals and unadopted split fan-outs) —
+the BANC gap is
 annotation-bound, and BANC Track-A cannot confirm same-name pairs
 (positives score below the null; the calibration artifacts that showed it
 were kept under `local_data/morph-qualification-inspection/` and are no
@@ -671,14 +725,19 @@ them.
   and the type-mate bins belong to the nested modes. A pooling `matched` is
   therefore NOT the mapper's asserted tier, despite the shared name.
 - **The UI can start it; that does not make it a rung**: the mode row of
-  **Cross-Dataset › Type Validation** offers a fourth `Pooling` button with
-  its own gate card (`card-tmvev-pooling` — its controls are the admission bar
+  **Cross-Dataset › Type Validation** is TWO CARDS ON ONE ROW — the nested
+  ladder's three buttons in `card-tmvev-mode` ("Validation Mode") and
+  `Pooling` alone in `card-tmvev-mode-pooling` ("Parallel mode") beside them,
+  because the seam between the cards is what says the fourth is not one more
+  rung. Selecting it reveals its own gate card (`card-tmvev-pooling` — its
+  controls are the admission bar
   (metric + top-N depth), the two advisory floors, the window multiplier and the
   morph budget: there is no floor-fit checkbox, no corroboration option, and no
   checkbox turning morphology off — the gate is mandatory), and
   `ui/tabs/type_validation.py:MODE_OPTIONS` is `VALIDATION_MODES +
   ['pooling']` — pinned beside `POOLING_MODE not in MODE_RANK` by
-  `tests/ui/test_type_validation_tab.py`. The CLI route
+  `tests/ui/test_type_validation_tab.py` (which also pins
+  `LADDER_MODES == VALIDATION_MODES` and the 3 + 1 card split). The CLI route
   (`scripts/RunMappingValidation.py --mode pooling`) sends the same config.
 - **Run it**: `--mode pooling [--pooling-bar-metric either|jaccard|rank_union]
   [--pooling-bar-top-n 3] [--pooling-jaccard-floor 0.10]

@@ -45,6 +45,12 @@ cfg = MappingValidationConfig(
     visualize=True,                      # CLI --no-visualize negates
     backward_evidence_enabled=True,      # default on (2026-09-26);
                                          # CLI --no-backward-evidence skips
+    scene_viz=None,                      # stage-4 look: {"skeleton_mode": "tube",
+                                         # "background_color": "black", ...};
+                                         # CLI --scene-viz-json
+    scene_category_colors=None,          # per-category legend colors, merged
+                                         # over CATEGORY_COLORS; CLI
+                                         # --scene-colors-json
     skip_out_map_expansion=False,
     skip_profile_build=False,            # True => cache-only profiles (offline control)
     use_cache=True,                      # False => force refetch (NOT offline)
@@ -75,6 +81,21 @@ print(run_dir)
   coarse category query renders (and costs) every scene it resolves. A positive
   value caps the count and names the parents it dropped; prefer splitting a
   large query across runs over raising a cap that is already off.
+- **Scene look is data, not a code edit:** the tab's collapsed **Advanced
+  Visualization** card sends `scene_viz` + `scene_category_colors` (and owns
+  `neuron_alpha`, so that field has exactly one writer). The dataclass defaults
+  are `None` and the UI runner prunes `None`, so a CLI run without the scene
+  flags renders byte-identically. `parameters.json` records the EFFECTIVE look
+  when scenes ran (`scene_render_kwargs` + the full merged palette), so the
+  shipped pages are reproducible from provenance. Stage 4 refuses
+  to be re-pinned out of `legend_mode='tree'`, `brain_mesh='native'` and
+  `skip_synapse=True` — the hierarchy, the coordinate
+  frame and the injected layers are what a scene is. Colors stay per CATEGORY
+  across the whole run; that is what makes two scenes comparable.
+- **Mode row = two cards, one row:** the nested ladder's three buttons live in
+  `card-tmvev-mode` and `Pooling` alone in `card-tmvev-mode-pooling` beside
+  them. The seam is the claim; `card-tmvev-pooling` is a THIRD card, the
+  pooling gate's knobs, revealed only while the mode is `pooling`.
 - **Run folder:** always `output_dir/type-map-validation_{SRCNICK}_to_{TGTNICK}_{ts}`.
   If `output_dir` is omitted it lands in `local_data/mapping_validation/` (a
   grandchild), which weakens the runner's direct-child discovery — the UI always

@@ -67,6 +67,11 @@ def test_validation_mode_options_match_backend():
     assert list(VALIDATION_MODES) + [POOLING_MODE] == tv.MODE_OPTIONS
     assert POOLING_MODE not in MODE_RANK
     assert set(tv.MODE_HINTS) == set(tv.MODE_OPTIONS)
+    # The card split is that same fact, not a styling choice: the ladder card
+    # holds exactly the nested enum and the parallel card holds exactly the
+    # mode that has no rank.
+    assert list(VALIDATION_MODES) == tv.LADDER_MODES
+    assert [POOLING_MODE] == tv.PARALLEL_MODES
 
 
 def test_pooling_widgets_back_real_fields():
@@ -264,6 +269,9 @@ def test_type_validation_tab_mounts():
     ids = {getattr(e, "_props", {}).get("id") for e in client.elements.values()}
     assert "card-tmvev-datasets" in ids
     assert "card-tmvev-advanced" in ids
+    assert "card-tmvev-mode" in ids
+    assert "card-tmvev-mode-pooling" in ids
+    assert "card-tmvev-advanced-viz" in ids
     assert any(getattr(e, "_props", {}).get("label") == "Run Validation"
                for e in client.elements.values())
 
@@ -346,6 +354,323 @@ def test_pooling_mounts_a_button_and_a_hidden_gate_card():
             if (getattr(e, "_props", {}) or {}).get("id")
             == "card-tmvev-pooling"][0]
     assert card.visible is False          # default mode is restrictive
+
+
+# --------------------------------------------------------------------------
+# Mode row: one row, two cards (the nested ladder and the parallel mode)
+# --------------------------------------------------------------------------
+def _mount(page_name):
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.tabs import create_type_validation_tab
+    client = Client(page("/" + page_name))
+    with client:
+        create_type_validation_tab()
+    return client
+
+
+def _card(client, dom_id):
+    return [e for e in client.elements.values()
+            if (getattr(e, "_props", {}) or {}).get("id") == dom_id][0]
+
+
+def _button_labels(element):
+    return sorted(e._props.get("label") for e in element.descendants()
+                  if type(e).__name__ == "Button"
+                  and e._props.get("label") in
+                  {"Restrictive", "Family", "Aggressive", "Pooling"})
+
+
+def test_mode_buttons_are_one_row_in_two_cards():
+    """Four buttons on one row, split 3 + 1 across two cards.
+
+    The seam is the message: the first three modes nest into each other and
+    the fourth is parallel to all of them, so it may not read as one more rung
+    of the same control. One row keeps the comparison the user makes ("which
+    mode?") a single glance.
+    """
+    client = _mount("tmvev-mode-row")
+    ladder, parallel = _card(client, "card-tmvev-mode"), _card(
+        client, "card-tmvev-mode-pooling")
+    assert _button_labels(ladder) == ["Aggressive", "Family", "Restrictive"]
+    assert _button_labels(parallel) == ["Pooling"]
+    # ... and both cards hang off the SAME row element.
+    row = ladder.parent_slot.parent
+    assert row is parallel.parent_slot.parent
+    assert type(row).__name__ == "Row"
+    # All four buttons exist exactly once — the split must not duplicate one.
+    assert _button_labels(row) == sorted(
+        ["Restrictive", "Family", "Aggressive", "Pooling"])
+
+
+def test_mode_hint_is_outside_both_cards():
+    """The pooling hint is five lines; inside a quarter-width card it would
+    break the row, so the caption belongs to the pair, not to either card."""
+    client = _mount("tmvev-mode-hint")
+    ladder, parallel = _card(client, "card-tmvev-mode"), _card(
+        client, "card-tmvev-mode-pooling")
+    hints = [e for e in client.elements.values()
+             if type(e).__name__ == "Label"
+             and str(getattr(e, "text", "")).startswith(
+                 "matched / verified / borderline")]
+    assert len(hints) == 1
+    assert hints[0] not in list(ladder.descendants())
+    assert hints[0] not in list(parallel.descendants())
+
+
+def _mode_buttons(client):
+    return {e._props.get("label"): e
+            for e in client.elements.values()
+            if type(e).__name__ == "Button"
+            and e._props.get("label") in
+            {"Restrictive", "Family", "Aggressive", "Pooling"}}
+
+
+def _click(element):
+    for listener in element._event_listeners.values():
+        if listener.type == "click" and listener.handler:
+            listener.handler({"sender": element.id, "args": None})
+            return
+    raise AssertionError("the button has no click handler")
+
+
+def test_mode_click_recolors_across_both_cards():
+    """_sync_mode keeps ONE button dict spanning both cards, so choosing the
+    parallel card clears the ladder's highlight — and the gate card that belongs
+    to it appears. aria-pressed rides with the color so the group is readable.
+    """
+    client = _mount("tmvev-mode-sync")
+    buttons = _mode_buttons(client)
+    assert len(buttons) == 4
+    state = lambda: {k: (v._props.get("color"),
+                         v._props.get("aria-pressed"))
+                     for k, v in _mode_buttons(client).items()}
+    before = state()
+    assert before["Restrictive"] == ("primary", "true")
+    assert all(before[m] == ("grey-7", "false")
+               for m in ("Family", "Aggressive", "Pooling"))
+
+    _click(buttons["Pooling"])
+    after = state()
+    assert after["Pooling"] == ("primary", "true")
+    assert all(after[m] == ("grey-7", "false")
+               for m in ("Restrictive", "Family", "Aggressive"))
+    # the hint moved with the mode, and the pooling GATE card revealed itself
+    hint = [e for e in client.elements.values()
+            if type(e).__name__ == "Label"
+            and "PARALLEL unsupervised" in str(getattr(e, "text", ""))]
+    assert len(hint) == 1
+    assert _card(client, "card-tmvev-pooling").visible is True
+
+    _click(buttons["Restrictive"])
+    assert state()["Restrictive"] == ("primary", "true")
+    assert _card(client, "card-tmvev-pooling").visible is False
+
+
+# --------------------------------------------------------------------------
+# Advanced Visualization panel (the stage-4 scene look)
+# --------------------------------------------------------------------------
+def test_scene_styling_fields_are_real_config_fields():
+    """The two dicts the panel sends must exist on the dataclass, and must not
+    collide with the knobs the pipeline owns."""
+    import dataclasses
+    from comparison.mapping_validation import MappingValidationConfig as C
+    from ui.tabs import type_validation as tv
+    names = {f.name for f in dataclasses.fields(C)}
+    assert {"scene_viz", "scene_category_colors"} <= names
+    live = {f.name: f.default for f in dataclasses.fields(C)
+            if f.default is not dataclasses.MISSING}
+    assert live["scene_viz"] is None and live["scene_category_colors"] is None
+    # A hidden control must never also be a sent control.
+    assert not set(tv.SCENE_VIZ_HIDDEN) & set(tv.SCENE_VIZ_KEYS)
+    # neuron_alpha has exactly one owner: the config field, not the dict.
+    assert "neuron_alpha" not in tv.SCENE_VIZ_KEYS
+    assert "neuron_alpha" not in tv.SCENE_VIZ_HIDDEN
+
+
+def test_scene_viz_keys_are_real_renderer_kwargs():
+    """Every key the panel may forward is a VisualizeSkeleton keyword, or the
+    scene would raise TypeError on a run that already paid for stages 1-3."""
+    import dataclasses
+    from ui.tabs import type_validation as tv
+    from visualize_skeleton import VisualizeSkeleton
+    kwargs = {f.name for f in dataclasses.fields(VisualizeSkeleton)}
+    unknown = [k for k in tv.SCENE_VIZ_KEYS if k not in kwargs]
+    assert unknown == [], f"not VisualizeSkeleton kwargs: {unknown}"
+
+
+def test_scene_viz_names_are_real_panel_fields():
+    """A mistyped name in either list fails silently in different directions:
+    an unknown HIDDEN name leaves a control the pipeline must pin on screen and
+    sending it, while an unknown SENT name is quietly dropped from the payload.
+    Both are pinned to the fields the panel actually builds."""
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.tabs import type_validation as tv
+    from ui.components.skeleton_visualization_settings import (
+        skeleton_visualization_settings,
+    )
+    # rebuilt the same way the tab mounts it, so `fields` is the real surface
+    client = Client(page("/tmvev-viz-fields"))
+    with client:
+        probe = skeleton_visualization_settings(
+            include_ranking=False, hidden_fields=tv.SCENE_VIZ_HIDDEN,
+            category_colors=tv._scene_color_defaults(),
+            card_id="card-tmvev-viz-probe")
+    real = set(probe.fields)
+    bogus_hidden = [n for n in tv.SCENE_VIZ_HIDDEN if n not in real
+                    and n != "neuron_colors"]
+    assert bogus_hidden == [], f"hidden names that are not panel fields: {bogus_hidden}"
+    bogus_sent = [k for k in tv.SCENE_VIZ_KEYS if k not in real]
+    assert bogus_sent == [], f"sent names that are not panel fields: {bogus_sent}"
+    # a hidden field must be invisible AND absent from the payload
+    v = probe.values()
+    for name in tv.SCENE_VIZ_HIDDEN:
+        if name in real:
+            assert probe.fields[name].visible is False, name
+            assert name not in v, name
+    for name in tv.SCENE_VIZ_KEYS:
+        assert name in v, f"{name} is promised to the scene but values() omits it"
+
+
+def test_scene_color_editor_is_seeded_from_the_backend():
+    """The UI must not own a second copy of the palette (same doctrine as the
+    dataclass-default check), and every editable key must exist upstream."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, COLOR_EDITABLE_CATEGORIES)
+    from ui.tabs import type_validation as tv
+    live = tv._scene_color_defaults()
+    assert live == {c: CATEGORY_COLORS[c]
+                    for c in COLOR_EDITABLE_CATEGORIES}
+    assert set(live) == set(COLOR_EDITABLE_CATEGORIES)
+    # The literal fallback is a fallback, not a rival source.
+    assert tv._FALLBACK_SCENE_COLORS == live
+
+
+def test_category_rows_use_the_layer_editor_picker():
+    """The component-level contract the Skeleton layer editor established: one
+    shared `color_picker_popup` (palettes + preview + opt-in alpha) driven
+    through a pending-category pointer, a swatch whose background IS the
+    preview, and an editable value that commits on blur."""
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.components.palette_picker import category_color_editor
+    defaults = {"query": "#1f77b4", "matched": "#17becf", "pooling": "#7b4173"}
+    client = Client(page("/cat-picker"))
+    with client:
+        ed = category_color_editor("Category Colors", defaults)
+
+    def fire(el, evt):
+        for listener in el._event_listeners.values():
+            if listener.type == evt and listener.handler:
+                class _E:
+                    value = None
+                listener.handler(_E())
+                return
+        raise AssertionError(f"no {evt} handler on {el}")
+
+    # clicking a swatch opens the picker seeded with THAT category
+    fire(ed.rows["matched"]["swatch"], "click")
+    assert ed.pick_popup._current == "#17becf"
+    # committing writes the row, its preview and the map
+    with client:
+        ed.pick_popup._submit_callback("#ff0000")
+    assert ed.get_colors()["matched"] == "#ff0000"
+    assert ed.get_changed() == {"matched": "#ff0000"}
+    assert ed.rows["matched"]["value"].value == "#ff0000"
+    assert ed.rows["matched"]["swatch"]._style["background"] == "#ff0000"
+    assert ed.rows["matched"]["was"].text == "was #17becf"
+    # a rejected value reverts rather than poisoning the map
+    ed.rows["pooling"]["value"].set_value("not-a-color")
+    with client:
+        fire(ed.rows["pooling"]["value"], "blur")
+    assert ed.get_colors()["pooling"] == "#7b4173"
+    ed.reset_to_defaults()
+    assert ed.get_colors() == defaults and ed.get_changed() == {}
+
+
+def test_advanced_viz_panel_builds_one_picker_not_fourteen():
+    """14 category rows sharing one dialog is the whole point of the pending-
+    pointer pattern; a regression to per-row popups would also collide on DOM
+    ids the way `color_swatch_picker` already does."""
+    client = _mount("tmvev-one-picker")
+    card = _card(client, "card-tmvev-advanced-viz")
+    swatches = [e for e in card.descendants()
+                if "drocat-color-cell-picker" in " ".join(e.classes)]
+    assert len(swatches) == 14, f"one swatch per category, got {len(swatches)}"
+    # a q-dialog is mounted at the page root, not inside the card
+    dialogs = [e for e in client.elements.values()
+               if type(e).__name__ == "Dialog"
+               and "category-color-editor" in str(
+                   (e._props or {}).get("id", ""))]
+    assert len(dialogs) == 1, f"expected one shared picker, got {len(dialogs)}"
+
+
+def test_advanced_viz_panel_mounts_collapsed_and_scoped():
+    """Collapsed by default like every other tab's panel, and scoped: the
+    controls a branch scene cannot honor are built but invisible, so they never
+    reach values() and silently override the pipeline's pin."""
+    client = _mount("tmvev-advanced-viz")
+    card = _card(client, "card-tmvev-advanced-viz")
+    expansions = [e for e in card.descendants()
+                  if type(e).__name__ == "Expansion"]
+    assert len(expansions) == 1
+    assert not expansions[0].value        # ui.expansion starts closed
+    captions = {e.text: e.visible for e in card.descendants()
+                if type(e).__name__ == "Label" and getattr(e, "text", None) in
+                ("Appearance", "Synapses and regions", "Data and export")}
+    assert captions.get("Synapses and regions") is False
+    assert captions.get("Appearance") is True
+    hidden = {getattr(e, "text", None) or (e._props or {}).get("label"):
+              e.visible for e in card.descendants()}
+    for name in ("Legend Mode", "Brain Mesh", "Skip Synapses",
+                 "Cache Neurons", "Cache Synapses", "Synapse Mode"):
+        assert hidden.get(name) is False, name
+    for name in ("Skeleton Mode", "Background", "Neuron Opacity",
+                 "Default Simplification", "Export Views", "Show Figure"):
+        assert hidden.get(name) is True, name
+
+
+def test_advanced_viz_panel_follows_the_scenes_checkbox():
+    """The panel styles the scenes, so it appears with them — the same rule
+    Max scenes already follows."""
+    client = _mount("tmvev-viz-visibility")
+    card = _card(client, "card-tmvev-advanced-viz")
+    assert card.visible is True
+    scenes = [e for e in client.elements.values()
+              if type(e).__name__ == "Checkbox"
+              and getattr(e, "text", "") == "Render 3D review scenes"]
+    assert len(scenes) == 1
+    scenes[0].set_value(False)
+    assert card.visible is False
+    assert _card(client, "card-tmvev-stages").visible is True
+
+
+def test_generated_script_passes_scene_styling():
+    cp = {"source_dataset": "A", "target_dataset": "B", "query_types": ["t"],
+          "visualize": True, "max_scenes": 3, "neuron_alpha": 0.35,
+          "scene_viz": {"skeleton_mode": "tube", "background_color": "black"},
+          "scene_category_colors": {"matched": "#00ff00",
+                                    "pooling": "#123456"}}
+    s = _generate(cp)
+    compile(s, "<gen>", "exec")
+    for frag in ("scene_viz={'skeleton_mode': 'tube', "
+                 "'background_color': 'black'}",
+                 "scene_category_colors={'matched': '#00ff00', "
+                 "'pooling': '#123456'}",
+                 "neuron_alpha=0.35", "max_scenes=3"):
+        assert frag in s, frag
+
+
+def test_generated_script_omits_scene_styling_when_unset():
+    """None keys are pruned by the runner, so a run that never touched the
+    panel constructs the config without those two fields at all."""
+    s = _generate({"source_dataset": "A", "target_dataset": "B",
+                   "query_types": ["t"], "visualize": True,
+                   "scene_viz": None, "scene_category_colors": None})
+    compile(s, "<gen>", "exec")
+    assert "scene_viz=" not in s
+    assert "scene_category_colors=" not in s
 
 
 def test_progress_steps_for_names_the_checklist():

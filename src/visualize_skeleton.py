@@ -2884,7 +2884,9 @@ class VisualizeSkeleton:
 
     folder_prefix: str = 'plot-3d'
     '''first token of the output folder name (``<prefix>_<dataset abbrev>_...``).
-    The type-mapping validation pipeline passes ``type-map``.'''
+    The type-mapping validation pipeline keeps this default: its scenes land in
+    ``visualization/plot-3d_<abbrev>_branches_<type>_<ts>/``, which is the glob
+    its tab's "Open latest scene" button and the run guide both read.'''
 
     export_views: bool | list = True
     '''

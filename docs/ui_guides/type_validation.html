@@ -42,12 +42,16 @@
       <code>cell_type</code> category (<code>circadian_clock</code>). A query is
       required &mdash; an empty query is rejected before the run starts.</li>
     <li>Choose a <b>Validation Mode</b>: <code>restrictive</code> &sube;
-      <code>family</code> &sube; <code>aggressive</code>. Wider modes admit more
+      <code>family</code> &sube; <code>aggressive</code>. The three nested modes
+      are the buttons in the <b>Validation Mode</b> card; the <b>Parallel
+      mode</b> card beside them holds the fourth. All four sit on one row, and
+      the card seam between them is deliberate &mdash; it is the UI saying the
+      fourth is not one more rung. Wider modes admit more
       candidate bins (aggressive adds the deep-window <b>examinees</b> bin
       &mdash; whose rows live in <code>deep_candidates.csv</code>;
       <code>examinees.csv</code> itself is the mode-invariant per-pair
-      pool-edge table) and run slower. The fourth button, <code>pooling</code>, is
-      <b>not</b> a wider rung: it is a parallel unsupervised search that scans
+      pool-edge table) and run slower. That fourth button, <code>pooling</code>,
+      is <b>not</b> a wider rung: it is a parallel unsupervised search that scans
       the queried population against the whole target universe, keeps each
       source&rsquo;s top-N rows under its own admission bar, writes its result
       into <code>pooling/</code> beside the nested
@@ -96,6 +100,66 @@
     query into separate runs.
   </p>
 
+  <h2>Advanced Visualization (the review scenes)</h2>
+  <p>
+    A collapsed card between <b>Stages</b> and <b>Data &amp; Offline</b>, shown
+    only while <b>Render 3D review scenes</b> is on &mdash; the same panel the
+    analysis tabs use, scoped to what a branch scene can honor. The look the
+    pipeline fixes is fixed here too — line mode, the opacity default, show-figure
+    off and export-views on — so with a default Settings profile a run renders what
+    it did before this card existed. <b>Background</b> and <b>Simplification
+    Method</b> follow your saved global preference as they do in the other analysis
+    tabs; the shipped defaults for both match the renderer&rsquo;s, so only a
+    preference you changed yourself will look different.
+  </p>
+  <ul>
+    <li><b>Skeleton Mode</b> starts at <code>line</code> for speed;
+      <code>tube</code> is the detailed mesh, and it then exposes
+      <b>Simplification Method</b> / <b>Mesh Simplification</b> &mdash; these
+      scenes inject skeletons the pipeline already loaded, so simplification is
+      what keeps a tube render of a hundred neurons from stalling the
+      browser.</li>
+    <li><b>Category Colors</b> paint the legend <i>by category</i>, not by
+      layer: one row per bin (<code>query</code>, <code>matched</code>,
+      <code>verified</code>, <code>borderline</code>, <code>unmatched</code>,
+      <code>sibling</code>, <code>candidates</code>, <code>family</code>,
+      <code>relative</code>, <code>examinees</code>,
+      <code>source-candidates</code>, <code>out-map candidates</code>,
+      <code>unassigned</code>, <code>pooling</code>), each seeded from the
+      pipeline&rsquo;s own palette so the UI never owns a second copy of it. A
+      category keeps its color across every branch and parent in the run &mdash;
+      that is what makes two scenes comparable &mdash; so recoloring moves the
+      whole bin, and <code>query</code> also drives the out-map query root.
+      Colors carry no alpha unless you opt into it: each row is the same color
+      cell the <b>Visualization › Skeleton</b> layer editor uses &mdash; a swatch
+      that previews the current color and opens the shared picker (Bokeh palettes
+      with strip previews, a color grid, and an <i>Override alpha</i> control),
+      beside an editable value that commits on Enter or blur. One picker serves
+      every row. Without an explicit alpha, <b>Neuron Opacity</b> is the only
+      opacity control; with one, that category alone overrides it.</li>
+    <li><b>Background</b>, <b>Export Method</b>, <b>Export Scale</b>,
+      <b>Export Views</b> (on, so each page still gets its PNG preview beside it)
+      and <b>Show Figure</b> (off, because a batch run would open every
+      scene).</li>
+    <li>Not offered, because the scene&rsquo;s correctness depends on them: the
+      <b>tree</b> legend (it carries branch &rarr; category &rarr; bodyId), the
+      <b>native</b> template (it <i>is</i> the coordinate frame the bridged
+      targets were delivered in), the synapse skip, and the scene count &mdash;
+      which stays <b>Max scenes</b> on the Stages card. <b>Neuron alpha</b> moved
+      into this card, so it has exactly one owner.</li>
+  </ul>
+  <p>
+    What a run actually wore is recorded in <code>parameters.json</code> as
+    <code>neuron_alpha</code>, <code>scene_viz</code> and
+    <code>scene_category_colors</code> — and with scenes on those are the
+    <i>effective</i> values, not an echo of what was sent: the resolved styling
+    the renderer received (<code>{}</code> when nothing was moved) and the full
+    legend palette, defaults and alias propagation included. The command line
+    reaches the same record through <code>--scene-viz-json</code> /
+    <code>--scene-colors-json</code>, so a run is reproducible from its own
+    provenance file.
+  </p>
+
   <h2>Offline runs</h2>
   <p>
     <b>Use connection cache</b> is not an offline switch - turning it off only
@@ -117,7 +181,10 @@
     per-bin results, <b>Out-map</b> (fill proposals for unclaimed sources),
     <b>Backward</b> (reciprocal grades) with a separate <b>Backward source
     status</b> view (per-source statuses over the target pool), <b>Morph</b>
-    and <b>Scenes</b>. Terms carry hover glossary entries; warnings are also
+    and <b>Scenes</b>. The <b>Scenes</b> tab also prints the palette this run
+    actually wore &mdash; one chip per category, and any bin you recolored names
+    the default it replaced &mdash; so a recolor is readable from the report, not
+    only from each scene&rsquo;s own tree legend. Terms carry hover glossary entries; warnings are also
     collected in <code>user_warning_notes.txt</code>.
   </p>
 

@@ -20,6 +20,9 @@ from ..components.common import (
     dir_input, section_header, param_grid, tool_page, apply_filter_mode,
 )
 from ..components.output_panel import OutputPanel
+from ..components.skeleton_visualization_settings import (
+    skeleton_visualization_settings,
+)
 from ..runner import ScriptRunner, open_file, open_folder
 from ..type_suggestions import dataset_aware_suggestions
 
@@ -28,10 +31,16 @@ from ..type_suggestions import dataset_aware_suggestions
 # the three nested bins keep the same meaning it gave them. The dropdown offers
 # it because the tab must be able to start the mode, not because it is wider.
 MODE_OPTIONS = ["restrictive", "family", "aggressive", "pooling"]
+# The first three are one nested chain; `pooling` is parallel to it. The split
+# is a UI fact, not a re-derivation of the ladder: the cards are laid out 3:1
+# so the seam between them reads as "different thing", while all four buttons
+# still sit on one row (user 2026-09-26).
+LADDER_MODES = MODE_OPTIONS[:3]
+PARALLEL_MODES = MODE_OPTIONS[3:]
 MODE_HINTS = {
     "restrictive": "matched / verified / borderline tiers only — the like-for-like spine.",
     "family": "adds the sibling / candidates / family bins (mapped relatives).",
-    "aggressive": "adds the relative tier and the deep-window examinees bin (widest, slowest).",
+    "aggressive": "adds the relative bin and the deep-window examinees bin (widest, slowest).",
     "pooling": "not a wider mode: a PARALLEL unsupervised homolog search over "
                "the whole target universe (absolute floors, morphology last), "
                "compared with the mapper afterwards. Writes pooling/ beside the "
@@ -79,6 +88,52 @@ ADV_NUM = [
 ]
 ADV_BOOL = ["include_untyped_partners", "scene_selfcheck"]
 
+# --------------------------------------------------------------------------
+# Stage-4 scene styling (the collapsed Advanced Visualization panel)
+# --------------------------------------------------------------------------
+# Controls the pipeline owns and therefore must not offer — the backend filters
+# them again in ``scene_render_kwargs``, so this list is the UI-side statement
+# of intent, not the only guard. The legend tree carries the branch -> category
+# -> bodyId hierarchy the scene is built around; ``brain_mesh`` IS the coordinate
+# frame every bridged target was delivered in (switching it is the 2026-09-18
+# MCNS->BANC misplacement); the synapse skip is forced because pair scenes carry
+# no connectivity; and the cache toggles are inert because stage 4 injects
+# skeletons it loaded itself, so the renderer never fetches.
+SCENE_VIZ_HIDDEN = [
+    "legend_mode", "brain_mesh", "vnc_mesh", "brain_mesh_color",
+    "vnc_mesh_color", "cache_neurons", "cache_synapses",
+    "skip_synapse", "min_synapse_num", "synapse_mode", "synapse_size",
+    "uniform_synapse_size", "synapse_alpha", "mesh_alpha", "synapse_colors",
+    "mesh_roi", "roi_colors",
+]
+# What the panel may send into a scene. ``neuron_alpha`` is deliberately absent:
+# it is a first-class config field, so the panel writes THAT field and never a
+# second copy of the same knob.
+SCENE_VIZ_KEYS = (
+    "skeleton_mode", "background_color", "neuprint_skeleton_pipeline",
+    "skeleton_mesh_simplification", "export_method", "export_scale",
+    "show_fig", "export_views",
+)
+# Fallback only, and deliberately a copy of ``COLOR_EDITABLE_CATEGORIES`` ->
+# CATEGORY_COLORS: the live backend map wins (see _scene_color_defaults), and a
+# test pins the two together so this cannot rot quietly.
+_FALLBACK_SCENE_COLORS = {
+    "query": "#1f77b4",
+    "unassigned": "#7f7f7f",
+    "matched": "#17becf",
+    "verified": "#2ca02c",
+    "borderline": "#e6ab02",
+    "unmatched": "#7f7f7f",
+    "sibling": "#e377c2",
+    "candidates": "#ff7f0e",
+    "family": "#98df8a",
+    "relative": "#bcbd22",
+    "examinees": "#d62728",
+    "source-candidates": "#8c564d",
+    "out-map candidates": "#aec7e8",
+    "pooling": "#7b4173",
+}
+
 
 def _field_defaults():
     """Live MappingValidationConfig defaults; fall back to the literal map."""
@@ -98,6 +153,25 @@ def _field_defaults():
 
 def _default(field):
     return _FIELD_DEFAULTS.get(field, _FALLBACK_DEFAULTS.get(field))
+
+
+def _scene_color_defaults():
+    """The backend's own category palette, in the order the legend shows it.
+
+    Same doctrine as :func:`_field_defaults`: the UI seeds from the code that
+    consumes the value, because a second copy of the palette would drift the
+    first time a category color moved.
+    """
+    try:
+        from comparison.mapping_validation_visualize import (
+            CATEGORY_COLORS, COLOR_EDITABLE_CATEGORIES)
+        out = {c: CATEGORY_COLORS[c] for c in COLOR_EDITABLE_CATEGORIES
+               if c in CATEGORY_COLORS}
+        if out:
+            return out
+    except Exception:
+        pass
+    return dict(_FALLBACK_SCENE_COLORS)
 
 
 def _setting(key, fallback):
@@ -145,6 +219,9 @@ def create_type_validation_tab():
                                state_key="type_mapping_validation")
     source_dataset = None
     target_dataset = None
+    # Assigned when the Advanced Visualization card is built (after the Stages
+    # card whose visibility handler reads it).
+    scene_viz_card = None
 
     form_col, results_col = tool_page(
         "Type Validation",
@@ -229,36 +306,61 @@ def create_type_validation_tab():
             except Exception:
                 pass
 
-        # --- Validation Mode ---
-        with ui.card().classes("w-full drocat-card").props('id="card-tmvev-mode"'):
-            section_header("Validation Mode", "tune")
-            mode_value = {"value": _setting("tmvev_mode", "restrictive")}
-            if mode_value["value"] not in MODE_OPTIONS:
-                mode_value["value"] = "restrictive"
-            mode_buttons = {}
-            with ui.row().classes("w-full items-center justify-between gap-4 px-2 flex-wrap"):
-                for _mode in MODE_OPTIONS:
-                    _b = ui.button(_mode.capitalize()).props("outline no-caps").classes("w-1/4")
-                    _b.style("min-height: 3rem; font-size: 1.0rem; font-weight: 700;")
-                    mode_buttons[_mode] = _b
-            mode_hint = ui.label("").classes("text-xs opacity-60 w-full")
+        # --- Validation Mode: the nested ladder, and `pooling` beside it ---
+        # Two cards on one row because the seam is the message: the first three
+        # modes nest, the fourth does not. The 3:1 flex ratio keeps the four
+        # buttons close to equal width (the card paddings make exact equality
+        # cost a hack), and the hint sits BELOW both cards because the pooling
+        # text is five lines and would blow up a quarter-width card.
+        mode_value = {"value": _setting("tmvev_mode", "restrictive")}
+        if mode_value["value"] not in MODE_OPTIONS:
+            mode_value["value"] = "restrictive"
+        mode_buttons = {}
 
-            def _sync_mode():
-                mode_hint.text = MODE_HINTS.get(mode_value["value"], "")
-                for _m, _b in mode_buttons.items():
-                    _b.props("color=primary" if _m == mode_value["value"] else "color=grey-7")
+        def _mode_button(mode):
+            _b = ui.button(mode.capitalize()).props("outline no-caps")
+            _b.style("flex: 1 1 0; min-width: 0; min-height: 3rem; "
+                     "font-size: 1.0rem; font-weight: 700;")
+            mode_buttons[mode] = _b
 
-            def _set_mode(_e=None, *, mode=None):
-                if mode:
-                    mode_value["value"] = mode
-                _sync_mode()
-                _sync_stage_visibility()
-                if _sync_pooling_visibility:
-                    _sync_pooling_visibility()
+        with ui.row().classes("w-full items-stretch gap-2 flex-wrap"):
+            with ui.card().classes("w-full drocat-card").props(
+                    'id="card-tmvev-mode"') as ladder_card:
+                ladder_card.style("flex: 3 1 0; min-width: 280px;")
+                section_header("Validation Mode", "tune")
+                with ui.row().classes("w-full items-center gap-2 px-1"):
+                    for _mode in LADDER_MODES:
+                        _mode_button(_mode)
+            with ui.card().classes("w-full drocat-card").props(
+                    'id="card-tmvev-mode-pooling"') as parallel_card:
+                parallel_card.style("flex: 1 1 0; min-width: 150px;")
+                section_header("Parallel mode", "call_split")
+                with ui.row().classes("w-full items-center gap-2 px-1"):
+                    for _mode in PARALLEL_MODES:
+                        _mode_button(_mode)
+        mode_hint = ui.label("").classes("text-xs opacity-60 w-full")
 
+        def _sync_mode():
+            mode_hint.text = MODE_HINTS.get(mode_value["value"], "")
             for _m, _b in mode_buttons.items():
-                _b.on_click(lambda _e, mode=_m: _set_mode(mode=mode))
+                _on = _m == mode_value["value"]
+                # aria-pressed is a lowercase ARIA enumeration, and the four
+                # buttons are one group: color alone does not reach a screen
+                # reader.
+                _b.props(f"color={'primary' if _on else 'grey-7'} "
+                         f"aria-pressed={str(_on).lower()}")
+
+        def _set_mode(_e=None, *, mode=None):
+            if mode:
+                mode_value["value"] = mode
             _sync_mode()
+            _sync_stage_visibility()
+            if _sync_pooling_visibility:
+                _sync_pooling_visibility()
+
+        for _m, _b in mode_buttons.items():
+            _b.on_click(lambda _e, mode=_m: _set_mode(mode=mode))
+        _sync_mode()
 
         # --- Pooling gate (only read when the mode is `pooling`) ---
         _sync_pooling_visibility = None
@@ -342,16 +444,17 @@ def create_type_validation_tab():
             visualize = checkbox_input(
                 "Render 3D review scenes", True,
                 hint="Emit branches_*.html skeletons for matched/verified pairs (capped below).")
-            with param_grid(2):
-                max_scenes = number_input(
-                    "Max scenes (0 = every parent)",
-                    int(_setting("tmvev_max_scenes", _default("max_scenes"))),
-                    0, 50, 1,
-                    hint="0 renders one scene per parent type; a positive value "
-                         "caps the scenes and names the parents it dropped.")
-                neuron_alpha = number_input(
-                    "Neuron alpha", _default("neuron_alpha"), *_bounds("neuron_alpha", _default("neuron_alpha")),
-                    hint="Skeleton opacity in review scenes (0-1).")
+            # Max scenes stays here because it is a COST control (how many pages
+            # the run pays for); how those pages look moved to the collapsed
+            # Advanced Visualization card below, which is also the single owner
+            # of neuron alpha — two widgets writing one field is the drift this
+            # tab's parity tests exist to catch.
+            max_scenes = number_input(
+                "Max scenes (0 = every parent)",
+                int(_setting("tmvev_max_scenes", _default("max_scenes"))),
+                0, 50, 1,
+                hint="0 renders one scene per parent type; a positive value "
+                     "caps the scenes and names the parents it dropped.")
             backward_enabled = checkbox_input(
                 "Backward (reciprocal) homolog evidence", True,
                 hint="Reverse-scan target neurons for reciprocal evidence — the slowest stage "
@@ -388,7 +491,11 @@ def create_type_validation_tab():
             def _sync_stage_visibility(_e=None):
                 morph_auc_floor.set_visibility(morph_enabled.value)
                 max_scenes.set_visibility(visualize.value)
-                neuron_alpha.set_visibility(visualize.value)
+                if scene_viz_card is not None:
+                    # The panel styles the scenes, so it appears with them —
+                    # same reason Max scenes does. It is built after this first
+                    # call, hence the guard (mirrors _sync_pooling_visibility).
+                    scene_viz_card.set_visibility(bool(visualize.value))
                 backward_top_n.set_visibility(backward_enabled.value)
                 backward_max_neurons.set_visibility(backward_enabled.value)
                 backward_per_branch_cap.set_visibility(backward_enabled.value)
@@ -403,6 +510,36 @@ def create_type_validation_tab():
                 if hasattr(w, "on_value_change"):
                     w.on_value_change(_sync_stage_visibility)
             _sync_stage_visibility()
+
+        # --- Advanced Visualization (collapsed; styles the stage-4 scenes) ---
+        # The same panel the analysis tabs use, scoped to what a branch scene can
+        # honor. The look the pipeline pins is pinned here too — line mode, alpha
+        # from the dataclass, show-figure off, and export views ON (the scenes
+        # already write a PNG beside each page, which the output guide documents),
+        # so a default Settings profile renders exactly what it did before this
+        # card existed. The two controls that follow the SAVED global preference
+        # rather than the renderer's default (Background, Simplification Method)
+        # do so here as they already do in the other four analysis tabs; the
+        # renderer's own defaults for them are 'white' and 'fast', identical to
+        # the shipped Settings defaults, so only a user who changed one of those
+        # Settings sees a different scene.
+        scene_viz_settings = skeleton_visualization_settings(
+            include_ranking=False,
+            default_skeleton_mode="line",
+            default_neuron_alpha=float(_default("neuron_alpha")),
+            default_show_fig=False,
+            default_export_views=True,
+            hidden_fields=SCENE_VIZ_HIDDEN,
+            category_colors=_scene_color_defaults(),
+            dataset_provider=lambda: [
+                source_dataset.value,
+                target_dataset.value,
+            ],
+            dataset_watchers=[source_dataset, target_dataset],
+            card_id="card-tmvev-advanced-viz",
+        )
+        scene_viz_card = scene_viz_settings.card
+        _sync_stage_visibility()
 
         # --- Data & Offline ---
         with ui.card().classes("w-full drocat-card").props('id="card-tmvev-data"'):
@@ -489,7 +626,15 @@ def create_type_validation_tab():
             cp["morph_auc_floor"] = float(morph_auc_floor.value)
         if visualize.value:
             cp["max_scenes"] = int(max_scenes.value)
-            cp["neuron_alpha"] = float(neuron_alpha.value)
+            # The scene styling rides only when scenes are rendered: stage 4 is
+            # skipped otherwise, and a stale dict in parameters.json would
+            # describe a look this run never produced.
+            viz = scene_viz_settings.values()
+            # One owner per field: the panel writes the config's own
+            # neuron_alpha rather than a second copy in scene_viz.
+            cp["neuron_alpha"] = float(viz["neuron_alpha"])
+            cp["scene_viz"] = {k: viz[k] for k in SCENE_VIZ_KEYS if k in viz}
+            cp["scene_category_colors"] = dict(viz["category_colors"])
         if backward_enabled.value:
             cp["backward_top_n"] = int(backward_top_n.value)
             cp["backward_max_neurons"] = int(backward_max_neurons.value)

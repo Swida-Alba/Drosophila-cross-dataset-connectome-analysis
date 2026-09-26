@@ -46,7 +46,9 @@ prefixes — so the legend and the CSVs cannot disagree.
 - Colors: each category has one fixed color across branches and types
   (query blue, matched cyan, verified green, borderline gold, unmatched
   grey, sibling pink, candidates orange, family light green, relatives
-  olive, examinees red).
+  olive, examinees red).  Those are DEFAULTS: ``cfg.scene_category_colors``
+  merges over them per category (``resolve_scene_colors``), so a recolor
+  still moves the whole bin everywhere at once and never one layer.
 - ``legend_mode='tree'``: the drocat legend panel builds branch ->
   category -> bodyId from the ``drocatLegend`` meta tags, so the row-to-
   trace mapping can never drift from the figure.  Targets whose skeleton
@@ -63,13 +65,15 @@ prefixes — so the legend and the CSVs cannot disagree.
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from comparison.body_id_resolver import chain_key
 from comparison.cross_dataset_type_mapper import basis_is_row_evidence
 from comparison.mapping_validation import DEDUP_RANK, TIER_CATEGORIES
+from utils.color_utils import standardize_color
+from visualization_options import default_analysis_skeleton_mesh_simplification
 
 # Color = f(category), unified across branches and types, high contrast
 # (user directive 2026-09-12: neurons under the same category share one
@@ -100,8 +104,138 @@ CATEGORY_COLORS = {
                                # no colour the ladder's bins own
                                # (distinct from candidates orange and
                                # sibling pink)
+    'unassigned': '#7f7f7f',   # grey    - queried source with no verdict pair
 }
-UNASSIGNED_COLOR = '#7f7f7f'  # grey
+# Kept as a name because the scene code and the docs both refer to it; it is
+# the same entry the per-category color editor paints, so an override reaches
+# the unassigned query neurons too.
+UNASSIGNED_COLOR = CATEGORY_COLORS['unassigned']
+
+# Category keys the UI may recolor, and the legacy aliases that must follow
+# their canonical key so a re-activated legacy path can never render a stale
+# color. `fill` / `backward` / `relatives` are reachable only through the
+# pre-3.12 `build_invader_buckets`, which the live render path no longer calls,
+# so they are not offered; `out-map query` is the same source population as
+# `query` and follows it.
+COLOR_EDITABLE_CATEGORIES = (
+    'query', 'unassigned', 'matched', 'verified', 'borderline', 'unmatched',
+    'sibling', 'candidates', 'family', 'relative', 'examinees',
+    'source-candidates', 'out-map candidates', 'pooling',
+)
+COLOR_ALIASES = {'candidates': ('fill',), 'relative': ('relatives',),
+                 'query': ('out-map query',)}
+
+
+def resolve_scene_colors(overrides: Optional[Dict[str, str]],
+                         log=None) -> Dict[str, str]:
+    """Merge a caller's category -> color map over :data:`CATEGORY_COLORS`.
+
+    Validation happens here, at the boundary, using the renderer's own color
+    parser: a value it refuses keeps the pipeline default and logs one line.
+    Stage 4 already swallows a raised exception, so an unchecked bad color
+    would silently cost the run EVERY scene rather than one category.
+
+    A recolor propagates to :data:`COLOR_ALIASES` so a legacy key can never
+    render a stale color while its canonical bin was edited.
+    """
+    out = dict(CATEGORY_COLORS)
+    for cat, raw in sorted((overrides or {}).items()):
+        cat = str(cat)
+        value = str(raw or '').strip()
+        if not value:
+            continue
+        try:
+            standardize_color(value)
+        except (TypeError, ValueError) as exc:  # noqa: BLE001
+            if log:
+                log(f'    ! scene color {cat!r} rejected ({exc}); keeping '
+                    f'{out.get(cat, "the pipeline default")}')
+            continue
+        if cat not in CATEGORY_COLORS:
+            # A typo is otherwise silent: the value parses, merges into the map,
+            # and is never looked up, so the bin keeps its default color and
+            # nothing says the edit was wasted.  Rejected unconditionally, not
+            # only when a log is attached — the provenance record calls this
+            # without one, and an accepted typo would then appear in
+            # parameters.json as a color the run never wore.
+            if log:
+                log(f'    ! scene color {cat!r} is not a scene category; '
+                    'ignored (see CATEGORY_COLORS)')
+            continue
+        out[cat] = value
+        for alias in COLOR_ALIASES.get(cat, ()):
+            out[alias] = value
+    return out
+
+
+#: Stage-4 kwargs the scene's correctness depends on, so a caller cannot
+#: rewrite them: ``legend_mode='tree'`` is what carries the branch -> category
+#: -> bodyId hierarchy (and the ``_drocat_*`` override dicts are read by that
+#: panel); ``brain_mesh='native'`` IS the coordinate frame every neuron was
+#: delivered in (the 2026-09-18 MCNS->BANC misplacement was a template switch);
+#: ``skip_synapse`` is forced because pair scenes carry no connectivity and the
+#: per-layer synapse color tuples are sized before the custom layers are
+#: injected; and the layer/color/output identity belongs to the planner.
+SCENE_PINNED_KWARGS = ('legend_mode', 'brain_mesh', 'skip_synapse',
+                       'custom_neurons', 'custom_layer_names', 'neuron_colors',
+                       'neuron_layers', 'dataset', 'output_dir', 'saveas',
+                       'folder_prefix', 'include_timestamp')
+#: Keys a caller may hold a widget for but which are not scene-render kwargs:
+#: the tab's own Max scenes owns the scene count, ``neuron_alpha`` is a
+#: first-class config field (one owner, not two), and the rest are panel
+#: bookkeeping or features these scenes do not have.
+SCENE_DROPPED_KEYS = ('visualize_top_n', 'visualize_by', 'neuron_alpha',
+                      'output_format', 'show_soma', 'mesh_roi', 'roi_colors',
+                      'synapse_colors', 'use_default_simplification')
+#: The renderer's own default tube pipeline (``VisualizeSkeleton.
+#: neuprint_skeleton_pipeline``), which is what decided the simplification
+#: default before any of these knobs existed. Kept as a name so the fallback in
+#: :func:`scene_render_kwargs` cannot silently drift to morphology's 'fine'.
+_DEFAULT_SCENE_PIPELINE = 'fast'
+
+
+def scene_render_kwargs(cfg, log=None) -> Dict[str, Any]:
+    """Resolve ``cfg.scene_viz`` into kwargs a stage-4 scene will accept.
+
+    Mirrors how the morphology analysis renders merge the same panel
+    (src/morphology.py, the ``viz_kwargs`` loop): iterate, skip what the
+    pipeline owns, then let the caller's values stand.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in sorted((cfg.scene_viz or {}).items()):
+        if key in SCENE_PINNED_KWARGS or key in SCENE_DROPPED_KEYS:
+            continue
+        out[str(key)] = value
+    # The shared panel's "use the method default" arrives as None. It must be
+    # resolved HERE, not at the renderer: custom (injected) layers bypass the
+    # fetch-time default path entirely, and a None that reaches
+    # _effective_render_simplification raises — which stage 4 swallows by
+    # losing every scene in the run.  The fallback pipeline is the RENDERER's
+    # own default ('fast' -> 0.90), not morphology's 'fine': before this panel
+    # existed a scene passed neither key, so 'fast' is what was actually in
+    # force, and an untouched run must keep wearing it.
+    pipeline = str(out.get('neuprint_skeleton_pipeline')
+                   or _DEFAULT_SCENE_PIPELINE)
+    if ('skeleton_mesh_simplification' in out
+            and out['skeleton_mesh_simplification'] is None):
+        out['skeleton_mesh_simplification'] = (
+            default_analysis_skeleton_mesh_simplification(
+                cfg.source_dataset, pipeline))
+    elif ('skeleton_mesh_simplification' not in out
+            and str(out.get('skeleton_mode') or '').strip().lower() == 'tube'):
+        # A caller that asks for tube WITHOUT a fraction (the CLI example in
+        # scripts/RunMappingValidation.py does exactly that) would otherwise
+        # inherit the renderer's own ``None`` default and raise — the same
+        # failure reached by a different door. Line mode never builds a neuron
+        # mesh, so it is left alone and stays byte-identical.
+        out['skeleton_mesh_simplification'] = (
+            default_analysis_skeleton_mesh_simplification(
+                cfg.source_dataset, pipeline))
+    if out and log:
+        log(f'[stage 4] scene styling from the caller: '
+            f'{", ".join(sorted(out))}')
+    return out
+
 
 # Single-bucket rule per invader neuron (Revision 3.6): the LOWEST
 # priority value wins when a neuron qualifies for several buckets —
@@ -752,6 +886,12 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
         if needs_transform else
         f'[stage 4] scenes in {src_space} (no transform needed)')
 
+    # Scene look. Colors are validated at the boundary (resolve_scene_colors:
+    # one rejected value costs one category, not the run); the kwargs are
+    # already filtered against what the pipeline owns.
+    colors = resolve_scene_colors(cfg.scene_category_colors, validator.log)
+    scene_kwargs = scene_render_kwargs(cfg, validator.log)
+
     def bridge_to_scene_space(neurons):
         """Bridge SOURCE-dataset neurons into the scene's render space
         (identity when native == render).  Fail-open: unbridgeable
@@ -983,7 +1123,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     for bid, why in qdrop:
                         validator.log(f'    ! query {bid} skipped ({why})')
                     if qn:
-                        add_layer(group, qn, CATEGORY_COLORS['query'],
+                        add_layer(group, qn, colors['query'],
                                   [f'query · {src_type}'] * len(qn),
                                   category='query')
                 if skipped_src:
@@ -996,7 +1136,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         sn = []
                     sn = bridge_to_scene_space(sn)
                     if sn:
-                        add_layer(group, sn, UNASSIGNED_COLOR,
+                        add_layer(group, sn, colors['unassigned'],
                                   [f'query · {src_type} · unassigned']
                                   * len(sn), category='unassigned')
 
@@ -1004,8 +1144,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 categories: Dict[str, List[int]] = defaultdict(list)
                 for tbid, cat in res['target_categories'].items():
                     categories[cat].append(int(tbid))
-                cat_colors = {c: CATEGORY_COLORS.get(
-                    c, CATEGORY_COLORS['unmatched'])
+                cat_colors = {c: colors.get(
+                    c, colors['unmatched'])
                     for c in ('matched', 'verified', 'borderline',
                               'unmatched')}
                 for cat in ('matched', 'verified', 'borderline',
@@ -1077,7 +1217,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                             leaf_sorts[int(n.id)] = \
                                 f'{stype} {tag}'.strip()
                         add_layer(group, cn,
-                                  CATEGORY_COLORS['source-candidates'],
+                                  colors['source-candidates'],
                                   [root] * len(cn),
                                   category='source-candidates',
                                   leaf_types=leaf_types,
@@ -1155,8 +1295,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         if not ids:
                             continue
                         prefix = _cat_of_key(key)
-                        color = CATEGORY_COLORS.get(
-                            prefix, CATEGORY_COLORS['examinees'])
+                        color = colors.get(
+                            prefix, colors['examinees'])
                         root = bucket_root_label(key, rec['types'])
                         raw, dropped = load_target_neurons(ids)
                         for bid, why in dropped:
@@ -1213,7 +1353,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     for n in on:
                         type_overrides[int(n.id)] = label
                     add_layer(f'{src_type} · out-map query', on,
-                              CATEGORY_COLORS['out-map query'],
+                              colors['out-map query'],
                               [label] * len(on), category='out-map query')
                 # The expansion's found targets for this type: top-k
                 # connectivity-ranked BANC/MCNS neurons outside the in-map
@@ -1253,7 +1393,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                                 type_overrides[int(n.id)] = c_label
                             add_layer(f'{src_type} · out-map candidates',
                                       neurons,
-                                      CATEGORY_COLORS['out-map candidates'],
+                                      colors['out-map candidates'],
                                       [c_label] * len(neurons),
                                       category='out-map candidates')
 
@@ -1289,7 +1429,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                             p_tags[int(n.id)] = tag
                         p_sorts[int(n.id)] = f'{token} {tag}'.strip()
                     add_layer(f'{src_type} · pooling', neurons,
-                              CATEGORY_COLORS['pooling'],
+                              colors['pooling'],
                               [root] * len(neurons), category=root,
                               leaf_types=p_types, leaf_tags=p_tags or None,
                               leaf_sorts=p_sorts)
@@ -1298,7 +1438,11 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 validator.log('    nothing to render for this parent')
                 continue
 
-            viz = VisualizeSkeleton(
+            # Built as a dict, not as `**scene_kwargs` after the explicit
+            # keywords: a caller-supplied `skeleton_mode` would then be passed
+            # twice and raise "got multiple values for keyword argument"
+            # (caught by the 2026-09-26 real-data scene run).
+            viz_kwargs = dict(
                 dataset=cfg.source_dataset,
                 neuron_layers=[],   # all-custom layers (query + matched)
                 custom_neurons=[(g, n) for g, n, _ in entries],
@@ -1320,6 +1464,12 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 # links them
                 show_fig=False,
             )
+            # The caller's panel values, last: they are already filtered
+            # against SCENE_PINNED_KWARGS / SCENE_DROPPED_KEYS, so what lands
+            # here is only what a scene may legitimately be talked into
+            # (line/tube, background, export, simplification).
+            viz_kwargs.update(scene_kwargs)
+            viz = VisualizeSkeleton(**viz_kwargs)
             viz._drocat_expand_roots = True   # Plan I §4: roots start expanded
             viz._drocat_legend_type_overrides = dict(type_overrides)
             viz._drocat_legend_leaf_type_overrides = dict(leaf_type_overrides)

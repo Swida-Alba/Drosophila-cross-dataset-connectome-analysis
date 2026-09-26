@@ -1121,3 +1121,53 @@ def test_an_attempted_scene_that_crashed_is_named_not_counted_away(run_dir: Path
     assert "s-LNv" in html and "attempted and FAILED" in html
     # the policy sentence stays, but no longer speaks for the crashes
     assert "nothing renderable get no scene" in html
+
+
+def _set_scene_params(run_dir: Path, palette):
+    """Rewrite the fixture's parameters.json with a scene palette record."""
+    import json
+    p = run_dir / 'parameters.json'
+    data = json.loads(p.read_text(encoding='utf-8'))
+    data['scene_category_colors'] = palette
+    p.write_text(json.dumps(data), encoding='utf-8')
+
+
+def test_the_scenes_tab_shows_the_palette_the_run_wore(run_dir: Path):
+    """A scene's tree legend was the only place the palette was ever visible, so
+    a recolored run could not be read from its report. The block names the
+    category, the color, and the default it replaced — "why is matched red?" is
+    the question it has to answer."""
+    from comparison.mapping_validation_visualize import (
+        CATEGORY_COLORS, COLOR_EDITABLE_CATEGORIES)
+    palette = dict(CATEGORY_COLORS)
+    palette['matched'] = '#ff0000'
+    _set_scene_params(run_dir, palette)
+
+    html = _scenes_tab(collect_run_data(run_dir))
+    assert 'Scene palette this run wore' in html
+    assert '<b>1</b> category recolored from the pipeline defaults' in html
+    assert "background:#ff0000" in html
+    assert 'was #17becf' in html                       # the default it replaced
+    # exactly the bins the UI editor offers, in the editor's order
+    shown = re.findall(r"mv-palette-name'>([^<]+)</span>", html)
+    assert shown == list(COLOR_EDITABLE_CATEGORIES)
+    # an untouched bin carries no "was" note
+    assert html.count('mv-palette-was') == 1
+
+
+def test_the_scenes_tab_says_so_when_nothing_was_recolored(run_dir: Path):
+    """The default path must read as the default, not as an empty table."""
+    from comparison.mapping_validation_visualize import CATEGORY_COLORS
+    _set_scene_params(run_dir, dict(CATEGORY_COLORS))
+    html = _scenes_tab(collect_run_data(run_dir))
+    assert 'the pipeline defaults, nothing recolored' in html
+    assert 'was #' not in html
+
+
+def test_a_run_that_recorded_no_palette_shows_no_palette_block(run_dir: Path):
+    """Pre-styling runs (and any run whose record is missing) simply have no
+    block — the Scenes tab must not render an empty legend or fail."""
+    _set_scene_params(run_dir, None)
+    html = _scenes_tab(collect_run_data(run_dir))
+    assert 'Scene palette' not in html
+    assert 'scenes rendered' in html                   # the tab still renders

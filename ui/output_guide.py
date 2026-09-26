@@ -2116,6 +2116,9 @@ TOOL_GUIDE_SPECS = {
                             "one row per scanned neuron), Out-map, Backward "
                             "source status, Suspects verification (opt-in "
                             "runs), Morph, Pooling, Scenes "
+                            "(which also prints the palette the run actually "
+                            "wore, one chip per category, each recolored bin "
+                            "naming the default it replaced) "
                             "and Log. Hover any dotted "
                             "term — or any table header, which explains its "
                             "own column — for its definition. Regenerable "
@@ -2211,7 +2214,14 @@ TOOL_GUIDE_SPECS = {
                             "expansion/backward_matches.csv."},
             {"pattern": "expansion/family_candidates.csv",
              "description": "The whole family bin (out-map bodyIds of each "
-                            "branch's target type)."},
+                            "branch's target type). NOT the same number as "
+                            "the Type Mapping panel's 'Out-map (in-map "
+                            "types)' column: the panel subtracts the bridge "
+                            "claim from the received types' populations and "
+                            "has no morphology, so a candidate that closes a "
+                            "hole here cannot close one there — on "
+                            "circadian_clock → male-cns the panel reads 15 "
+                            "(219 − 204) where this file holds 11 rows."},
             {"pattern": "expansion/relatives.csv",
              "description": "The whole relative bin (type-mates of "
                             "candidate types outside the map)."},
@@ -2347,7 +2357,12 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "parameters.json",
              "description": "Every knob incl. validation_mode / mode_rank (a "
                             "pooling run has mode_rank null: the mode is "
-                            "parallel to the nested chain, not above it)."},
+                            "parallel to the nested chain, not above it), and "
+                            "the scene look (neuron_alpha / scene_viz / "
+                            "scene_category_colors — with scenes on these are "
+                            "the EFFECTIVE values the pages wore, not an echo "
+                            "of what was sent: resolved kwargs plus the full "
+                            "legend palette, defaults and aliases included)."},
             {"pattern": "pipeline_progress.jsonl",
              "description": "Stage timeline events (pre-flight, scans, "
                             "out-map expansion, the stage-5d reciprocal "
@@ -2357,7 +2372,10 @@ TOOL_GUIDE_SPECS = {
                             "expansion content (source coordinates; a PNG "
                             "preview sits next to it). The legend tree is "
                             "one root per expansion category with ordered "
-                            "leaf tokens on every bodyId; on "
+                            "leaf tokens on every bodyId; each category's "
+                            "color is its own default and is adjustable per "
+                            "category, a recolor moving the whole bin across "
+                            "every branch; on "
                             "--backward-evidence runs a scanned gap-fill "
                             "leaf carries its reciprocal grade as a "
                             "trailing · high / · medium / · low tag "

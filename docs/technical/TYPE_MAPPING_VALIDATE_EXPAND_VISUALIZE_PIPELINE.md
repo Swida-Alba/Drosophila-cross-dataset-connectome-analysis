@@ -474,7 +474,14 @@ that makes the claim lookups raise:
   cache, its whitener sidecar and the raw skeleton count), because the scores
   and the comparison both read stores that can move, so a cell is only
   comparable with another run that read the same ones — and it says so when a
-  run predates the fingerprint. On a pooling run the report's HERO leads with
+  run predates the fingerprint. Since 2026-09-26 the rev/dirty pair is
+  recorded at **stage 1**, not by the stage-2 scan, so a run that resolves no
+  pairs at all — an absent target dataset, a lone held fan-out — still says
+  which tree produced it (measured twice on the MCNS→FAFB attempts, which
+  published untraceable empty run folders); when the worktree moves while a
+  run works, the scan keeps the first value as `git_rev_at_start` /
+  `git_dirty_at_start` and logs a `!` line instead of silently replacing it.
+  On a pooling run the report's HERO leads with
   that source axis and names the supervised ladder as the same run's other
   answer, because the ladder's three levels are not this mode's levels. In a scene it
   is the `pooling · {source type}` legend root (plum `#7b4173`), hosted by
@@ -484,9 +491,11 @@ that makes the claim lookups raise:
   is tagged `{mapper_cell} · {tiers} · morph ✓/✗` by `pool_leaf_tag`, since a
   scene shows a candidate with no column header to explain it.
   The UI's
-  mode row offers a fourth **Pooling** button with its own gate card
-  (`card-tmvev-pooling`), which is an entrance to the mode, not a widening
-  of the ladder.
+  mode row is two cards on one row — the nested ladder's three buttons in
+  `card-tmvev-mode`, **Pooling** alone in `card-tmvev-mode-pooling` beside
+  them (the seam is the claim that it is an entrance to the mode, not a
+  widening of the ladder) — and its own gate card (`card-tmvev-pooling`),
+  revealed only while the mode is selected.
 
 ### 4.6 Query-level dedup
 
@@ -1103,7 +1112,14 @@ non-empty. `family`/`relative` appear only in family/aggressive mode;
   qualification keeps its CSV label but is not drawn.
 - Colors (category-keyed): query blue, matched cyan, verified green,
   borderline gold, unmatched grey, sibling pink, candidates orange,
-  family light green, relative olive, examinees red.
+  family light green, relative olive, examinees red.  Those are the
+  DEFAULTS in `CATEGORY_COLORS`; `cfg.scene_category_colors` merges a
+  per-category override over them (`resolve_scene_colors`).  A value the
+  renderer cannot parse keeps its default and logs one line, and
+  `COLOR_ALIASES` moves `relatives` / `fill` / `out-map query` with their
+  canonical key so no legacy root can wear a stale color.  Recoloring
+  stays per CATEGORY, never per branch or layer — that invariant is what
+  makes two scenes in one run comparable.
 - The collapsible legend panel is content-width, shrinking for short
   labels and capping at 420px (or the viewport width, whichever is
   smaller); a custom horizontal scrollbar appears when a row overflows.

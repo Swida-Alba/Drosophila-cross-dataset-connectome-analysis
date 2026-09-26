@@ -58,7 +58,8 @@ flag at all — the tab is their only entrance.
 | Query chips | `query_types` (one chip per Enter-committed entry; the CLI flag takes a comma-joined list) | `--types` |
 | Run Label | `run_label` | `--label` |
 | Output directory | `output_dir` | `--output-dir` |
-| Validation Mode (Restrictive/Family/Aggressive/Pooling) | `validation_mode` | `--mode` |
+| Validation Mode — the three nested buttons (`Restrictive`/`Family`/`Aggressive`) in the **Validation Mode** card, plus `Pooling` in the **Parallel mode** card beside them | `validation_mode` | `--mode` |
+| Advanced Visualization card (collapsed, shown with the scenes): skeleton mode / background / neuron opacity / simplification / export, and **Category Colors** (one color per legend category) | `neuron_alpha`, `max_scenes` (the count stays on Stages), `scene_viz`, `scene_category_colors` | `--neuron-alpha`, `--max-scenes`, `--scene-viz-json`, `--scene-colors-json` |
 | Pooling gate card (visible only in mode Pooling): bar metric / bar depth (top-N per metric) / Jaccard floor (advisory flag) / window multiplier (advisory flag) / morph budget | `pooling_bar_metric` / `pooling_bar_top_n` / `pooling_jaccard_floor` / `pooling_window_mult` / `pooling_max_morph_targets` | `--pooling-bar-metric` / `--pooling-bar-top-n` / `--pooling-jaccard-floor` / `--pooling-window-mult` / `--pooling-max-morph-targets` |
 | Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
 | 3D review scenes | `visualize` | `--no-visualize` (negated) |
@@ -114,6 +115,14 @@ run gets a scene (`--max-scenes 0`); a positive value keeps the largest
 pools and names each dropped parent in the run log and in the report's
 Branches tab. The legend tree, top to bottom:
 
+The color named for each root is its **default**. Color is a property of the
+category, not of the branch or the type, so one bin wears one color everywhere in
+the run (that is what makes two scenes comparable) — and each category's color is
+adjustable per category in the tab's **Advanced Visualization** card
+(`--scene-colors-json` on the CLI). The tree legend, the `native` template, the
+synapse skip and the scene count are not offered: the hierarchy, the coordinate
+frame and the layer identity are what the scene is built from.
+
 | legend root | meaning |
 | --- | --- |
 | `query · {source type}` (blue) | your source neurons |
@@ -143,7 +152,7 @@ Every expansion leaf carries **one** token, decided in this order:
 - `{type}(no_source)` — the type is **not** in-map and has no usable
   backward route (**type-level**; e.g. CB4091).
 - `untyped` — no type annotation.
-- On a stage 5d (`--backward-evidence`) run, a scanned `candidates` /
+- On a stage 5d run (default on), a scanned `candidates` /
   `family` / `relative` leaf ends with one more tag: `· high`,
   `· medium` or `· low` (§2.2c). A member the pass did
   not scan keeps a **bare leaf** — no tag means "not checked", never

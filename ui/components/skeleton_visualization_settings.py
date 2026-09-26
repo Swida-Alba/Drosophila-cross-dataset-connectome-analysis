@@ -28,7 +28,11 @@ from .common import (
     param_grid,
     select_input,
 )
-from .palette_picker import color_swatch_picker, palette_editor
+from .palette_picker import (
+    color_swatch_picker,
+    category_color_editor,
+    palette_editor,
+)
 from visualization_options import default_analysis_skeleton_mesh_simplification
 
 
@@ -40,6 +44,19 @@ def _default_analysis_simplification(
     )
 
 
+#: The panel's three captioned sections, by field name. A section caption is
+#: hidden with its whole group, so a caller that scopes the panel down (the
+#: type-mapping validation scenes) never sees an empty heading.
+APPEARANCE_FIELDS = ("skeleton_mode", "legend_mode", "background_color",
+                     "brain_mesh", "vnc_mesh")
+SYNAPSE_FIELDS = ("skip_synapse", "min_synapse_num", "synapse_mode",
+                  "synapse_size", "uniform_synapse_size", "synapse_alpha",
+                  "mesh_alpha", "synapse_colors", "mesh_roi", "roi_colors")
+EXPORT_FIELDS = ("cache_neurons", "cache_synapses", "use_default_simplification",
+                 "neuprint_skeleton_pipeline", "skeleton_mesh_simplification",
+                 "export_method", "export_scale", "show_fig", "export_views")
+
+
 
 @dataclass
 class SkeletonVisualizationSettings:
@@ -47,6 +64,13 @@ class SkeletonVisualizationSettings:
 
     fields: Dict[str, Any]
     panel: Any = None
+    #: The wrapping drocat-card, so a caller can show or hide the whole section
+    #: (hiding only ``panel`` would leave an empty card behind).
+    card: Any = None
+    #: Controls the caller chose not to show. They stay out of ``values()`` so
+    #: the backend's own pinned value stands — a hidden control must never
+    #: reach the render as its widget default.
+    hidden: frozenset = frozenset()
 
     def values(self) -> Dict[str, Any]:
         """Return values using the keyword names accepted by VisualizeSkeleton."""
@@ -63,7 +87,12 @@ class SkeletonVisualizationSettings:
             return colors
 
         for name, field in self.fields.items():
-            if name in {"neuron_colors", "synapse_colors", "roi_colors"}:
+            if name in self.hidden:
+                continue
+            if name == "category_colors":
+                # A name -> color map, not a layer-ordered palette.
+                values[name] = field.get_colors()
+            elif name in {"neuron_colors", "synapse_colors", "roi_colors"}:
                 values[name] = palette_value(field)
             elif name in {"brain_mesh_color", "vnc_mesh_color"}:
                 values[name] = field.get_value()
@@ -96,13 +125,23 @@ class SkeletonVisualizationSettings:
         if "mesh_alpha" in values:
             values["mesh_alpha"] = float(values["mesh_alpha"] or 0)
         if "skeleton_mesh_simplification" in values:
-            if values.get("use_default_simplification", True):
+            # A hidden "use the method default" checkbox must not override a
+            # visible numeric control: the caller that hides it owns the default
+            # resolution, so the typed fraction is what gets sent.
+            use_default = (
+                "use_default_simplification" not in self.hidden
+                and bool(values.get("use_default_simplification", True))
+            )
+            if use_default:
                 values["skeleton_mesh_simplification"] = None
             else:
                 values["skeleton_mesh_simplification"] = float(
                     values["skeleton_mesh_simplification"] or 0
                 )
-            values.pop("use_default_simplification", None)
+        # The "use the method default" checkbox is a UI helper, never a renderer
+        # keyword — dropped unconditionally so a caller that hides the
+        # simplification pair cannot leak it into the render.
+        values.pop("use_default_simplification", None)
         if "mesh_roi" in values:
             values["mesh_roi"] = list(values["mesh_roi"] or [])
         if "roi_colors" in values:
@@ -121,17 +160,29 @@ class SkeletonVisualizationSettings:
         """Warn when a custom palette is empty (backend default fallback).
 
         The ROI palette is only consulted when at least one ROI mesh is
-        selected, so it is skipped otherwise.
+        selected, so it is skipped otherwise. Hidden controls are skipped too:
+        a caller that never shows a palette must not be warned about it, and a
+        category-color editor is never empty (it is seeded from the pipeline's
+        own map).
         """
         from .palette_picker import notify_empty_custom_palettes
 
-        palettes = [
-            (self.fields["neuron_colors"], "Neuron Colors"),
-            (self.fields["synapse_colors"], "Synapse Colors"),
-        ]
-        if self.fields["mesh_roi"].value:
+        def _palette(name, caption):
+            field = self.fields.get(name)
+            if field is None or name in self.hidden:
+                return None
+            return (field, caption)
+
+        palettes = [p for p in (
+            _palette("neuron_colors", "Neuron Colors"),
+            _palette("synapse_colors", "Synapse Colors"),
+        ) if p is not None]
+        if (self.fields.get("roi_colors") is not None
+                and "roi_colors" not in self.hidden
+                and self.fields["mesh_roi"].value):
             palettes.append((self.fields["roi_colors"], "ROI Colors"))
-        notify_empty_custom_palettes(*palettes)
+        if palettes:
+            notify_empty_custom_palettes(*palettes)
 
 
 def skeleton_visualization_settings(
@@ -150,6 +201,9 @@ def skeleton_visualization_settings(
     default_export_method: str = "webdriver",
     dataset_provider: Optional[Callable[[], Any]] = None,
     dataset_watchers: Optional[Iterable[Any]] = None,
+    hidden_fields: Optional[Iterable[str]] = None,
+    category_colors: Optional[Dict[str, str]] = None,
+    category_color_hints: Optional[Dict[str, str]] = None,
     card_id: str = "card-advanced-viz",
 ) -> SkeletonVisualizationSettings:
     """Create the collapsed advanced visualization editor used by analysis tabs.
@@ -161,8 +215,21 @@ def skeleton_visualization_settings(
     The editor renders as a drocat-card section (same pattern as the
     Skeleton tab's appearance blocks); ``card_id`` must be unique per call
     site because every tab builder runs on the same page.
+
+    A pipeline whose renderer pins some of these knobs (the type-mapping
+    validation scenes fix the legend tree, the coordinate template, and the
+    synapse skip) passes ``hidden_fields``: those controls are built but not
+    shown, and stay out of ``values()`` so the backend's pinned value stands
+    instead of the widget's default. ``category_colors`` replaces the ordered
+    Neuron Colors palette with a per-category editor seeded from the caller's
+    own map, returned under the ``category_colors`` key.
     """
     fields: Dict[str, Any] = {}
+    hidden = frozenset(str(name) for name in (hidden_fields or ()))
+    if category_colors:
+        # The two color editors are mutually exclusive; the ordered palette must
+        # not reach the render as an unused layer list.
+        hidden = hidden | {"neuron_colors"}
 
     def _fallback(param, key):
         """Use the caller override when given, else the saved user default."""
@@ -184,7 +251,7 @@ def skeleton_visualization_settings(
     show_fig_default = _fallback_opt_in(default_show_fig, "show_fig_skeleton")
     export_views_default = _fallback_opt_in(default_export_views, "export_views")
 
-    with ui.card().classes("w-full drocat-card").props(f'id="{card_id}"'):
+    with ui.card().classes("w-full drocat-card").props(f'id="{card_id}"') as settings_card:
         with ui.expansion(
             "Advanced Visualization",
             icon="view_in_ar",
@@ -213,7 +280,7 @@ def skeleton_visualization_settings(
                         ),
                     )
 
-            ui.label("Appearance").classes("drocat-mini-label")
+            appearance_label = ui.label("Appearance").classes("drocat-mini-label")
             with param_grid(3):
                 fields["skeleton_mode"] = select_input(
                     "Skeleton Mode",
@@ -264,11 +331,21 @@ def skeleton_visualization_settings(
 
             with ui.row().classes("w-full items-start gap-4"):
                 with ui.column().classes("flex-grow"):
-                    fields["neuron_colors"] = palette_editor(
-                        "Neuron Colors",
-                        value="Category10",
-                        include_auto=False,
-                    )
+                    if category_colors:
+                        # The caller's render colors neurons by CATEGORY, so an
+                        # ordered layer palette is the wrong shape: the map is
+                        # seeded from the pipeline's own defaults.
+                        fields["category_colors"] = category_color_editor(
+                            "Category Colors",
+                            category_colors,
+                            hints=category_color_hints,
+                        )
+                    else:
+                        fields["neuron_colors"] = palette_editor(
+                            "Neuron Colors",
+                            value="Category10",
+                            include_auto=False,
+                        )
                     fields["neuron_alpha"] = number_input(
                         "Neuron Opacity",
                         default_neuron_alpha,
@@ -280,6 +357,11 @@ def skeleton_visualization_settings(
                             "A color with an explicit opacity channel (#RGBA/#RRGGBBAA, "
                             "rgba(), or an RGBA tuple) overrides this value for that "
                             "layer; colors without opacity inherit it."
+                            if not category_colors else
+                            "Global opacity for every skeleton in the scene "
+                            "(0=invisible, 1=solid). The category colors above "
+                            "carry no alpha of their own, so this is the only "
+                            "opacity control."
                         ),
                     ).classes("w-48")
                 fields["brain_mesh_color"] = color_swatch_picker(
@@ -291,7 +373,7 @@ def skeleton_visualization_settings(
                     value="auto",
                 ).classes("flex-grow")
 
-            ui.label("Synapses and regions").classes("drocat-mini-label")
+            synapse_label = ui.label("Synapses and regions").classes("drocat-mini-label")
             with param_grid(3):
                 fields["skip_synapse"] = checkbox_input(
                     "Skip Synapses",
@@ -380,7 +462,7 @@ def skeleton_visualization_settings(
                 include_auto=True,
             )
 
-            ui.label("Data and export").classes("drocat-mini-label")
+            export_label = ui.label("Data and export").classes("drocat-mini-label")
             with param_grid(3):
                 fields["cache_neurons"] = checkbox_input(
                     "Cache Neurons",
@@ -467,6 +549,11 @@ def skeleton_visualization_settings(
             # disabled.  Keep the value in the returned dictionary regardless so
             # callers can take one consistent snapshot at run time.
             def refresh_default_simplification(_event=None):
+                if "use_default_simplification" in hidden:
+                    # The caller scoped the panel down: the visible fraction is
+                    # user-owned, so a hidden checkbox must not rewrite it when
+                    # the dataset changes underneath.
+                    return
                 if bool(fields["use_default_simplification"].value):
                     fields["skeleton_mesh_simplification"].set_value(
                         _default_analysis_simplification(
@@ -477,10 +564,12 @@ def skeleton_visualization_settings(
 
             def refresh_simplification_controls(_event=None):
                 is_line = fields["skeleton_mode"].value == "line"
+                follows_default = ("use_default_simplification" not in hidden
+                                   and bool(fields["use_default_simplification"].value))
                 fields["neuprint_skeleton_pipeline"].set_enabled(not is_line)
                 fields["use_default_simplification"].set_enabled(not is_line)
                 fields["skeleton_mesh_simplification"].set_enabled(
-                    not is_line and not bool(fields["use_default_simplification"].value)
+                    not is_line and not follows_default
                 )
                 if (
                     not cache_default_state["user_changed"]
@@ -522,8 +611,23 @@ def skeleton_visualization_settings(
                 watcher.on_value_change(refresh_simplification_controls)
             refresh_simplification_controls()
 
+            # Scope the panel down for this caller. The controls are still
+            # built (their linkage handlers keep running against them); they are
+            # simply not shown, and `values()` omits every hidden name so the
+            # backend's pinned value stands instead of the widget's default.
+            for _name in sorted(hidden):
+                _field = fields.get(_name)
+                if _field is not None:
+                    _field.set_visibility(False)
+            for _caption, _group in ((appearance_label, APPEARANCE_FIELDS),
+                                     (synapse_label, SYNAPSE_FIELDS),
+                                     (export_label, EXPORT_FIELDS)):
+                if all(_n in hidden for _n in _group):
+                    _caption.set_visibility(False)
+
     # Keep the returned object useful in tests and for callers that want to
     # toggle or restyle the section programmatically.
-    result = SkeletonVisualizationSettings(fields)
+    result = SkeletonVisualizationSettings(fields, hidden=hidden)
     result.panel = panel
+    result.card = settings_card
     return result

@@ -29,6 +29,7 @@ the root keeps report.html, the run guide and the parameter/meta files.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +41,25 @@ from comparison.mapping_validation import (  # noqa: E402
     MappingValidationConfig,
     MappingValidator,
 )
+
+
+def _json_object(raw, flag):
+    """Parse a ``{...}`` CLI value into a dict, naming the flag on failure.
+
+    The two scene-styling flags carry the same dicts the UI's Advanced
+    Visualization panel sends, so the CLI stays a complete surface for a run
+    someone reproduces from `parameters.json`.
+    """
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f'{flag}: invalid JSON ({exc})')
+    if not isinstance(value, dict):
+        raise SystemExit(f'{flag}: expected a JSON object, got '
+                         f'{type(value).__name__}')
+    return {str(k): v for k, v in value.items()}
 
 
 def parse_args(argv=None):
@@ -228,6 +248,18 @@ def parse_args(argv=None):
                         'value names every dropped parent in the run log)')
     p.add_argument('--neuron-alpha', type=float, default=0.2,
                    help='global neuron opacity in scenes (default: 0.2)')
+    p.add_argument('--scene-viz-json', default=None, metavar='JSON',
+                   help='scene styling as a JSON object of VisualizeSkeleton '
+                        'kwargs, e.g. \'{"skeleton_mode": "tube", '
+                        '"background_color": "black", "export_scale": 4}\'. '
+                        'What a scene may not be talked out of is ignored: '
+                        'the legend tree, the coordinate template, the synapse '
+                        'skip and the layer identity')
+    p.add_argument('--scene-colors-json', default=None, metavar='JSON',
+                   help='per-category scene colors as a JSON object merged '
+                        'over CATEGORY_COLORS, e.g. \'{"matched": "#00ff00", '
+                        '"pooling": "#123456"}\'. A color the renderer cannot '
+                        'parse keeps the pipeline default and logs one line')
     p.add_argument('--suspicious-cap', type=int, default=20,
                    help='max examinee rows kept per source neuron')
     p.add_argument('--verify-suspects', action='store_true',

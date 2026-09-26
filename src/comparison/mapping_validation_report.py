@@ -3632,6 +3632,63 @@ def _scene_failures(d: Dict) -> list:
     return sorted(failed.items())
 
 
+def _scene_palette_html(d: Dict) -> str:
+    """The category colors this run's scenes actually wore, as legend chips.
+
+    A scene's tree legend is the only place the palette was ever visible, so a
+    run whose categories were recolored could not be read from its report
+    alone. `parameters.json` records the EFFECTIVE map (see
+    `scene_styling_record`), which is what this renders — the same
+    `COLOR_EDITABLE_CATEGORIES` order the UI editor offers, so the two never
+    disagree about which bins are paintable. A changed bin names the default it
+    replaced, because "why is matched red?" is the question this answers.
+    """
+    palette = (d.get('params') or {}).get('scene_category_colors')
+    if not isinstance(palette, dict) or not palette:
+        return ''
+    try:
+        from comparison.mapping_validation_visualize import (
+            CATEGORY_COLORS, COLOR_EDITABLE_CATEGORIES)
+    except Exception:  # noqa: BLE001 - a legend is never worth a failed report
+        return ''
+    chips = []
+    changed = 0
+    for cat in COLOR_EDITABLE_CATEGORIES:
+        color = str(palette.get(cat) or '')
+        if not color:
+            continue
+        default = CATEGORY_COLORS.get(cat, '')
+        moved = color.lower() != str(default).lower()
+        # counted from the bins that actually produced a chip, so the headline
+        # can never claim a recolor for a category the block does not show
+        changed += int(moved)
+        note = (f"<span class='mv-palette-was'>was {_esc(default)}</span>"
+                if moved else '')
+        chips.append(
+            "<span class='mv-palette-chip'>"
+            f"<span class='mv-palette-swatch' "
+            f"style='background:{_esc(color)}'></span>"
+            f"<span class='mv-palette-name'>{_esc(cat)}</span>"
+            f"<span class='mv-palette-hex'>{_esc(color)}</span>{note}</span>")
+    if not chips:
+        return ''
+    if changed:
+        subtitle = (f"<b>{changed}</b> "
+                    f"{'category' if changed == 1 else 'categories'} "
+                    'recolored from the pipeline defaults')
+    else:
+        subtitle = 'the pipeline defaults, nothing recolored'
+    return (
+        "<div class='mv-palette'>"
+        "<p class='mv-palette-title'>Scene palette this run wore — "
+        + subtitle + "</p><div class='mv-palette-chips'>"
+        + ''.join(chips) + "</div>"
+        "<p class='mv-note'>Color is a property of the CATEGORY, so one bin "
+        'wears one color across every branch and parent scene in the run — '
+        'that is what makes two scenes comparable. Adjust per category under '
+        'Cross-Dataset › Type Validation › Advanced Visualization.</p></div>')
+
+
 def _scenes_tab(d: Dict) -> str:
     sc = d['selfcheck']
     statuses: Dict[str, bool] = {}
@@ -3678,6 +3735,7 @@ def _scenes_tab(d: Dict) -> str:
         'but failed is named below rather than folded into that count.'
         f'{fail_note}</p>'
         f"<div class='scene-grid'>{''.join(tiles)}</div>"
+        + _scene_palette_html(d) +
         "<p class='mv-note'>Scenes render in SOURCE coordinates — read "
         'as anatomy, never as the scoring frame (morph tracks score in '
         'TARGET coordinates).</p>')
@@ -3925,6 +3983,22 @@ _EXTRA_CSS = """<style>
                    padding: 7px 8px 0; }
 .scene-tile-status { display: block; color: var(--success);
                      font-size: 11px; padding: 0 8px 8px; }
+.mv-palette { border-top: 1px solid var(--line); margin: 16px 0 0;
+              padding-top: 12px; }
+.mv-palette-title { font-size: 13px; font-weight: 700; margin: 0 0 8px;
+                    color: var(--ink); }
+.mv-palette-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.mv-palette-chip { display: inline-flex; align-items: center; gap: 6px;
+                   background: var(--surface-soft);
+                   border: 1px solid var(--line); border-radius: 999px;
+                   padding: 3px 10px 3px 5px; font-size: 12px; }
+.mv-palette-swatch { width: 14px; height: 14px; border-radius: 4px;
+                     border: 1px solid rgba(11, 31, 58, .22);
+                     flex: none; display: inline-block; }
+.mv-palette-name { font-weight: 650; }
+.mv-palette-hex { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                  color: var(--muted); font-size: 11px; }
+.mv-palette-was { color: #92600a; font-size: 11px; }
 .missing { color: var(--muted); }
 .report-hero .report-subtitle { font-size: 16px; color: var(--ink); }
 .report-hero .report-subtitle b { color: var(--accent-dark); }
