@@ -451,3 +451,36 @@ class TestVerifyInstallConfigRead:
         has_token, _source = module.config_neuprint_token(tmp_path)
         assert has_token is False
 
+
+
+class TestWindowsFindstrPredicates:
+    """Round-6 finding F-P1: the batch's DROCAT-ownership predicates ran
+    findstr in REGEX mode ('ui\\app.py' never matched the literal text), so
+    kill-all, the EOF auto-open and the [2] menu wording were all dead on
+    Windows. These tests pin the literal /C: form at both sites so a bare
+    pattern cannot come back."""
+
+    def _bat(self):
+        return (ROOT / "windows_DROCAT.bat").read_text(encoding="utf-8")
+
+    def test_both_predicates_use_literal_slash_C(self):
+        text = self._bat()
+        literal = 'findstr /I /C:"ui\\app.py" /C:"drocat"'
+        assert text.count(literal) == 2, (
+            "expected the owner-classification and :stop_one_pid "
+            "predicates both in literal /C: form")
+
+    def test_no_bare_regex_predicate_remains(self):
+        text = self._bat()
+        assert 'findstr /I "ui\\app.py drocat"' not in text, (
+            "the bare form is a regex split into alternatives - "
+            "ui\\app.py never matches; see round-6 F-P1")
+
+    def test_scan_predicate_agrees_with_classification(self):
+        """The listing (:scan_drocat_instances, PowerShell -match) and the
+        ownership checks must not disagree by construction - the round-6
+        report showed a correct listing beside a dead kill switch."""
+        text = self._bat()
+        assert "ui[\\\\/]app\\.py" in text  # the PowerShell listing pattern
+        # and every listed PID passes the same literal classification
+        assert text.count('findstr /I /C:"ui\\app.py" /C:"drocat"') == 2

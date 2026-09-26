@@ -144,7 +144,11 @@ set "OWNER_CMD="
 for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!OWNER_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "OWNER_CMD=%%c"
 REM System-owned ports (PID 4) cannot be inspected; show a fallback label.
 if not defined OWNER_CMD set "OWNER_CMD=PID !OWNER_PID! (command line unavailable)"
-echo !OWNER_CMD! | findstr /I "ui\app.py drocat" >nul
+REM /C: x2: literal alternatives, NOT regex. The bare form ran findstr in
+REM regex mode where ui\app.py never matches the literal text (round-6
+REM finding F-P1: kill-all and EOF-open were dead on Windows), and under
+REM conda run the command line carries no "drocat" substring to rescue it.
+echo !OWNER_CMD! | findstr /I /C:"ui\app.py" /C:"drocat" >nul
 if not errorlevel 1 set "OWNER_IS_DROCAT=1"
 
 echo.
@@ -282,7 +286,8 @@ set "STOP_PID=%~1"
 set "STOP_CMD="
 for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!STOP_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "STOP_CMD=%%c"
 if not defined STOP_CMD goto :eof
-echo !STOP_CMD! | findstr /I "ui\app.py drocat" >nul
+REM /C: x2 for the same reason as the owner classification above (F-P1).
+echo !STOP_CMD! | findstr /I /C:"ui\app.py" /C:"drocat" >nul
 if errorlevel 1 goto :eof
 echo Stopping DROCAT PID !STOP_PID!...
 taskkill /PID !STOP_PID! >nul 2>nul
