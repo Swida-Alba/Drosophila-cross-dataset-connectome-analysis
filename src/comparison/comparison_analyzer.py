@@ -516,6 +516,36 @@ class ComparisonAnalyzer:
                 pass
         return self._path_run_meta_from_state(dataset_name, threshold, {})
 
+    def _neutralize_edge_mode_path_meta(self) -> None:
+        """F-XD-004: make edge-mode path-run provenance tell edge truth.
+
+        Must run AFTER ``_complete_path_run_meta`` — that pass re-derives
+        tau/bitten from the per-run FNC state and clobbers an earlier
+        neutralization (round-6 Windows finding F-P3: the exported root
+        showed tau repopulated and no side_path_run because the original
+        placement ran first).
+        """
+        for (ds_name, t), meta in list(self._path_run_meta.items()):
+            meta = dict(meta or {})
+            side = {k: meta.get(k) for k in (
+                'strongest_first_tau', 'tau', 'tau_canonical',
+                'strongest_first_budget_bitten', 'budget_bitten',
+                'graph_pruning_record', 'edge_budget',
+                'edge_budget_landing', 'path_mode') if meta.get(k) is not None}
+            meta.update({
+                'edge_mode': True,
+                'side_path_run': side,
+                'comparison_mode': 'edge',
+                'strongest_first_tau': None,
+                'tau': None,
+                'strongest_first_budget_bitten': False,
+                'budget_bitten': False,
+                'graph_pruning_record': {},
+                'edge_budget': None,
+                'edge_budget_landing': None,
+            })
+            self._path_run_meta[(ds_name, t)] = meta
+
     def _complete_path_run_meta(self) -> None:
         """Normalize every configured comparison row before exporting it."""
         for dataset_name in self.parameters.get_dataset_names():
@@ -550,7 +580,11 @@ class ComparisonAnalyzer:
             if applied is not None and int(applied) != int(threshold):
                 stats = getattr(self, '_untyped_drop_stats', {}).get(
                     (dataset_name, int(applied))) or {}
+        edge_meta = {k: meta.get(k) for k in (
+            'edge_mode', 'side_path_run', 'comparison_mode')
+            if meta.get(k) is not None}
         return {
+            **edge_meta,
             'dataset': dataset_name,
             'threshold': threshold,
             'threshold_scope': (
@@ -4010,33 +4044,19 @@ class ComparisonAnalyzer:
                 for threshold in tqdm(remaining_thresholds, desc=f"  {dataset_name} thresholds", leave=False, unit="thr"):
                     self.run_path_analysis(dataset_name, threshold, verbose_mode='silent')
 
-        # Edge-mode truth (F-XD-004): the compared data is exactly
-        # `weight >= requested` — the path runs above exist for output
-        # consistency, and their tau/budget provenance must not masquerade
-        # as the edge filter's applied threshold. Neutralize the path-run
-        # state so the shared formula reports applied == requested, and keep
-        # the side-run numbers under a clearly-labeled key.
-        if self.parameters.comparison_mode == 'edge':
-            for (ds_name, t), meta in list(self._path_run_meta.items()):
-                meta = dict(meta or {})
-                side = {k: meta.get(k) for k in (
-                    'strongest_first_tau', 'tau', 'strongest_first_budget_bitten',
-                    'budget_bitten', 'graph_pruning_record', 'edge_budget',
-                    'edge_budget_landing') if meta.get(k) is not None}
-                meta.update({
-                    'edge_mode': True,
-                    'side_path_run': side,
-                    'strongest_first_tau': None,
-                    'tau': None,
-                    'strongest_first_budget_bitten': False,
-                    'budget_bitten': False,
-                    'graph_pruning_record': {},
-                    'edge_budget': None,
-                    'edge_budget_landing': None,
-                })
-                self._path_run_meta[(ds_name, t)] = meta
-
         self._complete_path_run_meta()
+
+        # Edge-mode truth (F-XD-004, ordering fixed after round-6 F-P3):
+        # the compared data is exactly `weight >= requested` — the path
+        # runs above exist for output consistency, and their tau/budget
+        # provenance must not masquerade as the edge filter's applied
+        # threshold. This must run AFTER _complete_path_run_meta(): that
+        # pass re-derives tau/bitten from the per-run FNC state and would
+        # clobber an earlier neutralization (exactly what the Windows
+        # round-6 run observed — tau repopulated, side_path_run absent).
+        if self.parameters.comparison_mode == 'edge':
+            self._neutralize_edge_mode_path_meta()
+
         self._export_untyped_drop_records()
         self._export_effective_threshold_banner()
         self._log(f"Completed edge analysis for {len(dataset_names)} datasets")

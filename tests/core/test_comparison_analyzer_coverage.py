@@ -2370,28 +2370,40 @@ def test_state_notes_replace_across_re_exports(tmp_path):
 def test_edge_mode_provenance_reports_requested_threshold(analyzer):
     """Edge-mode data is exactly `weight >= requested`; the side-effect
     path runs' tau/budget must not masquerade as the edge filter's applied
-    threshold (F-XD-004)."""
+    threshold (F-XD-004), and the neutralization must SURVIVE the meta
+    re-derivation pass (round-6 Windows F-P3: running before it meant the
+    exported root repopulated tau and dropped side_path_run)."""
     analyzer._path_run_meta[('dsA', 5)] = {
-        'strongest_first_tau': 9, 'tau': 9,
+        'strongest_first_tau': 9, 'tau': 9, 'tau_canonical': 9,
         'strongest_first_budget_bitten': True, 'budget_bitten': True,
         'graph_pruning_record': {'landing': 9},
         'edge_budget': 1_000_000, 'edge_budget_landing': 9,
+        'path_mode': 'all',
     }
-    # Apply the same transform _run_all_edge_analyses applies in edge mode.
     analyzer.parameters.comparison_mode = 'edge'
-    meta = dict(analyzer._path_run_meta[('dsA', 5)])
-    side = {k: meta.get(k) for k in (
-        'strongest_first_tau', 'tau', 'strongest_first_budget_bitten',
-        'budget_bitten', 'graph_pruning_record', 'edge_budget',
-        'edge_budget_landing') if meta.get(k) is not None}
-    meta.update({
-        'edge_mode': True, 'side_path_run': side,
-        'strongest_first_tau': None, 'tau': None,
-        'strongest_first_budget_bitten': False, 'budget_bitten': False,
-        'graph_pruning_record': {}, 'edge_budget': None,
-        'edge_budget_landing': None,
-    })
-    analyzer._path_run_meta[('dsA', 5)] = meta
+    # the REAL sequence: re-derivation first (this is what used to clobber),
+    # then the neutralizer
+    analyzer._complete_path_run_meta()
+    analyzer._neutralize_edge_mode_path_meta()
     row = analyzer._path_provenance_row('dsA', 5)
     assert int(row['applied_threshold']) == 5
     assert row['tau'] is None and row['strongest_first_budget_bitten'] is False
+    assert row.get('edge_mode') is True
+    assert row.get('comparison_mode') == 'edge'
+    side = row.get('side_path_run') or {}
+    assert side.get('strongest_first_tau') == 9
+    assert side.get('path_mode') == 'all'
+
+
+def test_edge_mode_neutralization_runs_after_rederivation(analyzer):
+    """Ordering pin (F-P3): _run_all_edge_analyses must call the
+    neutralizer AFTER _complete_path_run_meta — source-order check so the
+    clobbering sequence cannot silently return."""
+    import inspect
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    src = inspect.getsource(ComparisonAnalyzer._run_all_edge_analyses)
+    complete = src.index('_complete_path_run_meta()')
+    neutral = src.index('_neutralize_edge_mode_path_meta()')
+    assert neutral > complete, (
+        'edge-mode neutralization must follow the meta re-derivation '
+        'or its values are clobbered (round-6 F-P3)')
