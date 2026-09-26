@@ -2091,6 +2091,35 @@ class ProgressReporter:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def ensure_local_release_data(dataset: str, project_root=None) -> bool:
+    """Prepare a local-release target the way every other entry point does.
+
+    Round-6 finding F-P2: with an absent BANC target the pair resolver
+    collapsed every pool to '(untyped)' and the run exited 0 having
+    validated nothing, because nothing between the CLI and the resolver
+    runs the public-bucket preparation that coana / visualize_skeleton /
+    the converters all perform. This gate gives the TM VEV entry points
+    the same behaviour: BANC targets auto-prepare on first use; a failed
+    preparation refuses the run instead of resolving against a universe
+    that does not exist. Returns True when the data is present/prepared.
+    """
+    from flywire_ids import is_banc_dataset
+    if not is_banc_dataset(dataset):
+        return True  # NeuPrint targets answer to the cache gates instead
+    try:
+        from BANC_file_converter import ensure_banc_data
+    except ImportError:
+        from .BANC_file_converter import ensure_banc_data  # type: ignore
+    root = Path(project_root) if project_root else \
+        Path(__file__).resolve().parents[2]
+    dataset_dir = root / 'datasets'
+    try:
+        return bool(ensure_banc_data(dataset, dataset_dir))
+    except Exception as exc:  # noqa: BLE001 — refusal, not a crash
+        print(f'! [TMVEV] target preparation for {dataset} failed: {exc!r}')
+        return False
+
+
 class MappingValidator:
     """Orchestrates the validation run and writes all outputs."""
 
@@ -2182,6 +2211,16 @@ class MappingValidator:
                 # validation type-level.
                 id2type = self.profiler.get_types_for_bodyids(
                     body_ids, cfg.source_dataset) or {}
+                if body_ids and not any(id2type.values()):
+                    # F-P2: an empty lookup is a TABLE/read failure, not a
+                    # data-quality fact — say so before the '(untyped)'
+                    # bucket reads like an accusation against the neurons.
+                    self.log(
+                        '! [resolution] type lookup returned nothing for '
+                        f'{len(body_ids)} bodyIds of {query!r} in '
+                        f'{cfg.source_dataset} (local neuron table '
+                        'unreadable or absent?) — the "(untyped)" bucket '
+                        'below names the LOOKUP GAP, not the data')
                 by_type: Dict[str, List[int]] = {}
                 for bid in body_ids:
                     tname = id2type.get(bid)
@@ -5611,7 +5650,10 @@ class MappingValidator:
                  f'{cfg.source_dataset} -> {cfg.target_dataset}')
         self.pairs = self.resolve_type_pairs()
         if not self.pairs:
-            self.log('no valid type pairs resolved; nothing to validate')
+            self.log('! [resolution] no valid type pairs resolved; '
+                     'nothing to validate — check that the TARGET '
+                     f'dataset ({cfg.target_dataset}) has local data and '
+                     'that the queried types exist on both sides')
             # P3: a no-pair run (e.g. a lone held fan-out) still verifies
             # its rivals when the pass is opted in.
             if cfg.verify_suspects:

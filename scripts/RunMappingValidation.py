@@ -310,12 +310,25 @@ def main(argv=None):
         visualize=not args.no_visualize,
         max_scenes=args.max_scenes,
         neuron_alpha=args.neuron_alpha,
+        scene_viz=_json_object(args.scene_viz_json, '--scene-viz-json'),
+        scene_category_colors=_json_object(
+            args.scene_colors_json, '--scene-colors-json'),
         suspicious_per_source_cap=args.suspicious_cap,
         verify_suspects=args.verify_suspects,
         output_dir=args.output_dir,
         run_label=args.label,
         verbose=not args.quiet,
     )
+    # F-P2 gate: a local-release target auto-prepares the way every other
+    # BANC entry point does; a failed preparation refuses the run instead
+    # of resolving type pairs against a universe that does not exist.
+    from comparison.mapping_validation import ensure_local_release_data
+    if not ensure_local_release_data(args.target):
+        print('! [TMVEV] refusing: target dataset '
+              f'{args.target!r} has no local data and its preparation '
+              'failed or was declined')
+        return 2
+
     validator = MappingValidator(cfg)
     run_dir = validator.run()
     print(f'\nResults: {run_dir}')
