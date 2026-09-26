@@ -27,7 +27,7 @@ python scripts/RunMappingValidation.py \
 # review the fill with the advisory reciprocal evidence (stage 5d, §2.2c)
 python scripts/RunMappingValidation.py \
     --source flywire_FAFB_v783 --target male-cns:v1.0 \
-    --types s-CPDN3C,s-CPDN3D --mode family --backward-evidence
+    --types s-CPDN3C,s-CPDN3D --mode family
 ```
 
 Results land in
@@ -62,7 +62,7 @@ flag at all — the tab is their only entrance.
 | Pooling gate card (visible only in mode Pooling): bar metric / bar depth (top-N per metric) / Jaccard floor (advisory flag) / window multiplier (advisory flag) / morph budget | `pooling_bar_metric` / `pooling_bar_top_n` / `pooling_jaccard_floor` / `pooling_window_mult` / `pooling_max_morph_targets` | `--pooling-bar-metric` / `--pooling-bar-top-n` / `--pooling-jaccard-floor` / `--pooling-window-mult` / `--pooling-max-morph-targets` |
 | Morphology verification | `morph_enabled` | `--no-morphology` (negated) |
 | 3D review scenes | `visualize` | `--no-visualize` (negated) |
-| Backward (reciprocal) evidence | `backward_evidence_enabled` | `--backward-evidence` |
+| Backward (reciprocal) evidence | `backward_evidence_enabled` (default **on**) | `--no-backward-evidence` skips it |
 | Backward scans unmatched pool members | `backward_scan_pool_targets` | `--no-backward-pool-targets` (negated) |
 | Suspicious per-source cap | `suspicious_per_source_cap` | `--suspicious-cap` |
 | Cache-only profiles | `skip_profile_build` | `--skip-profile-build` |

@@ -43,7 +43,8 @@ cfg = MappingValidationConfig(
     pool_widen=False,                    # retired (Rev 3.12)
     morph_enabled=True,                  # CLI --no-morphology negates
     visualize=True,                      # CLI --no-visualize negates
-    backward_evidence_enabled=False,     # CLI --backward-evidence (default off)
+    backward_evidence_enabled=True,      # default on (2026-09-26);
+                                         # CLI --no-backward-evidence skips
     skip_out_map_expansion=False,
     skip_profile_build=False,            # True => cache-only profiles (offline control)
     use_cache=True,                      # False => force refetch (NOT offline)

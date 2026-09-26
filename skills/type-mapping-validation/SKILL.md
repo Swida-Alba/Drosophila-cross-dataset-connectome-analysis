@@ -419,7 +419,7 @@ against — `local_data/` is disposable by design.
   the `source-` statuses), and cross-branch convergence lives in the
   sibling category.
 - **Stage 5d reciprocal evidence is ADVISORY and connectivity-only**
-  (`--backward-evidence`, default OFF): every `candidates` / `family` /
+  (default ON since 2026-09-26): every `candidates` / `family` /
   `relative` member — plus, by default, the UNMATCHED validated pool
   targets (matched / verified / borderline are never scanned; the
   symmetric forward score is their evidence) — is reverse-scanned against
