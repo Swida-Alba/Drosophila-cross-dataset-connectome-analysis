@@ -357,52 +357,6 @@ def assign_invader(claimed: Dict[int, Tuple[int, str]],
     rec['types'][bid] = atype
 
 
-def build_sibling_index(branch_list, own_pair) -> Dict[int,
-                                                        Tuple[str, str]]:
-    """Revision 3.5 Issue 2: pool categories of the SIBLING branches of
-    the same parent (same query + source_type), excluding the branch
-    being rendered: target_bid -> (category there, sibling target type).
-    """
-    sibling_index: Dict[int, Tuple[str, str]] = {}
-    for other_pair, other_res in branch_list:
-        if other_pair.key == own_pair.key:
-            continue
-        for tbid, cat in (other_res.get('target_categories')
-                          or {}).items():
-            sibling_index.setdefault(
-                int(tbid), (str(cat), other_pair.target_type))
-    return sibling_index
-
-
-def make_backward_lookup(validator, cfg, cache: Dict[str, Optional[str]]):
-    """Revision 3.5 Issue 2: cached backward type-mapper lookups — an
-    invader's target-dataset type mapped toward the source dataset via
-    ``get_mapping_decision`` ('mapped' / 'valid_split_evidence' only,
-    fail-closed otherwise)."""
-    def backward_lookup(ahead_type):
-        if (not ahead_type or ahead_type == '?'
-                or (isinstance(ahead_type, float)
-                    and ahead_type != ahead_type)
-                or validator.mapper is None):
-            return None
-        if ahead_type not in cache:
-            mapped = None
-            try:
-                dec = validator.mapper.get_mapping_decision(
-                    ahead_type, cfg.target_dataset, cfg.source_dataset)
-                if dec.get('status') in ('mapped', 'valid_split_evidence'):
-                    cands = [dec.get('target_type')]
-                    cands += list(dec.get('target_types') or [])
-                    vals = list(dict.fromkeys(
-                        str(t) for t in cands if t))
-                    mapped = '/'.join(vals) or None
-            except Exception:  # noqa: BLE001
-                mapped = None
-            cache[ahead_type] = mapped
-        return cache[ahead_type]
-    return backward_lookup
-
-
 def build_category_buckets(res, validator, pair, suspicious_cap: int
                            ) -> Tuple[Dict[str, Dict], List[str]]:
     """Revision 3.12: bucket the branch's expansion rows by their exported
