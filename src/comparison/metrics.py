@@ -569,11 +569,11 @@ class ComparisonMetrics:
                     row['hop_profile_w1'] = np.nan
 
                 # WEIGHT-SENSITIVE: Spearman rank correlation on SHARED edges only
-                # (detail-table metric; gated — NaN below 30 shared edges so a
+                # (detail-table metric; gated — NaN below 10 shared edges so a
                 # tiny-sample 1.0 can never read as a strong result)
                 spearman_sim = self.calculate_spearman_rank_correlation(
                     weights_1, weights_2, use_shared_edges=True, use_normalized=True,
-                    min_shared=30
+                    min_shared=10
                 )
                 row['spearman_rank_correlation'] = spearman_sim
 
@@ -1870,7 +1870,7 @@ class ComparisonMetrics:
                               If False, use union with 0 for missing edges.
             use_normalized: If True, normalize weights to proportions (default: True)
             min_shared: Gate on the shared-positive-edge count — NaN below it
-                        (v2.2: the detail table uses 30; 0 keeps legacy behavior).
+                        (v2.2: the detail table uses 10; 0 keeps legacy behavior).
 
         Returns:
             Rank correlation in [-1, 1], or NaN if undefined

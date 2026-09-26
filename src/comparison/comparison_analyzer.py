@@ -187,6 +187,11 @@ class ComparisonAnalyzer:
         self._merge_key_cache: Dict = {}
         self._mapping_status_counts: Dict[str, int] = {}
         self._conflicted_merge_types: Dict[str, str] = {}
+        # Union type-resolution coverage (type_coverage.py): query id ->
+        # {(type, dataset): TypeCoverageEntry}. None = not built yet; the
+        # pass is lazy because it reads the local neuron tables and
+        # connection caches once per dataset.
+        self._type_coverage_cache: Optional[Dict] = None
         # Query-anchored MergePolicy (plan:
         # plan-query-anchored-cross-dataset-analysis.md) — built lazily
         # once per run; False = build attempted and not applicable/failed
@@ -596,6 +601,85 @@ class ComparisonAnalyzer:
         path separators or platform-specific special names.
         """
         return safe_point_id(query_id)
+
+    # ------------------------------------------------------------------
+    # Union type-resolution coverage (type_coverage.py)
+    # ------------------------------------------------------------------
+
+    def _type_coverage(self) -> Dict[str, Dict[Tuple[str, str], Any]]:
+        """Union-of-appeared-types resolution for every query (lazy, cached).
+
+        Alignment only sees types a dataset recruited; this pass resolves
+        the union of appeared types into EVERY dataset and classifies the
+        absences (below threshold / not in dataset / unmapped / ...).  A
+        failure of the pass must never block the export.
+        """
+        if self._type_coverage_cache is None:
+            try:
+                from .type_coverage import build_type_coverage
+                self._type_coverage_cache = build_type_coverage(self)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"Warning: type coverage pass failed: {exc}")
+                self._type_coverage_cache = {}
+        return self._type_coverage_cache
+
+    def _type_coverage_for_query(self, point_key: Any) -> Dict[Tuple[str, str], Any]:
+        """Coverage entries for one query id / scalar threshold point."""
+        coverage = self._type_coverage()
+        if not coverage:
+            return {}
+        try:
+            record = self._query_record(point_key)
+        except Exception:  # noqa: BLE001
+            return {}
+        return coverage.get(str(record.get('id') or ''), {}) or {}
+
+    def _type_coverage_txt_lines(self) -> List[str]:
+        """Human-readable TYPE COVERAGE section lines for the txt report."""
+        coverage = self._type_coverage()
+        if not coverage:
+            return []
+        try:
+            from .type_coverage import STATUS_LABELS
+            nickname_map = self.parameters.get_nickname_map()
+        except Exception:  # noqa: BLE001
+            nickname_map = {}
+        lines = [
+            'TYPE COVERAGE (UNION RESOLUTION):',
+            '----------------------------------------------------------------------',
+            ('  Union of types that appeared in ANY dataset, resolved into '
+             'EVERY dataset via the type mapper.  Only absent (dataset, '
+             'type) pairs are listed; present types are omitted.  Full '
+             'table: comparison_results/type_resolution_union.csv'),
+            '',
+        ]
+        wrote_any = False
+        for query in self.get_threshold_queries():
+            query_id = str(query.get('id') or query.get('query_id') or '')
+            query_label = query.get('label', query_id)
+            entries = coverage.get(query_id) or {}
+            if not entries:
+                continue
+            per_type: Dict[str, List[str]] = {}
+            for (type_name, dataset), entry in sorted(entries.items()):
+                if entry.present:
+                    continue
+                nick = nickname_map.get(dataset, dataset)
+                text = f'{nick} {entry.status_label}'
+                if entry.detail:
+                    text += f' ({entry.detail})'
+                per_type.setdefault(type_name, []).append(text)
+            if not per_type:
+                continue
+            lines.append(f'  query = {query_id} ({query_label}):')
+            for type_name, notes in per_type.items():
+                lines.append(f'    {type_name}: ' + '; '.join(notes))
+            wrote_any = True
+            lines.append('')
+        if not wrote_any:
+            return []
+        return lines
+
     
     def _save_csv(self, df: pd.DataFrame, filepath: str, index: bool = False):
         """Save DataFrame to CSV with UTF-8 encoding for cross-platform compatibility.
@@ -1676,6 +1760,7 @@ class ComparisonAnalyzer:
         self._merge_key_cache = {}
         self._mapping_status_counts = {}
         self._conflicted_merge_types = {}
+        self._type_coverage_cache = None
 
     def run_all_analyses(self, skip_existing: bool = True) -> Dict[str, Dict[int, pd.DataFrame]]:
         """
@@ -5383,6 +5468,10 @@ class ComparisonAnalyzer:
                         f"    {left} ∩ {right}: {overlap} edges "
                         f"({left_pct:.0f}% of left, {right_pct:.0f}% of right)")
 
+        type_coverage_lines = self._type_coverage_txt_lines()
+        if type_coverage_lines:
+            lines.extend([""] + type_coverage_lines)
+
         lines.extend([
             "",
             "QUERY-KEYED EXPORTS:",
@@ -5678,7 +5767,12 @@ class ComparisonAnalyzer:
                         short1 = d1.split(':')[0][:8] if ':' in d1 else d1[:8]
                         short2 = d2.split(':')[0][:8] if ':' in d2 else d2[:8]
                         lines.append(f"    {short1} ∩ {short2}: {overlap} edges ({pct1:.0f}% of D1, {pct2:.0f}% of D2)")
-        
+
+        type_coverage_lines = self._type_coverage_txt_lines()
+        if type_coverage_lines:
+            lines.append("")
+            lines.extend(type_coverage_lines)
+
         lines.append("")
         lines.append("=" * 70)
         lines.append("For interactive visualizations, see: comparison_report.html")
@@ -6014,6 +6108,13 @@ class ComparisonAnalyzer:
         
         # === Cross-dataset comparison results ===
         self._export_cross_dataset_comparisons(comparison_results_dir)
+
+        # === Union type-resolution coverage (one row per query × type ×
+        # dataset: resolved name + absence diagnosis) ===
+        try:
+            self._export_type_resolution_union(comparison_results_dir)
+        except Exception as e:
+            self._log(f"Warning: type resolution union export failed: {e}")
 
         # === Intra-dataset threshold sensitivity ===
         self._export_intra_dataset_comparisons(comparison_results_dir)
@@ -6476,6 +6577,7 @@ class ComparisonAnalyzer:
                 dataset for dataset in dataset_names
                 if dataset in aligned.columns
             ]
+            coverage = self._type_coverage_for_query(query_id)
             for edge_key, values in aligned.iterrows():
                 edge_text = str(edge_key)
                 if ' -> ' in edge_text:
@@ -6497,6 +6599,14 @@ class ComparisonAnalyzer:
                     safe_name = self.parameters._sanitize_name(dataset)
                     row[f'weight_{safe_name}'] = values.get(dataset, 0)
                     row[f'threshold_{safe_name}'] = threshold_map.get(dataset)
+                    # Endpoint coverage statuses (type_coverage.py): why a
+                    # dataset shows no weight for this edge.
+                    src_entry = coverage.get((source, dataset))
+                    tgt_entry = coverage.get((target, dataset))
+                    row[f'source_status_{safe_name}'] = (
+                        src_entry.status if src_entry is not None else '')
+                    row[f'target_status_{safe_name}'] = (
+                        tgt_entry.status if tgt_entry is not None else '')
                     provenance = self._path_provenance_row(
                         dataset, threshold_map[dataset])
                     row[f'applied_threshold_{safe_name}'] = provenance.get(
@@ -9231,6 +9341,28 @@ class ComparisonAnalyzer:
         if self.comparison_report is not None:
             self.comparison_report['path_presence_matrix'] = path_df
 
+    def _export_type_resolution_union(self, comparison_results_dir: str):
+        """Export the union type-resolution table (type_coverage.py).
+
+        One row per (query, appeared type, dataset): how the type resolves
+        in that dataset and why it is absent when it is — the resolver's
+        verdict for the full union, not only the types a dataset's own
+        pathfinding happened to recruit.
+        """
+        try:
+            coverage = self._type_coverage()
+            from .type_coverage import coverage_rows
+            rows = coverage_rows(self, coverage)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Warning: type resolution union export failed: {exc}")
+            return
+        if not rows:
+            return
+        output_path = os.path.join(
+            comparison_results_dir, 'type_resolution_union.csv')
+        self._save_csv(pd.DataFrame(rows), output_path)
+        self._log_file(output_path, "Type resolution union")
+
     def _export_presence_matrix(self, comparison_results_dir: str, threshold: Any, silent: bool = False):
         """
         Export edge and path presence matrices showing conservation across datasets.
@@ -9302,6 +9434,13 @@ class ComparisonAnalyzer:
             edge_keys = pd.Series([f"{idx[0]} -> {idx[1]}" for idx in matrix_df.index], index=matrix_df.index)
         else:
             edge_keys = matrix_df.index.astype(str)
+        # ``Index.astype(str)`` stays an Index, and ``.str.split(expand=True)``
+        # on an Index returns a MultiIndex — which silently fell into the
+        # fallback below and wrote the full edge key into source_type (with
+        # an empty target_type).  Normalize to a Series so the split is a
+        # real DataFrame in both branches.
+        if not isinstance(edge_keys, pd.Series):
+            edge_keys = pd.Series(edge_keys, index=matrix_df.index)
         
         # Parse edge keys to source/target using vectorized string operations
         # Use try/except to handle edge cases where split returns unexpected types
@@ -9335,12 +9474,36 @@ class ComparisonAnalyzer:
             safe_name = safe_names[dataset]
             weights = matrix_df[dataset]
             is_present = weights > 0
-            
+
             # Presence marker (True/0 for CSV readability)
             presence_df[safe_name] = is_present.map({True: True, False: 0})
-            
+
             # Weight column (show weight if present, else empty string)
             presence_df[f'weight_{safe_name}'] = weights.where(is_present, '')
+
+        # Per-endpoint union-resolution status columns (type_coverage.py):
+        # the coverage status of each endpoint TYPE in that dataset, so a
+        # False presence cell is explainable (below threshold / not in
+        # dataset / unmapped / ...).  Empty when the pass has no entry.
+        try:
+            coverage = self._type_coverage_for_query(
+                query_id if query_id else threshold)
+        except Exception:  # noqa: BLE001
+            coverage = {}
+
+        def _endpoint_status(name: Any, dataset: str) -> str:
+            entry = coverage.get((str(name).split('(')[0], dataset))
+            return entry.status if entry is not None else ''
+
+        if coverage:
+            for dataset in available:
+                safe_name = safe_names[dataset]
+                presence_df[f'source_status_{safe_name}'] = [
+                    _endpoint_status(name, dataset) for name in source_types
+                ]
+                presence_df[f'target_status_{safe_name}'] = [
+                    _endpoint_status(name, dataset) for name in target_types
+                ]
         
         # Calculate conservation count (number of datasets with edge > 0)
         presence_cols = [safe_names[d] for d in available]
@@ -9382,6 +9545,14 @@ class ComparisonAnalyzer:
             weight_col = f'weight_{safe_name}'
             if weight_col in presence_df.columns:
                 col_order.append(weight_col)
+
+        # Add endpoint coverage-status columns right after the weights
+        for dataset in available:
+            safe_name = self.parameters._sanitize_name(dataset)
+            for role in ('source_status', 'target_status'):
+                col = f'{role}_{safe_name}'
+                if col in presence_df.columns:
+                    col_order.append(col)
         
         # Add statistics
         col_order.extend(['max_weight', 'avg_weight', 'weight_cv'])

@@ -121,7 +121,10 @@ writes both files.
   coloring schema (status colors; muted = resolves there but was not
   traversed) and one `#paths` column (paths starting at / ending at /
   traversing the type), with the full canonical grid as a collapsed
-  appendix. The grid's **Source (priority)** column shows the ONE
+  appendix. A **color legend** between the table title and its intro line
+  shows the six resolution colors plus the muted and `—` no-resolution
+  marks (rendered from the same palette the cells use). The grid's
+  **Source (priority)** column shows the ONE
   observation from the highest-priority dataset where the row resolves —
   male-cns → FAFB → other neuprint → BANC, a GLOBAL order, never the
   per-name merge anchor (remaining observations collapse into a
@@ -139,7 +142,16 @@ writes both files.
   unqueried) home-namespace parent leaves the parent row AND the merge
   counts (`[merge fan-in] … global contest`). The
   **Resolution topology** card stays collapsed by default; the
-  run folder gains `type_resolution_topology.json`; `auto_type_mapping.csv`
+  run folder gains `type_resolution_topology.json`;
+  `comparison_results/type_resolution_union.csv` resolves the FULL union
+  of types that appeared in any dataset into EVERY dataset (per-query
+  absence verdicts: `below_threshold` with the max source-side edge
+  weight, `not_recruited`, `no_edges`, `not_in_dataset`,
+  `unmapped`/`conflict`, `resolved_absent`); the presence matrices and
+  `unified_edge_comparison.csv` carry matching per-endpoint
+  `source_status_<ds>` / `target_status_<ds>` columns, and the network
+  edge hovers / node tooltips annotate the same verdicts;
+  `auto_type_mapping.csv`
   gains additive `anchor_group`/`auto_only` columns (`anchor_group` only
   when every endpoint of the row belongs to that same group); merged
   neuron-count rows carry their raw composition in `group_members`. All
@@ -205,13 +217,26 @@ writes both files.
 - Combination-mode similarities are written under
   `similarity_matrices/similarity_query_{query_id}.csv` and
   `similarity_by_query.csv`; use the query ID and per-dataset threshold
-  The Similarity section presents four representatives by LEVEL — edge
+  columns rather than a scalar threshold union.
+- The report's Similarity Trends grid plots one metric row each — Jaccard,
+  Edge Rank, Cosine, Spearman — across per-threshold and per-density
+  columns. A metric row with no plottable value in any query (Spearman
+  when every pair is below the gated ≥10 shared edges) renders a centered
+  explanatory note — including the run's max shared-edge count and the
+  pair/query that produced it — instead of bare axes.
+- The Similarity section presents four representatives by LEVEL — edge
   🔷 Jaccard + Cosine, path 🟣 Path Jaccard, graph 🔶 NetSimile-lite
   (cards colored by level) — with a per-pair detail table (coverage,
-  edge/path top-20, gated Spearman ≥30 shared, hop/strength W1). Edge
-  Rank / Path Rank / Pearson / RV / Ruzicka are legacy CSV-only columns;
-  the trend PNGs are now `top20_overlap_trend.png` / `netsimile_trend.png`.
-  columns rather than a scalar threshold union.
+  edge/path top-20, gated Spearman ≥10 shared, hop/strength W1). Edge
+  Rank / Path Rank / Pearson / RV / Ruzicka are legacy CSV-only columns.
+- Standard-mode `comparison_visualizations/` writes FOUR trend PNGs —
+  `jaccard_similarity_trend.png`, `top20_overlap_trend.png` (v2.2,
+  replaces the retired Edge Rank trend), `netsimile_trend.png` (v2.2,
+  replaces the retired Path Rank trend), and `cosine_similarity_trend.png`
+  — each with a matching `visualization_data/` CSV. Combination mode
+  writes NONE of them: query rows have a display order, not a numeric
+  threshold schedule, so a trend axis would dress query order up as a
+  threshold axis; the HTML report's query-keyed trends grid replaces them.
 - Combination-mode `comparison_report.html` uses the same full report shell as
   Standard mode (summary charts, provenance, similarities, networks,
   edge/path matrices, conservation, overlap, and statistics) and iterates

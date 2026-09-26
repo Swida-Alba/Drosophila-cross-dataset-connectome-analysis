@@ -19,7 +19,7 @@ import html
 import html as html_module
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 try:
     from utils.threshold_state import applied_threshold_provenance
@@ -30,6 +30,19 @@ try:
     from utils.naming_utils import split_hemi_suffix
 except ImportError:  # pragma: no cover - direct package imports
     from src.utils.naming_utils import split_hemi_suffix
+
+try:
+    from .type_coverage import absence_note as _coverage_absence_note
+    from .type_coverage import node_coverage_line as _coverage_node_line
+except ImportError:  # pragma: no cover - direct package imports
+    try:
+        from src.comparison.type_coverage import (
+            absence_note as _coverage_absence_note,
+            node_coverage_line as _coverage_node_line,
+        )
+    except ImportError:  # the card/hover annotations degrade to plain text
+        _coverage_absence_note = None
+        _coverage_node_line = None
 
 
 def _make_link(path: str, base_dir: str) -> str:
@@ -3466,7 +3479,7 @@ def _similarity_detail_table(similarities: pd.DataFrame,
         '<div class="sticky-table-container" style="overflow-x: auto; margin-top: 8px;">'
         '<table style="font-size:0.85em;"><thead><tr>'
         '<th>Pair</th><th>Coverage (min)</th><th>Edge top-20</th>'
-        '<th>Spearman (shared, ≥30)</th><th>Path Jaccard</th>'
+        '<th>Spearman (shared, ≥10)</th><th>Path Jaccard</th>'
         '<th>Path top-20</th><th>Hop W1</th><th>NetSimile</th>'
         '<th>Strength W1 (out/in)</th>'
         '</tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div>')
@@ -3591,7 +3604,7 @@ def _generate_similarity_section(analyzer, dataset_names: List[str], thresholds:
                     (N/A below 5 paths per side)<br>
                     <strong>🔶 Graph level</strong> — <strong>NetSimile-lite</strong> [0, 1]: alignment-free comparison of node-feature
                     distributions (degree/strength profile) — no type correspondence needed<br>
-                    Detail metrics per pair (coverage, edge top-20, guarded Spearman ≥30 shared, path top-20, hop/strength W1) sit in the
+                    Detail metrics per pair (coverage, edge top-20, guarded Spearman ≥10 shared, path top-20, hop/strength W1) sit in the
                     table under each card; legacy columns (Edge Rank, Path Rank, Pearson, RV, Ruzicka) remain in the CSV exports only.
                 </p>
 """)
@@ -4419,6 +4432,9 @@ def _generate_networks_section(analyzer, dataset_names: List[str], thresholds: L
             aligned_override=(resolve_network_aligned(k)
                               if aligned_network_getter else None),
             path_override=(resolve_paths(k) if path_getter else None)))
+        html_parts.append(_generate_type_coverage_card(
+            analyzer, k, dataset_names, nickname_map,
+            display_label=point_labels[i]))
         html_parts.append('</div>')
 
     html_parts.append('</div>')  # Close network_by_threshold tabs div
@@ -4789,6 +4805,104 @@ def _filter_aligned_by_paths(aligned: pd.DataFrame, path_data: pd.DataFrame,
     return aligned
 
 
+def _analyzer_type_coverage(analyzer, point_key) -> Dict[Tuple[str, str], Any]:
+    """Union type-resolution coverage for one comparison point.
+
+    Returns {} for analyzers without the pass (older pickles, tests with
+    fake analyzers) — the report must render unchanged, just unannotated.
+    """
+    getter = getattr(analyzer, '_type_coverage_for_query', None)
+    if not callable(getter):
+        return {}
+    try:
+        return getter(point_key) or {}
+    except Exception:
+        return {}
+
+
+def _generate_type_coverage_card(analyzer, point_key, dataset_names: List[str],
+                                 nickname_map: Dict[str, str],
+                                 display_label: str = None) -> str:
+    """Per-query table of union-resolved types that a dataset lacks.
+
+    The union of types that appeared in ANY dataset, resolved into EVERY
+    dataset by the type mapper; rows list only the absent side so the
+    "—" cells in the matrices have an explicit verdict.
+    """
+    coverage = _analyzer_type_coverage(analyzer, point_key)
+    if not coverage:
+        return ''
+    try:
+        from .type_coverage import STATUS_LABELS
+    except Exception:  # noqa: BLE001 - never block the report
+        try:
+            from src.comparison.type_coverage import STATUS_LABELS
+        except ImportError:
+            return ''
+
+    datasets = [d for d in dataset_names if d in nickname_map]
+    per_type: Dict[str, Dict[str, Any]] = {}
+    for (type_name, dataset), entry in coverage.items():
+        if entry.present:
+            continue
+        per_type.setdefault(type_name, {})[dataset] = entry
+    if not per_type:
+        return ''
+
+    def _status_cell(entry) -> str:
+        label = STATUS_LABELS.get(entry.status, entry.status)
+        detail = html.escape(str(entry.detail)) if entry.detail else ''
+        title = f' title="{detail}"' if detail else ''
+        return (f'<span{title} style="font-size:0.82em;'
+                f'color:var(--secondary-color);">'
+                f'{html.escape(label)}</span>')
+
+    rows = []
+    for type_name in sorted(per_type):
+        cells = []
+        for dataset in datasets:
+            entry = per_type[type_name].get(dataset)
+            cells.append(
+                '<td style="padding:3px 8px;border:1px solid '
+                'var(--border-color);">✓</td>' if entry is None else
+                '<td style="padding:3px 8px;border:1px solid '
+                f'var(--border-color);">{_status_cell(entry)}</td>')
+        rows.append(
+            '<tr><td style="padding:3px 8px;border:1px solid '
+            f'var(--border-color);font-weight:600;">'
+            f'{html.escape(type_name)}</td>' + ''.join(cells) + '</tr>')
+    if len(rows) > 200:
+        rows = rows[:200] + [
+            f'<tr><td colspan="{len(datasets) + 1}" '
+            f'style="padding:3px 8px;border:1px solid '
+            f'var(--border-color);">… {len(per_type) - 200} more types '
+            f'(see comparison_results/type_resolution_union.csv)'
+            f'</td></tr>']
+
+    title = display_label or point_key
+    header = ''.join(
+        f'<th style="padding:3px 8px;border:1px solid var(--border-color);'
+        f'font-size:0.85em;text-align:left;">{html.escape(str(nickname_map[d]))}</th>'
+        for d in datasets)
+    return (
+        '<details class="card" style="margin:10px 0;">'
+        '<summary style="cursor:pointer; font-weight:600; '
+        'color:var(--primary-color);">🌀 Type coverage — absent types '
+        'resolved per dataset</summary>'
+        '<div style="margin-top:8px;">'
+        '<p style="font-size:0.88em;">Union of types that appeared in any '
+        'dataset for query <strong>'
+        f'{html.escape(str(title))}</strong>, resolved into every dataset '
+        'via the type mapper. Only datasets lacking the type are filled; '
+        '✓ = present. Full table: '
+        '<code>comparison_results/type_resolution_union.csv</code></p>'
+        '<table style="border-collapse:collapse;margin-top:6px;">'
+        f'<thead><tr><th style="padding:3px 8px;border:1px solid '
+        f'var(--border-color);font-size:0.85em;text-align:left;">Type'
+        f'</th>{header}</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div></details>')
+
+
 def _generate_conservation_network(analyzer, dataset_names: List[str], threshold: int,
                                     nickname_map: Dict[str, str], max_edges: int = 500,
                                     key=None, display_label: str = None,
@@ -4843,7 +4957,12 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
     
     num_datasets = len(available)
     nicknames = [nickname_map[d] for d in available]
-    
+
+    # Union type-resolution coverage (type_coverage.py): lets an absent
+    # dataset say WHY it has no weight (below threshold / not in dataset /
+    # unmapped) instead of a bare "—".
+    type_coverage = _analyzer_type_coverage(analyzer, point_key)
+
     # Get source and target neurons (including all mapped type names across datasets)
     source_neurons = set()
     target_neurons = set()
@@ -5063,6 +5182,13 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
                     lines.append("Names by dataset:")
                     for code, name in sorted(ds_info.items()):
                         lines.append(f"  {code}: {name}")
+            coverage_line = (
+                _coverage_node_line(
+                    type_coverage, node_label, available,
+                    lambda d: nickname_map.get(d, d))
+                if _coverage_node_line is not None else '')
+            if coverage_line:
+                lines.append(coverage_line)
             return '\n'.join(lines)
         
         # Add nodes with role-based coloring
@@ -5124,8 +5250,14 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
         hover_lines = [f"{source} → {target}", f"Conservation: {conservation} ({present_count}/{num_datasets})"]
         for i, d in enumerate(available):
             w = weights.get(d, 0)
-            status = f"{int(w)}" if w > 0 else "—"
-            hover_lines.append(f"{nicknames[i]}: {status}")
+            if w > 0:
+                hover_lines.append(f"{nicknames[i]}: {int(w)}")
+                continue
+            reason = (
+                _coverage_absence_note(type_coverage, d, source, target)
+                if _coverage_absence_note is not None else '')
+            hover_lines.append(
+                f"{nicknames[i]}: —" + (f" ({reason})" if reason else ""))
         
         edges.append({
             'id': edge_id,
@@ -5259,7 +5391,14 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
                 for code, name in sorted(dataset_info.items()):
                     title_lines.append(f"  {code}: {name}")
                 node_dataset_mappings[display_label] = dataset_info
-            
+            _cov_line = (
+                _coverage_node_line(
+                    type_coverage, display_label, available,
+                    lambda d: nickname_map.get(d, d))
+                if _coverage_node_line is not None else '')
+            if _cov_line:
+                title_lines.append(_cov_line)
+
             node_ids[display_label] = node_counter
             node_roles[display_label] = 'source'
             nodes.append({
@@ -5318,7 +5457,14 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
                 for code, name in sorted(dataset_info.items()):
                     title_lines.append(f"  {code}: {name}")
                 node_dataset_mappings[display_label] = dataset_info
-            
+            _cov_line = (
+                _coverage_node_line(
+                    type_coverage, display_label, available,
+                    lambda d: nickname_map.get(d, d))
+                if _coverage_node_line is not None else '')
+            if _cov_line:
+                title_lines.append(_cov_line)
+
             node_ids[display_label] = node_counter
             node_roles[display_label] = 'target'
             nodes.append({
@@ -6879,6 +7025,54 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     _not_traversed_tip = ('resolves here, not traversed in this '
                           'run&#39;s paths')
 
+    def _status_legend_html() -> str:
+        """Explicit visual legend for the shared coloring schema.
+
+        Colors are read back through ``status_colors`` (never retyped) so
+        the legend cannot drift from the cell rendering; the muted chip
+        and the em-dash sample cover the two non-color marks.
+        """
+        def chip(color: str, label: str) -> str:
+            return (
+                '<span style="display:inline-flex; align-items:center; '
+                'gap:4px; margin:2px 14px 2px 0;" '
+                f'title="resolution status color: {color}">'
+                '<span style="width:12px; height:12px; border-radius:3px; '
+                f'display:inline-block; background:{color};"></span>'
+                f'<span style="font-size:0.78em; color:#475569;">{label}'
+                '</span></span>')
+
+        entries = [
+            (status_colors['same_name_identity'], 'identity / mapped / bridged'),
+            (status_colors['taxonomy'], 'taxonomy'),
+            (status_colors['valid_split'], 'valid split'),
+            (status_colors['same_name_fallback'], 'fallback / evidence only'),
+            (status_colors['conflict'], 'conflict'),
+            (status_colors['unmapped'], 'unmapped'),
+        ]
+        muted = (
+            '<span style="display:inline-flex; align-items:center; '
+            'gap:4px; margin:2px 14px 2px 0;" '
+            f'title="{_not_traversed_tip}">'
+            '<span style="width:12px; height:12px; border-radius:3px; '
+            f'display:inline-block; background:{_muted_color};"></span>'
+            '<span style="font-size:0.78em; color:#9ca3af;">muted</span>'
+            '<span style="font-size:0.78em; color:#475569;">= resolves '
+            'here but was not traversed in this run&#39;s paths</span>'
+            '</span>')
+        dash = (
+            '<span style="display:inline-flex; align-items:center; '
+            'gap:4px; margin:2px 0;" '
+            'title="no resolution in this dataset">'
+            '<span style="font-size:0.9em; color:#6b7280;">&#8212;</span>'
+            '<span style="font-size:0.78em; color:#475569;">= no '
+            'resolution in this dataset</span></span>')
+        return (
+            '<div class="status-legend" style="display:flex; '
+            'flex-wrap:wrap; align-items:center; margin:4px 0 2px 0;">'
+            + ''.join(chip(color, label) for color, label in entries)
+            + muted + dash + '</div>')
+
     def _tokens_for(role):
         toks, seen = [], set()
         for rec in records:
@@ -7072,16 +7266,15 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
             body.extend(rows)
         html.append(
             '<h4>Queried types &amp; path participation</h4>'
-            '<p style="color:#666; font-size:0.85em;">Queried source and '
+            + _status_legend_html()
+            + '<p style="color:#666; font-size:0.85em;">Queried source and '
             'target types plus the distinct intermediates inside this '
             'run&#39;s multi-hop paths — one shared column layout and one '
-            'coloring schema. Color = resolution status (green identity/'
-            'mapped, blue taxonomy, purple valid split, amber fallback, '
-            'red conflict, grey unmapped); muted = resolves here but was '
-            'not traversed in this run&#39;s paths; &#8212; = no '
-            'resolution. #paths = paths starting at a source, ending at '
-            'a target, or traversing an intermediate, summed over all '
-            'query points.</p>'
+            'coloring schema. Color = resolution status (legend above); '
+            'muted = resolves here but was not traversed in this '
+            'run&#39;s paths; &#8212; = no resolution. #paths = paths '
+            'starting at a source, ending at a target, or traversing an '
+            'intermediate, summed over all query points.</p>'
             '<div class="sticky-table-container" style="overflow-x: auto;">'
             '<table><thead><tr><th>Type</th>' + head_cells
             + '<th>#paths</th></tr></thead><tbody>'
@@ -8509,6 +8702,13 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
 
     Custom combination mode passes ``point_keys``/``point_similarities``
     (query id -> cached pairwise similarity frame).
+
+    Empty-state contract: a metric row with NO plottable value in any
+    query (e.g. Spearman when every pair falls below the >=10-shared-edges
+    gate) still gets its axes for grid consistency, plus a centered grey
+    note naming the gate and — for Spearman, when the frames carry
+    ``common_edges`` — the run's maximum shared-edge count with the pair
+    and query that produced it.
     """
     from .metrics import ComparisonMetrics
     import json
@@ -8693,6 +8893,44 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
         return traces
 
     show_legend = True
+
+    def _metric_has_data(metric_data) -> bool:
+        for pair_vals in metric_data.values():
+            for val in pair_vals.values():
+                if val is not None and not (
+                        isinstance(val, float) and np.isnan(val)):
+                    return True
+        return False
+
+    def _max_shared_suffix() -> str:
+        """The run's best shared-edge count behind the Spearman gate."""
+        best_n, best_text = None, ''
+        for k, sim_df in (point_similarities or {}).items():
+            if sim_df is None or sim_df.empty \
+                    or 'common_edges' not in sim_df.columns:
+                continue
+            for _, row in sim_df.iterrows():
+                try:
+                    n = int(row.get('common_edges'))
+                except (TypeError, ValueError):
+                    continue
+                if best_n is None or n > best_n:
+                    d1 = nickname_map.get(row.get('dataset_1'),
+                                          row.get('dataset_1'))
+                    d2 = nickname_map.get(row.get('dataset_2'),
+                                          row.get('dataset_2'))
+                    best_n = n
+                    best_text = f' ({d1} vs {d2}, {k})'
+        if best_n is None:
+            return ''
+        return f'; max shared in this run: {best_n}{best_text}'
+
+    def _empty_row_note(metric: str, m_title: str) -> str:
+        if metric == 'spearman':
+            return (f'no {m_title} data — gated at \u226510 shared edges'
+                    f'{_max_shared_suffix()}')
+        return f'no {m_title} data in any query'
+
     for r, (metric, m_title, m_sub, y_range, zero_line) in enumerate(
             metric_rows, start=1):
         for c, (col_keys, col_title) in enumerate(columns, start=1):
@@ -8728,6 +8966,18 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
                     'yref': f'y{"" if y_i == 1 else y_i}',
                     'line': {'color': 'gray', 'width': 1, 'dash': 'dot'},
                 })
+        # Empty-state: a metric with no plottable value anywhere must say
+        # WHY instead of rendering bare axes (the APL-style confusion
+        # this report keeps learning to avoid).
+        if not _metric_has_data(all_pair_data[metric]):
+            note_dom = _row_domain(r)
+            annotations.append({
+                'text': _empty_row_note(metric, m_title),
+                'x': 0.5, 'y': (note_dom[0] + note_dom[1]) / 2,
+                'xref': 'paper', 'yref': 'paper', 'xanchor': 'center',
+                'yanchor': 'middle', 'showarrow': False,
+                'font': {'size': 11, 'color': '#94a3b8'},
+            })
         show_legend = False
 
     # One x-axis caption per column, under the last row's tick labels

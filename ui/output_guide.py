@@ -1562,7 +1562,11 @@ TOOL_GUIDE_SPECS = {
                             "with a filesystem-safe query-ID slug "
                             "(the manifest retains the original ID); rows "
                             "include per-dataset requested thresholds. Presence flags, "
-                            "weights, counts and conservation per edge.",
+                            "weights, counts and conservation per edge. "
+                            "source_status_<dataset>/target_status_<dataset> "
+                            "columns carry the union type-resolution verdict "
+                            "for each endpoint type in that dataset (present, "
+                            "below_threshold, not_in_dataset, unmapped, ...).",
              "columns": ["edge_key", "source", "target", "conserved_at_lowest"]},
             {"pattern": "comparison_results/edge_weight_comparison.csv",
              "description": "Edge weights compared across all datasets. "
@@ -1577,9 +1581,27 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "comparison_results/unified_edge_comparison.csv",
              "description": "Combined edge data: per-dataset weight/presence "
                             "columns for every edge; combination rows also "
-                            "carry query_id and per-dataset threshold columns.",
+                            "carry query_id and per-dataset threshold columns "
+                            "plus the per-endpoint source_status/target_status "
+                            "union-resolution columns.",
              "columns": ["query_id", "query_label", "edge_key", "source",
                          "target", "threshold_mode", "conservation"]},
+            {"pattern": "comparison_results/type_resolution_union.csv",
+             "description": "Union type-resolution coverage: the union of "
+                            "types that appeared in ANY dataset for a query, "
+                            "resolved into EVERY dataset via the type mapper. "
+                            "One row per query x type x dataset with the "
+                            "resolved native name and, for absent types, why "
+                            "(below_threshold with the max connected edge "
+                            "weight, not_recruited, no_edges, not_in_dataset, "
+                            "unmapped/conflict, resolved_absent when the "
+                            "diagnosis inputs were unavailable). This is the "
+                            "full-union counterpart of query_resolution.csv, "
+                            "which covers only the queried source/target "
+                            "tokens.",
+             "columns": ["query_id", "query_label", "type", "dataset",
+                         "present", "resolved_type", "resolution_status",
+                         "detail"]},
             {"pattern": "comparison_results/unified_summary.csv",
              "description": "Run summary of the unified comparison.",
              "preview": True,
@@ -2158,7 +2180,7 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "gap_fill/gap_fill_dedup.csv", "preview": True,
              "description": "The bodyId-unique fill (one row per target "
                             "bodyId, dedup precedence + dup flag) — the "
-                            "real gap-fill list. On --backward-evidence "
+                            "real gap-fill list. On default runs "
                             "runs it also carries each neuron's reciprocal "
                             "ledger from its strongest branch: the grade, "
                             "the top-1 triple, and the branch-type hit the "
@@ -2173,8 +2195,9 @@ TOOL_GUIDE_SPECS = {
              "description": "The whole relative bin (type-mates of "
                             "candidate types outside the map)."},
             {"pattern": "expansion/backward_matches.csv",
-             "description": "Opt-in (--backward-evidence): the reverse "
-                            "target -> source homolog evidence per scanned "
+             "description": "Default ON (--no-backward-evidence opts "
+                            "out): the reverse target -> source homolog "
+                            "evidence per scanned "
                             "neuron - the candidates / family / relative "
                             "members first, then the UNMATCHED validated "
                             "pool members "

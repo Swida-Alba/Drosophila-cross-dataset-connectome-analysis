@@ -703,7 +703,12 @@ Mapping section leads with ONE merged, column-aligned query-role table
 (Queried sources / Queried targets / Path intermediates as section groups
 — shared coloring schema, a #paths column on every group, and the muted
 "resolves here, not traversed" treatment everywhere) with the
-full canonical grid as a collapsed appendix; the grid's **Source
+full canonical grid as a collapsed appendix. A **color legend** sits
+between the table title and its intro line: one chip per resolution
+color (green identity/mapped/bridged, blue taxonomy, purple valid split,
+amber fallback/evidence-only, red conflict, grey unmapped) plus the muted
+chip and the `—` no-resolution mark — the legend chips are rendered from
+the same palette the cells use, so they cannot drift. The grid's **Source
 (priority)** column picks the observation from the highest-priority
 dataset where the row resolves (male-cns → FAFB → other neuprint → BANC —
 a global order, not the per-name merge anchor) and names the remaining
@@ -854,8 +859,11 @@ table is sparse.
 - `top20_overlap` — Jaccard of the 20 heaviest edges per side (head of
   the ranking, tie-safe).
 - `spearman_rank_correlation` — rank correlation on shared positive
-  edges, gated: NaN below 30 shared edges (`common_edges` reported
-  beside it).
+  edges, gated: NaN below 10 shared edges (`common_edges` reported
+  beside it). In the Similarity Trends grid a metric row with no
+  plottable value in any query renders an explanatory note instead of
+  bare axes — for Spearman: the gate plus the run's maximum shared-edge
+  count and the pair/query that produced it.
 - `hop_profile_w1` / `strength_w1_out` / `strength_w1_in` — Wasserstein-1
   distances between hop-count / log-strength distributions (lower is
   closer).
@@ -1011,11 +1019,14 @@ This section is especially useful for internal network analysis (source=target) 
 ### 8. Statistics Tables
 - Per-dataset metrics (edge count, total weight, mean, max)
 - Pairwise similarity scores
-- **Similarity Trends grid**: one panel per representative (Jaccard,
-  Cosine, Path Jaccard, NetSimile-lite) × per comparison family — per-threshold and
+- **Similarity Trends grid**: one panel per metric row (Jaccard,
+  Edge Rank, Cosine, Spearman) × per comparison family — per-threshold and
   per-density columns each anchor to their own grid cell, with the
   per-pair traces, a dashed cross-pair average, and an x-axis caption
-  per column
+  per column. A metric row with no plottable value in any query (e.g.
+  Spearman when every pair is below the ≥10-shared-edges gate) renders a
+  centered explanatory note — including the run's max shared-edge count —
+  instead of bare axes
 
 ---
 

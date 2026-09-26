@@ -302,7 +302,12 @@
     paths, ranked by traversal count, showing the <b>resolved name in each
     dataset</b> — muted when the type resolves there but was not traversed
     in this run's paths — plus their
-    query roles). The full canonical mapping grid remains as a collapsed
+    query roles). A <b>color legend</b> between the table title and its
+    intro line shows the six resolution colors (green identity/mapped/
+    bridged, blue taxonomy, purple valid split, amber fallback/evidence,
+    red conflict, grey unmapped) plus the muted and — marks, rendered from
+    the same palette as the cells. The full canonical mapping grid remains
+    as a collapsed
     appendix. With <code>separate_hemispheres</code> enabled the run header
     carries a <b>Hemisphere-aware run</b> badge explaining the _L/_R/_U type
     suffixes.</p>
@@ -312,7 +317,10 @@
     exports). Similarity-trend plots split the comparison axis into two
     columns — per-threshold (left) and per-density (right, levels
     descending so thresholds increase left-to-right) — with one metric row
-    each (Jaccard, Edge Rank, Cosine, Spearman). Neuron-count charts and
+    each (Jaccard, Edge Rank, Cosine, Spearman). A metric row with no
+    plottable value in any query — Spearman when no pair shares the
+    gated ≥10 edges — renders an explanatory note (with the run's max
+    shared-edge count) instead of bare axes. Neuron-count charts and
     tables show only the types present in their own role (source chart =
     source-present types only, target chart = target-present only).</p>
 
@@ -652,6 +660,10 @@
     neuron_counts_by_type.csv, neuron_counts_summary.csv
     motif_analysis.csv
     threshold_combinations.csv    # combination-mode query/provenance manifest
+    type_resolution_union.csv     # union of appeared types resolved into
+                                  # EVERY dataset: resolved name + absence
+                                  # verdict (below_threshold w/ max weight,
+                                  # not_in_dataset, unmapped, conflict, ...)
   threshold_sensitivity.csv   # standard: edge_count/retention; advanced:
                                 # query_id/query_label query-cell diagnostics
     pathfinding_provenance.csv  # full provenance; advanced rows also carry

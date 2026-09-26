@@ -779,6 +779,35 @@ def test_similarity_trends_grid_single_family_axis_binding(analyzer):
     _assert_axis_binding(plot)
 
 
+def test_similarity_trends_grid_empty_metric_row_gets_note(analyzer):
+    """All-NaN spearman (every pair below the >=30-shared gate) must render
+    an explanatory note in the row band instead of bare axes; rows with
+    data get no note."""
+    html = hrg._generate_similarity_trends_2x2_plot(
+        analyzer, DATASETS, [], NICKNAME_MAP,
+        point_keys=['threshold=3', 'threshold=8'],
+        point_labels=['threshold=3', 'threshold=8'],
+        point_similarities={
+            key: _sim_frame(spearman_rank_correlation=float('nan'),
+                            common_edges=n)
+            for key, n in (('threshold=3', 8), ('threshold=8', 5))
+        },
+        axis_title='Query (display order)',
+        card_title='Similarity Trends Across Query Rows')
+    plot = _extract_plot_data(html)
+    texts = [a.get('text', '') for a in plot['layout']['annotations']]
+    spearman_notes = [t for t in texts if 'Spearman data' in t]
+    assert len(spearman_notes) == 1, texts
+    assert 'gated at \u226510 shared edges' in spearman_notes[0]
+    assert 'max shared in this run: 8 (D1 vs D2, threshold=3)' \
+        in spearman_notes[0]
+    # Rows with data carry no empty-state note.
+    assert not any('Jaccard data' in t for t in texts)
+    # Grid geometry unchanged; the empty row emitted zero traces.
+    assert sum(1 for k in plot['layout'] if k.startswith('yaxis')) == 4
+    _assert_axis_binding(plot)
+
+
 def test_generate_reciprocal_section_disabled(analyzer):
     html = hrg._generate_reciprocal_visualizations_section(
         analyzer, DATASETS, THRESHOLDS, NICKNAME_MAP
@@ -1104,7 +1133,24 @@ def test_path_intermediates_table_has_per_dataset_columns():
 
     report = hrg._generate_type_mapping_section(Analyzer(), datasets)
     assert '<h4>Queried types &amp; path participation</h4>' in report
-    # one merged table: shared header, section rows carry the role
+    # explicit visual legend for the shared coloring schema: one chip per
+    # resolution color (read from the same status_colors the cells use),
+    # plus the muted mark and the no-resolution em-dash
+    assert '<div class="status-legend"' in report
+    for color, label in (
+            ('#15803d', 'identity / mapped / bridged'),
+            ('#1d4ed8', 'taxonomy'),
+            ('#7c3aed', 'valid split'),
+            ('#b45309', 'fallback / evidence only'),
+            ('#b91c1c', 'conflict'),
+            ('#6b7280', 'unmapped')):
+        legend_chip = re.search(
+            r'<span[^>]*background:%s;?"?></span>\s*' % color, report)
+        assert legend_chip is not None, color
+    assert '= resolves ' in report and \
+        'not traversed in this run&#39;s paths</span>' in report
+    assert '&#8212;</span>' in report and 'no resolution in this dataset' in report
+    # one shared table: header, section rows carry the role
     assert '<th>Type</th><th>D1</th><th>D2</th><th>D3</th><th>#paths</th>' \
            in report
     assert '<th>Query roles</th>' not in report
@@ -2358,7 +2404,7 @@ def test_similarity_detail_table_renders_pair_rows():
     frame = pd.DataFrame([{
         'dataset_1': 'ds_one', 'dataset_2': 'ds_two',
         'coverage_min': 0.4, 'top20_overlap': 0.7,
-        'spearman_rank_correlation': float('nan'), 'common_edges': 12,
+        'spearman_rank_correlation': float('nan'), 'common_edges': 8,
         'path_jaccard_similarity': float('nan'),
         'path_top20_overlap': 0.2, 'hop_profile_w1': 0.5,
         'netsimile_similarity': 0.9,
@@ -2366,8 +2412,8 @@ def test_similarity_detail_table_renders_pair_rows():
     }])
     html = hrg._similarity_detail_table(frame, ['ds_one', 'ds_two'], NICKNAME_MAP)
     assert 'D1 ↔ D2' in html
-    assert 'Spearman (shared, ≥30)' in html
-    assert '— (12)' in html            # gated spearman, shared count kept
+    assert 'Spearman (shared, ≥10)' in html
+    assert '— (8)' in html            # gated spearman, shared count kept
     assert 'NetSimile' in html
     assert '0.300 / 0.600' in html
     # empty frame -> no table
