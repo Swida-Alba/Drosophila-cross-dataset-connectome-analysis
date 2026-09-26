@@ -311,7 +311,8 @@ def create_connectivity_tab():
                     suggestions=_comparison_suggest,
                     available_neurons=lambda: list(datasets_select.value or [])
                     if datasets_select is not None else [],
-                ).classes("drocat-fixed-neuron-input")
+                ).props('id=field-connectivity-comparison-query').classes(
+                    "drocat-fixed-neuron-input")
 
             with ui.card().classes("w-full drocat-card"):
                 section_header("Profile Construction", "build")
@@ -343,7 +344,7 @@ def create_connectivity_tab():
                     ui.label(
                         "Groups are read from the grouping board's source mapping: each custom label "
                         "is one group, and its members for the selected datasets fill the rows. "
-                        "The neuron query above is ignored in this mode."
+                        "The neuron query above is disabled in this mode."
                     ).classes("text-caption drocat-muted")
                 custom_group_box.set_visibility(False)
 
@@ -405,11 +406,19 @@ def create_connectivity_tab():
                                  "connections already cached.",
                         )
 
-                aggregation_level.on_value_change(
-                    lambda e: custom_group_box.set_visibility(
-                        (e.value or "") == "custom group"
-                    )
-                )
+                def _sync_custom_group_state(e=None):
+                    is_custom = str(
+                        (e.value if e is not None else aggregation_level.value)
+                        or "") == "custom group"
+                    custom_group_box.set_visibility(is_custom)
+                    # Custom rows come from the grouping board; leaving the
+                    # query box live would suggest its chips feed the matrix,
+                    # and the board drops its "Add to Query" action for a
+                    # disabled input.
+                    query_input.set_input_enabled(not is_custom)
+
+                _sync_custom_group_state()
+                aggregation_level.on_value_change(_sync_custom_group_state)
 
     with results_col:
         with ui.column().classes("w-full gap-1") as similar_output_container:
@@ -532,9 +541,13 @@ def create_connectivity_tab():
             similar_output.set_running(False)
 
     async def run_comparison():
+        is_custom_group = aggregation_level.value == "custom group"
         mode, neurons = query_input.get_value()
         query = apply_filter_mode(neurons, mode)
-        if not query:
+        # Custom rows come from the grouping board, so an empty query box is
+        # not a missing input — requiring one would make a disabled box
+        # unrunnable.
+        if not query and not is_custom_group:
             ui.notify("Please enter at least one neuron", type="warning")
             return
 
@@ -552,7 +565,7 @@ def create_connectivity_tab():
         # Custom-group mode needs a mapping (preset or inline); resolve it
         # before the running state so an invalid board aborts cleanly.
         mapping_path = None
-        if aggregation_level.value == "custom group":
+        if is_custom_group:
             mapping_path, mapping_ok = resolve_grouping()
             if not mapping_ok:
                 return
@@ -605,7 +618,7 @@ def create_connectivity_tab():
                 "ensure_cache_complete": full_cache_cmp.value,
             }
 
-            if aggregation_level.value == "custom group":
+            if is_custom_group:
                 constructor_params["custom_mapping_file"] = mapping_path
 
             result = await comparison_output.run(
@@ -618,8 +631,9 @@ def create_connectivity_tab():
 
             # The comparison pipeline resolves the query before comparing
             # profiles, so a completed run means the queried chips are useful
-            # history entries for the selected datasets.
-            if result["returncode"] == 0:
+            # history entries for the selected datasets — except in custom
+            # group mode, where those chips were not what the run used.
+            if result["returncode"] == 0 and not is_custom_group:
                 from ..history_store import record as _record_history
                 _record_history(
                     [str(v) for v in query],

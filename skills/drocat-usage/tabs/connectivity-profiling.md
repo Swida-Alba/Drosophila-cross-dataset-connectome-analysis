@@ -17,7 +17,8 @@ one or more datasets.
 from comparison.profile_comparator import ConnectivityProfileComparer
 
 comparer = ConnectivityProfileComparer(
-    query=["aMe12", "aMe10"],           # or a single query for a custom group
+    query=["aMe12", "aMe10"],           # ignored at aggregation_level="custom",
+                                       # where custom_mapping_file supplies the rows
     datasets=["male-cns:v0.9", "hemibrain:v1.2.1"],
     output_dir="/absolute/output/profiles",
     top_k=15,

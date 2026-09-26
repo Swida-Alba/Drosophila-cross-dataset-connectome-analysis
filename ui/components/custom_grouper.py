@@ -389,6 +389,13 @@ class LiteCustomGrouper:
                         "drocat-labelmapper-query-actions"
                     ):
                         for key, target in self.query_inputs.items():
+                            if getattr(target, "_drocat_input_enabled", True) is False:
+                                # The owning tab disabled this input because
+                                # its current mode does not read it (the
+                                # comparison tabs' custom group level), so
+                                # pushing labels into it would be a dead
+                                # action. Rows re-render on every panel open.
+                                continue
                             icon = self._QUERY_ICONS.get(key, "add")
                             ui.button(
                                 f"Add to {key.title()}", icon=icon,

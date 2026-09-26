@@ -883,3 +883,57 @@ class TestLabelMapperEditorSurface:
             source = inspect.getsource(module)
             assert "suggestions=self._cell_suggest(ds)" in source
             assert "history_hint_datasets=lambda ds=ds: [ds]" in source
+
+
+class TestQueryActionGate:
+    """The board can push a group's label into a tab's query input, so it must
+    not offer that action for an input the current mode has disabled (the
+    comparison tabs' custom group level ignores the query box entirely)."""
+
+    def test_add_to_query_offered_only_for_an_editable_input(self, isolated_store):
+        from nicegui import Client, ui
+        from nicegui.page import page
+
+        client = Client(page("/grouper-query-gate"))
+        with client:
+            target = ui.column().props('id=gate-target')
+            _button, dialog, _resolve = me.custom_grouping_block(
+                tab_key="gate3", datasets_provider=lambda: [DS_A],
+                query_inputs={"query": target})
+
+        def actions():
+            return [e for e in client.elements.values()
+                    if "Add to" in str(getattr(e, "text", "") or "")]
+
+        # Rows re-render on every open, so flipping the flag between opens is
+        # what a tab's level change actually does.
+        with client:
+            dialog.open()
+            assert actions(), "an editable input must offer the action"
+        with client:
+            target._drocat_input_enabled = False
+            dialog.close()
+            dialog.open()
+            assert actions() == []
+        with client:
+            target._drocat_input_enabled = True
+            dialog.close()
+            dialog.open()
+            assert actions()
+
+
+    def test_plain_element_target_still_gets_the_action(self, isolated_store):
+        """A target that never opted into the flag stays enabled — the gate
+        must not silently strip the action from the other tabs."""
+        from nicegui import Client, ui
+        from nicegui.page import page
+
+        client = Client(page("/grouper-query-plain"))
+        with client:
+            _button, dialog, _resolve = me.custom_grouping_block(
+                tab_key="gate4", datasets_provider=lambda: [DS_A],
+                query_inputs={"query": ui.column()})
+        with client:
+            dialog.open()
+        assert [e for e in client.elements.values()
+                if "Add to" in str(getattr(e, "text", "") or "")]

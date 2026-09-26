@@ -98,7 +98,13 @@
       buttons that append the group's <b>label</b> as a single chip to the
       tab's neuron inputs. The backend expands that label into its member
       neurons, so a freshly defined group drives the run directly and the
-      exported tables/visualizations aggregate under the group label.</li>
+      exported tables/visualizations aggregate under the group label. The
+      buttons are <b>not offered for an input the tab has disabled</b> — in the
+      Connectivity and Morphology Comparison sub-tabs, choosing
+      <i>Aggregation Level = custom group</i> disables that query box because
+      the rows come from the board itself, so pushing labels into it would
+      change nothing. Rows re-render on every panel open, so the buttons follow
+      the current level.</li>
   </ul>
   <div class="callout info">
     <b>Division of labor:</b> the shared Custom Mapping panel writes aligned

@@ -29,7 +29,7 @@ All paths are relative to the repo root unless noted.
 
 ## morphology_comparison (`src/morphology_comparison.py`)
 
-- `MorphologyProfileComparer(dataset, query, method, max_members_per_type, max_total_neurons, output_dir, saveas, generate_heatmaps, show_figures, use_cache, verbose, n_workers)` → `run()` — intra-dataset N×N morphology comparison (type-level + bodyId-level matrices; `method="vector_v2"` on the whitened vector cache, `"nblast"` on dotprops capped at 30 total neurons).
+- `MorphologyProfileComparer(dataset, query, method, aggregation_level, custom_mapping_file, max_members_per_type, max_total_neurons, output_dir, saveas, generate_heatmaps, show_figures, use_cache, verbose, n_workers)` → `run()` — intra-dataset N×N morphology comparison; `aggregation_level` picks the matrix row (`type` / `bodyid` / `custom group`), the bodyId matrix is always the scored primitive and the type-level file is absent at bodyId level (`method="vector_v2"` on the whitened vector cache, `"nblast"` on dotprops, which refuses populations over 30 neurons).
 
 ## comparison (`src/comparison/__init__.py`)
 

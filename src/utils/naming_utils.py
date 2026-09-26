@@ -18,8 +18,10 @@ Examples:
 """
 
 from collections import Counter
+import json
 import re
 from functools import lru_cache
+from pathlib import Path
 
 
 DATASET_ABBREVIATIONS = {
@@ -284,3 +286,100 @@ def run_folder_timestamp(name) -> str:
     """Return the embedded ``YYYYMMDD_HHMMSS`` stamp, or '' when absent."""
     match = _RUN_FOLDER_TIMESTAMP_RE.search(str(name or ""))
     return match.group(1) if match else ""
+
+
+def dataset_key_candidates(dataset) -> set:
+    """A dataset's own name plus the safe-name variant used as a mapping key
+    (colons and dots replaced by underscores)."""
+    return {dataset,
+            canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')}
+
+
+def group_member_rows(rows):
+    """One preset group: strings become single-member lists, digit-looking
+    identifiers become ints, everything else stays a stripped string."""
+    if isinstance(rows, str):
+        rows = [rows]
+    processed = []
+    for value in (rows or []):
+        text = str(value).strip()
+        processed.append(int(text) if text.isdigit() else text)
+    return processed
+
+
+def load_labelmapper_source_groups(mapping_path, dataset, log=None):
+    """Read the source-side groups of a LabelMapper preset JSON.
+
+    Preset format (the overall JSON exported by the Settings tab's mapping
+    presets)::
+
+        {"source_mapping": {
+            "custom_label": ["grp1", "grp2"],
+            "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
+
+    Each ``custom_label``/``std_label`` row is one group whose members are the
+    identifiers listed under the requested dataset; a dataset may appear under
+    its own name or its safe-name variant. Groups with no members in that
+    dataset are dropped.
+
+    Args:
+        mapping_path: Path to the LabelMapper preset JSON.
+        dataset: The dataset whose column supplies the members.
+        log: Optional callable for the progress/warning lines.
+
+    Returns:
+        ``(groups, group_names, side)`` — ``groups`` is a list parallel to
+        ``group_names``, each group a list of bodyIds/type names (the same
+        contract as the profiling group-map CSV); ``side`` is the raw
+        ``source_mapping`` dict, so callers that need other datasets' columns
+        do not re-read the file. Unreadable or invalid JSON raises ValueError;
+        an absent dataset column yields ``([], [], side)`` rather than raising,
+        because both comparers treat "no groups here" as a warn-and-continue.
+    """
+    say = log if callable(log) else (lambda _msg: None)
+
+    try:
+        data = json.loads(Path(mapping_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"Could not read custom mapping file {mapping_path}: {exc}")
+
+    side = data.get('source_mapping') or {}
+    labels = side.get('custom_label') or side.get('std_label') or []
+    if not labels:
+        say("Warning: mapping file has no source groups "
+            "(custom_label/std_label) — custom groups skipped")
+        return [], [], side
+
+    candidates = dataset_key_candidates(dataset)
+    ds_key = next(
+        (k for k in side
+         if k not in ('custom_label', 'std_label') and k in candidates),
+        None
+    )
+    if ds_key is None:
+        say(f"Warning: mapping file has no groups for dataset "
+            f"'{dataset}' — custom groups skipped")
+        return [], [], side
+
+    groups = []
+    group_names = []
+    group_rows = side.get(ds_key) or []
+    for index, label in enumerate(labels):
+        processed = group_member_rows(
+            group_rows[index] if index < len(group_rows) else None)
+        if not processed:
+            continue
+        group_names.append(str(label))
+        groups.append(processed)
+
+    if not group_names:
+        say(f"Warning: no groups with members in '{dataset}' "
+            f"found in mapping file")
+        return [], [], side
+
+    say(f"Loaded {len(group_names)} custom groups from mapping file:")
+    for name, ids in zip(group_names, groups):
+        say(f"  {name}: {len(ids)} identifiers")
+
+    return groups, group_names, side

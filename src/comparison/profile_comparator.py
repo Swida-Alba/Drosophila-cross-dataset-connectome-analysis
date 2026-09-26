@@ -80,9 +80,13 @@ from .connectivity_profiler import ConnectivityProfile, ConnectivityProfiler, Pr
 from .cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
 
 try:
-    from ..utils.naming_utils import canonical_dataset_name
+    from ..utils.naming_utils import (
+        canonical_dataset_name, dataset_key_candidates, group_member_rows,
+        load_labelmapper_source_groups)
 except ImportError:  # pragma: no cover - direct package imports
-    from utils.naming_utils import canonical_dataset_name
+    from utils.naming_utils import (
+        canonical_dataset_name, dataset_key_candidates, group_member_rows,
+        load_labelmapper_source_groups)
 try:
     from ..visualization_options import default_analysis_skeleton_mesh_simplification
 except ImportError:
@@ -10816,7 +10820,7 @@ class ConnectivityProfileComparer:
     ) -> Tuple[List, List[str]]:
         """
         Load custom groups from a LabelMapper preset JSON (source side).
-        
+
         The preset format is the LabelMapper overall JSON exported by the
         Settings tab's mapping presets:
             {"source_mapping": {
@@ -10825,43 +10829,24 @@ class ConnectivityProfileComparer:
         Each custom_label/std_label row becomes one group; the group members
         are the identifiers listed for the profiling dataset. Groups without
         any members in this dataset are dropped with a warning.
-        
+
+        The preset parsing itself is shared with the morphology comparison
+        (``naming_utils.load_labelmapper_source_groups``) so the two tabs
+        cannot drift on what a group is; only the multi-dataset member fan-out
+        below is profiling-specific.
+
         Args:
             mapping_path: Path to the LabelMapper preset JSON.
             dataset: Profiling dataset; must appear as a key of the mapping.
-        
+
         Returns:
             Tuple of (normalized_query, custom_group_names), each group
             being a list of bodyIds/types — same contract as
             _parse_group_map_csv.
         """
-        import json as _json
-        
-        try:
-            data = _json.loads(Path(mapping_path).read_text(encoding='utf-8'))
-        except (OSError, ValueError) as e:
-            raise ValueError(f"Could not read custom mapping file {mapping_path}: {e}")
-        
-        side = data.get('source_mapping') or {}
-        labels = side.get('custom_label') or side.get('std_label') or []
-        if not labels:
-            self._log("Warning: mapping file has no source groups "
-                      "(custom_label/std_label) — custom groups skipped")
-            return [], []
-        
-        # The profiling dataset may appear under its exact name or the
-        # normalized variant (colons/dots replaced by underscores).
-        candidates = {dataset, canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')}
-        ds_key = next(
-            (k for k in side
-             if k not in ('custom_label', 'std_label') and k in candidates),
-            None
-        )
-        if ds_key is None:
-            self._log(f"Warning: mapping file has no groups for dataset "
-                      f"'{dataset}' — custom groups skipped")
-            return [], []
-        
+        normalized, group_names, side = load_labelmapper_source_groups(
+            mapping_path, dataset, log=self._log)
+
         # Keep the per-dataset member lists (multi-dataset mode resolves each
         # group against its own dataset's members). Keys are normalized to the
         # dataset identifiers this comparer knows.
@@ -10871,44 +10856,11 @@ class ConnectivityProfileComparer:
                 if side_key in ('custom_label', 'std_label'):
                     continue
                 for known_ds in self.datasets:
-                    if side_key in (known_ds, canonical_dataset_name(known_ds).replace(':', '_').replace('.', '_')):
-                        processed_rows = []
-                        for row in (rows or []):
-                            if isinstance(row, str):
-                                row = [row]
-                            processed_rows.append([
-                                int(str(v).strip()) if str(v).strip().isdigit() else str(v).strip()
-                                for v in (row or [])
-                            ])
-                        self._mapping_ds_members[known_ds] = processed_rows
-        
-        normalized = []
-        group_names = []
-        group_rows = side.get(ds_key) or []
-        for i, label in enumerate(labels):
-            member_list = group_rows[i] if i < len(group_rows) else None
-            if isinstance(member_list, str):
-                member_list = [member_list]
-            if not member_list:
-                continue
-            processed = []
-            for id_val in member_list:
-                id_str = str(id_val).strip()
-                processed.append(int(id_str) if id_str.isdigit() else id_str)
-            if not processed:
-                continue
-            group_names.append(str(label))
-            normalized.append(processed)
-        
-        if not group_names:
-            self._log(f"Warning: no groups with members in '{dataset}' "
-                      f"found in mapping file")
-            return [], []
-        
-        self._log(f"Loaded {len(group_names)} custom groups from mapping file:")
-        for name, ids in zip(group_names, normalized):
-            self._log(f"  {name}: {len(ids)} identifiers")
-        
+                    if side_key in dataset_key_candidates(known_ds):
+                        self._mapping_ds_members[known_ds] = [
+                            group_member_rows(row) for row in (rows or [])
+                        ]
+
         return normalized, group_names
 
     @staticmethod

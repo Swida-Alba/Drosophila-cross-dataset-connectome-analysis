@@ -60,6 +60,10 @@ COLUMN_GLOSSARY = {
     "bodyId_pre": ("Pre-synaptic (source) neuron body id of a synapse.", "integer"),
     "bodyId_post": ("Post-synaptic (target) neuron body id of a synapse.", "integer"),
     "instance": ("Instance (individual) name of the neuron.", "text"),
+    "row": ("Matrix row this neuron feeds: the neuron type at the type "
+            "level, the neuron's own display label at the bodyId level, or "
+            "the group label at the custom group level. `type` beside it "
+            "stays the neuron's real type at every level.", "text"),
     "type": ("Neuron type name.", "text"),
     "type_pre": ("Presynaptic (source) neuron type of the edge.", "text"),
     "type_post": ("Postsynaptic (target) neuron type of the edge.", "text"),
@@ -1423,44 +1427,61 @@ TOOL_GUIDE_SPECS = {
     },
     "morphology_comparison": {
         "title": "Morphology · Comparison",
-        "summary": "Intra-dataset N×N morphology comparison of 2+ queried "
-                   "neurons (type-level and bodyId-level matrices).",
+        "summary": "Intra-dataset N×N morphology comparison of the queried "
+                   "neurons. Aggregation Level picks the row: type (default), "
+                   "bodyId (one neuron per row) or custom group.",
         "files": [
             {"pattern": "report.html",
              "description": "Summary report: parameters, compared neurons, "
-                            "and both similarity matrices with links to the "
-                            "interactive heatmaps."},
+                            "and the similarity matrices with links to the "
+                            "interactive heatmaps. Only the levels this run "
+                            "computed get a tab, so a bodyId-level report "
+                            "shows the BodyId matrix alone."},
             {"pattern": "parameters.json",
-             "description": "All analysis parameters (query, dataset, "
-                            "method, member/total caps)."},
+             "description": "All analysis parameters, including "
+                            "aggregation_level (member/total caps, method)."},
             {"pattern": "README.txt",
              "description": "Human-readable summary with the output "
                             "structure."},
             {"pattern": "members.csv",
              "description": "Resolved comparison population: one row per "
-                            "queried neuron with its type and availability "
-                            "status.",
+                            "compared neuron, with the matrix row it feeds "
+                            "and its availability status.",
              "preview": True,
              "preview_title": "Compared neurons",
-             "columns": ["type", "bodyId", "instance", "status"]},
+             "columns": ["row", "type", "bodyId", "instance", "status"]},
             {"pattern": "type_level/type_similarity_*.csv",
-             "description": "Type×type similarity matrix. Each entry is the "
-                            "mean over the cross-member bodyId pairs; the "
-                            "diagonal is the type's intra-type cohesion.",
+             "description": "Type×type similarity matrix: each entry is the "
+                            "mean over the cross-member bodyId pairs, the "
+                            "diagonal the type's intra-type cohesion. Written "
+                            "at the type level only — at the bodyId level the "
+                            "bodyId matrix IS the comparison and no aggregate "
+                            "is computed; at the custom group level the same "
+                            "aggregate lands in group_level/ instead.",
              "matrix": "rows/columns = neuron types, values = mean "
+                       "morphological similarity"},
+            {"pattern": "group_level/group_similarity_*.csv",
+             "description": "Group×group similarity matrix at the custom "
+                            "group level: rows are the grouping board's "
+                            "source-side groups, each entry the mean over "
+                            "their members' cross pairs.",
+             "matrix": "rows/columns = custom group labels, values = mean "
                        "morphological similarity"},
             {"pattern": "bodyid_level/bodyid_similarity_*.csv",
              "description": "BodyId-to-bodyId similarity matrix (every "
-                            "individual pair).",
+                            "individual pair). Always written, and the "
+                            "run's only matrix at the bodyId level.",
              "matrix": "rows/columns = '{bodyId}_{instance}' (or "
                        "'{bodyId}_{type}_{L|R}' on FAFB/BANC) labels, "
                        "values = morphological similarity"},
             {"pattern": "visualization/heatmap_*.html",
-             "description": "Interactive heatmaps for both levels."},
+             "description": "Interactive heatmaps, one per computed level — "
+                            "heatmap_type_* / heatmap_group_* / "
+                            "heatmap_bodyid_*."},
             {"pattern": "plot-3d_*/",
              "description": "Optional 3D skeleton scene (3D Skeleton "
                             "Visualization checkbox): one layer per "
-                            "compared type, linked from report.html."},
+                            "compared matrix row, linked from report.html."},
         ],
     },
     "inter_dataset": {
@@ -2195,6 +2216,18 @@ TOOL_GUIDE_SPECS = {
              "description": "Candidate-window rows below the pool best: the "
                             "top-rank_top_k band in family/aggressive "
                             "modes, the wider band in aggressive only."},
+            {"pattern": "validation/forward_matches.csv",
+             "description": "The Homolog · forward tab's data (user "
+                            "2026-09-26): one row per appeared source "
+                            "bodyId — assigned, fill-proposed, out-of-map "
+                            "or unpaired alike — with the chain-best "
+                            "target (primary_*), the serialized "
+                            "forward_topN union neighbourhood (top-3 "
+                            "rank_union ∪ top-3 jaccard, chain order), "
+                            "n_scanned / scanned_at, and the primary "
+                            "pair's morph display joins. Captured during "
+                            "stage 2; the report re-derives ✓/✗ from the "
+                            "branch bars — nothing is re-scored."},
             {"pattern": "gap_fill/gap_fill_proposals.csv",
              "description": "Fill proposals (in_pool / out_of_pool) for "
                             "every unpaired neuron — proposals only."},
@@ -2258,6 +2291,19 @@ TOOL_GUIDE_SPECS = {
                             "only — morphology is never re-scored here — "
                             "and advisory: it labels the bins, it never "
                             "changes a fill count."},
+            {"pattern": "expansion/target_matches.csv",
+             "description": "The Homolog · backward tab's data (stage 5e, "
+                            "user 2026-09-26): one row per appeared TARGET "
+                            "bodyId — pool members including matched / "
+                            "verified / borderline, plus expansion-bin, "
+                            "out-map and proposal targets — scanned back "
+                            "against the WHOLE source dataset. Carries "
+                            "pool_category + pool_branches, the chain-best "
+                            "primary_source_*, the backward_topN_union "
+                            "payload (top-3 rank_union ∪ top-3 jaccard), "
+                            "n_scanned / scanned_at and the same morph "
+                            "display joins. No caps; advisory display "
+                            "data only."},
             {"pattern": "expansion/out_map_expansion.csv",
              "description": "Top-k typed non-in-map candidates per "
                             "UNCLAIMED source, morph-checked against the "

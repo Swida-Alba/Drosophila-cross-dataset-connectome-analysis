@@ -279,3 +279,63 @@ def test_run_type_aggregation_still_computes_bodyid_matrices(monkeypatch):
 
     result = comparer.run()
     assert result["bodyid_level_skipped"] is False
+
+
+# ---------------------------------------------------------------------------
+# Shared LabelMapper group parser (used by BOTH comparison tabs)
+# ---------------------------------------------------------------------------
+def test_load_labelmapper_source_groups_returns_the_raw_side(tmp_path):
+    """The shared function returns (groups, names, side), so a caller that needs
+    another dataset's column does not re-read the file."""
+    from utils.naming_utils import load_labelmapper_source_groups
+
+    path = tmp_path / "preset.json"
+    path.write_text(json.dumps({"source_mapping": {
+        "custom_label": ["g1", "g2", "g3"],
+        DATASET: [["Mi1", "Mi2"], [], ["7"]],
+        "other:v1": [["X"]],
+    }}), encoding="utf-8")
+
+    groups, names, side = load_labelmapper_source_groups(str(path), DATASET)
+    assert names == ["g1", "g3"]
+    assert groups == [["Mi1", "Mi2"], [7]]          # digit strings become ints
+    assert side["custom_label"] == ["g1", "g2", "g3"]
+    assert "other:v1" in side
+
+
+def test_load_labelmapper_source_groups_degrades_like_the_method(tmp_path):
+    """Empty cases return the empty triple, warning through the injected log —
+    the two comparers both treat 'no groups here' as warn-and-continue."""
+    from utils.naming_utils import load_labelmapper_source_groups
+
+    logs = []
+    no_labels = tmp_path / "a.json"
+    no_labels.write_text(json.dumps({"source_mapping": {DATASET: [["x"]]}}))
+    assert load_labelmapper_source_groups(
+        str(no_labels), DATASET, log=logs.append) == ([], [], {DATASET: [["x"]]})
+
+    other_ds = tmp_path / "b.json"
+    other_ds.write_text(json.dumps({"source_mapping": {
+        "custom_label": ["g"], "nope:v1": [["x"]]}}))
+    groups, names, _side = load_labelmapper_source_groups(
+        str(other_ds), DATASET, log=logs.append)
+    assert (groups, names) == ([], [])
+
+    unreadable = tmp_path / "missing.json"
+    with pytest.raises(ValueError):
+        load_labelmapper_source_groups(str(unreadable), DATASET)
+
+
+def test_connectivity_delegate_matches_the_shared_function(tmp_path):
+    """The profiling method is a delegate: identical (groups, names)."""
+    from utils.naming_utils import load_labelmapper_source_groups
+
+    path = tmp_path / "preset.json"
+    path.write_text(json.dumps({"source_mapping": {
+        "custom_label": ["g1", "g2"],
+        DATASET.replace(':', '_').replace('.', '_'): [["Mi1"], ["5"]],
+    }}), encoding="utf-8")
+    comparer = _make_comparer(query=["Mi1"], aggregation_level="custom")
+    via_method = comparer._load_custom_groups_from_mapping(str(path), DATASET)
+    shared = load_labelmapper_source_groups(str(path), DATASET)[:2]
+    assert via_method == tuple(shared) == ([["Mi1"], [5]], ["g1", "g2"])

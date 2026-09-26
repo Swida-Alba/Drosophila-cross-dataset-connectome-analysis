@@ -209,7 +209,7 @@ def test_run_writes_folder_contract(vector_setup):
     assert body_df.shape == (5, 5)
     assert body_df.iloc[0, 1] == pytest.approx(1.0)
     assert body_df.iloc[0, 2] == pytest.approx(0.0)
-    assert result["types_compared"] == 3
+    assert result["rows_compared"] == 3
     assert result["neurons_compared"] == 5
 
 
@@ -468,7 +468,7 @@ def test_nblast_total_neuron_cap_enforced(monkeypatch, tmp_path):
         dataset="male-cns:v1.0", query=[f"T{i}" for i in range(40)],
         method="nblast", output_dir=str(tmp_path),
         generate_heatmaps=False, verbose=False)
-    with pytest.raises(ValueError, match="capped at 30"):
+    with pytest.raises(ValueError, match="30-neuron limit"):
         comparer.run()
 
 
@@ -828,3 +828,252 @@ def test_type_level_matrix_diagonal_pairs_align(monkeypatch):
     # The only matrix-present pair (10, 11) is contralateral and must be
     # excluded: cohesion is NaN, never the mean of matrix[0,1]/[1,0].
     assert np.isnan(out.loc["T", "T"])
+
+
+# ------------------------------------------------------------ aggregation levels
+def _body_labels(result, method="vector_v2"):
+    return list(_read_matrix(
+        Path(result["output_folder"]) / "bodyid_level"
+        / f"bodyid_similarity_{method}.csv").index)
+
+
+def test_bodyid_level_rows_are_neurons(vector_setup):
+    """Two bodyIds of the SAME type become two rows.
+
+    At the type level they fold into one row and the run refuses, so
+    'compare these two neurons' was previously impossible.
+    """
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["1", "2"],
+        aggregation_level="bodyid", output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    assert _body_labels(result) == ["1_inst1", "2_inst2"]
+    assert result["aggregation_level"] == "bodyid"
+    assert result["rows_compared"] == 2
+
+
+def test_type_level_fold_hint_names_the_level(vector_setup):
+    """The <2-rows refusal says WHY the query collapsed and what to change."""
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["1", "2"],
+        aggregation_level="type", output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False)
+    with pytest.raises(ValueError, match="Aggregation Level"):
+        comparer.run()
+
+
+def test_queried_bodyid_survives_the_member_cap(vector_setup):
+    """max_members_per_type may drop a type's other members, never the neuron
+    the query named (regression: the sorted prefix evicted it silently)."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["2", "aMe10"],
+        max_members_per_type=1, output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    labels = _body_labels(result)
+    assert "2_inst2" in labels
+    assert "1_inst1" not in labels
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert 2 in {int(b) for b in members["bodyId"]}
+
+
+def test_several_queried_bodyids_all_survive_a_cap_of_one(vector_setup):
+    """The cap bounds UNPINNED members: two queried neurons of one type both
+    stay even when max_members_per_type is 1.
+
+    Regression: `(pinned + rest)[:limit]` truncated the pinned run itself, so
+    the second named neuron vanished — the same silent loss this whole level
+    exists to prevent, just one layer up.
+    """
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["1", "2", "aMe10"],
+        max_members_per_type=1, output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    labels = _body_labels(result)
+    assert {"1_inst1", "2_inst2"} <= set(labels)
+    # The unpinned row is still capped to one member.
+    assert "3_inst3" in labels and "4_inst4" not in labels
+
+
+def test_total_cap_never_drops_a_queried_neuron(vector_setup):
+    """max_total_neurons fills with unpinned members only, and yields to the
+    named neurons when they alone pass the cap."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["2", "4"],
+        max_total_neurons=1, output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    assert set(_body_labels(result)) == {"2_inst2", "4_inst4"}
+    assert result["rows_compared"] == 2
+
+
+def test_bodyid_level_suppresses_the_type_matrix(vector_setup, monkeypatch):
+    """The bodyId matrix IS the comparison: no aggregate is computed, no empty
+    type_level/ directory is left behind, and the report offers no tab for a
+    level this run cannot have."""
+    monkeypatch.setitem(sys.modules, "vispath_pkg", None)
+    monkeypatch.setitem(sys.modules, "vispath_pkg.vispath", None)
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12", "aMe10"],
+        aggregation_level="bodyid", output_dir=str(vector_setup),
+        generate_heatmaps=True, verbose=False).run()
+    out = Path(result["output_folder"])
+    assert not (out / "type_level").exists()
+    assert (out / "bodyid_level" / "bodyid_similarity_vector_v2.csv").exists()
+    assert not list((out / "visualization").glob("heatmap_type_*"))
+    assert list((out / "visualization").glob("heatmap_bodyid_*"))
+    report = (out / "report.html").read_text(encoding="utf-8")
+    assert "BodyId level" in report
+    assert "Type level" not in report
+    assert "This level was not computed" not in report
+
+
+def test_members_type_column_stays_true(vector_setup):
+    """`row` carries the matrix row, `type` stays the real type — neither
+    column may lie about the other (the defect connectivity's bodyId level has)."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["1", "3"],
+        aggregation_level="bodyid", output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    by_id = {str(rec["bodyId"]): (rec["row"], rec["type"])
+             for rec in members.to_dict("records")}
+    assert by_id["1"] == ("1_inst1", "aMe12")
+    assert by_id["3"] == ("3_inst3", "aMe10")
+
+
+def _write_preset(tmp_path, groups, dataset="male-cns:v1.0"):
+    import json
+
+    path = tmp_path / "preset.json"
+    path.write_text(json.dumps({"source_mapping": {
+        "custom_label": [name for name, _ in groups],
+        dataset: [members for _, members in groups],
+    }}), encoding="utf-8")
+    return str(path)
+
+
+def test_custom_level_rows_are_groups(vector_setup, tmp_path):
+    preset = _write_preset(tmp_path, [
+        ("early", ["aMe12"]), ("late", ["aMe10", "PPL1*"])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["unused"],
+        aggregation_level="custom", custom_mapping_file=preset,
+        output_dir=str(tmp_path / "out"), generate_heatmaps=False,
+        verbose=False).run()
+    out = Path(result["output_folder"])
+    aggregate = _read_matrix(out / "group_level" / "group_similarity_vector_v2.csv")
+    assert list(aggregate.index) == ["early", "late"]
+    # The group matrix is filed under a name that says groups; the type×type
+    # name would lie about its axes.
+    assert not (out / "type_level").exists()
+    members = pd.read_csv(out / "members.csv")
+    assert set(members["row"]) == {"early", "late"}
+    assert set(members["type"]) == {"aMe12", "aMe10", "PPL1*"}
+    import json
+    params = json.loads((out / "parameters.json").read_text())
+    assert params["aggregation_level"] == "custom"
+
+
+def test_custom_level_heatmap_is_named_for_groups(vector_setup, monkeypatch):
+    monkeypatch.setitem(sys.modules, "vispath_pkg", None)
+    monkeypatch.setitem(sys.modules, "vispath_pkg.vispath", None)
+    preset = _write_preset(vector_setup, [("g1", ["aMe12"]),
+                                          ("g2", ["aMe10"])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["unused"], aggregation_level="custom",
+        custom_mapping_file=preset, output_dir=str(vector_setup / "hm"),
+        generate_heatmaps=True, verbose=False).run()
+    viz = Path(result["output_folder"]) / "visualization"
+    assert (viz / "heatmap_group_vector_v2.html").exists()
+    assert (viz / "heatmap_bodyid_vector_v2.html").exists()
+    assert not list(viz.glob("heatmap_type_*"))
+    assert "group_level/group_similarity_vector_v2.csv" in (
+        Path(result["output_folder"]) / "report.html").read_text(
+        encoding="utf-8")
+
+
+def test_custom_mapping_file_forces_custom_level(vector_setup, tmp_path):
+    """A preset given without the level is not silently ignored."""
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12", "aMe10"],
+        aggregation_level="type",
+        custom_mapping_file=_write_preset(tmp_path, [("g1", ["aMe12"])]),
+        verbose=False)
+    assert comparer.aggregation_level == "custom"
+
+
+def test_custom_level_without_a_preset_raises():
+    with pytest.raises(ValueError, match="custom_mapping_file"):
+        mc.MorphologyProfileComparer(
+            dataset="male-cns:v1.0", query=["aMe12", "aMe10"],
+            aggregation_level="custom", verbose=False).run()
+
+
+def test_invalid_aggregation_level_raises():
+    """Strict where connectivity is lenient: a level the run did not use must
+    never be reported as the run's level."""
+    with pytest.raises(ValueError, match="aggregation_level"):
+        mc.MorphologyProfileComparer(
+            dataset="male-cns:v1.0", query=["aMe12", "aMe10"],
+            aggregation_level="suspicious", verbose=False)
+
+
+def test_aggregation_level_alias_and_empty():
+    assert mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["a", "b"],
+        aggregation_level="Custom Group", verbose=False).aggregation_level \
+        == "custom"
+    for empty in (None, "", "   "):
+        assert mc.MorphologyProfileComparer(
+            dataset="male-cns:v1.0", query=["a", "b"],
+            aggregation_level=empty, verbose=False).aggregation_level == "type"
+
+
+# ------------------------------------------------------ NBLAST population cap
+def _install_nblast(monkeypatch, type_map):
+    _install_type_map(monkeypatch, type_map)
+    monkeypatch.setattr(
+        mc, "MorphologyComparer",
+        lambda **kw: _FakeHelper(sorted(type_map)))
+    import navis.nbl.nblast_funcs as nblast_funcs
+    monkeypatch.setattr(nblast_funcs, "NBlaster", _FakeNBlaster)
+
+
+def test_nblast_cap_below_30_is_honoured_not_refused(monkeypatch, tmp_path):
+    """15 neurons with max_total_neurons=10 runs.
+
+    Regression: the gate tested max_total_neurons while printing the 30
+    bound, so this raised "capped at 30 total neurons (got 15)" and built no
+    dotprops at all.
+    """
+    type_map = {**{i: "T1" for i in range(1, 14)}, 14: "T2", 15: "T3"}
+    _install_nblast(monkeypatch, type_map)
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["T1", "T2", "T3"], method="nblast",
+        max_total_neurons=10, output_dir=str(tmp_path),
+        generate_heatmaps=False, verbose=False).run()
+    body_df = _read_matrix(
+        Path(result["output_folder"]) / "bodyid_level"
+        / "bodyid_similarity_nblast.csv")
+    assert body_df.shape == (10, 10)
+
+
+def test_nblast_refusal_names_the_effective_population(monkeypatch, tmp_path):
+    """50 neurons with max_total_neurons=20 scores 20 instead of refusing;
+    with the default cap the same query is refused, naming its own count."""
+    type_map = {i: f"T{i}" for i in range(1, 51)}
+    _install_nblast(monkeypatch, type_map)
+    run = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=[f"T{i}" for i in range(1, 51)],
+        method="nblast", max_total_neurons=20, output_dir=str(tmp_path),
+        generate_heatmaps=False, verbose=False).run()
+    assert _read_matrix(
+        Path(run["output_folder"]) / "bodyid_level"
+        / "bodyid_similarity_nblast.csv").shape == (20, 20)
+
+    refused = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=[f"T{i}" for i in range(1, 51)],
+        method="nblast", output_dir=str(tmp_path),
+        generate_heatmaps=False, verbose=False)
+    with pytest.raises(ValueError, match=r"50 neurons exceed the 30-neuron"):
+        refused.run()

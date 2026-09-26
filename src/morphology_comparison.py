@@ -2,9 +2,12 @@
 
 Given ONE dataset and 2+ queried neurons (types, bodyIds, or regex
 patterns), computes the N×N morphological similarity matrix at bodyId level
-and an aggregated type-level matrix, then writes CSV matrices, interactive
-heatmaps, and a report — the morphology analogue of the Connectivity tab's
-Comparison sub-tab (``ConnectivityProfileComparer``).
+plus, unless the comparison IS at bodyId level, an aggregated matrix over
+them, then writes CSV matrices, interactive heatmaps, and a report — the
+morphology analogue of the Connectivity tab's Comparison sub-tab
+(``ConnectivityProfileComparer``). ``aggregation_level`` picks the row
+granularity: ``type`` (default), ``bodyid`` (one row per neuron) or
+``custom`` (one row per LabelMapper group).
 
 Two scoring methods:
 - ``vector_v2`` (default): the production similarity of Find Similar —
@@ -12,8 +15,8 @@ Two scoring methods:
   vectors from the per-dataset ``SkeletonVectorCacheV2``.
 - ``nblast``: canonical normalized NBLAST on raw-skeleton dotprops. Both
   orientations of every pair are scored and averaged (the forward score is
-  asymmetric); type means exclude contralateral pairs (mirror arbors score
-  at chance), matching Find Similar's ipsilateral-only aggregation.
+  asymmetric); aggregate means exclude contralateral pairs (mirror arbors
+  score at chance), matching Find Similar's ipsilateral-only aggregation.
 
 Intra-dataset ONLY: vectors and NBLAST dotprops are scored in one dataset's
 coordinate space against that dataset's caches. Cross-dataset workflows
@@ -24,10 +27,12 @@ Output folder (under ``output_dir``)::
     morphology_comparison_{DATASET}_{query}_{ts}/
       parameters.json
       README.txt
-      members.csv                       # resolved type/bodyId provenance
-      type_level/type_similarity_{method}.csv
+      members.csv                       # row / type / bodyId provenance
+      type_level/type_similarity_{method}.csv      # group_level/group_similarity_…
+                                                   # at the custom group level;
+                                                   # absent at the bodyId level
       bodyid_level/bodyid_similarity_{method}.csv
-      visualization/heatmap_type_{method}.html
+      visualization/heatmap_type_{method}.html     # heatmap_group_… / absent
       visualization/heatmap_bodyid_{method}.html
       report.html
 """
@@ -104,10 +109,12 @@ except ImportError:  # pragma: no cover - direct src/ execution
         is_banc_dataset, is_fafb_dataset)
 
 try:
-    from utils.naming_utils import dataset_abbrev
+    from utils.naming_utils import (
+        dataset_abbrev, load_labelmapper_source_groups)
 except ImportError:  # pragma: no cover
     def dataset_abbrev(dataset: str) -> str:
         return str(dataset or "").split(":")[0].replace("_", "")[:5].upper()
+    from naming_utils import load_labelmapper_source_groups
 
 try:
     from comparison import report_kit
@@ -128,6 +135,37 @@ _METHOD_LABELS = {
     "nblast": "NBLAST",
 }
 
+# Row granularity of the comparison matrix. "custom group" is accepted as an
+# alias so the raw UI label works, mirroring the connectivity comparer.
+_AGGREGATION_ALIASES = {
+    "type": "type",
+    "bodyid": "bodyid",
+    "custom": "custom",
+    "custom group": "custom",
+}
+_AGGREGATION_DEFAULT = "type"
+
+# How a matrix row is described in the report, per level.
+_ROW_KIND_LABELS = {"type": "type", "bodyid": "neuron", "custom": "group"}
+
+
+def _normalize_aggregation_level(value) -> str:
+    """`type` | `bodyid` | `custom`; empty/None takes the default.
+
+    Unlike the connectivity comparer, an unknown value raises instead of
+    silently becoming "type": a run whose rows are not what the user selected
+    is worse than a refused run. The strictness is deliberately local —
+    connectivity's fallthrough is pinned by its own coverage test.
+    """
+    if value is None or not str(value).strip():
+        return _AGGREGATION_DEFAULT
+    key = str(value).strip().lower()
+    if key not in _AGGREGATION_ALIASES:
+        raise ValueError(
+            f"Invalid aggregation_level: {value!r} "
+            "(type|bodyid|custom group)")
+    return _AGGREGATION_ALIASES[key]
+
 
 def _looks_like_pattern(token: str) -> bool:
     return any(ch in _PATTERN_CHARS for ch in str(token))
@@ -141,11 +179,21 @@ def _safe_name(value: str, limit: int = 60) -> str:
 class MorphologyProfileComparer:
     """Compare the morphology of already-identified neurons within ONE dataset.
 
-    The query is a single list of neurons; the result is one N×N matrix.
-    Rows are neuron types: each queried type contributes one row (diagonal =
-    intra-type cohesion, the mean pairwise score among its members), and the
-    type-level entry is the mean over the cross-member bodyId pairs. The
-    bodyId-level matrix carries every individual pair.
+    The query is a single list of neurons; the result is one N×N matrix whose
+    row granularity ``aggregation_level`` selects:
+
+    - ``type`` — each queried type is one row (diagonal = intra-type cohesion,
+      the mean pairwise score among its members), and the entry is the mean
+      over the cross-member bodyId pairs. The bodyId-level matrix, which
+      carries every individual pair, is written alongside it.
+    - ``bodyid`` — every individual neuron is its own row, so a queried
+      bodyId is compared as itself rather than folded into its type. The
+      bodyId matrix IS the comparison, so no type-level aggregate is written.
+    - ``custom`` — rows are the source-side groups of a LabelMapper preset
+      (``custom_mapping_file``); the query list is ignored.
+
+    The bodyId × bodyId matrix is always the scored primitive: the other
+    matrices are block means over it.
     """
 
     def __init__(
@@ -153,6 +201,8 @@ class MorphologyProfileComparer:
         dataset: Optional[str] = None,
         query: Optional[Union[str, int, List[Union[str, int]]]] = None,
         method: str = "vector_v2",
+        aggregation_level: str = _AGGREGATION_DEFAULT,
+        custom_mapping_file: Optional[str] = None,
         max_members_per_type: int = 25,
         max_total_neurons: int = 200,
         fetch_online: bool = True,
@@ -170,6 +220,8 @@ class MorphologyProfileComparer:
         self.dataset = dataset
         self.query = query
         self.method = str(method).lower()
+        self.aggregation_level = _normalize_aggregation_level(aggregation_level)
+        self.custom_mapping_file = str(custom_mapping_file or "").strip()
         self.max_members_per_type = max(1, int(max_members_per_type))
         self.max_total_neurons = max(2, int(max_total_neurons))
         self.fetch_online = bool(fetch_online)
@@ -194,6 +246,10 @@ class MorphologyProfileComparer:
                 "BANC morphological comparison is deferred: the public "
                 "L2/full skeletons still need vector-quality validation. "
                 "3D skeleton visualization for BANC is available.")
+        if self.custom_mapping_file and self.aggregation_level != "custom":
+            self._log("custom_mapping_file given: aggregation level "
+                      "switched to 'custom'.")
+            self.aggregation_level = "custom"
 
     # ------------------------------------------------------------------ log
     def _log(self, msg: str) -> None:
@@ -205,22 +261,16 @@ class MorphologyProfileComparer:
 
     # ------------------------------------------------------------- resolution
     def _resolve_members(self) -> "Dict[str, List[object]]":
-        """Resolve the query into {type: [member bodyIds]} (input order).
+        """Resolve the comparison population into {row label: [member bodyIds]}.
 
-        Numeric tokens are bodyIds (resolved to their type via the dataset
-        neuron table); non-numeric tokens are exact type names or regex
-        patterns expanded against the dataset's type names. Members are
-        capped per type and in total.
+        The row label follows ``aggregation_level``: a type name, a bodyId
+        display label, or a custom-group label. Values are always bodyIds, so
+        the block-mean aggregation and the 3D layering work unchanged at every
+        level. Neurons named directly in the query are *pinned*: no per-row cap
+        and no total cap may drop them.
         """
-        tokens: List[Union[str, int]] = []
-        if self.query is None:
-            tokens = []
-        elif isinstance(self.query, (str, int)):
-            tokens = [self.query]
-        else:
-            tokens = list(self.query)
-        tokens = [t for t in tokens if str(t).strip()]
-        if not tokens:
+        tokens = self._query_tokens()
+        if not tokens and self.aggregation_level != "custom":
             raise ValueError("Please provide at least two neurons to compare.")
 
         type_map, instance_map = _load_neuron_type_map(
@@ -233,42 +283,110 @@ class MorphologyProfileComparer:
         # neuron table is read once per run.
         self._type_map = type_map
         self._instance_map = instance_map
-        all_types = sorted({str(t or "").strip() for t in type_map.values()
-                            if str(t or "").strip()})
+        self._type_names = sorted(
+            {str(t or "").strip() for t in type_map.values()
+             if str(t or "").strip()})
 
-        members: Dict[str, List[object]] = {}
-        warning_missing_types: List[str] = []
+        self._pinned: set = set()
+        if self.aggregation_level == "custom":
+            members = self._custom_rows()
+        else:
+            members = self._query_rows(tokens)
+            if self.aggregation_level == "bodyid":
+                members = self._relabel_neuron_rows(members)
+
+        self._check_population(members)
+        return self._apply_total_cap(members)
+
+    def _query_tokens(self) -> List[Union[str, int]]:
+        """The query as an ordered list of non-blank tokens."""
+        if self.query is None:
+            tokens: List[Union[str, int]] = []
+        elif isinstance(self.query, (str, int)):
+            tokens = [self.query]
+        else:
+            tokens = list(self.query)
+        return [t for t in tokens if str(t).strip()]
+
+    def _type_member_ids(self, type_name: str) -> List[object]:
+        """Every bodyId of one dataset type, in the stable string order."""
+        ids = [bid for bid, t in self._type_map.items()
+               if str(t or "").strip() == type_name]
+        ids.sort(key=lambda b: str(b))
+        return ids
+
+    def _cap_members(self, ids: List[object], label: str) -> List[object]:
+        """Cap one row's members, never at the expense of a pinned neuron.
+
+        The cap bounds the UNPINNED members: with two or more queried neurons
+        in one row and a small cap, truncating `pinned + rest` would evict a
+        neuron the query named — the very defect this comparison fixes.
+        """
+        limit = self.max_members_per_type
+        if len(ids) <= limit:
+            return list(ids)
+        forced = [b for b in ids if self._body_id(b) in self._pinned]
+        rest = [b for b in ids if self._body_id(b) not in self._pinned]
+        keep_rest = max(0, limit - len(forced))
+        if len(forced) > limit:
+            self._log(
+                f"{label}: keeping all {len(forced)} queried neurons although "
+                f"max_members_per_type is {limit}.")
+        else:
+            self._log(
+                f"{label}: capping {len(ids)} members to {limit} "
+                "(max_members_per_type).")
+        return forced + rest[:keep_rest]
+
+    def _query_rows(self, tokens: List[Union[str, int]]) -> "Dict[str, List[object]]":
+        """Rows for the type and bodyId levels, keyed by canonical bodyId or
+        type name (bodyId keys are relabelled once, in bulk, afterwards)."""
+        rows: Dict[str, List[object]] = {}
+        missing: List[str] = []
+
+        def _add_ids(target_key: str, ids: List[object]) -> None:
+            merged = rows.get(target_key, [])
+            seen = {self._body_id(b) for b in merged}
+            for bid in ids:
+                canon = self._body_id(bid)
+                if canon in seen:
+                    continue
+                seen.add(canon)
+                merged.append(bid)
+            rows[target_key] = self._cap_members(merged, target_key)
 
         def _add_type(type_name: str) -> None:
-            if type_name in members:
-                return
-            ids = [bid for bid, t in type_map.items()
-                   if str(t or "").strip() == type_name]
+            ids = self._type_member_ids(type_name)
             if not ids:
                 return
-            ids.sort(key=lambda b: str(b))
-            if len(ids) > self.max_members_per_type:
-                self._log(
-                    f"{type_name}: capping {len(ids)} members to "
-                    f"{self.max_members_per_type} (max_members_per_type).")
-                ids = ids[: self.max_members_per_type]
-            members[type_name] = ids
+            if self.aggregation_level == "bodyid":
+                # One row per neuron; the per-type cap bounds how many rows a
+                # queried type contributes.
+                for bid in self._cap_members(ids, type_name):
+                    rows.setdefault(str(self._body_id(bid)), [bid])
+                return
+            _add_ids(type_name, ids)
 
         for token in tokens:
             text = str(token).strip()
             # Exact type names win over pattern interpretation (some dataset
             # type names contain regex metacharacters, e.g. "PPL1*").
-            if text in all_types:
+            if text in self._type_names:
                 _add_type(text)
                 continue
             if text.isdigit():
                 bid = self._body_id(text)
-                type_name = str(type_map.get(bid, "") or "").strip()
+                type_name = str(self._type_map.get(bid, "") or "").strip()
                 if not type_name:
                     raise ValueError(
                         f"bodyId {text} was not found in dataset "
                         f"'{self.dataset}'.")
-                _add_type(type_name)
+                # The neuron the user asked for is protected from every cap.
+                self._pinned.add(bid)
+                if self.aggregation_level == "bodyid":
+                    rows.setdefault(str(bid), [bid])
+                    continue
+                _add_ids(type_name, [bid] + self._type_member_ids(type_name))
                 continue
             if _looks_like_pattern(text):
                 try:
@@ -276,45 +394,145 @@ class MorphologyProfileComparer:
                 except re.error as exc:
                     raise ValueError(
                         f"Invalid query pattern '{text}': {exc}")
-                matched = [t for t in all_types if rx.fullmatch(t)]
+                matched = [t for t in self._type_names if rx.fullmatch(t)]
                 if not matched:
-                    warning_missing_types.append(text)
+                    missing.append(text)
                     continue
                 for type_name in matched:
                     _add_type(type_name)
                 continue
-            warning_missing_types.append(text)
+            missing.append(text)
 
-        if warning_missing_types:
+        if missing:
             self._log(
-                "No dataset types matched: "
-                + ", ".join(map(str, warning_missing_types)))
-        # ``members`` is already in first-occurrence query order (dicts
-        # preserve insertion order).
+                "No dataset types matched: " + ", ".join(map(str, missing)))
+        # ``rows`` is already in first-occurrence query order (dicts preserve
+        # insertion order).
+        return rows
 
+    def _relabel_neuron_rows(self, rows: "Dict[str, List[object]]"):
+        """Swap canonical-bodyId keys for the tree-legend display labels.
+
+        Labels come from one bulk lookup; two neurons that would share a label
+        get the type appended rather than merging into one row.
+        """
+        ids = [bid for members in rows.values() for bid in members]
+        labels = self._display_labels(ids)
+        out: Dict[str, List[object]] = {}
+        for bid, label in zip(ids, labels):
+            key = str(label)
+            if key in out:
+                key = f"{key}_{self._type_map.get(self._body_id(bid), '')}"
+            out[key] = [bid]
+        return out
+
+    def _custom_rows(self) -> "Dict[str, List[object]]":
+        """Rows from the grouping preset's source-side groups (query ignored).
+
+        Group members are type names or bodyIds, both resolved against this
+        dataset; a shared parser reads the preset so the two comparison tabs
+        cannot disagree about what a group is.
+        """
+        if not self.custom_mapping_file:
+            raise ValueError(
+                "The custom group level needs a grouping preset "
+                "(custom_mapping_file).")
+        groups, names, _side = load_labelmapper_source_groups(
+            self.custom_mapping_file, self.dataset, log=self._log)
+        if not names:
+            raise ValueError(
+                f"No custom groups with members in '{self.dataset}' — check "
+                "the grouping board's source mapping.")
+        rows: Dict[str, List[object]] = {}
+        for name, members in zip(names, groups):
+            ids: List[object] = []
+            for value in members:
+                text = str(value).strip()
+                if text.isdigit():
+                    ids.append(self._body_id(text))
+                elif text in self._type_names:
+                    ids.extend(self._type_member_ids(text))
+                else:
+                    self._log(f"{name}: '{text}' is neither a type nor a "
+                              f"bodyId in {self.dataset}; skipped")
+            ordered = list(dict.fromkeys(self._body_id(b) for b in ids))
+            if not ordered:
+                self._log(f"{name}: no members in {self.dataset}; skipped")
+                continue
+            rows[name] = self._cap_members(ordered, name)
+        return rows
+
+    def _check_population(self, members: "Dict[str, List[object]]") -> None:
+        """Row-count and NBLAST-cost gates, before any scoring work starts."""
         if len(members) < 2:
+            hint = ""
+            if self.aggregation_level == "type" and len(self._pinned) >= 2:
+                hint = (" bodyId queries resolve to their type at this level; "
+                        "set Aggregation Level to 'bodyid' to compare "
+                        "individual neurons.")
             raise ValueError(
-                "Morphology comparison needs at least two resolved types; "
-                f"query resolved {len(members)}.")
+                f"Morphology comparison needs at least two resolved rows; "
+                f"query resolved {len(members)} at the "
+                f"{self.aggregation_level} level.{hint}")
         total = sum(len(v) for v in members.values())
-        if total > self.max_total_neurons and self.method == "nblast":
+        # NBLAST scores every neuron pair and never truncates silently, so it
+        # is refused up front. The bound is the population that would actually
+        # be scored — min(total, max_total_neurons) — not the raw query size,
+        # or a cap below 30 would reject a population NBLAST can score while
+        # naming the 30 limit.
+        effective = min(total, self.max_total_neurons)
+        if self.method == "nblast" and effective > NBLAST_MAX_NEURONS:
             raise ValueError(
-                f"NBLAST comparison is capped at {NBLAST_MAX_NEURONS} total "
-                f"neurons (got {total}); reduce the query or the member cap.")
-        if total > self.max_total_neurons:
+                f"NBLAST comparison scores every neuron pair: {effective} "
+                f"neurons exceed the {NBLAST_MAX_NEURONS}-neuron limit. "
+                "Reduce the query or the per-type member cap"
+                + (" (at the bodyId level each row is one neuron)"
+                   if self.aggregation_level == "bodyid" else "")
+                + ", or use the vector method.")
+
+    def _apply_total_cap(self, members: "Dict[str, List[object]]"):
+        """Bound the population — but never by dropping a queried neuron.
+
+        Queried bodyIds are reserved first; the remaining budget fills with
+        unpinned members in row order. If the reservation alone passes the cap
+        the cap is exceeded deliberately and said out loud, because silently
+        evicting a neuron the user named is the defect this comparison fixes.
+        """
+        total = sum(len(v) for v in members.values())
+        if total <= self.max_total_neurons:
+            return members
+        limit = self.max_total_neurons
+        kept: Dict[str, List[object]] = {label: [] for label in members}
+        for label, ids in members.items():
+            for bid in ids:
+                if self._body_id(bid) in self._pinned:
+                    kept[label].append(bid)
+        reserved = sum(len(v) for v in kept.values())
+        if reserved > limit:
             self._log(
-                f"Query resolves to {total} neurons; truncating to "
-                f"{self.max_total_neurons} (max_total_neurons).")
-            kept: Dict[str, List[object]] = {}
-            budget = self.max_total_neurons
-            for type_name, ids in members.items():
+                f"max_total_neurons={limit} is below the "
+                f"{reserved} neuron(s) the query named; keeping every named "
+                "neuron.")
+        budget = max(0, limit - reserved)
+        if total - reserved > budget:
+            self._log(
+                f"Query resolves to {total} neurons; truncating the "
+                f"unpinned members to {limit} (max_total_neurons).")
+        for label, ids in members.items():
+            for bid in ids:
                 if budget <= 0:
                     break
-                take = ids[:budget]
-                kept[type_name] = take
-                budget -= len(take)
-            members = kept
-        return members
+                if self._body_id(bid) in self._pinned:
+                    continue
+                kept[label].append(bid)
+                budget -= 1
+            if budget <= 0:
+                break
+        dropped = total - sum(len(v) for v in kept.values())
+        if dropped:
+            self._log(f"{dropped} unpinned neuron(s) dropped by "
+                      "max_total_neurons.")
+        return {label: ids for label, ids in kept.items() if ids}
 
     # ----------------------------------------------------------------- vector
     def _fetch_missing_vectors(self, cache, missing_ids: List[object]) -> int:
@@ -540,6 +758,37 @@ class MorphologyProfileComparer:
                     out.loc[a, b] = out.loc[b, a] = val
         return out
 
+    # --------------------------------------------------------- level wording
+    def _level_display_labels(self) -> Dict[str, str]:
+        """Titles for the two matrix panels.
+
+        The internal level keys stay ``type``/``bodyid`` so filenames,
+        ``csv_links`` and heatmap names are level-independent code; only the
+        reader-facing wording moves with the aggregation level.
+        """
+        aggregate = ("Group level" if self.aggregation_level == "custom"
+                     else "Type level")
+        return {"type": aggregate, "bodyid": "BodyId level"}
+
+    def _row_axis_label(self, level: str) -> str:
+        """Axis title for one matrix panel."""
+        if level == "bodyid":
+            return "Neuron"
+        return "Group" if self.aggregation_level == "custom" else "Type"
+
+    def _aggregate_name(self) -> tuple:
+        """``(folder, csv_stem, heatmap_stem)`` for the aggregate matrix.
+
+        The internal level key stays ``"type"`` for the report plumbing, but
+        the on-disk names describe the axes: a group×group matrix lives in
+        ``group_level/``, not in a folder that claims types. Connectivity
+        files bodyId-labelled matrices under ``type_level/``; this module
+        deliberately does not do that to groups either.
+        """
+        if self.aggregation_level == "custom":
+            return "group_level", "group_similarity", "group"
+        return "type_level", "type_similarity", "type"
+
     # ------------------------------------------------------------------ files
     def _output_path(self, query_name: str) -> Path:
         base = (Path(self.output_dir) if self.output_dir
@@ -575,23 +824,27 @@ class MorphologyProfileComparer:
 
         Card keys are the METRIC key (the kit looks styles up by it); the
         level rides in the closures so the exported filenames stay
-        ``heatmap_{level}_{method}.html``. VisPath renders with native
-        clustering; any failure re-renders through the plotly fallback.
+        ``heatmap_{level}_{method}.html``, with the aggregate panel named for
+        its axes (``heatmap_group_*`` at the custom group level). VisPath
+        renders with native clustering; any failure re-renders through the
+        plotly fallback.
         """
         style = self._metric_style()
         styles = {style.key: style}
         method_label = _METHOD_LABELS.get(self.method, self.method)
-        level_labels = {"type": "Type level", "bodyid": "BodyId level"}
+        level_labels = self._level_display_labels()
+        agg_heatmap = self._aggregate_name()[2]
         saved: Dict[str, List[str]] = {"heatmaps_generated": []}
         for level in ("type", "bodyid"):
             matrix = matrices.get(level)
             if matrix is None or matrix.empty:
                 continue
+            stem = agg_heatmap if level == "type" else level
             report_kit.generate_standalone_heatmaps(
                 {self.dataset: {style.key: matrix}},
                 viz_dir, styles,
-                filename_builder=lambda group, key, _lv=level:
-                    f"heatmap_{_lv}_{self.method}.html",
+                filename_builder=lambda group, key, _st=stem:
+                    f"heatmap_{_st}_{self.method}.html",
                 group_display=lambda group: str(group),
                 vispath_title=lambda group, key, gd, _lv=level:
                     f"{method_label} — {gd} · "
@@ -610,10 +863,11 @@ class MorphologyProfileComparer:
                       params: Dict[str, object]) -> None:
         """Tabbed report on the shared report_kit (the same generator
         family as the connectivity-profiling and cross-dataset morphology
-        reports): hero header, Type/BodyId level tabs with Ward-clustered
-        heatmap cards (CSV + VisPath editor links), compared-members and
-        parameter details, and the 3D scene link. Plotly.js is embedded,
-        so the report renders offline.
+        reports): hero header, one tab per matrix level this run computed
+        (a bodyId-level run therefore shows the BodyId tab alone), each with
+        Ward-clustered heatmap cards (CSV + VisPath editor links),
+        compared-members and parameter details, and the 3D scene link.
+        Plotly.js is embedded, so the report renders offline.
         """
         from html import escape
 
@@ -628,6 +882,23 @@ class MorphologyProfileComparer:
             return (f"<div class='meta-chip'><span>{escape(label)}</span>"
                     f"<strong>{escape(value)}</strong></div>")
 
+        row_kind = _ROW_KIND_LABELS[self.aggregation_level]
+        level_blurb = {
+            "type": (
+                "Each queried type contributes one row — the diagonal is the "
+                "intra-type cohesion and each entry the mean over the "
+                "cross-member bodyId pairs; the bodyId level carries every "
+                "individual pair."),
+            "bodyid": (
+                "Every individual neuron is its own row, so the bodyId matrix "
+                "is the comparison itself and no type-level aggregate is "
+                "written."),
+            "custom": (
+                "Each custom group is one row — the diagonal is the "
+                "intra-group cohesion and each entry the mean over the "
+                "cross-member bodyId pairs; the bodyId level carries every "
+                "individual pair."),
+        }[self.aggregation_level]
         lines = [
             '<!DOCTYPE html>',
             "<html><head><meta charset='utf-8'>",
@@ -640,16 +911,15 @@ class MorphologyProfileComparer:
             '<h1 class="report-title">Morphology comparison</h1>',
             '<p class="report-subtitle">N×N similarity of the queried '
             f'neurons in {escape(str(self.dataset))} '
-            f'({escape(method_label)}). Each queried type contributes one '
-            'type-level row — the diagonal is the intra-type cohesion and '
-            'each entry the mean over the cross-member bodyId pairs; the '
-            'bodyId level carries every individual pair. Use the VisPath '
-            'editor links to change clustering; hover cells for exact '
-            'values.</p>',
+            f'({escape(method_label)} · {escape(self.aggregation_level)} '
+            f'level). {escape(level_blurb)} Use the VisPath editor links to '
+            'change clustering; hover cells for exact values.</p>',
             '<div class="report-meta">',
             chip('Dataset', str(self.dataset)),
             chip('Method', method_label),
-            chip('Types compared', str(params.get("types_compared", "—"))),
+            chip('Aggregation level', self.aggregation_level),
+            chip(f'{row_kind.capitalize()} rows compared',
+                 str(params.get("rows_compared", "—"))),
             chip('Neurons compared',
                  f"{compared}/{len(member_rows)}"),
             '</div>',
@@ -665,21 +935,17 @@ class MorphologyProfileComparer:
         lines.append('</header>')
 
         plotly_state = {'include_plotlyjs': True}
-        level_labels = {"type": "Type level", "bodyid": "BodyId level"}
+        level_labels = self._level_display_labels()
+        agg_heatmap = self._aggregate_name()[2]
 
         def render_level(level: str, _level_panel_id: str) -> None:
-            matrix = matrices.get(level)
-            matrix = matrix if matrix is not None else pd.DataFrame()
-            if matrix.empty:
-                lines.append(
-                    "<div class='heatmap-empty'>This level was not "
-                    'computed for this run.</div>')
-                return
+            matrix = matrices[level]
             scored = int(matrix.notna().sum().sum())
             note = (f'{matrix.shape[0]}×{matrix.shape[1]} · {scored} '
                     'scored cells')
             if level == 'type':
-                note += ' · diagonal = intra-type cohesion'
+                note += f' · diagonal = intra-{row_kind} cohesion'
+            axis = self._row_axis_label(level)
             lines.append(
                 f"<div class='direction-intro'><h3 class='direction-title'>"
                 f'{escape(level_labels.get(level, level))}</h3>'
@@ -688,26 +954,33 @@ class MorphologyProfileComparer:
                 lines, report_path.parent, {style.key: matrix},
                 f'Intra-dataset · {level_labels.get(level, level)}',
                 {style.key: csv_links.get(level, "")},
-                {style.key: f'visualization/heatmap_{level}_'
-                            f'{self.method}.html'},
-                'Neuron' if level == 'bodyid' else 'Type',
-                'Neuron' if level == 'bodyid' else 'Type',
+                {style.key: f'visualization/heatmap_'
+                            f'{agg_heatmap if level == "type" else level}'
+                            f'_{self.method}.html'},
+                axis,
+                axis,
                 plotly_state,
                 styles={style.key: style},
                 square_cells=True,
             )
 
+        # Only the levels this run actually computed get a tab: an
+        # always-present "Type level" tab reading "not computed" invites the
+        # reader to look for a missing input rather than a deliberate level.
+        computed_levels = [
+            (level, level_labels[level]) for level in ('type', 'bodyid')
+            if matrices.get(level) is not None and not matrices[level].empty
+        ]
         report_kit.append_report_tab_group(
-            lines, 'morph-levels',
-            [(level, level_labels[level]) for level in ('type', 'bodyid')],
-            render_level,
+            lines, 'morph-levels', computed_levels, render_level,
             panel_class='tab-panel direction-panel')
 
         # --- compared members + parameters details -----------------------
         detail_bits = []
         if member_rows:
             rows = "".join(
-                f"<tr><td>{escape(str(m['type']))}</td>"
+                f"<tr><td>{escape(str(m.get('row', '')))}</td>"
+                f"<td>{escape(str(m['type']))}</td>"
                 f"<td>{escape(str(m['bodyId']))}</td>"
                 f"<td>{escape(str(m.get('instance', '')))}</td>"
                 f"<td>{escape(str(m.get('status', '')))}</td></tr>"
@@ -715,8 +988,9 @@ class MorphologyProfileComparer:
             detail_bits.append(
                 '<details class="detail-block"><summary>Compared '
                 'neurons</summary><div style="overflow-x:auto">'
-                "<table class='mapping-table'><thead><tr><th>type</th>"
-                '<th>bodyId</th><th>instance</th><th>status</th></tr>'
+                "<table class='mapping-table'><thead><tr><th>row</th>"
+                '<th>type</th><th>bodyId</th><th>instance</th>'
+                '<th>status</th></tr>'
                 f'</thead><tbody>{rows}</tbody></table></div></details>')
         if params:
             rows = "".join(
@@ -737,7 +1011,7 @@ class MorphologyProfileComparer:
                 '<div class="section-card"><h2 class="section-heading">'
                 '3D skeleton visualization</h2>'
                 f"<p><a href='{escape(plot3d_link)}'>Open plot-3d scene"
-                '</a> — one layer per compared type; the legend tree '
+                '</a> — one layer per compared matrix row; the legend tree '
                 'lists every bodyId leaf.</p></div>')
 
         lines.extend(['</main>', report_kit.report_script(),
@@ -815,10 +1089,11 @@ class MorphologyProfileComparer:
     def _visualize_members(self, output_path: Path,
                            members: Dict[str, List[object]]
                            ) -> Optional[str]:
-        """Render the compared neurons as one skeleton layer per type.
+        """Render the compared neurons as one skeleton layer per matrix row.
 
         Mirrors Find Similar's 3D scene (line skeletons, interactive
-        tree legend, template brain, no synapses); each compared type contributes one
+        tree legend, template brain, no synapses); each compared row
+        contributes one
         layer capped at ``TYPE_RENDER_MEMBER_CAP`` members for the render
         only. With ``fetch_online=False`` the scene is strictly offline:
         members without locally cached skeletons are skipped (reported)
@@ -851,23 +1126,23 @@ class MorphologyProfileComparer:
         layers: List[List[object]] = []
         names: List[str] = []
         notes: List[str] = []
-        for rank, (type_name, ids) in enumerate(members.items(), start=1):
+        for rank, (row_label, ids) in enumerate(members.items(), start=1):
             canon_ids = [self._body_id(b) for b in ids]
             shown = canon_ids[:TYPE_RENDER_MEMBER_CAP]
             layers.append(shown)
-            safe_type = _safe_name(type_name, 40)
+            safe_type = _safe_name(row_label, 40)
             names.append(f"t{rank}_{safe_type}_x{len(shown)}")
             if len(canon_ids) > len(shown):
                 notes.append(
                     f"t{rank}_{safe_type}: showing {len(shown)} of "
-                    f"{len(canon_ids)} members of type '{type_name}' "
+                    f"{len(canon_ids)} members of row '{row_label}' "
                     f"(per-layer render cap {TYPE_RENDER_MEMBER_CAP})")
         if not layers:
             self._log("3D visualization skipped: no compared neurons.")
             return None
 
         self._log(
-            f"3D visualization: {len(layers)} compared type layer(s), "
+            f"3D visualization: {len(layers)} compared row layer(s), "
             f"{sum(len(layer) for layer in layers)} neurons.")
 
         settings = dict(self.visualization_settings)
@@ -958,8 +1233,10 @@ class MorphologyProfileComparer:
             all_ids.extend(ids)
         total = len(all_ids)
         self._log(
-            f"Comparing {len(members)} types / {total} neurons in "
-            f"{self.dataset} ({self.method}).")
+            f"Comparing {len(members)} "
+            f"{_ROW_KIND_LABELS[self.aggregation_level]} row(s) / {total} "
+            f"neurons in {self.dataset} ({self.method}, "
+            f"{self.aggregation_level} level).")
 
         if self.method == "nblast":
             kept_matrix, kept_ids = self._nblast_matrix(all_ids)
@@ -1000,33 +1277,52 @@ class MorphologyProfileComparer:
 
         labels = [self._body_id(b) for b in all_ids]
         body_df = pd.DataFrame(body_matrix, index=labels, columns=labels)
-        type_df = self._type_level_matrix(body_matrix, labels, members)
+        # At the bodyId level the body matrix IS the comparison, so the block
+        # mean is neither computed nor written — connectivity files its bodyId
+        # rows under the type-level name; this one drops the level instead.
+        aggregate_df = (
+            None if self.aggregation_level == "bodyid"
+            else self._type_level_matrix(body_matrix, labels, members))
         # BodyId rows read as '{bodyId}_{instance}' or
-        # '{bodyId}_{type}_{L|R}' (the tree-legend rule). The type-level
-        # aggregation above resolves members by canonical bodyId, so the
-        # display relabel happens only after it has run.
+        # '{bodyId}_{type}_{L|R}' (the tree-legend rule). The aggregation above
+        # resolves members by canonical bodyId, so the display relabel happens
+        # only after it has run.
         display_labels = self._display_labels(all_ids)
         body_df.index = display_labels
         body_df.columns = display_labels
 
+        # Name the run folder from what the user queried. At the bodyId level
+        # the row labels are '{bodyId}_{instance}' display labels, and four of
+        # them overflow the 60-char name budget with no information the query
+        # did not already carry.
+        name_source = ([str(t) for t in self._query_tokens()]
+                       if self.aggregation_level == "bodyid"
+                       else list(members.keys()))
         output_path = self._output_path(
-            "_".join(str(t) for t in list(members.keys())[:4]))
-        (output_path / "type_level").mkdir(parents=True, exist_ok=True)
+            "_".join(str(t) for t in name_source[:4]))
+        agg_dir, agg_stem, _agg_heatmap_stem = self._aggregate_name()
         (output_path / "bodyid_level").mkdir(parents=True, exist_ok=True)
-
-        type_df.to_csv(output_path / "type_level"
-                       / f"type_similarity_{self.method}.csv")
+        if aggregate_df is not None:
+            (output_path / agg_dir).mkdir(parents=True, exist_ok=True)
+            aggregate_df.to_csv(
+                output_path / agg_dir
+                / f"{agg_stem}_{self.method}.csv")
         body_df.to_csv(output_path / "bodyid_level"
                        / f"bodyid_similarity_{self.method}.csv")
 
         type_map = getattr(self, "_type_map", {}) or {}
         instance_map = getattr(self, "_instance_map", {}) or {}
         member_rows: List[Dict[str, object]] = []
-        for type_name, ids in members.items():
+        for row_label, ids in members.items():
             for bid in ids:
                 canon = self._body_id(bid)
                 member_rows.append({
-                    "type": type_name,
+                    # `row` is the matrix row this neuron belongs to: a type
+                    # name, this neuron's own display label, or a group label.
+                    # `type` stays the real type at every level, so neither
+                    # column lies about the other.
+                    "row": row_label,
+                    "type": str(type_map.get(canon, "") or ""),
                     "bodyId": canon,
                     "instance": str(instance_map.get(canon, "") or ""),
                     "status": status_by_id.get(canon, "compared"),
@@ -1034,10 +1330,9 @@ class MorphologyProfileComparer:
         pd.DataFrame(member_rows).to_csv(
             output_path / "members.csv", index=False)
 
-        matrices = {
-            "type": type_df,
-            "bodyid": body_df,
-        }
+        matrices: Dict[str, pd.DataFrame] = {"bodyid": body_df}
+        if aggregate_df is not None:
+            matrices["type"] = aggregate_df
         heatmap_files: List[str] = []
         if self.generate_heatmaps:
             heatmap_files = self._write_heatmaps(
@@ -1053,10 +1348,11 @@ class MorphologyProfileComparer:
                       (self.query if isinstance(self.query, list)
                        else [self.query])],
             "method": self.method,
+            "aggregation_level": self.aggregation_level,
             "max_members_per_type": self.max_members_per_type,
             "max_total_neurons": self.max_total_neurons,
             "fetch_online": self.fetch_online,
-            "types_compared": len(members),
+            "rows_compared": len(members),
             "neurons_compared": int(sum(
                 1 for m in member_rows if m["status"] == "compared")),
             "intra_dataset_only": True,
@@ -1065,18 +1361,22 @@ class MorphologyProfileComparer:
             "duration_s": round(time.time() - started, 1),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
+        if self.custom_mapping_file:
+            params["custom_mapping_file"] = self.custom_mapping_file
         report_params = dict(params)
         report_params["_member_rows"] = member_rows
         if plot3d_link:
             report_params["_plot3d_link"] = plot3d_link
         (output_path / "parameters.json").write_text(
             json.dumps(params, indent=2, default=str), encoding="utf-8")
+        csv_links = {
+            "bodyid": f"bodyid_level/bodyid_similarity_{self.method}.csv",
+        }
+        if aggregate_df is not None:
+            csv_links["type"] = f"{agg_dir}/{agg_stem}_{self.method}.csv"
         self._write_report(
             output_path / "report.html", matrices,
-            csv_links={
-                "type": f"type_level/type_similarity_{self.method}.csv",
-                "bodyid": f"bodyid_level/bodyid_similarity_{self.method}.csv",
-            },
+            csv_links=csv_links,
             params=report_params)
         (output_path / "README.txt").write_text(
             self._readme_text(output_path, heatmap_files),
@@ -1085,7 +1385,8 @@ class MorphologyProfileComparer:
         self._log(f"Output: {output_path}")
         return {
             "output_folder": str(output_path),
-            "types_compared": len(members),
+            "aggregation_level": self.aggregation_level,
+            "rows_compared": len(members),
             "neurons_compared": params["neurons_compared"],
             "files": [str(p) for p in sorted(output_path.rglob("*"))
                       if p.is_file()],
@@ -1093,23 +1394,46 @@ class MorphologyProfileComparer:
 
     def _readme_text(self, output_path: Path,
                      heatmap_files: List[str]) -> str:
+        level = self.aggregation_level
+        aggregate = "group" if level == "custom" else "type"
+        if level == "bodyid":
+            semantics = (
+                "Rows are individual neurons, so the bodyId matrix IS the "
+                "comparison; no aggregate-level matrix is written for this "
+                "run.")
+        else:
+            semantics = (
+                f"{aggregate.capitalize()}-level entry = mean over the "
+                "cross-member bodyId pairs; the diagonal is the "
+                f"{aggregate}'s intra-{aggregate} cohesion (mean pairwise "
+                "among its own members). The bodyId-level matrix carries "
+                "every individual pair.")
+        agg_dir, agg_stem, _agg_heatmap = self._aggregate_name()
+        layout = [
+            "  parameters.json",
+            "  members.csv                    row / type / bodyId provenance",
+        ]
+        if level != "bodyid":
+            layout.append(
+                f"  {agg_dir}/{agg_stem}_{self.method}.csv"
+                f"          {aggregate}×{aggregate} matrix")
+        layout += [
+            f"  bodyid_level/bodyid_similarity_{self.method}.csv"
+            "     bodyId×bodyId matrix",
+            "  visualization/heatmap_*.html   interactive heatmaps",
+            "  plot-3d_<dataset>/             3D skeleton scene (when enabled;"
+            " one layer per compared row)",
+            "  report.html                    summary report",
+        ]
         return f"""MORPHOLOGY COMPARISON — {self.dataset}
 Generated {datetime.now().isoformat(timespec='seconds')}
 
-Intra-dataset morphology comparison (method: {_METHOD_LABELS.get(self.method, self.method)}).
-Type-level entry = mean over the cross-member bodyId pairs; the diagonal is
-the type's intra-type cohesion (mean pairwise among its own members). The
-bodyId-level matrix carries every individual pair.
+Intra-dataset morphology comparison (method: {_METHOD_LABELS.get(self.method, self.method)},
+aggregation level: {level}).
+{semantics}
 
 Output layout:
-  parameters.json                              run parameters
-  members.csv                                  resolved type/bodyId provenance
-  type_level/type_similarity_{self.method}.csv   type×type matrix
-  bodyid_level/bodyid_similarity_{self.method}.csv  bodyId×bodyId matrix
-  visualization/heatmap_*.html                 interactive heatmaps
-  plot-3d_<dataset>/                           3D skeleton scene (when enabled;
-                                               one layer per compared type)
-  report.html                                  summary report
+{chr(10).join(layout)}
 
 bodyId-level rows/axes are labeled '{{bodyId}}_{{instance}}' (NeuPrint-style
 datasets) or '{{bodyId}}_{{type}}_L/_R' (FAFB/BANC); members.csv maps every

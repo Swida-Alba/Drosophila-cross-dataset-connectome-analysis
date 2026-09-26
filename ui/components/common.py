@@ -2430,7 +2430,27 @@ def neuron_list_input(
         update_status()
         return current
 
+    def set_input_enabled(editable: bool) -> None:
+        """Enable or disable this input as a unit, keeping its values.
+
+        NiceGUI carries `set_enabled` only on value elements (there is no
+        element-level `enabled` getter), so the interactive descendants are
+        toggled directly. The state is recorded on the container because the
+        grouping board reads it: an input the current mode does not consume
+        must not be offered as a push target.
+        """
+        stack = list(container.default_slot.children)
+        while stack:
+            child = stack.pop()
+            stack.extend(child.default_slot.children)
+            setter = getattr(child, "set_enabled", None)
+            if callable(setter):
+                setter(editable)
+        container._drocat_input_enabled = bool(editable)
+
     container.add_values = add_values
+    container.set_input_enabled = set_input_enabled
+    container._drocat_input_enabled = True
     return container
 
 

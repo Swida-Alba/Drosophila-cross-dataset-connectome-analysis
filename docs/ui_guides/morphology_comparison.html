@@ -38,20 +38,48 @@
       public L2/full skeletons, not because skeletons are missing; BANC 3D
       visualization and pathfinding work).</li>
     <li>Enter <b>2+ neurons</b>: exact types, bodyIds, or patterns
-      (e.g. <code>aMe.*</code>).</li>
+      (e.g. <code>aMe.*</code>) — or pick <b>custom group</b> as the
+      Aggregation Level and define the groups on the grouping board instead.</li>
+    <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) to
+      decide what one matrix row is.</li>
     <li>Click <b>Run Comparison</b>; open <code>report.html</code> in the
       output folder.</li>
   </ol>
 
+  <h2>Aggregation Level — what one matrix row is</h2>
+  <ul>
+    <li><b>type</b> (default): each queried type is one row; a bodyId input
+      resolves to its type. The bodyId-level matrix is written alongside.</li>
+    <li><b>bodyid</b>: every individual neuron is its own row, so two neurons
+      of the same type can be compared — the thing the type level folds away.
+      Here the bodyId matrix <i>is</i> the comparison, so no type-level matrix
+      or heatmap is produced, and the report carries no tab for it — a tab
+      that can only ever read "not computed" invites the reader to look for a
+      missing input rather than a deliberate level.
+      Not offered while the method is NBLAST (see below).</li>
+    <li><b>custom group</b>: rows are the source-side groups of the grouping
+      board (a saved preset or groups defined inline), resolved against the
+      selected dataset; the neuron query above is disabled, not silently
+      ignored. Same board and
+      preset format as Connectivity ▸ Comparison. The aggregate matrix is
+      written as <code>group_level/group_similarity_{method}.csv</code> with
+      <code>heatmap_group_*.html</code>, because its axes are groups, not
+      types.</li>
+  </ul>
+
   <h2>How the comparison works</h2>
   <ul>
-    <li>Each queried <b>type is one row</b> of the matrices; its members
-      supply the pairwise scores. bodyId inputs resolve to their type.</li>
-    <li><b>BodyId-level matrix</b>: every individual pair.</li>
-    <li><b>Type-level matrix</b>: each entry is the mean over the
-      cross-member bodyId pairs; the <b>diagonal is the type's intra-type
-      cohesion</b> (mean pairwise among its own members, 1.0 for a
-      single-member type).</li>
+    <li>The <b>bodyId-level matrix</b> is always the scored primitive: every
+      individual pair, labelled <code>{bodyId}_{instance}</code> (or
+      <code>{bodyId}_{type}_L/_R</code> on FAFB).</li>
+    <li>The <b>aggregate matrix</b> (type or group level) is derived from it:
+      each entry is the mean over the cross-member bodyId pairs, and the
+      <b>diagonal is that row's intra-type/group cohesion</b> (mean pairwise
+      among its own members, 1.0 for a single-member row).</li>
+    <li>A neuron you queried <b>by bodyId is never dropped</b> by
+      <i>Max Members per Type</i> or <i>Max Total Neurons</i>; those caps only
+      remove other members. <code>members.csv</code> lists every compared
+      neuron with the <code>row</code> it fed and its real <code>type</code>.</li>
   </ul>
 
   <h2>Methods</h2>
@@ -65,29 +93,43 @@
         bundle → CAVE fallback — and persist into the shared skeleton +
         vector caches. Mirror twins are legitimate evidence (lateral
         normalization).</td></tr>
-    <tr><td><b>NBLAST</b></td><td>Slow — capped at <b>30 total
+    <tr><td><b>NBLAST</b></td><td>Slow — refuses populations over <b>30
       neurons</b></td>
       <td>Canonical normalized NBLAST on raw-skeleton dotprops; both
-        orientations of every pair are scored and averaged. Type means
+        orientations of every pair are scored and averaged. Aggregate means
         exclude contralateral pairs (mirror arbors score at chance); the
-        bodyId matrix keeps every pair.</td></tr>
+        bodyId matrix keeps every pair. Because every neuron enters scoring,
+        the Aggregation Level drops <b>bodyid</b> while NBLAST is selected —
+        there each row is one neuron, so a realistic query could not
+        complete.</td></tr>
   </table>
 
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td>Aggregation Level</td><td>type</td><td>What one matrix row is:
+      a <b>type</b> (bodyId inputs resolve to their type), an individual
+      <b>neuron</b> (bodyid), or a <b>custom group</b> from the grouping board
+      (its query box is disabled). Only offered for the intra-dataset comparison — a
+      cross-dataset run keeps type rows, because bodyIds are not comparable
+      across datasets</td></tr>
     <tr><td>Max Members per Type</td><td>25</td><td>Members sampled per type
       for the pairwise scores (large types are truncated; the exact member
-      list is written to <code>members.csv</code>)</td></tr>
-    <tr><td>Max Total Neurons</td><td>200</td><td>Safety cap on the
-      vectorized population (NBLAST is always limited to 30 total)</td></tr>
+      list is written to <code>members.csv</code>). At the bodyId level it
+      bounds the rows each queried type contributes; at the custom group
+      level, the members a group keeps. Neurons queried by bodyId are never
+      dropped by it</td></tr>
+    <tr><td>Max Total Neurons</td><td>200</td><td>Safety cap on the compared
+      population; truncation walks the rows in order and never drops a neuron
+      you queried by bodyId. NBLAST judges its 30-neuron limit against this
+      capped size, so a cap below 30 is honoured rather than refused</td></tr>
     <tr><td>Fetch Missing Skeletons Online</td><td>on</td><td>Pull
       skeletons for cache misses through the API into the shared cache
       (turn off for a strictly offline comparison)</td></tr>
     <tr><td>Generate Heatmaps</td><td>on</td><td>Interactive (VisPath)
-      heatmaps for both levels</td></tr>
+      heatmaps, one per computed level</td></tr>
     <tr><td>3D Skeleton Visualization</td><td>off</td><td>Render the
-      compared neurons as one skeleton layer per compared type (line
+      compared neurons as one skeleton layer per compared matrix row (line
       rendering by default; Advanced Visualization exposes the full render
       settings shared with Find Similar). With <b>Fetch Missing Skeletons
       Online</b> off, only members whose skeletons are already cached are
@@ -100,8 +142,9 @@
   <h2>3D skeleton scene</h2>
   <p>With <b>3D Skeleton Visualization</b> enabled, the run also renders the
     compared population into <code>plot-3d_{dataset}/</code> inside the run
-    folder: one skeleton layer per compared type (capped at 20 members per
-    type for the render, with an in-page note when a layer is sampled), line
+    folder: one skeleton layer per compared matrix row (capped at 20 members
+      per row for the render, with an in-page note when a layer is sampled),
+      line
     skeletons on a template brain, no synapses. The scene is linked from
     <code>report.html</code>, and the legend tree lists every neuron leaf.</p>
 
@@ -109,10 +152,11 @@
   <pre><code>{output_dir}/morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/
   parameters.json
   README.txt
-  members.csv                              # compared population + status
-  type_level/type_similarity_{method}.csv   # type×type matrix
+  members.csv                              # row/type/bodyId + status
+  type_level/type_similarity_{method}.csv   # type×type — type level only
+  group_level/group_similarity_{method}.csv # group×group — custom group level
   bodyid_level/bodyid_similarity_{method}.csv  # bodyId×bodyId matrix
-  visualization/heatmap_type_{method}.html
+  visualization/heatmap_type_{method}.html     # or heatmap_group_… / heatmap_bodyid_…
   visualization/heatmap_bodyid_{method}.html
   plot-3d_{dataset}/                       # optional 3D skeleton scene
   report.html</code></pre>

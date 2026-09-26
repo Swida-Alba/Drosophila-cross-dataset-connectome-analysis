@@ -24,6 +24,7 @@ from ..components.common import (
     number_input, select_input, checkbox_input, dir_input, section_header,
     param_grid, tool_page, apply_filter_mode,
 )
+from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
 from ..components.skeleton_visualization_settings import skeleton_visualization_settings
 from ..runner import ScriptRunner
@@ -112,6 +113,14 @@ _MORPH_METHOD_LABELS = {
 MORPH_METHODS = {
     method: _MORPH_METHOD_LABELS.get(method, method)
     for method in MORPH_METHOD_OPTIONS
+}
+
+# Row granularity of the Comparison sub-tab — the same three choices the
+# Connectivity tab's Comparison sub-tab offers. "custom group" is the UI
+# label; the backend keyword is "custom".
+MORPH_AGGREGATION_OPTIONS = ["type", "bodyid", "custom group"]
+_AGGREGATION_PARAM_VALUES = {
+    "type": "type", "bodyid": "bodyid", "custom group": "custom",
 }
 
 
@@ -350,17 +359,19 @@ def create_morphology_tab():
                     label="Neurons to Compare",
                     placeholder="Type or upload CSV/TSV/Excel (e.g., aMe12, aMe10, aMe9)",
                     hint="Enter neuron types, bodyIds, or patterns "
-                         "(e.g. aMe.*). Each type is one matrix row; its "
-                         "members supply the pairwise scores. With two or "
-                         "more datasets, types are resolved per dataset "
-                         "(same-name/pattern, or via Auto Type Mapping) "
-                         "and missing types show up as explicit empty "
+                         "(e.g. aMe.*). What one matrix row is depends on "
+                         "Aggregation Level below: a type (bodyIds resolve to "
+                         "their type), an individual neuron, or a custom "
+                         "group. With two or more datasets, types are resolved "
+                         "per dataset (same-name/pattern, or via Auto Type "
+                         "Mapping) and missing types show up as explicit empty "
                          "rows.",
                     suggestions=_comparison_suggest,
                     available_neurons=lambda: list(
                         comparison_datasets.value or [])
                     if comparison_datasets is not None else [],
-                ).classes("drocat-fixed-neuron-input")
+                ).props('id=field-morph-comparison-query').classes(
+                    "drocat-fixed-neuron-input")
 
             with ui.card().classes("w-full drocat-card"):
                 section_header("Comparison Parameters", "tune")
@@ -370,10 +381,59 @@ def create_morphology_tab():
                         hint="Members sampled per type (and dataset) for "
                              "the pairwise scores (large types are "
                              "truncated; the member list is written to "
-                             "members.csv).",
+                             "members.csv). At the bodyId level it bounds how "
+                             "many rows each queried type contributes; at the "
+                             "custom group level, how many members a group "
+                             "keeps. Neurons you queried by bodyId are never "
+                             "dropped by this cap.",
                     )
                 # --- intra-dataset-only parameters (exactly one dataset) ---
-                with ui.column().classes("w-full gap-1") as intra_params_box:
+                with ui.column().classes("w-full gap-1").props(
+                        'id=card-morph-comparison-intra') as intra_params_box:
+                    with param_grid(2):
+                        comparison_aggregation = select_input(
+                            "Aggregation Level", MORPH_AGGREGATION_OPTIONS,
+                            "type",
+                            hint="'type': each queried type is one matrix row "
+                                 "(bodyId inputs resolve to their type). "
+                                 "'bodyid': every individual neuron is its own "
+                                 "row, so the bodyId matrix IS the comparison "
+                                 "and no type-level matrix is written. "
+                                 "'custom group': rows come from the grouping "
+                                 "board below; its query box is disabled in "
+                                 "this mode.",
+                        ).props('id=select-aggregation')
+
+                    # Custom grouping board (same inline/preset mechanism as
+                    # the Connectivity Comparison sub-tab), shown only for the
+                    # 'custom group' level.
+                    custom_group_box = ui.card().classes(
+                        "w-full drocat-card").props('id=card-morph-custom-group')
+                    with custom_group_box:
+                        section_header("Custom Groups (LabelMapper)", "group_work")
+                        _mapping_select, _grouper_card, resolve_grouping = (
+                            custom_grouping_block(
+                                label="Custom Grouping Preset",
+                                hint="Groups from the history menu or defined "
+                                     "inline for this query. Each source-side "
+                                     "group becomes one row of the comparison "
+                                     "matrix, resolved against the selected "
+                                     "dataset.",
+                                tab_key="morphology_comparison",
+                                datasets_provider=lambda: (
+                                    list(comparison_datasets.value or [])[:1]),
+                                watch_elements=[comparison_datasets],
+                                query_inputs={
+                                    "query": comparison_query_input},
+                            ))
+                        ui.label(
+                            "Groups are read from the grouping board's source "
+                            "mapping: each custom label is one row, and its "
+                            "members for the selected dataset fill it. The "
+                            "neuron query above is disabled in this mode."
+                        ).classes("text-caption drocat-muted")
+                    custom_group_box.set_visibility(False)
+
                     with param_grid(2):
                         comparison_method = select_input(
                             "Method", MORPH_METHODS, "vector_v2",
@@ -384,15 +444,16 @@ def create_morphology_tab():
                                  "'NBLAST': canonical normalized NBLAST on "
                                  "raw-skeleton dotprops; capped at 30 "
                                  "total neurons.",
-                        )
+                        ).props('id=select-morph-comparison-method')
                     with ui.row().classes("w-full items-center gap-4"):
                         comparison_visualize = checkbox_input(
                             "3D Skeleton Visualization", False,
                             hint="Render the compared neurons as one "
-                                 "skeleton layer per compared type (line "
-                                 "rendering by default; written to "
-                                 "plot-3d_<dataset> inside the run folder "
-                                 "and linked from report.html).",
+                                 "skeleton layer per compared matrix row "
+                                 "(type, neuron, or group; line rendering by "
+                                 "default; written to plot-3d_<dataset> inside "
+                                 "the run folder and linked from "
+                                 "report.html).",
                         )
                     comparison_visualization_settings = (
                         skeleton_visualization_settings(
@@ -473,8 +534,13 @@ def create_morphology_tab():
                         )
                         comparison_max_total = number_input(
                             "Max Total Neurons", 200, 2, 2000,
-                            hint="Safety cap on the vectorized population "
-                                 "(NBLAST is always limited to 30 total).",
+                            hint="Safety cap on the compared population: "
+                                 "truncation walks the rows in order and "
+                                 "never drops a neuron you queried by bodyId. "
+                                 "NBLAST scores every pair, so it refuses any "
+                                 "population over 30 neurons — capped size "
+                                 "included, which is why a cap below 30 is "
+                                 "honoured rather than refused.",
                         )
                         with ui.row().classes("gap-4"):
                             comparison_heatmaps = checkbox_input(
@@ -487,6 +553,35 @@ def create_morphology_tab():
                                 hint="Open generated heatmaps in the "
                                      "browser.",
                             )
+
+        def _sync_custom_group_visibility(_e=None):
+            is_custom = (
+                str(comparison_aggregation.value or "") == "custom group")
+            custom_group_box.set_visibility(is_custom)
+            # Custom rows come from the grouping board; leaving the query box
+            # live would suggest its chips feed the matrix, and the board drops
+            # its "Add to Query" action for a disabled input.
+            comparison_query_input.set_input_enabled(not is_custom)
+
+        def _sync_aggregation_options(_e=None):
+            """Drop the bodyId level while NBLAST is selected.
+
+            NBLAST scores every neuron pair and refuses populations over 30
+            neurons, and at the bodyId level each row is one neuron, so a
+            realistic query there cannot complete. The choice is removed
+            rather than offered — a disabled choice also resets, so it can
+            never reach the run record.
+            """
+            options = (["type", "custom group"]
+                       if str(comparison_method.value or "") == "nblast"
+                       else list(MORPH_AGGREGATION_OPTIONS))
+            comparison_aggregation.options = options
+            if comparison_aggregation.value not in options:
+                comparison_aggregation.value = "type"
+            _sync_custom_group_visibility()
+
+        comparison_aggregation.on_value_change(_sync_custom_group_visibility)
+        comparison_method.on_value_change(_sync_aggregation_options)
 
         def sync_mode():
             is_find = mode_value["value"] == "Find Similar"
@@ -674,15 +769,18 @@ def create_morphology_tab():
         if not selected:
             ui.notify("Please select at least one dataset", type="warning")
             return
+        aggregation = str(comparison_aggregation.value or "type")
+        # Custom rows come from the grouping board, not from the query box.
+        query_optional = aggregation == "custom group"
         mode, neurons = comparison_query_input.get_value()
         query = apply_filter_mode(neurons, mode)
-        if len(query) < 2 and len(selected) == 1:
+        if (not query_optional and len(query) < 2 and len(selected) == 1):
             ui.notify(
                 "Please enter at least two neurons to compare",
                 type="warning",
             )
             return
-        if not query:
+        if not query and not query_optional:
             ui.notify("Please enter at least one query neuron",
                       type="warning")
             return
@@ -711,6 +809,19 @@ def create_morphology_tab():
                 type="warning",
             )
             return
+
+        # Custom-group rows need a mapping (preset or inline); resolve it
+        # before the running state so an invalid board aborts cleanly.
+        mapping_path = None
+        if not cross and aggregation == "custom group":
+            mapping_path, mapping_ok = resolve_grouping()
+            if not mapping_ok:
+                return
+            if not mapping_path:
+                ui.notify(
+                    "Define inline groups (or load them from the history menu) "
+                    "for the custom groups", type="warning")
+                return
 
         comparison_output.clear()
         comparison_output.set_running(True)
@@ -745,6 +856,7 @@ def create_morphology_tab():
                     "dataset": selected[0],
                     "query": query,
                     "method": comparison_method.value,
+                    "aggregation_level": _AGGREGATION_PARAM_VALUES[aggregation],
                     "max_members_per_type": int(comparison_max_members.value),
                     "max_total_neurons": int(comparison_max_total.value),
                     "fetch_online": bool(comparison_fetch.value),
@@ -759,6 +871,8 @@ def create_morphology_tab():
                     "visualization_settings": (
                         visualization_values if viz_on else {}),
                 }
+                if mapping_path:
+                    constructor_params["custom_mapping_file"] = mapping_path
                 tool = "morphology_comparison"
 
             result = await comparison_output.run(
@@ -773,7 +887,9 @@ def create_morphology_tab():
                     "Completed" if succeeded else "Failed",
                     "green" if succeeded else "red",
                 )
-            if succeeded:
+            if succeeded and aggregation != "custom group":
+                # In custom mode the query is ignored, so its chips are not a
+                # record of what this comparison actually used.
                 from ..history_store import record as _record_history
                 _record_history(
                     [str(v) for v in query],
@@ -795,3 +911,4 @@ def create_morphology_tab():
     sync_mode()
     on_dataset_change()
     _on_comparison_datasets_change()
+    _sync_aggregation_options()

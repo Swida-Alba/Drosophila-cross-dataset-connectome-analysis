@@ -422,11 +422,16 @@ neurons, contralateral pairs excluded from type means).
 Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
 
 ### Key Output Files
-*   **`members.csv`**: Resolved comparison population — one row per queried
-    neuron with its `type`, `bodyId`, `instance`, and `status`
+*   **`members.csv`**: Resolved comparison population — one row per compared
+    neuron, with its matrix row (`row`: the type at the type level, the
+    neuron's own display label at the bodyId level, the group label at the
+    custom group level), its real `type`, `bodyId`, `instance`, and `status`
     (`compared` / `no vector` / `no dotprops`); neurons without a local
     skeleton carry empty matrix cells instead of biasing the averages.
-*   **`type_level/type_similarity_{method}.csv`**: Type×type matrix.
+*   **`type_level/type_similarity_{method}.csv`**: Type×type matrix. Only at
+    the type level — at the bodyId level no aggregate is computed, and at the
+    custom group level the same matrix is written as
+    `group_level/group_similarity_{method}.csv` so the name matches the axes.
 *   **`bodyid_level/bodyid_similarity_{method}.csv`**: BodyId×bodyId matrix
     (every individual pair; dropped neurons keep NaN rows). Rows/columns
     read as `{bodyId}_{instance}` (NeuPrint-style datasets) or
@@ -434,10 +439,11 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     legend tree uses; `members.csv` maps every label back to its raw
     bodyId.
 *   **`visualization/heatmap_{type|bodyid}_{method}.html`**: Interactive
-    (VisPath) heatmaps, plotly fallback when VisPath is unavailable.
+    (VisPath) heatmaps, plotly fallback when VisPath is unavailable. One per
+    computed level, so `heatmap_type_*` is absent at the bodyId level.
 *   **`plot-3d_{dataset_folder}/`**: Optional 3D skeleton scene (Comparison
     panel → "3D Skeleton Visualization" checkbox) — one skeleton layer per
-    compared type, line rendering by default; linked from `report.html`.
+    compared matrix row, line rendering by default; linked from `report.html`.
 *   **`report.html` / `parameters.json` / `README.txt`**: Tabbed report on
     the shared `report_kit` (hero header, Type-level / BodyId-level tabs,
     Ward-clustered heatmap cards with CSV + VisPath editor links,
@@ -670,6 +676,7 @@ mapping_validation/type-map-validation_{SRC}_to_{TGT}_{ts}/
     user_warning_notes.txt
     validation/                         ← stage 2/3 validation evidence
         validation_results.csv
+        forward_matches.csv             ← Homolog · forward panel (per source bodyId)
         pair_summary.csv
         pool_categories.csv
         examinees.csv
@@ -680,6 +687,7 @@ mapping_validation/type-map-validation_{SRC}_to_{TGT}_{ts}/
         relatives.csv
         out_map_expansion.csv
         backward_matches.csv
+        target_matches.csv              ← Homolog · backward panel (per target bodyId)
         source_status.csv
         source_candidates.csv
     gap_fill/                           ← gap-fill accounting
@@ -788,8 +796,19 @@ candidates. **Additive columns** — the pass never changes a `category`, a
 `counts_toward_*` flag, or a fill `level`; the reverse fact rides the `evidence`
 column of `gap_fill/gap_fill_levels.csv` (as `backward_high` etc. on the
 `family` / `relative` / `unmatched` rows — a `candidates` row keeps its
-bar-kind evidence) and a
-`backward_evidence` column beside it.
+bar-kind evidence) and a `backward_evidence` column beside it.
+
+### Homolog panels (`forward_matches.csv` / `target_matches.csv`, user 2026-09-26)
+
+Where stage 5d labels the neurons the mapping did NOT assert, the two
+homolog tabs match EVERY bodyId the run touched, both directions, with the
+same scorer: `validation/forward_matches.csv` (one row per appeared source
+bodyId → its chain-best target + the top-3 rank_union ∪ top-3 jaccard
+payload) and `expansion/target_matches.csv` (one row per appeared target
+bodyId → its chain-best source, scanned against the whole source dataset
+in stage 5e, no caps). Morph columns are display joins; the report
+re-derives ✓/✗ offline from the branch bars. Full column docs in the
+artifact list below.
 
 ### Pooling mode (`--mode pooling`, writes `pooling/`)
 
@@ -1070,6 +1089,37 @@ and no other dataset's agreement is joined into this mode's pool.
     the branch's type wins on jaccard alone — which is exactly why both
     travel. Advisory: it labels
     the bins, it never changes a fill count, and no morphology is scored.
+*   **`forward_matches.csv`** (`validation/`, user 2026-09-26): the Homolog ·
+    forward panel's data — ONE row per source bodyId that appeared in the
+    run (assigned, fill-proposed, out-of-map or unpaired alike), captured
+    during stage 2 while the scan frames are in memory. Columns:
+    `source_bodyId` / `source_type`, the published chain-best target as
+    `primary_target_bodyId` / `_type` / `primary_jaccard` /
+    `primary_rank_union` / `primary_in_branch`, `forward_topN` — the
+    neighbourhood as the UNION of the top-3 by `rank_union_rank` and the
+    top-3 by `jaccard_rank` (deduped, ≤ 6 records, same
+    `ru_rank|jac_rank|bid|type|rank_union|jaccard|in_branch` format as
+    `backward_topN`, chain order) — `n_scanned`, `scanned_at` (`run` /
+    `no_profile` / `error`: silence with a reason, never a negative), and
+    the display-join `morph_v2_similarity` / `morph_pool_ref` /
+    `morph_bar_kind` read off the artifacts that already scored that pair
+    (nothing is re-scored). The report tab re-derives the ✓/✗ offline from
+    `morphology_calibration.json`'s branch bars.
+*   **`target_matches.csv`** (`expansion/`, stage 5e, user 2026-09-26): the
+    Homolog · backward panel's data — ONE row per TARGET bodyId that
+    appeared in the run (pool members INCLUDING matched / verified /
+    borderline, expansion-bin members, out-map and proposal targets),
+    scanned back against the WHOLE source dataset: the exact mirror of the
+    forward panel. Columns: `target_bodyId` / `target_type`,
+    `pool_category` (every pool tier claiming it) + `pool_branches` (every
+    claiming branch as `src→tgt;…`), the chain-best source as
+    `primary_source_bodyId` / `_type` / `primary_jaccard` /
+    `primary_rank_union` / `primary_in_branch` (True when the source sits
+    in a branch source pool), `backward_topN_union` (same union-payload
+    rule, sources ranked for this target), `n_scanned` / `scanned_at`, and
+    the same display-join morph columns. No caps — the stage-5d caps belong
+    to the evidence pass — and fail-open like the other advisory layers.
+    Advisory display data only: nothing downstream gates on it.
 *   **`mapping_export.csv`**: per-bridge mapping record (refined pools +
     linkers, with `selected_bridge` / `source_bridge` naming the chain that
     resolved each side of the pool, and the matching `pool_basis` (source
