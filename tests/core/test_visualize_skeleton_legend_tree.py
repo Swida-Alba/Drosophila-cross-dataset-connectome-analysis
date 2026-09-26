@@ -193,7 +193,7 @@ def test_legend_tree_html_contains_panel_and_markers():
     assert '"vncMeshRank": 200000001' in html
     assert 'width:fit-content;min-width:180px;' in html
     assert 'max-width:min(420px,calc(100vw - 20px));' in html
-    assert 'overflow:auto;box-sizing:border-box;' in html
+    assert 'overflow-y:auto;overflow-x:hidden;box-sizing:border-box;' in html
     assert '.drocat-lt-items{padding-left:16px;min-width:max-content;}' in html
     # manual detector matches Plotly 6.4.0's native doubleClickDelay default
     assert '"doubleClickMs": 300' in html
@@ -222,12 +222,13 @@ def test_legend_tree_html_contains_panel_and_markers():
     assert 'addSiteLeaves' in html
     assert "children.length > 10" in html
     assert '.drocat-lt-items.drocat-lt-scroll{max-height:224px;' in html
-    assert 'min-width:0;overflow:auto;}' in html
-    # horizontal overflow must stay mouse-reachable: modern macOS browsers
-    # render native bars overlay-only, so the panel mounts its own bar
-    assert ('#drocat-legend-tree::-webkit-scrollbar:horizontal,'
-            '.drocat-lt-items.drocat-lt-scroll::-webkit-scrollbar:horizontal'
-            '{display:none;}') in html
+    assert 'min-width:0;overflow-y:auto;overflow-x:hidden;}' in html
+    # horizontal overflow must stay mouse-reachable: the panel mounts its own
+    # bar, and the axis is hidden so no engine can add a native bar under it.
+    # Deleting the ::-webkit-scrollbar rule this replaced reproduced the
+    # doubled bar at the same widths and the same gap, so that rule alone was
+    # never enough.
+    assert '::-webkit-scrollbar' not in html
     assert ('.drocat-lt-hscroll{position:sticky;bottom:0;left:0;'
             'display:none;height:10px;width:100%;cursor:pointer;'
             'background:rgba(255,255,255,0.92);border-radius:4px;}') in html

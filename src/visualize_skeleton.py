@@ -5162,7 +5162,13 @@ class VisualizeSkeleton:
         with meshes pinned last. A custom always-visible horizontal
         scrollbar is mounted on the panel and the capped leaf lists,
         because modern macOS browsers keep native bars overlay-only and
-        a mouse can never reach them.
+        a mouse can never reach them. That custom bar is the only bar a
+        viewer can get: the panel's horizontal axis is
+        ``overflow-x:hidden``, which still takes the ``scrollLeft`` the
+        bar drives but lets no engine paint a native one under it. The
+        ``::-webkit-scrollbar:horizontal`` rule this replaced does hide
+        the native bar in Blink; on the engine it was measured in, two
+        bars stacked.
         """
         baked = {
             'meshRankBase': ROI_MESH_LEGEND_RANK_BASE,
@@ -5177,7 +5183,11 @@ class VisualizeSkeleton:
             '#drocat-legend-tree{position:fixed;right:10px;top:60px;'
             'z-index:9999;width:fit-content;min-width:180px;'
             'max-width:min(420px,calc(100vw - 20px));'
-            'max-height:65vh;overflow:auto;box-sizing:border-box;'
+            # overflow-x:hidden, not auto: a hidden axis still accepts the
+            # scrollLeft the custom bar drives, but no engine can paint a
+            # native bar under it. Same treatment on the capped lists below.
+            'max-height:65vh;overflow-y:auto;overflow-x:hidden;'
+            'box-sizing:border-box;'
             'font:12px/1.6 -apple-system,BlinkMacSystemFont,'
             'Segoe UI,sans-serif;border-radius:8px;padding:6px 8px;'
             'background:rgba(255,255,255,0.92);color:#000;'
@@ -5207,13 +5217,7 @@ class VisualizeSkeleton:
             '.drocat-lt-header .drocat-lt-eye{cursor:pointer;font-size:11px;}'
             '.drocat-lt-help{opacity:.62;padding:0 2px 4px;font-size:10px;}'
             '.drocat-lt-items.drocat-lt-scroll{max-height:224px;'
-            'min-width:0;overflow:auto;}'
-            # Custom horizontal scrollbar: modern macOS browsers keep native
-            # bars overlay-only (reachable only via trackpad gestures), which
-            # a mouse can never drag, so panels carry their own bar.
-            '#drocat-legend-tree::-webkit-scrollbar:horizontal,'
-            '.drocat-lt-items.drocat-lt-scroll::-webkit-scrollbar:horizontal'
-            '{display:none;}'
+            'min-width:0;overflow-y:auto;overflow-x:hidden;}'
             '.drocat-lt-hscroll{position:sticky;bottom:0;left:0;'
             'display:none;height:10px;width:100%;cursor:pointer;'
             'background:rgba(255,255,255,0.92);border-radius:4px;}'
@@ -5625,8 +5629,10 @@ class VisualizeSkeleton:
 
   var hScrollbars = [];
   function mountHScrollbar(container) {
-    /* Custom always-visible horizontal scrollbar. Native bars on macOS are
-       overlay-only, so a mouse can never reach horizontal overflow. */
+    /* Custom always-visible horizontal scrollbar, and the only one the viewer
+       can get: these containers are overflow-x:hidden, so a mouse reaches
+       horizontal overflow through this bar's scrollLeft rather than through a
+       native bar, which macOS keeps overlay-only anyway. */
     var track = makeEl('div', 'drocat-lt-hscroll');
     var thumb = makeEl('div', 'drocat-lt-hscroll-thumb');
     track.appendChild(thumb);

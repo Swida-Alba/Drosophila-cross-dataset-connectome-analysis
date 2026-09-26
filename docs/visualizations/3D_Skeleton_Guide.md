@@ -385,6 +385,15 @@ one neuron emits both a skeleton trace and a soma mesh trace: a custom group
 containing that one body is shown as a single direct row with count `1` and no
 redundant child leaf. Groups containing multiple neurons remain expandable.
 
+The panel is content-width and caps at 420px, so a long bodyId row overflows
+it. The horizontal scrollbar shown in that case is the panel's own, and it is
+the only one: the panel's horizontal axis is `overflow-x:hidden`, which still
+takes the `scrollLeft` that bar drives but stops any engine from painting a
+native bar underneath it. (The `::-webkit-scrollbar` rule used before does hide
+the native bar in Blink, but on the engine where the defect was reported two
+bars stacked, so the suppression no longer depends on it.) Vertical scrolling
+is unaffected.
+
 For a cross-dataset overlay, such as a homolog search's
 `query_transformed_*` layer, the bodyId row uses the source neuron's native
 `type` label. Crosswalk fields such as MCNS `flywireType` are used for mapping
