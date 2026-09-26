@@ -1199,11 +1199,13 @@ def test_panel_chip_modes_and_origin_seeded_flows():
     assert set(kept) == {(MCNS, FW)}
 
 
-def test_pair_network_circadian_entry_owns_fafb():
-    """§14 real-index probe: the per-pair `Network (type-level)` export for
-    the FAFB taxonomy query `cell_type = circadian_clock` carries exactly
-    ONE FAFB-owned query entry attached to the FAFB source types, with the
-    origin-side population in its hover — never a target-owned entry."""
+def test_pair_network_circadian_query_adds_no_node():
+    """§14 real-index probe, re-cut 2026-09-26: the per-pair
+    `Network (type-level)` export for the FAFB taxonomy query
+    ``cell_type = circadian_clock`` plots the 21 FAFB source types and their
+    male-cns counterparts — the chip that produced them is search
+    provenance, not a mapping endpoint, so it renders nowhere on the
+    canvas."""
     from comparison.mapping_visualization import (
         build_mapping_network_graph,
         origin_seeded_flows,
@@ -1222,24 +1224,20 @@ def test_pair_network_circadian_entry_owns_fafb():
         matched_origins=res['origin_matches'].get(FW))
     assert flows
     graph = build_mapping_network_graph(flows)
-    entries = [n for n, d in graph.nodes(data=True)
-               if d['node_type'] == 'entry']
-    assert entries == [f"E|{FW}|cell_type · 'circadian_clock'"]
-    entry = entries[0]
-    successors = list(graph.successors(entry))
-    assert successors
-    assert all(n.startswith(f'0|{FW}|') for n in successors)
-    assert not list(graph.predecessors(entry))
-    assert 'covers 21 types, 242 neurons' in graph.nodes[entry]['title']
-    assert not any(
-        d['node_type'] == 'entry' and n.split('|')[1] == MCNS
-        for n, d in graph.nodes(data=True))
-    # the FAFB -> MCNS pair-mapping edges are untouched by the entry fix
-    pair_edges = [(u, v) for u, v in graph.edges()
-                  if not graph[u][v].get('entry_edge')]
+    assert not [n for n in graph.nodes if str(n).startswith('E|')]
+    assert not [n for n, d in graph.nodes(data=True)
+                if d['node_type'] == 'entry']
+    labels = {str(d.get('label')) for _, d in graph.nodes(data=True)}
+    assert 'circadian_clock' not in labels
+    # the origin side keeps layer 0 and the counterpart side layer 1
+    assert any(n.startswith(f'0|{FW}|') for n in graph.nodes)
+    pair_edges = list(graph.edges())
     assert pair_edges
     assert all(u.startswith(f'0|{FW}|') and v.startswith(f'1|{MCNS}|')
                for u, v in pair_edges)
+    # the 21 types the entry used to summarise are all on the canvas
+    assert len([n for n in graph.nodes if n.startswith(f'0|{FW}|')]) == 21
+
 
 
 def test_reverse_context_smp227_incoming_families(mapper):
@@ -1594,13 +1592,21 @@ def test_sankey_renders_no_parallel_duplicate_links():
     backend keyed its edges by layer.  Edge keys are layer-less now, so
     the same node pair merges into ONE link (max weight)."""
     import json
+    import re
 
     from comparison.mapping_visualization import render_mapping_sankey_html
 
     flows, pools = _apdn3_bridge_flows_and_pools()
     html = render_mapping_sankey_html(flows, pools=pools)
     assert html
-    start = html.index('[', html.index('Plotly.newPlot('))
+    # Anchor on the figure's own div id: the Sankey now EMBEDS plotly.js, and
+    # the bundled library contains the string 'Plotly.newPlot(' itself, so a
+    # first-occurrence search lands inside minified library code.
+    div_id = re.search(r'<div id="([a-zA-Z0-9_\-]+)" class="plotly-graph-div"',
+                       html).group(1)
+    call = html.index('Plotly.newPlot(', html.index(f'"{div_id}"',
+                                                    html.index(div_id)))
+    start = html.index('[', call)
     figure = json.JSONDecoder().raw_decode(html[start:])[0][0]
     labels = figure['node']['label']
     links_by_pair = {}

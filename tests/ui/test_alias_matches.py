@@ -529,7 +529,11 @@ def test_mapping_visualizations_from_circadian_flows():
     graph = build_mapping_network_graph(flows)
     assert graph.number_of_nodes() > 10
     roles = {d.get('node_type') for _, d in graph.nodes(data=True)}
-    assert {'source', 'target', 'entry'} <= roles
+    assert {'source', 'target'} <= roles
+    # 2026-09-26: the query chip is not a node — a type-level view plots
+    # types, so the label that produced them stays in the tables and CSVs
+    assert 'entry' not in roles
+    assert not [n for n in graph.nodes if str(n).startswith('E|')]
     for node, data in graph.nodes(data=True):
         assert 'position' not in data and 'title' in data
         # rendered labels carry display values, no layer|dataset prefixes
@@ -547,24 +551,15 @@ def test_mapping_visualizations_from_circadian_flows():
     local = count_type_in_index(index, 'CL125')
     assert local and edge['weight'] == local == edge['source_count']
     assert edge['foreign_count'] > 0
-    # §14 + origin-side fix: the query entry is owned by the dataset
-    # where the matched column lives — the FOREIGN dataset for these
-    # native-match flows — and the origin side is presented LEFT
-    # (layer 0), so the rendered flow reads entry → origin types →
-    # searched types exactly like the panel's exports
-    entry_nodes = [n for n, d in graph.nodes(data=True)
-                   if d['node_type'] == 'entry']
-    assert entry_nodes
-    for entry_node in entry_nodes:
-        origin_ds = str(entry_node).split('|')[1]
-        assert origin_ds in {'flywire_FAFB_v783', 'banc_v888', 'banc_v626'}
-        assert not list(graph.in_edges(entry_node))
-        for _src, tgt, data in graph.out_edges(entry_node, data=True):
-            assert tgt.startswith(f'0|{origin_ds}|')
-            assert data.get('entry_edge') is True
-            assert data['weight'] > 0
-    assert not any(str(n).startswith(f'E|{MCNS}|')
-                   for n in entry_nodes)
+    # §14 + origin-side fix, re-cut 2026-09-26: the origin side of these
+    # native-match flows (the FOREIGN dataset, where the matched column
+    # lives) is still presented LEFT (layer 0), so the rendered flow reads
+    # origin types → searched types exactly like the panel's exports — only
+    # now without the entry hub that used to be ranked in front of them.
+    assert any(str(n).startswith('0|flywire_FAFB_v783|')
+               for n in graph.nodes)
+    assert not any(str(n).startswith('E|male-cns:v1.0|')
+                   for n in graph.nodes)
     # bridge derivation lives exclusively on the pair edges (the few
     # name-similarity-only pairs are the honest exception)
     pair_edges = [(s, t, d) for s, t, d in graph.edges(data=True)
@@ -575,9 +570,6 @@ def test_mapping_visualizations_from_circadian_flows():
     # primary->alt annotation hops that walked BANC's cross-dataset label
     # tokens are no longer derivable (derivation noise).
     assert len(with_text) >= len(pair_edges) - 9
-    assert all(not d['bridge_texts']
-               for s, t, d in graph.edges(data=True)
-               if s.startswith('E|') or t.startswith('E|'))
 
     # bridge text renders the full chain with type-identity endpoints,
     # names glued to their 4-char source, and the annotation hop carrying

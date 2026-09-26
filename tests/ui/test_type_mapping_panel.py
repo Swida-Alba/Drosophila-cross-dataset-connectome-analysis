@@ -596,6 +596,43 @@ def test_coverage_and_suspects_blocks_render(suspects_panel_client):
 
 
 
+def test_suspects_badges_carry_a_hover_with_the_rival_evidence(
+        suspects_panel_client):
+    """2026-09-26: the badge was a dead end — its per-rival facts lived only
+    in the collapsed block below the table, so reading what the warning
+    meant meant hunting for the expander.  Every surface that renders a
+    '⚠ suspects' badge now hovers too: the same-name-first explanation plus
+    one line per rival candidate.  The collapsed block stays — a hover is
+    never the only route to the evidence (D1)."""
+    client, button, _sel = suspects_panel_client
+    # two chips so the per-type breakdown renders (it is collapsed for a
+    # single-type preview); aMe9 is the same-name-first fan-out
+    button.search_container.add_values(['aMe9', 'aMe12'])
+    assert _click_button(client, 'Search mappings')
+
+    badge = [t for t in _tables(client) if 'Suspects' in _column_labels(t)]
+    # pair card + coverage forward + coverage backward + per-type breakdown
+    assert len(badge) == 4, [_column_labels(t) for t in badge]
+    for t in badge:
+        names = [k for k in t.slots if k.startswith('body-cell-suspects')]
+        assert names, f'no suspects cell slot on {_column_labels(t)}'
+        template = t.slots[names[0]].template
+        assert 'q-tooltip' in template and 'suspects_tip' in template
+
+    tips = [str(row.get('suspects_tip') or '') for t in badge
+            for row in t._props.get('rows', [])]
+    flagged = [tip for tip in tips if tip]
+    assert len(flagged) >= 4, 'every flagged row carries its own hover'
+    for tip in flagged:
+        assert tip.startswith('same-name-first selection')
+        assert 'own 1-to-1 pair' in tip and 'votes' in tip
+        assert 'aMe12' in tip, 'the demoted rival is named'
+    # a row without the badge never grows a hover
+    assert any(not tip for tip in tips)
+    # the collapsed block is still rendered beside the hover
+    assert any(lbl.startswith('Suspects — ') for lbl in _labels(client))
+
+
 def test_a_declined_rival_is_listed_but_never_counted_as_mapped(panel_client):
     """2026-09-22: the headline count and the pair list disagreed about what
     the mapping is.  FAFB ``APDN3`` fans out to three BANC types, and the
@@ -617,3 +654,16 @@ def test_a_declined_rival_is_listed_but_never_counted_as_mapped(panel_client):
     assert per_type[0]['mapped_neurons'] == 7
     # the fan-out is still disclosed where it describes evidence, not claims
     assert per_type[0]['relationship'] == '1-to-N'
+
+
+def test_composed_sankey_button_sits_beside_the_mapping_graph(panel_client):
+    """2026-09-26: the composed export gained its own Sankey (one column per
+    dataset, the query's origin in the middle) beside the network button.
+    The network answers 'what connects to what'; the Sankey answers how much
+    of each type crosses over."""
+    client, button, _selection = panel_client
+    button.search_container.add_values(['APDN3'])
+    assert _click_button(client, 'Search mappings')
+    texts = ([str(getattr(b, 'text', '')) for b in _buttons(client)]
+             + _labels(client))
+    assert any('Mapping sankey (HTML)' in t for t in texts), texts

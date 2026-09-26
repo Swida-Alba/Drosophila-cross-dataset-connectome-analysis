@@ -78,62 +78,109 @@ def test_composed_component_order_prefers_same_name():
     assert meta['components'][0]['datasets'] == ['ds_b', 'ds_a', 'ds_c']
 
 
-def test_composed_pooled_label_node():
-    pair_flows = {
+def _circadian_pair_flows():
+    """FAFB is the one query origin, MCNS and BANC its two targets — the
+    1-source/2-target shape the composed view centres.  T1 fans out to
+    several target types in both."""
+    def _meta(origin_type, origin_count):
+        return dict(origin="cell_type · 'circadian_clock'",
+                    origin_dataset=FAFB, origin_column='cell_type',
+                    origin_value='circadian_clock',
+                    origin_label="cell_type · 'circadian_clock'",
+                    origin_type=origin_type, origin_count=origin_count)
+    return {
         (FAFB, MCNS): [
-            _flow(FAFB, 'T1', MCNS, 'M1', 2, 2,
-                  origin="cell_type · 'circadian_clock'",
-                  origin_dataset=FAFB, origin_column='cell_type',
-                  origin_value='circadian_clock', origin_label=
-                  "cell_type · 'circadian_clock'", origin_type='T1',
-                  origin_count=2),
-            _flow(FAFB, 'T1', MCNS, 'M2', 2, 3,
-                  origin="cell_type · 'circadian_clock'",
-                  origin_dataset=FAFB, origin_column='cell_type',
-                  origin_value='circadian_clock', origin_label=
-                  "cell_type · 'circadian_clock'", origin_type='T1',
-                  origin_count=2),
-            _flow(FAFB, 'T2', MCNS, 'M1', 1, 3,
-                  origin="cell_type · 'circadian_clock'",
-                  origin_dataset=FAFB, origin_column='cell_type',
-                  origin_value='circadian_clock', origin_label=
-                  "cell_type · 'circadian_clock'", origin_type='T2',
-                  origin_count=1),
+            _flow(FAFB, 'T1', MCNS, 'M1', 2, 2, **_meta('T1', 2)),
+            _flow(FAFB, 'T1', MCNS, 'M2', 2, 3, **_meta('T1', 2)),
+            _flow(FAFB, 'T2', MCNS, 'M1', 1, 3, **_meta('T2', 1)),
         ],
         (FAFB, BANC): [
-            _flow(FAFB, 'T1', BANC, 'B1', 2, 4,
-                  origin="cell_type · 'circadian_clock'",
-                  origin_dataset=FAFB, origin_column='cell_type',
-                  origin_value='circadian_clock', origin_label=
-                  "cell_type · 'circadian_clock'", origin_type='T1',
-                  origin_count=2),
-            _flow(FAFB, 'T2', BANC, 'B2', 1, 5,
-                  origin="cell_type · 'circadian_clock'",
-                  origin_dataset=FAFB, origin_column='cell_type',
-                  origin_value='circadian_clock', origin_label=
-                  "cell_type · 'circadian_clock'", origin_type='T2',
-                  origin_count=1),
+            _flow(FAFB, 'T1', BANC, 'B1', 2, 4, **_meta('T1', 2)),
+            _flow(FAFB, 'T2', BANC, 'B2', 1, 5, **_meta('T2', 1)),
         ],
     }
-    graph, _meta = build_composed_mapping_graph(pair_flows)
-    entries = [n for n, d in graph.nodes(data=True)
-               if d['node_type'] == 'entry']
-    assert len(entries) == 1
-    entry = entries[0]
-    assert entry == f"E|{FAFB}|cell_type · 'circadian_clock'"
-    assert 'circadian_clock' in graph.nodes[entry]['label']
-    assert graph.nodes[entry]['home_dataset'] == FAFB
-    assert graph.nodes[entry]['origin_column'] == 'cell_type'
-    # The query entry is attached to the two unique origin types, even though
-    # T1 fans out to multiple target types and two target datasets.
-    successors = list(graph.successors(entry))
-    assert {graph.nodes[n]['label'] for n in successors} == {'T1', 'T2'}
-    assert not list(graph.predecessors(entry))
-    assert all(n.startswith(f'0|{FAFB}|') for n in successors)
-    assert 'covers 2 types, 3 neurons' in graph.nodes[entry]['title']
-    assert not any(
-        d['node_type'] == 'entry' and n.split('|')[1] in {MCNS, BANC}
-        for n, d in graph.nodes(data=True))
+
+
+def test_composed_graph_plots_types_only():
+    """2026-09-26: the chip that produced the mapping used to render as a
+    hub node ('cell_type · circadian_clock') feeding the origin types, so the
+    query itself read as one more mapping endpoint.  A type-granularity view
+    plots types; the chip stays in the panel tables and the CSVs."""
+    graph, _meta = build_composed_mapping_graph(_circadian_pair_flows())
+    assert not [n for n in graph.nodes if str(n).startswith('E|')]
+    assert not [n for n, d in graph.nodes(data=True)
+                if d.get('node_type') == 'entry']
+    labels = {str(d.get('label')) for _, d in graph.nodes(data=True)}
+    assert 'circadian_clock' not in labels
+    assert "cell_type · 'circadian_clock'" not in labels
+    # the origin types the entry used to point at are still there, and the
+    # target types they fan out to
+    assert {'T1', 'T2', 'M1', 'M2', 'B1', 'B2'} <= labels
+
+
+def test_composed_star_centres_the_origin_dataset():
+    """One origin + two targets is not a chain.  Dagre's affinity order read
+    it ``FAFB → BANC → MCNS``, which hides that BOTH targets came from ONE
+    query; the star puts FAFB in the middle column and keeps its 'source'
+    role (layer position must not demote it to 'intermediate')."""
+    graph, meta = build_composed_mapping_graph(_circadian_pair_flows())
+    assert meta['starred'] is True
+    order = meta['components'][0]['datasets']
+    assert order[1] == FAFB
+    assert set(order) == {FAFB, MCNS, BANC}
+    # equal origin-type coverage (T1, T2 reach both) → the dataset key
+    # decides, so the layout is deterministic for a given result
+    assert order == [BANC, FAFB, MCNS]
+    for node, data in graph.nodes(data=True):
+        layer = str(node).split('|')[0]
+        assert data['node_type'] == (
+            'source' if layer == '1' else 'target')
+        # the star renders from explicit positions, one column per dataset
+        assert data['position']['x'] == int(layer) * 380
+        assert isinstance(data['position']['y'], (int, float))
+    # each column is stacked with a row gap, not scattered by a force layout
+    by_column: Dict[str, list] = {}
+    for node, data in graph.nodes(data=True):
+        by_column.setdefault(str(node).split('|')[0], []).append(
+            data['position']['y'])
+    for ys in by_column.values():
+        assert len({round(y) for y in ys}) == len(ys)
+
+
+def test_composed_star_flanks_follow_the_selection_order():
+    """The denser half of the picture reads first: the target covering more
+    origin types takes the left flank, and the caller's selection order
+    breaks a tie."""
+    pair_flows = {
+        (FAFB, MCNS): [_flow(FAFB, 'T1', MCNS, 'M1', 2, 2),
+                       _flow(FAFB, 'T2', MCNS, 'M2', 1, 1)],
+        (FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'B1', 2, 4)],
+    }
+    _graph, meta = build_composed_mapping_graph(pair_flows)
+    # MCNS covers two origin types, BANC one → MCNS left regardless of order
+    assert meta['components'][0]['datasets'] == [MCNS, FAFB, BANC]
+    # a 1-to-1 star (equal coverage) falls back to the selection order
+    tied = {
+        (FAFB, MCNS): [_flow(FAFB, 'T1', MCNS, 'M1', 2, 2)],
+        (FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'B1', 2, 4)],
+    }
+    _graph, meta = build_composed_mapping_graph(
+        tied, dataset_order=[FAFB, BANC, MCNS])
+    assert meta['components'][0]['datasets'] == [BANC, FAFB, MCNS]
+
+
+def test_composed_chain_is_not_a_star():
+    """A target that is itself an origin (FAFB → BANC → MCNS) has no single
+    centre, so §10.1's affinity order and dagre stay."""
+    pair_flows = {
+        (FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'T1', 1, 1)],
+        (BANC, MCNS): [_flow(BANC, 'T1', MCNS, 'T1', 1, 1)],
+    }
+    graph, meta = build_composed_mapping_graph(pair_flows)
+    assert meta['starred'] is False
+    assert not any('position' in d for _, d in graph.nodes(data=True))
+    assert meta['components'][0]['star'] is False
+
 
 
 def _entry_flows(**overrides):
@@ -154,64 +201,59 @@ def _entry_flows(**overrides):
     ]
 
 
-def test_pair_network_query_entry_owns_origin_side():
-    """§14: the per-pair type-level network attaches a taxonomy query
-    entry to its ORIGIN dataset and the origin-side source types — the
-    same contract the composed graph already follows (§13)."""
+def _no_entry_nodes(graph):
+    """The 2026-09-26 contract: a type-level network plots TYPES.  The chip
+    that produced them (``matched_origin``) is search provenance and lives in
+    the panel tables and the CSVs, never on the canvas."""
+    assert not [n for n in graph.nodes if str(n).startswith('E|')]
+    assert not [n for n, d in graph.nodes(data=True)
+                if d.get('node_type') == 'entry']
+    assert not [d for _, d in graph.nodes(data=True)
+                if 'circadian_clock' in str(d.get('label', ''))]
+
+
+def test_pair_network_plots_types_only():
+    """§14 as re-cut 2026-09-26: the per-pair type-level network keeps the
+    origin-side types the query entry used to point at, but the entry itself
+    is gone — and the pair edges are untouched."""
     from comparison.mapping_visualization import build_mapping_network_graph
 
     graph = build_mapping_network_graph(_entry_flows())
-    entries = [n for n, d in graph.nodes(data=True)
-               if d['node_type'] == 'entry']
-    assert entries == [f"E|{FAFB}|cell_type · 'circadian_clock'"]
-    entry = entries[0]
-    assert graph.nodes[entry]['home_dataset'] == FAFB
-    assert graph.nodes[entry]['origin_column'] == 'cell_type'
-    assert graph.nodes[entry]['origin_value'] == 'circadian_clock'
-    # the entry touches only origin-side source types, in the entry →
-    # source direction (the entry is the query input)
-    successors = list(graph.successors(entry))
-    assert {graph.nodes[n]['label'] for n in successors} == {'T1', 'T2'}
-    assert all(n.startswith(f'0|{FAFB}|') for n in successors)
-    assert not list(graph.predecessors(entry))
-    # hover coverage counts UNIQUE origin types and source-side neurons,
-    # never the target-side received counts
-    assert 'covers 2 types, 3 neurons' in graph.nodes[entry]['title']
-    # no entry keyed under the target dataset
-    assert not any(
-        d['node_type'] == 'entry' and n.split('|')[1] == MCNS
-        for n, d in graph.nodes(data=True))
+    _no_entry_nodes(graph)
+    labels = {str(d.get('label')) for _, d in graph.nodes(data=True)}
+    assert {'T1', 'T2', 'M1', 'M2'} <= labels
     # the real pair-mapping edges survive unchanged (T1→M1, T1→M2, T2→M1)
-    pair_edges = {(u, v) for u, v in graph.edges()
-                  if not graph[u][v].get('entry_edge')}
-    assert pair_edges == {(f'0|{FAFB}|T1', f'1|{MCNS}|M1'),
-                          (f'0|{FAFB}|T1', f'1|{MCNS}|M2'),
-                          (f'0|{FAFB}|T2', f'1|{MCNS}|M1')}
-    assert any(graph[u][v]['bridge_texts'] for u, v in pair_edges)
+    assert {(u, v) for u, v in graph.edges()} == {
+        (f'0|{FAFB}|T1', f'1|{MCNS}|M1'),
+        (f'0|{FAFB}|T1', f'1|{MCNS}|M2'),
+        (f'0|{FAFB}|T2', f'1|{MCNS}|M1')}
+    assert any(graph[u][v]['bridge_texts'] for u, v in graph.edges())
+    # the origin side stays LEFT
+    assert all(str(n).startswith(f'0|{FAFB}|')
+               for n in graph.nodes
+               if str(n).endswith('|T1') or str(n).endswith('|T2'))
 
 
-def test_pair_network_entry_falls_back_to_source_dataset():
-    """§14: a legacy flow with only the matched_origin display string keys
-    its entry under the flow's source (origin) dataset."""
+def test_pair_network_legacy_origin_string_adds_no_node():
+    """A legacy flow carrying only the matched_origin DISPLAY string (no
+    structured origin metadata) is the same case: types, no entry."""
     from comparison.mapping_visualization import build_mapping_network_graph
 
     graph = build_mapping_network_graph(
         [_flow(FAFB, 'T1', MCNS, 'M1', 2, 2,
                origin="cell_type · 'legacy_label'")])
-    entries = [n for n, d in graph.nodes(data=True)
-               if d['node_type'] == 'entry']
-    assert entries == [f"E|{FAFB}|cell_type · 'legacy_label'"]
-    assert all(n.startswith(f'0|{FAFB}|')
-               for n in graph.successors(entries[0]))
+    assert not [n for n in graph.nodes if str(n).startswith('E|')]
+    assert {(u, v) for u, v in graph.edges()} == {
+        (f'0|{FAFB}|T1', f'1|{MCNS}|M1')}
 
 
-def test_pair_network_entry_attaches_to_target_side_origin():
+def test_pair_network_puts_the_origin_side_left():
     """Native-match flows (the viewer's expanded search, and the panel's
     fallback chips) run searched → foreign with the matched column on the
-    FOREIGN side: the entry must attach there and count the foreign
-    population (user 2026-09-10: the viewer's circadian_clock artifact
-    was mis-owned by MCNS, hovering 'covers 40 types, 219 neurons' — the
-    received side)."""
+    FOREIGN side.  The entry node is gone, but the orientation rule that was
+    introduced to rank it survives: the origin side renders LEFT, so the view
+    reads FAFB types → searched MCNS types exactly like the panel's
+    origin-seeded exports (user 2026-09-10 layout report)."""
     from comparison.mapping_visualization import build_mapping_network_graph
 
     def _native_flow(local, foreign_type, count, foreign_count):
@@ -228,33 +270,12 @@ def test_pair_network_entry_attaches_to_target_side_origin():
         _native_flow('M2', 's-CPDN3C', 2, 32),
         _native_flow('M1', 's-CPDN3D', 3, 37),
     ])
-    entries = [n for n, d in graph.nodes(data=True)
-               if d['node_type'] == 'entry']
-    assert entries == [f"E|{FAFB}|cell_type · 'circadian_clock'"]
-    entry = entries[0]
-    assert graph.nodes[entry]['home_dataset'] == FAFB
-    successors = list(graph.successors(entry))
-    assert {graph.nodes[n]['label']
-            for n in successors} == {'s-CPDN3A', 's-CPDN3C', 's-CPDN3D'}
-    # the origin side is presented LEFT (layer 0), so dagre ranks
-    # query entry → FAFB types → searched MCNS types — the same natural
-    # flow as the panel's origin-seeded exports
-    assert all(n.startswith(f'0|{FAFB}|') for n in successors)
-    assert not list(graph.predecessors(entry))
-    # the hover counts the ORIGIN side's covered population (38+32+37),
-    # never the searched side's received neurons
-    assert 'covers 3 types, 107 neurons' in graph.nodes[entry]['title']
-    assert not any(
-        d['node_type'] == 'entry' and n.split('|')[1] == MCNS
-        for n, d in graph.nodes(data=True))
-    # the pair edges are drawn origin → counterpart (presentation
-    # direction); per-side counts stay on the edge attrs
-    pair_edges = {(u, v) for u, v in graph.edges()
-                  if not graph[u][v].get('entry_edge')}
-    assert pair_edges == {(f'0|{FAFB}|s-CPDN3A', f'1|{MCNS}|M1'),
-                          (f'0|{FAFB}|s-CPDN3C', f'1|{MCNS}|M2'),
-                          (f'0|{FAFB}|s-CPDN3D', f'1|{MCNS}|M1')}
-    for u, v in pair_edges:
+    _no_entry_nodes(graph)
+    assert {(u, v) for u, v in graph.edges()} == {
+        (f'0|{FAFB}|s-CPDN3A', f'1|{MCNS}|M1'),
+        (f'0|{FAFB}|s-CPDN3C', f'1|{MCNS}|M2'),
+        (f'0|{FAFB}|s-CPDN3D', f'1|{MCNS}|M1')}
+    for u, v in graph.edges():
         data = graph[u][v]
         assert data['source_dataset'] == MCNS
         assert data['target_dataset'] == FAFB
@@ -804,3 +825,121 @@ def test_type_coverage_unmeasured_side_reads_not_measured():
     assert forward['query_cov'] == 'not measured'
     # the target side measured a real zero: 0 of 12
     assert forward['target_cov'] == '0 of 12 (0.0%)'
+
+
+def _star_flows(extra_target=None):
+    """FAFB is the one origin; BANC and MCNS its targets.  ``extra_target``
+    adds a third dataset FAFB maps into, which the Sankey cannot draw."""
+    flows = {
+        (FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'B1', 2, 4),
+                       _flow(FAFB, 'T2', BANC, 'B2', 1, 5)],
+        (FAFB, MCNS): [_flow(FAFB, 'T1', MCNS, 'M1', 2, 2),
+                       _flow(FAFB, 'T1', MCNS, 'M2', 2, 3),
+                       _flow(FAFB, 'T2', MCNS, 'M1', 1, 3)],
+    }
+    if extra_target:
+        flows[(FAFB, extra_target)] = [
+            _flow(FAFB, 'T1', extra_target, 'H1', 2, 2)]
+    return flows
+
+
+def test_composed_sankey_centres_the_origin_and_reverses_the_left_half():
+    """2026-09-26: the cross-dataset Sankey draws one column per dataset with
+    the query's origin in the middle.  Plotly ranks nodes topologically and
+    ignores node.x when a link contradicts it, so the LEFT half's rows run
+    target → origin — the drawing's direction only; the mapping stays an
+    equivalence and the artifact's note says so."""
+    from comparison.mapping_visualization import build_composed_sankey_paths
+
+    rows, info = build_composed_sankey_paths(
+        _star_flows(), dataset_order=[FAFB, BANC, MCNS])
+    assert info['columns'] == [BANC, FAFB, MCNS]
+    assert info['left'] == BANC and info['right'] == MCNS
+    left = [names for names, _w in rows if names[0].endswith('· BANC')]
+    right = [names for names, _w in rows if names[1].endswith('· MCNS')]
+    assert left and right
+    assert all(names[1].endswith('· FAFB') for names in left)
+    assert all(names[0].endswith('· FAFB') for names in right)
+    # every ribbon carries the pooled weight, one value per hop
+    assert all(len(w) == len(names) - 1 for names, w in rows)
+    # T1/T2 both reach BANC, so nothing falls into the wrong column
+    assert info['slipped'] == []
+
+
+def test_composed_sankey_names_the_types_that_would_slip_a_column():
+    """An origin type with no counterpart in the LEFT target has no incoming
+    ribbon, so plotly drops it into the leftmost column.  The builder cannot
+    prevent that, so it must report it — and the flank rule already picked
+    the denser target as the left, so this is the residual case."""
+    from comparison.mapping_visualization import build_composed_sankey_paths
+
+    pair_flows = {
+        (FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'B1', 2, 4),
+                       _flow(FAFB, 'T2', BANC, 'B2', 1, 5),
+                       _flow(FAFB, 'T3', BANC, 'B3', 1, 5)],
+        (FAFB, MCNS): [_flow(FAFB, 'T4', MCNS, 'M1', 2, 2)],
+    }
+    rows, info = build_composed_sankey_paths(pair_flows)
+    # BANC covers three origin types, MCNS one → BANC takes the left flank,
+    # and T4 (which only MCNS names) is the type that will sit beside it
+    assert info['columns'] == [BANC, FAFB, MCNS]
+    assert info['slipped'] == ['T4']
+
+
+def test_composed_sankey_gate_is_one_origin_into_one_or_two_targets():
+    """A third target has no column, and a chain has no centre — both fall
+    back to the per-pair Sankeys rather than drawing something false."""
+    from comparison.mapping_visualization import build_composed_sankey_paths
+
+    rows, info = build_composed_sankey_paths(
+        _star_flows(extra_target='hemibrain:v1.2.1'))
+    assert rows == [] and info is None
+    chain = {(FAFB, BANC): [_flow(FAFB, 'T1', BANC, 'T1', 1, 1)],
+             (BANC, MCNS): [_flow(BANC, 'T1', MCNS, 'T1', 1, 1)]}
+    rows, info = build_composed_sankey_paths(chain)
+    assert rows == [] and info is None
+    # one target is fine: two columns, no reversal needed
+    rows, info = build_composed_sankey_paths(
+        {(FAFB, MCNS): _star_flows()[(FAFB, MCNS)]})
+    assert info['columns'] == [FAFB, MCNS] and info['left'] is None
+    assert all(names[0].endswith('· FAFB') for names, _w in rows)
+
+
+def test_composed_sankey_html_carries_its_own_wording_and_note():
+    from comparison.mapping_visualization import render_composed_sankey_html
+
+    html, info = render_composed_sankey_html(_star_flows())
+    assert html and info
+    assert 'Type mapping Sankey — BANC | FAFB | MCNS' in html
+    assert 'Columns are datasets' in html
+    assert 'Synapse' not in html
+
+
+def test_extended_csv_header_matches_its_own_documentation():
+    """The mapping CSV's fixed column set is documented by name in
+    `docs/technical/AUTO_TYPE_MAPPING_IMPLEMENTATION.md`, and that list had
+    silently fallen behind the code (18 of 35 columns, missing
+    `selected_bridge`, `mapping_status`, the whole `all_valid_*` scope and
+    `coverage_overlap` / `coverage_scope`).  A doc that names every column
+    should not be able to drift from the header it names."""
+    import re
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[2]
+           / 'docs' / 'technical'
+           / 'AUTO_TYPE_MAPPING_IMPLEMENTATION.md').read_text(encoding='utf-8')
+    start = doc.index('FIXED column set for every pair')
+    end = doc.index('so the all-pairs file', start)
+    documented = [c.strip() for c in ''.join(
+        re.findall(r'`([^`]+)`', doc[start:end])).split(',') if c.strip()]
+
+    header = build_bridges_csv(
+        [_flow(MCNS, 'T1', FAFB, 'T1', 4, 4)], extended=True).splitlines()[0]
+    actual = header.split(',')
+    assert actual == documented, (
+        f'doc/code drift — only in the doc: {set(documented) - set(actual)}, '
+        f'only in the header: {set(actual) - set(documented)}')
+    # the legacy (non-extended) export stays a strict prefix-shaped subset
+    legacy = build_bridges_csv(
+        [_flow(MCNS, 'T1', FAFB, 'T1', 4, 4)]).splitlines()[0].split(',')
+    assert set(legacy) <= set(actual)

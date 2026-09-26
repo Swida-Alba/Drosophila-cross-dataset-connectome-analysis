@@ -2,18 +2,20 @@
 
 Consumes the derivation chains produced by
 ``CrossDatasetTypeMapper.get_type_bridges`` and renders through the
-vispath machinery: the type-level network (dagre layout — no custom
-layer map; current dataset types on the left, foreign dataset types in
-the middle joined by direct per-pair edges, mapping-graph query entries
-anchored to the dataset where they resolved) and the layered
-Sankey (``create_sankey`` backend with the shared interactive control
-panel — user-adjustable node/edge colors).
+vispath machinery: the type-level network (dagre, or explicit preset
+positions for the centre-source star; origin-side types on the left,
+counterpart types on the right, joined by direct per-pair edges) and the
+layered Sankey (``create_sankey`` backend with the shared interactive
+control panel — user-adjustable node/edge colors).
 
-The bridge derivation (columns · via) is never a node: it lives on the
-pair-edge hover labels next to the per-side neuron counts, and in the
-exported CSV. Both builders are pure: they take flows (mapped pairs +
-bridge chains + neuron counts) and return figures/graphs; writing files
-and opening the browser is the caller's job.
+NODES ARE TYPES. The query chip that produced them (``matched_origin``,
+e.g. ``cell_type · 'circadian_clock'``) is search provenance and renders
+nowhere on a canvas (user 2026-09-26), and neither does the bridge
+derivation (columns · via) — that lives on the pair-edge hover labels
+next to the per-side neuron counts, and in the exported CSV. Both
+builders are pure: they take flows (mapped pairs + bridge chains + neuron
+counts) and return figures/graphs; writing files and opening the browser
+is the caller's job.
 """
 
 from __future__ import annotations
@@ -393,9 +395,10 @@ def build_mapping_flows(entries, source_dataset: str,
                 # (the flow's target side): a native-match flow maps the
                 # local type ↔ the foreign name the query reached, so the
                 # query-origin provenance must be foreign-anchored.  The
-                # graph entry nodes attach to THIS side (user 2026-09-10:
-                # the viewer's circadian_clock entry was mis-owned by the
-                # searched dataset and counted the received neurons).
+                # network puts THIS side in layer 0 (user 2026-09-10: the
+                # viewer's circadian_clock entry was mis-owned by the
+                # searched dataset and counted the received neurons; the
+                # entry itself is no longer drawn — user 2026-09-26).
                 origin = _origin_metadata(
                     foreign, matched_origin, covered_name)
                 flows.append({
@@ -728,26 +731,22 @@ def build_mapping_network_graph(flows, *,
     """Layered left-to-right type-mapping network, bridges hidden.
 
     Edges are the per-pair type mappings themselves, so 1-to-1, 1-to-N,
-    and N-to-1 are visible in the node geometry.  The matched query entry
-    (taxonomy label hits) belongs to the dataset where the query resolved:
-    one ``E|<origin>|<label>`` node per matched label, connected to the
-    covered types on that origin side (§14) — the flow's source side for
-    origin-seeded flows, its target side for native-match flows (the
-    matched column lives in the foreign dataset there).  Never a
-    target-side coverage sink keyed under an unrelated dataset.  The
-    bridge derivation (columns · via) is carried exclusively on the pair
-    edges (``bridge_texts`` attribute) together with the per-side neuron
-    counts — never as a node.
+    and N-to-1 are visible in the node geometry.  NODES ARE TYPES ONLY: the
+    matched query entry (a taxonomy label hit, ``matched_origin``) is not a
+    node — it names the search, not a mapping endpoint, so it stays in the
+    panel tables and the CSVs (user 2026-09-26).  Which side the query
+    resolved on still orients the drawing: a native-match flow (the viewer's
+    expanded search, where the matched column lives in the foreign dataset)
+    renders its origin side LEFT, so the view reads origin → counterpart
+    either way.  The bridge derivation (columns · via) is carried
+    exclusively on the pair edges (``bridge_texts`` attribute) together with
+    the per-side neuron counts — never as a node.
 
-    Layer 0 = current dataset types, layer 1 = foreign dataset types;
-    entry nodes carry ``E|`` ids on their origin side (dagre positions
-    them from their edges).  Pair-edge weight is the shared
-    ``pair_flow_weight`` (independent endpoint coverage / min of the two
-    sides) — the same number the Sankey ribbon draws for the type bridge.
-    Entry-edge weight is the covered origin-side type's neuron count, and
-    the entry hover counts unique origin-side types and their neurons —
-    never the opposite side's received counts.  With ``pools``, node
-    hovers also carry the pooled bodyId count of the type on its side.
+    Layer 0 = origin-side types, layer 1 = counterpart types.  Pair-edge
+    weight is the shared ``pair_flow_weight`` (independent endpoint coverage
+    / min of the two sides) — the same number the Sankey ribbon draws for
+    the type bridge.  With ``pools``, node hovers also carry the pooled
+    bodyId count of the type on its side.
 
     ``orphans`` (W3) are queried types with NO mapped counterpart in a
     target dataset: ``{'dataset', 'type', 'count', 'target'}``.  Each is
@@ -766,7 +765,6 @@ def build_mapping_network_graph(flows, *,
         flows,
         key=lambda f: -(f.get("foreign_count") or f.get("source_count") or 0),
     )
-    entry_cover: Dict[str, Dict[str, Any]] = {}
     for flow in ordered:
         foreign_count = int(flow.get("foreign_count") or 0)
         source_count = int(flow.get("source_count") or 0)
@@ -779,12 +777,13 @@ def build_mapping_network_graph(flows, *,
         # Native-match flows (the viewer's expanded search) run
         # searched → foreign with the query origin on the TARGET side.
         # Present them the way the panel's origin-seeded exports read:
-        # origin side left (layer 0), counterpart right (layer 1), so
-        # dagre ranks query entry → origin types → counterpart types
-        # instead of burying the entry in the counterpart's rank (user
-        # 2026-09-10 layout report).  Only label-origin flows flip; each
-        # rendered artifact holds a single orientation (one entry block
-        # or one seeded direction), so the two id spaces never mix.
+        # origin side left (layer 0), counterpart right (layer 1), so dagre
+        # ranks origin types → counterpart types instead of mixing the two
+        # datasets in one rank (user 2026-09-10 layout report; the query
+        # entry that used to be ranked in front of them is no longer a node
+        # — user 2026-09-26).  Only label-origin flows flip; each rendered
+        # artifact holds a single orientation, so the two id spaces never
+        # mix.
         flipped = bool(origin_column
                        and origin_column != "type"
                        and flow_origin_ds
@@ -815,18 +814,6 @@ def build_mapping_network_graph(flows, *,
             right_count = foreign_count
             right_pool_ids = tgt_pool_ids
             right_selected_pool_ids = tgt_selected_pool_ids
-
-        def _side_title(side_type: str, side_ds: str, side_count: int,
-                        pool_ids, selected_pool_ids) -> str:
-            dataset_scoped_key = (side_ds, side_type)
-            return (f"{side_type} · {side_ds} "
-                    f"({side_count or pair_weight} neurons)"
-                    + _pool_title_suffix(
-                        pool_ids.get(dataset_scoped_key, 0)
-                        if dataset_scoped else pool_ids.get(side_type, 0),
-                        selected_pool_ids.get(dataset_scoped_key, 0)
-                        if dataset_scoped else selected_pool_ids.get(
-                            side_type, 0)))
 
         # the pair edge carries the SHARED per-pair flow weight (the same
         # number the Sankey ribbon draws) — never the source type's whole
@@ -876,55 +863,12 @@ def build_mapping_network_graph(flows, *,
                            source_dataset=source_ds,
                            target_dataset=target_ds)
 
-        # the query hit belongs to the dataset where it resolved and
-        # attaches to the covered types on THAT side — which the
-        # orientation flip above always renders as the LEFT side (layer
-        # 0): the flow's source side for origin-seeded flows (the panel)
-        # and the target side for native-match flows (the viewer's
-        # expanded search, where the matched column lives in the foreign
-        # dataset).  The structured origin metadata decides the owner;
-        # the source side is only the legacy fallback.
-        if origin_column and origin_column != "type":
-            origin_ds = flow_origin_ds or source_ds
-            attach_id = left_id
-            attach_type = left_type
-            side_count = left_count
-            origin_label = str(flow.get("matched_origin", "") or "matched")
-            entry_id = f"E|{origin_ds}|{origin_label}"
-            graph.add_node(
-                entry_id, node_type="entry", label=origin_label,
-                home_dataset=origin_ds, origin_dataset=origin_ds,
-                origin_column=origin_column, origin_value=origin_value)
-            cover = entry_cover.setdefault(
-                entry_id, {"types": {}, "dataset": origin_ds})
-            origin_type = str(flow.get("origin_type")
-                              or attach_type or "")
-            raw_origin_count = flow.get("origin_count")
-            origin_count = int(
-                raw_origin_count if raw_origin_count is not None
-                else side_count)
-            # one origin type can fan out to many counterpart types (and
-            # so appear in several flows): count it once in the
-            # query-entry hover, retaining the largest consistent
-            # origin-side count
-            if origin_type:
-                previous = cover["types"].get(origin_type)
-                if previous is None or origin_count > previous:
-                    cover["types"][origin_type] = origin_count
-            # the entry is the query input, so the edge follows the same
-            # left-to-right direction as the pair edges: entry → covered
-            # origin-side type.  This is not a type-to-type mapping edge.
-            edge_weight = max(1, origin_count)
-            if graph.has_edge(entry_id, attach_id):
-                existing = graph[entry_id][attach_id]
-                if edge_weight > existing.get("weight", 0):
-                    existing["weight"] = edge_weight
-                    existing["title"] = f"{edge_weight} neurons"
-            else:
-                graph.add_edge(
-                    entry_id, attach_id, weight=edge_weight,
-                    title=f"{edge_weight} neurons", bridge_texts=[],
-                    entry_edge=True, origin_dataset=origin_ds)
+        # The query hit is NOT a node: a type-level view plots types, so the
+        # chip that produced them (``matched_origin``, e.g.
+        # ``cell_type · 'circadian_clock'``) stays in the panel tables and the
+        # CSVs and never reaches the canvas (user 2026-09-26 — the entry hub
+        # read as a mapping target).  Which side the origin lives on is still
+        # what the orientation flip above decides.
 
     # W3 orphans: queried types with no mapped counterpart in a target
     # dataset stay VISIBLE as isolated nodes (degree 0) with the
@@ -948,17 +892,6 @@ def build_mapping_network_graph(flows, *,
                            title=(f"{otype} — no mapped counterpart in "
                                   f"{target_code} ({count:,} neurons)"))
 
-    # Entry hover titles name what they cover on the ORIGIN side (§14):
-    # unique source types and their source-side counts — never the
-    # target-side received neurons.
-    for entry_id, cover in entry_cover.items():
-        types = cover["types"]
-        total = sum(types.values())
-        graph.nodes[entry_id]["title"] = (
-            f"{graph.nodes[entry_id].get('label', '')} — covers "
-            f"{len(types)} types, {total:,} neurons"
-        )
-
     return graph
 
 
@@ -970,14 +903,14 @@ def render_mapping_network_html(flows, *,
                                 ) -> Optional[str]:
     """Render the type-level mapping network to an HTML string.
 
-    Uses the vispath machinery with the dagre layout (source types left,
-    foreign types right; a taxonomy query entry sits on its ORIGIN side,
-    attached to the source types it covers — §14).  Nodes are draggable.
-    ``pools`` adds the pooled bodyId counts to the node hovers.
-    ``orphans`` adds isolated unmapped-type nodes (W3).
-    Nothing is written to the repository — the temp render file lives
-    in the system temp dir.  Returns the HTML text, or None when
-    vispath is unavailable.
+    Uses the vispath machinery with the dagre layout: source types left,
+    foreign types right, and the origin side of a native-match flow kept on
+    the left (§14 as re-cut 2026-09-26 — the taxonomy query chip that
+    produced the types is search provenance, not a node).  Nodes are
+    draggable.  ``pools`` adds the pooled bodyId counts to the node hovers.
+    ``orphans`` adds isolated unmapped-type nodes (W3).  Nothing is written
+    to the repository — the temp render file lives in the system temp dir.
+    Returns the HTML text, or None when vispath is unavailable.
     """
     graph = build_mapping_network_graph(flows, pools=pools,
                                         orphans=orphans)
@@ -1070,6 +1003,20 @@ def _import_vispath():
     return VisualizePath
 
 
+def _apply_document_title(html: str, title: str) -> str:
+    """Replace the vendored renderer's generic ``<title>`` with the artifact
+    title (the downloaded file's browser tab otherwise reads "Neural Pathway
+    Network - Selected Paths" for every mapping view)."""
+    import re
+    from html import escape as html_escape
+
+    safe_title = html_escape(str(title or ""), quote=False)
+    return re.sub(
+        r"(<title\b[^>]*>).*?(</title>)",
+        lambda match: f"{match.group(1)}{safe_title}{match.group(2)}",
+        html, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+
 def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False,
                           edge_labels: Optional[Dict[tuple, Dict[str, str]]] = None,
                           node_dataset_info: Optional[Dict[str, Dict[str, str]]] = None,
@@ -1129,6 +1076,15 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
             "dagre_rank_dir": "TB",
             "node_groups": [],
             "dataset_legend_meta": {},
+            # Sankey/metric wording defaults — the mapping views override
+            # every one of them (a mapping artifact counts neurons, and its
+            # Sankey columns are datasets, not pathway hops).
+            "sankey_title": "Sankey diagram of pathway connections",
+            "sankey_label_layers": True,
+            "metric_option_label": "Synapse Count",
+            "_sankey_title_js": "Sankey diagram of pathway connections",
+            "_sankey_weight_name": "Synapses",
+            "_sankey_weight_name": "Synapses",
         }
 
         def __getattr__(self, name):
@@ -1169,6 +1125,10 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
     visualizer.edge_labels = edge_labels
     # the mapping weights are neuron counts, not synapses
     visualizer.edge_weight_label = "neurons"
+    # …and so is the ribbon's Connection Metric selector, which the vendored
+    # template otherwise labels 'Synapse Count' for every artifact (user
+    # 2026-09-26).
+    visualizer.metric_option_label = "Neuron count"
     visualizer.linker_colors = linker_colors or {}
     # declared per-dataset node groups (§13) — drive the group buttons,
     # the color/opacity dropdown and the color-keyed legend
@@ -1217,14 +1177,7 @@ def _vispath_html(graph, *, edge_labels=None, node_dataset_info=None,
 
     # The vendored vispath template uses a generic document title.  Keep the
     # dependency untouched and apply the caller's artifact title safely here.
-    import re
-    from html import escape as html_escape
-
-    safe_title = html_escape(str(title or ""), quote=False)
-    return re.sub(
-        r"(<title\b[^>]*>).*?(</title>)",
-        lambda match: f"{match.group(1)}{safe_title}{match.group(2)}",
-        rendered, count=1, flags=re.IGNORECASE | re.DOTALL)
+    return _apply_document_title(rendered, title)
 
 
 class _VispathUnavailable(ImportError):
@@ -1562,14 +1515,20 @@ def render_bridge_linker_html(flows, *, source_dataset: str,
                               target_dataset: str,
                               pools: Optional[Dict[tuple,
                                                    Dict[str, Any]]] = None,
-                              title: str = "Standardized bridge linkers"
+                              title: Optional[str] = None
                               ) -> Optional[str]:
     """Render the standardized linker paths to an HTML string.
 
     Source types → colored linkers → target types; nothing is written
     to the repository.  Returns the HTML text, or None when vispath is
-    unavailable or there is nothing to draw.
+    unavailable or there is nothing to draw.  ``title`` also becomes the
+    downloaded document title (it once stayed the renderer's generic
+    "Neural Pathway Network - Selected Paths").
     """
+    if title is None:
+        title = ("Standardized bridge linkers — "
+                 f"{dataset_abbrev(source_dataset)} → "
+                 f"{dataset_abbrev(target_dataset)}")
     graph = build_bridge_linker_graph(
         flows, source_dataset=source_dataset, target_dataset=target_dataset,
         pools=pools)
@@ -1638,7 +1597,7 @@ def render_bridge_linker_html(flows, *, source_dataset: str,
         dataset_legend=dataset_legend,
         dataset_legend_meta=legend_meta,
         node_groups=_dataset_groups(graph),
-        layout="mapping")
+        layout="mapping", title=title)
     return html
 
 
@@ -1647,7 +1606,7 @@ def write_bridge_linker_html(flows, output_path: str, *,
                              pools: Optional[Dict[tuple,
                                                   Dict[str, Any]]] = None,
                              open_browser: bool = False,
-                             title: str = "Standardized bridge linkers"):
+                             title: Optional[str] = None):
     """Write the interactive Cytoscape HTML of the standardized linker
     paths.  Thin file wrapper around ``render_bridge_linker_html``.
     Returns the output path, or None when vispath is unavailable or
@@ -2323,10 +2282,84 @@ def _apply_reverse_context(row: Dict[str, Any], ctx: Dict[str, Any],
     }
 
 
+def _render_sankey_rows(rows, *, title: str,
+                        notes: Optional[List[str]] = None,
+                        node_colors: Optional[Dict[str, str]] = None
+                        ) -> Optional[str]:
+    """One layered mapping Sankey through the vispath backend.
+
+    ``rows`` is the ``[(node_names, hop_weights), ...]`` product of
+    ``build_mapping_sankey_paths`` / ``build_composed_sankey_paths``.  The
+    render goes to a temp dir and is read back as an HTML string (nothing
+    lands in the repository).  ``title`` becomes both the drawn heading and
+    the document title; ``notes`` are the floating panels injected over the
+    canvas; ``node_colors`` maps a node name to a colour, overriding the
+    renderer's pathway-role palette.  Returns None when vispath is
+    unavailable or the render fails.
+    """
+    import os
+    import tempfile
+
+    import pandas as pd
+
+    VisualizePath = _import_vispath()
+    if VisualizePath is None or not rows:
+        return None
+    frame = pd.DataFrame({
+        "path_block": [" -> ".join(names) for names, _w in rows],
+        "weights": [weights for _n, weights in rows],
+    })
+    with tempfile.TemporaryDirectory(prefix="drocat_sankey_") as tmp:
+        visualizer = VisualizePath(
+            path_file=frame, output_folder=tmp, showfig=False,
+            verbose=False,
+            source_color="#5b8cff", intermediate_color="#94a3b8",
+            target_color="#22c55e", link_color="rgba(100, 100, 100, 0.4)",
+            # A mapping ribbon carries NEURONS, and its columns are dataset
+            # hops, not pathway depth — so the vendored 'Synapse Count'
+            # wording and the (L<n>) label suffix are both wrong here
+            # (user 2026-09-26).
+            edge_weight_label="neurons",
+            metric_option_label="Neuron count",
+            sankey_title=title, sankey_label_layers=False)
+        # Not an __init__ parameter — the renderer reads it as an attribute.
+        visualizer.custom_node_colors = dict(node_colors or {})
+        try:
+            path = visualizer.visualize_sankey()
+        except Exception:
+            logger.warning("mapping sankey render failed", exc_info=True)
+            return None
+        if not path or not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            html = handle.read()
+    html = _apply_document_title(html, title)
+    if notes:
+        html = _inject_body_note(html, "".join(notes))
+    return html
+
+
+def _sankey_note(text: str, *, corner: str = "top") -> str:
+    """One floating note over a Sankey canvas.
+
+    ``corner`` picks the free area: the vispath Sankey's own control ribbon
+    owns the top-left, so a multi-line note goes bottom-left or it covers
+    the tools (measured on the composed export — a three-line note at the
+    top hid the metric selector and the colour row behind it).
+    """
+    anchor = ("top:8px" if corner == "top" else "bottom:8px")
+    return (f'<div style="position:fixed;{anchor};left:8px;z-index:9999;'
+            'background:rgba(255,255,255,0.94);border:1px solid #cbd5e1;'
+            'border-radius:8px;padding:8px 12px;max-width:460px;'
+            'font:12px/1.45 -apple-system,Segoe UI,sans-serif;color:#0f172a">'
+            f'{text}</div>')
+
+
 def render_mapping_sankey_html(flows, *, pools: Optional[Dict[tuple,
                                Dict[str, Any]]] = None,
                                variant: str = "linker",
                                max_flows: int = 500,
+                               title: Optional[str] = None,
                                orphans: Optional[List[Dict[str, Any]]] = None
                                ) -> Optional[str]:
     """Layered mapping Sankey through the vispath backend.
@@ -2348,48 +2381,22 @@ def render_mapping_sankey_html(flows, *, pools: Optional[Dict[tuple,
         orphans=orphans)
     if not rows:
         return None
-    VisualizePath = _import_vispath()
-    if VisualizePath is None:
-        return None
-
-    import os
-    import tempfile
-
-    import pandas as pd
 
     total_flows = len([f for f in (flows or []) if f])
     overflow = max(0, total_flows - max_flows)
 
-    frame = pd.DataFrame({
-        "path_block": [" -> ".join(names) for names, _w in rows],
-        "weights": [weights for _n, weights in rows],
-    })
-    with tempfile.TemporaryDirectory(prefix="drocat_sankey_") as tmp:
-        visualizer = VisualizePath(
-            path_file=frame, output_folder=tmp, showfig=False,
-            verbose=False,
-            source_color="#5b8cff", intermediate_color="#94a3b8",
-            target_color="#22c55e", link_color="rgba(100, 100, 100, 0.4)",
-            edge_weight_label="neurons")
-        try:
-            path = visualizer.visualize_sankey()
-        except Exception:
-            logger.warning("mapping sankey render failed",
-                           exc_info=True)
-            return None
-        if not path or not os.path.isfile(path):
-            return None
-        with open(path, "r", encoding="utf-8") as handle:
-            html = handle.read()
+    if title is None:
+        _ds = [(f.get("source_dataset"), f.get("target_dataset"))
+               for f in (flows or [])
+               if f and f.get("source_dataset") and f.get("target_dataset")]
+        title = ("Type mapping Sankey — "
+                 + (f"{dataset_abbrev(_ds[0][0])} → "
+                    f"{dataset_abbrev(_ds[0][1])}" if _ds else "?"))
     notes = []
     if overflow:
-        notes.append(
-            '<div style="position:fixed;top:8px;left:8px;z-index:9999;'
-            'background:rgba(255,255,255,0.94);border:1px solid #cbd5e1;'
-            'border-radius:8px;padding:8px 12px;'
-            'font:12px/1.45 -apple-system,Segoe UI,sans-serif;color:#0f172a">'
+        notes.append(_sankey_note(
             f'<b>+{overflow} more flows not drawn</b> (cap {max_flows}) — '
-            'the full mapping is in the CSV export.</div>')
+            'the full mapping is in the CSV export.'))
     if variant == "linker":
         legend = _linker_legend_html(_collect_linker_columns(flows, pools))
         if legend:
@@ -2405,9 +2412,142 @@ def render_mapping_sankey_html(flows, *, pools: Optional[Dict[tuple,
             '<b>Alternative bridge evidence retained.</b> Ribbon weights use '
             'the selected bridge and are not summed; see Type coverage for '
             'the all-valid union and overlap.</div>')
-    if notes:
-        html = _inject_body_note(html, "".join(notes))
-    return html
+    return _render_sankey_rows(rows, title=title, notes=notes)
+
+
+# The composed Sankey draws one column per dataset, so it stops at two
+# targets — a third has no column to sit in.
+COMPOSED_SANKEY_MAX_TARGETS = 2
+
+
+def build_composed_sankey_paths(pair_flows, *, pools=None,
+                                dataset_order=None,
+                                max_flows: int = 500):
+    """Path rows for the cross-dataset (composed) mapping Sankey.
+
+    Columns are DATASETS: ``[origin | target]`` for one target,
+    ``[target 1 | origin | target 2]`` for two — the same centre-source shape
+    the network draws.  Nodes are TYPES only, named ``type · CODE``.
+
+    The LEFT half's rows read ``target → origin``, the reverse of the
+    derivation direction, and that is deliberate: plotly ranks Sankey nodes
+    topologically and ignores ``node.x`` when a link contradicts it (measured
+    2026-09-26 — with ``arrangement='fixed'`` and ``x=[0,0,.5,.5,1,1]`` it
+    still placed the source at the far left and BOTH targets at the right
+    edge).  A type mapping is an equivalence, so which end a ribbon starts at
+    changes the drawing, not the claim; the artifact says so in a floating
+    note.
+
+    Returns ``(rows, info)``; ``info`` names the columns, counts the flows the
+    cap trimmed, and lists the origin types with NO counterpart in the left
+    target — those are the one defect the reversal cannot fix, since a node
+    with no incoming link falls into the leftmost column.  ``([], None)``
+    when the selection is not one origin into one or two targets (the caller
+    tells the user to use the per-pair Sankeys instead).
+    """
+    pools = pools or {}
+    if not pair_flows:
+        return [], None
+    ds_graph = nx.Graph()
+    for src_ds, tgt_ds in pair_flows:
+        ds_graph.add_edge(src_ds, tgt_ds)
+    components = sorted(nx.connected_components(ds_graph), key=sorted)
+    if len(components) != 1:
+        return [], None
+    shape = _origin_target_shape(components[0], pair_flows)
+    if not shape or not 1 <= len(shape[1]) <= COMPOSED_SANKEY_MAX_TARGETS:
+        return [], None
+    origin, targets, covered = shape
+    ordered_targets = _flank_order(targets, covered, dataset_order)
+    left = ordered_targets[0] if len(ordered_targets) == 2 else None
+
+    entries: List[tuple] = []
+    seen = set()
+    for tgt_ds in ordered_targets:
+        for flow in pair_flows.get((origin, tgt_ds), []) or []:
+            src_type = str(flow.get("source_type") or "")
+            foreign_type = str(flow.get("foreign_type") or "")
+            if not src_type or not foreign_type:
+                continue
+            src_name = f"{src_type} · {dataset_abbrev(origin)}"
+            tgt_name = f"{foreign_type} · {dataset_abbrev(tgt_ds)}"
+            names = ([tgt_name, src_name] if tgt_ds == left
+                     else [src_name, tgt_name])
+            pool = get_mapping_pool(pools, {
+                **flow,
+                "source_dataset": flow.get("source_dataset") or origin,
+                "target_dataset": flow.get("target_dataset") or tgt_ds})
+            weight = pair_flow_weight(flow, pool)
+            if tuple(names) in seen:
+                continue
+            seen.add(tuple(names))
+            entries.append((names, [weight]))
+    entries.sort(key=lambda row: -sum(row[1]))
+    overflow = max(0, len(entries) - max_flows)
+    rows = entries[:max_flows]
+    if not rows:
+        return [], None
+    origin_types = set().union(*covered.values()) if covered else set()
+    slipped = (sorted(origin_types - set(covered.get(left, ())))
+               if left else [])
+    columns = ([left] if left else []) + [origin] + [
+        t for t in ordered_targets if t != left]
+    return rows, {"origin": origin, "left": left,
+                  "targets": ordered_targets, "slipped": slipped,
+                  "overflow": overflow, "columns": columns,
+                  "right": ordered_targets[-1] if left else None}
+
+
+def render_composed_sankey_html(pair_flows, *, pools=None,
+                                dataset_order=None,
+                                max_flows: int = 500):
+    """The composed mapping Sankey, or None when the selection's shape does
+    not support one (the caller points at the per-pair Sankey buttons).
+
+    Returns ``(html, info)`` so the caller can report why nothing came."""
+    rows, info = build_composed_sankey_paths(
+        pair_flows, pools=pools, dataset_order=dataset_order,
+        max_flows=max_flows)
+    if not rows:
+        return None, info
+    codes = " | ".join(dataset_abbrev(ds) or "?"
+                       for ds in info["columns"])
+    title = f"Type mapping Sankey — {codes}"
+    # ONE floating panel: three separate notes would stack on the same
+    # corner of the canvas.
+    lines = [f'<b>Columns are datasets: {codes}.</b> Ribbon width is the '
+             'pooled neuron count of that type pair — the same number the '
+             'network edge and the per-pair Sankey draw.']
+    if info["left"]:
+        lines.append('The left half reads <i>target ← origin</i> only so the '
+                     'origin can sit in the middle: a mapping is an '
+                     'equivalence, and the derivation direction is on the '
+                     'hover and in the CSV export.')
+    if info["slipped"]:
+        lines.append(f'<b>{len(info["slipped"])} origin types have no '
+                     f'counterpart in {dataset_abbrev(info["left"])}</b> and '
+                     'so fall into the left column (a Sankey places a node '
+                     'with no incoming ribbon at the far left): '
+                     + ", ".join(info["slipped"][:12])
+                     + ("…" if len(info["slipped"]) > 12 else ""))
+    if info["overflow"]:
+        lines.append(f'<b>+{info["overflow"]} more mappings not drawn</b> '
+                     f'(cap {max_flows}) — the full mapping is in the CSV '
+                     'export.')
+    # Colour by DATASET, not by pathway role: the reversal would otherwise
+    # paint the left target column 'Source' and the origin 'Intermediate',
+    # which is an artifact of the drawing rather than a fact about the
+    # mapping.  This keeps the Sankey's columns the same colours the network
+    # uses for the same datasets.
+    node_colors: Dict[str, str] = {}
+    for names, _w in rows:
+        for name in names:
+            code = name.rsplit(" · ", 1)[-1]
+            node_colors.setdefault(name, dataset_group_color(code))
+    return _render_sankey_rows(
+        rows, title=title,
+        node_colors=node_colors,
+        notes=[_sankey_note("<br>".join(lines), corner="bottom")]), info
 
 
 def build_source_map_graph() -> "nx.DiGraph":
@@ -2567,20 +2707,91 @@ def _order_component(component, ds_types, pair_flows):
     return ordered
 
 
+def _origin_target_shape(component, pair_flows):
+    """``(origin, [targets…], covered)`` when ONE dataset in the component
+    issues every mapping and the others only receive.  ``covered[target]`` is
+    the set of origin types reaching it.  None when the component has no
+    single centre (a chain or a cycle reads as both source and target).
+
+    Roles come from the pair DIRECTIONS, not from the claim fields: a
+    programmatically built flow list that carries no
+    ``mapping_target_types`` still has a direction.
+    """
+    datasets = set(component)
+    if not 2 <= len(datasets) <= 3:
+        return None
+    sources: set = set()
+    targets: set = set()
+    covered: Dict[str, set] = {}
+    for (src_ds, tgt_ds), flows in (pair_flows or {}).items():
+        if src_ds not in datasets or tgt_ds not in datasets:
+            continue
+        live = [flow for flow in (flows or [])
+                if flow.get("source_type") and flow.get("foreign_type")]
+        if not live:
+            continue
+        sources.add(src_ds)
+        targets.add(tgt_ds)
+        covered.setdefault(src_ds, {}).setdefault(tgt_ds, set()).update(
+            str(flow.get("source_type")) for flow in live)
+    if len(sources) != 1 or sources | targets != datasets:
+        return None
+    origin = next(iter(sources))
+    return origin, sorted(targets), covered.get(origin, {})
+
+
+def _star_component_order(component, pair_flows, dataset_order=None):
+    """One origin dataset + exactly two target datasets → centre the origin.
+
+    The affinity order (§10.1) reads a mapping as a chain
+    (``source → target → target``), which buries the shape the user actually
+    searched: BOTH targets were reached from ONE query.  A star puts the
+    origin in the MIDDLE with one target on each flank, so every column
+    boundary is exactly one dataset pair.  Returns ``[left, origin, right]``,
+    or ``None`` when the component is not a 1-source/2-target star (then the
+    caller keeps §10.1's order).
+
+    Which flank a target takes is decided by how many origin types it covers
+    (more coverage left, so the denser half of the picture reads first), ties
+    broken by the caller's dataset order and then the dataset key — the
+    layout is deterministic for a given result.
+    """
+    shape = _origin_target_shape(component, pair_flows)
+    if not shape or len(shape[1]) != 2:
+        return None
+    origin, targets, covered = shape
+    left, right = _flank_order(targets, covered, dataset_order)
+    return [left, origin, right]
+
+
+def _flank_order(targets, covered, dataset_order=None) -> List[str]:
+    """Targets ordered left-to-right: the one covering more origin types
+    first (the denser half of the picture reads first), ties broken by the
+    caller's dataset order and then the dataset key."""
+    order = list(dataset_order or [])
+
+    def key(tgt: str):
+        rank = order.index(tgt) if tgt in order else len(order)
+        return (-len(covered.get(tgt, ())), rank, tgt)
+
+    return sorted(targets, key=key)
+
+
 def build_composed_mapping_graph(pair_flows, *, pools=None,
-                                 node_cap: int = 80):
+                                 node_cap: int = 80,
+                                 dataset_order=None):
     """Composed N-dataset type-level graph (Round 2, spec §4).
 
     ``pair_flows`` maps ``(source_dataset, target_dataset)`` to the
     ``build_mapping_flows`` product for that pair — the global search's
     per-pair results.  Nodes are ``<layer>|<dataset>|<type>`` with the
-    layer taken from the component's affinity-ordered datasets (§10.1);
-    per-pair edges carry the maps-via texts and per-side neuron counts;
-    label-query pooled nodes (``entry`` group) sit on the dataset where the
-    query resolved and connect only to the source types they cover; every
-    type node's hover lists
-    its cross-dataset matches (§10.2).  Beyond ``node_cap`` nodes,
-    all-same-name types are hidden first (§6) and reported via
+    layer taken from the component's affinity-ordered datasets (§10.1), or
+    from the centre-source star when one origin dataset maps into exactly
+    two targets (``_star_layers``); per-pair edges carry the maps-via texts
+    and per-side neuron counts.  Nodes are TYPES ONLY — the label-query chip
+    that produced them is not a node (user 2026-09-26).  Every type node's
+    hover lists its cross-dataset matches (§10.2).  Beyond ``node_cap``
+    nodes, all-same-name types are hidden first (§6) and reported via
     ``meta['notes']``.  Returns ``(graph, meta)``.
     """
     from comparison.cross_dataset_type_mapper import standardize_bridge
@@ -2595,7 +2806,6 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
     graph = nx.DiGraph()
     ds_types: Dict[str, set] = {}
     edges: List[tuple] = []
-    entry_specs: Dict[tuple, Dict[str, Any]] = {}
     for (src_ds, tgt_ds), flows in (pair_flows or {}).items():
         for flow in flows or []:
             src_type = flow.get("source_type", "")
@@ -2628,39 +2838,11 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
                 "source_dataset": src_ds,
                 "target_dataset": tgt_ds,
             }))
-            origin = str(flow.get("origin_label") or
-                         flow.get("matched_origin", "") or "").strip()
-            origin_column = str(flow.get("origin_column") or "").strip()
-            origin_value = str(flow.get("origin_value") or "").strip()
-            if not origin_column:
-                origin_column, separator, parsed_value = origin.partition(
-                    " · ")
-                origin_column = origin_column.strip()
-                if not origin_value and separator:
-                    origin_value = parsed_value.strip().strip("'")
-            if origin_column and origin_column != "type" and origin:
-                # A taxonomy/metadata query belongs to the dataset in which
-                # it resolved.  The source side of an origin-seeded flow is
-                # that dataset; never re-key this entry to the target dataset.
-                origin_ds = str(flow.get("origin_dataset") or src_ds)
-                origin_type = str(flow.get("origin_type") or src_type)
-                raw_origin_count = flow.get("origin_count")
-                origin_count = int(
-                    raw_origin_count if raw_origin_count is not None
-                    else src_count)
-                ds_types.setdefault(origin_ds, set()).add(origin_type)
-                spec = entry_specs.setdefault(
-                    (origin_ds, origin),
-                    {"label": origin, "types": {}, "neurons": 0,
-                     "column": origin_column, "value": origin_value})
-                # One origin type can fan out to many target types.  Count it
-                # once in the query-entry hover, retaining the largest
-                # consistent source-side count seen across its flows.
-                if origin_type:
-                    previous = spec["types"].get(origin_type)
-                    if previous is None or origin_count > previous:
-                        spec["types"][origin_type] = origin_count
-                    spec["neurons"] = sum(spec["types"].values())
+            # The matched query entry (``matched_origin`` / ``origin_label``,
+            # e.g. ``cell_type · 'circadian_clock'``) is deliberately NOT a
+            # node here: this is a type-granularity view and the chip names
+            # the search, not a mapping endpoint (user 2026-09-26).  It stays
+            # on the panel tables and in the CSVs.
 
     # connected components over the datasets that have mapped pairs
     ds_graph = nx.Graph()
@@ -2668,11 +2850,17 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
         ds_graph.add_edge(src_ds, tgt_ds)
     orders: Dict[str, int] = {}
     ds_component_size: Dict[str, int] = {}
+    star_centres: set = set()
+    star_flanks: set = set()
     components: List[Dict[str, Any]] = []
     for component in sorted(nx.connected_components(ds_graph),
                             key=lambda c: sorted(c)):
-        ordered = _order_component(component, ds_types, pair_flows)
-        components.append({"datasets": ordered})
+        star = _star_component_order(component, pair_flows, dataset_order)
+        ordered = star or _order_component(component, ds_types, pair_flows)
+        components.append({"datasets": ordered, "star": bool(star)})
+        if star:
+            star_centres.add(star[1])
+            star_flanks.update({star[0], star[2]})
         for layer, ds in enumerate(ordered):
             orders[ds] = layer
             ds_component_size[ds] = len(ordered)
@@ -2681,6 +2869,13 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
         return f"{orders[ds]}|{ds}|{type_name}"
 
     def _role(ds: str) -> str:
+        # A star's centre IS the query's origin even though it sits in the
+        # middle column, and its flanks are targets even though one sits on
+        # the far left — layer position must not decide either of them.
+        if ds in star_centres:
+            return "source"
+        if ds in star_flanks:
+            return "target"
         layer = orders[ds]
         size = ds_component_size[ds]
         return "source" if layer == 0 else (
@@ -2761,28 +2956,6 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
             graph.add_edge(sid, tid, title=f"{attrs['weight']} neurons",
                            **attrs)
 
-    # label-query entry nodes: one per origin dataset per matched label,
-    # connected only to the covered origin/source types (§1.B′)
-    for (ds, origin), spec in sorted(entry_specs.items()):
-        node_id = f"E|{ds}|{origin}"
-        graph.add_node(node_id, node_type="entry", label=origin,
-                       title=(f"{origin} — covers {len(spec['types'])} types, "
-                              f"{spec['neurons']:,} neurons"),
-                       home_dataset=ds,
-                       origin_dataset=ds,
-                       origin_column=spec.get("column", ""),
-                       origin_value=spec.get("value", ""))
-        for type_name, count in sorted(spec["types"].items()):
-            nid = _node_id(ds, type_name)
-            _ensure_node(ds, type_name, count)
-            # The entry is the query input, so the edge follows the same
-            # left-to-right direction as the mapping edges: entry → covered
-            # origin type.  This is not a type-to-type mapping edge.
-            graph.add_edge(node_id, nid, weight=count or 1,
-                           title=f"{count or 1} neurons",
-                           bridge_texts=[], entry_edge=True,
-                           origin_dataset=ds)
-
     # mapping-graph scoping (§6): beyond the node cap hide all-same-name
     # types first — bare name echoes carry no mapping information, while
     # linker-bearing types and pooled-fed types are never hidden
@@ -2795,8 +2968,7 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
                                              "target"):
                 continue
             nbrs = list(graph.successors(nid)) + list(graph.predecessors(nid))
-            if not nbrs or any(graph.nodes[o].get("node_type") == "entry"
-                               for o in nbrs):
+            if not nbrs:
                 continue
             label = data.get("label")
             if not all(graph.nodes[o].get("label") == label for o in nbrs):
@@ -2815,22 +2987,51 @@ def build_composed_mapping_graph(pair_flows, *, pools=None,
     if hidden:
         notes.append(f"+{hidden} same-name types hidden")
 
+    # A star component is drawn from explicit positions, not dagre: dagre
+    # ranks by edge direction, so the centre's two target halves would
+    # collapse into ONE right-hand rank and the origin would drift to the
+    # far left.  Every component must be a star for that — one document
+    # carries one layout.
+    starred = bool(components) and all(c.get("star") for c in components)
+    if starred:
+        node_layer = {node: int(str(node).split("|")[0])
+                      for node in graph.nodes}
+        ys = _layered_y_positions(graph, node_layer, row_gap=70)
+        # A 40-type column at a 70 px row gap is ~2,800 px tall; the fixed
+        # 380 px column gap from the linker view then renders as a thin V
+        # that the viewer's fit-to-canvas shrinks until the labels collide.
+        # Widen the gap with the tallest column so the three columns stay a
+        # readable aspect (measured on circadian_clock: 42/21/40 types).
+        rows_per_column: Dict[int, int] = {}
+        for layer in node_layer.values():
+            rows_per_column[layer] = rows_per_column.get(layer, 0) + 1
+        tallest = max(rows_per_column.values(), default=1)
+        column_height = max(0, tallest - 1) * 70
+        layer_gap = max(380, min(1200, int(column_height * 0.45)))
+        for node in graph.nodes:
+            graph.nodes[node]["position"] = {
+                "x": node_layer[node] * layer_gap, "y": ys[node]}
+
     meta = {"components": components, "notes": notes,
-            "hidden_same_name": hidden, "node_cap": node_cap}
+            "hidden_same_name": hidden, "node_cap": node_cap,
+            "starred": starred}
     return graph, meta
 
 
 def render_composed_mapping_html(pair_flows, *, pools=None,
                                  node_cap: int = 80,
+                                 dataset_order=None,
                                  title: str = "Mapping graph"):
     """Render the N-dataset mapping graph to an HTML string (Round 2).
 
     Returns ``(html, meta)`` — html is None when vispath is unavailable
     or nothing is mapped; meta carries component orders and scoping
-    notes for the popup.
+    notes for the popup.  ``dataset_order`` is the caller's dataset
+    selection order, used only to break star-flank ties.
     """
     graph, meta = build_composed_mapping_graph(
-        pair_flows, pools=pools, node_cap=node_cap)
+        pair_flows, pools=pools, node_cap=node_cap,
+        dataset_order=dataset_order)
     if not graph.nodes:
         return None, meta
 
@@ -2838,8 +3039,6 @@ def render_composed_mapping_html(pair_flows, *, pools=None,
     dataset_legend: Dict[str, str] = {}
     for node, data in graph.nodes(data=True):
         ds = str(node).split("|")[1] if str(node).count("|") >= 1 else ""
-        if node.startswith("E|"):
-            ds = str(node).split("|")[1]
         code = dataset_abbrev(ds) or "?"
         node_dataset_info[node] = {
             code: str(data.get("title") or data.get("label", ""))}
@@ -2859,7 +3058,11 @@ def render_composed_mapping_html(pair_flows, *, pools=None,
                          node_dataset_info=node_dataset_info,
                          dataset_legend=dataset_legend,
                          node_groups=_dataset_groups(graph),
-                         layout="dagre", title=title)
+                         # 'mapping' is the preset layout: the star's
+                         # columns are decided by the search shape, not by
+                         # dagre's edge ranking
+                         layout="mapping" if meta.get("starred") else "dagre",
+                         title=title)
     return html, meta
 
 

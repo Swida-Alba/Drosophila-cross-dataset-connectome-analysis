@@ -302,6 +302,9 @@ class VisualizePath:
         hemisphere_mirror_default=None,  # None = auto-enable with separate_hemispheres
         progress_total=None,  # Optional [DROCAT][progress] step total (web UI runs only)
         edge_weight_label='synapses',  # Unit label for the edge weight in hover info
+        sankey_title=None,  # Sankey heading; None = the pathway default
+        sankey_label_layers=True,  # Append the (L<n>) hop layer to Sankey labels
+        metric_option_label=None,  # 'weight' option text; None = 'Synapse Count'
     ):
         """
         Initialize VisualizePath with pathway data and visualization settings.
@@ -543,6 +546,29 @@ class VisualizePath:
         # Unit label shown with the edge weight (e.g. 'synapses' for
         # connectome graphs, 'neurons' for type-mapping graphs).
         self.edge_weight_label = str(edge_weight_label or 'synapses')
+
+        def _js(value: str) -> str:
+            # Values that land inside single-quoted JS literals in the
+            # templates below; a caller-supplied title may carry an
+            # apostrophe.  The HTML/plotly copies stay raw.
+            return (str(value).replace('\\', '\\\\')
+                    .replace("'", "\\'").replace('\n', ' ').replace('\r', ''))
+        # Sankey heading, node-label layer suffix, and the metric selector's
+        # 'weight' option text.  A pathway artifact reads "…(L1)" as hop depth
+        # and names its metric 'Synapse Count'; a type-mapping artifact has
+        # one hop per DATASET column (so the suffix is noise — and wrong once
+        # a view reverses a half's link direction to centre its source) and
+        # counts NEURONS, not synapses.  Those callers pass all three; the
+        # defaults keep every pathway artifact byte-identical.
+        self.sankey_title = str(sankey_title
+                                or 'Sankey diagram of pathway connections')
+        self._sankey_title_js = _js(self.sankey_title)
+        self.sankey_label_layers = bool(sankey_label_layers)
+        self.metric_option_label = str(metric_option_label
+                                       or 'Synapse Count')
+        # The Sankey hover names the same metric.
+        self._sankey_weight_name = (_js(metric_option_label)
+                                    if metric_option_label else 'Synapses')
         # Dagre flow direction: connectome hierarchies read top-to-bottom,
         # mapping artifacts pass 'LR' so source→target reads left-to-right.
         self.dagre_rank_dir = 'TB'
@@ -2732,9 +2758,12 @@ class VisualizePath:
                 node_added.add(node)
                 node_list.append(node)
                 
-                # Create label with layer information
+                # Create label with layer information (unless the caller
+                # opted out — see sankey_label_layers).
                 all_layers = sorted(node_layers[node])
-                if len(all_layers) == 1:
+                if not self.sankey_label_layers:
+                    node_labels.append(node)
+                elif len(all_layers) == 1:
                     node_labels.append(f"{node} (L{all_layers[0]})")
                 else:
                     layers_str = ','.join(map(str, all_layers))
@@ -2956,7 +2985,7 @@ class VisualizePath:
                 y_offset -= 0.04
         
         fig.update_layout(
-            title_text='Sankey diagram of pathway connections',
+            title_text=self.sankey_title,
             font_size=12,
             height=None,  # Let it fill container
             autosize=True,  # Auto-resize to container
@@ -2966,9 +2995,14 @@ class VisualizePath:
         
         output_path = os.path.join(self.output_folder, self.base_filename + '_Sankey.html')
         
-        # Get the basic Plotly HTML
+        # Get the basic Plotly HTML.  The library is embedded, not
+        # referenced: a downloaded Sankey has to open from disk with no
+        # network (the CDN form left it blank offline, and a Sankey is the
+        # artifact reviewers are most likely to open away from their
+        # machine).  plotly.py ships the bundle, so this adds no dependency.
         import plotly.io as pio
-        basic_html = pio.to_html(fig, include_plotlyjs='https://cdn.plot.ly/plotly-2.35.2.min.js', full_html=False)
+        basic_html = pio.to_html(fig, include_plotlyjs=True,
+                                 full_html=False)
         
         # Create custom HTML with interactive controls
         html_content = self._create_sankey_html_with_controls(
@@ -3329,7 +3363,7 @@ class VisualizePath:
                     <label class="control-label">Connection Metric</label>
                     <div class="color-input-group">
                         <select id="metricSelect" style="padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;">
-                            <option value="weight">Synapse Count</option>
+                            <option value="weight">{self.metric_option_label}</option>
                             <option value="ratio" {"disabled" if not has_ratios else ""}>Connection Ratio{" (N/A)" if not has_ratios else ""}</option>
                             <option value="prob" {"disabled" if not has_probs else ""}>Traversal Probability{" (N/A)" if not has_probs else ""}</option>
                         </select>
@@ -3785,7 +3819,7 @@ class VisualizePath:
             }}
             
             // Metric display name for hover text
-            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio' : (currentMetric === 'prob' ? 'Probability' : 'Synapses');
+            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio' : (currentMetric === 'prob' ? 'Probability' : '{self._sankey_weight_name}');
             
             // Ratio/probability are 0..1; normalize them to the synapse-weight
             // scale so link widths stay comparable without a magic ×1000 factor.
@@ -3867,7 +3901,7 @@ class VisualizePath:
             const fontSize = parseInt(document.getElementById('fontSize').value);
             
             // Build title with simplification note if applicable
-            let title = 'Sankey diagram of pathway connections';
+            let title = '{self._sankey_title_js}';
             const simplificationApplied = {str(simplification_applied).lower()};
             const originalEdgeCount = {original_edge_count};
             if (simplificationApplied) {{
@@ -4742,6 +4776,15 @@ class VisualizePath:
                 '<optgroup label="🔀 Type Mapping (preset)">'
                 '<option value="mapping" selected>'
                 'Mapping (layered L→R, preset)</option></optgroup>')
+
+        # Which dropdown option carries the `selected` marker.  The option
+        # values are the JS-facing names, so this compares against
+        # js_layout_name.  It cannot be inlined in the HTML template below:
+        # every option there is written with doubled braces (the template is
+        # an f-string), so an inline conditional would ship its Python source
+        # as HTML text and no option would ever pre-select.
+        def _layout_selected(option: str) -> str:
+            return 'selected' if js_layout_name == option else ''
         
         # Generate NT-based edge styles if enabled
         nt_edge_styles = ""
@@ -5785,23 +5828,23 @@ class VisualizePath:
             <select id="layoutSelector" onchange="changeLayout()" title="Layout algorithm used to arrange the nodes" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 12px; background: white; cursor: pointer;">
                 {mapping_layout_optgroup}
                 <optgroup label="🌟 Hierarchical">
-                    <option value="dagre" {{'selected' if cytoscape_layout == 'dagre' else ''}}>Dagre ⭐⭐⭐⭐⭐</option>
-                    <option value="klay" {{'selected' if cytoscape_layout == 'klay' else ''}}>KLay ⭐⭐⭐⭐</option>
-                    <option value="breadthfirst" {{'selected' if cytoscape_layout == 'breadthfirst' else ''}}>Breadth-First ⭐⭐⭐</option>
+                    <option value="dagre" {_layout_selected('dagre')}>Dagre ⭐⭐⭐⭐⭐</option>
+                    <option value="klay" {_layout_selected('klay')}>KLay ⭐⭐⭐⭐</option>
+                    <option value="breadthfirst" {_layout_selected('breadthfirst')}>Breadth-First ⭐⭐⭐</option>
                 </optgroup>
                 <optgroup label="🎯 Force-Directed">
-                    <option value="fcose" {{'selected' if cytoscape_layout == 'fcose' else ''}}>fCoSE ⭐⭐⭐⭐⭐</option>
-                    <option value="cose-bilkent" {{'selected' if cytoscape_layout == 'cose-bilkent' else ''}}>CoSE-Bilkent ⭐⭐⭐⭐</option>
-                    <option value="cose" {{'selected' if cytoscape_layout == 'cose' else ''}}>CoSE ⭐⭐⭐</option>
+                    <option value="fcose" {_layout_selected('fcose')}>fCoSE ⭐⭐⭐⭐⭐</option>
+                    <option value="cose-bilkent" {_layout_selected('cose-bilkent')}>CoSE-Bilkent ⭐⭐⭐⭐</option>
+                    <option value="cose" {_layout_selected('cose')}>CoSE ⭐⭐⭐</option>
                 </optgroup>
                 <optgroup label="🧠 Hemisphere-Aware">
-                    <option value="hemi-dagre" {{'selected' if cytoscape_layout == 'hemi-dagre' else ''}}>Hemisphere Dagre 🪞</option>
-                    <option value="hemi-fcose" {{'selected' if cytoscape_layout == 'hemi-fcose' else ''}}>Hemisphere fCoSE 🪞</option>
+                    <option value="hemi-dagre" {_layout_selected('hemi-dagre')}>Hemisphere Dagre 🪞</option>
+                    <option value="hemi-fcose" {_layout_selected('hemi-fcose')}>Hemisphere fCoSE 🪞</option>
                 </optgroup>
                 <optgroup label="📐 Other">
-                    <option value="circle" {{'selected' if cytoscape_layout == 'circle' else ''}}>Circular ⭐⭐</option>
-                    <option value="grid" {{'selected' if cytoscape_layout == 'grid' else ''}}>Grid ⭐⭐</option>
-                    <option value="concentric" {{'selected' if cytoscape_layout == 'concentric' else ''}}>Concentric ⭐⭐</option>
+                    <option value="circle" {_layout_selected('circle')}>Circular ⭐⭐</option>
+                    <option value="grid" {_layout_selected('grid')}>Grid ⭐⭐</option>
+                    <option value="concentric" {_layout_selected('concentric')}>Concentric ⭐⭐</option>
                 </optgroup>
             </select>
             </div>
@@ -5912,8 +5955,8 @@ class VisualizePath:
         <div class="vp-ribbon-page" id="pageFilter">
             <div class="vp-ribbon-group" style="min-width: 150px;">
             <label class="vp-group-title">Connection Metric</label>
-            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: synapse count, connection ratio, or traversal probability" style="width: 100%; padding: 5px;">
-                <option value="weight">Synapse Count</option>
+            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()}, connection ratio, or traversal probability" style="width: 100%; padding: 5px;">
+                <option value="weight">{self.metric_option_label}</option>
                 <option value="ratio">Connection Ratio</option>
                 <option value="probability">Traversal Probability</option>
             </select>
