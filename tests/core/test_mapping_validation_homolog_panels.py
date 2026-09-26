@@ -97,6 +97,17 @@ class TestSerializeTopnUnion:
         assert serialize_topn_union(_frame([]), k=3) == ""
         assert serialize_topn_union(_frame(_scan_rows()), k=0) == ""
 
+    def test_a_ranked_row_with_an_unusable_bid_is_skipped_not_fatal(self):
+        # self-review fix 2026-09-26: same NaN/None-bid tolerance as
+        # serialize_backward_topN — a ranked row without a usable bodyId
+        # must never crash the window
+        rows = _scan_rows() + [
+            {"target_bid": None, "jaccard": 0.9, "rank_union": 0.8,
+             "rank_union_rank": 1, "jaccard_rank": 1}]
+        bids = topn_union_rows(_frame(rows), k=3)
+        assert 1 in bids["target_bid"].tolist()  # clean rows still picked
+        assert bids["target_bid"].isna().sum() == 0
+
 
 def test_the_two_homolog_artifacts_are_registered_and_header_guaranteed(
         tmp_path):
@@ -348,6 +359,30 @@ def test_appeared_target_bids_spells_fills_through_fill_pair():
     assert bids == [901, 902, 903, 904, 905, 909]
     # a source bodyId never enters the target universe (fill side='target')
     assert 2 not in bids
+
+
+def test_pooling_engine_targets_enter_the_backward_universe():
+    # self-review fix 2026-09-26: a pooling run's own pool is named by no
+    # supervised artifact, so the 5e universe must read it directly
+    v = _capture_validator()
+    v._backward_matches_rows = []
+    v._pooling = {'pool': [{'target_bodyId': 950}, {'target_bodyId': 951}]}
+    assert v._appeared_target_bids([], [], [], [], [], [], [], [], [],
+                                   []) == [950, 951]
+
+
+def test_deep_window_rows_reach_the_forward_allocation(run_dir: Path):
+    # self-review fix 2026-09-26: the `examinees` bin lives in
+    # deep_candidates.csv, so its rows must join the allocation
+    _write_csv(run_dir / "forward_matches.csv", _FWD_HEADER, [
+        ["103", "C", "303", "Z", 0.3, 0.1, True, _PAYLOAD, 20, "run",
+         None, None, ""]])
+    _write_csv(run_dir / "deep_candidates.csv",
+               ["source_bodyId", "category"], [["103", "examinees"]])
+    d = collect_run_data(run_dir)
+    assert d["forward_alloc"]["103"]["bins"] == ["examinees"]
+    html = _homolog_forward_tab(d)
+    assert "examinees · C" in html
 
 
 def test_finalize_target_rows_attach_categories_branches_and_morph():
