@@ -533,7 +533,7 @@ eight distinct source neurons.
 - **Export mapping CSV** (user 2026-09-09, replaces the old "Export
   bridges (CSV)"): buttons `Export mapping` (per pair) and
   `Export mapping — all pairs (CSV)`; filenames `mapping_*.csv`.  One
-  FIXED column set for every pair — 35 columns, verified against the real
+  FIXED column set for every pair — 37 columns, verified against the real
   export: `source_dataset, source_entry, matched_column, source_type,
   target_dataset, target_type, relationship, source_neurons, target_neurons,
   selected_bridge, bridge, bridge_columns, mapping_origin, mapping_status,
@@ -543,7 +543,8 @@ eight distinct source neurons.
   all_valid_source_total, all_valid_target_pool, all_valid_target_total,
   source_body_ids, target_body_ids, all_valid_source_body_ids,
   all_valid_target_body_ids, pool_coverage, pool_coverage_basis,
-  coverage_overlap, coverage_scope` — so the all-pairs file is a plain
+  coverage_overlap, coverage_scope, target_out_map,
+  target_out_map_body_ids` — so the all-pairs file is a plain
   header + rows concatenation (the old per-pair pivoted
   `bridge-<column>` fields needed a union-of-columns hack to avoid
   ragged rows).  `source_entry` is the value that matched on the source
@@ -613,8 +614,12 @@ eight distinct source neurons.
   now **row-based**: the pair card's **Export branch bodyIds** button
   downloads `mapping_branch_bodyids_*.csv` — one row per mapped pair
   branch with the bridge-resolved pools (per-side basis
-  `linker rows` / `full population`, sizes, and the full
-  `source_body_ids` / `target_body_ids` populations).  This covers every
+  `linker rows` / `full population`, sizes, and the pool bodyIds
+  `source_body_ids` / `target_body_ids` — the CLAIM, not the type's
+  population), plus the per-branch out-map
+  (`target_out_map` / `target_out_map_body_ids`: the endpoint type's own
+  neurons this branch's pool does not reach, so a `full population` basis
+  reads 0).  This covers every
   multi-branch group, including `evidence_only` N-to-1 pairs (e.g. FAFB
   `s-CPDN3D` → 6 MCNS branches) that the connectivity-based export
   could never serve.

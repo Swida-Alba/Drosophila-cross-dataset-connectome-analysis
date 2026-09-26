@@ -416,6 +416,21 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     # breakdown reports dataset-specific claim sets — never a sum across
     # the target datasets (user 2026-09-14).
     claimed_by_type: Dict[Tuple[str, str, str], set] = {}
+    # OUT-MAP (user 2026-09-26): the received types' own neurons that the
+    # claim set does NOT reach.  Both halves are bodyId SETS — the pool's
+    # `target_type_body_ids` (the full population of the endpoint type in its
+    # OWN dataset) minus the claim — so the count is a set difference and can
+    # never be a sum of per-type counts that a multivalue cell would
+    # double-count.  A `full population` basis claims its whole type, so it
+    # contributes 0 by construction.
+    #
+    # This is the PANEL's figure and deliberately NOT the validation
+    # pipeline's `family` bin.  TM VEV bins out-map rows per BRANCH and lets a
+    # morph-qualified candidate CLOSE a hole; on circadian_clock → MCNS the
+    # panel therefore reads 219 − 204 = 15 where family_candidates.csv holds
+    # 11.  Every surface that shows this number says which population it is.
+    pop_by_target_type: Dict[Tuple[str, str], set] = {}
+    claimed_for_target_type: Dict[Tuple[str, str], set] = {}
     for (src, tgt), flows in pair_flows.items():
         for f in flows:
             if not flow_is_claimed(f):
@@ -424,6 +439,14 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                                    f.get("foreign_type"))
             pool = pools.get(key)
             tb = (pool or {}).get("target_body_ids") or []
+            tkey = (tgt, str(f.get("foreign_type") or ""))
+            # str-normalized on both sides: the same ids the card and the CSV
+            # compare, and it cannot raise on a local release's id spelling
+            pop_by_target_type.setdefault(tkey, set()).update(
+                str(b) for b in ((pool or {}).get("target_type_body_ids")
+                                 or []))
+            claimed_for_target_type.setdefault(tkey, set()).update(
+                str(b) for b in tb)
             if not tb:
                 continue
             claimed_by_ds.setdefault(tgt, set()).update(
@@ -432,6 +455,19 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 (src, f.get("source_type"), tgt), set()).update(
                 int(b) for b in tb)
 
+    def _out_map_ids(target_dataset: str, foreign_type: str) -> set:
+        """The out-map bodyId set of one received type in one dataset."""
+        tkey = (target_dataset, str(foreign_type or ""))
+        return (pop_by_target_type.get(tkey) or set()) - (
+            claimed_for_target_type.get(tkey) or set())
+
+    # Per dataset the union over its received types; equal to
+    # (union of received-type populations) − (claim union), because every
+    # claim is a subset of its own type's population.
+    out_map_by_ds: Dict[str, set] = {}
+    for (tgt, foreign) in pop_by_target_type:
+        out_map_by_ds.setdefault(tgt, set()).update(
+            _out_map_ids(tgt, foreign))
 
     # §12.3: dataset-wide incoming context for the backward coverage
     # table — only for receiving types already present in the result,
@@ -565,6 +601,7 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
         # only issues the query reads 0 here and shows its issued side
         # through Matched types / Neurons (user 2026-09-14).
         recv_neurons = len(claimed_by_ds.get(ds, set()))
+        out_map = len(out_map_by_ds.get(ds, set()))
         unmapped = len({e["type"] for (s, _t), v in orphans.items()
                         if s == ds for e in v})
         summary.append({
@@ -575,6 +612,7 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
             "mapped_neurons": recv_neurons,
             "mapped": _format_mapped_neurons(recv_neurons,
                                              len(recv_present)),
+            "out_map": out_map,
             "unmapped": unmapped,
         })
 
@@ -631,6 +669,15 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     max((len(_pair_map.get(ft, ())) for ft in ftypes),
                         default=0))
                 suspect_n = sum(1 for f in tgt_flows if f.get("suspects"))
+                # Per-type out-map for this row: each accepted target type's
+                # population minus the claims reaching THAT TYPE (a union
+                # across the adopted branches that share it, so under N-to-1
+                # convergence this is narrower than a per-branch read — the
+                # validation pipeline bins `family` per BRANCH). Summed over
+                # the row's accepted types, which is why these rows can total
+                # more than the deduped dataset figure (17 vs 15).
+                out_map_n = sum(len(_out_map_ids(tgt, ft))
+                                for ft in claim_ftypes)
                 summary_per_type.append({
                     "dataset": ds,
                     "type": t,
@@ -643,6 +690,7 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     "mapped_neurons": len(claimed),
                     "mapped": _format_mapped_neurons(
                         len(claimed), len(present_types)),
+                    "out_map": out_map_n,
                     "unmapped": orphaned,
                 })
 
@@ -834,8 +882,10 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
     def _deliver_branch_bodyids(src: str, tgt: str, flows, pools,
                                 stamp: str) -> None:
         """Row-based bodyId-level export: per-branch bridge-resolved
-        pools (linker rows / full population) + vote provenance — the
-        mapper's bodyId-level data for this pair.  Evidence only."""
+        pools (linker rows / full population) + vote provenance + the
+        per-branch out-map of the target type — the mapper's bodyId-level
+        data for this pair.  Evidence only: the out-map is the panel-side
+        figure (pool-only claim), never the validation run's `family` bin."""
         import csv as _csv
         import io
 
@@ -855,6 +905,14 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             pool = get_mapping_pool(pools, flow)
             if not pool:
                 continue
+            # Out-map: the endpoint type's own neurons this branch's pool
+            # does not reach (same definition as the mapping CSV's
+            # `target_out_map`; 0 when the basis is the full population).
+            _claimed_target = {str(b) for b in
+                               (pool.get("target_body_ids") or [])}
+            out_map_ids = [b for b in
+                           (pool.get("target_type_body_ids") or [])
+                           if str(b) not in _claimed_target]
             rows.append([
                 src, tgt,
                 flow.get("source_type"), flow.get("foreign_type"),
@@ -868,6 +926,8 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 "{" + ", ".join(str(b) for b in
                                 (pool.get("target_body_ids") or [])) + "}"
                 if pool.get("target_body_ids") is not None else "",
+                len(out_map_ids),
+                "{" + ", ".join(str(b) for b in out_map_ids) + "}",
             ])
         if not rows:
             ui.notify("No bridge-resolved bodyId pools to export.",
@@ -879,7 +939,8 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                          "source_type", "target_type",
                          "source_basis", "target_basis",
                          "source_pool_size", "target_pool_size",
-                         "source_body_ids", "target_body_ids"])
+                         "source_body_ids", "target_body_ids",
+                         "target_out_map", "target_out_map_body_ids"])
         writer.writerows(rows)
         name = (f"mapping_branch_bodyids_{src.replace(':', '_')}"
                 f"_{tgt.replace(':', '_')}_{stamp}.csv")
@@ -1141,11 +1202,25 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 suspects_tip = _suspects_tip(
                     [("", suspect_rows.get((str(s_type), str(f_type)))
                        or [])])
+            # Out-map for THIS branch: the endpoint type's own neurons that
+            # this row's pool does not reach (per branch, so split branches
+            # are non-exclusive and can each report the same neuron).  Only
+            # an adopted row is a claim, so a disclosure row says so instead
+            # of quoting a number the Mapped column never counted.
+            if not pool:
+                out_map_cell = "not pooled"
+            elif not flow_is_claimed(flow):
+                out_map_cell = "not adopted"
+            else:
+                out_map_cell = len(
+                    {str(b) for b in (pool.get("target_type_body_ids") or [])}
+                    - {str(b) for b in (pool.get("target_body_ids") or [])})
             rows.append([
                 s_type + _multivalue_marker(mapper, s_type, src),
                 f_type + _multivalue_marker(mapper, f_type, tgt),
                 f"{s_total} {src_code} → {t_total} {tgt_code}",
-                relationship, suspects_cell, map_used, cov, suspects_tip,
+                relationship, suspects_cell, map_used, cov, out_map_cell,
+                suspects_tip,
             ])
         # Quasar table cells nowrap by default: cap the long columns and
         # force wrapping so every column stays visible (user 2026-09-07)
@@ -1168,9 +1243,20 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 _col("map_used", "Map used (per linker)", "map_used",
                      max_w=440),
                 _col("cov", "Pool coverage (bodyIds)", "cov", min_w=210),
+                _col("out_map", "Out-map (this type)", "out_map",
+                     min_w=120,
+                     tooltip="Neurons of the mapped target type that THIS "
+                             "branch's pool does not reach — per branch, so "
+                             "split branches are non-exclusive and may quote "
+                             "the same neuron twice. Panel-side evidence: "
+                             "the claim is the bridge pool, so a type pooled "
+                             "on its full population reads 0 and no "
+                             "morphology closes holes here (that is what "
+                             "makes this figure larger than the validation "
+                             "run's `family` bin)."),
             ],
             rows=[dict(zip(("name", "foreign", "counts", "relationship",
-                             "suspects", "map_used", "cov",
+                             "suspects", "map_used", "cov", "out_map",
                              "suspects_tip"), r))
                   for r in rows],
         ).classes("w-full")
@@ -1469,6 +1555,25 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "that only issues the query receives "
                                     "0 — its issued side is Matched "
                                     "types / Neurons."},
+                        {"name": "out_map",
+                         "label": "Out-map (in-map types)",
+                         "field": "out_map", "align": "left",
+                         "tooltip": "Neurons of the received (in-map) "
+                                    "types in THIS dataset that the claim "
+                                    "set above does not reach — the "
+                                    "union of those types' own populations "
+                                    "minus the branch-claimed bodyIds, so a "
+                                    "type claimed on its full-population "
+                                    "basis contributes 0. This is the "
+                                    "PANEL's figure: the validation "
+                                    "pipeline bins the same material per "
+                                    "BRANCH and lets a morph-qualified "
+                                    "candidate close a hole, so on "
+                                    "circadian_clock → male-cns it reports "
+                                    "15 out-map here (219 − 204) while "
+                                    "family_candidates.csv holds 11 rows. "
+                                    "Evidence about coverage, never a "
+                                    "mapping claim."},
                         {"name": "unmapped", "label": "Unmapped (orphans)",
                          "field": "unmapped", "align": "left",
                          "tooltip": "Matched types here with no realized "
@@ -1556,6 +1661,28 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                          "(the claim set), with '(k "
                                          "types)' from 2 distinct "
                                          "received types up."),
+                            _col("out_map", "Out-map (in-map types)",
+                                 "out_map", min_w=120,
+                                 tooltip="Neurons of THIS row's mapped "
+                                         "target type(s) that the claim does "
+                                         "not reach — computed PER RECEIVED "
+                                         "TARGET TYPE (a neuron an adopted "
+                                         "branch reaches anywhere in that "
+                                         "type counts as claimed) and summed "
+                                         "over the row's accepted target "
+                                         "types. Two reasons this is not the "
+                                         "dataset row's number: convergent "
+                                         "sources can report the same "
+                                         "neuron twice across rows (on "
+                                         "circadian_clock → male-cns these "
+                                         "rows sum to 17 where the deduped "
+                                         "union above is 15), and with no "
+                                         "morphology a candidate cannot "
+                                         "close a hole, so this can exceed "
+                                         "the run's family count (11 there, "
+                                         "binned per branch — so match this "
+                                         "to `family` only per type, not "
+                                         "across a convergent pair)."),
                             _col("unmapped", "Unmapped (orphans)",
                                  "unmapped", min_w=100),
                         ],

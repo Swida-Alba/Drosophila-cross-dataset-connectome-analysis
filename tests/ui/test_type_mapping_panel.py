@@ -290,6 +290,10 @@ def test_cb4091_stale_crosswalk_claim_is_not_counted_as_mapped(panel_client):
     assert mcns['mapped'] == '0'
     assert fafb == {'dataset': FAFB, 'types': 0, 'neurons': 0,
                     'mapped_types': 0, 'mapped_neurons': 0, 'mapped': '0',
+                    # an unfulfilled claim fabricates neither a mapped count
+                    # NOR an out-map overhang — FAFB has no neurons of the
+                    # type, so there is nothing left out of the map either
+                    'out_map': 0,
                     'unmapped': 0}
     # the orphan explains WHY: the claim names a type FAFB does not have
     entries = outcome['orphans'].get((MCNS, FAFB)) or []
@@ -337,6 +341,13 @@ def test_orphan_claim_is_explained_in_the_expander(panel_client):
                 for c in summary_tables[0]._props['columns']}
     assert 'no neurons here does not count' in by_label['Mapped neurons'][
         'tooltip']
+    # the out-map column renders beside the claim it complements, and its own
+    # hover says which population it is — the panel-side overhang, not the
+    # validation pipeline's `family` bin (219 − 204 = 15 vs 11 rows)
+    assert 'Out-map (in-map types)' in by_label
+    out_map_tip = by_label['Out-map (in-map types)']['tooltip']
+    assert '219' in out_map_tip and 'family' in out_map_tip
+    assert 'does not reach' in out_map_tip
     assert 'no realized counterpart' in by_label['Unmapped (orphans)'][
         'tooltip']
 
@@ -356,6 +367,53 @@ def test_single_type_preview_has_no_per_type_expansion(panel_client):
                    for e in expansions)
 
 
+def test_the_branch_bodyid_export_publishes_the_out_map(panel_client,
+                                                        monkeypatch):
+    """`mapping_branch_bodyids_*.csv` is assembled inside a closure no other
+    test reached, so its header/row alignment was carried on trust. Capture
+    the download and check the two out-map columns against the pool the row
+    itself names — a count that disagrees with its own brace cell is the
+    failure mode this pins."""
+    import csv as _csv
+    import io as _io
+
+    from nicegui import ui
+
+    client, button, _sel = panel_client
+    captured = {}
+    monkeypatch.setattr(
+        ui.download, 'content',
+        lambda text, name, mime='text/plain', **kw: captured.update(
+            name=name, text=text))
+    button.search_container.add_values(['APDN3'])
+    assert _click_button(client, 'Search mappings')
+    export = next((el for el in client.elements.values()
+                   if type(el).__name__ == 'Button'
+                   and 'Export branch bodyIds' in str(getattr(el, 'text', ''))),
+                  None)
+    assert export is not None, 'no branch-bodyId export button rendered'
+    # click it IN THE BUTTON'S OWN SLOT: the handler ends in push_banner,
+    # which needs a live slot — the generic `_click_button` helper only
+    # re-enters a slot for async handlers, and a zero-arg lambda is not one
+    with (export.parent_slot or client):
+        for listener in export._event_listeners.values():
+            if listener.type == 'click' and listener.handler:
+                _invoke(listener.handler, client, export)
+                break
+    assert str(captured.get('name', '')).startswith(
+        'mapping_branch_bodyids_'), captured.get('name')
+    rows = list(_csv.DictReader(_io.StringIO(captured['text'])))
+    assert rows, 'the branch export wrote no rows'
+    assert {'target_out_map', 'target_out_map_body_ids'} <= set(rows[0])
+    for r in rows:
+        cell = (r['target_out_map_body_ids'] or '').strip()
+        ids = [s for s in cell.strip('{}').split(', ') if cell and s]
+        assert len(ids) == int(r['target_out_map']), r
+        # the pools are int-keyed; a stray whitespace or dtype leak would
+        # surface here as a cell that no longer parses
+        assert all(s.isdigit() for s in ids), r
+
+
 def test_multi_type_preview_shows_collapsed_per_type_expansion(panel_client):
     client, button, _selection = panel_client
     button.search_container.add_values(['5thsLNv_LNd6', 'SLP249'])
@@ -364,6 +422,11 @@ def test_multi_type_preview_shows_collapsed_per_type_expansion(panel_client):
                   if type(e).__name__ == 'Expansion']
     assert any('Per-type breakdown' in str(getattr(e, 'text', ''))
                for e in expansions)
+    # the breakdown publishes the same column at its PER-BRANCH grain
+    breakdown = [t for t in _tables(client)
+                 if 'Out-map (in-map types)' in _column_labels(t)
+                 and 'Matched type' in _column_labels(t)]
+    assert breakdown, 'the per-type breakdown lacks the Out-map column'
 
 
 def test_per_type_breakdown_rows_are_dataset_specific(panel_client):
@@ -509,6 +572,73 @@ def test_panel_flows_carry_the_suspects_fields():
     other = [f for f in flows if not f.get('suspects')]
     for f in other:
         assert f['suspect_rivals'] == [] and not f['same_name_first']
+
+
+def test_the_panel_publishes_the_out_map_of_the_received_types():
+    """`Out-map (in-map types)` is the received types' own neurons that the
+    claim set does NOT reach.  Recomputed here from the same pools the panel
+    read, so the published number is pinned to its definition rather than to
+    itself (user 2026-09-26).  Panel-side on purpose: with no morphology a
+    candidate cannot close a hole, so this figure is at least as large as the
+    validation run's `family` bin — 219 − 204 = 15 against 11 on
+    circadian_clock → male-cns."""
+    from comparison.mapping_visualization import (
+        flow_is_claimed, mapping_pool_key)
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    out = _compute_type_mapping(['SLP249'], [MCNS, FAFB], 'exact')
+    assert out['summary'], 'the fixture query must resolve a mapping'
+    for row in out['summary']:
+        assert isinstance(row['out_map'], int) and row['out_map'] >= 0
+
+    pop, claimed = {}, {}
+    for (src, tgt), flows in out['pair_flows'].items():
+        for f in flows:
+            if not flow_is_claimed(f):
+                continue
+            pool = out['pools'].get(
+                mapping_pool_key(src, tgt, f.get('source_type'),
+                                 f.get('foreign_type'))) or {}
+            tkey = (tgt, str(f.get('foreign_type') or ''))
+            pop.setdefault(tkey, set()).update(
+                str(b) for b in (pool.get('target_type_body_ids') or []))
+            claimed.setdefault(tkey, set()).update(
+                str(b) for b in (pool.get('target_body_ids') or []))
+    assert pop, 'SLP249 must resolve at least one claimed endpoint type'
+
+    by_ds = {}
+    for (tgt, foreign), ids in pop.items():
+        by_ds.setdefault(tgt, set()).update(
+            ids - (claimed.get((tgt, foreign)) or set()))
+    for row in out['summary']:
+        assert row['out_map'] == len(by_ds.get(row['dataset'], set())), row
+        # the claim set and the out-map are disjoint halves of the same
+        # population: they can never both be counted as mapped
+        assert row['out_map'] == 0 or row['mapped_neurons'] > 0
+
+
+def test_the_circadian_clock_envelope_publishes_204_mapped_and_15_out_map():
+    """The ratified envelope, read straight off the panel (user 2026-09-26):
+    circadian_clock FAFB → male-cns claims 204 bodyIds and reports 15 of the
+    received types' 219 neurons as out-of-map — the same 219 / 204 the
+    validation run publishes in `set_coverage.json`, so panel and pipeline
+    describe ONE claim set.  The pipeline's `family` bin is 11 rows on this
+    query, because a morph-qualified candidate closes a hole there; the panel
+    has no morphology, so it reports the whole overhang."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    out = _compute_type_mapping(['circadian_clock'], [FAFB, MCNS], 'expand')
+    row = {r['dataset']: r for r in out['summary']}
+    target = row[MCNS]
+    assert target['mapped_neurons'] == 204
+    assert target['out_map'] == 15
+    assert target['mapped_neurons'] + target['out_map'] == 219
+    # the issuing side reports neither a claim nor an overhang
+    assert row[FAFB]['mapped_neurons'] == 0 and row[FAFB]['out_map'] == 0
+    # per-type rows are the PER-BRANCH grain: convergent sources can name the
+    # same neuron twice, so they sum above the deduped union (17 vs 15)
+    per_type = [r for r in out['summary_per_type'] if r['target'] == MCNS]
+    assert sum(r['out_map'] for r in per_type) >= target['out_map']
 
 
 @pytest.fixture

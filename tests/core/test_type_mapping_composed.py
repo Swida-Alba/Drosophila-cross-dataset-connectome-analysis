@@ -368,6 +368,40 @@ def test_bridges_csv_contract():
     assert build_bridges_csv([]) is None
 
 
+def test_bridges_csv_publishes_the_per_branch_out_map():
+    """The extended export names the endpoint type's own neurons this row's
+    bridge pool does NOT reach — the panel-side out-map the user asked for
+    (2026-09-26).  A SET difference, so a `full population` basis reads 0, and
+    an unresolvable pool stays an EMPTY cell rather than a false 0.  The
+    historical 20-column legacy contract is untouched."""
+    import csv as _csv
+    import io as _io
+
+    flows = [_flow(MCNS, 'T1', FAFB, 'T1', 4, 5),
+             _flow(MCNS, 'T2', FAFB, 'T2', 2, 2),
+             _flow(MCNS, 'T3', FAFB, 'T3', 1, 1)]
+    text = build_bridges_csv(flows, pools={
+        ('T1', 'T1'): {'target_body_ids': [3, 4],
+                       'target_type_body_ids': [3, 4, 5, 6, 7]},
+        ('T2', 'T2'): {'target_body_ids': [8, 9],
+                       'target_type_body_ids': [8, 9]},
+    }, extended=True)
+    rows = list(_csv.DictReader(_io.StringIO(text)))
+    assert len(rows) == 3
+    by_type = {r['source_type']: r for r in rows}
+    assert by_type['T1']['target_out_map'] == '3'
+    assert by_type['T1']['target_out_map_body_ids'] == '{5, 6, 7}'
+    # a type pooled on its full population leaves nothing out of map
+    assert by_type['T2']['target_out_map'] == '0'
+    assert by_type['T2']['target_out_map_body_ids'] == '{}'
+    # no pool is UNMEASURED, not zero — the two must not read alike
+    assert by_type['T3']['target_out_map'] == ''
+    assert by_type['T3']['target_out_map_body_ids'] == ''
+    # legacy (default) form keeps its 20 columns exactly
+    legacy = list(_csv.reader(_io.StringIO(build_bridges_csv(flows))))
+    assert len(legacy[0]) == 20 and 'target_out_map' not in legacy[0]
+
+
 def test_bridges_csv_relationship_reflects_fan_in():
     """Pair rows label cardinality from BOTH fan directions: two source
     types converging on one target read N-to-1 instead of two 1-to-1 rows
@@ -523,7 +557,7 @@ def test_extended_bridges_csv_exposes_selected_and_all_valid_scopes():
         [flow], pools={('T1', 'T1'): pool}, extended=True))))
     header = rows[0]
     row = dict(zip(header, rows[1]))
-    assert len(header) == 35
+    assert len(header) == 37
     assert row['mapping_status'] == 'valid_split_evidence'
     assert row['selected_bridge_rank'] == '1'
     assert row['valid_bridge_count'] == '2'

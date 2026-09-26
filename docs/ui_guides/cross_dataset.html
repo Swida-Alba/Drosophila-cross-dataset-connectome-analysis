@@ -469,7 +469,14 @@
       types' full populations are the reference denominator), shown as
       <code>{N}({m} types)</code> from 2 distinct received types up, plain
       <code>{N}</code> otherwise — a dataset that only issues the query
-      reads 0 — plus Unmapped (orphans stay visible).</li>
+      reads 0 — plus <b>Out-map (in-map types)</b>, the received types' own
+      neurons that the claim set does <i>not</i> reach (union of those types'
+      populations minus the claim, so a type pooled on its full population
+      contributes 0; on circadian_clock → male-cns this reads
+      219 − 204 = <b>15</b>, while the validate-expand-visualize run's
+      <code>family</code> bin holds 11 rows because a morph-qualified
+      candidate closes holes there and nothing does in the panel), plus
+      Unmapped (orphans stay visible).</li>
     <li><b>Pair cards</b> (<code>src → tgt · N mapped pairs</code>): Type,
       Mapped to, Neurons (<code>source → foreign</code>), <b>Relationship</b>
       (the per-flow cardinality, matching the coverage tables and the CSV),
@@ -493,7 +500,11 @@
       selected bridge and the all-valid union; the latter includes the
       unique bodyIds from supported alternatives. Raw linker values such as
       <code>auto:MeVPLo2</code> and their canonical matching tokens are
-      retained in the extended export.</li>
+      retained in the extended export. The card's <b>Out-map (this type)</b>
+      column is the endpoint type's own neurons this branch's pool does
+      <i>not</i> reach — per branch, so split branches can each quote the
+      same neuron; it reads <code>not adopted</code> on a disclosure row and
+      <code>not pooled</code> where no pool resolved.</li>
     <li><b>Type coverage tables</b> (top-level expansion per pair,
       bidirectional): the FORWARD view lists each queried type with its
       neurons, mapped targets, <code>1-to-N</code>/<code>1-to-1</code>, a
@@ -558,7 +569,13 @@
       columns. The UI's extended export additionally carries the selected
       bridge, mapping status, selected rank, valid-chain count,
       raw/canonical selected linker values, unsupported attempts,
-      selected/all-valid pool IDs and totals, overlap, and scope. The full
+      selected/all-valid pool IDs and totals, overlap, and scope, plus
+      <code>target_out_map</code> / <code>target_out_map_body_ids</code> —
+      the endpoint type's own neurons this branch's pool does <i>not</i>
+      reach (a set difference, so a full-population basis reads 0 and an
+      unresolved pool stays an empty cell rather than a false 0; this is the
+      panel-side overhang, at least as large as the validation run's
+      <code>family</code> bin because no morphology closes a hole here). The full
       mapping is never silently dropped — a
       <code>+N more flows</code> notice points at the CSV when the drawn
       cap trims).</li>

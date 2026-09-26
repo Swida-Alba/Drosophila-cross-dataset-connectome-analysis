@@ -3100,8 +3100,12 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
     union-of-bridge-columns concatenation hack is gone.  Uniform field
     counts, proper quoting.  Returns None when there is nothing to
     export.  ``extended=True`` adds selected/all-valid coverage scopes,
-    resolver status, ranks, and the selected/all-valid pool IDs.  The
-    default keeps the historical 20-column contract for downstream callers;
+    resolver status, ranks, the selected/all-valid pool IDs, and the
+    per-branch out-map of the target type (``target_out_map`` /
+    ``target_out_map_body_ids`` — the type's own neurons this row's bridge
+    pool does not reach, a panel-side figure that is at least as large as the
+    validation run's `family` bin because no morphology closes a hole here).
+    The default keeps the historical 20-column contract for downstream callers;
     the Type Mapping UI requests the extended form explicitly.
     """
     import csv as _csv
@@ -3149,6 +3153,9 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
         "all_valid_source_body_ids", "all_valid_target_body_ids",
         "pool_coverage", "pool_coverage_basis", "coverage_overlap",
         "coverage_scope",
+        # Out-map (user 2026-09-26): extended form only — the historical
+        # 20-column contract for downstream callers is untouched.
+        "target_out_map", "target_out_map_body_ids",
     ]
     header = extended_header if extended else legacy_header
     targets_by_source: Dict[str, set] = {}
@@ -3270,6 +3277,23 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
             coverage_overlap = (
                 f"source {pool.get('all_valid_source_overlap_count', 0)}; "
                 f"target {pool.get('all_valid_target_overlap_count', 0)}")
+        # OUT-MAP for this branch (user 2026-09-26): the endpoint type's own
+        # neurons that this row's claim does not reach — a SET difference, so
+        # a `full population` basis reads 0 and an unresolvable pool stays an
+        # empty cell rather than a false 0.  The panel-side figure: the claim
+        # is the bridge pool alone, so no morphology closes a hole here and
+        # this count is at least as large as the validation run's `family` bin
+        # for the same query (15 vs 11 on circadian_clock → male-cns).
+        if pool:
+            _claimed_target = {str(b) for b in
+                               (pool.get("target_body_ids") or [])}
+            # Order comes from the pool's own population list, which the
+            # builder already sorts — no re-sorting of mixed int/str ids.
+            _out_map_ids = [b for b in
+                            (pool.get("target_type_body_ids") or [])
+                            if str(b) not in _claimed_target]
+        else:
+            _out_map_ids = None
         legacy_row = [
             src_ds,
             source_entry,
@@ -3331,6 +3355,8 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
             coverage_basis,
             coverage_overlap,
             pool.get("coverage_scope") or "selected bridge",
+            (len(_out_map_ids) if _out_map_ids is not None else ""),
+            _body_ids_cell(_out_map_ids),
         ]
         writer.writerow(extended_row if extended else legacy_row)
     return buffer.getvalue()
