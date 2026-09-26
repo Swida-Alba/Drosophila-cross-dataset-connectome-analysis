@@ -401,6 +401,8 @@ against — `local_data/` is disposable by design.
   clamps largest-pool-first and names each dropped parent in the run log and
   in the report's Branches tab, so a missing scene is always a disclosure,
   never a silence.
+  **Viewing on macOS**: the scene HTMLs carry a kernel-set `com.apple.provenance` attribute (the plotly/kaleido writer subprocess creates them), and Chrome may answer `ERR_ACCESS_DENIED` on `file://` links from the report even though the files are intact and OS-readable — macOS TCC applies the creating subprocess's restrictions to the reader. The scenes are fine (the run's scene self-checks verify legend/geometry): serve the run folder instead — `python3 -m http.server 8791` inside the run dir, then open `http://127.0.0.1:8791/report.html` (relative scene links work) — or open the report in Safari, or grant Chrome Full Disk Access. The attribute cannot be stripped (`xattr -d` no-ops) and inode rewrites do not clear it.
+
 - **`matched` is the only asserted tier**; verified/borderline are
   review tiers; all proposals are evidence — the mapping is never
   rewritten.

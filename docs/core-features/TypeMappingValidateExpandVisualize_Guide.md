@@ -105,6 +105,9 @@ python -m comparison.mapping_validation_report <run_dir>
 
 ### 2.1 The 3D scenes (`visualization/*.html`)
 
+> **macOS viewing note (Chrome + `file://`):** a scene HTML may refuse to open from the report in Chrome with `ERR_ACCESS_DENIED` even though the file is intact — macOS attaches a provenance attribute to files written by the plotly/kaleido subprocess and applies its restrictions to the reading app. Serve the run folder instead (`python3 -m http.server 8791` inside the run folder, then open `http://127.0.0.1:8791/report.html` — relative scene links work), use Safari, or grant Chrome Full Disk Access. The exported PNG views in `exported_views/` are unaffected.
+
+
 One scene per parent type, skeleton lines in the **source brain
 template** (targets are bridged in). By default every parent type in the
 run gets a scene (`--max-scenes 0`); a positive value keeps the largest
