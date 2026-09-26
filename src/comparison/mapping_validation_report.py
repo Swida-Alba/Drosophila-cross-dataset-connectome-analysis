@@ -2779,9 +2779,9 @@ def _reciprocal_tab(d: Dict) -> str:
             'Reciprocal homolog evidence',
             'What each gap-fill member prefers when IT is scanned back '
             'against the whole source universe.',
-            _empty('backward_matches.csv absent — the pass is opt-in '
-                   '(--backward-evidence) and was not run, or no member '
-                   'of the three bins was scanned.'),
+            _empty('backward_matches.csv absent — the pass was skipped '
+                   '(--no-backward-evidence / the UI checkbox) or no '
+                   'member of the three bins was scanned.'),
             ['reciprocal', 'not-checked'])
 
     def _bin_rows():

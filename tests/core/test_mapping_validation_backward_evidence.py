@@ -1145,3 +1145,25 @@ def test_reverse_column_keeps_pool_members_below_the_cut():
     col = m.reverse_source_column(df, [99], top_rows=3)
     assert [e['source'] for e in col] == [10, 11, 12, 99]
     assert [e['in_pool'] for e in col] == [False, False, False, True]
+
+
+def test_backward_evidence_runs_by_default_and_opt_out_flips_it():
+    """User decision 2026-09-26: the reciprocal pass runs BY DEFAULT —
+    every certified round shipped an empty Reciprocal tab because nothing
+    ever passed the old opt-in flag. The CLI keeps --backward-evidence as
+    a no-op affirmative and adds --no-backward-evidence as the opt-out."""
+    import argparse
+    # the same two-arg shape the script registers (store_true default=True
+    # + store_false sharing the dest — the argparse default trap)
+    p = argparse.ArgumentParser()
+    p.add_argument('--backward-evidence', action='store_true', default=True)
+    p.add_argument('--no-backward-evidence', dest='backward_evidence',
+                   action='store_false')
+    assert p.parse_args([]).backward_evidence is True
+    assert p.parse_args(['--no-backward-evidence']).backward_evidence is False
+    assert p.parse_args(['--backward-evidence']).backward_evidence is True
+    # and the config dataclass default is ON
+    from comparison.mapping_validation import MappingValidationConfig
+    assert MappingValidationConfig(
+        source_dataset='a', target_dataset='b',
+        query_types=['x']).backward_evidence_enabled is True

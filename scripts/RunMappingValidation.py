@@ -176,14 +176,20 @@ def parse_args(argv=None):
                         'the budget scales with the work asked for. Rows past the '
                         "budget are labelled morph_gate='not-attempted-cap', never "
                         'blank, and `morph.capped` says how many.')
-    p.add_argument('--backward-evidence', action='store_true',
+    p.add_argument('--backward-evidence', action='store_true', default=True,
                    help='stage 5d: reverse (target -> source) scans label '
                         'the expansion bins — ADVISORY only, never gates '
                         'nor relabels a row; connectivity only, no '
-                        'morphology re-scored (default OFF)')
+                        'morphology re-scored (DEFAULT ON since '
+                        '2026-09-26; kept for compatibility — passing it '
+                        'changes nothing)')
+    p.add_argument('--no-backward-evidence', dest='backward_evidence',
+                   action='store_false',
+                   help='stage 5d opt-out: skip the reciprocal pass (the '
+                        'Reciprocal tab then renders its not-run note)')
     p.add_argument('--skip-backward-pass', action='store_true',
                    help='stage 5d: force-skip the backward pass even when '
-                        '--backward-evidence is set')
+                        'enabled')
     p.add_argument('--backward-top-n', type=int, default=5,
                    help='stage 5d: reverse hits kept per neuron (the '
                         'report hover label; default 5)')

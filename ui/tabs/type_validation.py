@@ -353,9 +353,10 @@ def create_type_validation_tab():
                     "Neuron alpha", _default("neuron_alpha"), *_bounds("neuron_alpha", _default("neuron_alpha")),
                     hint="Skeleton opacity in review scenes (0-1).")
             backward_enabled = checkbox_input(
-                "Backward (reciprocal) homolog evidence", False,
+                "Backward (reciprocal) homolog evidence", True,
                 hint="Reverse-scan target neurons for reciprocal evidence — the slowest stage "
-                     "(≈4-7 s × up to hundreds of scans). Default off.")
+                     "(≈4-7 s × up to hundreds of scans). Default on (user 2026-09-26); "
+                     "uncheck to skip the Reciprocal tab.")
             with param_grid(3):
                 backward_top_n = number_input(
                     "Backward top N", _default("backward_top_n"), 0, 100, 1)

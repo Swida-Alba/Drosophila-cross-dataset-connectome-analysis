@@ -88,7 +88,7 @@ start there. It assembles the headline (e.g. **242 source neurons →
 204 male-cns:v1.0 neurons map-covered**), the three coverage levels
 (L1 claim / L2 provenance / L3 validation), the branch table, the
 target-side holes, the fill proposals with per-row provenance, the
-**Reciprocal** tab (stage 5d, only on `--backward-evidence` runs — §2.2c),
+**Reciprocal** tab (stage 5d, on by default — §2.2c),
 the out-map expansion, the backward `source-` view, the **Pooling** tab (the
 whole result of a `--mode pooling` run — §4), the morphology record
 (with the null-sample advisory when null-kind bars are in play), the
@@ -225,7 +225,8 @@ do you prefer branch B's neurons too?* Each `candidates` / `family` /
 `relative` member is scored against the **whole source universe** with
 the same homolog finder (unmatched pool targets are scanned too;
 matched / verified / borderline are not — the symmetric forward score
-is their evidence). It is opt-in (`--backward-evidence`, default **off**)
+is their evidence). It runs by default (user 2026-09-26;
+`--no-backward-evidence` skips it)
 and it is **advisory**: it never moves a neuron between bins, never
 changes a fill level or a count, and **no morphology is re-scored** —
 candidates are already morph-qualified, and family / relative members
@@ -338,7 +339,7 @@ pass on.
 | `gap_fill/gap_fill_proposals.csv` | proposed partners for unpaired neurons (evidence only), with `counts_toward_restrictive_fill` / `counts_toward_family_fill`; `side` says whether `bodyId` is the source or the target neuron of the pair |
 | `gap_fill/gap_fill_levels.csv` | the layered fill (§2.2b) + each row's `backward_evidence` |
 | `expansion/family_candidates.csv` | the whole `family` bin (enumerated members ∪ evidence rows classified `family`) **[family mode]** |
-| `expansion/backward_matches.csv` | stage 5d only (`--backward-evidence`): one row per (branch, scanned neuron) — reverse top-1, the `backward_own_type_*` hit the grade rests on, and the serialized top-N neighbourhood (§2.2c) |
+| `expansion/backward_matches.csv` | stage 5d (default on): one row per (branch, scanned neuron) — reverse top-1, the `backward_own_type_*` hit the grade rests on, and the serialized top-N neighbourhood (§2.2c) |
 | `expansion/source_status.csv` | the backward `source-` statuses (§2.3b) |
 | `expansion/out_map_expansion.csv` | each unclaimed source neuron's top connectivity-ranked targets (exploratory, never a fill) |
 | `gap_fill/gap_fill_dedup.csv` | query-level bodyId dedup of the fill (the true filled-gap list), with the `dup` tag and, on stage-5d runs, the reciprocal rollup of the neuron's strongest branch (§2.2c) |

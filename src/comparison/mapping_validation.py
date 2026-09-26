@@ -290,7 +290,11 @@ class MappingValidationConfig:
     # counts_toward_* flags.  Connectivity only: morphology is deliberately
     # not re-scored here (plan-tmvev-backward-expansion-evidence.md D5).
     # ------------------------------------------------------------------
-    backward_evidence_enabled: bool = False
+    #: USER DECISION 2026-09-26: the reciprocal pass runs BY DEFAULT
+    #: (it was opt-in `--backward-evidence` before; every certified round
+    #: shipped an empty Reciprocal tab because nothing ever passed the
+    #: flag).  Opt out with `--no-backward-evidence` / the UI checkbox.
+    backward_evidence_enabled: bool = True
     #: Reverse hits kept per neuron (the report's hover label; the table
     #: cells show the top-1 and the branch-type hit, never the whole list).
     backward_top_n: int = 5

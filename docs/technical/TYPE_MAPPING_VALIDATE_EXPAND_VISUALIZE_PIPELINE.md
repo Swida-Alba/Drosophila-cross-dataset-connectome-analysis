@@ -585,7 +585,8 @@ shared-name pads inflate jaccard 0.30 → 0.80, while these two counts say the
 same thing directly (plan §17 / §17b).
 
 Knobs (all in `parameters.json`): `backward_evidence_enabled` (default
-**False**; CLI `--backward-evidence`), `backward_top_n` (5, the number of
+**True** since 2026-09-26, user decision — was opt-in; CLI
+`--no-backward-evidence` opts out), `backward_top_n` (5, the number of
 reverse hits serialized into `backward_topN`), `backward_max_neurons`
 (300 — the per-run budget of dataset-scale scans),
 `backward_per_branch_cap` (40), `backward_scan_pool_targets` (True; CLI
@@ -1146,7 +1147,7 @@ gives the subfolder each one lives in.
 | `deep_candidates.csv` | candidate-window rows ranked below the pool best, tagged `candidate_source`: `'top_window'` (the `rank_top_k` band, family+ — connectivity evidence, so rule 3 admits them as `candidates`) or `'deep_window'` (the aggressive-only wider band, the `examinees` bin) |
 | `gap_fill_proposals.csv` | proposals with `fill_class` (in/out of pool), `category`, `counts_toward_restrictive_fill`, `counts_toward_family_fill` |
 | `family_candidates.csv` | the whole `family` bin — enumerated members ∪ evidence rows classified `family`, per branch+bodyId (family/aggressive modes) |
-| `backward_matches.csv` | stage 5d (`--backward-evidence` only): one row per (branch, scanned member) of `candidates`/`family`/`relative` (+ the UNMATCHED pool members) — `member_bodyId`/`member_type`/`member_category`/`scan_role`, then `backward_evidence` with the reverse top-1 (`backward_top1_source_bodyId`/`_type`/`_in_branch`), the two metric values + ranks, the evidence base (`backward_shared_type_count`/`_union_type_count`, `backward_thin_evidence` at ≤3 shared), the `backward_own_type_*` block (the branch-type hit the grade rests on, with `backward_own_type_via`), `backward_n_out_of_branch`, the caliber pair, and the serialized `backward_topN` neighbourhood in jaccard order; advisory, connectivity only (§4.6a) |
+| `backward_matches.csv` | stage 5d (default ON; `--no-backward-evidence` skips it): one row per (branch, scanned member) of `candidates`/`family`/`relative` (+ the UNMATCHED pool members) — `member_bodyId`/`member_type`/`member_category`/`scan_role`, then `backward_evidence` with the reverse top-1 (`backward_top1_source_bodyId`/`_type`/`_in_branch`), the two metric values + ranks, the evidence base (`backward_shared_type_count`/`_union_type_count`, `backward_thin_evidence` at ≤3 shared), the `backward_own_type_*` block (the branch-type hit the grade rests on, with `backward_own_type_via`), `backward_n_out_of_branch`, the caliber pair, and the serialized `backward_topN` neighbourhood in jaccard order; advisory, connectivity only (§4.6a) |
 | `gap_fill_dedup.csv` | query-level bodyId dedup with `dedup_category` (precedence §4.6), `dup`, and on stage-5d runs the 12-column reciprocal rollup of the neuron's strongest branch (§4.6a) |
 | `set_coverage.json` | set-level coverage in two ROLE-named blocks — `source` (assigned/proposed/unpaired rollup) and `target` (in-pool/candidates/holes per type) — labelled by the top-level `source_dataset`/`target_dataset`, plus `family_material` (in-map-type bodyIds no branch pool claims — the 219−204 population overhang) and `mapper_gap` (types with no backward mapping) |
 | `relatives.csv` | the whole `relative` bin (type-mates of candidate types, ∪ evidence rows classified `relative`), per branch+bodyId |

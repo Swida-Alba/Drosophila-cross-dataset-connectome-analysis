@@ -1,6 +1,6 @@
 ---
 name: type-mapping-validation
-description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now), per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), the opt-in stage-5d reciprocal homolog evidence (high / medium / low / not-checked — advisory, connectivity-only, graded on how prominently the member's own branch source type ranks), nested modes (restrictive / family / aggressive) plus the PARALLEL unsupervised `pooling` mode (absolute volume floors, morphology as the last gate, the mapper joined only afterwards), two-track morphology with per-branch bar kinds (native / Track-A backup / null) and a persisted target-vector store, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\", \"reciprocal homolog evidence\", \"backward evidence\", \"pooling mode\", \"unsupervised homolog scan\"."
+description: "Run and interpret the DROCAT type-mapping validation pipeline — bodyId-level validation of cross-dataset type mappings (FAFB ↔ male-cns), with branch-resolved pools, the Rev 3.12 category partition (tier / sibling / candidates / family / relative / examinees — 'examinees' was renamed from 'suspicious' 2026-09-18; the mapper's rival-suspects concept owns that word now), per-bodyId leaf tokens ((out-map) / >src / (no_source) / untyped), the stage-5d reciprocal homolog evidence (DEFAULT ON since 2026-09-26 — opt out with --no-backward-evidence / the UI checkbox) (high / medium / low / not-checked — advisory, connectivity-only, graded on how prominently the member's own branch source type ranks), nested modes (restrictive / family / aggressive) plus the PARALLEL unsupervised `pooling` mode (absolute volume floors, morphology as the last gate, the mapper joined only afterwards), two-track morphology with per-branch bar kinds (native / Track-A backup / null) and a persisted target-vector store, 3D review scenes, and gap-fill proposals. WHEN: \"validate type mapping\", \"mapping validation\", \"check bodyId mapping\", \"run RunMappingValidation\", \"gap fill proposals\", \"type mapping candidates\", \"cross-dataset mapping check\", \"s-CPDN3 validation\", \"circadian clock mapping validation\", \"reciprocal homolog evidence\", \"backward evidence\", \"pooling mode\", \"unsupervised homolog scan\"."
 ---
 
 # DROCAT Type-Mapping Validation
@@ -47,7 +47,7 @@ $PY scripts/RunMappingValidation.py \
     --types <TYPE_A,TYPE_B | coarse_cell_type> \
     --label <short_label> \
     [--mode restrictive|family|aggressive|pooling] \
-    [--backward-evidence] \
+    [--no-backward-evidence] \
     [--scene-selfcheck]
 ```
 
@@ -55,7 +55,9 @@ $PY scripts/RunMappingValidation.py \
   coarse `cell_type` (`circadian_clock`).
 - ALWAYS pass `--scene-selfcheck` (verifies legend-leaf geometry against
   the neuron bbox; flags mislabeled renders).
-- Add `--backward-evidence` when the **fill** is the question (§3): it
+- The reciprocal pass runs by default (user 2026-09-26); add
+  `--no-backward-evidence` to skip it when the **fill** is not the
+  question (§3): it
   runs the homolog finding in reverse over the `candidates` / `family` /
   `relative` members. Advisory only, connectivity only, default OFF.
 - Floors-v3 knobs: `--morph-track-a-offset` (Δ, default 0.05 — candidate
@@ -237,7 +239,7 @@ against — `local_data/` is disposable by design.
     (re-aimed 2026-09-18: the earlier sibling-row derivation showed
     other branches' query neurons, which the sibling category already
     covers).
-11c. `expansion/backward_matches.csv` — only with `--backward-evidence`:
+11c. `expansion/backward_matches.csv` — the default pass writes it;
     one row per (branch, scanned neuron) — the `candidates` / `family` /
     `relative` members first, then the UNMATCHED validated pool targets
     (`scan_role=pool_target`; matched / verified / borderline are never
