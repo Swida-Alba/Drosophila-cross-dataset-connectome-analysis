@@ -112,11 +112,16 @@ CATEGORY_COLORS = {
 UNASSIGNED_COLOR = CATEGORY_COLORS['unassigned']
 
 # Category keys the UI may recolor, and the legacy aliases that must follow
-# their canonical key so a re-activated legacy path can never render a stale
-# color. `fill` / `backward` / `relatives` are reachable only through the
-# pre-3.12 `build_invader_buckets`, which the live render path no longer calls,
-# so they are not offered; `out-map query` is the same source population as
-# `query` and follows it.
+# their canonical key so a recolor never leaves a bin behind wearing the old
+# color. `out-map query` is the same source population as `query`, so it
+# follows it and is not offered separately.
+# `fill` / `backward` / `relatives` are NOT offered: the pre-3.12 bucket
+# builder that could produce them is deleted, and the live partition
+# (`CATEGORY_VALUES`) contains none of the three. They stay in
+# CATEGORY_COLORS as a three-line hedge so a dict still carrying the old root
+# names resolves to its historical color instead of falling back to examinees
+# red. `backward` and `alternate-chain` remain live as the `invader_class`
+# DATA value — only their scene color keys are unreachable.
 COLOR_EDITABLE_CATEGORIES = (
     'query', 'unassigned', 'matched', 'verified', 'borderline', 'unmatched',
     'sibling', 'candidates', 'family', 'relative', 'examinees',
@@ -237,22 +242,6 @@ def scene_render_kwargs(cfg, log=None) -> Dict[str, Any]:
     return out
 
 
-# Single-bucket rule per invader neuron (Revision 3.6): the LOWEST
-# priority value wins when a neuron qualifies for several buckets —
-# structural facts (sibling pool membership, backward/alternate-chain
-# evidence) outrank morphological qualification (Revision 3.6
-# inversion; the old fill=candidates>sibling order is retired, and the
-# `fill` root is merged into `candidates` per Revision 3.8).
-INVADER_BUCKET_PRIORITY = {
-    'sibling': 0,
-    'backward': 1,
-    'alternate-chain': 1,
-    'fill': 2,
-    'candidates': 2,
-    'family': 3,
-    'examinees': 4,
-}
-
 # Revision 3.12 render order for the new S2 categories (lower = earlier).
 # Tier roots are added separately (before the expansion bins); this covers
 # only the expansion bins.
@@ -273,22 +262,6 @@ def _linker_sig(pair) -> str:
         if v and v not in vals:
             vals.append(v)
     return '/'.join(vals) if vals else 'direct'
-
-
-def invader_bucket_key(ahead_bid: int, ahead_type: str,
-                       sibling_index: Dict[int, Tuple[str, str]],
-                       backward_lookup) -> str:
-    """Rev 3.6 fallback classification (rows without precomputed
-    fields).  Collapsed root keys (user 2026-09-12): sibling is ONE
-    root per branch; backward roots carry the exact mapped type as
-    suffix (never linker/additional_type names)."""
-    hit = sibling_index.get(int(ahead_bid))
-    if hit is not None:
-        return 'sibling'
-    mapped = backward_lookup(ahead_type) if backward_lookup else None
-    if mapped:
-        return f'backward · {mapped}'
-    return 'examinees'
 
 
 def bucket_root_label(key: str, types_by_bid: Dict[int, str]) -> str:
@@ -330,31 +303,6 @@ def ensure_bucket(buckets: Dict[str, Dict], bucket_order: List[str],
                         'tags': {}, 'sort_key': {}}
         bucket_order.append(key)
     return buckets[key]
-
-
-def assign_invader(claimed: Dict[int, Tuple[int, str]],
-                   buckets: Dict[str, Dict], bucket_order: List[str],
-                   bid: int, atype: str, key: str) -> None:
-    """Single-bucket rule per invader neuron (Revision 3.5 Issue 6b).
-
-    LEGACY (pre-3.12) helper: maintained for the older bucket tests.  The
-    Revision 3.12 render path buckets by the exported ``category`` in
-    :func:`build_category_buckets`, which enforces the same single-bucket
-    rule directly.  Lowest priority value wins; earlier higher-priority
-    claims are moved.
-    """
-    bid = int(bid)
-    prio = INVADER_BUCKET_PRIORITY[key.split(' · ')[0]]
-    cur = claimed.get(bid)
-    if cur is not None:
-        if cur[0] <= prio:
-            return
-        buckets[cur[1]]['ids'].discard(bid)
-        buckets[cur[1]]['types'].pop(bid, None)
-    claimed[bid] = (prio, key)
-    rec = ensure_bucket(buckets, bucket_order, key)
-    rec['ids'].add(bid)
-    rec['types'][bid] = atype
 
 
 def build_category_buckets(res, validator, pair, suspicious_cap: int
@@ -442,165 +390,6 @@ _BACKWARD_LEAF_TAG = {'high': '· high',
 
 def _cat_of_key(key: str) -> str:
     return key.split(' · ')[0]
-
-
-def build_invader_buckets(res, suspicious_cap: int, threshold,
-                          floors: Optional[Dict] = None,
-                          pair_key: Optional[Tuple[str, str]] = None,
-                          sibling_index: Optional[Dict[int,
-                                                       Tuple[str, str]]] = None,
-                          backward_lookup=None,
-                          null_bar: Optional[float] = None,
-                          branch_target_type: Optional[str] = None
-                          ) -> Tuple[Dict[str, Dict], List[str]]:
-    """Revision 3.6/3.8: bucket every out-of-pool invader of one branch.
-
-    EVERY rendered neuron passes the morph rule (user 2026-09-12,
-    default included): structural bins (sibling/backward/
-    alternate-chain) only name the bucket — they never bypass
-    qualification, and failures stay in the CSVs (a morph-failing
-    sibling is still structurally explainable, so it does not demote
-    to examinees either).  Rule v2 with the binding native floor:
-    `pool_ref >= floor` when the branch has one, otherwise
-    `query morph >= bar` (null-calibrated when available, else the
-    factor x pooled-average threshold).
-
-    Rows carry the precomputed classification from
-    ``MappingValidator.annotate_invaders`` (structural facts outrank
-    morphology): sibling / alternate-chain / backward labels are used
-    verbatim; only UNEXPLAINED invaders (hollow-backward, unmapped) are
-    eligible for morph-qualified `candidates` promotion — qualification
-    rule v2 `query_or_pool` (Rev 3.7): query-based morph >= threshold OR
-    native pool_ref >= floor.  Untyped invaders stay `examinees ·
-    untyped` (never promoted, never `?`).  Out-of-pool fill proposals
-    (proposed unconditionally per Rev 3.8) merge into the same buckets.
-
-    Returns (buckets {key: {'ids': set, 'types': {bid: type}}},
-    insertion-ordered bucket keys).
-    """
-    def pd_isna(v):
-        return v is None or (isinstance(v, float) and v != v)
-
-    def type_label(v):
-        # CSV round-trips can turn missing labels into NaN
-        return '?' if v is None or pd_isna(v) else str(v)
-
-    floor = floors.get(pair_key) if floors and pair_key else None
-    bar_a = null_bar if null_bar is not None else threshold
-
-    def morph_ok(r):
-        # Rule v2 (user 2026-09-12): the native pool-ref floor is
-        # BINDING when the branch has one — the cross-dataset
-        # Track-A score has a heavy-tailed baseline (T1: query 0.226
-        # >= 0.176 but pool-ref 0.013 vs floor 0.83), so Track A never
-        # overrides it.  Track A (null-calibrated when possible)
-        # qualifies only branches with no usable native floor.
-        pr = r.get('morph_pool_ref')
-        if floor is not None:
-            return (pr is not None and not pd_isna(pr) and pr >= floor)
-        m = r.get('morph_v2_similarity')
-        return (bar_a is not None and m is not None and not pd_isna(m)
-                and m >= bar_a)
-
-    def bucket_key(r):
-        cls = r.get('invader_class')
-        if cls == 'untyped':
-            # Rev 3.6 untyped policy: explicit review root, never promoted
-            return 'examinees · untyped'
-        # Rev 3.11 (user 2026-09-13): SAME-TYPE extras (ahead/proposal
-        # type == the branch target type, outside the widened pool --
-        # their annotation group has no chain to the parent) are the
-        # ONLY fills of the mapped type ("the qualified ones").
-        # Unqualified same-type extras get the explicit
-        # `family · {type}` label -- family by annotation, unvalidated
-        # by evidence; both render.
-        atype = type_label(r.get('proposal_type',
-                                 r.get('ahead_target_type')))
-        if cls == 'same-type' or (
-                branch_target_type is not None
-                and atype == str(branch_target_type)):
-            return 'fill' if morph_ok(r) else 'family'
-        # EVERY rendered STRUCTURAL member must pass the morph rule
-        # (user 2026-09-12, default included): sibling/backward labels
-        # only name the bin — they never bypass qualification; failures
-        # stay in the CSVs (a morph-failing sibling is still structurally
-        # explainable, so it does not demote to examinees either).
-        if cls in ('sibling', 'backward') and not morph_ok(r):
-            return None
-        # Rev 3.11 (user 2026-09-13): alternate-chain residues are
-        # mapped-set members — they are SIBLINGS (family), not fills.
-        # `backward` is reserved for OUT-OF-SCOPE mapped types (home
-        # outside the queried population; linker detail stays in
-        # alt_chain_of_parent).
-        if cls == 'sibling' or cls == 'alternate-chain':
-            return 'sibling'
-        if cls == 'backward':
-            if r.get('in_query_family'):
-                return 'sibling'
-            mapped = r.get('backward_maps_to')
-            if mapped and not (isinstance(mapped, float)
-                               and mapped != mapped):
-                return f'backward · {mapped}'
-        bid = int(r.get('ahead_target_bodyId',
-                        r.get('proposal_bodyId')))
-        atype = type_label(r.get('ahead_target_type',
-                                 r.get('proposal_type')))
-        if sibling_index is not None or backward_lookup is not None:
-            key = invader_bucket_key(bid, atype, sibling_index or {},
-                                     backward_lookup)
-            if key != 'examinees':
-                return key
-        # unexplained: morph-qualified -> candidates; otherwise the
-        # examinees review root (the "ranked ahead, failed
-        # qualification" signal survives by design)
-        if morph_ok(r):
-            return 'candidates'
-        return 'examinees'
-
-    buckets: Dict[str, Dict] = {}
-    bucket_order: List[str] = []
-    claimed: Dict[int, Tuple[int, str]] = {}
-    per_src: Dict[int, int] = {}
-    for r in res['suspicious']:
-        sid = int(r['source_bodyId'])
-        if per_src.get(sid, 0) >= suspicious_cap:
-            continue
-        per_src[sid] = per_src.get(sid, 0) + 1
-        key = bucket_key(r)
-        if key is None:
-            continue
-        assign_invader(claimed, buckets, bucket_order,
-                       int(r['ahead_target_bodyId']),
-                       type_label(r.get('ahead_target_type')), key)
-    # Revision 3.8 deep-window candidates: out-of-pool homologs that
-    # rank BELOW the pool best (not invaders) join the same buckets —
-    # structural labels respected, morph-qualified unexplained ones
-    # become `candidates`; unqualified deep rows stay in
-    # deep_candidates.csv only (examinees remains an ahead-only
-    # concept).
-    for r in res.get('deep', []):
-        key = bucket_key(r)
-        if key is None or key in ('examinees', 'examinees · untyped'):
-            continue
-        assign_invader(claimed, buckets, bucket_order,
-                       int(r['ahead_target_bodyId']),
-                       type_label(r.get('ahead_target_type')), key)
-    # Revision 3.8: out-of-pool fill proposals are unconditional and
-    # merge into the same buckets (candidates when morph-qualified and
-    # unexplained; sibling/backward labels respected).  Untyped
-    # proposals NEVER render (Rev 3.6 untyped policy) — they stay in
-    # gap_fill_proposals.csv as evidence.
-    for f in res['fills']:
-        if f.get('side') != 'source' \
-                or f.get('fill_class') != 'out_of_pool':
-            continue
-        key = bucket_key(f)
-        if key is None or key in ('examinees', 'examinees · untyped'):
-            continue
-        assign_invader(claimed, buckets, bucket_order,
-                       int(f['proposal_bodyId']),
-                       type_label(f.get('proposal_type')), key)
-    return buckets, bucket_order
 
 
 def neuron_bbox(nrn) -> Optional[Tuple[np.ndarray, np.ndarray]]:

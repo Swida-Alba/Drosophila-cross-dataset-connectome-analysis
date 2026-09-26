@@ -50,10 +50,8 @@ from comparison.mapping_validation import (  # noqa: E402
     scene_styling_record,
 )
 from comparison.mapping_validation_visualize import (  # noqa: E402
-    assign_invader,
     bucket_root_label,
     check_scene_identities,
-    invader_bucket_key,
 )
 
 SRC_UP = {'A': 10, 'B': 8, 'C': 4, 'D': 2}
@@ -336,30 +334,6 @@ def test_finalize_keeps_same_type_branches_from_different_queries():
 # Issues 2/3/3b — invader cross-referencing helpers
 # ---------------------------------------------------------------------------
 
-def test_invader_bucket_key_sibling_wins():
-    sibling_index = {46295: ('verified', 'SMP222'),
-                     52161: ('matched', 'SMP221')}
-    # sibling pool member -> ONE collapsed 'sibling' root per branch,
-    # even when its own type would also map backward
-    key = invader_bucket_key(
-        46295, 'SMP222', sibling_index,
-        lambda t: 's-CPDN3C' if t == 'SMP222' else None)
-    assert key == 'sibling'
-    assert invader_bucket_key(
-        52161, 'SMP221', sibling_index, lambda t: None) == 'sibling'
-
-
-def test_invader_bucket_key_backward_then_plain_examinees():
-    mapping = {'SMP221': 's-CPDN3C', 'CB4091': 'CB4091'}
-    lookup = lambda t: mapping.get(t)  # noqa: E731
-    assert invader_bucket_key(1, 'SMP221', {}, lookup) \
-        == 'backward · s-CPDN3C'
-    # unmapped + unknown type -> plain examinees bucket
-    assert invader_bucket_key(2, 'SMP999', {}, lookup) == 'examinees'
-    assert invader_bucket_key(3, '?', {}, lookup) == 'examinees'
-    # no sibling hit and no mapper -> plain examinees
-    assert invader_bucket_key(4, 'SMP221', {}, None) == 'examinees'
-
 
 def test_bucket_root_label_counts_types():
     # Revision 3.12: the four expansion categories are ONE root each (the
@@ -380,112 +354,6 @@ def test_bucket_root_label_counts_types():
         == 'sibling · verified · SMP221'
     assert bucket_root_label('backward · s-CPDN3D', {9: 'X'}) \
         == 'backward · s-CPDN3D'
-
-
-def test_assign_invader_single_bucket_rule():
-    """Rev 3.6 inversion: structural facts (sibling, backward,
-    alternate-chain) outrank morph-qualified candidates; each neuron
-    renders in exactly ONE bucket."""
-    buckets, order, claimed = {}, [], {}
-
-    def ids(key):
-        return buckets[key]['ids']
-
-    # a sibling claim now beats an earlier candidates claim (inversion)
-    assign_invader(claimed, buckets, order, 50274, 'CB3508', 'candidates')
-    assign_invader(claimed, buckets, order, 50274, 'CB3508', 'sibling')
-    assert 50274 in ids('sibling')
-    assert 50274 not in ids('candidates')
-
-    # backward does NOT steal from sibling (same priority keeps first)
-    assign_invader(claimed, buckets, order, 61868, 'SMP223', 'sibling')
-    assign_invader(claimed, buckets, order, 61868, 'SMP223', 'backward · X')
-    assert 61868 in ids('sibling')
-    # and examinees never steal from anything
-    assign_invader(claimed, buckets, order, 61868, 'SMP223', 'examinees')
-    assert 61868 in ids('sibling')
-
-    # a later higher-priority (lower value) claim moves the neuron
-    assign_invader(claimed, buckets, order, 61430, 'SMP223', 'examinees')
-    assign_invader(claimed, buckets, order, 61430, 'SMP223',
-                   'backward · s-CPDN3D')
-    assert 61430 in ids('backward · s-CPDN3D')
-    assert 61430 not in ids('examinees')
-
-    # each neuron renders exactly once overall
-    all_ids = [b for rec in buckets.values() for b in rec['ids']]
-    assert len(all_ids) == len(set(all_ids)) == 3
-    # render order: sibling first, then backward, then candidates
-    from comparison.mapping_validation_visualize import \
-        INVADER_BUCKET_PRIORITY
-    render_order = sorted(order, key=lambda k: (
-        INVADER_BUCKET_PRIORITY[k.split(' · ')[0]], k))
-    # buckets left empty by priority moves still appear in the order;
-    # check the non-empty render sequence
-    prefixes = [k.split(' · ')[0] for k in render_order
-                if buckets[k]['ids']]
-    # 50274 moved out of candidates, so its bucket is empty here
-    assert prefixes == ['sibling', 'backward']
-
-
-def test_build_invader_buckets_uses_precomputed_classification():
-    """Rows annotated by annotate_invaders drive the bucketing: sibling/
-    alternate-chain labels render verbatim; only unexplained invaders are
-    morph-promotable; untyped stay `examinees · untyped`; out-of-pool
-    fill proposals merge in (Rev 3.8) and non-qualifying ones don't."""
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    res = {
-        'suspicious': [
-            {'source_bodyId': 1, 'ahead_target_bodyId': 50274,
-             'ahead_target_type': 'CB3508', 'invader_class': 'sibling',
-             'invader_label': 'sibling · verified · CB3508',
-             'morph_v2_similarity': 0.9},
-            {'source_bodyId': 1, 'ahead_target_bodyId': 61430,
-             'ahead_target_type': 'SMP223',
-             'invader_class': 'alternate-chain',
-             'invader_label': 'alternate-chain · CB3612 → SMP223',
-             'in_query_family': True,
-             'backward_maps_to': 's-CPDN3D',
-             'morph_v2_similarity': 0.6},
-            {'source_bodyId': 1, 'ahead_target_bodyId': 80536,
-             'ahead_target_type': 'CB4091',
-             'invader_class': 'hollow-backward', 'invader_label': None,
-             'morph_v2_similarity': 0.8},
-            {'source_bodyId': 1, 'ahead_target_bodyId': 293154,
-             'ahead_target_type': None, 'invader_class': 'untyped',
-             'invader_label': None, 'morph_v2_similarity': 0.9},
-            {'source_bodyId': 1, 'ahead_target_bodyId': 999,
-             'ahead_target_type': 'X', 'invader_class': 'unmapped',
-             'invader_label': None, 'morph_v2_similarity': 0.01},
-        ],
-        'fills': [
-            {'side': 'source', 'fill_class': 'out_of_pool',
-             'proposal_bodyId': 888, 'proposal_type': 'Y',
-             'invader_class': 'unmapped', 'invader_label': None,
-             'morph_v2_similarity': 0.9},
-            {'side': 'source', 'fill_class': 'out_of_pool',
-             'proposal_bodyId': 777, 'proposal_type': 'Z',
-             'invader_class': 'unmapped', 'invader_label': None,
-             'morph_v2_similarity': 0.01},
-        ],
-    }
-    buckets, order = build_invader_buckets(res, suspicious_cap=20,
-                                           threshold=0.5, floors=None)
-    # collapsed roots: in-scope family residues are all siblings
-    assert set(buckets) == {
-        'sibling', 'candidates', 'examinees · untyped', 'examinees'}
-    assert 80536 in buckets['candidates']['ids']   # morph-qualified, unexplained
-    assert 888 in buckets['candidates']['ids']     # qualifying fill proposal
-    assert 777 not in buckets.get('examinees', {'ids': set()})['ids']
-    assert buckets['examinees · untyped']['ids'] == {293154}
-    assert bucket_root_label('examinees · untyped', {293154: 'untyped'}) \
-        == 'examinees · untyped'
-    # priority order: sibling < alternate-chain < candidates < examinees
-    from comparison.mapping_validation_visualize import INVADER_BUCKET_PRIORITY
-    ranked = sorted(order, key=lambda k: (
-        INVADER_BUCKET_PRIORITY[k.split(' · ')[0]], k))
-    assert ranked[0] == 'sibling'
-    assert ranked[-1].startswith('examinees')
 
 
 # ---------------------------------------------------------------------------
@@ -774,52 +642,6 @@ def test_annotate_invaders_cross_parent_becomes_backward():
     assert sus[1]['invader_label'] == 'sibling · verified · SMP220'
 
 
-def test_morph_gate_on_structural_bins_always():
-    """User 2026-09-12: ALL rendered STRUCTURAL members pass the morph
-    rule in every scope — a backward/sibling row that fails rule v2
-    (e.g. R1-R6 with NaN pool-ref) does not render.  The unexplained
-    flow keeps its review path (candidates when qualified, examinees
-    otherwise), and the null-calibrated Track-A bar replaces the
-    arbitrary factor x pooled-average bar for branches without a
-    native floor."""
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    res = {'suspicious': [
-        # backward, pool-ref NaN (the R1-R6 case) -> never renders
-        {'source_bodyId': 1, 'ahead_target_bodyId': 205699,
-         'ahead_target_type': 'R1-R6', 'invader_class': 'backward',
-         'backward_maps_to': 'R1-6', 'morph_v2_similarity': None,
-         'morph_pool_ref': None},
-        # sibling in the no-floor branch: passes via the null bar
-        {'source_bodyId': 1, 'ahead_target_bodyId': 50274,
-         'ahead_target_type': 'CB3508', 'invader_class': 'sibling',
-         'backward_maps_to': None, 'morph_v2_similarity': 0.4,
-         'morph_pool_ref': 0.9},
-        # unexplained in a NO-FLOOR branch: passes only via the
-        # null-calibrated Track-A bar
-        {'source_bodyId': 1, 'ahead_target_bodyId': 80536,
-         'ahead_target_type': 'CB4091', 'invader_class': 'hollow-backward',
-         'backward_maps_to': 'CB4091', 'morph_v2_similarity': 0.4,
-         'morph_pool_ref': None},
-        {'source_bodyId': 1, 'ahead_target_bodyId': 39416,
-         'ahead_target_type': 'SMP217', 'invader_class': 'hollow-backward',
-         'backward_maps_to': 'SMP217', 'morph_v2_similarity': 0.05,
-         'morph_pool_ref': None},
-    ], 'fills': []}
-    floors = {('s-CPDN3C', 'SMP222'): 0.6}   # SMP227-style: no floor
-    b, _ = build_invader_buckets(res, suspicious_cap=20, threshold=0.25,
-                                 floors=floors,
-                                 pair_key=('s-CPDN3C', 'SMP227'),
-                                 null_bar=0.3)
-    # R1-R6: NaN pool-ref + NaN query morph -> out (any scope)
-    assert 'backward · R1-6' not in b
-    # sibling passes the binding floor -> renders
-    assert 'sibling' in b and 50274 in b['sibling']['ids']
-    # no-floor branch: the null bar (0.3) governs, not the 0.25 threshold
-    assert 'candidates' in b and 80536 in b['candidates']['ids']
-    assert 39416 not in b.get('candidates', {'ids': set()})['ids']
-    assert 39416 in b['examinees']['ids']
-
-
 def test_hemisphere_asymmetry_fires_gap():
     """User 2026-09-12 (corrected): every neuron has a hemisphere
     identity, so an L != R imbalance in either pool fires the gap even
@@ -1096,35 +918,6 @@ def test_rev312_set_coverage_candidate_evidence_closes_hole():
     assert m['per_type']['X']['hole_body_ids'] == []
 
 
-def test_same_type_alternate_chain_is_sibling_not_fill():
-    """Rev 3.11 (user 2026-09-13): alternate-chain residues are
-    mapped-set members -- SIBLINGS, not fills -- whether same-type
-    (own branch target) or cross-target (a sibling branch's target).
-    Only out-of-scope mapped types render under `backward · {mapped}`
-    (expansion advice)."""
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    res = {'suspicious': [
-        # same-type residue: SMP220 in the SMP220 branch (in-scope)
-        {'source_bodyId': 1, 'ahead_target_bodyId': 56425,
-         'ahead_target_type': 'SMP220', 'invader_class': 'alternate-chain',
-         'in_query_family': True, 'backward_maps_to': 's-CPDN3C',
-         'morph_v2_similarity': 0.7, 'morph_pool_ref': 0.9},
-        # cross-target residue: SMP223 in the SMP222 branch (in-scope)
-        {'source_bodyId': 1, 'ahead_target_bodyId': 61430,
-         'ahead_target_type': 'SMP223', 'invader_class': 'alternate-chain',
-         'in_query_family': True, 'backward_maps_to': 's-CPDN3D',
-         'morph_v2_similarity': 0.7, 'morph_pool_ref': 0.9},
-    ], 'fills': []}
-    b, _ = build_invader_buckets(
-        res, suspicious_cap=20, threshold=0.5,
-        floors={('s-CPDN3C', 'SMP220'): 0.6,
-                ('s-CPDN3D', 'SMP222'): 0.6},
-        pair_key=('s-CPDN3C', 'SMP220'))
-    # both residues are siblings; the fill and backward roots are gone
-    assert set(b) == {'sibling'}
-    assert {56425, 61430} <= b['sibling']['ids']
-
-
 def test_rev312_category_buckets_from_exported_category():
     """Revision 3.12: the scene buckets by the EXPORTED category, not by
     re-parsing label prefixes.  A row renders only when in scope and its
@@ -1165,6 +958,42 @@ def test_rev312_category_buckets_from_exported_category():
     assert 'sibling' in b and 11111 in b['sibling']['ids']
     # out-of-scope row never rendered
     assert all(99999 not in rec['ids'] for rec in b.values())
+
+
+def test_rev312_one_bucket_per_neuron_follows_dedup_rank():
+    """The live single-bucket rule (Revision 3.6 inversion, enforced by
+    `build_category_buckets` through DEDUP_RANK): a target that qualifies
+    for two expansion bins renders in ONE of them, the structurally
+    stronger one, and the weaker claim is vacated — in either row order.
+
+    This replaces what the retired `assign_invader` used to prove about the
+    pre-3.12 builder; the rule itself is live, so it needs a live test.
+    """
+    from comparison.mapping_validation_visualize import build_category_buckets
+
+    def _rows(strong_first):
+        sibling = {'source_bodyId': 1, 'ahead_target_bodyId': 50274,
+                   'ahead_target_type': 'CB3508', 'category': 'sibling',
+                   'candidate_annotation': 'CB3508', 'in_scope': True,
+                   'source_type': 's-CPDN3C', 'target_type': 'SMP222'}
+        cand = dict(sibling, category='candidates',
+                    candidate_annotation='CB3508>s-CPDN3C')
+        return [sibling, cand] if strong_first else [cand, sibling]
+
+    v = MappingValidator.__new__(MappingValidator)
+    v.cfg = MappingValidationConfig(
+        source_dataset='flywire_FAFB_v783', target_dataset='male-cns:v1.0',
+        query_types=['x'], visualize=False)
+    for strong_first in (True, False):
+        b, _ = build_category_buckets(
+            {'suspicious': _rows(strong_first), 'deep': [], 'fills': []},
+            v, None, suspicious_cap=20)
+        assert 50274 in b['sibling']['ids'], strong_first
+        # the weaker bin never keeps a ghost of the vacated claim
+        assert 50274 not in b.get('candidates', {'ids': set()})['ids'], \
+            strong_first
+        assert sum(50274 in rec['ids'] for rec in b.values()) == 1, \
+            strong_first
 
 
 def test_rev312_classify_category_partition():
@@ -1559,34 +1388,6 @@ def test_track_b_floor_calibration_with_mock_cache(monkeypatch):
     assert need <= set(sus[0].keys())
 
 
-def test_backward_roots_split_by_mapped_type():
-    """Collapsed backward roots are per DISTINCT mapped type: a branch
-    whose invaders map back to two different source types gets two
-    roots (`backward · A`, `backward · B`), never a merged one."""
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    res = {'suspicious': [
-        {'source_bodyId': 1, 'ahead_target_bodyId': 40165,
-         'ahead_target_type': 'SMP223', 'invader_class': 'backward',
-         'backward_maps_to': 's-CPDN3D', 'morph_v2_similarity': 0.6},
-        {'source_bodyId': 1, 'ahead_target_bodyId': 63414,
-         'ahead_target_type': 'SLP267', 'invader_class': 'backward',
-         'backward_maps_to': 's-CPDN3E', 'morph_v2_similarity': 0.6},
-        {'source_bodyId': 1, 'ahead_target_bodyId': 46295,
-         'ahead_target_type': 'SMP222', 'invader_class': 'backward',
-         'backward_maps_to': 's-CPDN3D', 'morph_v2_similarity': 0.7},
-    ], 'fills': []}
-    buckets, order = build_invader_buckets(res, suspicious_cap=20,
-                                           threshold=0.5, floors=None)
-    assert set(buckets) == {'backward · s-CPDN3D', 'backward · s-CPDN3E'}
-    assert buckets['backward · s-CPDN3D']['ids'] == {40165, 46295}
-    assert buckets['backward · s-CPDN3E']['ids'] == {63414}
-    # each root keeps its own exact type as the suffix
-    assert bucket_root_label('backward · s-CPDN3D',
-                             {40165: 'SMP223'}) == 'backward · s-CPDN3D'
-    assert bucket_root_label('backward · s-CPDN3E',
-                             {63414: 'SLP267'}) == 'backward · s-CPDN3E'
-
-
 def test_backward_decision_hollow_home():
     """A mapper 'mapped' decision with a 0-count source home is hollow
     and must not earn backward_home_real (the CB4091 case)."""
@@ -1614,65 +1415,6 @@ def test_backward_decision_hollow_home():
 # ---------------------------------------------------------------------------
 # Revision 3.7 — frame disclosure in the calibration record
 # ---------------------------------------------------------------------------
-
-def test_deep_window_candidates_below_pool_best():
-    """Rev 3.8 deep window: an out-of-pool homolog ranked BELOW the pool
-    best (an invader never surfaces it) is extracted within the window,
-    caliber-gated, and morph-qualification decides promotion."""
-    import pandas as pd
-    v = MappingValidator.__new__(MappingValidator)
-    v.cfg = MappingValidationConfig(
-        source_dataset='dsA', target_dataset='dsB', query_types=['T'],
-        morph_enabled=False, visualize=False,
-        aggressive_expansion=True, candidate_window=25, deep_cap=10)
-    v.mapper = None
-    v.notes = []
-
-    class FakeProfiler:
-        def get_profile(self, bid, dataset):
-            return None
-
-        def get_types_for_bodyids(self, bids, dataset):
-            return {b: 'TX' for b in bids}
-
-    v.profiler = FakeProfiler()
-    pair = TypePair('dsA', 'T', [1], 'dsB', 'T', [11])
-    # pool best 11 at ru-rank 1; deep homolog 302 at rank 4 (below pool),
-    # fragment 303 at rank 5 (must be caliber-dropped)
-    scans = {1: pd.DataFrame([
-        {'target_bid': 11, 'rank_union': 0.90, 'rank_union_rank': 1,
-         'jaccard': 0.90, 'jaccard_rank': 1},
-        {'target_bid': 302, 'rank_union': 0.55, 'rank_union_rank': 4,
-         'jaccard': 0.50, 'jaccard_rank': 4},
-        {'target_bid': 303, 'rank_union': 0.50, 'rank_union_rank': 5,
-         'jaccard': 0.45, 'jaccard_rank': 5},
-    ])}
-    sizes = {11: 2.6e9, 302: 3.0e8, 303: 2.4e6}
-    res = v.validate_pair(pair, scans, {11: 'T', 302: 'TX', 303: 'TX'},
-                          sizes=sizes)
-    # 302 ranks below the pool best -> NOT an invader...
-    assert all(s['ahead_target_bodyId'] != 302 for s in res['suspicious'])
-    # ...but the deep window catches it, and the fragment is dropped
-    deep_bids = [d['ahead_target_bodyId'] for d in res['deep']]
-    assert deep_bids == [302]
-    # Re-based 2026-09-21: rank 4 is inside the borderline window
-    # `rank_top_k`, and that tight window is what family MODE reads as a
-    # candidate-discovery feed.  Tagging by the ROW's rank (not the mode)
-    # is what keeps the modes nested: the same neuron is a `candidates`
-    # row in family and in aggressive, never `examinees` in one and
-    # `candidates` in the other.
-    assert res['deep'][0]['candidate_source'] == 'top_window'
-    assert res['summary']['deep_candidates'] == 1
-    # and it classifies/qualifies through the standard buckets
-    res['deep'][0].update(invader_class='unmapped', invader_label=None,
-                          morph_pool_ref=0.9)
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    res['fills'] = []
-    buckets, _ = build_invader_buckets(res, suspicious_cap=20,
-                                       threshold=0.5,
-                                       floors={('T', 'T'): 0.6},
-                                       pair_key=('T', 'T'))
-    assert 302 in buckets['candidates']['ids']
 
 
 def _nesting_fixture(mode):
@@ -1914,73 +1656,6 @@ def test_the_discovery_window_carries_candidates_a_perfect_pool_hides():
         tier=None, mode='family') == ('', False, False)
 
 
-def test_gap_fill_caliber_gate_and_untyped_render():
-    """Rev 3.6 + 3.8: an out-of-pool fragment proposed as a fill is
-    replaced by the next-best candidate above the caliber floor, and an
-    untyped fill proposal never renders (stays in the CSV)."""
-    import pandas as pd
-    from comparison.mapping_validation_visualize import build_invader_buckets
-    v = MappingValidator.__new__(MappingValidator)
-    v.cfg = MappingValidationConfig(
-        source_dataset='dsA', target_dataset='dsB', query_types=['T'],
-        morph_enabled=False, visualize=False, aggressive_expansion=True)
-    v.mapper = None
-    v.notes = []
-
-    class FakeProfiler:
-        def get_profile(self, bid, dataset):
-            return None
-
-        def get_types_for_bodyids(self, bids, dataset):
-            return {b: 'TX' for b in bids}
-
-    v.profiler = FakeProfiler()
-    pair = TypePair('dsA', 'T', [1, 2], 'dsB', 'T', [11])
-    scans = {
-        1: pd.DataFrame([{'target_bid': 11, 'rank_union': 0.9,
-                          'rank_union_rank': 1, 'jaccard': 0.9,
-                          'jaccard_rank': 1}]),
-        2: pd.DataFrame([
-            {'target_bid': 603004462, 'rank_union': 0.5,
-             'rank_union_rank': 2, 'jaccard': 0.4, 'jaccard_rank': 2},
-            {'target_bid': 888, 'rank_union': 0.45,
-             'rank_union_rank': 3, 'jaccard': 0.35, 'jaccard_rank': 3},
-        ]),
-    }
-    val_rows = [
-        {'source_bodyId': 1, 'verdict': 'verified', 'suspicious_count': 0},
-        {'source_bodyId': 2, 'verdict': 'verified', 'suspicious_count': 0},
-    ]
-    # source 2 is unpaired (11's mutual best is source 1); its best
-    # candidate 603004462 is a fragment -> the proposal falls to 888
-    fills = v._gap_fill(pair, scans, [(1, 11)], val_rows, {11},
-                        {11: 'T', 603004462: None, 888: None},
-                        sizes={11: 2.6e9, 603004462: 2.4e6, 888: 3.0e8})
-    src_fills = {f['bodyId']: f for f in fills if f['side'] == 'source'}
-    assert src_fills[2]['proposal_bodyId'] == 888
-    # untyped fill proposals never render
-    res = {'suspicious': [], 'fills': [
-        {'side': 'source', 'fill_class': 'out_of_pool',
-         'proposal_bodyId': 603004462, 'proposal_type': None,
-         'invader_class': 'untyped', 'invader_label': None,
-         'morph_v2_similarity': 0.9},
-        {'side': 'source', 'fill_class': 'out_of_pool',
-         'proposal_bodyId': 888, 'proposal_type': 'Y',
-         'invader_class': 'unmapped', 'invader_label': None,
-         'morph_v2_similarity': 0.9},
-    ]}
-    buckets, _ = build_invader_buckets(res, suspicious_cap=20,
-                                       threshold=0.5, floors=None)
-    assert 603004462 not in buckets.get('examinees · untyped',
-                                        {'ids': set()})['ids']
-    assert 888 in buckets['candidates']['ids']
-    # root label: sibling carries the member-count suffix
-    assert bucket_root_label('sibling', {1: 'A', 2: 'B'}) \
-        == 'sibling · 2 members'
-    assert bucket_root_label('backward · s-CPDN3D', {1: 'A'}) \
-        == 'backward · s-CPDN3D'
-
-
 def test_annotate_invaders_alternate_chain(monkeypatch):
     """An invader whose type is the final hop of a NON-selected chain of
     its own parent (SMP223 via CB3612 under s-CPDN3D, where the CB3508
@@ -2049,8 +1724,6 @@ def test_run_morphology_discloses_score_frame(monkeypatch):
     assert 'target' in sf['track_a'] and 'transformed' in sf['track_a']
     assert 'native' in sf['track_b'] and 'no transforms' in sf['track_b']
     assert 'source' in sf['visualization']
-
-
 
 
 def test_overlay_source_metadata_aligns_rows_to_bids(tmp_path):
@@ -2705,8 +2378,9 @@ def test_editable_categories_cover_every_key_the_scene_looks_up():
     aliased = {a for targets in COLOR_ALIASES.values() for a in targets}
     reachable = set(COLOR_EDITABLE_CATEGORIES) | aliased
     unreachable = [c for c in CATEGORY_COLORS if c not in reachable]
-    # `backward` is the one exception: reachable only through the pre-3.12
-    # build_invader_buckets, which the live render path no longer calls.
+    # The three retained legacy keys are the exception, and only `backward` is
+    # unaliased: the pre-3.12 builder that could color them is deleted, so they
+    # sit in CATEGORY_COLORS as a vocabulary hedge rather than a live bin.
     assert unreachable == ['backward'], unreachable
     assert set(COLOR_EDITABLE_CATEGORIES) <= set(CATEGORY_COLORS)
 
@@ -2823,7 +2497,6 @@ def test_scene_styling_record_publishes_what_the_run_wore():
     # scenes off: there was no look to wear, so the raw config is the record
     off = scene_styling_record(_cfg(visualize=False))
     assert off == {'scene_viz': None, 'scene_category_colors': None}
-
 
 
 def test_rev312_mapper_gap_counts_follow_annotation_finalization():
