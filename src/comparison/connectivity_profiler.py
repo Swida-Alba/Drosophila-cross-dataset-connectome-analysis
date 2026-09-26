@@ -1377,6 +1377,14 @@ class ConnectivityProfiler:
         
         # Client cache per dataset
         self._clients: Dict[str, Any] = {}
+        # Why a client could NOT be created, per dataset. `ensure_data_available`
+        # used to answer "check your credentials" for every failure, including
+        # the one that is not a credential problem at all — the server simply
+        # does not host that dataset name (measured 2026-09-26, when the live
+        # catalog stopped answering `male-cns:v1.0` and lists `manc:*` in its
+        # place: a fully local Find Homologs run died at save time and was
+        # told to check its token).
+        self._client_errors: Dict[str, str] = {}
         
         # Data availability cache: dataset -> True (avoids repeated checks)
         self._data_availability_cache: Dict[str, bool] = {}
@@ -2511,6 +2519,19 @@ class ConnectivityProfiler:
                 client = self._get_client_for_dataset(dataset)
                 if client is None:
                     if raise_on_missing:
+                        reason = self._client_errors.get(dataset)
+                        if reason:
+                            # name what the server actually said rather than
+                            # guessing at credentials
+                            raise DataNotAvailableError(
+                                f"Cannot connect to NeuPrint for '{dataset}'.\n\n"
+                                f"The server refused this dataset: {reason}\n\n"
+                                "If this release is analysed from local tables, "
+                                "the dataset NAME is the problem (NeuPrint's list "
+                                "no longer matches it), not the token; "
+                                "otherwise check NEUPRINT_APPLICATION_CREDENTIALS "
+                                "and that the token may access it."
+                            )
                         raise DataNotAvailableError(
                             f"Cannot connect to NeuPrint for '{dataset}'.\n\n"
                             f"Please ensure:\n"
@@ -2650,6 +2671,7 @@ class ConnectivityProfiler:
             self._clients[dataset] = client
             return client
         except Exception as e:
+            self._client_errors[dataset] = str(e)
             self._log(f"Warning: Could not create client for {dataset}: {e}")
             return None
     
