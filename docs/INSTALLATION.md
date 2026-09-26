@@ -60,6 +60,12 @@ automatically before starting the UI.
 - Do **not** install `neuronbridge-python` — DROCAT bundles its own client
   (`src/neuronbridge_client.py`) to avoid that package's incompatible
   Pydantic pin and heavy dependency tree.
+  Manual `python`/`pytest` commands in this env need the same guard on
+  Windows hosts with a `Roaming\Python` user-site tree (round-6 finding
+  F-I1: a stale user-site `psutil` shadows the pinned one and the
+  version preflight prints the wrong number): prefix every manual
+  invocation with `PYTHONNOUSERSITE=1` (`set PYTHONNOUSERSITE=1` in
+  cmd, `$env:PYTHONNOUSERSITE="1"` in PowerShell).
 
 ## 3. Manual install
 

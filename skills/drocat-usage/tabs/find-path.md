@@ -9,7 +9,7 @@ pathfinding between two neuron groups.
 - **import:** `from coana import FindNeuronConnection`
 - **class:** `FindNeuronConnection` (var `fc`)
 - **init:** `fc.InitializeNeuronInfo()`
-- **method:** `fc.FindAllPath(forward_only=True, find_reciprocal=fc.find_reciprocal)`
+- **method:** `fc.FindAllPath(forward_only=True)` — the method's find_reciprocal parameter defers to the constructor field (2026-09-25); the explicit forwarding form is retired. Set the constructor flag and call plain
   (the UI uses `find_all_path`; `fc.FindPath()` is the single-strategy variant)
 
 ## Parameters the UI builds
@@ -53,7 +53,7 @@ fc = FindNeuronConnection(
 # optional: fc constructor param custom_mapping_file for a custom grouping/mapping JSON
 
 fc.InitializeNeuronInfo()
-fc.FindAllPath(forward_only=True, find_reciprocal=fc.find_reciprocal)
+fc.FindAllPath(forward_only=True)
 ```
 
 ## Run
