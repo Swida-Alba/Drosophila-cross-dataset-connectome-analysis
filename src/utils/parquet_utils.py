@@ -23,6 +23,22 @@ still alive is never touched, however old its temp looks; only a temp whose
 PID has demonstrably been recycled is reclaimed that way.
 """
 
+# Round-6 finding F-D1: this module EMITS the non-ASCII status glyphs
+# (✓ / ⚠️) but never installed the UTF-8 stdio guard its siblings do, so a
+# SUCCESSFUL, already-committed re-encode aborted with UnicodeEncodeError on
+# a cp936 console whenever the entry point (e.g. FAFB_file_converter or
+# banc_public_data as __main__) did not import coana first. Installing the
+# guard here covers every entry point; it is idempotent and never raises.
+try:
+    from .console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
+
 import os
 import time
 

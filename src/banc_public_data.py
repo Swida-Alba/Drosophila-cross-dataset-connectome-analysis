@@ -186,14 +186,31 @@ def _is_v626_release(dataset) -> bool:
 
 def http_get(url: str, timeout: float = 120, attempts: int = 3,
              note: str = "") -> Optional[bytes]:
-    """GET *url* with retries.  Returns None on HTTP 404, bytes on success."""
+    """GET *url* with retries and byte-range RESUME.  Returns None on HTTP
+    404, bytes on success.
+
+    Round-6 finding F-N1: every retry used to restart from byte 0, so one
+    lossy link exhausted the attempts mid-file and aborted BANC
+    preparation — resume only worked BETWEEN files.  The partial body of a
+    dropped read is now kept and the next attempt continues it with a
+    ``Range: bytes=<n>-`` request; a server that answers 200 instead of
+    206 (range ignored) restarts cleanly from zero.
+    """
     last_error = None
+    received = bytearray()
     for attempt in range(attempts):
         try:
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "DROCAT/banc-public-data"})
+            headers = {"User-Agent": "DROCAT/banc-public-data"}
+            if received:
+                headers["Range"] = f"bytes={len(received)}-"
+            request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read()
+                status = getattr(response, 'status', 200)
+                if received and status == 206:
+                    received.extend(response.read())  # continuation
+                else:
+                    received = bytearray(response.read())  # full restart
+                return bytes(received)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
@@ -203,7 +220,13 @@ def http_get(url: str, timeout: float = 120, attempts: int = 3,
             # http.client.HTTPException covers IncompleteRead: a connection
             # dropped mid-body used to escape the retry loop entirely and
             # abort BANC preparation after tens of MB (re-test finding F3,
-            # 2026-09-16).  The partial body is discarded and re-read.
+            # 2026-09-16).  The partial bytes read so far survive in
+            # ``received`` and the next attempt resumes from them.
+            # http.client.IncompleteRead.partial is the BYTES read so far
+            # (not a file object) — salvage them so the retry resumes.
+            partial = getattr(exc, 'partial', None)
+            if isinstance(partial, (bytes, bytearray)):
+                received.extend(partial)
             last_error = exc
         if attempt + 1 < attempts:
             time.sleep(1.5 * (attempt + 1))

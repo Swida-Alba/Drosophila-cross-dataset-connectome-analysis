@@ -153,7 +153,7 @@ def run_probe(python_exe: str, modules: list) -> dict:
         [python_exe, "-c", code],
         capture_output=True,
         env=isolated_python_env(),
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         timeout=300,
     )
     try:
@@ -167,7 +167,7 @@ def run_version_probe(python_exe: str, manifests: list[Path]) -> dict:
         [python_exe, "-c", VERSION_PROBE, *(str(path) for path in manifests)],
         capture_output=True,
         env=isolated_python_env(),
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         timeout=300,
     )
     try:
@@ -257,7 +257,7 @@ def main() -> int:
             [python_exe, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
             capture_output=True,
             env=isolated_python_env(),
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
         )
         version = proc.stdout.strip()
@@ -306,7 +306,7 @@ def main() -> int:
             [python_exe, "-m", "pip", "check"],
             capture_output=True,
             env=isolated_python_env(),
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=300,
         )
         detail = (proc.stdout or proc.stderr).strip()
@@ -323,13 +323,16 @@ def main() -> int:
             cwd=str(project),
             capture_output=True,
             env=isolated_python_env(),
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=300,
         )
+        stdout_text = proc.stdout or ""
+        stderr_text = proc.stderr or ""
         check(
             "atomic write round-trip",
-            proc.returncode == 0 and "atomic-ok" in proc.stdout,
-            (proc.stderr or proc.stdout)[-300:],
+            proc.returncode == 0 and "atomic-ok" in stdout_text,
+            (stderr_text or stdout_text
+             or "probe produced no output (reader failed)")[-300:],
         )
     except Exception as exc:
         check("atomic write round-trip", False, str(exc))
@@ -366,7 +369,7 @@ def main() -> int:
             cwd=str(project),
             capture_output=True,
             env=isolated_python_env(),
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=300,
         )
         check("UI imports (ui.app)", "ui-ok" in proc.stdout, proc.stderr[-200:])
