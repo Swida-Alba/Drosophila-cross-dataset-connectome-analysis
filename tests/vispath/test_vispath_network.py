@@ -653,6 +653,104 @@ class TestPanelCollapseAndRegrouping:
         assert 'onclick="saveLayout()"' not in layout_page
         assert 'onclick="exportLayout()"' not in layout_page
 
+    def test_layout_persistence_captures_all_parameters(self, network_html):
+        """Save/Load must capture the FULL view state, not just positions
+        and colors: per-element alpha (the opacity style bypass), edge base
+        color + alpha, group definitions/memberships, background + label
+        font color, metric, edge filter, hide toggles, and every global
+        style control including edge-label size, spacing and rotation."""
+        html = network_html.read_text(encoding="utf-8")
+        assert "function captureNetworkState(" in html
+        assert "function applyNetworkState(" in html
+        # capture side: the alpha lives in the opacity style bypass, the
+        # edge base appearance in the __base* data keys
+        assert "captureStyleBypass(n)" in html
+        assert "EDGE_BASE_COLOR_KEY" in html
+        assert "EDGE_BASE_OPACITY_KEY" in html
+        capture_block = html[html.index("function captureNetworkState("):html.index("function applyNetworkState(")]
+        for key in ("version: 2", "edgeStyles", "assignedGroups", "groupDefaults",
+                    "customGroups", "background: bgCtrl", "labelFontColor",
+                    "edgeWeightLabels", "hemisphereMirrorEnabled", "reciprocal:",
+                    "filter:", "hideToggles", "edgeLabelFontSize", "metric:",
+                    "spacingX", "rotation", "background-opacity"):
+            assert key in capture_block, f"capture payload missing {key!r}"
+        # apply side: guarded restore paths + re-derivation of class hiding;
+        # alpha restores as BODY-only (background-opacity) so the label font
+        # keeps full opacity, and stale whole-element opacity is stripped
+        apply_block = html[html.index("function applyNetworkState("):html.index("function saveLayout(")]
+        assert "restoringHistoryState = true" in apply_block
+        assert "node.style('background-opacity', item.opacity)" in apply_block
+        assert "node.removeStyle('opacity')" in apply_block
+        assert "setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase)" in apply_block
+        assert "reapplySelfLoopHiding()" in apply_block
+        assert "syncToggleButtons()" in apply_block
+        assert "bgCtrl.apply(state.background)" in apply_block
+
+    def test_alpha_is_body_only_everywhere(self, network_html):
+        """Alpha must never ride on whole-element 'opacity': that property
+        multiplies the LABEL text too, so a faded node would fade its font.
+        Every applier/read-back uses background-opacity (nodes) or
+        line/arrow opacity (edges); element 'opacity' stays reserved for
+        hiding (the .hidden stylesheet rule) and transient placeholders."""
+        html = network_html.read_text(encoding="utf-8")
+        # the alpha appliers are body-only
+        assert "'background-opacity': opacity" in html          # individual + group appliers
+        assert "node.style('background-opacity', sourceOpacity)" in html    # initial opacity
+        assert "node.style('background-opacity', intermediateOpacity)" in html
+        assert "node.style('background-opacity', targetOpacity)" in html
+        assert "'line-opacity': edgeOpacity" in html            # initial edge opacity
+        assert "'line-opacity': opacity" in html                # edge base appearance
+        assert "'background-opacity': ((def.opacity" in html    # applyGroupLook
+        # the alpha read-backs match
+        assert "element.style('background-opacity')" in html    # tap read-back (node)
+        assert "element.style('line-opacity')" in html          # tap read-back (edge)
+        # no remaining applier SETS whole-element opacity on elements (reads
+        # of the legacy key for old-build file compat are fine)
+        assert "node.style('opacity'," not in html
+        assert "edge.style('opacity'," not in html
+        assert "'background-color': color, 'opacity':" not in html
+
+    def test_graph_export_carries_metric_and_edge_label_size(self, network_html):
+        """Import/Export Graph settings include the connection metric and
+        the edge-label font size, so a graph round-trip restores them too
+        (the restore runs under the history-suppression flag)."""
+        html = network_html.read_text(encoding="utf-8")
+        export_block = html[html.index("function exportGraph("):html.index("// ===== EDGE LIST CSV EXPORT =====")]
+        assert "metric: currentMetric" in export_block
+        assert "edgeLabelFontSize: globalEdgeLabelFontSize" in export_block
+        import_block = html[html.index("function loadGraphFile("):html.index("function exportLayout(")]
+        assert "settings.metric !== undefined" in import_block
+        assert "settings.edgeLabelFontSize !== undefined" in import_block
+
+    def test_layout_autorestore_on_open(self, network_html):
+        """A saved layout for this generated file is re-applied on open
+        (deferred past the init's hemisphere-caching timer), with a toast
+        whose Reset action drops the saved state and reloads."""
+        html = network_html.read_text(encoding="utf-8")
+        init_at = html.index("initializeEdgeBaseStyles();")
+        autorestore_at = html.index("Auto-restore: a layout saved for THIS generated file")
+        assert autorestore_at > init_at, "auto-restore must run after the edge base init"
+        block = html[autorestore_at:autorestore_at + 2000]
+        assert "applyNetworkState(state)" in block
+        assert "localStorage.removeItem(LAYOUT_STORAGE_KEY)" in block
+        assert "window.location.reload()" in block
+        assert "}, 250);" in block
+
+    def test_layout_file_export_is_full_state_v2(self, network_html):
+        """Export Layout emits the v2 full-state file (legacy positions map
+        kept); Import Layout dispatches on `state` and still accepts v1
+        positions-only files."""
+        html = network_html.read_text(encoding="utf-8")
+        export_block = html[html.index("function exportLayout("):html.index("function importLayout(")]
+        assert "version: '2.0'" in export_block
+        assert "type: 'network-state'" in export_block
+        assert "state: captureNetworkState()" in export_block
+        assert "layout: layoutData" in export_block
+        import_block = html[html.index("function loadLayoutFile("):html.index("// Add CSS for edge-source indicator")]
+        assert "if (!importData.layout && !importData.state)" in import_block
+        assert "if (importData.state)" in import_block
+        assert "applyNetworkState(importData.state)" in import_block
+
     def test_export_row_compact(self, network_html):
         """The narrowed scale input shares ONE flex row with the PNG and
         SVG buttons (buttons to the RIGHT of the input, not below it)."""
@@ -1219,6 +1317,22 @@ class TestUiFeedbackNode:
             f"ui-feedback harness failed:\n{res.stdout}\n{res.stderr}"
         )
         assert "ALL UI-FEEDBACK TESTS PASSED" in res.stdout
+
+
+class TestLayoutPersistenceNode:
+    """The layout persistence capture/apply pair extracted from the
+    generated HTML: a save -> scramble -> load round-trip restores every
+    view parameter (per-element alpha, edge base color + alpha, filter,
+    hide toggles, groups, global styles), old-format payloads still load,
+    and loading records no history entries."""
+
+    def test_all_persistence_scenarios(self, network_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "persistence_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"persistence harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL PERSISTENCE TESTS PASSED" in res.stdout
 
     def test_whole_page_script_parses(self, network_html, node_cache):
         """The ENTIRE inline script must parse as JavaScript. A single bad

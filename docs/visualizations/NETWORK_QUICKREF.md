@@ -48,17 +48,17 @@
 
 ### Layout Export
 
-**Button:** 📍 Layout
+**Button:** 📤 Export Layout
 
-**Saves:** Positions only (~1-5 KB)
+**Saves:** Full view state (v2) — positions, colors + alpha, groups, filters, toggles, controls; includes a legacy positions-only map (~5-50 KB)
 
-**Use:** Reuse layout on different data
+**Use:** Move the whole customized view to another machine or collaborator (legacy builds read the positions map)
 
 ### Layout Import
 
-**Button:** 📌 Apply
+**Button:** 📥 Import Layout
 
-**Action:** Apply positions to matching nodes
+**Action:** Apply a layout file — v2 restores the full state; legacy files update positions for matching nodes
 
 ---
 
@@ -171,9 +171,10 @@ Restoring settings...
 1. Arrange network
 2. Set filter: <5
 3. Adjust settings
-4. Export 📊 → my_work.json
-5. [Later] Import 📂 → my_work.json
-6. Everything restored!
+4. Click 💾 Save
+5. [Later] Reopen the same HTML file
+6. Everything restored automatically (📂 Load re-applies it;
+   the toast's Reset drops the save and reloads defaults)
 ```
 
 ### 3. Create Template

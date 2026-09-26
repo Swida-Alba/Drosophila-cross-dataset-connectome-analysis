@@ -322,8 +322,8 @@ Click "✏️ Enable Edit Mode" button (changes to "🔒 Disable Edit Mode")
 3. Reconstructs exact network state
 
 #### Export/Import Layout Only
-- **📍 Layout**: Save node positions only
-- **📌 Apply**: Load positions onto current graph
+- **📤 Export Layout**: Save the full view state (positions, colors + alpha, groups, filters, controls); legacy positions map included
+- **📥 Import Layout**: Load a layout file — v2 full-state files restore everything, legacy positions-only files update positions
 - **Use case**: Share layouts between similar networks
 
 ### 10. Network Statistics

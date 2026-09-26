@@ -112,7 +112,7 @@ The interactive network visualization supports comprehensive export and import f
 
 **Export section** (Column 3, top-right):
 - **📊 Graph** - Export full graph with settings
-- **📍 Layout** - Export positions only (see Layout Export below)
+- **📤 Export Layout** - Export the full view state (see Layout Export below)
 
 ### File Naming
 
@@ -189,41 +189,54 @@ The import automatically restores:
 
 ## Layout Export/Import
 
-For lightweight position-only files, use the Layout export feature:
+Exports the full view state (v2): positions plus per-element colors and
+alpha (body-only — the node fill and edge line fade, label text keeps full
+opacity), edge base appearance, group definitions and memberships, filters,
+toggles and every style control. The legacy positions-only `layout` map is
+still included so older builds can import the file.
 
 ### Export Layout Only
 
-**Button:** **📍 Layout** (Export section)
+**Button:** **📤 Export Layout** (Import & Export section)
 
-**File size:** ~1-5 KB (vs. 50-500 KB for full graph)
+**File size:** ~5-50 KB (scales with node/edge counts)
 
-**Format:**
+**Format (v2):**
 ```json
 {
+  "version": "2.0",
+  "type": "network-state",
   "layout": {
     "A": {"x": 100, "y": 200},
-    "B": {"x": 150, "y": 250},
-    "C": {"x": 200, "y": 300}
+    "B": {"x": 150, "y": 250}
+  },
+  "state": {
+    "version": 2,
+    "positions": [{"id": "A", "position": {"x": 100, "y": 200}}, ...],
+    "colors": [{"id": "A", "color": "#ff0000", "opacity": 0.4}, ...],
+    "edgeStyles": [...],
+    "groupDefaults": {...}, "customGroups": {...},
+    "filter": {...}, "hideToggles": {...}, "globalStyles": {...}
   }
 }
 ```
 
 **Use cases:**
-- Save clean layouts after manual arrangement
-- Apply same layout to different datasets
-- Share positions without sharing data
+- Save the complete customized view after manual arrangement
+- Share the full look (colors, alpha, filters) with collaborators
+- Back up positions without sharing data (legacy consumers read `layout`)
 
 ### Import Layout Only
 
-**Button:** **📌 Apply** (Layout Import section)
+**Button:** **📥 Import Layout** (Layout Persistence section)
 
 **Process:**
 1. Uploads layout JSON file
-2. Matches node IDs
-3. Updates positions for matching nodes
-4. Reports missing nodes
+2. v2 files (`state` key): applies the full view state
+3. Legacy v1 files (`layout` only): matches node IDs and updates positions
+4. Reports nodes missing from the file (v1 path)
 
-**Example output:**
+**Example output (v1 path):**
 ```
 ✓ Applied layout to 48/50 nodes
   Missing nodes: X, Y
@@ -505,7 +518,7 @@ Warning: Element 'edgeWidthScale' not found, using default
 **Symptoms:** Export file is many megabytes
 
 **Solutions:**
-1. Use Layout Export for positions only
+1. Use Layout Export for a positions-only legacy file (or trim the v2 `state` key)
 2. Reduce graph size before export
 3. Check for duplicate data in JSON
 4. Compress JSON (gzip)
@@ -563,8 +576,8 @@ Don't use exports as data storage:
 
 For maximum flexibility:
 ```
-📊 Full export → Complete state preservation
-📍 Layout export → Quick position reuse
+📊 Graph export → Complete graph structure + core settings
+📤 Layout export → Full view state (v2), importable elsewhere
 ```
 
 Export both for different use cases.
@@ -621,28 +634,30 @@ Loads and processes imported graph file.
 
 ### exportLayout()
 
-Exports positions only (lightweight).
+Exports the full view state (v2, `type: 'network-state'`); the legacy
+positions-only `layout` map is kept for older imports.
 
-**Trigger:** Click 📍 Layout button
+**Trigger:** Click 📤 Export Layout button
 
-**File size:** ~1-5 KB
+**File size:** ~5-50 KB
 
 **Format:**
 ```json
-{"layout": {"A": {"x": 100, "y": 200}, ...}}
+{"version": "2.0", "type": "network-state", "layout": {"A": {"x": 100, "y": 200}, ...}, "state": {...}}
 ```
 
 ### loadLayoutFile(event)
 
-Imports and applies layout positions.
+Imports and applies a layout file. v2 files (`state` key) restore the full
+view state via `applyNetworkState`; legacy v1 files (positions-only) update
+node positions for matching IDs.
 
 **Parameters:**
 - `event` - File input change event
 
 **Actions:**
 1. Read layout file
-2. Match node IDs
-3. Update positions
+2. v2: apply the captured state; v1: match node IDs and update positions
 4. Report missing nodes
 
 ## Version History

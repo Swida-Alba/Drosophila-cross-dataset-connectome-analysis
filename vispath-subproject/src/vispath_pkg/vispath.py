@@ -6003,12 +6003,12 @@ class VisualizePath:
             <div class="vp-ribbon-group">
             <label class="vp-group-title">Layout Persistence</label>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-                <button class="btn" onclick="saveLayout()" style="background: #4caf50; font-size: 12px; padding: 6px; width: 100%;" title="Save current node positions to this browser's storage for this file">💾 Save</button>
-                <button class="btn" onclick="loadLayout()" style="background: #2196f3; font-size: 12px; padding: 6px; width: 100%;" title="Load node positions saved earlier from browser storage">📂 Load</button>
+                <button class="btn" onclick="saveLayout()" style="background: #4caf50; font-size: 12px; padding: 6px; width: 100%;" title="Save the full view state (positions, colors + alpha, groups, filters, toggles, controls) to this browser's storage for this file; auto-restored on reopen">💾 Save</button>
+                <button class="btn" onclick="loadLayout()" style="background: #2196f3; font-size: 12px; padding: 6px; width: 100%;" title="Restore the saved view state from browser storage">📂 Load</button>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-                <button class="btn" onclick="exportLayout()" style="padding: 6px; font-size: 11px; background: #607d8b; width: 100%;" title="Download current node positions as a JSON layout file">📤 Export Layout</button>
-                <button class="btn" onclick="importLayout()" style="padding: 6px; font-size: 11px; background: #607d8b; width: 100%;" title="Apply node positions from a previously exported JSON layout file">📥 Import Layout</button>
+                <button class="btn" onclick="exportLayout()" style="padding: 6px; font-size: 11px; background: #607d8b; width: 100%;" title="Download the full view state as a v2 JSON file (a legacy positions-only map is included for older imports)">📤 Export Layout</button>
+                <button class="btn" onclick="importLayout()" style="padding: 6px; font-size: 11px; background: #607d8b; width: 100%;" title="Apply a previously exported layout file — full state (v2) or positions-only (legacy)">📥 Import Layout</button>
             </div>
             </div>
             <div class="vp-ribbon-group" style="min-width: 220px;">
@@ -6289,7 +6289,7 @@ class VisualizePath:
                     <p><strong>Hide edges by weight</strong> — comma = OR, parentheses = AND:<br>
                     <code>&lt;5, &gt;100</code> hides weak and very strong edges;<br>
                     <code>(&gt;=10, &lt;=20)</code> keeps only a weight band.</p>
-                    <p><strong>Save vs Export Layout</strong> — Save keeps positions in this browser for this file; Export Layout downloads them as JSON to share or re-import elsewhere.</p>
+                    <p><strong>Save vs Export Layout</strong> — Save keeps the full view state (positions, colors + alpha, groups, filters, toggles, controls) in this browser for this file and auto-restores it on reopen; Export Layout downloads the same state as JSON to share or re-import elsewhere.</p>
                     <p><strong>Horizontal/Vertical Gap &amp; Rotate</strong> — set the center-to-center distance between neighboring nodes in px (node size unchanged); rotation turns the whole arrangement around its center — the gaps are measured along the layout's own columns/rows, so small tilts keep the values stable, while at ±90°/270° the Horizontal and Vertical values swap accordingly (↺ Reset Spacing restores the layout-run gaps for the current rotation); both reset when the layout re-runs and are undoable.</p>
                     <p><strong>Panels</strong> — ⚙️ hides the top tool panel, 🎨 the right panel; both states are remembered.</p>
                 </div>
@@ -8228,47 +8228,352 @@ class VisualizePath:
             }});
         }} catch (e) {{ /* localStorage unavailable (privacy mode) */ }}
         
+        // ===== LAYOUT PERSISTENCE (full view state) =====
+        //
+        // captureNetworkState / applyNetworkState are the single capture /
+        // restore pair shared by the Save/Load buttons (localStorage), the
+        // Export/Import Layout file buttons (v2 JSON) and the auto-restore-
+        // on-open path. Every apply step is guarded so payloads written by
+        // older builds (missing keys, flat control values, no per-element
+        // alpha) still load.
+
+        function captureNetworkState() {{
+            // Node alpha lives in the background-opacity style bypass
+            // (body-only: the label font keeps full opacity — whole-element
+            // 'opacity' would fade the label text too). captureStyleBypass
+            // (bypass entries only) is the right read: style('...')
+            // directly would also pick up stylesheet-derived values, e.g.
+            // the .hidden class paints opacity 0. The legacy whole-element
+            // 'opacity' bypass is accepted as a fallback.
+            const colors = cy.nodes().map(n => {{
+                const item = {{
+                    id: n.id(),
+                    color: n.style('background-color')
+                }};
+                const bypass = captureStyleBypass(n);
+                const alpha = (bypass && bypass['background-opacity'] !== undefined)
+                    ? bypass['background-opacity']
+                    : (bypass ? bypass['opacity'] : undefined);
+                if (alpha !== undefined && alpha !== null && isFinite(parseFloat(alpha))) {{
+                    item.opacity = parseFloat(alpha);
+                }}
+                return item;
+            }});
+            // Edge base appearance lives in data (__baseColor/__baseOpacity),
+            // not in style() — style() shows the transient highlight
+            // override while a highlight is active.
+            const edgeStyles = cy.edges().map(e => ({{
+                id: e.id(),
+                baseColor: e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'),
+                baseOpacity: (e.data(EDGE_BASE_OPACITY_KEY) !== undefined)
+                    ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
+                    : (parseFloat(e.style('line-opacity')) || 1)
+            }}));
+            // Custom-group memberships (non-empty only; '' = Unassigned).
+            const assignedGroups = {{}};
+            cy.nodes().forEach(n => {{
+                const g = n.data('assigned_group');
+                if (g !== undefined && g !== null && g !== '') assignedGroups[n.id()] = g;
+            }});
+            return {{
+                version: 2,
+                // Geometry
+                positions: cy.nodes().map(n => ({{ id: n.id(), position: n.position() }})),
+                zoom: cy.zoom(),
+                pan: cy.pan(),
+                // Per-element appearance + visibility
+                colors: colors,
+                edgeStyles: edgeStyles,
+                visibility: cy.nodes().map(n => ({{
+                    id: n.id(),
+                    visible: n.visible(),
+                    hidden: n.hasClass('hidden')
+                }})),
+                edgeVisibility: cy.edges().map(e => ({{
+                    id: e.id(),
+                    visible: e.visible(),
+                    hidden: e.hasClass('hidden')
+                }})),
+                // Group definitions + memberships
+                assignedGroups: assignedGroups,
+                groupDefaults: JSON.parse(JSON.stringify(groupDefaults)),
+                customGroups: JSON.parse(JSON.stringify(customGroups)),
+                // Surface controls
+                background: bgCtrl.getColor(),
+                labelFontColor: customLabelColor || '',
+                labelsVisible: labelsVisible,
+                labelPosition: labelPosition,
+                edgeWeightLabels: (document.getElementById('toggleEdgeWeightsBtn')?.dataset.showing === '1'),
+                hemisphereMirrorEnabled: hemisphereMirrorEnabled,
+                reciprocal: {{
+                    enabled: straightReciprocalEdgesEnabled,
+                    offset: reciprocalOffset
+                }},
+                filter: {{
+                    inputValue: document.getElementById('ignoreEdgesInput')?.value || '',
+                    ignoredValues: Array.from(ignoredEdges),
+                    expressions: ignoredEdgeExpressions
+                }},
+                hideToggles: {{
+                    orphans: orphansHidden,
+                    selfLoops: selfLoopsHidden,
+                    deadEnds: deadEndsHidden
+                }},
+                // Global style controls (mirrors the undo captureState list)
+                globalStyles: {{
+                    nodeSize: globalNodeSize,
+                    edgeWidth: globalEdgeWidth,
+                    fontSize: globalFontSize,
+                    edgeLabelFontSize: globalEdgeLabelFontSize,
+                    arrowSize: globalArrowSize,
+                    edgeWidthScale: globalEdgeWidthScale,
+                    metric: currentMetric,
+                    spacingX: lastGapX,
+                    spacingY: lastGapY,
+                    rotation: lastRotationDeg
+                }},
+                // Legacy flat control keys (kept so the payload stays
+                // loadable by older diagnostic tooling)
+                edgeWidth: String(globalEdgeWidth),
+                edgeWidthScale: globalEdgeWidthScale,
+                arrowSize: String(globalArrowSize),
+                fontSize: String(globalFontSize),
+                nodeSize: String(globalNodeSize),
+                // Metadata
+                timestamp: new Date().toISOString(),
+                graphName: '{js_escape(output_name)}'
+            }};
+        }}
+
+        function applyNetworkState(state) {{
+            if (!state || typeof state !== 'object') return false;
+            restoringHistoryState = true;
+            try {{
+                const gs = state.globalStyles || {{}};
+                const pick = (nested, flat) => (nested !== undefined) ? nested : flat;
+
+                // --- global style controls: value into the DOM, then the
+                // update fn (history suppressed by the flag) ---
+                const edgeWidth = pick(gs.edgeWidth, state.edgeWidth);
+                if (edgeWidth !== undefined) {{
+                    document.getElementById('edgeWidthSlider').value = edgeWidth;
+                    updateEdgeWidth(edgeWidth);
+                }}
+                const edgeWidthScale = pick(gs.edgeWidthScale, state.edgeWidthScale);
+                if (edgeWidthScale !== undefined) {{
+                    document.getElementById('edgeWidthScale').value = edgeWidthScale;
+                    updateEdgeWidths();
+                }}
+                const arrowSize = pick(gs.arrowSize, state.arrowSize);
+                if (arrowSize !== undefined) {{
+                    document.getElementById('arrowSizeSlider').value = arrowSize;
+                    updateArrowSize(arrowSize);
+                }}
+                const fontSize = pick(gs.fontSize, state.fontSize);
+                if (fontSize !== undefined) {{
+                    document.getElementById('fontSizeSlider').value = fontSize;
+                    updateFontSize(fontSize);
+                }}
+                const nodeSize = pick(gs.nodeSize, state.nodeSize);
+                if (nodeSize !== undefined) {{
+                    document.getElementById('nodeSizeSlider').value = nodeSize;
+                    updateNodeSize(nodeSize);
+                }}
+                if (gs.edgeLabelFontSize !== undefined) {{
+                    const el = document.getElementById('edgeLabelSizeSlider');
+                    if (el) el.value = gs.edgeLabelFontSize;
+                    updateEdgeLabelFontSize(gs.edgeLabelFontSize);
+                }}
+                if (gs.metric !== undefined) {{
+                    document.getElementById('metricSelect').value = gs.metric;
+                    updateMetric();
+                }}
+
+                // --- layout transform trackers: values only, NO transform —
+                // the saved positions already encode the spaced / rotated
+                // arrangement ---
+                if (gs.spacingX !== undefined || gs.spacingY !== undefined) {{
+                    if (gs.spacingX !== undefined) lastGapX = gs.spacingX;
+                    if (gs.spacingY !== undefined) lastGapY = gs.spacingY;
+                    syncGapDisplays();
+                }}
+                if (gs.rotation !== undefined && Number.isFinite(Number(gs.rotation))) {{
+                    lastRotationDeg = ((Number(gs.rotation) % 360) + 360) % 360;
+                    syncRotateDisplay();
+                }}
+
+                // --- background + label font color ---
+                if (state.background && bgCtrl && bgCtrl.apply) bgCtrl.apply(state.background);
+                if (state.labelFontColor !== undefined && state.labelFontColor !== null) {{
+                    if (state.labelFontColor) {{
+                        applyLabelFontColor(state.labelFontColor);
+                    }} else {{
+                        // Saved state had no custom label color: clear the
+                        // override; applyBackground re-runs the theme
+                        // adaptation (and resets the picker).
+                        customLabelColor = null;
+                        if (bgCtrl) applyBackground(bgCtrl.getColor());
+                    }}
+                }}
+
+                // --- group definitions + memberships ---
+                if (state.groupDefaults) {{
+                    Object.keys(state.groupDefaults).forEach(key => {{
+                        groupDefaults[key] = state.groupDefaults[key];
+                    }});
+                }}
+                if (state.customGroups) {{
+                    Object.keys(state.customGroups).forEach(groupName => {{
+                        const def = state.customGroups[groupName] || {{}};
+                        customGroups[groupName] = {{
+                            label: def.label || groupName,
+                            color: def.color || '#888888',
+                            opacity: def.opacity === undefined ? 100 : def.opacity,
+                            defaultColor: def.defaultColor || def.color || '#888888',
+                            defaultOpacity: def.defaultOpacity === undefined ? 100 : def.defaultOpacity
+                        }};
+                    }});
+                }}
+                if (state.assignedGroups) {{
+                    Object.keys(state.assignedGroups).forEach(id => {{
+                        const n = cy.getElementById(id);
+                        if (n.length > 0 && n.isNode()) n.data('assigned_group', state.assignedGroups[id]);
+                    }});
+                    normalizeAssignedGroups();
+                }}
+                if (state.groupDefaults || state.customGroups || state.assignedGroups) {{
+                    rebuildAssignSelect();
+                    rebuildCustomGroupUI();
+                    refreshLegend();
+                }}
+
+                // --- edge filter ---
+                if (state.filter) {{
+                    const filterInput = document.getElementById('ignoreEdgesInput');
+                    if (filterInput) {{
+                        filterInput.value = state.filter.inputValue || '';
+                        updateIgnoredEdges();
+                    }}
+                }}
+
+                // --- hide toggles: flags set directly (flipping them
+                // through the toggle functions would toggle AGAIN), the
+                // button faces resync via syncToggleButtons, and the
+                // class-based hiding is re-derived ---
+                if (state.hideToggles) {{
+                    if (state.hideToggles.selfLoops !== undefined) selfLoopsHidden = !!state.hideToggles.selfLoops;
+                    if (state.hideToggles.orphans !== undefined) orphansHidden = !!state.hideToggles.orphans;
+                    if (state.hideToggles.deadEnds !== undefined) deadEndsHidden = !!state.hideToggles.deadEnds;
+                    syncToggleButtons();
+                }}
+                reapplySelfLoopHiding();
+                reapplyDeadEndHiding();
+                reapplyOrphanHiding();
+
+                // --- hemisphere mirror: state only. The mirrored geometry
+                // arrives with the saved positions; caching the ORIGINAL
+                // (pre-mirror) layout first keeps a later un-mirror exact. ---
+                if (state.hemisphereMirrorEnabled !== undefined && hasHemisphereNodes) {{
+                    if (!originalHemispherePositions) cacheHemispherePositions();
+                    hemisphereMirrorEnabled = !!state.hemisphereMirrorEnabled;
+                    syncToggleButtons();
+                }}
+
+                // --- reciprocal edges (mode + offset) ---
+                if (state.reciprocal) {{
+                    if (state.reciprocal.enabled !== undefined &&
+                        !!state.reciprocal.enabled !== straightReciprocalEdgesEnabled) {{
+                        toggleReciprocalMode();
+                    }}
+                    if (state.reciprocal.offset !== undefined && Number.isFinite(Number(state.reciprocal.offset))) {{
+                        const slider = document.getElementById('reciprocalOffsetSlider');
+                        if (slider) slider.value = state.reciprocal.offset;
+                        reciprocalOffset = Number(state.reciprocal.offset);
+                        const valueLabel = document.getElementById('reciprocalOffsetValue');
+                        if (valueLabel) valueLabel.textContent = Math.round(reciprocalOffset) + 'px';
+                        refreshEdgeStyles(false);
+                    }}
+                }}
+
+                // --- edge weight labels + label position ---
+                if (state.edgeWeightLabels !== undefined) {{
+                    const btn = document.getElementById('toggleEdgeWeightsBtn');
+                    const showing = btn ? btn.dataset.showing === '1' : false;
+                    if (showing !== !!state.edgeWeightLabels) toggleEdgeWeightLabels();
+                }}
+                if (state.labelPosition !== undefined && state.labelPosition !== labelPosition) {{
+                    labelPosition = state.labelPosition;
+                    if (labelPosition === 'outside') cy.nodes().addClass('labels-outside');
+                    else cy.nodes().removeClass('labels-outside');
+                }}
+
+                // --- per-node appearance: color always; alpha applies to
+                // the BODY only (background-opacity) so the label font keeps
+                // full opacity; any stale whole-element 'opacity' bypass
+                // from older payloads is stripped ---
+                (state.colors || []).forEach(item => {{
+                    const node = cy.getElementById(item.id);
+                    if (node.length === 0 || !node.isNode()) return;
+                    node.style('background-color', item.color);
+                    if (item.opacity !== undefined) {{
+                        node.style('background-opacity', item.opacity);
+                        node.removeStyle('opacity');
+                    }} else {{
+                        node.removeStyle('background-opacity');
+                        node.removeStyle('opacity');
+                    }}
+                }});
+                // --- per-edge base appearance (color + alpha) ---
+                (state.edgeStyles || []).forEach(item => {{
+                    const edge = cy.getElementById(item.id);
+                    if (edge.length === 0 || !edge.isEdge()) return;
+                    const canApplyBase = !edge.selected() && !edge.hasClass('highlighted');
+                    setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase);
+                    if (!canApplyBase) applyEdgeHighlightOverride(edge);
+                }});
+
+                // --- visibility (final pass: manual hides win over the
+                // class-derived passes above) ---
+                if (state.visibility) {{
+                    state.visibility.forEach(item => {{
+                        const node = cy.getElementById(item.id);
+                        if (node.length > 0) {{
+                            if (item.hidden) node.addClass('hidden');
+                            else node.removeClass('hidden');
+                        }}
+                    }});
+                }}
+                if (state.edgeVisibility) {{
+                    state.edgeVisibility.forEach(item => {{
+                        const edge = cy.getElementById(item.id);
+                        if (edge.length > 0) {{
+                            if (item.hidden) edge.addClass('hidden');
+                            else edge.removeClass('hidden');
+                        }}
+                    }});
+                }}
+
+                // --- geometry ---
+                (state.positions || []).forEach(item => {{
+                    const node = cy.getElementById(item.id);
+                    if (node.length > 0) node.position(item.position);
+                }});
+                if (Number.isFinite(state.zoom)) cy.zoom(state.zoom);
+                if (state.pan && Number.isFinite(state.pan.x) && Number.isFinite(state.pan.y)) cy.pan(state.pan);
+
+                // --- labels ---
+                if (state.labelsVisible !== undefined && state.labelsVisible !== labelsVisible) toggleLabels();
+
+                resizeCanvasAfterVisibilityControlChange();
+                return true;
+            }} finally {{
+                restoringHistoryState = false;
+            }}
+        }}
+
         function saveLayout() {{
             try {{
-                const state = {{
-                    // Node positions
-                    positions: cy.nodes().map(n => ({{
-                        id: n.id(),
-                        position: n.position()
-                    }})),
-                    // Node colors
-                    colors: cy.nodes().map(n => ({{
-                        id: n.id(),
-                        color: n.style('background-color')
-                    }})),
-                    // Node visibility
-                    visibility: cy.nodes().map(n => ({{
-                        id: n.id(),
-                        visible: n.visible(),
-                        hidden: n.hasClass('hidden')
-                    }})),
-                    // Edge visibility
-                    edgeVisibility: cy.edges().map(e => ({{
-                        id: e.id(),
-                        visible: e.visible(),
-                        hidden: e.hasClass('hidden')
-                    }})),
-                    // UI state
-                    zoom: cy.zoom(),
-                    pan: cy.pan(),
-                    labelsVisible: labelsVisible,
-                    // Control values
-                    edgeWidth: document.getElementById('edgeWidthSlider').value,
-                    edgeWidthScale: document.getElementById('edgeWidthScale').value,
-                    arrowSize: document.getElementById('arrowSizeSlider').value,
-                    fontSize: document.getElementById('fontSizeSlider').value,
-                    nodeSize: document.getElementById('nodeSizeSlider').value,
-                    // Metadata
-                    timestamp: new Date().toISOString(),
-                    graphName: '{js_escape(output_name)}'
-                }};
-                
-                localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state));
+                localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(captureNetworkState()));
                 showToast('Layout saved', 'success');
                 console.log('Layout saved successfully');
             }} catch (error) {{
@@ -8276,7 +8581,7 @@ class VisualizePath:
                 console.error('Error saving layout:', error);
             }}
         }}
-        
+
         function loadLayout() {{
             try {{
                 const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
@@ -8284,92 +8589,9 @@ class VisualizePath:
                     showToast('No saved layout found', 'warn');
                     return;
                 }}
-                
+
                 const state = JSON.parse(saved);
-                
-                // Restore node positions
-                state.positions.forEach(item => {{
-                    const node = cy.getElementById(item.id);
-                    if (node.length > 0) {{
-                        node.position(item.position);
-                    }}
-                }});
-                
-                // Restore node colors
-                state.colors.forEach(item => {{
-                    const node = cy.getElementById(item.id);
-                    if (node.length > 0) {{
-                        node.style('background-color', item.color);
-                    }}
-                }});
-                
-                // Restore node visibility
-                state.visibility.forEach(item => {{
-                    const node = cy.getElementById(item.id);
-                    if (node.length > 0) {{
-                        if (item.hidden) {{
-                            node.addClass('hidden');
-                        }} else {{
-                            node.removeClass('hidden');
-                        }}
-                    }}
-                }});
-                
-                // Restore edge visibility
-                if (state.edgeVisibility) {{
-                    state.edgeVisibility.forEach(item => {{
-                        const edge = cy.getElementById(item.id);
-                        if (edge.length > 0) {{
-                            if (item.hidden) {{
-                                edge.addClass('hidden');
-                            }} else {{
-                                edge.removeClass('hidden');
-                            }}
-                        }}
-                    }});
-                }}
-                
-                // Restore zoom and pan (validate the saved state first)
-                if (Number.isFinite(state.zoom)) {{
-                    cy.zoom(state.zoom);
-                }}
-                if (state.pan && Number.isFinite(state.pan.x) && Number.isFinite(state.pan.y)) {{
-                    cy.pan(state.pan);
-                }}
-                
-                // Restore label visibility
-                if (state.labelsVisible !== undefined && state.labelsVisible !== labelsVisible) {{
-                    toggleLabels();
-                }}
-                
-                // Restore control values (suppressed from history: loading
-                // a layout is one operation, not a series of slider edits)
-                restoringHistoryState = true;
-                try {{
-                    if (state.edgeWidth) {{
-                        document.getElementById('edgeWidthSlider').value = state.edgeWidth;
-                        updateEdgeWidth(state.edgeWidth);
-                    }}
-                    if (state.edgeWidthScale) {{
-                        document.getElementById('edgeWidthScale').value = state.edgeWidthScale;
-                        updateEdgeWidths();
-                    }}
-                    if (state.arrowSize) {{
-                        document.getElementById('arrowSizeSlider').value = state.arrowSize;
-                        updateArrowSize(state.arrowSize);
-                    }}
-                    if (state.fontSize) {{
-                        document.getElementById('fontSizeSlider').value = state.fontSize;
-                        updateFontSize(state.fontSize);
-                    }}
-                    if (state.nodeSize) {{
-                        document.getElementById('nodeSizeSlider').value = state.nodeSize;
-                        updateNodeSize(state.nodeSize);
-                    }}
-                }} finally {{
-                    restoringHistoryState = false;
-                }}
-                
+                applyNetworkState(state);
                 showToast('Layout loaded', 'success');
                 console.log('Layout loaded successfully:', state);
             }} catch (error) {{
@@ -8610,6 +8832,12 @@ class VisualizePath:
         }}
 
         function pushHistory(label) {{
+            // Re-application paths (undo/redo restore, layout load/import,
+            // auto-restore on open) run under restoringHistoryState: loading
+            // a layout is ONE operation, not a series of slider/toggle
+            // edits. Historically only some update* callers checked the
+            // flag themselves — centralize the suppression here.
+            if (restoringHistoryState) return;
             pushStateHistory(label, captureState());
         }}
 
@@ -9473,10 +9701,15 @@ class VisualizePath:
             edge.data(EDGE_BASE_COLOR_KEY, color);
             edge.data(EDGE_BASE_OPACITY_KEY, opacity);
             if (applyImmediately) {{
+                // Body-only alpha: line + arrows fade; the edge's weight
+                // LABEL (text) keeps its own text-opacity. Whole-element
+                // 'opacity' would fade the font along with the line.
                 edge.style({{
                     'line-color': color,
                     'target-arrow-color': color,
-                    'opacity': opacity
+                    'line-opacity': opacity,
+                    'target-arrow-opacity': opacity,
+                    'source-arrow-opacity': opacity
                 }});
             }}
         }}
@@ -9484,7 +9717,7 @@ class VisualizePath:
         function ensureEdgeBaseAppearance(edge) {{
             if (!edge.data(EDGE_BASE_COLOR_KEY)) {{
                 const currentColor = edge.style('line-color');
-                const currentOpacity = parseFloat(edge.style('opacity')) || 1;
+                const currentOpacity = parseFloat(edge.style('line-opacity')) || 1;
                 setEdgeBaseAppearance(edge, currentColor, currentOpacity, false);
             }}
         }}
@@ -9492,23 +9725,27 @@ class VisualizePath:
         function restoreEdgeBaseAppearance(edge) {{
             const color = edge.data(EDGE_BASE_COLOR_KEY) || edge.style('line-color');
             const opacityData = edge.data(EDGE_BASE_OPACITY_KEY);
-            const opacity = (opacityData !== undefined) ? opacityData : (parseFloat(edge.style('opacity')) || 1);
+            const opacity = (opacityData !== undefined) ? opacityData : (parseFloat(edge.style('line-opacity')) || 1);
             edge.style({{
                 'line-color': color,
                 'target-arrow-color': color,
-                'opacity': opacity
+                'line-opacity': opacity,
+                'target-arrow-opacity': opacity,
+                'source-arrow-opacity': opacity
             }});
         }}
 
         function applyEdgeHighlightOverride(edge) {{
             ensureEdgeBaseAppearance(edge);
             const baseOpacity = edge.data(EDGE_BASE_OPACITY_KEY);
-            const fallbackOpacity = (baseOpacity !== undefined) ? baseOpacity : (parseFloat(edge.style('opacity')) || 1);
+            const fallbackOpacity = (baseOpacity !== undefined) ? baseOpacity : (parseFloat(edge.style('line-opacity')) || 1);
             const targetOpacity = Math.max(fallbackOpacity, highlightOpacity || 0.85);
             edge.style({{
                 'line-color': highlightColor,
                 'target-arrow-color': highlightColor,
-                'opacity': targetOpacity
+                'line-opacity': targetOpacity,
+                'target-arrow-opacity': targetOpacity,
+                'source-arrow-opacity': targetOpacity
             }});
         }}
 
@@ -9537,7 +9774,7 @@ class VisualizePath:
         function initializeEdgeBaseStyles() {{
             cy.edges().forEach(edge => {{
                 const color = edge.style('line-color');
-                const opacity = parseFloat(edge.style('opacity')) || 1;
+                const opacity = parseFloat(edge.style('line-opacity')) || 1;
                 setEdgeBaseAppearance(edge, color, opacity, false);
             }});
         }}
@@ -9588,7 +9825,7 @@ class VisualizePath:
         }}
 
         function applyGroupLook(node, def) {{
-            node.style({{ 'background-color': def.color, 'opacity': ((def.opacity === undefined ? 100 : def.opacity) / 100) }});
+            node.style({{ 'background-color': def.color, 'background-opacity': ((def.opacity === undefined ? 100 : def.opacity) / 100) }});
         }}
 
         function groupLabel(name) {{
@@ -9812,7 +10049,7 @@ class VisualizePath:
             const applyNodeGroupColor = (name) => {{
                 groupMembers(name).forEach(node => {{
                     if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'opacity': opacity }});
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
                     }}
                 }});
                 groupDefaults[name] = {{ color: color, opacity: opacity * 100 }};
@@ -9834,7 +10071,7 @@ class VisualizePath:
                 memberGroups.forEach(name => {{
                     groupMembers(name).forEach(node => {{
                         if (!node.selected()) {{
-                            node.style({{ 'background-color': color, 'opacity': opacity }});
+                            node.style({{ 'background-color': color, 'background-opacity': opacity }});
                         }}
                     }});
                     if (customGroups[name]) {{
@@ -9852,7 +10089,7 @@ class VisualizePath:
             if (group === 'unassigned') {{
                 groupMembers('').forEach(node => {{
                     if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'opacity': opacity }});
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
                     }}
                 }});
                 groupDefaults.unassigned = {{ color: color, opacity: opacity * 100 }};
@@ -9860,7 +10097,7 @@ class VisualizePath:
             if (group === 'hemi_left') {{
                 cy.nodes().filter('[hemisphere = "L"]').forEach(node => {{
                     if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'opacity': opacity }});
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
                     }}
                 }});
                 groupDefaults.hemisphere_left = {{ color: color, opacity: opacity * 100 }};
@@ -9868,7 +10105,7 @@ class VisualizePath:
             if (group === 'hemi_right') {{
                 cy.nodes().filter('[hemisphere = "R"]').forEach(node => {{
                     if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'opacity': opacity }});
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
                     }}
                 }});
                 groupDefaults.hemisphere_right = {{ color: color, opacity: opacity * 100 }};
@@ -9876,7 +10113,7 @@ class VisualizePath:
             if (group === 'hemi_unknown') {{
                 cy.nodes().filter('[hemisphere = "U"]').forEach(node => {{
                     if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'opacity': opacity }});
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
                     }}
                 }});
                 groupDefaults.hemisphere_unknown = {{ color: color, opacity: opacity * 100 }};
@@ -9917,7 +10154,7 @@ class VisualizePath:
                 if (customGroups[groupName]) {{
                     groupMembers(groupName).forEach(node => {{
                         if (!node.selected()) {{
-                            node.style({{ 'background-color': color, 'opacity': opacity }});
+                            node.style({{ 'background-color': color, 'background-opacity': opacity }});
                         }}
                     }});
                     customGroups[groupName].color = color;
@@ -10168,7 +10405,10 @@ class VisualizePath:
             if (element.isNode()) {{
                 const bgColor = element.style('background-color');
                 currentColor = extractColorHex(bgColor);
-                const opacity = element.style('opacity');
+                // Alpha read-back mirrors the body-only appliers: the fill's
+                // background-opacity (nodes) / line-opacity (edges), never
+                // the whole-element opacity.
+                const opacity = element.style('background-opacity');
                 currentOpacity = Math.round(parseFloat(opacity || 1) * 100);
                 
                 if (selectionCount.total > 1) {{
@@ -10183,7 +10423,7 @@ class VisualizePath:
             }} else {{
                 const lineColor = element.style('line-color');
                 currentColor = extractColorHex(lineColor);
-                const opacity = element.style('opacity');
+                const opacity = element.style('line-opacity');
                 currentOpacity = Math.round(parseFloat(opacity || 1) * 100);
                 
                 const sourceNode = element.source().data('label');
@@ -10248,7 +10488,11 @@ class VisualizePath:
                 if (element.isNode()) {{
                     element.style({{
                         'background-color': color,
-                        'opacity': opacity  // CSS opacity property (coana's approach)
+                        // Body-only alpha (was whole-element 'opacity', the
+                        // so-called coana approach): the fill fades while
+                        // the label text keeps full opacity — element
+                        // 'opacity' multiplies the label font too.
+                        'background-opacity': opacity
                     }});
                     element.data('customColor', true);  // Mark as customized
                     nodesUpdated++;
@@ -10442,21 +10686,29 @@ class VisualizePath:
                 edge: edgeOpacity
             }});
             
-            // Apply initial opacity to all nodes based on their type
+            // Apply initial opacity to all nodes based on their type.
+            // Body-only (background-opacity): the fill fades, the label
+            // font stays fully opaque — element 'opacity' would fade the
+            // label text along with the fill.
             cy.nodes().forEach(function(node) {{
                 const nodeType = node.data('node_type');
                 if (nodeType === 'source') {{
-                    node.style('opacity', sourceOpacity);
+                    node.style('background-opacity', sourceOpacity);
                 }} else if (nodeType === 'intermediate') {{
-                    node.style('opacity', intermediateOpacity);
+                    node.style('background-opacity', intermediateOpacity);
                 }} else if (nodeType === 'target') {{
-                    node.style('opacity', targetOpacity);
+                    node.style('background-opacity', targetOpacity);
                 }}
             }});
-            
-            // Apply initial opacity to all edges
+
+            // Apply initial opacity to all edges (line + arrows, not the
+            // weight-label text)
             cy.edges().forEach(function(edge) {{
-                edge.style('opacity', edgeOpacity);
+                edge.style({{
+                    'line-opacity': edgeOpacity,
+                    'target-arrow-opacity': edgeOpacity,
+                    'source-arrow-opacity': edgeOpacity
+                }});
                 const currentColor = edge.style('line-color');
                 setEdgeBaseAppearance(edge, currentColor, edgeOpacity, false);
             }});
@@ -10657,7 +10909,7 @@ class VisualizePath:
                 const edgeNT = edge.data('nt_type') || '';
                 const currentColor = extractColorHex(edge.style('line-color'));
                 const updatedColor = edgeNT ? getNTColor(edgeNT) : currentColor;
-                const currentOpacity = edge.data(EDGE_BASE_OPACITY_KEY) !== undefined ? edge.data(EDGE_BASE_OPACITY_KEY) : (parseFloat(edge.style('opacity')) || 1);
+                const currentOpacity = edge.data(EDGE_BASE_OPACITY_KEY) !== undefined ? edge.data(EDGE_BASE_OPACITY_KEY) : (parseFloat(edge.style('line-opacity')) || 1);
                 const canApplyNow = !edge.selected() && !edge.hasClass('highlighted');
                 setEdgeBaseAppearance(edge, updatedColor, currentOpacity, canApplyNow);
                 if (!canApplyNow) {{
@@ -11256,6 +11508,23 @@ class VisualizePath:
                 }}
             }});
         }}
+
+        // Re-apply self-loop hiding from the flag (layout persistence); the
+        // inverse of the ON branch clears strays so the class set always
+        // matches the flag.
+        function reapplySelfLoopHiding() {{
+            if (!selfLoopsHidden) {{
+                cy.edges('.selfloop-hidden').removeClass('selfloop-hidden');
+                return;
+            }}
+            cy.edges().forEach(edge => {{
+                if (edge.source().id() === edge.target().id()) {{
+                    edge.addClass('selfloop-hidden');
+                }} else {{
+                    edge.removeClass('selfloop-hidden');
+                }}
+            }});
+        }}
         
         // Refresh layout after hiding orphans or filtering edges. Only
         // VISIBLE elements participate (class-based - see isVisibleElement).
@@ -11297,6 +11566,9 @@ class VisualizePath:
                     classes: node.hasClass('hidden') ? ['hidden'] : [],  // Store hidden class
                     style: {{
                         'background-color': node.style('background-color'),
+                        // Body-only alpha; 'opacity' kept for old builds
+                        // expecting the legacy whole-element key.
+                        'background-opacity': parseFloat(node.style('background-opacity')),
                         'opacity': parseFloat(node.style('opacity'))
                     }}
                 }});
@@ -11314,7 +11586,9 @@ class VisualizePath:
                     classes: classes,  // Store classes (hidden/filtered)
                     style: {{
                         'line-color': edge.style('line-color'),
-                        'opacity': parseFloat(edge.style('opacity'))
+                        // Body-only alpha: export the line's own opacity
+                        // (the weight-label text is never faded by alpha).
+                        'opacity': parseFloat(edge.style('line-opacity'))
                     }}
                 }});
             }});
@@ -11333,6 +11607,8 @@ class VisualizePath:
                 arrowSize: parseFloat(document.getElementById('arrowSizeSlider')?.value || 9),
                 fontSize: parseFloat(document.getElementById('fontSizeSlider')?.value || 12),
                 nodeSize: parseFloat(document.getElementById('nodeSizeSlider')?.value || 40),
+                metric: currentMetric,
+                edgeLabelFontSize: globalEdgeLabelFontSize,
                 groupDefaults: JSON.parse(JSON.stringify(groupDefaults)),
                 customGroups: JSON.parse(JSON.stringify(customGroups)),
                 labelFontColor: customLabelColor || ''
@@ -11574,8 +11850,13 @@ class VisualizePath:
                                 if (nodeData.style['background-color']) {{
                                     node.style('background-color', nodeData.style['background-color']);
                                 }}
-                                if (nodeData.style['opacity'] !== undefined) {{
-                                    node.style('opacity', nodeData.style['opacity']);
+                                // Alpha is body-only so the label font keeps
+                                // full opacity; legacy exports captured the
+                                // whole-element opacity — migrate it.
+                                if (nodeData.style['background-opacity'] !== undefined) {{
+                                    node.style('background-opacity', nodeData.style['background-opacity']);
+                                }} else if (nodeData.style['opacity'] !== undefined) {{
+                                    node.style('background-opacity', nodeData.style['opacity']);
                                 }}
                             }}
                         }}
@@ -11611,7 +11892,7 @@ class VisualizePath:
                                         const importedColor = edgeData.style['line-color'] || e.style('line-color');
                                         const importedOpacity = (edgeData.style['opacity'] !== undefined)
                                             ? edgeData.style['opacity']
-                                            : (parseFloat(e.style('opacity')) || 1);
+                                            : (parseFloat(e.style('line-opacity')) || 1);
                                         const canApplyBase = !e.selected() && !e.hasClass('highlighted');
                                         setEdgeBaseAppearance(e, importedColor, importedOpacity, canApplyBase);
                                         if (!canApplyBase) {{
@@ -11697,6 +11978,21 @@ class VisualizePath:
                                     updateNodeSize(settings.nodeSize);
                                 }}
                             }}
+
+                            // Restore the connection metric + edge label
+                            // font size (metric re-applies widths + filter)
+                            if (settings.metric !== undefined) {{
+                                const metricSelect = document.getElementById('metricSelect');
+                                if (metricSelect) {{
+                                    metricSelect.value = settings.metric;
+                                    updateMetric();
+                                }}
+                            }}
+                            if (settings.edgeLabelFontSize !== undefined) {{
+                                const elSlider = document.getElementById('edgeLabelSizeSlider');
+                                if (elSlider) elSlider.value = settings.edgeLabelFontSize;
+                                updateEdgeLabelFontSize(settings.edgeLabelFontSize);
+                            }}
                             
                             // Restore the label font color choice
                             if (settings.labelFontColor) {{
@@ -11766,7 +12062,10 @@ class VisualizePath:
         
         // ===== EXPORT/IMPORT LAYOUT ONLY =====
         
-        // Export only node positions (layout)
+        // Export the FULL view state (v2): positions plus per-element
+        // appearance (color + alpha), group definitions, filters, toggles
+        // and every style control. The legacy positions-only `layout` map is
+        // still emitted so older builds can import the file.
         function exportLayout() {{
             // Collect only node IDs and positions
             const layoutData = {{}};
@@ -11779,13 +12078,14 @@ class VisualizePath:
             
             // Create export object
             const exportData = {{
-                version: '1.0',
-                type: 'layout',
+                version: '2.0',
+                type: 'network-state',
                 timestamp: new Date().toISOString(),
                 layout: layoutData,
+                state: captureNetworkState(),
                 metadata: {{
                     nodeCount: Object.keys(layoutData).length,
-                    description: 'Node positions only (no edges or properties)'
+                    description: 'Full view state (positions, colors + alpha, groups, filters, toggles, controls); legacy `layout` position map kept for older imports'
                 }}
             }};
             
@@ -11801,7 +12101,7 @@ class VisualizePath:
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
             
-            updateHoverInfo('✓ Exported layout: ' + Object.keys(layoutData).length + ' node positions');
+            updateHoverInfo('✓ Exported layout: ' + Object.keys(layoutData).length + ' node positions + full view state');
         }}
         
         // Import layout (trigger file input)
@@ -11821,8 +12121,19 @@ class VisualizePath:
                     const importData = JSON.parse(e.target.result);
                     
                     // Check if it's a layout file
-                    if (!importData.layout) {{
+                    if (!importData.layout && !importData.state) {{
                         showToast('Invalid layout file format. Expected a layout export file.', 'error');
+                        return;
+                    }}
+                    
+                    // v2 file: full view state (positions + appearance +
+                    // groups + filters + controls). v1 files carry only the
+                    // `layout` position map and fall through to the
+                    // positions-only path below.
+                    if (importData.state) {{
+                        applyNetworkState(importData.state);
+                        const stateNodeCount = (importData.state.positions || []).length;
+                        showToast('✓ Layout state applied: ' + stateNodeCount + ' node positions + view settings', 'success', {{ label: 'Fit', onClick: function() {{ cy.fit(null, 50); }} }});
                         return;
                     }}
                     
@@ -11891,6 +12202,31 @@ class VisualizePath:
         initializeEdgeBaseStyles();
         initializeLogBaseVisibility();
         initPanelBar();
+
+        // Auto-restore: a layout saved for THIS generated file is re-applied
+        // on open. Deferred past the init's 200 ms hemisphere-caching timer
+        // so the original-layout cache is captured before the saved (possibly
+        // mirrored) positions land. The Reset action drops the saved state
+        // and reloads — a reload re-renders the generated defaults, so no
+        // separate reset machinery is needed.
+        setTimeout(function() {{
+            try {{
+                const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+                if (!saved) return;
+                const state = JSON.parse(saved);
+                if (!state || typeof state !== 'object' || !state.positions) return;
+                applyNetworkState(state);
+                showToast('Restored saved layout', 'success', {{
+                    label: 'Reset',
+                    onClick: function() {{
+                        try {{ localStorage.removeItem(LAYOUT_STORAGE_KEY); }} catch (e) {{ /* privacy mode */ }}
+                        window.location.reload();
+                    }}
+                }});
+            }} catch (e) {{
+                console.error('Auto-restore failed:', e);
+            }}
+        }}, 250);
     </script>
 </body>
 </html>"""

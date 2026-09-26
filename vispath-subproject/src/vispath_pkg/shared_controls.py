@@ -193,6 +193,22 @@ function createBackgroundController(colors, labels, applyFn) {
             currentColor = picker.value;
             applyFn(currentColor);
         },
+        /* Restore a specific background color (layout persistence): preset
+           colors re-select their mode so the next toggle continues from
+           them; anything else is treated like a custom color (mode left
+           alone, same contract as applyCustom). */
+        apply: function (color) {
+            if (color === undefined || color === null || color === '') { return; }
+            const idx = colors.indexOf(color);
+            if (idx !== -1) {
+                mode = idx;
+                const btn = document.getElementById('bgToggleBtn');
+                if (btn) { btn.textContent = labels[mode]; }
+            }
+            currentColor = color;
+            paintButton();
+            applyFn(color);
+        },
         reset: function (labelPrefix) {
             mode = 0;
             const btn = document.getElementById('bgToggleBtn');

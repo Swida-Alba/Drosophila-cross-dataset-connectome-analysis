@@ -215,7 +215,8 @@ VisualizePath supports three input formats:
 ### Export/Import
 - **Export Graph**: Saves nodes, edges, positions, styles, group settings, and custom groups
 - **Import Graph**: Restores complete graph state including custom groups
-- **Export Layout**: Saves only node positions for applying to other networks
+- **Export Layout**: Saves the full view state (positions, colors + alpha, groups, filters, controls) as a v2 JSON; legacy positions-only files still import
+- **Save/Load**: The same full view state in browser localStorage, auto-restored when the file reopens
 
 ## Documentation
 

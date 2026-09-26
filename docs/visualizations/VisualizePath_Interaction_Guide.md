@@ -57,8 +57,8 @@ The network visualization (Cytoscape.js-based) provides the most comprehensive i
 | **👁️ Hide Labels / Show Labels** | Toggle node labels                | Cycles visibility state                           |
 | **👁️ Show All**                  | Restore all hidden nodes/edges    | Only appears when elements are hidden             |
 | **🔄 Refresh Edges**             | Re-apply edge styling             | Fixes parallel/reciprocal edge display            |
-| **💾 Save**                      | Save layout to browser storage    | Includes positions, colors, visibility, zoom, pan |
-| **📂 Load**                      | Load saved layout                 | Restores complete state                           |
+| **💾 Save**                      | Save view state to browser storage | Full state: positions, colors + alpha, edges, groups, filters, toggles, all controls |
+| **📂 Load**                      | Load saved view state           | Restores complete state; also auto-restored on reopen |
 
 ### Layout Algorithm Selector
 
@@ -128,8 +128,8 @@ For networks with bidirectional connections:
 | **SVG**      | `network_*.svg` | Vector image (infinite scaling)          |
 | **📊 Graph**  | JSON file       | Complete network structure with all data |
 | **📂 Import** | —               | Load previously exported JSON            |
-| **📍 Layout** | JSON file       | Node positions only                      |
-| **📌 Apply**  | —               | Apply layout JSON to current network     |
+| **📤 Export Layout** | JSON file | Full view state (v2) + legacy positions map |
+| **📥 Import Layout** | —         | Apply layout JSON (v2 full state or legacy positions) |
 
 **Image Scale**: 1-10× (default 2×). Scale > 4× may fail in some browsers.
 

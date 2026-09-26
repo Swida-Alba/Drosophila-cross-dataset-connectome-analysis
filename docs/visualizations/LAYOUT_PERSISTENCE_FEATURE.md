@@ -2,7 +2,7 @@
 
 ## Overview
 
-The network visualizations now include a **Layout Persistence** feature that allows you to save and restore all your custom adjustments to the visualization.
+The network visualizations now include a **Layout Persistence** feature that allows you to save and restore all your custom adjustments to the visualization. Reopening the same HTML file restores the last saved state automatically (with a **Reset** action on the toast that drops the saved state and reloads the generated defaults).
 
 ## Features
 
@@ -13,18 +13,20 @@ The network visualizations now include a **Layout Persistence** feature that all
 
 ### 📂 Load Layout
 - Restores previously saved layout from localStorage
-- Shows timestamp of when layout was saved
-- Restores all positions, colors, and settings
+- Restores all positions, appearance, settings (see the full list below)
 
-### 📤 Export JSON
-- Downloads layout configuration as a `.json` file
+### 🔄 Auto-Restore on Open
+- When the page opens and a saved state exists for this file, it is re-applied automatically
+- The confirmation toast offers a **Reset** action: drops the saved state and reloads the page, restoring the generated defaults
+
+### 📤 Export Layout
+- Downloads the full view state as a `.json` file (v2 format)
 - Can be shared with collaborators
 - Can be backed up or version-controlled
 
-### 📥 Import JSON
+### 📥 Import Layout
 - Upload a previously exported layout file
-- Applies all settings from the file
-- Automatically saves to localStorage after import
+- v2 files apply the full state; legacy positions-only files (v1) still import
 
 ## What Gets Saved
 
@@ -33,15 +35,28 @@ The following state is preserved:
 ### Node Properties
 - **Positions** (x, y coordinates)
 - **Colors** (custom color assignments)
+- **Alpha/opacity** — body-only: the fill's transparency set through the color panels; label text keeps full opacity
 - **Visibility** (hidden/shown state)
+- **Custom group memberships** (assigned_group)
 
 ### Edge Properties
 - **Visibility** (hidden/shown state)
+- **Base color** (line/arrow color)
+- **Base alpha/opacity** — line + arrows only; edge weight-label text is never faded by alpha
+
+### Group Definitions
+- **Group defaults** (color + opacity per group, including edited NT/dataset groups)
+- **Custom group definitions** (label, color, opacity)
 
 ### View State
 - **Zoom level**
 - **Pan position** (viewport center)
 - **Label visibility** (on/off)
+- **Label position** (center/outside)
+- **Edge weight labels** (on/off)
+- **Background color**
+- **Label font color**
+- **Hemisphere mirror** (on/off)
 
 ### Control Settings
 - **Edge width** slider value
@@ -49,10 +64,17 @@ The following state is preserved:
 - **Arrow size** slider value
 - **Font size** slider value
 - **Node size** slider value
+- **Edge label font size** slider value
+- **Connection metric** (weight/ratio/probability)
+- **Edge filter** expression
+- **Hide toggles** (orphans / self-loops / dead ends)
+- **Reciprocal edge mode** (curved/straight) + offset
+- **Spacing trackers** (horizontal/vertical gaps) and **rotation** — values only; the saved positions carry the arrangement
 
 ### Metadata
 - **Timestamp** (when saved)
 - **Graph name** (for unique identification)
+- **Version** (2)
 
 ## Usage
 
@@ -60,39 +82,37 @@ The following state is preserved:
 
 1. **Adjust your visualization**
    - Move nodes around to desired positions
-   - Change colors using the color palette
-   - Hide/show nodes and edges as needed
+   - Change colors and alpha using the color panels
+   - Hide/show nodes and edges, filter edges as needed
    - Adjust font sizes, edge widths, etc.
 
 2. **Save your work**
    - Click **💾 Save** button
-   - See confirmation: "✓ Layout saved to browser"
    - Your layout is now persisted in browser storage
 
 3. **Reload anytime**
-   - Open the same HTML file
-   - Click **📂 Load** button
-   - See confirmation with save timestamp
-   - All your adjustments are restored
+   - Open the same HTML file — the saved state is restored automatically
+   - Or click **📂 Load** to re-apply it explicitly
+   - The toast's **Reset** action drops the save and reloads the defaults
 
 ### Sharing Layouts
 
 1. **Export to file**
-   - Click **📤 Export** button
-   - Downloads `network_layout_<filename>.json`
+   - Click **📤 Export Layout** button
+   - Downloads `network_layout_<date>.json` with the full view state
    - Send this file to collaborators
 
 2. **Import from file**
-   - Collaborator clicks **📥 Import** button
+   - Collaborator clicks **📥 Import Layout** button
    - Selects your `.json` file
-   - Layout is automatically applied and saved
+   - The full state is applied (legacy positions-only files import too)
 
 ## Technical Details
 
 ### Storage
 
 - Uses browser's **localStorage** API
-- Storage key: `cytoscape_network_layout`
+- Storage key: `cytoscape_layout_<filename>#<generation-timestamp>` (each generated HTML copy has independent saves; stale keys are evicted, newest 20 kept)
 - Data format: JSON
 - Size limit: ~5-10 MB (browser dependent, typically sufficient for hundreds of nodes)
 
@@ -104,40 +124,43 @@ The following state is preserved:
 
 ### File Format
 
-JSON structure:
+JSON structure (v2 — `layout` is the legacy positions-only map kept for older imports):
 ```json
 {
+  "version": 2,
   "positions": [{"id": "neuron1", "position": {"x": 100, "y": 200}}, ...],
-  "colors": [{"id": "neuron1", "color": "#ff0000"}, ...],
+  "colors": [{"id": "neuron1", "color": "#ff0000", "opacity": 0.4}, ...],
+  "edgeStyles": [{"id": "edge1", "baseColor": "#ff0000", "baseOpacity": 0.3}, ...],
   "visibility": [{"id": "neuron1", "visible": true, "hidden": false}, ...],
   "edgeVisibility": [{"id": "edge1", "visible": true, "hidden": false}, ...],
+  "assignedGroups": {"neuron1": "my-group"},
+  "groupDefaults": {"source": {"color": "#ff5722", "opacity": 100}, ...},
+  "customGroups": {"my-group": {"label": "...", "color": "...", "opacity": 100, ...}},
+  "background": "#ffffff",
+  "labelFontColor": "",
+  "labelsVisible": true,
+  "labelPosition": "center",
+  "edgeWeightLabels": false,
+  "hemisphereMirrorEnabled": false,
+  "reciprocal": {"enabled": false, "offset": 5},
+  "filter": {"inputValue": "", "ignoredValues": [], "expressions": []},
+  "hideToggles": {"orphans": false, "selfLoops": false, "deadEnds": false},
+  "globalStyles": {"nodeSize": 40, "edgeWidth": 3, "fontSize": 12,
+                    "edgeLabelFontSize": 9, "arrowSize": 9,
+                    "edgeWidthScale": "log_e", "metric": "weight",
+                    "spacingX": 100, "spacingY": 100, "rotation": 0},
+  "edgeWidth": "3", "edgeWidthScale": "log_2", "arrowSize": "9",
+  "fontSize": "12", "nodeSize": "40",
   "zoom": 1.5,
   "pan": {"x": 0, "y": 0},
-  "labelsVisible": true,
-  "edgeWidth": "3",
-  "edgeWidthScale": "log_2",
-  "arrowSize": "9",
-  "fontSize": "12",
-  "nodeSize": "40",
-  "timestamp": "2025-10-29T10:30:00.000Z",
+  "timestamp": "2026-09-27T10:30:00.000Z",
   "graphName": "network_selected_paths"
 }
 ```
 
-### Status Messages
+Every field is applied defensively: payloads (or files) written by older builds that lack the newer keys still load.
 
-| Message | Meaning |
-|---------|---------|
-| ✓ Layout saved to browser | Save successful |
-| ✓ Layout loaded from \<date> | Load successful with timestamp |
-| ✓ Layout exported as JSON | Export successful |
-| ✓ Layout imported from \<filename> | Import successful |
-| No saved layout found | No previous save in localStorage |
-| No layout to export. Save first! | Must save before exporting |
-| ✗ Invalid layout file | JSON file format incorrect |
-| ✗ Save/Load/Export/Import failed: \<error> | Error occurred |
-
-## Best Practices
+### Best Practices
 
 ### 1. Save Frequently
 - Save after major layout changes
@@ -145,9 +168,9 @@ JSON structure:
 - Export important layouts as backup
 
 ### 2. Name Your Exports
-- Default name: `network_layout_<original_filename>.json`
+- Default name: `network_layout_<date>.json`
 - Rename exported files with descriptive names
-- Example: `network_layout_L3_to_MeVPMe_final_2025.json`
+- Example: `network_layout_L3_to_MeVPMe_final_2026.json`
 
 ### 3. Version Control
 - Export layouts before making major changes
@@ -167,9 +190,13 @@ JSON structure:
 ## Troubleshooting
 
 ### Layout not loading?
-- Check status message for errors
-- Verify you're opening the same HTML file
+- Check the toast for errors
+- Verify you're opening the same HTML file (storage keys are per generated copy)
 - Try exporting and re-importing
+
+### Restored a layout by mistake?
+- Click **Reset** on the "Restored saved layout" toast — it drops the save and reloads the generated defaults
+- Or undo individual steps with the undo system where applicable
 
 ### Positions slightly off?
 - May occur if window size changed significantly
@@ -185,15 +212,6 @@ JSON structure:
 - Different screen sizes may affect initial view
 - Collaborator should click "Fit to Screen"
 - Relative positions will be preserved
-
-## Future Enhancements
-
-Possible future additions:
-- Multiple save slots (save different versions)
-- Auto-save every N minutes
-- Undo/redo functionality
-- Layout comparison view
-- Cloud storage integration
 
 ## Implementation Status
 

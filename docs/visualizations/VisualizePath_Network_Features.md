@@ -230,9 +230,11 @@ Restores complete graph state from exported JSON:
 
 ### Export Layout Only
 
-Exports only node positions (no styles or groups):
-1. Click **📍 Layout** button
-2. Use to apply same layout to different networks
+Exports the full view state (v2): node positions plus colors and alpha,
+edge base appearance, group definitions, filters, toggles and all style
+controls. A legacy positions-only map is included for older imports:
+1. Click **📤 Export Layout** button
+2. Import elsewhere to restore the whole look (or just positions with legacy builds)
 
 ### Export Edge List (CSV)
 
