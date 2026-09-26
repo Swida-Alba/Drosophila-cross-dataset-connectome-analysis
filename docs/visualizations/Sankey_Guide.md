@@ -91,6 +91,22 @@ Toggle between different strength measures:
 
 **Effect**: Link widths update to reflect selected metric
 
+**Not always synapses**: the metric label is supplied by the caller
+(`edge_weight_label` / `metric_option_label`), so a diagram of cross-dataset
+**type mapping** reads **Neuron count** and is titled for the mapping
+(`Type mapping Sankey — <columns>`) rather than "pathway connections". The
+same callers can drop the `(L<n>)` hop suffix from node labels
+(`sankey_label_layers=False`) when a column is a dataset rather than a
+pathway depth — which is the case for every type-mapping Sankey. Defaults
+(pathway data) are unchanged.
+
+**Opens offline**: the Sankey embeds the Plotly bundle in the file itself
+(`include_plotlyjs=True`) rather than referencing `cdn.plot.ly`, so a
+downloaded `_Sankey.html` renders with no network. The file is ~4.9 MB
+instead of ~70 KB — the deliberate trade for an artifact reviewers open away
+from their own machine. The Cytoscape **network** views still load their
+libraries from a CDN, so those need network on first open.
+
 ### 2. Layout Modes
 
 Control how the diagram is arranged:

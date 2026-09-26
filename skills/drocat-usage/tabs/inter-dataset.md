@@ -314,9 +314,11 @@ writes both files.
   selects that candidate and demotes the rest to *suspects*. The panel marks
   such a row with a `⚠ suspects (N)` badge in its own **Suspects** column —
   on the pair-card mapped-pairs table, the forward/backward Type coverage
-  tables, and the per-type breakdown — and carries the rival details in a
-  **collapsed `Suspects` expander** below the table (rival · own 1-to-1 pair
-  · votes · reverse target · rival pair status); the pair's Type coverage
+  tables, and the per-type breakdown. **Hovering the badge** explains the flag
+  and lists the rivals (rival · own 1-to-1 pair
+  · votes · reverse target · rival pair status); a **collapsed `Suspects`
+  expander** below the table carries the identical facts, so the hover is
+  additive and never the only route to the evidence. The pair's Type coverage
   expansion title is data-driven (`1-to-N fan-out` / `N-to-1 fan-in` /
   `all 1-to-1`, plus `· ⚠ N suspect pair(s)`), and a pair kept unmapped for
   this reason says so in the

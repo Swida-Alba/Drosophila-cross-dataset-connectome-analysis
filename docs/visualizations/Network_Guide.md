@@ -181,6 +181,13 @@ Toggle between different connection measures:
 
 **Note**: Edge widths update automatically when switching metrics
 
+**Note**: the weight's unit label and the "weight" option text come from the
+caller (`edge_weight_label` / `metric_option_label`), so the type-mapping
+networks read **Neuron count** while pathway networks keep **Synapse Count**.
+The Layout Algorithm selector also pre-selects the layout the document was
+actually rendered with — including the programmatic `mapping` preset the
+type-mapping views use — so the dropdown matches the canvas on open.
+
 ### 4. Edge Filtering
 
 Hide edges based on weight values:

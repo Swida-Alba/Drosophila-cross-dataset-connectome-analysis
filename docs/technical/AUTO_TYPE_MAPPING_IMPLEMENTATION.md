@@ -428,25 +428,44 @@ eight distinct source neurons.
   `FB: not measured` / `not pooled`); long cells wrap within capped
   column widths so every column stays visible.  The summary strip
   splits received vs issued mapped neurons.
-- **Mapping graph query-entry provenance**: the downloaded Mapping graph keeps
-  a taxonomy/metadata query entry on the dataset where it resolved. For
-  example, FAFB `cell_type · 'circadian_clock'` is one FAFB-owned entry linked
-  to its 21 FAFB source types and titled with the 242-neuron query population;
-  it is not recreated under MCNS or BANC, and target summary counts remain
-  separate. The graph carries structured `origin_dataset`, `origin_column`,
-  `origin_value`, and `origin_type` flow metadata while retaining the legacy
-  `matched_origin` display field.
-- **Per-pair network query-entry ownership** (§14, user 2026-09-09): the
-  per-pair `Network (type-level)` export follows the same contract —
-  `build_mapping_network_graph` keys a non-`type` query entry
-  `E|<origin_dataset>|<label>` from the structured origin metadata (legacy
-  flows fall back to the flow's source dataset), attaches it only to the
-  ORIGIN-side source types in the entry → source direction, and titles it
-  with the unique origin types and their source-side counts (the
-  `circadian_clock` FAFB→MCNS export reads `covers 21 types, 242 neurons`).
-  The old contract keyed the entry under the TARGET dataset, converged the
-  target-side types into it, and summed the foreign counts — the same
-  defect class the Mapping graph had already shed.
+- **Mapping graph plots types only** (re-cut 2026-09-26): the downloaded
+  Mapping graph and Mapping sankey draw type nodes and nothing else. A
+  taxonomy/metadata chip such as FAFB `cell_type · 'circadian_clock'` used to
+  be rendered as an `E|<origin_dataset>|<label>` hub linked to its 21 FAFB
+  source types, which read as one more mapping endpoint; it is now search
+  provenance only, carried by the flow metadata (`origin_dataset`,
+  `origin_column`, `origin_value`, `origin_type`, plus the legacy
+  `matched_origin` display field) and by the panel tables and CSV columns.
+- **Centre-source star** (`_star_component_order`, `_origin_target_shape`):
+  when one dataset is the origin and exactly two receive it, the composed
+  network renders from explicit preset positions as
+  `target 1 | origin | target 2` — the origin keeps role `source` in the middle
+  column (layer position must not demote it), and the flank covering more
+  origin types goes left, ties broken by the selection order then the dataset
+  key. Dagre ranks by edge direction and cannot produce that shape, so
+  `render_composed_mapping_html` switches to the preset layout whenever every
+  component is a star. The composed Sankey follows the same columns; because
+  Plotly ranks Sankey nodes topologically and ignores `node.x` when a link
+  contradicts it (measured), the left half's rows are emitted
+  `target → origin`, and the artifact states that convention in a floating
+  note. One origin into one target is a plain two-column Sankey; more than two
+  targets is not drawn (the per-pair `Sankey (type-level)` buttons cover it).
+- **Per-pair network orientation** (§14, user 2026-09-09): the
+  per-pair `Network (type-level)` export still presents the ORIGIN side in
+  layer 0 — a native-match flow (the viewer's expanded search, whose matched
+  column lives in the foreign dataset) is flipped so the view reads
+  origin types → searched types like the panel's seeded exports. Only the
+  entry hub is gone; the orientation rule that was introduced to rank it
+  survives because it is what makes the two exports read alike.
+- **Mapping exports count neurons** (user 2026-09-26): vispath's Sankey and
+  network templates hard-coded the pathway vocabulary, so a mapping Sankey
+  hovered "Synapses: 9" and its metric selector read "Synapse Count" even
+  though DROCAT already passed `edge_weight_label='neurons'`. The templates now
+  honour `metric_option_label`, `sankey_title` and `sankey_label_layers`; the
+  mapping views pass `Neuron count`, a `Type mapping Sankey — …` title, and no
+  `(L<n>)` hop suffix (whose columns are datasets, not pathway depth). The
+  pathway defaults are unchanged, so connectome artifacts render byte-for-byte
+  as before.
 - **Dataset-wide backward coverage** (§12, user 2026-09-09): the panel's
   backward table upgrades receiving-type rows to the dataset-wide incoming
   scope. `CrossDatasetTypeMapper.incoming_type_names()` discovers the full
@@ -514,11 +533,17 @@ eight distinct source neurons.
 - **Export mapping CSV** (user 2026-09-09, replaces the old "Export
   bridges (CSV)"): buttons `Export mapping` (per pair) and
   `Export mapping — all pairs (CSV)`; filenames `mapping_*.csv`.  One
-  FIXED column set for every pair — `source_dataset, source_entry,
-  matched_column, source_type, target_dataset, target_type,
-  relationship, source_neurons, target_neurons, bridge, bridge_columns,
-  mapping_origin, source_pool, source_total, target_pool, target_total,
-  pool_coverage, pool_coverage_basis` — so the all-pairs file is a plain
+  FIXED column set for every pair — 35 columns, verified against the real
+  export: `source_dataset, source_entry, matched_column, source_type,
+  target_dataset, target_type, relationship, source_neurons, target_neurons,
+  selected_bridge, bridge, bridge_columns, mapping_origin, mapping_status,
+  selected_bridge_rank, valid_bridge_count, selected_linker_values,
+  selected_linker_canonical_values, unsupported_attempts, source_pool,
+  source_total, target_pool, target_total, all_valid_source_pool,
+  all_valid_source_total, all_valid_target_pool, all_valid_target_total,
+  source_body_ids, target_body_ids, all_valid_source_body_ids,
+  all_valid_target_body_ids, pool_coverage, pool_coverage_basis,
+  coverage_overlap, coverage_scope` — so the all-pairs file is a plain
   header + rows concatenation (the old per-pair pivoted
   `bridge-<column>` fields needed a union-of-columns hack to avoid
   ragged rows).  `source_entry` is the value that matched on the source
@@ -526,7 +551,11 @@ eight distinct source neurons.
   value); `relationship` is derived 1-to-1/1-to-N per source type; the
   numeric pool/total columns make coverage machine-readable while
   `pool_coverage` stays the human-readable `source covered …; target
-  …` field.  `source_body_ids` / `target_body_ids` carry the FULL
+  …` field.  The `selected_*` / `all_valid_*` pair of scopes is the
+  machine-readable form of the same split the panel's coverage columns
+  show: the primary bridge chain versus the union of every supported
+  chain, with `coverage_overlap` quantifying how much the two share and
+  `coverage_scope` naming which basis a cell was measured on.  `source_body_ids` / `target_body_ids` carry the FULL
   per-type populations (every bodyId of the mapped type in its own
   dataset, one brace-wrapped comma-separated list quoted as one CSV field
   per cell — user 2026-09-09, after ';'-joined lists made spreadsheet
@@ -616,12 +645,13 @@ eight distinct source neurons.
 | `tests/core/test_type_mapper_source_map.py` | declarative licensing vs the tables, per-pair sweeps |
 | `tests/core/test_type_mapper_bridge_rules.py` | the algebra: reverse crosswalk legs, connector licenses, BANC ban, no-flip order, untyped exclusion, label-hop terminality + primary-valued-alt refusal (the `l-LNv → BM_*` regression), the designed `aT`→`ACT` standard, real-data acceptance |
 | `tests/core/test_type_mapper_annotation_bridge.py` | overlay precedence, exports, release-name resolution |
-| `tests/core/test_type_mapper_real_datasets.py` | circadian parity (panel == viewer, 219 unique), linker layout + header legend chips, direct BANC label routes, normalized-auto MeVPLo2 pools, SMP227 selected/all-valid coverage and overlap, CB1011 conflict blocking, two-linker cap, APDN3 pair weights == Sankey ribbons, APDN3 pool-union hover, Sankey no parallel links, edge-label size control, per-pair network FAFB-owned circadian entry (§14), SMP227 reverse-context incoming families and dataset-wide unions (§12) |
+| `tests/core/test_type_mapper_real_datasets.py` | circadian parity (panel == viewer, 219 unique), linker layout + header legend chips, direct BANC label routes, normalized-auto MeVPLo2 pools, SMP227 selected/all-valid coverage and overlap, CB1011 conflict blocking, two-linker cap, APDN3 pair weights == Sankey ribbons, APDN3 pool-union hover, Sankey no parallel links, edge-label size control, per-pair network types-only (no circadian query-entry node, FAFB still layer 0 — §14 re-cut 2026-09-26), SMP227 reverse-context incoming families and dataset-wide unions (§12) |
 | `tests/core/test_banc_release_and_mcns_version.py` | BANC label votes/verification, `auto:`-stripped label provenance, duplicated root relation, MCNS v0.9 alias/native fallback |
 | `tests/core/test_dataset_release_registry.py` | shared recommendation policy and unavailable-release behavior |
 | `tests/ui/test_dataset_release_notice.py` | explicit single/multi selector recommendation action and suppression |
-| `tests/core/test_type_mapping_composed.py` | mapping-CSV fixed-width contract (`source_dataset`…`pool_coverage_basis`), extended selected/all-valid scope and raw/canonical linker export, `format_coverage` states, `not measured` coverage rows, shared `pair_flow_weight` formula, pool-count union, forward 1-to-N + reverse row-subject `1-to-N` fan-out labeling with dataset-wide incoming contexts (§12), Mapping graph query-entry ownership, per-pair network entry ownership + legacy fallback + no type-query entry (§14) |
-| `tests/ui/test_type_mapping_panel.py` | entrance enable/disable, global search composition, short coverage headers with dataset-key + selected/all-valid tooltips, dataset-wide backward scope rows, per-pair artifact actions, panel-scoped history |
+| `tests/core/test_type_mapping_composed.py` | mapping-CSV fixed-width contract (`source_dataset`…`pool_coverage_basis`), extended selected/all-valid scope and raw/canonical linker export, `format_coverage` states, `not measured` coverage rows, shared `pair_flow_weight` formula, pool-count union, forward 1-to-N + reverse row-subject `1-to-N` fan-out labeling with dataset-wide incoming contexts (§12), types-only canvases (no query-entry node in the composed graph or either per-pair network, origin side still left), the centre-source star (columns, `source` role kept in the middle, flank by coverage then selection order, chain-is-not-a-star), and the composed Sankey (reversed left half, column list, slipped-type report, ≤2-target gate) |
+| `tests/core/test_mapping_export_wording.py` | mapping Sankey/network exports never speak pathway: no 'Synapse'/'Synapse Count', no `(L0)` hop suffix, a mapping-specific title on canvas and in `<title>`, the layout dropdown pre-selects the rendered layout, and the vispath defaults keep a PATHWAY artifact byte-identical |
+| `tests/ui/test_type_mapping_panel.py` | entrance enable/disable, global search composition, short coverage headers with dataset-key + selected/all-valid tooltips, dataset-wide backward scope rows, per-pair artifact actions, the suspects badge hover on all three tables (slot bound + per-rival text, collapsed block still rendered), the composed Sankey button beside the graph button, panel-scoped history |
 | `tests/ui/test_alias_matches.py` | viewer enrichment, source-scoped conflict rendering, mapped-type view, pool granularity |
 | `tests/ui/test_neuron_index_viewer.py` | independent endpoint pools, two-sided support semantics, prioritized fallback after an unsupported chain |
 

@@ -280,8 +280,11 @@
     marks a same-name-first selection with a <code>⚠ suspects (N)</code>
     badge in the row's own <b>Suspects</b> column — on the pair-card mapped
     pairs table, the forward/backward Type coverage tables, and the
-    per-type breakdown — each carrying the rival details in a collapsed
-    <b>Suspects</b> expander (one row per rival: own
+    per-type breakdown. <b>Hovering the badge</b> explains the flag and lists
+    the rivals (own 1-to-1 pair, votes, reverse target, rival pair status);
+    the collapsed <b>Suspects</b> expander below each table carries the same
+    facts, so the hover is additive and never the only route to the evidence
+    (one row per rival: own
     1-to-1 pair, votes, reverse target, rival pair status). A pair kept
     unmapped for the same reason says so in the Orphan list instead of
     looking unmapped for no reason. The "See available neurons" viewer with
@@ -444,12 +447,19 @@
       ends with / regex), with dataset-aware type suggestions. A chip that
       names a taxonomy value (e.g. FAFB <code>cell_type</code>
       <code>circadian_clock</code>) expands to that label's member types. The
-      Mapping graph keeps that query entry on FAFB and connects it only to
-      the covered FAFB source types; target datasets do not receive duplicate
-      query-entry nodes. The per-pair <code>Network (type-level)</code>
-      downloads follow the same rule — the query entry is owned by the
-      dataset where the query resolved, attached only to that side's source
-      types, with the origin-side population on its hover.</li>
+      exported <code>Mapping graph (HTML)</code> and <code>Mapping sankey
+      (HTML)</code> plot <b>types only</b> — the chip itself is search
+      provenance, so it appears in the tables and CSVs, never as a node on the
+      canvas. The per-pair <code>Network (type-level)</code> download follows
+      the same rule, and still presents the dataset where the query resolved on
+      the left.</li>
+    <li><b>Centre-source layout</b>: when one dataset is the origin and exactly
+      two receive it, both exports place the origin in the <b>middle</b> column
+      with one target on each flank (<code>target 1 | origin | target 2</code>),
+      the denser flank on the left. The composed Sankey covers one or two target
+      datasets; for a wider selection use a pair card's <code>Sankey
+      (type-level)</code>. Sankey ribbons are labelled in <b>neurons</b> — the
+      mapping views never say "synapses".</li>
     <li><b>Summary table</b> (per dataset): Matched types, Neurons (the
       issued side — every matched type is issued into the resolution,
       flowed or orphaned), <b>Mapped neurons</b> — what the dataset
@@ -464,9 +474,10 @@
       Mapped to, Neurons (<code>source → foreign</code>), <b>Relationship</b>
       (the per-flow cardinality, matching the coverage tables and the CSV),
       <b>Suspects</b> (a <code>⚠ suspects (N)</code> badge on a row whose
-      same-name-first selection demoted rival candidates — expand the
-      collapsed <b>Suspects</b> block below the table for the per-rival
-      evidence), Map used (the
+      same-name-first selection demoted rival candidates — <b>hover the badge</b>
+      for the explanation and one line per rival, or expand the collapsed
+      <b>Suspects</b> block below the table, which carries the same facts as a
+      table), Map used (the
       derivation linkers, e.g. <code>flywireType 'LMTe01' +
       additional_type(s) 'LMTe01'</code>), and <b>Pool coverage</b> —
       one basis-aware cell per side so the states can never be confused:
@@ -528,7 +539,10 @@
       warning appears only when no evidence connects the pair.</li>
     <li><b>Exports</b>: Sankey (type-level / linker), Network (type-level /
       linker paths), the <b>Mapping graph</b> (HTML, downloaded as
-      <code>mapping_graph_*.html</code>), and <b>Export mapping</b> (per pair and
+      <code>mapping_graph_*.html</code>), the cross-dataset <b>Mapping
+      sankey</b> (HTML, <code>mapping_sankey_*.html</code>; one column per
+      dataset with the origin centred, offered whenever the selection is one
+      origin into at most two targets), and <b>Export mapping</b> (per pair and
       <b>all pairs (CSV)</b>; filenames <code>mapping_*.csv</code>).  One
       fixed column set: <code>source_dataset, source_entry, matched_column,
       source_type, target_dataset, target_type, relationship,

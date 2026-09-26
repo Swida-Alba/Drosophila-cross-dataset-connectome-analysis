@@ -310,16 +310,27 @@ both surfaces report identical target sets and unique neuron counts
 (e.g. `circadian_clock`: 21 FAFB types / 242 neurons → 40 male-cns
 targets / 219 unique neurons on both).
 
-The Type Mapping panel's **Mapping graph (HTML)** preserves that provenance:
-when a query resolves through a taxonomy column such as FAFB `cell_type`, the
-query entry is owned by FAFB and connects only to its covered FAFB source
-types. It is not duplicated as an entry node in each target dataset; target
-summary counts remain separate from the query-entry population. The per-pair
-**Network (type-level)** downloads follow the same rule: a taxonomy query
-entry is keyed and drawn on the dataset where the query resolved, attached
-only to that side's source types, and its hover counts the origin-side
-population (unique source types and their neurons) — never the target-side
-received neurons.
+The Type Mapping panel's **Mapping graph (HTML)** and **Mapping sankey (HTML)**
+plot **types only**. The chip that produced them — a taxonomy hit such as FAFB
+`cell_type = circadian_clock` — is search provenance, not a mapping endpoint,
+so it is not drawn as a node on any canvas (it stays in the panel tables, the
+per-pair cards and the CSV exports, where the `matched_origin` /
+`source_entry` / `matched_column` columns carry it).
+
+When one dataset is the query's origin and exactly two datasets receive it,
+both exports put the origin in the **middle column** with one target on each
+flank (`target 1 | origin | target 2`), so each column boundary is exactly one
+dataset pair; the flank covering more origin types takes the left. Dagre cannot
+do that (it ranks by edge direction), so the network renders from explicit
+preset positions, and Plotly's Sankey ignores an `x` that contradicts its link
+direction, so the left half's ribbons are drawn `target ← origin` — a drawing
+convention only: a type mapping is an equivalence, the artifact says so in a
+floating note, and the derivation direction stays on the edge hover. (The
+network keeps the derivation direction on BOTH halves, so its arrows point
+outward from the centre — measured on the `circadian_clock` star: 44 edges to
+the left flank, 43 to the right.) The
+composed Sankey exists for one or two targets; a wider selection falls back to
+the per-pair **Sankey (type-level)** buttons.
 
 #### BodyId-level granularity (row-based bridge evidence only)
 
@@ -934,12 +945,16 @@ target_types=[<same name>]        # the rivals stay OUT by default
 - **UI surfaces** (plan-ui-type-mapper-alignment): the cross-dataset tab's
   Type Mapping panel and the "See available neurons" viewer with
   cross-dataset mapping ON display this state — a short marker plus
-  **collapsed** details, never a hover-only tooltip.  In the panel the
+  **collapsed** details.  In the panel the
   `⚠ suspects (N)` badge rides on the row's own **Suspects** column across
   all three surfaces (the pair-card mapped-pairs table, the forward and
-  backward Type coverage tables, and the per-type breakdown), each with a
-  collapsed **Suspects** block below the table holding the per-rival
-  expander; the viewer keeps its per-candidate expander.  A pair that did
+  backward Type coverage tables, and the per-type breakdown).  Hovering the
+  badge opens the same-name-first explanation plus one line per rival
+  (candidate name, own 1-to-1 pair, curated/auto votes, reverse target,
+  rival-pair status, src/tgt neurons); the **collapsed Suspects block** below
+  each table holds the identical facts as a table, so the hover is additive
+  and never the only route to the evidence.  The viewer keeps its
+  per-candidate expander.  A pair that did
   NOT fire explains itself where it surfaces: a held conflict/kept-unmapped
   line naming how many rivals lack their own 1-to-1 pairing.  The viewer's
   same-name annotation distinguishes three cases — curated cross-dataset
