@@ -97,7 +97,9 @@ dev = [
     "tomli>=2.0.0,<3; python_version < '3.11'",
     "jupyter==1.0.0",
     "ipykernel==6.0.0",
-    "black==22.0.0",
+    # 22.0.0 was never published to PyPI, and nothing before 22.6.0 accepts this
+    # project's own target-version = py311, so pip could not resolve [dev].
+    "black==22.12.0",
     "flake8==4.0.0",
 ]
 
@@ -195,6 +197,10 @@ extend-exclude = '''
   | dist
   | cache
   | __pycache__
+  # the article's codebase is a separate repository with its own tooling; it is
+  # excluded from DROCAT's .gitignore by .git/info/exclude only, so black would
+  # otherwise reformat it from the app root
+  | _clock_production
 )/
 '''
 
