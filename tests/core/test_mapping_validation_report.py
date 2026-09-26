@@ -4,10 +4,11 @@
 
 Covers: self-contained HTML assembly (no external refs), the §1
 coverage levels, the §6 fill table with per-row cross-bin provenance,
-the hover-glossary layer, the 20-row viewport catch-all, warning-note
-collection + the ``user_warning_notes.txt`` header discipline, the
-mapper-gap fallback chain (in-memory → set_coverage.json → README), and
-the slim README contract.
+the hover-glossary layer, the every-row scroll viewport (the 20-row
+cap is gone, user 2026-09-26), warning-note collection + the
+``user_warning_notes.txt`` header discipline, the mapper-gap fallback
+chain (in-memory → set_coverage.json → README), and the slim README
+contract.
 """
 
 import csv
@@ -29,7 +30,7 @@ from comparison.mapping_validation_report import (  # noqa: E402
     collect_warnings,
     _scene_failures,
     _scenes_tab,
-    _viewport,
+    _scroll_viewport,
 )
 
 
@@ -302,13 +303,16 @@ def test_mapper_gap_fallback_chain(run_dir: Path):
     assert d3["mapper_gap"] == {"FROMJSON": 9}
 
 
-def test_viewport_catch_all():
+def test_scroll_viewport_renders_every_row_in_one_table():
+    # user 2026-09-26: the 20-row cap is gone — every table is ONE
+    # open table with EVERY row inside the scroll wrapper
     rows = [f"<tr><td>r{i}</td></tr>" for i in range(25)]
-    html = _viewport(rows, "<th>c</th>")
-    assert "Show all 25 rows (first 20 above)" in html
-    assert html.count("<td>r0</td>") == 1  # open table keeps first 20
-    small = _viewport(rows[:5], "<th>c</th>")
-    assert "Show all" not in small
+    html = _scroll_viewport(rows, "<th>c</th>")
+    assert html.count("<table") == 1
+    assert "<details" not in html
+    for i in range(25):
+        assert f"<td>r{i}</td>" in html
+    assert "max-height" in html  # the container scrolls, not the page
 
 
 def test_scenes_status_and_outmap(run_dir: Path):

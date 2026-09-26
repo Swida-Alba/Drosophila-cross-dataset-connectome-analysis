@@ -89,11 +89,14 @@ start there. It assembles the headline (e.g. **242 source neurons →
 204 male-cns:v1.0 neurons map-covered**), the three coverage levels
 (L1 claim / L2 provenance / L3 validation), the branch table, the
 target-side holes, the fill proposals with per-row provenance, the
-**Reciprocal** tab (stage 5d, on by default — §2.2c),
-the out-map expansion, the backward `source-` view, the **Pooling** tab (the
-whole result of a `--mode pooling` run — §4), the morphology record
-(with the null-sample advisory when null-kind bars are in play), the
-scene gallery, and a file index.
+**Reciprocal** tab (stage 5d, on by default — §2.2c), the
+**Homolog · forward** / **Homolog · backward** tabs (per-bodyId match
+sheets — §2.2d), the out-map expansion, the backward `source-` view, the
+**Pooling** tab (the whole result of a `--mode pooling` run — §4), the
+morphology record (with the null-sample advisory when null-kind bars are
+in play), the scene gallery, and a file index.
+Every table renders ALL its rows in one scrollable table (user
+2026-09-26 — there is no "Show all" second table anywhere).
 Hover any dotted term — or any table header, which explains its own column
 and any tolerance it reads against — for its definition. Every `!` log line is
 reproduced verbatim in its Warnings section, and the same warnings are
@@ -103,6 +106,9 @@ appended to `user_warning_notes.txt`. `README.txt` stays slim
 ```
 python -m comparison.mapping_validation_report <run_dir>
 ```
+
+(Runs that predate the homolog panels show those two tabs as
+absent-artifact notes until the pipeline rewrites the folder.)
 
 ### 2.1 The 3D scenes (`visualization/*.html`)
 
@@ -299,6 +305,40 @@ morphology.
 Skip it when you only need the tier: one reverse scan costs what a
 forward source scan costs, so a large query is bounded by
 `--backward-max-neurons` (300) and `--backward-per-branch-cap` (40).
+
+### 2.2d Homolog · forward / Homolog · backward (per-bodyId match sheets, user 2026-09-26)
+
+The Reciprocal tab answers the reverse question for the neurons the
+mapping did NOT assert. The two homolog tabs answer the MATCHING question
+for every bodyId the run touched, both directions, so one worksheet can
+drive the manual allocation of the `candidates` / `family` / `relative` /
+`examinees` bins and every other appeared bodyId:
+
+*   **Homolog · forward** — ONE row per source bodyId that appeared in the
+    run (assigned, fill-proposed, out-of-map or unpaired alike), with the
+    published chain-best target as the **primary match** and the union of
+    the **top-3 rank_union and top-3 jaccard** hits on hover (deduped,
+    chain order — a hit that is rank-1 on one metric while invisible on
+    the other still shows). Rows are grouped by the **allocation** the
+    run's artifacts give the bodyId (category bins, fill-proposed,
+    out-of-map, otherwise the mapping verdict) and ordered by the primary
+    match's jaccard inside each group. Data: `validation/forward_matches.csv`.
+*   **Homolog · backward** — the exact mirror: ONE row per TARGET bodyId
+    that appeared (pool members INCLUDING matched / verified / borderline
+    — which the reciprocal pass deliberately leaves unscanned — plus
+    expansion-bin, out-map and proposal targets), scanned back against the
+    WHOLE source dataset in stage 5e. Each row carries its pool category,
+    the branches claiming it, the chain-best source match, the same union
+    hover, and the same morph cell. Data: `expansion/target_matches.csv`.
+
+Both tabs show the **morph** qualification of the primary pair whenever
+the run exported a value for it — ✓/✗ re-derived offline from
+`morphology_calibration.json`'s branch bars (display only: the report
+never re-scores a pair), and `not scored` when it did not. A bodyId the
+scan could not run for carries `no profile` (or `scan error`) with its
+`scanned_at` reason — silence with a reason, never a negative. These
+panels are advisory display data; nothing downstream gates on them, and
+runs that predate them show the tabs as absent-artifact notes.
 
 ### 2.3 What is filtered as noise
 

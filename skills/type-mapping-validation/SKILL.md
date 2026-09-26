@@ -198,8 +198,16 @@ against — `local_data/` is disposable by design.
 1. `report.html` — the per-run report: headline + the three coverage
    levels (L1 claim / L2 provenance / L3 validation), branches, fills
    (with their per-row `reciprocal` column), the Reciprocal tab (stage
-   5d, opt-in runs), out-map expansion, morphology record, scenes, file
-   index. The **Scenes** tab prints the palette the run actually wore
+   5d, opt-in runs), the **Homolog · forward** / **Homolog · backward**
+   tabs (per-bodyId match sheets, user 2026-09-26 — one row per appeared
+   source / target bodyId with the chain-best primary match, the union of
+   the top-3 rank_union and top-3 jaccard neighbourhood on hover, the
+   allocation the run's artifacts give the bodyId, and the morph
+   qualification of the pair displayed when the run scored it), out-map
+   expansion, morphology record, scenes, file
+   index. Every table renders ALL rows in one scrollable table (the
+   20-row "Show all" catch-all is gone, user 2026-09-26). The **Scenes**
+   tab prints the palette the run actually wore
    (`_scene_palette_html`, one chip per `COLOR_EDITABLE_CATEGORIES` bin, each
    recolored bin naming the default it replaced, no block when nothing was
    recorded) — read it before concluding a scene's colors are the defaults. Hover any
@@ -208,7 +216,9 @@ against — `local_data/` is disposable by design.
    verbatim in its Warnings section, which also quotes the stage-5d
    `[reciprocal]` advisory (the Fill tab's `Reverse evidence by bin` line
    is its per-bin form). Regenerable for any past run:
-   `python -m comparison.mapping_validation_report <run_dir>`.
+   `python -m comparison.mapping_validation_report <run_dir>` (runs that
+   predate the homolog panels show those two tabs as absent-artifact
+   notes until the pipeline rewrites them).
 2. `README.txt` — slim directions (what file is what) + the raw run log
    (scan the log lines starting with `!` for self-check failures or
    gate warnings). The old glossary / pair-summaries / coverage
@@ -288,7 +298,27 @@ against — `local_data/` is disposable by design.
     with `backward_own_type_via` naming the ranking that placed it there),
     and the serialized `backward_topN` neighbourhood the report hovers,
     listed in jaccard order (§3).
-11d. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
+11d. `validation/forward_matches.csv` — the **Homolog · forward** panel's
+    data (user 2026-09-26): ONE row per appeared source bodyId — assigned,
+    fill-proposed, out-of-map or unpaired alike — with the published
+    chain-best target (`primary_*`), the serialized `forward_topN`
+    neighbourhood, `n_scanned`, and `scanned_at` (`run` / `no_profile` /
+    `error`; silence with a reason, never a negative). Captured during
+    stage 2 while the scan frames are in memory; the `morph_*` columns are
+    display joins off the artifacts that already scored that pair — the
+    report re-derives ✓/✗ offline from the branch bars, nothing is
+    re-scored.
+11e. `expansion/target_matches.csv` — the **Homolog · backward** panel's
+    data (stage 5e, user 2026-09-26): ONE row per appeared target bodyId
+    (pool members — INCLUDING matched / verified / borderline — plus
+    expansion / out-map / proposal targets) scanned back against the WHOLE
+    source dataset, the exact mirror of the forward panel. Carries
+    `pool_category` + `pool_branches` (every branch claiming the target),
+    the chain-best `primary_source_*`, the serialized
+    `backward_topN_union` payload, `n_scanned` / `scanned_at`. No caps —
+    the stage-5d caps belong to the evidence pass. Advisory display data
+    only: nothing downstream gates on it.
+11f. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
     `pooling_sources.csv` / `pooling_cross_validation.json` — `--mode pooling`
     only, three axes: every (source, target) pair the BAR admitted (with its
     `tier`, `bar_rank`, the three advisory flags and `verdict_for_pair`), the

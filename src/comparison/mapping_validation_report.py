@@ -416,6 +416,36 @@ TERM_DEFS: Dict[str, str] = {
         'almost nothing to rank — an incompletely traced neuron scores well '
         'against another short one. Advisory marker only: it never changes '
         'the reciprocal verdict, a bar, or a fill count.',
+    'homolog forward':
+        'One row per source bodyId the run touched — assigned, '
+        'fill-proposed, out-of-map or unpaired alike — with the target '
+        'neuron the connectivity scan matched it to.',
+    'homolog backward':
+        'One row per target bodyId that appeared in the run, scanned back '
+        'against the WHOLE source dataset — the exact mirror of the '
+        'forward panel.',
+    'primary match':
+        'The published chain-best hit of the per-bodyId scan (Jaccard '
+        'first, rank_union as the tie-break, bodyId last) — the same '
+        'definition the reciprocal top-1 column publishes.',
+    'union window':
+        'The hover list is the UNION of the top-3 hits by rank_union and '
+        'the top-3 by jaccard (deduped, listed in chain order), so a hit '
+        'that is rank-1 on one metric while invisible on the other still '
+        'shows.',
+    'allocation':
+        "Every bin/status the run's artifacts give this bodyId — category "
+        'bins (sibling/candidates/family/relative/examinees), '
+        'fill-proposed, out-of-map, the mapping verdict and the backward '
+        'source status — so one row answers "where does this neuron live '
+        'today".',
+    'not scored':
+        'The run exported no morphology for this pair. The homolog panels '
+        'display the run\'s own morph exports and never re-score at '
+        'report time.',
+    'no profile':
+        'The neuron had no usable connectivity profile, so its scan was '
+        'skipped — silence with a reason, never a negative result.',
 }
 
 # per-file column/term notes for §12 expanders
@@ -431,6 +461,12 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
         'reciprocal', 'reciprocal top-1', 'branch-type hit', 'high',
         'medium', 'low', 'not-checked', 'shared partner types',
         'thin evidence'],
+    'validation/forward_matches.csv': [
+        'homolog forward', 'primary match', 'union window', 'allocation',
+        'not scored', 'no profile'],
+    'expansion/target_matches.csv': [
+        'homolog backward', 'primary match', 'union window', 'not scored',
+        'no profile'],
     'gap_fill/gap_fill_dedup.csv': [
         'dup', 'restrictive fill', 'family fill', 'branch-type hit',
         'thin evidence'],
@@ -478,6 +514,12 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
     ('expansion/backward_matches.csv',
      'reciprocal homolog evidence per candidates/family/relative member '
      'and per unmatched pool member (§5d, advisory)'),
+    ('validation/forward_matches.csv',
+     'Homolog · forward: one row per appeared source bodyId — chain-best '
+     'target + top-3 rank_union ∪ top-3 jaccard payload (display only)'),
+    ('expansion/target_matches.csv',
+     'Homolog · backward: one row per appeared target bodyId scanned back '
+     'against the whole source dataset (display only)'),
     ('expansion/source_status.csv',
      'backward `source-` status per in-branch source (advisory)'),
     ('expansion/source_candidates.csv',
@@ -960,6 +1002,50 @@ def collect_run_data(run_dir: Path,
         per_type_status.setdefault(
             r['source_type'], collections.Counter())[r['status']] += 1
 
+    # -- homolog panels (user 2026-09-26): per-bodyId forward/backward ------
+    forward_rows = _read_csv_rows(_run_file(run_dir, 'forward_matches.csv'))
+    forward_available = _run_file(run_dir, 'forward_matches.csv').exists()
+    target_match_rows = _read_csv_rows(
+        _run_file(run_dir, 'target_matches.csv'))
+    target_match_available = _run_file(
+        run_dir, 'target_matches.csv').exists()
+    # the deep window carries the `examinees` bin — its rows must reach the
+    # allocation the same way the other expansion bins do
+    deep_rows = _read_csv_rows(_run_file(run_dir, 'deep_candidates.csv'))
+    # allocation = every bin/status a SOURCE bodyId appears in across the
+    # run's artifacts, so one panel row answers "where does this neuron
+    # live today" without cross-referencing five tabs
+    forward_alloc: Dict[str, Dict] = {}
+
+    def _fwd_alloc(bid) -> Dict:
+        return forward_alloc.setdefault(
+            str(bid), {'verdict': '', 'bins': [], 'fill': False,
+                       'out_map': False, 'source_status': ''})
+
+    for b, v in (best_verdict or {}).items():
+        _fwd_alloc(b)['verdict'] = str(v or '')
+    for r in (list(sus_rows) + list(deep_rows) + list(fam_rows)
+              + list(rel_rows)):
+        c = str(r.get('category') or '')
+        b = str(r.get('source_bodyId') or '')
+        if c and b:
+            bins = _fwd_alloc(b)['bins']
+            if c not in bins:
+                bins.append(c)
+    for r in prop_rows:
+        if str(r.get('side') or '') != 'source':
+            continue
+        b = str(r.get('bodyId') or '')
+        if b:
+            _fwd_alloc(b)['fill'] = True
+    for b in out_sources:
+        if b:
+            _fwd_alloc(b)['out_map'] = True
+    for r in ss_rows:
+        b = str(r.get('source_bodyId') or '')
+        if b:
+            _fwd_alloc(b)['source_status'] = str(r.get('status') or '')
+
     scenes = _parse_scenes(run_dir)
     selfcheck = {'pass': len(readme['selfcheck_pass']),
                  'fail': len(readme['selfcheck_fail'])}
@@ -1090,6 +1176,11 @@ def collect_run_data(run_dir: Path,
         'backward_bins': backward_bins,
         'backward_by_bid': backward_by_bid,
         'backward_rows_by_bid': rows_by_bid,
+        'forward_rows': forward_rows,
+        'forward_available': forward_available,
+        'forward_alloc': forward_alloc,
+        'target_match_rows': target_match_rows,
+        'target_match_available': target_match_available,
         'backward_counters': (coverage.get('target') or {}).get(
             'backward_evidence') or {},
         'out_sources': out_sources,
@@ -1341,25 +1432,6 @@ def _scroll_viewport(rows_html: List[str], headers: str,
     return ("<div style='overflow:auto;max-height:"
             f"{max_h}px'><table class='mv-table'>{head}"
             f"<tbody>{''.join(rows_html)}</tbody></table></div>")
-
-
-def _viewport(rows_html: List[str], headers: str, n: int = 20) -> str:
-    """First ``n`` rows in the open table; the rest behind a details
-    catch-all (the 20-row viewport convention)."""
-    head = f'<thead><tr>{headers}</tr></thead>'
-    if len(rows_html) <= n:
-        return ("<div style='overflow-x:auto'>"
-                f"<table class='mv-table'>{head}"
-                f"<tbody>{''.join(rows_html)}</tbody></table></div>")
-    open_rows = ''.join(rows_html[:n])
-    rest_rows = ''.join(rows_html[n:])
-    return (
-        "<div style='overflow-x:auto'><table class='mv-table'>"
-        f'{head}<tbody>{open_rows}</tbody></table></div>'
-        '<details class="detail-block"><summary>Show all '
-        f'{len(rows_html)} rows (first {n} above)</summary>'
-        "<div style='overflow-x:auto'><table class='mv-table'>"
-        f'{head}<tbody>{rest_rows}</tbody></table></div></details>')
 
 
 def _kv_block(title: str, pairs: List[Tuple[str, str]]) -> str:
@@ -1683,7 +1755,7 @@ def _coverage_tab(d: Dict) -> str:
                 f'<td>{_esc(v.get("assigned", 0))}</td>'
                 f'<td>{_esc(v.get("fill_proposed", 0))}</td>'
                 f'<td>{_esc(v.get("unpaired_unproposed", 0))}</td></tr>')
-        body = _viewport(
+        body = _scroll_viewport(
             rows,
             _th('source type', 'The queried source-side type.')
             + _th('pool', 'Source neurons of this type in the query '
@@ -2026,7 +2098,7 @@ def _targets_tab(d: Dict) -> str:
                 f'<td>{tier}</td>'
                 f'<td>{_esc(v.get("reached_as_candidates_only", 0))}</td>'
                 f"<td>{_esc(', '.join(str(b) for b in holes))}</td></tr>")
-        body = _viewport(
+        body = _scroll_viewport(
             rows,
             _th('target type', 'The target-side (male-cns) type.')
             + _th('mapped pop', 'Target neurons annotated with this '
@@ -2277,7 +2349,7 @@ def _fill_tab(d: Dict) -> str:
             f"<td>{_esc(lvl.get('dup', r.get('dup', '')))}</td>"
             f'<td>{_bev_badge(bev, _badge_thin(brec))}</td>'
             f'<td>{_esc(prov)}</td></tr>')
-    table = _viewport(
+    table = _scroll_viewport(
         rows,
         _th('target bodyId', 'The proposed fill neuron (bodyId-unique '
             'across branches).')
@@ -2327,7 +2399,7 @@ def _outmap_tab(d: Dict) -> str:
     pct = _pct(d['out_morph_pass'], d['out_rows_total'])
     top = ' · '.join(
         f'{_esc(t)} {_esc(n)}' for t, n in
-        sorted(d['out_type_counts'].items(), key=lambda kv: -kv[1])[:6])
+        sorted(d['out_type_counts'].items(), key=lambda kv: -kv[1]))
     n_with_q = len(d['per_source_best'])
     summ = _kv_block('Out-map expansion summary', [
         ('Sources expanded',
@@ -2371,7 +2443,7 @@ def _outmap_tab(d: Dict) -> str:
             f"<td>{_f(r.get('jaccard'))}</td>"
             f"<td>{_f(r.get('morph_v2_similarity'))}{vs} {q}</td>"
             f"<td>{item['n_q']}/{item['n_total']}</td></tr>")
-    table = _viewport(
+    table = _scroll_viewport(
         rows,
         _th('source', 'The unclaimed source neuron (type + bodyId).')
         + _th('best candidate', 'Its best-ranked typed non-in-map '
@@ -2449,7 +2521,7 @@ def _backward_tab(d: Dict) -> str:
                 f"<td>{_esc(c.get('source-verified', 0))}</td>"
                 f"<td>{_esc(c.get('source-borderline', 0))}</td>"
                 f"<td>{_esc(c.get('source-unmatched', 0))}</td></tr>")
-        pt_table = _viewport(
+        pt_table = _scroll_viewport(
             pt_rows,
             _th('source type', 'The queried source-side type.')
             + ''.join(_th(k, TERM_DEFS[k])
@@ -2675,13 +2747,15 @@ def _badge_thin(r: Dict) -> bool:
     return _is_thin(r)
 
 
-def _topn_hover(raw) -> str:
-    """Render a ``backward_topN`` cell as the hover's mini table.
+def _topn_hover(raw, head: str = 'top-N reverse hits (Jaccard order)') -> str:
+    """Render a ``backward_topN`` / union-payload cell as the hover's mini
+    table.
 
     Records are ``ru_rank|jac_rank|bid|type|ru|jaccard|in_branch`` and the
-    list arrives in the reciprocal list's default order (Jaccard first), so
-    BOTH ranks travel: a hit can be jaccard 1 while ranking poorly by
-    rank_union, and one rank column would hide that."""
+    list arrives in chain order (Jaccard first), so BOTH ranks travel: a
+    hit can be jaccard 1 while ranking poorly by rank_union, and one rank
+    column would hide that.  ``head`` names the list the caller serialized
+    (the reciprocal chain top-N vs the homolog union window)."""
     recs = [r for r in str(raw or '').split(';') if r.strip()]
     if not recs:
         return ''
@@ -2696,7 +2770,7 @@ def _topn_hover(raw) -> str:
             f'<td>{_esc(f[4] or "—")}</td>'
             f'<td>{_esc(f[5] or "—")}</td>'
             f'<td>{"this branch" if f[6] == "1" else "elsewhere"}</td></tr>')
-    return ('<b>top-N reverse hits (Jaccard order)</b>'
+    return (f'<b>{head}</b>'
             '<table><thead><tr>'
             "<th title='Rank by jaccard; the list is ordered by this.'>"
             '#jac</th>'
@@ -2835,7 +2909,7 @@ def _reciprocal_tab(d: Dict) -> str:
         'family and relative members are morph-similar to the query or to '
         'those candidates), so this is connectivity evidence and nothing '
         'here moves a neuron between bins or counts toward a fill.',
-        _viewport(
+        _scroll_viewport(
             _bin_rows(),
             _th('bin', 'The bin scanned back: the gap-fill bins '
                 'candidates / family / relative, plus unmatched pool '
@@ -3033,6 +3107,418 @@ def _reciprocal_tab(d: Dict) -> str:
         ['reciprocal top-1', 'branch-type hit', 'rank_union',
          'shared partner types', 'thin evidence']))
     return ''.join(cards)
+
+
+# ---------------------------------------------------------------------------
+# homolog panels (user 2026-09-26): per-bodyId forward/backward match sheets
+# ---------------------------------------------------------------------------
+
+def _branch_bar_for(bars: Dict, src_type: str, tgt_type: str) -> Dict:
+    """The branch bar spec for a pair, accepting both key generations
+    (plain ``src->tgt`` and query-prefixed ``query|src->tgt``)."""
+    if not bars:
+        return {}
+    suffix = f'{src_type}->{tgt_type}'
+    for key in sorted(bars):
+        if key == suffix or key.endswith('|' + suffix):
+            return bars.get(key) or {}
+    return {}
+
+
+def _homolog_morph_cell(row: Dict, bars: Dict) -> str:
+    """The morph qualification of the row's PRIMARY pair, display-only:
+    the values are the run's own exports and the ✓/✗ re-derives
+    ``morph_bars.candidate_qualified`` against the branch bar (or the
+    exported bar for out-map pairs) — nothing is re-scored here."""
+    from comparison.morph_bars import BarSet, candidate_qualified
+    sim = _as_num(row.get('morph_v2_similarity'))
+    pref = _as_num(row.get('morph_pool_ref'))
+    if sim is None and pref is None:
+        return "<span class='missing'>not scored</span>"
+    src_type = str(row.get('source_type')
+                   or row.get('primary_source_type') or '')
+    tgt_type = str(row.get('primary_target_type')
+                   or row.get('target_type') or '')
+    spec = _branch_bar_for(bars, src_type, tgt_type)
+    if spec:
+        bar = BarSet(
+            candidate_kind=str(spec.get('candidate_kind') or 'null'),
+            native_floor=_as_num(spec.get('native_floor')),
+            backup_floor=_as_num(spec.get('backup_floor')),
+            null_bar=_as_num(spec.get('null_bar')),
+        )
+        ok = candidate_qualified(bar, pref, sim)
+        val = pref if bar.candidate_kind == 'native' else sim
+        return (f"{'✓' if ok else '✗'} {_f(val, 4)} vs "
+                f'{_f(bar.candidate_bar_value(), 4)} '
+                f'({_esc(bar.candidate_kind)})')
+    bar_val = _as_num(row.get('morph_bar'))
+    kind = str(row.get('morph_bar_kind') or '')
+    if bar_val is not None and sim is not None:
+        return (f"{'✓' if sim >= bar_val else '✗'} {_f(sim, 4)} vs "
+                f'{_f(bar_val, 4)} ({_esc(kind or "bar")})')
+    shown = sim if sim is not None else pref
+    return f"{_f(shown, 4)} <span class='mv-note'>(no bar in this run)</span>"
+
+
+def _homolog_forward_tab(d: Dict) -> str:
+    """Homolog · forward (user 2026-09-26): EVERY source bodyId that
+    appeared in the run — assigned, fill-proposed, out-of-map or unpaired
+    — with the target neuron the connectivity scan matched it to (the
+    published chain-best hit), the morph qualification of that pair when
+    the run scored it, and the union of the top-3 rank_union and top-3
+    jaccard neighbourhood on hover.  One display row per bodyId, grouped
+    by the allocation the run's artifacts give it: this is the worksheet
+    the user allocates candidates / family / relative / examinees and all
+    other appeared bodyIds from."""
+    if not d.get('forward_available'):
+        return _section_card(
+            'Homolog · forward',
+            'One row per source bodyId the run touched, with its '
+            'connectivity match in the target dataset.',
+            _empty('forward_matches.csv absent — this run predates the '
+                   'homolog panels; re-run the pipeline to populate the '
+                   'panel.'),
+            ['homolog forward', 'union window', 'not scored'])
+    rows = d['forward_rows']
+    if not rows:
+        return _section_card(
+            'Homolog · forward', '',
+            _empty('forward_matches.csv is present but empty — the run '
+                   'had no source neurons to match.'),
+            ['homolog forward'])
+    bars = d['branch_bars']
+    alloc_by_bid = d['forward_alloc']
+    branches_by_src: Dict[str, List[str]] = {}
+    for pr in d['pair_rows']:
+        st = str(pr.get('source_type') or '')
+        tt = str(pr.get('target_type') or '')
+        if st and tt:
+            lst = branches_by_src.setdefault(st, [])
+            if tt not in [x.split(' → ')[-1] for x in lst]:
+                lst.append(f'{st} → {tt}')
+
+    def _alloc_label(bid: str) -> str:
+        a = alloc_by_bid.get(bid) or {}
+        parts = list(a.get('bins') or [])
+        if a.get('fill'):
+            parts.append('fill-proposed')
+        if a.get('out_map'):
+            parts.append('out-of-map')
+        if parts:
+            return '+'.join(parts)
+        v = str(a.get('verdict') or '')
+        if not v:
+            return 'appeared'
+        return 'unpaired' if v == 'unmatched' else f'mapped · {v}'
+
+    _group_rank = {'candidates': 0, 'family': 1, 'relative': 2,
+                   'examinees': 3, 'sibling': 4, 'fill-proposed': 5,
+                   'out-of-map': 6, 'unpaired': 7, 'appeared': 9}
+
+    def _alloc_detail(bid: str) -> str:
+        a = alloc_by_bid.get(bid) or {}
+        notes = []
+        if a.get('verdict'):
+            notes.append(f"verdict {a['verdict']}")
+        if a.get('source_status'):
+            notes.append(str(a['source_status']))
+        return (f"<span class='mv-note'> · {_esc(' · '.join(notes))}</span>"
+                if notes else '')
+
+    def _row_sort(r):
+        j = _as_num(r.get('primary_jaccard'))
+        return (-(j if j is not None else -1e9),
+                str(r.get('source_bodyId') or ''))
+
+    scanned_counts: Dict[str, int] = collections.Counter(
+        str(r.get('scanned_at') or '?') for r in rows)
+    n_scored = sum(1 for r in rows
+                   if _as_num(r.get('morph_v2_similarity')) is not None
+                   or _as_num(r.get('morph_pool_ref')) is not None)
+    summary = _section_card(
+        f'Homolog · forward — {len(rows):,} source bodyIds',
+        'Every source bodyId the run touched, one row each, ordered by the '
+        'primary match\'s Jaccard inside its allocation group. The '
+        '<b>primary match</b> is the published chain-best hit (Jaccard '
+        'first, rank_union tie-break); its hover carries the union of the '
+        'top-3 rank_union and top-3 jaccard neighbourhood. Morphology is '
+        'the run\'s own export for that pair — displayed, never re-scored '
+        'here.',
+        "<p class='mv-note'>Scanned: "
+        f"{scanned_counts.get('run', 0):,} of {len(rows):,} against the "
+        'full target dataset · '
+        f"{scanned_counts.get('no_profile', 0):,} without a usable "
+        f"profile · {scanned_counts.get('error', 0):,} scan errors · "
+        f"{n_scored:,} with a morph value on the primary pair.</p>"
+        + _scroll_viewport(
+            [f'<tr><td>{_esc(k)}</td><td>{v:,}</td></tr>'
+             for k, v in sorted(
+                 collections.Counter(_alloc_label(str(r.get(
+                     'source_bodyId') or '?')) for r in rows).items(),
+                 key=lambda kv: kv[1], reverse=True)],
+            _th('allocation', 'The group the bodyId allocates into today.')
+            + _th('bodyIds', 'Rows in the group below.')),
+        ['homolog forward', 'primary match', 'union window', 'allocation',
+         'not scored'])
+
+    groups: Dict[Tuple[str, str], List[Dict]] = collections.defaultdict(list)
+    for r in rows:
+        bid = str(r.get('source_bodyId') or '?')
+        groups[(_alloc_label(bid),
+                str(r.get('source_type') or '(untyped)'))].append(r)
+
+    def _group_order(key):
+        label, tpe = key
+        if '+' in label:
+            rank = min((_group_rank.get(p, 6) for p in label.split('+')),
+                       default=6)
+        else:
+            rank = _group_rank.get(label, 8 if label.startswith('mapped')
+                                   else 9)
+        return (rank, label, -len(groups[key]), tpe)
+
+    blocks = []
+    for key in sorted(groups, key=_group_order):
+        label, tpe = key
+        members = sorted(groups[key], key=_row_sort)
+        trs = []
+        for r in members:
+            bid = str(r.get('source_bodyId') or '?')
+            p_bid = str(r.get('primary_target_bodyId') or '')
+            if p_bid:
+                where = ('in a branch pool'
+                         if _truthy(r.get('primary_in_branch'))
+                         else 'outside the branch pools')
+                p_type = str(r.get('primary_target_type') or '(untyped)')
+                cell = (f'{_esc(p_bid)} · {_esc(p_type)}'
+                        f"<span class='mv-note'> · {where} · "
+                        f'jac {_f(r.get("primary_jaccard"), 4)} · '
+                        f'ru {_f(r.get("primary_rank_union"), 4)}'
+                        '</span>')
+                cell = _hover(cell, _topn_hover(
+                    r.get('forward_topN'),
+                    'homolog neighbourhood — top-3 rank_union ∪ top-3 '
+                    'jaccard (chain order)'))
+            else:
+                cell = "<span class='missing'>—</span>"
+            scanned = str(r.get('scanned_at') or '')
+            if scanned == 'run':
+                scan_cell = f'{_cnt(r.get("n_scanned"))} targets'
+            elif scanned == 'no_profile':
+                scan_cell = _term('no profile')
+            elif scanned == 'error':
+                scan_cell = "<span class='missing'>scan error</span>"
+            else:
+                scan_cell = _esc(scanned or '—')
+            brs = branches_by_src.get(str(r.get('source_type') or ''), [])
+            trs.append(
+                f'<tr><td>{_esc(bid)}</td>'
+                f'<td>{_esc(str(r.get("source_type") or "(untyped)"))}</td>'
+                f'<td>{_esc(label)}{_alloc_detail(bid)}</td>'
+                f'<td>{cell}</td>'
+                f'<td>{_homolog_morph_cell(r, bars)}</td>'
+                f'<td>{_esc(" · ".join(brs) or "—")}</td>'
+                f'<td>{scan_cell}</td>'
+                f'</tr>')
+        blocks.append(
+            '<details class="detail-block"><summary>'
+            f'{_esc(label)} · {_esc(tpe)} — {len(members)} neuron'
+            f'{"s" if len(members) != 1 else ""}</summary>'
+            "<div style='overflow-x:auto'>"
+            "<table class='mv-table'>"
+            '<thead><tr>'
+            + _th('source bodyId', 'The source-dataset neuron this run '
+                  'mapped from.')
+            + _th('type', 'Its source-side type.')
+            + _th('allocation', 'The bins/status this bodyId holds across '
+                  "the run's artifacts, with the mapping verdict and the "
+                  'backward source status as notes.')
+            + _th('primary match (hover: top-3 ∪ top-3)',
+                  'The chain-best target hit; hover for the union '
+                  'neighbourhood with both ranks and both scores.')
+            + _th('morph', 'The primary pair\'s morph qualification, '
+                  're-derived offline from the run\'s own exports and its '
+                  'branch bar — display only.')
+            + _th('branches', 'The branches this source type maps through.')
+            + _th('scanned', 'How many target neurons the scan ranked, or '
+                  'why it did not run.')
+            + f'</tr></thead><tbody>{"".join(trs)}</tbody></table>'
+            '</div></details>')
+    return summary + _section_card(
+        'Per-bodyId matches, grouped by allocation',
+        'One row per source bodyId; a bodyId appears in exactly one group '
+        "(the allocation label built from the run's bins), so this panel "
+        'can drive the manual allocation of every appeared neuron.',
+        ''.join(blocks),
+        ['homolog forward', 'primary match', 'union window', 'allocation',
+         'not scored', 'no profile'])
+
+
+def _homolog_backward_tab(d: Dict) -> str:
+    """Homolog · backward (user 2026-09-26): EVERY target bodyId that
+    appeared in the run — pool members, expansion-bin members, out-map
+    targets, proposal targets — scanned back against the WHOLE source
+    dataset (stage 5e), the exact mirror of the forward panel: primary
+    source match, the top-3 rank_union ∪ top-3 jaccard union on hover, and
+    the morph qualification of the primary pair when the run scored it."""
+    if not d.get('target_match_available'):
+        return _section_card(
+            'Homolog · backward',
+            'One row per target bodyId the run touched, scanned back '
+            'against the whole source dataset.',
+            _empty('target_matches.csv absent — this run predates the '
+                   'homolog panels; re-run the pipeline to populate the '
+                   'panel.'),
+            ['homolog backward', 'union window', 'not scored'])
+    rows = d['target_match_rows']
+    if not rows:
+        return _section_card(
+            'Homolog · backward', '',
+            _empty('target_matches.csv is present but empty — the run had '
+                   'no target neurons to scan back.'),
+            ['homolog backward'])
+    bars = d['branch_bars']
+    member_cat_by_bid = {
+        bid: str(best.get('member_category') or '')
+        for bid, best in (d.get('backward_by_bid') or {}).items()}
+
+    def _alloc_label(r: Dict) -> str:
+        cats = [c for c in str(r.get('pool_category') or '').split(';')
+                if c]
+        mc = member_cat_by_bid.get(str(r.get('target_bodyId') or ''), '')
+        if mc and mc not in cats:
+            cats.append(mc)
+        return '+'.join(cats) if cats else 'unallocated'
+
+    _group_rank = {'matched': 0, 'verified': 1, 'borderline': 2,
+                   'unmatched': 3, 'sibling': 4, 'candidates': 5,
+                   'family': 6, 'relative': 7, 'examinees': 8,
+                   'unallocated': 9}
+
+    def _row_sort(r):
+        j = _as_num(r.get('primary_jaccard'))
+        return (-(j if j is not None else -1e9),
+                str(r.get('target_bodyId') or ''))
+
+    scanned_counts: Dict[str, int] = collections.Counter(
+        str(r.get('scanned_at') or '?') for r in rows)
+    n_scored = sum(1 for r in rows
+                   if _as_num(r.get('morph_v2_similarity')) is not None
+                   or _as_num(r.get('morph_pool_ref')) is not None)
+    summary = _section_card(
+        f'Homolog · backward — {len(rows):,} target bodyIds',
+        'Every target bodyId the run touched, scanned back against the '
+        'whole source dataset with the same scorer the reciprocal pass '
+        'uses — one row each, the mirror of the forward panel. The '
+        '<b>primary source match</b> is the chain-best source; its hover '
+        'carries the union of the top-3 rank_union and top-3 jaccard '
+        'neighbourhood. Morphology is the run\'s own export for that pair '
+        '— displayed, never re-scored here.',
+        "<p class='mv-note'>Scanned: "
+        f"{scanned_counts.get('run', 0):,} of {len(rows):,} · "
+        f"{scanned_counts.get('no_profile', 0):,} without a usable "
+        f"profile · {scanned_counts.get('error', 0):,} scan errors · "
+        f"{n_scored:,} with a morph value on the primary pair.</p>"
+        + _scroll_viewport(
+            [f'<tr><td>{_esc(k)}</td><td>{v:,}</td></tr>'
+             for k, v in sorted(
+                 collections.Counter(_alloc_label(r) for r in rows).items(),
+                 key=lambda kv: kv[1], reverse=True)],
+            _th('allocation', 'The group the bodyId allocates into today.')
+            + _th('bodyIds', 'Rows in the group below.')),
+        ['homolog backward', 'primary match', 'union window', 'not scored'])
+
+    groups: Dict[Tuple[str, str], List[Dict]] = collections.defaultdict(list)
+    for r in rows:
+        groups[(_alloc_label(r),
+                str(r.get('target_type') or '(untyped)'))].append(r)
+
+    def _group_order(key):
+        label, tpe = key
+        if '+' in label:
+            rank = min((_group_rank.get(p, 5) for p in label.split('+')),
+                       default=5)
+        else:
+            rank = _group_rank.get(label, 9)
+        return (rank, label, -len(groups[key]), tpe)
+
+    blocks = []
+    for key in sorted(groups, key=_group_order):
+        label, tpe = key
+        members = sorted(groups[key], key=_row_sort)
+        trs = []
+        for r in members:
+            bid = str(r.get('target_bodyId') or '?')
+            s_bid = str(r.get('primary_source_bodyId') or '')
+            if s_bid:
+                where = ('in a branch source pool'
+                         if _truthy(r.get('primary_in_branch'))
+                         else 'outside the branch source pools')
+                s_type = str(r.get('primary_source_type') or '(untyped)')
+                cell = (f'{_esc(s_bid)} · {_esc(s_type)}'
+                        f"<span class='mv-note'> · {where} · "
+                        f'jac {_f(r.get("primary_jaccard"), 4)} · '
+                        f'ru {_f(r.get("primary_rank_union"), 4)}'
+                        '</span>')
+                cell = _hover(cell, _topn_hover(
+                    r.get('backward_topN_union'),
+                    'homolog neighbourhood — top-3 rank_union ∪ top-3 '
+                    'jaccard (chain order)'))
+            else:
+                cell = "<span class='missing'>—</span>"
+            scanned = str(r.get('scanned_at') or '')
+            if scanned == 'run':
+                scan_cell = f'{_cnt(r.get("n_scanned"))} sources'
+            elif scanned == 'no_profile':
+                scan_cell = _term('no profile')
+            elif scanned == 'error':
+                scan_cell = "<span class='missing'>scan error</span>"
+            else:
+                scan_cell = _esc(scanned or '—')
+            trs.append(
+                f'<tr><td>{_esc(bid)}</td>'
+                f'<td>{_esc(str(r.get("target_type") or "(untyped)"))}</td>'
+                f'<td>{_esc(label)}</td>'
+                f'<td>{_esc(str(r.get("pool_branches") or "—"))}</td>'
+                f'<td>{cell}</td>'
+                f'<td>{_homolog_morph_cell(r, bars)}</td>'
+                f'<td>{scan_cell}</td>'
+                f'</tr>')
+        blocks.append(
+            '<details class="detail-block"><summary>'
+            f'{_esc(label)} · {_esc(tpe)} — {len(members)} neuron'
+            f'{"s" if len(members) != 1 else ""}</summary>'
+            "<div style='overflow-x:auto'>"
+            "<table class='mv-table'>"
+            '<thead><tr>'
+            + _th('target bodyId', 'The target-dataset neuron, whatever '
+                  'bin it allocates into.')
+            + _th('type', 'Its target-side type.')
+            + _th('allocation', 'The pool tier / reverse-scan bin this '
+                  'bodyId holds (a neuron claimed by several bins lists '
+                  'each).')
+            + _th('branches', 'The branches claiming this target.')
+            + _th('primary source match (hover: top-3 ∪ top-3)',
+                  'The chain-best source of the whole source-dataset scan; '
+                  'hover for the union neighbourhood with both ranks and '
+                  'both scores.')
+            + _th('morph', 'The primary pair\'s morph qualification, '
+                  're-derived offline from the run\'s own exports and its '
+                  'branch bar — display only.')
+            + _th('scanned', 'How many source neurons the scan ranked, or '
+                  'why it did not run.')
+            + f'</tr></thead><tbody>{"".join(trs)}</tbody></table>'
+            '</div></details>')
+    return summary + _section_card(
+        'Per-bodyId matches, grouped by allocation',
+        'One row per target bodyId — including the matched / verified / '
+        'borderline pool members the reciprocal pass deliberately leaves '
+        'unscanned (their symmetric forward score is their evidence), so '
+        'this panel covers every appeared target without exception.',
+        ''.join(blocks),
+        ['homolog backward', 'primary match', 'union window', 'not scored',
+         'no profile'])
 
 
 def _suspects_tab(d: Dict) -> str:
@@ -3487,7 +3973,7 @@ def _pooling_tab(d: Dict) -> str:
     harvest = ''
     if miss:
         harvest = ("<div class='mv-kv-title'>The harvest, by target "
-                   'type</div>' + _viewport(
+                   'type</div>' + _scroll_viewport(
             [f"<tr><td>{_esc(t or 'untyped')}</td><td>{_cnt(n)}</td>"
              f"<td>{_pct(n, miss_tot)}</td></tr>"
              for t, n in sorted(miss.items(), key=lambda kv: -(int(
@@ -3555,7 +4041,7 @@ def _pooling_tab(d: Dict) -> str:
             + (f" <span class='mv-note'>{_esc(r['mapper_verdict'])}</span>"
                if str(r.get('mapper_verdict') or '').strip() else '')
             + '</td></tr>')
-    table = _viewport(
+    table = _scroll_viewport(
         trs,
         _th('candidate target', 'The pooled target neuron, its shared '
             'leaf token (`(out-map)` / `T>src` / `T(no_source)` / '
@@ -3726,8 +4212,7 @@ def _scenes_tab(d: Dict) -> str:
         fail_note = (
             f" <b class='mv-warn'>{len(failed)} attempted and FAILED</b>"
             ' (their folders hold no page; see the Log tab): '
-            + _esc(', '.join(f'{t} — {e}' for t, e in failed[:6]))
-            + ('' if len(failed) <= 6 else f' (+{len(failed) - 6} more)'))
+            + _esc(', '.join(f'{t} — {e}' for t, e in failed)))
     body = (
         f"<p class='section-summary'>{len(d['scenes'])} scenes rendered "
         '— types with nothing renderable get no scene (decided: a scene '
@@ -4013,7 +4498,10 @@ _TABS: List[Tuple[str, str]] = [
     ('coverage', 'Coverage'), ('branches', 'Branches'),
     ('targets', 'Targets'), ('fill', 'Fill'),
     ('reciprocal', 'Reciprocal'), ('outmap', 'Out-map'),
-    ('backward', 'Backward'), ('suspects', 'Suspects'),
+    ('backward', 'Backward'),
+    ('homolog_forward', 'Homolog · forward'),
+    ('homolog_backward', 'Homolog · backward'),
+    ('suspects', 'Suspects'),
     ('morph', 'Morph'), ('pooling', 'Pooling'),
     ('scenes', 'Scenes'), ('log', 'Log'),
 ]
@@ -4101,6 +4589,8 @@ def build_report_document(d: Dict) -> str:
         'reciprocal': lambda: _reciprocal_tab(d),
         'outmap': lambda: _outmap_tab(d),
         'backward': lambda: _backward_tab(d),
+        'homolog_forward': lambda: _homolog_forward_tab(d),
+        'homolog_backward': lambda: _homolog_backward_tab(d),
         'suspects': lambda: _suspects_tab(d),
         'morph': lambda: _morph_tab(d),
         'pooling': lambda: _pooling_tab(d),

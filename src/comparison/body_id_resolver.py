@@ -736,6 +736,67 @@ def serialize_backward_topN(df: Optional[pd.DataFrame], id2type=None,
     return ';'.join(parts)
 
 
+def topn_union_rows(df: Optional[pd.DataFrame], k: int = 3
+                    ) -> Optional[pd.DataFrame]:
+    """The rows :func:`serialize_topn_union` serializes: the top-``k`` by
+    ``jaccard_rank`` UNION the top-``k`` by ``rank_union_rank``, deduped,
+    in :data:`_CHAIN` order.  Rank ties beyond the rank column break by the
+    chain so window membership is deterministic.  Callers that only need
+    the bodyIds (reducing a scan frame before its types are known) use
+    this; the serializer and the pipeline share one window definition."""
+    if df is None or df.empty or int(k or 0) <= 0:
+        return None if df is None else df.iloc[0:0]
+    picked: set = set()
+    for col in _RANK_COLS:
+        sub = df[df[col].notna()]
+        if sub.empty:
+            continue
+        for r in sub.sort_values(
+                [col] + _CHAIN, ascending=[True] + _CHAIN_ASC,
+                na_position='last').head(int(k)).itertuples(index=False):
+            try:
+                picked.add(int(r.target_bid))
+            except (TypeError, ValueError):
+                continue  # same NaN/None-bid tolerance as serialize_backward_topN
+    if not picked:
+        return df.iloc[0:0]
+    return order_by_chain(df[df['target_bid'].isin(picked)])
+
+
+def serialize_topn_union(df: Optional[pd.DataFrame], id2type=None,
+                         k: int = 3, branch_pool=None) -> str:
+    """The neighbourhood as the UNION of the top-``k`` of each rank
+    column (user 2026-09-26, the homolog-panel hover payload).
+
+    Same 7-field record format as :func:`serialize_backward_topN`
+    (``ru_rank|jac_rank|bid|type|ru|jaccard|in_branch``, ``;``-joined), but
+    the members come from :func:`topn_union_rows` — at most ``2*k``
+    records, fewer when the two windows overlap — listed in
+    :data:`_CHAIN` order so the chain-best hit stays first.  The chain's
+    own top-N can hide a hit that is rank-1 on one metric while invisible
+    on the other; the union shows both neighbourhoods without letting
+    either metric alone define the window."""
+    small = topn_union_rows(df, k)
+    if small is None or small.empty:
+        return ''
+    pool = {int(b) for b in (branch_pool or [])}
+    parts: List[str] = []
+    for r in small.itertuples(index=False):
+        bid = int(r.target_bid)
+        ru = _clean_num(getattr(r, 'rank_union', None))
+        jac = _clean_num(getattr(r, 'jaccard', None))
+        parts.append('|'.join([
+            str(_clean_int(getattr(r, 'rank_union_rank', None)) or ''),
+            str(_clean_int(getattr(r, 'jaccard_rank', None)) or ''),
+            str(bid),
+            _clean_type((id2type or {}).get(bid)),
+            '' if ru is None else f'{ru:.4f}',
+            '' if jac is None else f'{jac:.4f}',
+            '1' if bid in pool else '0',
+        ]))
+    return ';'.join(parts)
+
+
 def _own_type_hit(usable: pd.DataFrame, id2type: Optional[Dict],
                   branch_source_type: str, top_k: int = 3) -> Optional[Dict]:
     """The best-ranked hit of the claiming branch's OWN source type, and

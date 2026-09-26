@@ -119,6 +119,7 @@ from comparison.body_id_resolver import (  # noqa: E402
     _SideStats,
     _pearson,
     _rankdata_average,
+    _best_row,
     BACKWARD_COLUMNS,
     BACKWARD_EVIDENCE_VALUES,
     blank_backward_fields,
@@ -135,6 +136,8 @@ from comparison.body_id_resolver import (  # noqa: E402
     scan_source,
     score_one_candidate,
     score_one_candidate_fast,
+    serialize_topn_union,
+    topn_union_rows,
 )
 
 SOURCE_STATUS_SKIP = {'NONE', 'ORPHAN'}
@@ -1040,6 +1043,7 @@ def _git_rev() -> Optional[str]:
 RUN_FILE_LAYOUT: Dict[str, str] = {
     # stage-2/3 validation evidence
     'validation_results.csv': 'validation',
+    'forward_matches.csv': 'validation',
     'pair_summary.csv': 'validation',
     'pool_categories.csv': 'validation',
     'examinees.csv': 'validation',
@@ -1052,6 +1056,7 @@ RUN_FILE_LAYOUT: Dict[str, str] = {
     'source_candidates.csv': 'expansion',
     'source_status.csv': 'expansion',
     'backward_matches.csv': 'expansion',
+    'target_matches.csv': 'expansion',
     # gap-fill accounting
     'gap_fill_dedup.csv': 'gap_fill',
     'gap_fill_levels.csv': 'gap_fill',
@@ -1247,6 +1252,26 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'backward_matches.csv': [
         'query', 'branch_source_type', 'branch_target_type',
         'member_bodyId', 'member_type', 'member_category', 'scan_role'],
+    # Homolog · forward (user 2026-09-26): one row per appeared source
+    # bodyId — the chain-best target plus the serialized top-3-rank_union
+    # ∪ top-3-jaccard neighbourhood, captured while the stage-2 scan
+    # frames are in memory.  Morph columns are display joins off the
+    # artifacts that already scored the pair; nothing is re-scored here.
+    'forward_matches.csv': [
+        'source_bodyId', 'source_type', 'primary_target_bodyId',
+        'primary_target_type', 'primary_jaccard', 'primary_rank_union',
+        'primary_in_branch', 'forward_topN', 'n_scanned', 'scanned_at',
+        'morph_v2_similarity', 'morph_pool_ref', 'morph_bar_kind'],
+    # Homolog · backward (user 2026-09-26): one row per appeared target
+    # bodyId scanned back against the whole source dataset (stage 5e, no
+    # caps — the stage-5d caps belong to the evidence pass).  Same payload
+    # rule, mirrored direction.
+    'target_matches.csv': [
+        'target_bodyId', 'target_type', 'pool_category', 'pool_branches',
+        'primary_source_bodyId', 'primary_source_type', 'primary_jaccard',
+        'primary_rank_union', 'primary_in_branch', 'backward_topN_union',
+        'n_scanned', 'scanned_at', 'morph_v2_similarity', 'morph_pool_ref',
+        'morph_bar_kind'],
     # one row per admitted PAIR: the bar's own decision, the flags the floors
     # left behind, the tier, and the morphology record that qualified it
     'pooling_candidates.csv': [
@@ -5012,6 +5037,332 @@ class MappingValidator:
                 self.log(traceback.format_exc())
         return rows, cand_rows
 
+    # -- homolog panels: forward capture (stage 2) + target pass (stage 5e)
+
+    def _record_forward_matches(self, src_type, plist, scans,
+                                target_id2type) -> None:
+        """Homolog · forward payload capture (user 2026-09-26): while the
+        stage-2 scan frames are in memory, keep per source bodyId the
+        chain-best target plus the serialized top-3-rank_union ∪
+        top-3-jaccard neighbourhood.  One row per pool source; a source
+        the scan skipped (no usable profile) carries
+        ``scanned_at='no_profile'`` so silence never reads as a negative.
+        Pure capture — the morph display join happens at write time."""
+        if not hasattr(self, '_forward_match_rows'):
+            self._forward_match_rows = []
+            self._forward_seen: set = set()
+        in_branch = {int(b) for p in plist for b in p.target_pool}
+        for sbid in sorted({int(b) for p in plist for b in p.source_pool}):
+            if sbid in self._forward_seen:
+                continue
+            self._forward_seen.add(sbid)
+            row = {
+                'source_bodyId': sbid,
+                'source_type': src_type,
+                'primary_target_bodyId': '',
+                'primary_target_type': '',
+                'primary_jaccard': None,
+                'primary_rank_union': None,
+                'primary_in_branch': '',
+                'forward_topN': '',
+                'n_scanned': 0,
+                'scanned_at': 'no_profile',
+                'morph_v2_similarity': None,
+                'morph_pool_ref': None,
+                'morph_bar_kind': '',
+            }
+            df = scans.get(sbid)
+            if df is None or df.empty:
+                self._forward_match_rows.append(row)
+                continue
+            row['n_scanned'] = int(len(df))
+            row['scanned_at'] = 'run'
+            row['forward_topN'] = serialize_topn_union(
+                df, target_id2type, k=3, branch_pool=in_branch)
+            best = _best_row(df)
+            if best is not None:
+                bid = int(best['target_bid'])
+                row['primary_target_bodyId'] = bid
+                row['primary_target_type'] = (
+                    target_id2type or {}).get(bid) or ''
+                for f, col in (('primary_jaccard', 'jaccard'),
+                               ('primary_rank_union', 'rank_union')):
+                    v = best.get(col)
+                    row[f] = None if pd.isna(v) else float(v)
+                row['primary_in_branch'] = bool(bid in in_branch)
+            self._forward_match_rows.append(row)
+
+    def _appeared_target_bids(self, val_rows, sus_rows, deep_rows,
+                              noise_rows, fills, pool_detail, out_map_rows,
+                              dedup_rows, relatives, family_rows) -> List[int]:
+        """Every target bodyId that APPEARED in the run — the stage-5e
+        universe.  Sources never qualify (a fill row spells its pair
+        through :func:`fill_pair`, so only the target side is taken)."""
+        bids: Dict[int, None] = {}
+        for rows, keys in (
+                (val_rows, ('target_bodyId', 'ru_top_target_bodyId')),
+                (sus_rows + deep_rows + noise_rows,
+                 ('ahead_target_bodyId', 'best_pool_target_bodyId')),
+                (pool_detail, ('target_bodyId',)),
+                (out_map_rows, ('target_bodyId',)),
+                (dedup_rows, ('target_bodyId', 'proposal_bodyId')),
+                (relatives, ('ahead_target_bodyId',
+                             'best_pool_target_bodyId')),
+                (family_rows, ('ahead_target_bodyId',
+                               'best_pool_target_bodyId')),
+                (getattr(self, '_backward_matches_rows', None) or [],
+                 ('member_bodyId',)),
+                # pooling-engine targets: the supervised artifacts above
+                # never name them, but a pooling run's pool is real
+                # appeared-target material for the backward panel
+                ((getattr(self, '_pooling', None) or {}).get('pool') or [],
+                 ('target_bodyId',)),
+        ):
+            for r in rows or []:
+                for k in keys:
+                    try:
+                        bids[int(r.get(k))] = None
+                    except (TypeError, ValueError):
+                        continue
+        for r in fills or []:
+            try:
+                bids[fill_pair(r)[1]] = None
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(bids)
+
+    def _target_match_pass(self, universe: List[int]) -> None:
+        """Stage 5e (user 2026-09-26): scan every appeared target bodyId
+        back against the WHOLE source dataset — the exact mirror of the
+        stage-2 forward scan, feeding the report's Homolog · backward
+        panel.  One row per target bodyId, no caps (the stage-5d caps
+        belong to the evidence pass).  Advisory display data only: nothing
+        downstream gates on it.  Fail-open like the other advisory
+        layers."""
+        cfg = self.cfg
+        if not universe:
+            self._target_match_rows = []
+            return
+        self.log(f'[stage 5e] target matches: scanning {len(universe)} '
+                 'appeared target bodyId(s) against the whole source '
+                 'dataset')
+        self.progress.emit('stage_start', stage='5e',
+                           label='target matches', targets=len(universe))
+        if not cfg.skip_profile_build:
+            try:
+                self._preflight_target_profiles(cfg.source_dataset)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[stage 5e] source profile pre-flight failed '
+                         f'(continuing cache-only): {exc}')
+        try:
+            vectors = build_target_vectors(
+                self.profiler, cfg.source_dataset, self.mapper, cfg.verbose,
+                min_weight=cfg.target_min_weight,
+                min_partner_types=cfg.target_min_partner_types)
+            source_stats = prep_target_stats(vectors)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f'[stage 5e] source-universe vectors unavailable, '
+                     f'target matches skipped: {exc}')
+            self._target_match_rows = [{
+                'target_bodyId': bid, 'target_type': '',
+                'primary_source_bodyId': '', 'primary_source_type': '',
+                'primary_jaccard': None, 'primary_rank_union': None,
+                'primary_in_branch': '', 'backward_topN_union': '',
+                'n_scanned': 0, 'scanned_at': 'error',
+            } for bid in universe]
+            self.progress.emit('stage_done', stage='5e',
+                               label='target matches', rows=0)
+            return
+        del vectors
+        source_bids = list(source_stats)
+        in_branch = {int(b) for p in self.pairs for b in p.source_pool}
+        tgt_id2type = self._bodyid_types(universe, cfg.target_dataset)
+        reduced: Dict[int, object] = {}
+        rows: List[Dict] = []
+        t0 = time.time()
+        for i, bid in enumerate(universe, 1):
+            row = {
+                'target_bodyId': bid,
+                'target_type': (tgt_id2type or {}).get(bid) or '',
+                'primary_source_bodyId': '',
+                'primary_source_type': '',
+                'primary_jaccard': None,
+                'primary_rank_union': None,
+                'primary_in_branch': '',
+                'backward_topN_union': '',
+                'n_scanned': 0,
+                'scanned_at': 'no_profile',
+            }
+            try:
+                sp = self.profiler.get_profile(bid, cfg.target_dataset)
+                df = None
+                if sp is not None and sp.connectivity_status.name \
+                        not in SOURCE_STATUS_SKIP:
+                    df = scan_source(expanded_vector(sp, self.mapper),
+                                     source_stats, source_bids)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f'[TMVEV] target scan {bid}: {exc}')
+                row['scanned_at'] = 'error'
+                df = None
+            if df is not None and not df.empty:
+                row['n_scanned'] = int(len(df))
+                row['scanned_at'] = 'run'
+                # keep only the union window until the types are
+                # known — a full frame per target does not stay resident
+                small = topn_union_rows(df, k=3)
+                if small is not None and not small.empty:
+                    reduced[bid] = small
+                    best = small.iloc[0]
+                    s_bid = int(best['target_bid'])
+                    row['primary_source_bodyId'] = s_bid
+                    row['primary_jaccard'] = (
+                        None if pd.isna(best['jaccard'])
+                        else float(best['jaccard']))
+                    row['primary_rank_union'] = (
+                        None if pd.isna(best['rank_union'])
+                        else float(best['rank_union']))
+                    row['primary_in_branch'] = bool(s_bid in in_branch)
+            rows.append(row)
+            if i % 50 == 0 or i == len(universe):
+                self.log(f'[stage 5e] target scan {i}/{len(universe)} '
+                         f'({time.time() - t0:.0f}s)')
+                self.progress.emit('backward_progress', stage='5e',
+                                   done=i, total=len(universe))
+        del source_stats, source_bids
+        wanted = sorted({int(r.target_bid) for small in reduced.values()
+                         for r in small.itertuples(index=False)})
+        src_id2type = self._bodyid_types(wanted, cfg.source_dataset)
+        for row in rows:
+            small = reduced.get(int(row['target_bodyId']))
+            if small is None:
+                continue
+            row['backward_topN_union'] = serialize_topn_union(
+                small, src_id2type, k=3, branch_pool=in_branch)
+            if not row['primary_source_bodyId']:
+                continue
+            row['primary_source_type'] = (
+                src_id2type or {}).get(int(row['primary_source_bodyId'])) or ''
+        self._target_match_rows = rows
+        self.log(f'[stage 5e] target matches: {len(reduced)} scanned / '
+                 f'{len(universe)} universe '
+                 f'({time.time() - t0:.0f}s)')
+        self.progress.emit('stage_done', stage='5e',
+                           label='target matches',
+                           rows=len(reduced), total=len(universe))
+
+    @staticmethod
+    def _morph_pair_index(*row_groups) -> Dict[Tuple[int, int], Dict]:
+        """(source_bodyId, target_bodyId) -> the morph values the run
+        already exported for that pair, first non-empty value wins.  Fill
+        rows spell their pair through :func:`fill_pair` and name their bar
+        kind ``bar_kind``; both spellings normalize here so the homolog
+        panels DISPLAY these joins and nothing is re-scored."""
+        idx: Dict[Tuple[int, int], Dict] = {}
+
+        def _absorb(rows, a_key, b_key, fields):
+            for r in rows or []:
+                try:
+                    key = (int(r.get(a_key)), int(r.get(b_key)))
+                except (TypeError, ValueError):
+                    continue
+                rec = idx.setdefault(key, {})
+                for f in fields:
+                    v = r.get(f)
+                    if v is not None and v != '':
+                        rec.setdefault(f, v)
+                bk = rec.get('bar_kind')
+                if bk is not None and 'morph_bar_kind' not in rec:
+                    rec['morph_bar_kind'] = bk
+
+        def _absorb_fill(rows):
+            for r in rows or []:
+                try:
+                    key = fill_pair(r)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                rec = idx.setdefault(key, {})
+                for f in ('morph_v2_similarity', 'morph_pool_ref',
+                          'bar_kind', 'bar_value', 'fill_qualified'):
+                    v = r.get(f)
+                    if v is not None and v != '':
+                        rec.setdefault(f, v)
+                bk = rec.get('bar_kind')
+                if bk is not None and 'morph_bar_kind' not in rec:
+                    rec['morph_bar_kind'] = bk
+
+        for rows in row_groups:
+            if not rows:
+                continue
+            _absorb(rows, 'source_bodyId', 'target_bodyId',
+                    ('morph_v2_similarity', 'morph_bar', 'morph_bar_kind',
+                     'bar_kind'))
+            _absorb(rows, 'source_bodyId', 'ahead_target_bodyId',
+                    ('morph_v2_similarity', 'morph_pool_ref', 'bar_kind'))
+            _absorb(rows, 'source_bodyId', 'best_pool_target_bodyId',
+                    ('morph_v2_similarity', 'morph_pool_ref', 'bar_kind'))
+            _absorb_fill(rows)
+        return idx
+
+    def _finalize_forward_match_rows(self, morph_idx) -> List[Dict]:
+        """Attach the display joins to the stage-2 capture: the primary
+        pair's morph values, read off the artifacts that already scored
+        it."""
+        rows = []
+        for row in (getattr(self, '_forward_match_rows', None) or []):
+            row = dict(row)
+            rec = None
+            try:
+                rec = morph_idx.get((int(row['source_bodyId']),
+                                     int(row['primary_target_bodyId'])))
+            except (TypeError, ValueError):
+                rec = None
+            for f in ('morph_v2_similarity', 'morph_pool_ref',
+                      'morph_bar_kind'):
+                row[f] = (rec or {}).get(f)
+            rows.append(row)
+        return rows
+
+    def _finalize_target_match_rows(self, pool_detail,
+                                    morph_idx) -> List[Dict]:
+        """Attach the pool category + claiming branches (every branch that
+        claims the target) and the primary pair's morph values to the
+        stage-5e rows."""
+        cat_by_bid: Dict[int, List[str]] = {}
+        branch_by_bid: Dict[int, List[str]] = {}
+        for r in pool_detail or []:
+            try:
+                bid = int(r.get('target_bodyId'))
+            except (TypeError, ValueError):
+                continue
+            c = str(r.get('category') or '')
+            if c:
+                cats = cat_by_bid.setdefault(bid, [])
+                if c not in cats:
+                    cats.append(c)
+            b = (f"{r.get('source_type') or '?'}→"
+                 f"{r.get('target_type') or '?'}")
+            branches = branch_by_bid.setdefault(bid, [])
+            if b not in branches:
+                branches.append(b)
+        rows = []
+        for row in (getattr(self, '_target_match_rows', None) or []):
+            row = dict(row)
+            cats = cat_by_bid.get(int(row['target_bodyId'])) or []
+            row['pool_category'] = ';'.join(cats)
+            row['pool_branches'] = ';'.join(
+                branch_by_bid.get(int(row['target_bodyId'])) or [])
+            rec = None
+            try:
+                rec = morph_idx.get((int(row['primary_source_bodyId']),
+                                     int(row['target_bodyId'])))
+            except (TypeError, ValueError):
+                rec = None
+            for f in ('morph_v2_similarity', 'morph_pool_ref',
+                      'morph_bar_kind'):
+                row[f] = (rec or {}).get(f)
+            rows.append(row)
+        return rows
+
     # -- stage 5d: backward (target -> source) homolog evidence ------------
 
     def _backward_expansion_pass(self):
@@ -5825,6 +6176,8 @@ class MappingValidator:
                                sources=len(pool), scanned=len(scans),
                                targets=len(target_bids),
                                elapsed_s=round(time.time() - t0, 1))
+            self._record_forward_matches(src_type, plist, scans,
+                                         target_id2type)
             for pair in plist:
                 res = self.validate_pair(pair, scans, target_id2type,
                                          sizes=self._target_sizes,
@@ -6159,6 +6512,21 @@ class MappingValidator:
         self._out_map_expansion_rows = out_map_rows
         self._out_map_by_type = out_map_by_type
 
+        # Stage 5e (user 2026-09-26): every appeared target bodyId scanned
+        # back against the whole source dataset — the Homolog · backward
+        # panel's payload.  Advisory display data only, fail-open.
+        _tgt_universe = self._appeared_target_bids(
+            all_val_rows, all_sus_rows, all_deep_rows, all_noise_rows,
+            all_fills, all_pool_detail, out_map_rows, dedup_rows,
+            relatives_out, family_rows_out)
+        try:
+            self._target_match_pass(_tgt_universe)
+        except Exception as exc:
+            import traceback
+            self.log(f'[TMVEV] target match pass failed '
+                     f'(advisory, skipped): {exc}')
+            self.log(traceback.format_exc())
+
         if cfg.visualize:
             self.progress.emit('stage_start', stage='4', label='scenes')
             try:
@@ -6266,6 +6634,16 @@ class MappingValidator:
         # top-1 + the serialized top-N neighbourhood (advisory label only).
         _write_run_csv(rd, 'backward_matches.csv',
                        getattr(self, '_backward_matches_rows', None) or [])
+        # Homolog panels (user 2026-09-26): the stage-2 forward capture
+        # gets its morph display join here (morphology runs after stage 2);
+        # the stage-5e rows get their pool categories + the same join.
+        _morph_idx = self._morph_pair_index(val_rows, sus_rows, fills,
+                                            out_map_rows, deep_rows)
+        _write_run_csv(rd, 'forward_matches.csv',
+                       self._finalize_forward_match_rows(_morph_idx))
+        _write_run_csv(rd, 'target_matches.csv',
+                       self._finalize_target_match_rows(pool_detail,
+                                                        _morph_idx))
         _write_run_csv(rd, 'same_name_excluded.csv',
                        getattr(self, '_same_name_excluded', None) or [])
         if getattr(self.cfg, 'verify_suspects', False):
