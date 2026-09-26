@@ -220,10 +220,12 @@ writes both files.
   columns rather than a scalar threshold union.
 - The report's Similarity Trends grid plots one metric row each — Jaccard,
   Edge Rank, Cosine, Spearman — across per-threshold and per-density
-  columns. A metric row with no plottable value in any query (Spearman
-  when every pair is below the gated ≥10 shared edges) renders a centered
-  explanatory note — including the run's max shared-edge count and the
-  pair/query that produced it — instead of bare axes.
+  columns. A metric row with no plottable value in any query renders a
+  centered explanatory note instead of bare axes. Spearman gating is
+  intentionally asymmetric: the query-keyed grid reads the CSV column
+  gated at ≥10 shared edges, while the Standard-mode panel computes
+  Spearman live UNGATED (≥3-shared floor) so tiny samples stay visible
+  for manual judgement — each empty note names the rule that applied.
 - The Similarity section presents four representatives by LEVEL — edge
   🔷 Jaccard + Cosine, path 🟣 Path Jaccard, graph 🔶 NetSimile-lite
   (cards colored by level) — with a per-pair detail table (coverage,

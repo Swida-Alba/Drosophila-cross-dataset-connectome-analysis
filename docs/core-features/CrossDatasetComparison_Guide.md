@@ -860,9 +860,13 @@ table is sparse.
   the ranking, tie-safe).
 - `spearman_rank_correlation` — rank correlation on shared positive
   edges, gated: NaN below 10 shared edges (`common_edges` reported
-  beside it). In the Similarity Trends grid a metric row with no
-  plottable value in any query renders an explanatory note instead of
-  bare axes — for Spearman: the gate plus the run's maximum shared-edge
+  beside it). Intentional asymmetry: only the CSV column and the
+  query-keyed trend grid use the ≥10 gate — the Standard-mode trends
+  panel computes Spearman live, ungated beyond the ≥3-shared floor, so
+  tiny samples stay visible for manual judgement. In the Similarity
+  Trends grid a metric row with no plottable value in any query renders
+  an explanatory note instead of bare axes — naming which rule applied
+  (the ≥10 gate, or the ≥3 floor) plus the run's maximum shared-edge
   count and the pair/query that produced it.
 - `hop_profile_w1` / `strength_w1_out` / `strength_w1_in` — Wasserstein-1
   distances between hop-count / log-strength distributions (lower is

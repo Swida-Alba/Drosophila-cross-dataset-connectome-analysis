@@ -808,6 +808,30 @@ def test_similarity_trends_grid_empty_metric_row_gets_note(analyzer):
     _assert_axis_binding(plot)
 
 
+def test_similarity_trends_standard_path_spearman_note_names_floor(analyzer):
+    """User decision 2026-09-26: the Standard path computes Spearman live
+    and stays UNGATED (>=3 shared floor) so tiny samples remain visible
+    for manual judgement — its empty-state note must name the floor, not
+    the >=10 query-grid gate."""
+    class _Stub:
+        def get_aligned_data(self, threshold):
+            # One shared edge: below the hard floor -> Spearman NaN,
+            # while Jaccard/Cosine still have data.
+            return pd.DataFrame({'ds_one': [5.0], 'ds_two': [3.0]},
+                                index=['A -> B'])
+
+    html = hrg._generate_similarity_trends_2x2_plot(
+        _Stub(), DATASETS, [1], NICKNAME_MAP,
+        axis_title='Threshold',
+        card_title='Similarity Trends Across Thresholds')
+    plot = _extract_plot_data(html)
+    texts = [a.get('text', '') for a in plot['layout']['annotations']]
+    spearman_notes = [t for t in texts if 'Spearman data' in t]
+    assert len(spearman_notes) == 1, texts
+    assert 'every pair below the \u22653 shared-edge floor' in spearman_notes[0]
+    assert 'gated at' not in spearman_notes[0]
+
+
 def test_generate_reciprocal_section_disabled(analyzer):
     html = hrg._generate_reciprocal_visualizations_section(
         analyzer, DATASETS, THRESHOLDS, NICKNAME_MAP

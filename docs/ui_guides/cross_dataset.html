@@ -318,9 +318,11 @@
     columns — per-threshold (left) and per-density (right, levels
     descending so thresholds increase left-to-right) — with one metric row
     each (Jaccard, Edge Rank, Cosine, Spearman). A metric row with no
-    plottable value in any query — Spearman when no pair shares the
-    gated ≥10 edges — renders an explanatory note (with the run's max
-    shared-edge count) instead of bare axes. Neuron-count charts and
+    plottable value in any query renders an explanatory note instead of
+    bare axes — for Spearman the note names the rule that applied: the
+    query-keyed grid uses the ≥10-shared-edge gate, while the
+    Standard-mode panel stays ungated (≥3-shared floor) so tiny samples
+    remain visible for manual judgement. Neuron-count charts and
     tables show only the types present in their own role (source chart =
     source-present types only, target chart = target-present only).</p>
 

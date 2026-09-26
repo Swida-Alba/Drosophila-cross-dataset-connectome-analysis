@@ -8704,11 +8704,13 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
     (query id -> cached pairwise similarity frame).
 
     Empty-state contract: a metric row with NO plottable value in any
-    query (e.g. Spearman when every pair falls below the >=10-shared-edges
-    gate) still gets its axes for grid consistency, plus a centered grey
-    note naming the gate and — for Spearman, when the frames carry
-    ``common_edges`` — the run's maximum shared-edge count with the pair
-    and query that produced it.
+    query still gets its axes for grid consistency, plus a centered grey
+    note naming the reason.  For Spearman the reason is mode-specific:
+    the query-keyed path reports the pipeline's >=10-shared-edges gate
+    (with the run's maximum shared-edge count and its pair/query when the
+    frames carry ``common_edges``), while the Standard path reports the
+    >=3 shared-edge floor — Standard computes Spearman live and stays
+    ungated so tiny samples remain visible for manual judgement.
     """
     from .metrics import ComparisonMetrics
     import json
@@ -8732,7 +8734,14 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
             for metric in all_pair_data:
                 all_pair_data[metric][pair_key] = {}
 
+    # Two data paths, two Spearman gate semantics (intentional, user
+    # decision 2026-09-26): the query-keyed path reads the CSV column the
+    # similarity pipeline gated at >=10 shared edges, while the Standard
+    # path computes Spearman live and stays UNGATED (only the hard >=3
+    # floor) — tiny samples stay visible for manual judgement.  The
+    # empty-state note must say which one applies.
     if point_similarities is not None:
+        _spearman_gate_note = 'gated at \u226510 shared edges'
         point_keys = list(thresholds) if point_keys is None else list(point_keys)
         if point_labels is None:
             point_labels = [str(k) for k in point_keys]
@@ -8751,6 +8760,8 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
                 all_pair_data['cosine'][pair_key][k] = row.get('cosine_similarity')
                 all_pair_data['spearman'][pair_key][k] = row.get('spearman_rank_correlation')
     else:
+        _spearman_gate_note = (
+            'every pair below the \u22653 shared-edge floor')
         for threshold in thresholds:
             aligned = analyzer.get_aligned_data(threshold)
             if aligned.empty:
@@ -8927,7 +8938,7 @@ def _generate_similarity_trends_2x2_plot(analyzer, dataset_names: List[str], thr
 
     def _empty_row_note(metric: str, m_title: str) -> str:
         if metric == 'spearman':
-            return (f'no {m_title} data — gated at \u226510 shared edges'
+            return (f'no {m_title} data — {_spearman_gate_note}'
                     f'{_max_shared_suffix()}')
         return f'no {m_title} data in any query'
 
