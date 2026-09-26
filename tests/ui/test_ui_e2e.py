@@ -15,6 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import pytest
 
+from tests.live_neuprint import skipif_not_served
+
 
 # =============================================================================
 # Test Configuration Module
@@ -891,6 +893,7 @@ class TestRunner:
         assert "max_members_per_type=25" in comparison_script
         assert "query=['aMe12', 'aMe10']" in comparison_script
 
+    @skipif_not_served("male-cns:v1.0")
     def test_homologs_empty_saveas_uses_auto_folder(self, tmp_path):
         """UI sends saveas='' when blank; results must land in a per-run
         homologs_ folder instead of being dumped into output_dir."""
@@ -934,6 +937,7 @@ class TestRunner:
         assert not (tmp_path / "README.txt").exists()
         assert not (tmp_path / "results").exists()
 
+    @skipif_not_served("male-cns:v1.0")
     def test_homologs_custom_saveas_respected(self, tmp_path):
         """A non-empty saveas must still be used as the folder name."""
         import sys
@@ -2410,6 +2414,14 @@ class TestDatasetService:
         service._index_dir = tmp_path / "neuron_indexes"
         service._probe_server = lambda ds: {
             "state": "available", "checked_at": "t", "metadata": {}}
+        # A full refresh enumerates the release catalogs, so stub those too:
+        # otherwise which rows survive the authoritative replace depends on
+        # what the servers happen to serve the day the test runs (2026-09-26:
+        # NeuPrint withdrew male-cns:v1.0 and the seeded row vanished from
+        # under the merge semantics this test is about).
+        service.fetch_codex_datasets = lambda: {}
+        service.fetch_neuprint_datasets = lambda: [
+            "hemibrain:v1.2.1", "male-cns:v1.0"]
 
         service.refresh_availability(["hemibrain:v1.2.1", "male-cns:v1.0"])
         assert set(service._server_rows) == {"hemibrain:v1.2.1", "male-cns:v1.0"}

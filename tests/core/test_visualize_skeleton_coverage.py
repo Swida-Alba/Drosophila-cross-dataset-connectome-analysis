@@ -5964,8 +5964,21 @@ class TestWebDriverExportSessionLifecycle:
         try:
             for port in range(8765, 8865):
                 so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                so.bind(('127.0.0.1', port))
+                try:
+                    so.bind(('127.0.0.1', port))
+                except OSError:
+                    # Somebody else already holds this one — which is exactly
+                    # the precondition under test (a range with no free port),
+                    # so it counts. The suite used to die here on a machine
+                    # running a DROCAT server inside the range.
+                    so.close()
+                    continue
                 socks.append(so)
+            if len(socks) < 20:
+                pytest.skip('fewer than 20 ports of the range were free to '
+                            'occupy; the range is already exhausted by '
+                            'outside listeners, so this is not the case under '
+                            'test')
             with pytest.raises(RuntimeError, match='available port'):
                 session._start_http_server_for_file(str(html))
         finally:

@@ -34,6 +34,7 @@ NEUPRINT_SERVER = "https://neuprint.janelia.org"
 pytest.importorskip("neuprint")
 
 from src.utils.token_manager import TokenManager  # noqa: E402
+from tests.live_neuprint import skipif_not_served  # noqa: E402
 
 
 def _network_available() -> bool:
@@ -243,6 +244,7 @@ class TestRealDataPulls:
         text = str(excinfo.value)
         assert "401" in text or "Unauthorized" in text
 
+    @skipif_not_served("male-cns:v1.0")
     def test_dataset_service_lists_live_datasets_and_filters_hidden(self):
         from ui.dataset_service import DatasetService
         available = DatasetService().fetch_neuprint_datasets()

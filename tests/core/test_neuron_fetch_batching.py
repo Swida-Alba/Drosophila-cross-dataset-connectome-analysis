@@ -30,7 +30,32 @@ def _make_chunk_df(ids):
     })
 
 
+class _StubCriteria:
+    """Stand-in for neuprint's `NeuronCriteria`.
+
+    Building a real one resolves neuprint's DEFAULT CLIENT
+    (`neuprint/client.py:106`), so in a process that never created a Client
+    the chunk builder raises before the fetch is attempted, the retry loop
+    sleeps its 5→40 s backoff, and the patched `fetch_neurons` is never
+    reached — which made these four tests fail as `calls == []` AND cost
+    minutes of sleeping each. To the batching contract under test the
+    criteria is a value object, so a stand-in with the same attributes keeps
+    the assertion honest and the run offline."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
 class TestFetchNeuronsBatched:
+    @pytest.fixture(autouse=True)
+    def _no_default_client_needed(self, monkeypatch):
+        """Every case here drives `_fetch_neurons_batched`, which builds a
+        `NeuronCriteria` per chunk — and building one resolves neuprint's
+        default client BEFORE any fetch is attempted. Autouse, because a test
+        that patches only `fetch_neurons` still falls into that wall and then
+        reads as "the patched client was never called"."""
+        monkeypatch.setattr(coana, 'NeuronCriteria', _StubCriteria)
+
     def _client(self, monkeypatch):
         calls = []
 

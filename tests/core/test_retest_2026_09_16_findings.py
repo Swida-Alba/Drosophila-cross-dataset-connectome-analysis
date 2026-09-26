@@ -363,6 +363,14 @@ class TestF3IncompleteRead:
 # ---------------------------------------------------------------------------
 
 class TestF4NoIncompleteCacheBypass:
+    # A verification harness that NAMES the deleted parameter to prove the
+    # product refuses it is not the bypass coming back — it is the guard's own
+    # evidence.  `scripts/harness/windows_round6/t_cache_gate.py` runs
+    # `allow_incomplete_cache=True` against the current product on purpose
+    # ("--- B3d allow_incomplete_cache=True (parameter was deleted)"), so the
+    # scan exempts the negative probes and every other file stays in scope.
+    NEGATIVE_PROBES = {'scripts/harness/windows_round6/t_cache_gate.py'}
+
     def test_incomplete_cache_bypass_is_gone_tree_wide(self):
         """An incomplete cache is never runnable (2026-09-18 decision), so
         neither the opt-in flag nor its PARTIAL-results marker may come
@@ -373,7 +381,19 @@ class TestF4NoIncompleteCacheBypass:
             for path in (repo / folder).rglob('*'):
                 if not path.is_file() or path.suffix not in {'.py', '.md'}:
                     continue
+                if str(path.relative_to(repo)) in self.NEGATIVE_PROBES:
+                    continue
                 text = path.read_text(errors='ignore')
                 if 'allow_incomplete_cache' in text or 'INCOMPLETE_CACHE' in text:
                     hits.append(str(path.relative_to(repo)))
         assert hits == []
+
+    def test_the_exempted_probe_still_asserts_the_refusal(self):
+        """The exemption is only safe while the harness really does prove the
+        refusal, so pin that: the probe must still call the parameter AND
+        label it deleted."""
+        repo = Path(__file__).resolve().parents[2]
+        for rel in self.NEGATIVE_PROBES:
+            text = (repo / rel).read_text(errors='ignore')
+            assert 'allow_incomplete_cache' in text, rel
+            assert 'parameter was deleted' in text, rel

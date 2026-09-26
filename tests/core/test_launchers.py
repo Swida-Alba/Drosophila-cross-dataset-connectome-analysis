@@ -323,11 +323,21 @@ if [[ "$rows" != *"{port}"$'\\t'"{proc.pid}"$'\\t'* ]]; then
     echo "port {port} / pid {proc.pid} missing from: $rows"
     exit 1
 fi
-# exactly one row: lsof reports each socket more than once per endpoint
-if [[ "$(printf '%s\\n' "$rows" | grep -c .)" != "1" ]]; then
-    echo "expected one row, got: $rows"
+# "lists ONLY drocat listeners": every row the inventory reports must pass the
+# ownership predicate. It must NOT assert the machine holds exactly one —
+# a second real `python ui/app.py` (someone's dev server, or a sibling test
+# session) made this fail on a busy machine while the inventory was right.
+if [[ -z "$rows" ]]; then
+    echo "inventory empty"
     exit 1
 fi
+while IFS=$'\\t' read -r row_port row_pid row_cmd; do
+    [[ -z "$row_port" ]] && continue
+    if ! is_drocat_command "$row_cmd"; then
+        echo "non-DROCAT row listed: $row_port $row_pid $row_cmd"
+        exit 1
+    fi
+done < <(printf '%s\\n' "$rows")
 # the ownership predicate distinguishes run backends from servers
 if ! is_drocat_command "python ui/app.py"; then
     echo "ui/app.py rejected"
@@ -344,13 +354,14 @@ if kill_all_drocat ""; then
 fi
 # print_drocat_listeners feeds the menus
 print_drocat_listeners >/dev/null
-if [[ "$DROCAT_COUNT" != "1" || "$DROCAT_PIDS" != " {proc.pid}" ]]; then
+if [[ "${{DROCAT_COUNT:-0}}" -lt 1 ]] \\
+        || [[ "$DROCAT_PIDS" != *" {proc.pid}"* ]]; then
     echo "count=$DROCAT_COUNT pids=$DROCAT_PIDS"
     exit 1
 fi
 stop_drocat_pids "{proc.pid}"
-if [[ -n "$(drocat_listeners)" ]]; then
-    echo "inventory not empty after the kill"
+if [[ "$(drocat_listeners)" == *"{port}"$'\\t'"{proc.pid}"$'\\t'* ]]; then
+    echo "own listener still listed after the kill"
     exit 1
 fi
 echo PASS
