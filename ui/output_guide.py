@@ -83,6 +83,27 @@ COLUMN_GLOSSARY = {
                    "number"),
     "query_id": ("Stable identifier for one cross-dataset threshold query row.", "text"),
     "query_label": ("Human-readable label for one cross-dataset threshold query row.", "text"),
+    # type_resolution_union.csv: one (type, dataset) coverage record per query.
+    "present": ("Whether this type was found in THIS dataset's own searched "
+                "graph, so no cross-dataset name resolution was needed. False "
+                "means it is absent here and `resolution_status` says why.",
+                "boolean"),
+    "resolved_type": ("The name this type resolves to in THIS dataset's "
+                      "namespace (merged-display alternates such as "
+                      "\"CB0937(CB2577)\" are normalized). Equals `type` when "
+                      "`present` is true, and is empty when the type could not "
+                      "be resolved at all.", "text"),
+    "resolution_status": ("Why this (type, dataset) cell does or does not carry "
+                          "coverage: present, below_threshold, not_recruited, "
+                          "no_edges, not_in_dataset, resolved_absent (the "
+                          "diagnosis inputs themselves were unavailable, so "
+                          "absence is unproven rather than established), or the "
+                          "resolver's own verdicts unmapped, conflict, "
+                          "evidence_only, claimed, mapper_unavailable.",
+                          "text"),
+    "detail": ("The evidence behind `resolution_status` — e.g. the largest "
+               "connected edge weight for a below_threshold type, or the "
+               "reason a resolution was refused.", "text"),
     "threshold_mode": ("Threshold query mode: standard same-threshold rows or explicit combinations.", "text"),
     "threshold_scope": ("Whether a row is a scalar threshold grid cell, a Custom query comparison cell, or a raw-run schedule diagnostic.", "text"),
     "path_mode": ("Path enumeration mode for the run: all paths or per-pair shortest.", "text"),
