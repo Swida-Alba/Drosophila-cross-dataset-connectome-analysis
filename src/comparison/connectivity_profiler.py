@@ -4516,7 +4516,13 @@ class ConnectivityProfiler:
         """
         if not bodyids:
             return {}
-        
+
+        # the untyped-sentinel vocabulary, shared by both lookup paths below
+        try:
+            from utils.label_utils import UntypedLabelPolicy
+        except ImportError:  # direct src/ execution
+            from src.utils.label_utils import UntypedLabelPolicy
+
         result_map = {}
         # Offline-first: prefer a repo-local neuron table when the dataset
         # has one (FAFB/BANC always; male-cns and other NeuPrint releases
@@ -4566,12 +4572,19 @@ class ConnectivityProfiler:
                             # Create lookup dictionary
                             df[bid_col] = df[bid_col].astype(str)
                             type_lookup = df.set_index(bid_col)[type_col].to_dict()
-                            
-                            # Map all bodyIds
+
+                            # Map all bodyIds.  A missing annotation reaches
+                            # the table as pandas NaN, whose str() is the
+                            # literal 'nan' — return None for it, matching
+                            # the docstring contract (untyped consumers'
+                            # `or` guards cannot catch the truthy string).
                             for bid in bodyids:
                                 bid_str = str(bid)
                                 if bid_str in type_lookup:
-                                    result_map[bid] = str(type_lookup[bid_str])
+                                    label = str(type_lookup[bid_str])
+                                    result_map[bid] = (
+                                        None if UntypedLabelPolicy.is_untyped(
+                                            label) else label)
                                 else:
                                     result_map[bid] = None
                             return result_map
@@ -4606,7 +4619,14 @@ class ConnectivityProfiler:
                     for _, row in df.iterrows():
                         bid = int(row['bodyId'])
                         ntype = row['type']
-                        result_map[bid] = str(ntype) if ntype else None
+                        # a missing type property reaches the DataFrame as
+                        # pandas NaN, which is TRUTHY — guard it through the
+                        # same policy as the local-table path above, or it
+                        # stringifies to the literal 'nan'
+                        result_map[bid] = (
+                            None if not str(ntype or '').strip()
+                            or UntypedLabelPolicy.is_untyped(str(ntype))
+                            else str(ntype))
                 
                 # Fill in any missing bodyIds with None
                 for bid in bodyids:

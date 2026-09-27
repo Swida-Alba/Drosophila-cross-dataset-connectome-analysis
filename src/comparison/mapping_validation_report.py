@@ -1009,6 +1009,19 @@ def collect_run_data(run_dir: Path,
         _run_file(run_dir, 'target_matches.csv'))
     target_match_available = _run_file(
         run_dir, 'target_matches.csv').exists()
+    # the pipeline labels unannotated neurons `untyped` (mapping_validation
+    # _type_label); run folders written before that fix carry the profiler's
+    # raw literal 'nan' here — normalize at read time so legacy folders
+    # render the pipeline's word without re-running
+    _HOMOLOG_JUNK_TYPES = frozenset(
+        {'', '?', 'nan', 'na', 'n/a', 'none', 'null', 'unknown',
+         '<na>', '<null>'})
+    for _r in forward_rows + target_match_rows:
+        for _f in ('source_type', 'primary_target_type', 'target_type',
+                   'primary_source_type'):
+            _v = str(_r.get(_f) or '').strip().lower()
+            if _v in _HOMOLOG_JUNK_TYPES:
+                _r[_f] = 'untyped'
     # the deep window carries the `examinees` bin — its rows must reach the
     # allocation the same way the other expansion bins do
     deep_rows = _read_csv_rows(_run_file(run_dir, 'deep_candidates.csv'))
@@ -3266,7 +3279,7 @@ def _homolog_forward_tab(d: Dict) -> str:
     for r in rows:
         bid = str(r.get('source_bodyId') or '?')
         groups[(_alloc_label(bid),
-                str(r.get('source_type') or '(untyped)'))].append(r)
+                str(r.get('source_type') or 'untyped'))].append(r)
 
     def _group_order(key):
         label, tpe = key
@@ -3290,7 +3303,7 @@ def _homolog_forward_tab(d: Dict) -> str:
                 where = ('in a branch pool'
                          if _truthy(r.get('primary_in_branch'))
                          else 'outside the branch pools')
-                p_type = str(r.get('primary_target_type') or '(untyped)')
+                p_type = str(r.get('primary_target_type') or 'untyped')
                 cell = (f'{_esc(p_bid)} · {_esc(p_type)}'
                         f"<span class='mv-note'> · {where} · "
                         f'jac {_f(r.get("primary_jaccard"), 4)} · '
@@ -3314,7 +3327,7 @@ def _homolog_forward_tab(d: Dict) -> str:
             brs = branches_by_src.get(str(r.get('source_type') or ''), [])
             trs.append(
                 f'<tr><td>{_esc(bid)}</td>'
-                f'<td>{_esc(str(r.get("source_type") or "(untyped)"))}</td>'
+                f'<td>{_esc(str(r.get("source_type") or "untyped"))}</td>'
                 f'<td>{_esc(label)}{_alloc_detail(bid)}</td>'
                 f'<td>{cell}</td>'
                 f'<td>{_homolog_morph_cell(r, bars)}</td>'
@@ -3432,7 +3445,7 @@ def _homolog_backward_tab(d: Dict) -> str:
     groups: Dict[Tuple[str, str], List[Dict]] = collections.defaultdict(list)
     for r in rows:
         groups[(_alloc_label(r),
-                str(r.get('target_type') or '(untyped)'))].append(r)
+                str(r.get('target_type') or 'untyped'))].append(r)
 
     def _group_order(key):
         label, tpe = key
@@ -3455,7 +3468,7 @@ def _homolog_backward_tab(d: Dict) -> str:
                 where = ('in a branch source pool'
                          if _truthy(r.get('primary_in_branch'))
                          else 'outside the branch source pools')
-                s_type = str(r.get('primary_source_type') or '(untyped)')
+                s_type = str(r.get('primary_source_type') or 'untyped')
                 cell = (f'{_esc(s_bid)} · {_esc(s_type)}'
                         f"<span class='mv-note'> · {where} · "
                         f'jac {_f(r.get("primary_jaccard"), 4)} · '
@@ -3478,7 +3491,7 @@ def _homolog_backward_tab(d: Dict) -> str:
                 scan_cell = _esc(scanned or '—')
             trs.append(
                 f'<tr><td>{_esc(bid)}</td>'
-                f'<td>{_esc(str(r.get("target_type") or "(untyped)"))}</td>'
+                f'<td>{_esc(str(r.get("target_type") or "untyped"))}</td>'
                 f'<td>{_esc(label)}</td>'
                 f'<td>{_esc(str(r.get("pool_branches") or "—"))}</td>'
                 f'<td>{cell}</td>'

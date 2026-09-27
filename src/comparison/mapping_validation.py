@@ -113,6 +113,10 @@ from comparison.morph_bars import (
 )
 from comparison.profile_comparator import ProfileComparator
 from flywire_ids import is_fafb_dataset
+try:
+    from utils.label_utils import UntypedLabelPolicy
+except ImportError:  # direct src/ execution
+    from src.utils.label_utils import UntypedLabelPolicy
 from comparison.body_id_resolver import (  # noqa: E402
     BodyIdResolver,
     BodyIdResolverConfig,
@@ -5039,6 +5043,23 @@ class MappingValidator:
 
     # -- homolog panels: forward capture (stage 2) + target pass (stage 5e)
 
+    @staticmethod
+    def _type_label(mapping, bid) -> str:
+        """The homolog CSVs' type label for one bodyId: the resolved name,
+        or the pipeline's own word ``untyped`` — never the profiler's raw
+        ``'nan'``.  The local-table lookup stringifies a missing annotation
+        as the literal ``'nan'``, and that string is truthy, so the
+        ``or ''`` guards around these reads cannot catch it (measured:
+        54/370 ``target_matches.csv`` rows read ``nan`` in the 2026-09-27
+        clock-matrix run).  Same verdict as :func:`has_type_name` plus the
+        :class:`UntypedLabelPolicy` sentinel vocabulary (case variants,
+        hemi suffixes, digit fallbacks)."""
+        value = (mapping or {}).get(int(bid))
+        if value is None or not has_type_name(value) \
+                or UntypedLabelPolicy.is_untyped(value):
+            return 'untyped'
+        return str(value)
+
     def _record_forward_matches(self, src_type, plist, scans,
                                 target_id2type) -> None:
         """Homolog · forward payload capture (user 2026-09-26): while the
@@ -5047,7 +5068,9 @@ class MappingValidator:
         top-3-jaccard neighbourhood.  One row per pool source; a source
         the scan skipped (no usable profile) carries
         ``scanned_at='no_profile'`` so silence never reads as a negative.
-        Pure capture — the morph display join happens at write time."""
+        Type labels route through :meth:`_type_label` — ``untyped`` for
+        an unannotated neuron, never the raw ``'nan'``.  Pure capture —
+        the morph display join happens at write time."""
         if not hasattr(self, '_forward_match_rows'):
             self._forward_match_rows = []
             self._forward_seen: set = set()
@@ -5083,8 +5106,8 @@ class MappingValidator:
             if best is not None:
                 bid = int(best['target_bid'])
                 row['primary_target_bodyId'] = bid
-                row['primary_target_type'] = (
-                    target_id2type or {}).get(bid) or ''
+                row['primary_target_type'] = self._type_label(
+                    target_id2type, bid)
                 for f, col in (('primary_jaccard', 'jaccard'),
                                ('primary_rank_union', 'rank_union')):
                     v = best.get(col)
@@ -5136,9 +5159,10 @@ class MappingValidator:
         back against the WHOLE source dataset — the exact mirror of the
         stage-2 forward scan, feeding the report's Homolog · backward
         panel.  One row per target bodyId, no caps (the stage-5d caps
-        belong to the evidence pass).  Advisory display data only: nothing
-        downstream gates on it.  Fail-open like the other advisory
-        layers."""
+        belong to the evidence pass).  Type labels route through
+        :meth:`_type_label` — ``untyped`` for an unannotated neuron.
+        Advisory display data only: nothing downstream gates on it.
+        Fail-open like the other advisory layers."""
         cfg = self.cfg
         if not universe:
             self._target_match_rows = []
@@ -5154,6 +5178,9 @@ class MappingValidator:
             except Exception as exc:  # noqa: BLE001
                 self.log(f'[stage 5e] source profile pre-flight failed '
                          f'(continuing cache-only): {exc}')
+        # type labels first: the lookup only needs the profiler, so even
+        # the vector-build failure path below exports real labels
+        tgt_id2type = self._bodyid_types(universe, cfg.target_dataset)
         try:
             vectors = build_target_vectors(
                 self.profiler, cfg.source_dataset, self.mapper, cfg.verbose,
@@ -5164,7 +5191,8 @@ class MappingValidator:
             self.log(f'[stage 5e] source-universe vectors unavailable, '
                      f'target matches skipped: {exc}')
             self._target_match_rows = [{
-                'target_bodyId': bid, 'target_type': '',
+                'target_bodyId': bid,
+                'target_type': self._type_label(tgt_id2type, bid),
                 'primary_source_bodyId': '', 'primary_source_type': '',
                 'primary_jaccard': None, 'primary_rank_union': None,
                 'primary_in_branch': '', 'backward_topN_union': '',
@@ -5176,14 +5204,13 @@ class MappingValidator:
         del vectors
         source_bids = list(source_stats)
         in_branch = {int(b) for p in self.pairs for b in p.source_pool}
-        tgt_id2type = self._bodyid_types(universe, cfg.target_dataset)
         reduced: Dict[int, object] = {}
         rows: List[Dict] = []
         t0 = time.time()
         for i, bid in enumerate(universe, 1):
             row = {
                 'target_bodyId': bid,
-                'target_type': (tgt_id2type or {}).get(bid) or '',
+                'target_type': self._type_label(tgt_id2type, bid),
                 'primary_source_bodyId': '',
                 'primary_source_type': '',
                 'primary_jaccard': None,
@@ -5240,8 +5267,8 @@ class MappingValidator:
                 small, src_id2type, k=3, branch_pool=in_branch)
             if not row['primary_source_bodyId']:
                 continue
-            row['primary_source_type'] = (
-                src_id2type or {}).get(int(row['primary_source_bodyId'])) or ''
+            row['primary_source_type'] = self._type_label(
+                src_id2type, int(row['primary_source_bodyId']))
         self._target_match_rows = rows
         self.log(f'[stage 5e] target matches: {len(reduced)} scanned / '
                  f'{len(universe)} universe '
@@ -6799,8 +6826,9 @@ class MappingValidator:
             '- report.html — the run report: headline + coverage levels '
             '(L1 claim / L2 provenance / L3 validation), branches,',
             '  fills, the Reciprocal tab (on --backward-evidence runs), '
-            'out-map expansion, morphology record, scenes; hover any '
-            'term for its definition.',
+            'the Homolog · forward / Homolog · backward tabs (one row '
+            'per appeared bodyId, both directions), out-map expansion, '
+            'morphology record, scenes; hover any term for its definition.',
             '- set_coverage.json — set-level coverage (per-type '
             'rollups, hole bodyIds, family_material).',
             '- gap_fill/gap_fill_dedup.csv — the bodyId-unique fill; '
@@ -6846,6 +6874,17 @@ class MappingValidator:
             '- expansion/out_map_expansion.csv — each unclaimed '
             'source\'s top-k typed non-in-map expansion candidates, '
             'morph-checked against the run null bar.',
+            '- validation/forward_matches.csv — the Homolog · forward '
+            'tab: one row per appeared source bodyId (assigned, '
+            'fill-proposed, out-of-map or unpaired) with its chain-best '
+            'target, the top-3 rank_union ∪ top-3 jaccard neighbourhood, '
+            'and the primary pair\'s morph display join. `untyped` '
+            'marks an unannotated neuron.',
+            '- expansion/target_matches.csv — the Homolog · backward '
+            'tab: every appeared target bodyId (pool, expansion-bin, '
+            'out-map and proposal targets) scanned back against the '
+            'WHOLE source dataset; `untyped` marks an unannotated '
+            'neuron. Advisory display data only.',
             # a pooling run's own result is in none of the nested bins, so the
             # folder index has to point at it — an unlisted folder of exports
             # reads as "nothing was found" to anyone working from README.txt

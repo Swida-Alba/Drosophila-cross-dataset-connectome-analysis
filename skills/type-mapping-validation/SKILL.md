@@ -316,7 +316,10 @@ against — `local_data/` is disposable by design.
     `pool_category` + `pool_branches` (every branch claiming the target),
     the chain-best `primary_source_*`, the serialized
     `backward_topN_union` payload, `n_scanned` / `scanned_at`. No caps —
-    the stage-5d caps belong to the evidence pass. Advisory display data
+    the stage-5d caps belong to the evidence pass. Type columns read
+    `untyped` for unannotated neurons, never the raw profiler 'nan'
+    (fixed 2026-09-27; pre-fix folders normalize at report-read time).
+    Advisory display data
     only: nothing downstream gates on it.
 11f. `pooling/pooling_candidates.csv` / `pooling_pool.csv` /
     `pooling_sources.csv` / `pooling_cross_validation.json` — `--mode pooling`

@@ -176,16 +176,42 @@
 
   <h2>The report</h2>
   <p>
-    <code>report.html</code> carries twelve tabs, including <b>Coverage</b>
+    <code>report.html</code> carries fourteen tabs, including <b>Coverage</b>
     (the three-level L1 claim / L2 provenance / L3 validation counts), the
     per-bin results, <b>Out-map</b> (fill proposals for unclaimed sources),
     <b>Backward</b> (reciprocal grades) with a separate <b>Backward source
-    status</b> view (per-source statuses over the target pool), <b>Morph</b>
+    status</b> view (per-source statuses over the target pool), the
+    <b>Homolog &middot; forward</b> / <b>Homolog &middot; backward</b>
+    per-bodyId match sheets (below), <b>Morph</b>
     and <b>Scenes</b>. The <b>Scenes</b> tab also prints the palette this run
     actually wore &mdash; one chip per category, and any bin you recolored names
     the default it replaced &mdash; so a recolor is readable from the report, not
     only from each scene&rsquo;s own tree legend. Terms carry hover glossary entries; warnings are also
-    collected in <code>user_warning_notes.txt</code>.
+    collected in <code>user_warning_notes.txt</code>. Every table renders
+    all of its rows in one scrollable table &mdash; there is no hidden
+    &ldquo;Show all&rdquo; second table anywhere.
+  </p>
+
+  <h2>Homolog &middot; forward / backward (per-bodyId match sheets)</h2>
+  <p>
+    Where the Reciprocal tab grades the neurons the mapping did <i>not</i>
+    assert, the two <b>Homolog</b> tabs answer the matching question for every
+    bodyId the run touched, both directions &mdash; the worksheet for manually
+    allocating <code>candidates</code> / <code>family</code> /
+    <code>relative</code> / <code>examinees</code> and every other appeared
+    bodyId. <b>Homolog &middot; forward</b> (<code>validation/forward_matches.csv</code>)
+    is one row per appeared source bodyId with its chain-best target and its
+    allocation group; <b>Homolog &middot; backward</b>
+    (<code>expansion/target_matches.csv</code>) is the exact mirror: every
+    appeared target bodyId &mdash; pool members included, which the reciprocal
+    pass deliberately leaves unscanned &mdash; scanned back against the whole
+    source dataset (stage 5e). Hover a primary match for the union of the
+    top-3 <code>rank_union</code> and top-3 <code>jaccard</code> hits, and
+    read the pair&rsquo;s morph qualification from the run&rsquo;s own exports
+    (display only &mdash; nothing is re-scored; <code>not scored</code> when
+    absent). Type columns read <code>untyped</code> for unannotated neurons,
+    never the raw profiler &ldquo;nan&rdquo;. Advisory display data: nothing
+    downstream gates on it.
   </p>
 
   <h2>Backward (reciprocal) evidence</h2>

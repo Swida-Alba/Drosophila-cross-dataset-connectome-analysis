@@ -336,7 +336,10 @@ the run exported a value for it — ✓/✗ re-derived offline from
 `morphology_calibration.json`'s branch bars (display only: the report
 never re-scores a pair), and `not scored` when it did not. A bodyId the
 scan could not run for carries `no profile` (or `scan error`) with its
-`scanned_at` reason — silence with a reason, never a negative. These
+`scanned_at` reason — silence with a reason, never a negative. Type
+columns read `untyped` for unannotated neurons, never the raw profiler
+'nan' (fixed 2026-09-27; folders written before the fix are normalized at
+report-read time). These
 panels are advisory display data; nothing downstream gates on them, and
 runs that predate them show the tabs as absent-artifact notes.
 

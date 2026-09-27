@@ -220,6 +220,33 @@ def test_backward_tab_uses_pool_category_and_union_hover(run_dir: Path):
     assert "unallocated" in html  # the target with no pool category
 
 
+def test_backward_tab_renders_legacy_nan_type_cells_as_untyped(
+        run_dir: Path):
+    # run folders written before the _type_label fix carry the profiler's
+    # literal 'nan' in target_type — the report normalizes at read time
+    # (user 2026-09-27: 54/370 rows, all 54 <td>nan< in the panel)
+    _write_csv(run_dir / "target_matches.csv", _TGT_HEADER, [
+        ["901", "nan", "unmatched", "A→X", "201", "A", 0.4, 0.2, True,
+         _PAYLOAD, 12, "run", None, None, ""],
+        ["902", "nan", "", "", "202", "B", 0.1, -0.2, False, "", 8,
+         "run", None, None, ""],
+    ])
+    _write_csv(run_dir / "forward_matches.csv", _FWD_HEADER, [
+        ["101", "A", "301", "nan", 0.5, -0.1, True, _PAYLOAD, 40, "run",
+         None, None, ""]])
+    d = collect_run_data(run_dir)
+    # normalized at collect time, in the data the builders consume
+    assert d["target_match_rows"][0]["target_type"] == "untyped"
+    assert d["forward_rows"][0]["primary_target_type"] == "untyped"
+    fwd = _homolog_forward_tab(d)
+    bwd = _homolog_backward_tab(d)
+    assert "<td>nan<" not in fwd and "<td>nan<" not in bwd
+    # the forward primary-match cell reads the normalized type inline
+    assert "301 · untyped" in fwd
+    assert "· untyped —" in bwd  # the group summary spells the pipeline word
+    assert "<td>901</td><td>untyped</td>" in bwd
+
+
 def test_morph_cell_rederives_the_branch_bar_verdict_offline():
     bars = {"A->X": {"candidate_kind": "track_a_backup",
                      "backup_floor": 0.55, "native_floor": None,
@@ -309,6 +336,42 @@ def test_forward_capture_records_chain_best_union_and_no_profile():
     # a second capture of the same source does not duplicate rows
     v._record_forward_matches('A', [pair], scans, {201: 'X', 202: 'Y'})
     assert len(v._forward_match_rows) == 2
+
+
+def test_type_label_never_leaks_the_profilers_raw_nan():
+    # the profiler's local-table lookup stringifies a missing annotation as
+    # the literal 'nan' and bool('nan') defeats `or` guards — the homolog
+    # writers must route every type read through _type_label (user
+    # 2026-09-27: 54/370 target_matches rows read nan)
+    f = MappingValidator._type_label
+    assert f({1: 'nan'}, 1) == 'untyped'
+    assert f({1: float('nan')}, 1) == 'untyped'
+    assert f({1: None}, 1) == 'untyped'
+    assert f({1: ''}, 1) == 'untyped'
+    assert f({1: '?'}, 1) == 'untyped'
+    assert f({1: 'NA'}, 1) == 'untyped'
+    assert f({1: 'Unknown'}, 1) == 'untyped'
+    assert f({1: 'Unknown_L'}, 1) == 'untyped'
+    assert f({}, 1) == 'untyped'
+    assert f({1: 'CL125'}, 1) == 'CL125'
+
+
+def test_forward_capture_labels_an_untyped_primary_target():
+    v = _capture_validator()
+    pair = TypePair(source_dataset='dsA', source_type='A',
+                    source_pool=[1], target_dataset='dsB',
+                    target_type='X', target_pool=[201])
+    tgt_vectors = {
+        201: expanded_vector(_profile(201, {'A': 9, 'B': 5}, {'X': 4}),
+                             None),
+        202: expanded_vector(_profile(202, {'B': 3}, {'Y': 2}), None)}
+    target_stats = prep_target_stats(tgt_vectors)
+    scans = {1: scan_source(
+        expanded_vector(_profile(1, {'A': 10, 'B': 8}, {'P': 6}), None),
+        target_stats)}
+    # the raw profiler map spelling for an unannotated neuron
+    v._record_forward_matches('A', [pair], scans, {201: 'nan', 202: 'Y'})
+    assert v._forward_match_rows[0]['primary_target_type'] == 'untyped'
 
 
 def test_morph_pair_index_reads_fills_through_fill_pair():

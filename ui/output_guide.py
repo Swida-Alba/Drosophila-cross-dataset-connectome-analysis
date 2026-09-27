@@ -2287,7 +2287,9 @@ TOOL_GUIDE_SPECS = {
                             "n_scanned / scanned_at, and the primary "
                             "pair's morph display joins. Captured during "
                             "stage 2; the report re-derives ✓/✗ from the "
-                            "branch bars — nothing is re-scored."},
+                            "branch bars — nothing is re-scored. Type "
+                            "columns read `untyped` for unannotated "
+                            "neurons, never the raw profiler 'nan'."},
             {"pattern": "gap_fill/gap_fill_proposals.csv",
              "description": "Fill proposals (in_pool / out_of_pool) for "
                             "every unpaired neuron — proposals only."},
@@ -2363,7 +2365,9 @@ TOOL_GUIDE_SPECS = {
                             "payload (top-3 rank_union ∪ top-3 jaccard), "
                             "n_scanned / scanned_at and the same morph "
                             "display joins. No caps; advisory display "
-                            "data only."},
+                            "data only. Type columns read `untyped` for "
+                            "unannotated neurons, never the raw "
+                            "profiler 'nan'."},
             {"pattern": "expansion/out_map_expansion.csv",
              "description": "Top-k typed non-in-map candidates per "
                             "UNCLAIMED source, morph-checked against the "

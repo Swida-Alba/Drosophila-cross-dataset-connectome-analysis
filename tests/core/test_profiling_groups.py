@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -416,3 +417,59 @@ def test_connectivity_delegate_matches_the_shared_function(tmp_path):
     via_method = comparer._load_custom_groups_from_mapping(str(path), DATASET)
     shared = load_labelmapper_source_groups(str(path), DATASET)[:2]
     assert via_method == tuple(shared) == ([["Mi1"], [5]], ["g1", "g2"])
+
+
+def test_get_types_for_bodyids_maps_untyped_table_rows_to_none(
+        tmp_path, monkeypatch):
+    """The local-table path must honour its own docstring ('type name or
+    None'): a missing annotation reaches the table as pandas NaN and used
+    to stringify to the literal 'nan', which is truthy and defeated every
+    consumer's `or` guard (user 2026-09-27: 54/370 target_matches rows)."""
+    import comparison.connectivity_profiler as cpmod
+
+    table = tmp_path / "a" / "b" / "c"  # stands in for the profiler file:
+    # src_dir = table.parent.parent = tmp/'a', project_root = tmp_path
+    safe = (cpmod.canonical_dataset_name("probe-ds")
+            .replace(':', '_').replace('.', '_'))
+    folder = tmp_path / "datasets" / safe
+    folder.mkdir(parents=True)
+    pd.DataFrame({
+        "bodyId": ["1", "2", "3", "4"],
+        # empty cell -> NaN; literal 'nan' spelling; sentinel 'Unknown'
+        "type": ["CL125", "", "nan", "Unknown"],
+    }).to_csv(folder / f"{safe}_neurons.csv", index=False)
+
+    monkeypatch.setattr(cpmod, "Path", lambda p=None: table)
+    prof = ConnectivityProfiler.__new__(ConnectivityProfiler)
+    prof._has_local_table = lambda ds: True
+
+    got = prof.get_types_for_bodyids([1, 2, 3, 4], "probe-ds")
+    assert got[1] == "CL125"
+    assert got[2] is None  # NaN annotation -> None, never the string 'nan'
+    assert got[3] is None  # literal 'nan' spelling
+    assert got[4] is None  # 'Unknown' sentinel
+
+
+def test_get_types_for_bodyids_neuprint_nan_type_also_none(monkeypatch):
+    """The NeuPrint path leaks the same way the local table did: a missing
+    type property reaches fetch_custom's DataFrame as pandas NaN, which is
+    TRUTHY, so `str(ntype) if ntype else None` published the literal
+    'nan' (review find 2026-09-27)."""
+    import comparison.connectivity_profiler as cpmod
+
+    monkeypatch.setattr(cpmod, "is_local_connectome_dataset",
+                        lambda ds: False)
+    prof = ConnectivityProfiler.__new__(ConnectivityProfiler)
+    prof._has_local_table = lambda ds: False
+
+    class FakeClient:
+        def fetch_custom(self, query):
+            # None in the frame mimics an absent type property after the
+            # NeuPrint -> DataFrame hop (pandas turns it into NaN)
+            return pd.DataFrame({"bodyId": [7, 8],
+                                 "type": [None, "Mi1"]})
+
+    prof._get_client_for_dataset = lambda ds: FakeClient()
+    got = prof.get_types_for_bodyids([7, 8], "hemibrain:v1.2.1")
+    assert got[7] is None  # NaN type -> None, never the string 'nan'
+    assert got[8] == "Mi1"
