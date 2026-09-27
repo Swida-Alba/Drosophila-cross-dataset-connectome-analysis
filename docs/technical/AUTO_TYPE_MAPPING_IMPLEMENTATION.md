@@ -87,7 +87,7 @@ HEMI  --hT--  MCNS
 MANC  --mT--  MCNS
 MCNS  --fT--aT--  FAFB   |  MCNS --fT-- FAFB  |  MCNS --aT-- FAFB
 MCNS  --mct--  BANC
-FAFB  --fafb_cell_type--  BANC  |  FAFB --aT--ACT-- BANC  |  FAFB --aT--fafb_cell_type-- BANC  |  FAFB --aT--type-- BANC
+FAFB  --fafb_cell_type--  BANC  |  FAFB --aT--ACT-- BANC  |  FAFB --aT--fafb_cell_type-- BANC  |  FAFB --aT--type-- BANC  |  FAFB --ACT-- BANC
 HEMI  --hemibrain_cell_type--  BANC
 MANC  --manc_cell_type--  BANC
 BANC v626  --banc_release_crosswalk--  BANC v888
@@ -102,7 +102,10 @@ target namespaces. MCNS `flywireType` does not land in BANC. In
 `FAFB --aT--type-- BANC` the trailing `type` hop is the same-name identity
 landing: the shared token is itself a BANC primary, so the aT hop stays
 inside FAFB and a `type` hop crosses into BANC (FAFB `DN1pD`
---aT 'SMP537'--> BANC `SMP537`).
+--aT 'SMP537'--> BANC `SMP537`). In `FAFB --ACT-- BANC` the two ACT hops
+(landing + alt→primary continuation) collapse to one standardized linker
+when the via values coincide — read the selected bridge text, not the
+column list, for the hop detail.
 
 (2026-09-27 audit, code-verified) One emitted edge never survives: the
 male-cns-side annotation-reverse block also offers `MCNS --ACT-- BANC` —
@@ -113,7 +116,7 @@ registry scoping strips every ACT chain for that pair. It is a
 licensed-column detour the registry refuses, not a bridge, which is why the
 diagram does not draw it.
 
-(2026-09-27 audit, probe-verified) All four FAFB↔BANC forms derive on the
+(2026-09-27 audit, probe-verified) All five FAFB↔BANC forms derive on the
 real tables. (1) `fafb_cell_type` — the curated label edge lands directly
 on the FAFB primary ONLY when the cell token names it exactly; a
 rename-resolved winner (BANC v888 `SMP537`'s fct cell `SMP537` → FAFB
@@ -135,6 +138,28 @@ same target — before chaining+subsumption the linker view drew two
 PARALLEL one-linker paths on 36 of 44 circadian pairs; today it draws
 one sequential chain). The decision/provenance layer stays
 winner-resolved throughout (votes `{DN1pD: 3}`, target DN1pD).
+
+**Usage census (2026-09-27, post chaining+subsumption, endpoint pairs
+with surviving chains):** v626 — fct 7,472 (selected 7,472), pure-ACT
+2,348 (selected 1,878), aT→ACT 416 (selected 194), **aT→type landing
+297 (selected 287)**, aT→fct 114 (selected 114), bare echo 115,
+alignment lane 18; v888 — fct 7,484, pure-ACT 2,273 (selected 1,803),
+aT→ACT 421 (selected 199), aT→type 297 (selected 287), aT→fct 113,
+bare 114, alignment 18. All classes reach the decision layer, pooling
+(linker-row or full-population bases per hop home) and the mapping
+exports.
+
+**(5) `ACT--ACT` (pure-ACT landing)** — the mirror of the aT lane: a
+FAFB primary whose OWN name appears in a BANC primary's
+`Alternative Cell Type(s)` cell derives `FAFB --ACT 'P'--> [BANC
+token P] --ACT--> BANC primary` (the two ACT hops collapse to one
+standardized linker when the via values coincide). Legitimate and
+heavily applicable: 7,637 of 7,643 v888 ACT tokens are FAFB primaries
+(7,637 for v626), the class is the second-most-selected lane
+(1,878/1,803 selections), and the two linkers' identical column makes
+it invisible in column-list exports — read the selected bridge text
+instead. The mirror aT lane is the same structure: 290 FAFB
+`additional_type(s)` tokens are BANC primaries (aT→type→BANC).
 
 ### 3.2 Connector licenses (`ROUTE_MIDS`)
 

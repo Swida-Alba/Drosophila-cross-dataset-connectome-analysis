@@ -142,8 +142,13 @@ described above — it never overrides a curated label and never fills a
 curated conflict. `fanc_cell_type` is intentionally unlicensed
 until a FANC namespace and evidence policy are added.
 
-`Alternative Cell Type(s)` remains an intra-BANC annotation column. It is not
-used as a substitute for the curated per-dataset label columns.
+`Alternative Cell Type(s)` remains an intra-BANC annotation column in the
+source map — never a substitute for the curated per-dataset label columns;
+its cross-dataset reach comes from the mirror landing — a FAFB
+primary whose own name appears in a BANC primary's ACT cell derives
+`FAFB --ACT--> BANC` chains (7,637 of 7,643 v888 ACT tokens are FAFB
+primaries; 2,273–2,348 endpoint pairs, the second-most-selected lane after
+the curated labels).
 
 #### The FAFB ↔ BANC annotation bridge (additional Type(S) ⇄ Alternative Cell Type(s))
 
