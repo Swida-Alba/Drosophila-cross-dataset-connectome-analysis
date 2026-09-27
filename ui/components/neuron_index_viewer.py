@@ -107,9 +107,15 @@ def _dataset_values(value) -> List[str]:
 
 
 def _column_label(column: str) -> str:
-    if column == "bodyId":
-        return "Body ID"
-    return column.replace("_", " ").strip().title()
+    """Verbatim metadata column name (user 2026-09-27 unification).
+
+    The 'See available neurons' panel displays the neuron index's original
+    column names exactly as the dataset tables and the type mapper use
+    them — no title-casing — so names read off the panel (e.g.
+    ``fafb_cell_type``, ``flywireType``, ``Alternative Cell Type(s)``)
+    agree with the exports, the bridge map and the docs.
+    """
+    return column
 
 
 def _relative_source(path: Path) -> str:
