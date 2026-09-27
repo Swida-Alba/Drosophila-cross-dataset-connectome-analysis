@@ -76,6 +76,8 @@ EDGES = [
     ("MCNS", "flywireType"), ("MCNS", "hemibrainType"),
     ("MCNS", "mancType"), ("MCNS", "malecns_cell_type"),
     ("MCNS", "additional_type(s)"), ("FAFB", "flywireType"),
+    # the ORIGINAL composed two-linker standard (MCNS --fT--aT-- FAFB)
+    ("flywireType", "additional_type(s)"),
     # outer datasets
     ("HEMI", "hemibrainType"), ("HEMI", "hemibrain_cell_type"),
     ("MANC", "mancType"), ("MANC", "manc_cell_type"),
