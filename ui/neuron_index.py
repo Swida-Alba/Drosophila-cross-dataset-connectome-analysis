@@ -4905,13 +4905,25 @@ def collect_zero_hit_matches_in_process(
     matched_values: Optional[List[tuple]] = None,
     *,
     prefix_only_search: bool = False,
+    index_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pickle-safe process entry point for the viewer's mapper expansion.
 
     Keep this as a module-level function so ``spawn`` can import it without
     serializing a UI closure.  The process-local mapper and index caches stay
     in the dedicated worker and never compete with the websocket process.
+
+    ``index_root`` carries the caller's neuron-index root across the spawn
+    boundary (user 2026-09-27 root-cause fix): a spawned worker re-imports
+    this module with the real ``PROJECT_ROOT``, so without it the worker's
+    dataset enumeration ignores whatever root the caller resolved — the
+    isolation gap that leaked real-dataset entries into isolated
+    environments and made the viewer tests order-dependent on the mapper's
+    warm/cold state.
     """
+    global PROJECT_ROOT
+    if index_root:
+        PROJECT_ROOT = Path(index_root)
     return _collect_zero_hit_matches(
         dataset,
         search,

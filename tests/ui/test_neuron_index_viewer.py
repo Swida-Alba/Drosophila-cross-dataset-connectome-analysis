@@ -2921,3 +2921,25 @@ def test_mapped_csv_extras_same_name_marker_makes_no_column():
     assert fieldnames == [
         'foreign_dataset', 'foreign_type(s)', 'matched column(s)']
     assert extras[0]['foreign_type(s)'] == 'DN1a'
+
+
+def test_worker_entry_applies_the_caller_index_root(isolated_index_root):
+    """Root-cause pin (user 2026-09-27): the spawned cross-dataset worker
+    re-imports this module with the REAL PROJECT_ROOT, so without the
+    caller-passed index_root its dataset enumeration escaped the test's
+    isolation and leaked real-dataset entries into the counterpart panel
+    (order-dependent on the mapper's warm/cold state).  The worker entry
+    must apply the caller's root before scanning."""
+    import ui.neuron_index as neuron_index
+    from ui.neuron_index import collect_zero_hit_matches_in_process
+
+    dataset, _, _ = _write_index(isolated_index_root)
+    matches = collect_zero_hit_matches_in_process(
+        dataset, 'aMe', index_root=str(isolated_index_root))
+    assert neuron_index.PROJECT_ROOT == isolated_index_root
+    # the isolated root carries no OTHER cached dataset: every mapped
+    # entry must belong to the fixture's own dataset — a real dataset
+    # (male-cns, banc, ...) in the list is the isolation leak
+    mapped = (matches or {}).get('mapped', [])
+    assert all(entry.get('dataset') == dataset for entry in mapped), mapped
+    assert (matches or {}).get('native', []) == []

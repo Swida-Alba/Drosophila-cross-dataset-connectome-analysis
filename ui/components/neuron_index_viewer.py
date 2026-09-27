@@ -2226,6 +2226,11 @@ def _render_index(
                             query_text,
                             matched_values=matched_pairs,
                             prefix_only_search=prefix_only_search,
+                            # carry the caller's index root across the spawn
+                            # boundary — a spawned worker re-imports this
+                            # module with the real PROJECT_ROOT, which would
+                            # otherwise scan indexes the caller never sees
+                            index_root=str(PROJECT_ROOT),
                             is_current=lambda: (
                                 alias_scan["current_key"] == cache_key),
                         )
