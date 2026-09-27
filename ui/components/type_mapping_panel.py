@@ -725,6 +725,11 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                 # more than the deduped dataset figure (17 vs 15).
                 out_map_n = sum(len(_out_map_ids(tgt, ft))
                                 for ft in claim_ftypes)
+                # §three-tier: the row's REACH figures — all flows' pools
+                # toward this row's target dataset, disclosure ends
+                # included (the same claim-vs-reach pairing as the strip)
+                reach_ids = reach_by_type.get((ds, t, tgt), set())
+                reach_ftypes = [tt for tt in ftypes if tgt_counts.get(tt)]
                 summary_per_type.append({
                     "dataset": ds,
                     "type": t,
@@ -737,6 +742,10 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     "mapped_neurons": len(claimed),
                     "mapped": _format_mapped_neurons(
                         len(claimed), len(present_types)),
+                    "reach_types": len(reach_ftypes),
+                    "reach_neurons": len(reach_ids),
+                    "reach": _format_mapped_neurons(
+                        len(reach_ids), len(reach_ftypes)),
                     "out_map": out_map_n,
                     "unmapped": orphaned,
                 })
@@ -1728,6 +1737,14 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                          "(the claim set), with '(k "
                                          "types)' from 2 distinct "
                                          "received types up."),
+                            _col("reach", "Evidence reach", "reach",
+                                 min_w=120,
+                                 tooltip="All flows' pools toward this "
+                                         "row's target dataset, "
+                                         "disclosure ends included — "
+                                         "the reach tier (same scope "
+                                         "as the strip's Evidence "
+                                         "reach column)."),
                             _col("out_map", "Out-map (in-map types)",
                                  "out_map", min_w=120,
                                  tooltip="Neurons of THIS row's mapped "

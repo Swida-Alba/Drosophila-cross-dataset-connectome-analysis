@@ -434,8 +434,12 @@ target dataset)`, so the mapped counts are specific to the row's target
 dataset and never summed across datasets, plus the originating query
 chip.  Its **Mapped neurons** cell combines count and type breadth:
 `{N}({m} types)` from 2 mapped types up, plain `{N}` for a single mapped
-type.  Single-type previews look exactly as before, and the breakdown is
-view-only.
+type.  Each row also carries an **Evidence reach** cell (2026-09-27
+three-tier readout): all flows' pools toward that row's target dataset,
+disclosure ends included — e.g. the `APDN3 → banc_v888` row reads
+claim `7` vs reach `12(3 types)` because the same-name-first rivals
+LMTe01/LTe71 are evidence, not claims.  Single-type previews look
+exactly as before, and the breakdown is view-only.
 
 #### The type mapper's boundary (row-based evidence is carried, not consumed)
 
