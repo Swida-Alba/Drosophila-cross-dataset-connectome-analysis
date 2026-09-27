@@ -33,7 +33,7 @@ const FUNCTIONS = [
     'pushStateHistory', 'pushHistory', 'registerDragHistory',
     'undo', 'redo',
     'updateUndoRedoButtons', 'updateHistoryList', 'jumpToHistory',
-    'restoreGlobalStyles', 'updateNodeSize', 'updateEdgeWidth',
+    'restoreGlobalStyles', 'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth',
     'updateFontSize', 'updateArrowSize', 'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
     'syncSelectedGeometryInputs', 'updateAlignButtons', 'alignSelectedNodes',
     'syncTransformInputs', 'syncGapDisplays', 'measureAxisGap', 'isVisibleElement', 'metricEdgeValue',
@@ -75,6 +75,9 @@ function buildScope(cy) {
         let globalEdgeLabelFontSize = 9;
         let globalArrowSize = 9;
         let globalEdgeWidthScale = 'log_e';
+        let globalNodeShape = 'circle';
+        let pendingNudge = null;
+        function flushPendingNudge() {}
         let reciprocalOffset = 5;
         let restoringHistoryState = false;
         // Layout transform trackers mirrored by captureState's globalStyles
@@ -94,7 +97,7 @@ function buildScope(cy) {
         function makeEl(id) {
             const el = {
                 id: id, value: '', textContent: '', style: {},
-                options: [], selectedIndex: 0,
+                options: [{ textContent: '' }], selectedIndex: 0,
                 appendChild: function (o) { el.options.push(o); }
             };
             Object.defineProperty(el, 'innerHTML', {

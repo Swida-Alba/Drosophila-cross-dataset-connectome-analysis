@@ -186,14 +186,21 @@ The import automatically restores:
 | Arrow Size | Arrow Size slider | `updateArrowSize()` |
 | Font Size | Font Size slider | `updateFontSize()` |
 | Node Size | Node Size slider | `updateNodeSize()` |
+| Node Shape | Node Shape dropdown | `updateNodeShape()` |
+| Per-node geometry | — (restored directly) | width/height/shape/z-order overrides in `nodeGeometry` |
+| Per-edge width | — (restored directly) | manual widths in `edgeGeometry` (+ `customSize` marker) |
 
 ## Layout Export/Import
 
 Exports the full view state (v2): positions plus per-element colors and
 alpha (body-only — the node fill and edge line fade, label text keeps full
 opacity), edge base appearance, group definitions and memberships, filters,
-toggles and every style control. The legacy positions-only `layout` map is
-still included so older builds can import the file.
+toggles and every style control, **plus the selection-panel overrides**:
+`nodeGeometry` (explicit width/height, per-node shape, z-order — only
+elements with an actual override are listed) and `edgeGeometry` (manually
+sized edges). An element absent from these lists follows the global
+controls, exactly like the live renderer. The legacy positions-only
+`layout` map is still included so older builds can import the file.
 
 ### Export Layout Only
 
@@ -213,6 +220,9 @@ still included so older builds can import the file.
   "state": {
     "version": 2,
     "positions": [{"id": "A", "position": {"x": 100, "y": 200}}, ...],
+    "nodeGeometry": [{"id": "A", "width": 130, "height": 64,
+                       "shape": "ellipse", "zIndex": "10000"}, ...],
+    "edgeGeometry": [{"id": "e7", "width": 9}, ...],
     "colors": [{"id": "A", "color": "#ff0000", "opacity": 0.4}, ...],
     "edgeStyles": [...],
     "groupDefaults": {...}, "customGroups": {...},

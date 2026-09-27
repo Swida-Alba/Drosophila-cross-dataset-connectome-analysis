@@ -899,7 +899,9 @@ def render_mapping_network_html(flows, *,
                                 title: str = "Auto type mapping bridges",
                                 pools: Optional[Dict[tuple,
                                                      Dict[str, Any]]] = None,
-                                orphans: Optional[List[Dict[str, Any]]] = None
+                                orphans: Optional[List[Dict[str, Any]]] = None,
+                                node_shape: str = "circle",
+                                merge_reciprocal_edges: bool = False
                                 ) -> Optional[str]:
     """Render the type-level mapping network to an HTML string.
 
@@ -910,7 +912,9 @@ def render_mapping_network_html(flows, *,
     draggable.  ``pools`` adds the pooled bodyId counts to the node hovers.
     ``orphans`` adds isolated unmapped-type nodes (W3).  Nothing is written
     to the repository — the temp render file lives in the system temp dir.
-    Returns the HTML text, or None when vispath is unavailable.
+    ``node_shape``/``merge_reciprocal_edges`` expose the square-node
+    vocabulary and merged double-headed edges (defaults keep the classic
+    look).  Returns the HTML text, or None when vispath is unavailable.
     """
     graph = build_mapping_network_graph(flows, pools=pools,
                                         orphans=orphans)
@@ -963,19 +967,25 @@ def render_mapping_network_html(flows, *,
         node_dataset_info=node_dataset_info,
         dataset_legend=dataset_legend,
         dataset_legend_meta=legend_meta,
-        node_groups=_dataset_groups(graph), layout="dagre", title=title)
+        node_groups=_dataset_groups(graph), layout="dagre", title=title,
+        node_shape=node_shape,
+        merge_reciprocal_edges=merge_reciprocal_edges)
 
 
 def write_mapping_network_html(flows, output_path: str, *,
                                open_browser: bool = False,
-                               title: str = "Auto type mapping bridges"):
+                               title: str = "Auto type mapping bridges",
+                               node_shape: str = "circle",
+                               merge_reciprocal_edges: bool = False):
     """Write the interactive Cytoscape network HTML for the mapped types.
 
     Thin file wrapper around ``render_mapping_network_html`` (kept for
     the analyzer/CLI callers).  Returns the output path, or None when
     vispath is unavailable or there is nothing to draw.
     """
-    text = render_mapping_network_html(flows, title=title)
+    text = render_mapping_network_html(flows, title=title,
+                                       node_shape=node_shape,
+                                       merge_reciprocal_edges=merge_reciprocal_edges)
     if text is None:
         return None
     with open(output_path, "w", encoding="utf-8") as handle:
@@ -1026,7 +1036,9 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
                           edge_weight_label: str = "neurons",
                           linker_colors: Optional[Dict[str, str]] = None,
                           node_groups: Optional[List[Dict[str, str]]] = None,
-                          layout: str = "dagre"):
+                          layout: str = "dagre",
+                          node_shape: str = "circle",
+                          merge_reciprocal_edges: bool = False):
     """Render one mapping DiGraph through the vispath cytoscape renderer.
 
     Raises ``_VispathUnavailable`` when the vispath package cannot be
@@ -1133,6 +1145,10 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
     # declared per-dataset node groups (§13) — drive the group buttons,
     # the color/opacity dropdown and the color-keyed legend
     visualizer.node_groups = list(node_groups or [])
+    # Node geometry + merged bidirectional edges (diagram-design square
+    # vocabulary; defaults keep the classic circular mapping look).
+    visualizer.node_shape = node_shape
+    visualizer.merge_reciprocal_edges = merge_reciprocal_edges
     visualizer._plot_cytoscape_network(
         graph, output_path, layout=layout, open_browser=open_browser
     )
@@ -1143,7 +1159,9 @@ def _vispath_html(graph, *, edge_labels=None, node_dataset_info=None,
                   dataset_legend=None, dataset_legend_meta=None,
                   node_groups=None,
                   layout: str = "dagre",
-                  title: str = "Neural Pathway Network - Selected Paths"
+                  title: str = "Neural Pathway Network - Selected Paths",
+                  node_shape: str = "circle",
+                  merge_reciprocal_edges: bool = False
                   ) -> Optional[str]:
     """Render a mapping graph to an HTML string.
 
@@ -1154,7 +1172,9 @@ def _vispath_html(graph, *, edge_labels=None, node_dataset_info=None,
     type-mapping network natively — no custom layer map needed).
     ``node_groups`` declares the per-dataset groups (§13).  ``title`` is
     applied to the downloaded document title after the vendored renderer
-    writes its HTML.  Returns None when vispath is unavailable.
+    writes its HTML.  ``node_shape``/``merge_reciprocal_edges`` expose
+    the square-node vocabulary and merged double-headed edges (defaults
+    keep the classic look).  Returns None when vispath is unavailable.
     """
     import os
     import tempfile
@@ -1169,7 +1189,9 @@ def _vispath_html(graph, *, edge_labels=None, node_dataset_info=None,
                 dataset_legend=dataset_legend,
                 dataset_legend_meta=dataset_legend_meta,
                 node_groups=node_groups,
-                edge_weight_label="neurons", layout=layout)
+                edge_weight_label="neurons", layout=layout,
+                node_shape=node_shape,
+                merge_reciprocal_edges=merge_reciprocal_edges)
         except _VispathUnavailable:
             return None
         with open(path, "r", encoding="utf-8") as handle:
@@ -2646,6 +2668,8 @@ def build_source_map_graph() -> "nx.DiGraph":
 
 def render_source_map_network_html(
         title: str = "Valid type-mapping bridges (BRIDGE_SOURCE_MAP)",
+        node_shape: str = "circle",
+        merge_reciprocal_edges: bool = False,
 ) -> Optional[str]:
     """Interactive HTML network of the valid bridges (§9I).
 
@@ -2653,7 +2677,9 @@ def render_source_map_network_html(
     pipeline and prepends a floating panel with the licensing rules,
     linked to ``docs/AUTO_TYPE_MAPPING.md`` and the regeneration
     command — the HTML, the code constant, and the docs all describe
-    the same map.  Returns None when vispath is unavailable.
+    the same map.  ``node_shape``/``merge_reciprocal_edges`` expose the
+    square-node vocabulary and merged double-headed edges.  Returns
+    None when vispath is unavailable.
     """
     graph = build_source_map_graph()
     node_dataset_info: Dict[str, Dict[str, str]] = {}
@@ -2667,7 +2693,9 @@ def render_source_map_network_html(
     html = _vispath_html(graph, node_dataset_info=node_dataset_info,
                          dataset_legend=dataset_legend,
                          node_groups=_dataset_groups(graph),
-                         layout="dagre")
+                         layout="dagre",
+                         node_shape=node_shape,
+                         merge_reciprocal_edges=merge_reciprocal_edges)
     if not html:
         return None
     import re

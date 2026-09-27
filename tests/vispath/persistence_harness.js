@@ -35,7 +35,7 @@ const FUNCTIONS = [
     // capture/undo plumbing (pushHistory guard + style bypass reads)
     'captureStyleBypass', 'captureState', 'pushHistory', 'syncToggleButtons',
     // global style update fns
-    'updateNodeSize', 'updateEdgeWidth', 'updateFontSize', 'updateArrowSize',
+    'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth', 'updateFontSize', 'updateArrowSize',
     'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
     'updateEdgeMetricLabels',
     // edge filter chain
@@ -98,6 +98,9 @@ function buildScope(cy) {
         let globalEdgeLabelFontSize = 9;
         let globalArrowSize = 9;
         let globalEdgeWidthScale = 'log_e';
+        let globalNodeShape = 'circle';
+        let pendingNudge = null;
+        function flushPendingNudge() {}
         let straightReciprocalEdgesEnabled = false;
         let reciprocalOffset = 5;
         let restoringHistoryState = false;
@@ -147,7 +150,7 @@ function buildScope(cy) {
         function makeEl(id) {
             const el = {
                 id: id, value: '', textContent: '', disabled: false,
-                style: {}, dataset: {}, options: [],
+                style: {}, dataset: {}, options: [{ textContent: '' }],
                 classList: makeClassList(),
                 appendChild: function (o) { el.options.push(o); },
                 remove: function () {},
@@ -450,6 +453,61 @@ function hexOf(api, value) {
     state.filter = { inputValue: '<3', ignoredValues: [], expressions: [] };
     api.applyNetworkState(state);
     check('apply adds no history entries', api.getUndoStack().length, 1);
+}
+
+// ===== Test E: per-node geometry/shape metadata round-trip =====
+{
+    const cy = buildGraph(
+        { S: 'source', A: 'intermediate', T: 'target' },
+        [['S', 'A', 5], ['A', 'T', 9]],
+    );
+    const api = buildScope(cy);
+    // arrange: explicit size + shape + z-order on A, manual edge width on e0
+    cy.getElementById('A').style({ width: '120px', height: '60px' });
+    cy.getElementById('A').style('shape', 'rectangle');
+    cy.getElementById('A').style({ 'z-index-compare': 'manual', 'z-index': 60 });
+    cy.getElementById('e0').style('width', '9px');
+    cy.getElementById('e0').data('customSize', true);
+
+    const state = api.captureNetworkState();
+    const geoA = state.nodeGeometry.find(g => g.id === 'A');
+    check('nodeGeometry captures width', geoA.width, 120);
+    check('nodeGeometry captures height', geoA.height, 60);
+    check('nodeGeometry captures shape override', geoA.shape, 'rectangle');
+    check('nodeGeometry captures manual z-order', geoA.zIndex, '60');
+    check('unstyled nodes absent from nodeGeometry',
+        state.nodeGeometry.length, 1);
+    const geoE = state.edgeGeometry.find(g => g.id === 'e0');
+    check('edgeGeometry captures manual width', geoE.width, 9);
+    check('unstyled edges absent from edgeGeometry',
+        state.edgeGeometry.length, 1);
+
+    // scramble: wipe the overrides, set DIFFERENT ones, add a stale
+    // customSize flag without a style bypass (graph-import leftovers)
+    cy.getElementById('A').removeStyle('width');
+    cy.getElementById('A').removeStyle('height');
+    cy.getElementById('A').removeStyle('shape');
+    cy.getElementById('A').removeStyle('z-index');
+    cy.getElementById('A').removeStyle('z-index-compare');
+    cy.getElementById('A').style({ width: '11px', height: '11px' });
+    cy.getElementById('T').style('shape', 'ellipse');
+    cy.getElementById('e0').removeStyle('width');
+    cy.getElementById('e0').data('customSize', true);
+    check('stale customSize flag without bypass is NOT captured',
+        api.captureNetworkState().edgeGeometry.length, 0);
+
+    // restore
+    api.applyNetworkState(state);
+    const A2 = cy.getElementById('A');
+    check('size override restored', [Math.round(A2.numericStyle('width')),
+        Math.round(A2.numericStyle('height'))], [120, 60]);
+    check('shape override restored', A2.style('shape'), 'rectangle');
+    check('z-order restored', A2.style('z-index'), '60');
+    check('scramble-only override cleared (T follows global)',
+        cy.getElementById('T').style('shape'), 'ellipse');
+    const e0b = cy.getElementById('e0');
+    check('manual edge width restored', Math.round(parseFloat(e0b.style('width'))), 9);
+    check('manual edge width marker restored', e0b.data('customSize'), true);
 }
 
 console.log(failures === 0 ? 'ALL PERSISTENCE TESTS PASSED' : failures + ' PERSISTENCE TEST(S) FAILED');

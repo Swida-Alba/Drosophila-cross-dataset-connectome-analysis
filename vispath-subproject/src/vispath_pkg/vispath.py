@@ -305,6 +305,8 @@ class VisualizePath:
         sankey_title=None,  # Sankey heading; None = the pathway default
         sankey_label_layers=True,  # Append the (L<n>) hop layer to Sankey labels
         metric_option_label=None,  # 'weight' option text; None = 'Synapse Count'
+        node_shape='circle',  # NEW: Node geometry ('circle'|'round-square'|'sharp-square'|'by-role')
+        merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
     ):
         """
         Initialize VisualizePath with pathway data and visualization settings.
@@ -495,7 +497,25 @@ class VisualizePath:
             Default: None — automatically follows separate_hemispheres
             (mirroring is enabled whenever Separate Hemispheres is on,
             unless explicitly set to False).
-            
+
+        node_shape : str, optional
+            Node geometry for the network HTML: 'circle' (today's look),
+            'round-square' (flowchart step box), 'sharp-square', or
+            'by-role' (source/target round-square, intermediates
+            sharp-square — the diagram-design "shape carries role"
+            convention).  A per-node 'shape' graph attribute overrides
+            the global choice for that node.
+            Default: 'circle'
+
+        merge_reciprocal_edges : bool, optional
+            If True, a reciprocal pair A→B + B→A collapses into ONE edge
+            element with arrowheads at both ends.  Width and the
+            weight-band filter use the STRONGER direction; hover and the
+            Edge List CSV export show both directions.  Edges with
+            negative weights never merge (the negative style is
+            per-direction).
+            Default: False
+
         Raises
         ------
         FileNotFoundError
@@ -659,7 +679,21 @@ class VisualizePath:
         
         # Reciprocal edges style
         self.straight_reciprocal_edges = straight_reciprocal_edges
-        
+
+        # Node geometry vocabulary (diagram-design squares).  Unknown
+        # values warn once and fall back to the classic circles so a typo
+        # never blanks the canvas.
+        valid_shapes = ('circle', 'round-square', 'sharp-square', 'by-role')
+        if node_shape not in valid_shapes:
+            self._vprint(f"Warning: Unknown node_shape '{node_shape}', "
+                         f"using 'circle' (valid: {', '.join(valid_shapes)})")
+            node_shape = 'circle'
+        self.node_shape = node_shape
+
+        # Merged bidirectional edges: reciprocal pairs render as ONE
+        # double-headed edge (width = stronger direction).
+        self.merge_reciprocal_edges = merge_reciprocal_edges
+
         # Create node_color array for compatibility with internal methods
         self.node_color = [self.source_color, self.intermediate_color]
         
@@ -668,6 +702,7 @@ class VisualizePath:
         self.custom_node_colors = None  # Will be populated in _load_custom_colors()
         self.custom_edge_colors = None  # Will be populated if edge-list has color column
         self.custom_node_groups = None  # Will be populated if edge-list has source/target_group columns
+        self.custom_edge_bidirectional = {}  # (source, target) -> pair id from a bidirectional(_pair) column
         self._csv_group_labels = {}  # safe custom group name -> raw edge-list label
         
         self.network_layout = network_layout
@@ -1997,7 +2032,8 @@ class VisualizePath:
         nt_alias_names = {'nt_type', 'nt', 'neurotransmitter'}
         group_info_names = {'nt_group', 'custom_groups'}
         hover_info_names = {'edge info', 'source info', 'target info'}
-        
+        bidir_alias_names = {'bidirectional', 'bidirectional_pair'}
+
         # Look for the nt_type and endpoint-group columns BY NAME - dtype is
         # unreliable: an all-empty nt_type column reads as NaN and looks numeric.
         nt_type_col = None
@@ -2006,6 +2042,7 @@ class VisualizePath:
         edge_info_col = None
         source_info_col = None
         target_info_col = None
+        bidirectional_col = None
         for col in self.path_df.columns:
             if col in exclude_cols:
                 continue
@@ -2022,6 +2059,8 @@ class VisualizePath:
                 source_info_col = col
             elif target_info_col is None and col_lower == 'target info':
                 target_info_col = col
+            elif bidirectional_col is None and col_lower in bidir_alias_names:
+                bidirectional_col = col
         
         # Find all numeric columns that could be additional metrics
         numeric_cols = []
@@ -2035,6 +2074,8 @@ class VisualizePath:
             skip_cols.add(source_group_col)
         if target_group_col:
             skip_cols.add(target_group_col)
+        if bidirectional_col:
+            skip_cols.add(bidirectional_col)
         for info_col in (edge_info_col, source_info_col, target_info_col):
             if info_col:
                 skip_cols.add(info_col)
@@ -2135,10 +2176,26 @@ class VisualizePath:
                 # Validate and normalize color
                 if color_value.startswith('#') or color_value.startswith('rgb'):
                     custom_edge_colors[edge_key] = color_value
-        
+
+            # Declared-bidirectional edges: a truthy bidirectional /
+            # bidirectional_pair cell marks the row as traversing BOTH
+            # ways (the cell value doubles as the pair id when two rows
+            # share it).  Truthiness: non-empty string that is not a
+            # falsy word, or numeric != 0.
+            if bidirectional_col is not None:
+                raw = row[bidirectional_col]
+                if pd.notna(raw):
+                    text = str(raw).strip().lower()
+                    if text and text not in ('false', 'no', '0', '0.0', 'nan'):
+                        self.custom_edge_bidirectional[(source, target)] = str(raw).strip()
+
         # Add new columns
         self.path_df['path_block'] = paths
         self.path_df['weights'] = weights
+
+        if self.custom_edge_bidirectional:
+            self._vprint(f"  Detected bidirectional column ({bidirectional_col}): "
+                         f"{len(self.custom_edge_bidirectional)} declared both-way edge(s)")
         
         # Restore hover infos for the renderer: per-edge custom labels and
         # the per-node unique-union info map (the cytoscape hover reads
@@ -4337,24 +4394,30 @@ class VisualizePath:
     def create_network(self):
         """
         Create interactive Cytoscape.js network visualization.
-        
+
         Creates a fully interactive network graph with:
-        - Draggable nodes
-        - Hover tooltips showing weight/ratio/probability
-        - Right-click to hide nodes
-        - Keyboard shortcut (H) to hide selected nodes
-        - Export to PNG functionality
-        
+        - Draggable nodes, arrow-key nudging (1 px, Shift = 10 px)
+        - Hover tooltips showing weight/ratio/probability (both directions
+          for merged bidirectional edges)
+        - Right-click to hide nodes; keyboard shortcut (H) to hide selected
+        - Selection panel: live position/size (W/H), per-node shape,
+          align/distribute (even or fixed gap), match/reset size, z-order
+        - Export to PNG/SVG, edge-list CSV (merged pairs export as two
+          directional rows sharing a bidirectional_pair id), and
+          Save/Export Layout carrying all per-element overrides
+
         Returns
         -------
         str
             Path to the generated HTML file
-            
+
         Notes
         -----
         - Layout algorithm specified by network_layout parameter
-        - Edge thickness represents connection weight
-        - Node colors follow node_type (source/intermediate/target)
+        - Edge thickness represents connection weight (the stronger
+          direction for merged bidirectional edges)
+        - Node colors follow node_type (source/intermediate/target);
+          node geometry follows node_shape (circle default, squares opt-in)
         """
         if self.G_network is None:
             self.build_network()
@@ -4484,7 +4547,7 @@ class VisualizePath:
     def _plot_cytoscape_network(self, G, output_path, layout='hierarchical', open_browser=True):
         """
         Create Cytoscape.js network visualization (internal method).
-        
+
         Parameters
         ----------
         G : networkx.DiGraph
@@ -4493,6 +4556,15 @@ class VisualizePath:
             Path to save HTML file
         layout : str
             Layout algorithm: 'hierarchical', 'spring', 'circular', 'distributed'
+
+        Notes
+        -----
+        Reads ``self.node_shape`` (global geometry; per-node 'shape' graph
+        attribute overrides) and ``self.merge_reciprocal_edges`` plus the
+        declared-bidirectional map (``self.custom_edge_bidirectional``)
+        when building the element data; merged pairs carry
+        ``bidirectional: 1`` + ``weight_forward``/``weight_reverse`` and
+        render with arrowheads at both ends.
         """
         # Prepare node data
         nodes_data = []
@@ -4507,6 +4579,35 @@ class VisualizePath:
                 hemi = base_label[-1]
                 base_label = base_label[:-2]
             return base_label, hemi
+
+        # Node geometry (diagram-design square vocabulary).  The graph can
+        # override per node via a 'shape' attribute (user-facing or raw
+        # Cytoscape names both accepted); otherwise the global node_shape
+        # choice applies.  'by-role' follows the flowchart convention:
+        # shape carries the role — source/target steps are round squares,
+        # intermediates are sharp squares.  The final Cytoscape shape name
+        # is written per node; 'ellipse' nodes skip the key entirely so
+        # the default (all-circle) generation stays byte-identical.
+        _shape_alias = {
+            'circle': 'ellipse',
+            'ellipse': 'ellipse',
+            'round-square': 'round-rectangle',
+            'round-rectangle': 'round-rectangle',
+            'rounded-rectangle': 'round-rectangle',
+            'sharp-square': 'rectangle',
+            'rectangle': 'rectangle',
+        }
+
+        def _resolve_shape(node_type_role: str, override) -> str:
+            choice = override if override else self.node_shape
+            if choice == 'by-role':
+                choice = ('round-square' if node_type_role in ('source', 'target')
+                          else 'sharp-square')
+            return _shape_alias.get(str(choice).lower(), 'ellipse')
+
+        any_node_shaped = any(
+            G.nodes[n].get('shape') for n in G.nodes())
+        emit_shape_keys = (self.node_shape != 'circle') or any_node_shaped
 
         for node in G.nodes():
             node_type = G.nodes[node].get('node_type', 'intermediate')
@@ -4555,7 +4656,15 @@ class VisualizePath:
             # Get dataset info for this node (for hover labels)
             ds_info = self.node_dataset_info.get(node, {})
 
-            nodes_data.append({
+            # Final geometry for this node.  NOTE: `role` is the
+            # structural role (source/target/intermediate) even when
+            # declared groups renamed node_type above — by-role shaping
+            # must follow the structure, not the group identity.
+            node_shape_name = _resolve_shape(role, G.nodes[node].get('shape'))
+            if node_shape_name != 'ellipse':
+                emit_shape_keys = True
+
+            node_data_entry = {
                 'data': {
                     'id': node,
                     'label': G.nodes[node].get('label', node),
@@ -4577,7 +4686,13 @@ class VisualizePath:
                 # start at the origin and are placed by their layout.
                 'position': G.nodes[node].get('position') or {},
                 'classes': ''  # For CSS classes
-            })
+            }
+            # Shape key only when some node is non-circle — keeps the
+            # all-circle generation byte-identical (the stylesheet
+            # passthrough below is injected on the same condition).
+            if emit_shape_keys:
+                node_data_entry['data']['shape'] = node_shape_name
+            nodes_data.append(node_data_entry)
 
         # Node groups beyond the standard three (the type-mapping views'
         # 'linker' and 'entry' nodes) become first-class groups in the
@@ -4649,30 +4764,55 @@ class VisualizePath:
         has_negative = False  # Track if any negative weights exist
         has_nt_coloring_network = False  # Track if NT coloring applies
         unique_nts_network = set()  # Collect unique NT types for CSS
-        
-        for source, target, data in G.edges(data=True):
+        has_bidirectional_edges = False  # Merged/declared double-headed edges
+
+        # ---- Merged bidirectional edge planning ----
+        # A reciprocal pair (or a pair the edge list declares bidirectional
+        # via its bidirectional/bidirectional_pair column) collapses into
+        # ONE element with arrowheads at both ends.  Width, filters and
+        # labels use the STRONGER direction; hover and the Edge List CSV
+        # keep both.  Negative edges never merge — the light-blue
+        # negative style is per-direction.
+        directed_edges = {(s, t): d for s, t, d in G.edges(data=True)}
+        declared_bidir = getattr(self, 'custom_edge_bidirectional', None) or {}
+
+        def _fmt_weight(w):
+            return f"{int(w):,}" if float(w).is_integer() else f"{w:,}"
+
+        merge_pairs = set()  # canonical (u, v) with str(u) < str(v)
+        for (s, t) in directed_edges:
+            if s == t:
+                continue
+            u, v = (s, t) if str(s) < str(t) else (t, s)
+            if (u, v) in merge_pairs:
+                continue
+            fwd = directed_edges.get((u, v))
+            rev = directed_edges.get((v, u))
+            if fwd is None or rev is None:
+                continue
+            declared = ((u, v) in declared_bidir or (v, u) in declared_bidir)
+            if not (declared or self.merge_reciprocal_edges):
+                continue
+            if fwd.get('weight', 0) < 0 or rev.get('weight', 0) < 0:
+                continue
+            merge_pairs.add((u, v))
+
+        def _edge_payload(source, target, data):
+            """Per-direction fields for one directed edge (no bidirectional
+            extras) — shared by the plain and the merged emission paths."""
+            nonlocal has_negative, has_nt_coloring_network
             weight = data.get('weight', 0)
             is_negative = weight < 0
             if is_negative:
                 has_negative = True
-            
-            # Convert all to positive for plotting (avoid Cytoscape issues)
-            abs_weight = abs(weight)
-            edge_weights.append(abs_weight)
             ratio = data.get('ratio', np.nan)
             prob = data.get('probability', np.nan)
-            
-            # Get NT type from lookup
             nt_type = nt_lookup.get((source, target), None)
             if self.color_edges_by_nt and nt_type is not None:
                 has_nt_coloring_network = True
                 unique_nts_network.add(nt_type)
-            
-            # Format tooltip - use actual newline character, not escaped.
-            # Integer-valued counts drop the float '.0' (edge lists often
-            # parse synapse counts as floats).
-            weight_disp = (f"{int(weight):,}"
-                           if float(weight).is_integer() else f"{weight:,}")
+
+            weight_disp = _fmt_weight(weight)
             tooltip_parts = [f"Weight: {weight_disp} {self.edge_weight_label}"]
             if not np.isnan(ratio):
                 tooltip_parts.append(f"Ratio: {ratio:.3f}")
@@ -4680,8 +4820,6 @@ class VisualizePath:
                 tooltip_parts.append(f"Probability: {prob:.3f}")
             if nt_type:
                 tooltip_parts.append(f"NT: {nt_type}")
-            
-            # Add custom edge labels (e.g., multi-dataset synapse strengths)
             if self.edge_labels and (source, target) in self.edge_labels:
                 custom_labels = self.edge_labels[(source, target)]
                 if isinstance(custom_labels, dict):
@@ -4690,36 +4828,98 @@ class VisualizePath:
                             tooltip_parts.append(f"{label_name}: {label_value:,}")
                         else:
                             tooltip_parts.append(f"{label_name}: {label_value}")
-            
-            tooltip = "\n".join(tooltip_parts)  # Use actual newline, not escaped
-            
-            # Store custom labels in edge data for JavaScript hover handling
+
             custom_labels_json = {}
             if self.edge_labels and (source, target) in self.edge_labels:
                 custom_labels_json = self.edge_labels[(source, target)]
-            
-            # Per-edge color from the uploaded edge list (the optional
-            # 'color' column) wins over the UI link color, which is only
-            # the fallback for edges the file does not color.
+
             edge_color = self.edge_color
             if self.custom_edge_colors and (source, target) in self.custom_edge_colors:
                 edge_color = self.custom_edge_colors[(source, target)]
-            
+
+            return {
+                'weight': abs(weight),
+                'original_weight': weight,
+                'is_negative': 1 if is_negative else 0,
+                'nt_type': nt_type if nt_type else '',
+                'color': edge_color,
+                'ratio': ratio if not np.isnan(ratio) else 0,
+                'probability': prob if not np.isnan(prob) else 0,
+                'tooltip': "\n".join(tooltip_parts),
+                'custom_labels': custom_labels_json,
+            }
+
+        for source, target, data in G.edges(data=True):
+            # Reverse halves of merged pairs are skipped — the canonical
+            # half emits the single double-headed element for the pair.
+            pair = ((source, target) if str(source) < str(target)
+                    else (target, source)) if source != target else None
+            if pair is not None and pair in merge_pairs and (source, target) != pair:
+                continue
+
+            if pair is not None and pair in merge_pairs:
+                u, v = pair
+                fwd = directed_edges[(u, v)]
+                rev = directed_edges[(v, u)]
+                w_fwd = fwd.get('weight', 0)
+                w_rev = rev.get('weight', 0)
+                # Metadata (ratio/probability/NT/color/labels) adopts the
+                # STRONGER direction; ties keep the canonical orientation.
+                stronger_src, stronger_tgt, stronger_data = (
+                    (u, v, fwd) if w_fwd >= w_rev else (v, u, rev))
+                payload = _edge_payload(stronger_src, stronger_tgt, stronger_data)
+                max_w = max(w_fwd, w_rev)
+                tooltip_parts = [
+                    f"{u} → {v}: {_fmt_weight(w_fwd)} {self.edge_weight_label}",
+                    f"{v} → {u}: {_fmt_weight(w_rev)} {self.edge_weight_label}",
+                ]
+                # Keep the stronger direction's context lines after the
+                # two weight lines (drop its now-redundant Weight line).
+                for line in payload['tooltip'].split("\n")[1:]:
+                    tooltip_parts.append(line)
+                edges_data.append({
+                    'data': {
+                        'source': u,
+                        'target': v,
+                        'weight': max_w,  # Stronger direction (width/filter/label)
+                        'original_weight': max_w,  # metricEdgeValue reads this
+                        'weight_forward': w_fwd,   # u → v (canonical forward)
+                        'weight_reverse': w_rev,   # v → u
+                        'bidirectional': 1,
+                        'is_negative': 0,
+                        'nt_type': payload['nt_type'],
+                        'color': payload['color'],
+                        'ratio': payload['ratio'],
+                        'probability': payload['probability'],
+                        'tooltip': "\n".join(tooltip_parts),
+                        'custom_labels': payload['custom_labels'],
+                    }
+                })
+                edge_weights.append(max_w)
+                has_bidirectional_edges = True
+                continue
+
+            # Declared-bidirectional single row (no stored reverse): one
+            # both-way edge whose weight stands for both directions.
+            standalone_declared = (pair is not None
+                                   and (source, target) in declared_bidir
+                                   and pair not in merge_pairs)
+            payload = _edge_payload(source, target, data)
+            weight = data.get('weight', 0)
+            if standalone_declared:
+                payload['bidirectional'] = 1
+                payload['weight_forward'] = weight
+                payload['weight_reverse'] = weight
+                has_bidirectional_edges = True
+
             edges_data.append({
                 'data': {
                     'source': source,
                     'target': target,
-                    'weight': abs_weight,  # Store positive for Cytoscape
-                    'original_weight': weight,  # Store original for hover modification
-                    'is_negative': 1 if is_negative else 0,  # Use 1/0 instead of True/False for JavaScript
-                    'nt_type': nt_type if nt_type else '',  # Store NT type for CSS styling
-                    'color': edge_color,  # Per-edge color (file color or link_color fallback)
-                    'ratio': ratio if not np.isnan(ratio) else 0,
-                    'probability': prob if not np.isnan(prob) else 0,
-                    'tooltip': tooltip,
-                    'custom_labels': custom_labels_json  # Store for JS access
+                    **payload
                 }
             })
+            edge_weights.append(abs(weight))
         
         if has_negative:
             self._vprint(f"  ℹ️  Found negative edge weights - using absolute values for width, light blue color for negative edges")
@@ -4728,10 +4928,17 @@ class VisualizePath:
         
         # Calculate scaled edge widths
         scaled_widths = self._calculate_edge_widths(edge_weights)
-        
-        # Add scaled width to each edge
+
+        # Add scaled width to each edge, plus a STABLE id.  Without one,
+        # Cytoscape mints a fresh UUID per page load and every id-keyed
+        # persisted map (edge base colors, visibility, manual widths in the
+        # layout save/export) silently fails to match after a reopen.
+        # Generation order is deterministic for a given file, so edge_N is
+        # stable; the 'e<name>' prefix space stays free for user-drawn
+        # edges (edit mode numbers those from 1000).
         for i, edge in enumerate(edges_data):
             edge['data']['scaled_width'] = scaled_widths[i]
+            edge['data']['id'] = edge['data'].get('id', f'edge_{i}')
         
         # Calculate min and max scaled widths for mapData function
         min_scaled_width = min(scaled_widths) if scaled_widths else 1
@@ -4811,14 +5018,37 @@ class VisualizePath:
                     selector: 'edge[nt_type = "{nt}"]',
                     style: {{
                         'line-color': '{nt_hex}',
-                        'target-arrow-color': '{nt_hex}'
+                        'target-arrow-color': '{nt_hex}',
+                        'source-arrow-color': '{nt_hex}'
                     }}
                 }},""")
                 # Add option for dropdown
                 nt_option_parts.append(f'<option value="nt_{nt}">{nt} Edges</option>')
             nt_edge_styles = "\n                ".join(nt_style_parts)
             nt_edge_group_options = "\n                                    ".join(nt_option_parts)
-        
+
+        # Double-headed edges: one selector adds the source-side
+        # arrowhead to every merged/declared bidirectional edge.  Empty
+        # when none exist, so the default generation stays byte-identical.
+        bidir_edge_styles = ""
+        if has_bidirectional_edges:
+            bidir_edge_styles = """{
+                    selector: 'edge[bidirectional = 1]',
+                    style: {
+                        'source-arrow-shape': 'triangle',
+                        'source-arrow-color': 'data(color)'
+                    }
+                },"""
+
+        # Square-node geometry: the passthrough + corner radius only join
+        # the stylesheet when at least one node is non-circle (the node
+        # data keys are emitted under the same condition).
+        node_shape_style = ""
+        if emit_shape_keys:
+            node_shape_style = """'shape': 'data(shape)',
+                        'corner-radius': '8',"""
+
+
         # Hemisphere group options and controls
         has_hemi_controls = self.separate_hemispheres and has_hemisphere_nodes
         hemisphere_group_options = ""
@@ -5930,6 +6160,14 @@ class VisualizePath:
                     <input type="number" id="arrowSizeSlider" min="1" step="1" value="9" oninput="updateArrowSize(this.value)" title="Size of the arrowheads on directed edges in px">
                     <span class="vp-unit">px</span>
                 </div>
+                <div class="vp-spinner vp-spinner-inline">
+                    <label for="nodeShapeSelect" title="Node geometry: circles (default), or the flowchart square vocabulary">Node Shape</label>
+                    <select id="nodeShapeSelect" onchange="updateNodeShape(this.value)" title="Node geometry: circles (default), or the flowchart square vocabulary" style="padding: 4px 6px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-bg, #fff); color: inherit;">
+                        <option value="circle" {'selected' if self.node_shape == 'circle' else ''}>Circle</option>
+                        <option value="round-square" {'selected' if self.node_shape in ('round-square', 'by-role') else ''}>Round Square</option>
+                        <option value="sharp-square" {'selected' if self.node_shape == 'sharp-square' else ''}>Sharp Square</option>
+                    </select>
+                </div>
             </div>
             </div>
             <div id="reciprocalOffsetControls" class="vp-ribbon-group" style="display: none;">
@@ -6031,7 +6269,11 @@ class VisualizePath:
             <span id="datasetLegend" style="display: contents;">{dataset_legend_html}</span>
         </div>
         <div class="info">
-            <strong>{G.number_of_nodes()}</strong> nodes, <strong>{G.number_of_edges()}</strong> connections ·
+            <!-- Rendered-element count: with merged bidirectional edges
+                 the canvas shows fewer edges than the graph holds
+                 (a reciprocal pair is ONE element), so the graph's edge
+                 count would overstate what is drawn. -->
+            <strong>{G.number_of_nodes()}</strong> nodes, <strong>{len(edges_data)}</strong> connections ·
             Press <strong>?</strong> for help
         </div>
     </div>
@@ -6114,36 +6356,70 @@ class VisualizePath:
                         </div>
                         <div class="color-group" id="assignGroupRow">
                             <label>Group:</label>
-                            <div style="display: flex; gap: 6px; align-items: center;">
-                                <select id="assignGroupSelect" title="Target group for the selected nodes (every node belongs to exactly one group)" style="flex: 1; width: auto;"></select>
+                            <div style="display: flex; gap: 6px; align-items: center; min-width: 0;">
+                                <!-- min-width: 0 lets the select shrink below
+                                     its longest option so the Assign button
+                                     stays inside the panel; flex-basis 0 +
+                                     the 70px floor keep the select usable
+                                     with truncation for long names -->
+                                <select id="assignGroupSelect" title="Target group for the selected nodes (every node belongs to exactly one group)" style="flex: 1 1 0; width: auto; min-width: 70px; text-overflow: ellipsis;"></select>
                                 <button class="apply-btn" onclick="assignSelectedToGroup()" title="Move the selected nodes into this group; Unassigned empties them from every group" style="flex: 0 0 auto; background: #2196f3; padding: 5px 8px;">Assign</button>
                             </div>
                         </div>
-                        <!-- Geometry: precise numeric size/position editing -->
+                        <!-- Geometry: precise numeric size/position editing.
+                             Values apply IMMEDIATELY on change (the same
+                             live pattern as the ribbon's Sizes spinners);
+                             the Apply button is an explicit commit that
+                             also works when live input is unavailable. -->
                         <div class="color-group" id="geomNodeGroup" style="display: none;">
                             <label>Position / Size (node):</label>
                             <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; font-size: 10px; color: #555;">
                                 <span>X</span>
-                                <input type="number" id="selGeomX" step="1" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise X position of the selected node">
+                                <input type="number" id="selGeomX" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise X position of the selected node (applies immediately; the other selected nodes follow by the same delta)">
                                 <span>Y</span>
-                                <input type="number" id="selGeomY" step="1" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise Y position of the selected node">
+                                <input type="number" id="selGeomY" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise Y position of the selected node (applies immediately; the other selected nodes follow by the same delta)">
                             </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>Size&nbsp;(px)</span>
-                                <input type="number" id="selGeomSize" min="1" step="1" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Size in pixels of the selected node">
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>W&nbsp;(px)</span>
+                                <input type="number" id="selGeomSize" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected node (squares: also sets height)">
+                                <span>H&nbsp;(px)</span>
+                                <input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Height in pixels of the selected node (squares: kept equal to width)">
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Shape</span>
+                                <select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node geometry: Keep = no change; Follow Global = drop this node's override so the ribbon Node Shape applies again" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                    <option value="">Keep current</option>
+                                    <option value="ellipse">Circle</option>
+                                    <option value="round-rectangle">Round Square</option>
+                                    <option value="rectangle">Sharp Square</option>
+                                    <option value="__follow__">Follow Global</option>
+                                </select>
+                                <button type="button" id="geomAspectLockBtn" onclick="toggleGeomAspectLock()" title="Aspect-ratio lock: when on, editing W scales H proportionally from the shape the selection had when the lock went on" style="padding: 2px 5px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 3px; background: var(--vp-bg, #fff); color: inherit; opacity: 0.45;">🔗</button>
                             </div>
                         </div>
                         <div class="color-group" id="geomEdgeGroup" style="display: none;">
                             <label>Width (edge):</label>
                             <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; font-size: 10px; color: #555;">
                                 <span>Width&nbsp;(px)</span>
-                                <input type="number" id="selGeomWidth" min="0.5" step="0.5" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected edge">
+                                <input type="number" id="selGeomWidth" min="0.5" step="0.5" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected edge (applies immediately)">
                             </div>
                             <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Edges are anchored to their endpoints — no free position.</div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
                             <button class="btn" id="alignHBtn" onclick="alignSelectedNodes('h')" title="Align selected nodes horizontally (same Y)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Align H</button>
                             <button class="btn" id="alignVBtn" onclick="alignSelectedNodes('v')" title="Align selected nodes vertically (same X)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇕ Align V</button>
+                            <button class="btn" id="distHBtn" onclick="distributeSelectedNodes('h')" title="Distribute selected nodes evenly along X (first and last keep their positions; needs 3+ nodes; a Gap value switches to fixed spacing)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Dist H</button>
+                            <button class="btn" id="distVBtn" onclick="distributeSelectedNodes('v')" title="Distribute selected nodes evenly along Y (first and last keep their positions; needs 3+ nodes; a Gap value switches to fixed spacing)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇕ Dist V</button>
+                        </div>
+                        <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 6px; font-size: 10px; color: #555;">
+                            <span>Gap&nbsp;(px)</span>
+                            <input type="number" id="distGapInput" min="1" step="1" placeholder="even" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Fixed center-to-center spacing for the Dist buttons; empty = even spacing between the two extreme nodes">
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
+                            <button class="btn" id="matchSizeBtn" onclick="matchSelectedSize()" title="Copy the primary node's W×H to every other selected node" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⤢ Match size</button>
+                            <button class="btn" id="resetSizeBtn" onclick="resetSelectedSize()" title="Clear the per-element size override — falls back to the global Node Size / Edge Width controls" style="font-size: 10px; padding: 5px; background: #607d8b; opacity: 0.4;">↺ Reset size</button>
+                            <button class="btn" id="zFrontBtn" onclick="setSelectionZOrder(true)" title="Bring the selected elements in front of everything else" style="font-size: 10px; padding: 5px; background: #5c6bc0; opacity: 0.4;">⬆ Front</button>
+                            <button class="btn" id="zBackBtn" onclick="setSelectionZOrder(false)" title="Send the selected elements behind everything else" style="font-size: 10px; padding: 5px; background: #5c6bc0; opacity: 0.4;">⬇ Back</button>
                         </div>
                         <button class="apply-btn" onclick="applyIndividualColor()" title="Apply the chosen color and opacity to the selected elements">Apply to Selected</button>
                         <button class="apply-btn" id="applyGeometryBtn" onclick="applySelectedGeometry()" title="Apply the numeric position/size values to the selected element" style="background: #00838f;">Apply Size/Position</button>
@@ -6277,6 +6553,7 @@ class VisualizePath:
                         <tr><td class="vp-key">H</td><td>Hide selected nodes</td></tr>
                         <tr><td class="vp-key">E</td><td>Hide selected edges</td></tr>
                         <tr><td class="vp-key">L</td><td>Toggle label position (center / outside)</td></tr>
+                        <tr><td class="vp-key">Arrows</td><td>Nudge selected nodes 1 px (⇧ = 10 px); a burst = one undo step</td></tr>
                         <tr><td class="vp-key">?</td><td>Toggle this help</td></tr>
                         <tr><td class="vp-key">⌘Z / ⌃Z</td><td>Undo</td></tr>
                         <tr><td class="vp-key">⌘⇧Z / ⌃Y</td><td>Redo</td></tr>
@@ -6354,6 +6631,7 @@ class VisualizePath:
                         'font-family': "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif",
                         'width': '40px',
                         'height': '40px',
+                        {node_shape_style}
                         'border-width': '0px',  // No border
                         'text-wrap': 'wrap',
                         'text-max-width': '80px'
@@ -6435,7 +6713,10 @@ class VisualizePath:
                     selector: 'edge[is_negative = 1]',
                     style: {{
                         'line-color': '#4A90E2',  // Light blue for negative
-                        'target-arrow-color': '#4A90E2'
+                        'target-arrow-color': '#4A90E2',
+                        // Symmetric recolor: merged bidirectional edges
+                        // carry a source-side arrowhead too (below).
+                        'source-arrow-color': '#4A90E2'
                     }}
                 }},
                 {{
@@ -6454,6 +6735,7 @@ class VisualizePath:
                     }}
                 }},
                 {nt_edge_styles}
+                {bidir_edge_styles}
                 {{
                     selector: 'edge.hidden',
                     style: {{
@@ -6477,6 +6759,7 @@ class VisualizePath:
                     style: {{
                         'line-color': '{self.highlight_color}',
                         'target-arrow-color': '{self.highlight_color}',
+                        'source-arrow-color': '{self.highlight_color}',
                         'width': 'mapData(scaled_width, {min_scaled_width}, {max_scaled_width}, 3, 16)'
                     }}
                 }},
@@ -6485,6 +6768,7 @@ class VisualizePath:
                     style: {{
                         'line-color': '{self.highlight_color}',
                         'target-arrow-color': '{self.highlight_color}',
+                        'source-arrow-color': '{self.highlight_color}',
                         'width': 'mapData(scaled_width, {min_scaled_width}, {max_scaled_width}, 3, 20)',
                         'z-index': 999
                     }}
@@ -6997,14 +7281,29 @@ class VisualizePath:
             const source = edge.source().data('label');
             const target = edge.target().data('label');
             const info = document.getElementById('hoverInfo');
-            
+
             // Get display weight (add negative sign if needed)
             const displayWeight = data.is_negative === 1 ? -data.weight : data.weight;
-            
-            let html = `<b>Connection:</b> ${{escapeHtml(source)}} → ${{escapeHtml(target)}}<br>`;
-            
-            // Highlight the current metric
-            if (currentMetric === 'weight') {{
+
+            // Merged bidirectional edge: both-way header + both weights
+            // (width/filter use the stronger direction).
+            const arrow = data.bidirectional ? ' ⇄ ' : ' → ';
+            let html = `<b>Connection:</b> ${{escapeHtml(source)}}${{arrow}}${{escapeHtml(target)}}<br>`;
+
+            if (data.bidirectional &&
+                    data.weight_forward !== undefined &&
+                    data.weight_reverse !== undefined) {{
+                const fwd = Number(data.weight_forward);
+                const rev = Number(data.weight_reverse);
+                if (currentMetric === 'weight') {{
+                    html += `<b>Weight:</b> <span style="color: #4CAF50; font-weight: bold;">${{Math.max(fwd, rev).toLocaleString()}} {self.edge_weight_label} ⬅ Current</span>`;
+                }} else {{
+                    html += `<b>Weight:</b> ${{Math.max(fwd, rev).toLocaleString()}} {self.edge_weight_label}`;
+                }}
+                const fwdLine = `${{escapeHtml(edge.source().data('label'))}} → ${{escapeHtml(edge.target().data('label'))}}: ${{fwd.toLocaleString()}}`;
+                const revLine = `${{escapeHtml(edge.target().data('label'))}} → ${{escapeHtml(edge.source().data('label'))}}: ${{rev.toLocaleString()}}`;
+                html += `<br><span style="color: #666; font-size: 0.92em;">${{fwdLine}}<br>${{revLine}}</span>`;
+            }} else if (currentMetric === 'weight') {{
                 html += `<b>Weight:</b> <span style="color: #4CAF50; font-weight: bold;">${{displayWeight.toLocaleString()}} {self.edge_weight_label} ⬅ Current</span>`;
             }} else {{
                 html += `<b>Weight:</b> ${{displayWeight.toLocaleString()}} {self.edge_weight_label}`;
@@ -7151,6 +7450,17 @@ class VisualizePath:
             clearEdgeHighlightOverride(evt.target);
         }});
 
+        // Arrow-key nudge burst coalescing (see the keydown handler below):
+        // one pre-burst snapshot, committed as a single undoable
+        // 'Nudge nodes' entry once the burst goes quiet.
+        let pendingNudge = null;
+        function flushPendingNudge() {{
+            if (!pendingNudge) return;
+            if (pendingNudge.timer) clearTimeout(pendingNudge.timer);
+            pushStateHistory('Nudge nodes', pendingNudge.state);
+            pendingNudge = null;
+        }}
+
         // Keyboard shortcut: L to toggle label position (center/outside)
         document.addEventListener('keydown', function(e) {{
             const tag = e.target && e.target.tagName;
@@ -7158,6 +7468,32 @@ class VisualizePath:
                 return;
             }}
             if (dialogCtl.isActive()) return;
+            // Arrow-key nudging: move the selected nodes by 1 px
+            // (Shift = 10 px).  A rapid burst coalesces into ONE history
+            // entry — the pre-nudge snapshot is captured on the first press
+            // and committed once the burst goes quiet (the same idea as the
+            // drag handler's grab/dragfree pair, which arrow keys bypass).
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {{
+                const sel = cy.$('node:selected');
+                if (sel.length === 0) return;
+                e.preventDefault();
+                const step = e.shiftKey ? 10 : 1;
+                const dx = e.key === 'ArrowLeft' ? -step : (e.key === 'ArrowRight' ? step : 0);
+                const dy = e.key === 'ArrowUp' ? -step : (e.key === 'ArrowDown' ? step : 0);
+                if (!pendingNudge) {{
+                    pendingNudge = {{ state: captureState(), timer: null }};
+                }} else {{
+                    clearTimeout(pendingNudge.timer);
+                }}
+                cy.batch(() => {{
+                    sel.forEach(n => {{
+                        const p = n.position();
+                        n.position({{ x: p.x + dx, y: p.y + dy }});
+                    }});
+                }});
+                pendingNudge.timer = setTimeout(flushPendingNudge, 700);
+                return;
+            }}
             if (e.key === 'l' || e.key === 'L') {{
                 pushHistory('Toggle label position');
                 if (labelPosition === 'center') {{
@@ -8275,12 +8611,46 @@ class VisualizePath:
                 const g = n.data('assigned_group');
                 if (g !== undefined && g !== null && g !== '') assignedGroups[n.id()] = g;
             }});
+            // Per-node geometry/shape metadata (the selection-panel
+            // features): explicit width/height/shape/z-index overrides and
+            // the manual-edge-width marker.  Only OVERRIDES are stored —
+            // nodes without one fall back to the global controls, exactly
+            // like the live renderer.  Width detection reads the style
+            // BYPASS flag, not a value comparison: a computed width (e.g.
+            // mapData on edges) is not an override, and a graph-JSON import
+            // can leave a customSize flag behind without its style.
+            const hasBypass = (el, key) => !!(el._private && el._private.style &&
+                el._private.style[key] && el._private.style[key].bypass === true);
+            const nodeGeometry = cy.nodes().map(n => {{
+                const item = {{ id: n.id() }};
+                const wBypass = hasBypass(n, 'width');
+                const hBypass = hasBypass(n, 'height');
+                if (wBypass) item.width = parseFloat(n.style('width'));
+                if (hBypass) item.height = parseFloat(n.style('height'));
+                // shape override: only when it differs from the stylesheet's
+                // passthrough value (data(shape) or the global dropdown)
+                const shapeOverride = hasBypass(n, 'shape') ? n._private.style.shape.value : null;
+                if (shapeOverride) item.shape = shapeOverride;
+                // z-order override: captured only when manual
+                const zc = n.style('z-index-compare');
+                if (zc === 'manual') item.zIndex = n.style('z-index');
+                return item;
+            }}).filter(item => Object.keys(item).length > 1);
+            const edgeGeometry = cy.edges().map(e => {{
+                const item = {{ id: e.id() }};
+                if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));
+                return item;
+            }}).filter(item => Object.keys(item).length > 1);
             return {{
                 version: 2,
                 // Geometry
                 positions: cy.nodes().map(n => ({{ id: n.id(), position: n.position() }})),
                 zoom: cy.zoom(),
                 pan: cy.pan(),
+                // Per-node overrides: explicit sizes, shapes, z-order +
+                // manual edge widths (absence = follow the global controls)
+                nodeGeometry: nodeGeometry,
+                edgeGeometry: edgeGeometry,
                 // Per-element appearance + visibility
                 colors: colors,
                 edgeStyles: edgeStyles,
@@ -8327,6 +8697,7 @@ class VisualizePath:
                     edgeLabelFontSize: globalEdgeLabelFontSize,
                     arrowSize: globalArrowSize,
                     edgeWidthScale: globalEdgeWidthScale,
+                    nodeShape: globalNodeShape,
                     metric: currentMetric,
                     spacingX: lastGapX,
                     spacingY: lastGapY,
@@ -8378,6 +8749,14 @@ class VisualizePath:
                 if (nodeSize !== undefined) {{
                     document.getElementById('nodeSizeSlider').value = nodeSize;
                     updateNodeSize(nodeSize);
+                }}
+                const nodeShape = pick(gs.nodeShape, state.nodeShape);
+                if (nodeShape !== undefined) {{
+                    const shapeSelect = document.getElementById('nodeShapeSelect');
+                    if (shapeSelect) {{
+                        shapeSelect.value = nodeShape;
+                        updateNodeShape(nodeShape);
+                    }}
                 }}
                 if (gs.edgeLabelFontSize !== undefined) {{
                     const el = document.getElementById('edgeLabelSizeSlider');
@@ -8558,8 +8937,60 @@ class VisualizePath:
                     const node = cy.getElementById(item.id);
                     if (node.length > 0) node.position(item.position);
                 }});
+                // --- per-node overrides: explicit sizes, shapes, z-order +
+                // manual edge widths (absence = clear the override so the
+                // global controls apply again) ---
+                if (state.nodeGeometry) {{
+                    const byId = {{}};
+                    state.nodeGeometry.forEach(item => {{ byId[item.id] = item; }});
+                    cy.nodes().forEach(n => {{
+                        const item = byId[n.id()];
+                        if (!item) {{
+                            n.removeStyle('width');
+                            n.removeStyle('height');
+                            n.removeStyle('shape');
+                            n.removeStyle('z-index');
+                            n.removeStyle('z-index-compare');
+                            return;
+                        }}
+                        if (item.width !== undefined || item.height !== undefined) {{
+                            const globalSize = parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
+                            n.style({{
+                                'width': (item.width !== undefined ? item.width : globalSize) + 'px',
+                                'height': (item.height !== undefined ? item.height : globalSize) + 'px'
+                            }});
+                        }} else {{
+                            n.removeStyle('width');
+                            n.removeStyle('height');
+                        }}
+                        if (item.shape !== undefined) n.style('shape', item.shape);
+                        else n.removeStyle('shape');
+                        if (item.zIndex !== undefined) {{
+                            n.style({{ 'z-index-compare': 'manual', 'z-index': item.zIndex }});
+                        }} else {{
+                            n.removeStyle('z-index');
+                            n.removeStyle('z-index-compare');
+                        }}
+                    }});
+                }}
+                if (state.edgeGeometry) {{
+                    const byId = {{}};
+                    state.edgeGeometry.forEach(item => {{ byId[item.id] = item; }});
+                    cy.edges().forEach(e => {{
+                        const item = byId[e.id()];
+                        if (item && item.width !== undefined) {{
+                            e.style('width', item.width + 'px');
+                            e.data('customSize', true);
+                        }} else {{
+                            e.removeStyle('width');
+                            e.removeData('customSize');
+                        }}
+                    }});
+                }}
                 if (Number.isFinite(state.zoom)) cy.zoom(state.zoom);
                 if (state.pan && Number.isFinite(state.pan.x) && Number.isFinite(state.pan.y)) cy.pan(state.pan);
+                // endpoint anchors follow any restored size overrides
+                refreshEdgeStyles(false);
 
                 // --- labels ---
                 if (state.labelsVisible !== undefined && state.labelsVisible !== labelsVisible) toggleLabels();
@@ -8678,8 +9109,9 @@ class VisualizePath:
                 hemisphereMirrorEnabled: hemisphereMirrorEnabled,
                 labelPosition: labelPosition,
                 // Global style controls (node/edge size, font/arrow size,
-                // scaling method, metric, reciprocal offset) so undo/redo
-                // also reverts size and width adjustments exactly.
+                // scaling method, metric, node shape, reciprocal offset)
+                // so undo/redo also reverts size and width adjustments
+                // exactly.
                 globalStyles: {{
                     nodeSize: globalNodeSize,
                     edgeWidth: globalEdgeWidth,
@@ -8687,6 +9119,7 @@ class VisualizePath:
                     edgeLabelFontSize: globalEdgeLabelFontSize,
                     arrowSize: globalArrowSize,
                     edgeWidthScale: globalEdgeWidthScale,
+                    nodeShape: globalNodeShape,
                     metric: currentMetric,
                     reciprocalOffset: reciprocalOffset,
                     // Layout transform trackers so undo/redo also restores
@@ -8768,6 +9201,8 @@ class VisualizePath:
                 applySlider('arrowSizeSlider', gs.arrowSize);
                 const scaleSelect = document.getElementById('edgeWidthScale');
                 if (scaleSelect && gs.edgeWidthScale) scaleSelect.value = gs.edgeWidthScale;
+                const shapeSelect = document.getElementById('nodeShapeSelect');
+                if (shapeSelect && gs.nodeShape) shapeSelect.value = gs.nodeShape;
                 const metricSelect = document.getElementById('metricSelect');
                 if (metricSelect && gs.metric) metricSelect.value = gs.metric;
                 if (gs.reciprocalOffset !== undefined) {{
@@ -8793,6 +9228,7 @@ class VisualizePath:
                 if (gs.fontSize !== undefined) updateFontSize(gs.fontSize);
                 if (gs.edgeLabelFontSize !== undefined) updateEdgeLabelFontSize(gs.edgeLabelFontSize);
                 if (gs.arrowSize !== undefined) updateArrowSize(gs.arrowSize);
+                if (gs.nodeShape !== undefined) updateNodeShape(gs.nodeShape);
                 updateMetric();
             }} finally {{
                 restoringHistoryState = false;
@@ -8900,6 +9336,7 @@ class VisualizePath:
         }});
 
         function undo() {{
+            flushPendingNudge();  // an in-flight nudge burst commits first
             if (undoStack.length === 0) return;
             const entry = undoStack[undoStack.length - 1];
             redoStack.push({{ label: entry.label, state: captureState() }});
@@ -8909,6 +9346,7 @@ class VisualizePath:
         }}
 
         function redo() {{
+            flushPendingNudge();  // an in-flight nudge burst commits first
             if (redoStack.length === 0) return;
             const entry = redoStack[redoStack.length - 1];
             undoStack.push({{ label: entry.label, state: captureState() }});
@@ -9385,9 +9823,29 @@ class VisualizePath:
                     'height': value + 'px'
                 }})
                 .update();
-            
+
             // Refresh edge styles to update arrow positions when node size changes
             refreshEdgeStyles(false);
+        }}
+
+        // Node geometry — the flowchart square vocabulary.  This is a
+        // GLOBAL override on the stylesheet (same semantics as the Node
+        // Size slider): choosing a shape here restyles every node,
+        // superseding any per-node shapes the generation baked in.
+        // 'circle' restores the Cytoscape default (ellipse).
+        function updateNodeShape(shape) {{
+            const shapeName = shape === 'round-square' ? 'round-rectangle'
+                : shape === 'sharp-square' ? 'rectangle' : 'ellipse';
+            if (!restoringHistoryState && shape !== globalNodeShape) pushHistory('Adjust node shape');
+            globalNodeShape = shape;
+            // keep the dropdown honest (undo/redo + applyNetworkState route
+            // through here with values the control may not show yet)
+            const shapeSelect = document.getElementById('nodeShapeSelect');
+            if (shapeSelect) shapeSelect.value = shape;
+            cy.style()
+                .selector('node')
+                .style('shape', shapeName)
+                .update();
         }}
 
         function updateEdgeWidth(width) {{
@@ -9496,6 +9954,11 @@ class VisualizePath:
         let globalEdgeLabelFontSize = {self.edge_label_font_size};
         let globalArrowSize = 9;
         let globalEdgeWidthScale = document.getElementById('edgeWidthScale')?.value || 'log_e';
+        // Node geometry ('circle'|'round-square'|'sharp-square'); seeded
+        // from the generation-time choice (by-role renders show their
+        // dominant round-square vocabulary in the dropdown).
+        let globalNodeShape = document.getElementById('nodeShapeSelect')?.value
+            || '{'circle' if self.node_shape in ('circle', 'sharp-square') else 'round-square'}';
         let restoringHistoryState = false;
         
         function updateMetric() {{
@@ -9704,9 +10167,12 @@ class VisualizePath:
                 // Body-only alpha: line + arrows fade; the edge's weight
                 // LABEL (text) keeps its own text-opacity. Whole-element
                 // 'opacity' would fade the font along with the line.
+                // source-arrow-color keeps BOTH ends of a merged
+                // bidirectional edge matching the line after a recolor.
                 edge.style({{
                     'line-color': color,
                     'target-arrow-color': color,
+                    'source-arrow-color': color,
                     'line-opacity': opacity,
                     'target-arrow-opacity': opacity,
                     'source-arrow-opacity': opacity
@@ -9726,9 +10192,13 @@ class VisualizePath:
             const color = edge.data(EDGE_BASE_COLOR_KEY) || edge.style('line-color');
             const opacityData = edge.data(EDGE_BASE_OPACITY_KEY);
             const opacity = (opacityData !== undefined) ? opacityData : (parseFloat(edge.style('line-opacity')) || 1);
+            // source-arrow-color restores too: the highlight override paints
+            // it, so a merged edge's source arrowhead would otherwise stay
+            // stuck at the highlight color after the highlight clears.
             edge.style({{
                 'line-color': color,
                 'target-arrow-color': color,
+                'source-arrow-color': color,
                 'line-opacity': opacity,
                 'target-arrow-opacity': opacity,
                 'source-arrow-opacity': opacity
@@ -9743,6 +10213,10 @@ class VisualizePath:
             edge.style({{
                 'line-color': highlightColor,
                 'target-arrow-color': highlightColor,
+                // Merged bidirectional edges also carry a source-side
+                // arrowhead — recolor it with the line so a highlighted
+                // double-headed edge stays symmetric.
+                'source-arrow-color': highlightColor,
                 'line-opacity': targetOpacity,
                 'target-arrow-opacity': targetOpacity,
                 'source-arrow-opacity': targetOpacity
@@ -10537,6 +11011,12 @@ class VisualizePath:
 
         // Fill the geometry inputs from the primary element and show the
         // matching node/edge rows; pass null to hide both rows.
+        // Multi-selection: when the selected nodes disagree on a size
+        // dimension, that field shows an empty value with a 'mixed'
+        // placeholder — an empty field means "keep each node's own size"
+        // in the apply path, so a bundle resize can't clobber a mixed
+        // selection by accident. X/Y always follow the primary (bundle
+        // move semantics).
         function syncSelectedGeometryInputs(primary) {{
             const nodeGroup = document.getElementById('geomNodeGroup');
             const edgeGroup = document.getElementById('geomEdgeGroup');
@@ -10546,14 +11026,55 @@ class VisualizePath:
             }} else if (primary.isNode()) {{
                 if (nodeGroup) nodeGroup.style.display = 'block';
                 if (edgeGroup) edgeGroup.style.display = 'none';
+                const selNodes = primary.selected() ? cy.$('node:selected') : primary;
                 const pos = primary.position();
                 document.getElementById('selGeomX').value = Math.round(pos.x * 10) / 10;
                 document.getElementById('selGeomY').value = Math.round(pos.y * 10) / 10;
-                document.getElementById('selGeomSize').value = Math.round(primary.numericStyle('width'));
+                const widths = new Set(selNodes.map(n => n.numericStyle('width')));
+                const heights = new Set(selNodes.map(n => n.numericStyle('height')));
+                const wField = document.getElementById('selGeomSize');
+                const hField = document.getElementById('selGeomHeight');
+                if (widths.size > 1) {{
+                    wField.value = '';
+                    wField.placeholder = 'mixed';
+                }} else {{
+                    wField.placeholder = '';
+                    wField.value = Math.round(primary.numericStyle('width'));
+                }}
+                if (heights.size > 1) {{
+                    hField.value = '';
+                    hField.placeholder = 'mixed';
+                }} else {{
+                    hField.placeholder = '';
+                    hField.value = Math.round(primary.numericStyle('height'));
+                }}
+                // Shape row: show the primary's effective shape; 'mixed'
+                // when the selection disagrees. The value stays '' (Keep)
+                // — acting happens via applySelectedShape's onchange.
+                const shapeField = document.getElementById('selGeomShape');
+                if (shapeField) {{
+                    const shapes = new Set(selNodes.map(n => n.style('shape')));
+                    if (shapes.size > 1) {{
+                        shapeField.selectedIndex = 0;
+                        shapeField.options[0].textContent = 'Mixed';
+                    }} else {{
+                        shapeField.options[0].textContent = 'Keep current';
+                        shapeField.title = 'Current: ' + primary.style('shape');
+                    }}
+                }}
             }} else {{
                 if (nodeGroup) nodeGroup.style.display = 'none';
                 if (edgeGroup) edgeGroup.style.display = 'block';
-                document.getElementById('selGeomWidth').value = Math.round(primary.numericStyle('width') * 10) / 10;
+                const selEdges = primary.selected() ? cy.$('edge:selected') : primary;
+                const widths = new Set(selEdges.map(e => e.numericStyle('width')));
+                const wField = document.getElementById('selGeomWidth');
+                if (widths.size > 1) {{
+                    wField.value = '';
+                    wField.placeholder = 'mixed';
+                }} else {{
+                    wField.placeholder = '';
+                    wField.value = Math.round(primary.numericStyle('width') * 10) / 10;
+                }}
             }}
             updateAlignButtons();
         }}
@@ -10563,10 +11084,24 @@ class VisualizePath:
         // entirely while nothing is selected (they would otherwise keep
         // showing stale values after a deselect).
         function updateAlignButtons() {{
-            const enabled = cy.$('node:selected').length >= 2;
+            const selectedNodeCount = cy.$('node:selected').length;
+            const enabled = selectedNodeCount >= 2;
             ['alignHBtn', 'alignVBtn'].forEach(id => {{
                 const btn = document.getElementById(id);
                 if (btn) btn.style.opacity = enabled ? '1' : '0.4';
+            }});
+            // Distribute needs 3+ nodes to space anything between the ends
+            ['distHBtn', 'distVBtn'].forEach(id => {{
+                const btn = document.getElementById(id);
+                if (btn) btn.style.opacity = selectedNodeCount >= 3 ? '1' : '0.4';
+            }});
+            // Match size needs 2+ NODES (copies the primary's shape);
+            // reset/z-order work on any non-empty selection.
+            const matchBtn = document.getElementById('matchSizeBtn');
+            if (matchBtn) matchBtn.style.opacity = selectedNodeCount >= 2 ? '1' : '0.4';
+            ['resetSizeBtn', 'zFrontBtn', 'zBackBtn'].forEach(id => {{
+                const btn = document.getElementById(id);
+                if (btn) btn.style.opacity = cy.$(':selected').length > 0 ? '1' : '0.4';
             }});
             const anySelected = cy.$(':selected').length > 0;
             const applyGeom = document.getElementById('applyGeometryBtn');
@@ -10595,10 +11130,32 @@ class VisualizePath:
                 const nodes = selected.nodes();
                 const newX = parseFloat(document.getElementById('selGeomX').value);
                 const newY = parseFloat(document.getElementById('selGeomY').value);
-                const newSize = parseFloat(document.getElementById('selGeomSize').value);
+                const newWidth = parseFloat(document.getElementById('selGeomSize').value);
+                // Independent height: rectangles (round/sharp squares) can be
+                // non-square; an empty Height field keeps the node square by
+                // following the width, which also preserves the old behavior.
+                let newHeight;
+                const heightRaw = document.getElementById('selGeomHeight').value;
+                newHeight = (heightRaw === '' || heightRaw === null)
+                    ? newWidth : parseFloat(heightRaw);
+                // Aspect-ratio lock: W drives H from the ratio the selection
+                // had when the lock went on (the H field is disabled while
+                // locked, so W is the only driving dimension).
+                if (geomAspectLock && !isNaN(newWidth) && newWidth > 0) {{
+                    newHeight = Math.max(1, Math.round(newWidth * geomLockRatio));
+                    document.getElementById('selGeomHeight').value = newHeight;
+                }}
                 const pos = primary.position();
                 const wantMove = !isNaN(newX) && !isNaN(newY) && (newX !== pos.x || newY !== pos.y);
-                const wantResize = !isNaN(newSize) && newSize > 0 && newSize !== primary.numericStyle('width');
+                // Bundle semantics: the resize applies to EVERY selected
+                // node, so the change check must scan the whole selection —
+                // a primary that already matches must not suppress the
+                // resize of the other selected nodes.
+                const wantResizeW = !isNaN(newWidth) && newWidth > 0 &&
+                    nodes.some(n => n.numericStyle('width') !== newWidth);
+                const wantResizeH = !isNaN(newHeight) && newHeight > 0 &&
+                    nodes.some(n => n.numericStyle('height') !== newHeight);
+                const wantResize = wantResizeW || wantResizeH;
                 if (!wantMove && !wantResize) return;
 
                 pushHistory(wantResize ? 'Resize element' : 'Move nodes');
@@ -10621,7 +11178,11 @@ class VisualizePath:
                 }}
                 if (wantResize) {{
                     cy.batch(() => {{
-                        nodes.forEach(n => n.style({{ 'width': newSize + 'px', 'height': newSize + 'px' }}));
+                        nodes.forEach(n => {{
+                            const w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : n.numericStyle('width');
+                            const h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : n.numericStyle('height');
+                            n.style({{ 'width': w + 'px', 'height': h + 'px' }});
+                        }});
                     }});
                 }}
                 refreshEdgeStyles(false);  // keep endpoints/offsets attached to resized nodes
@@ -10670,6 +11231,173 @@ class VisualizePath:
             syncSelectedGeometryInputs(primary);
             updateHoverInfo('✓ Aligned ' + nodes.length + ' nodes ' +
                 (axis === 'h' ? 'horizontally (same Y)' : 'vertically (same X)'));
+        }}
+
+        // Distribute the selected nodes EVENLY along one axis: order by the
+        // current coordinate, keep the two extremes in place, and give every
+        // intermediate node the same center-to-center step.  The other axis
+        // is untouched, so this composes with Align (e.g. Align H evens the
+        // row, Dist X spaces it).  Needs 3+ nodes to mean anything.
+        function distributeSelectedNodes(axis) {{
+            const nodes = cy.$('node:selected');
+            if (nodes.length < 3) {{
+                showToast('Select at least three nodes to distribute', 'warn');
+                return;
+            }}
+            const coord = (axis === 'h') ? 'x' : 'y';
+            const ordered = nodes.toArray().sort((a, b) => a.position()[coord] - b.position()[coord]);
+            const first = ordered[0].position()[coord];
+            const last = ordered[ordered.length - 1].position()[coord];
+            // Gap (px) input: a value switches from even spacing (extremes
+            // fixed) to FIXED spacing — the first node stays and every node
+            // sits at first + i*gap, extremes included.
+            const gapRaw = parseFloat(document.getElementById('distGapInput').value);
+            const fixedGap = (!isNaN(gapRaw) && gapRaw > 0) ? gapRaw : null;
+            if (!fixedGap && Math.abs(last - first) < 0.5) {{
+                showToast('Nodes already share the same ' + (axis === 'h' ? 'X' : 'Y') + ' — nothing to distribute', 'info');
+                return;
+            }}
+            const step = fixedGap !== null ? fixedGap : (last - first) / (ordered.length - 1);
+            pushHistory('Distribute nodes');
+            cy.batch(() => {{
+                ordered.forEach((n, i) => {{
+                    if (!fixedGap && (i === 0 || i === ordered.length - 1)) return;
+                    const p = n.position();
+                    const v = first + step * i;
+                    n.position(coord === 'x' ? {{ x: v, y: p.y }} : {{ x: p.x, y: v }});
+                }});
+            }});
+            refreshEdgeStyles(false);
+            const primary = (selectedElement && selectedElement.selected()) ? selectedElement : ordered[0];
+            syncSelectedGeometryInputs(primary);
+            updateHoverInfo('✓ Distributed ' + nodes.length + ' nodes ' +
+                (fixedGap ? ('with a ' + fixedGap + ' px gap ') : 'evenly ') +
+                (axis === 'h' ? 'horizontally (X)' : 'vertically (Y)'));
+        }}
+
+        // ===== Selection size / z-order helpers =====
+
+        // Aspect-ratio lock: while on, the H field is disabled and W edits
+        // scale H from geomLockRatio (captured from the selection's current
+        // shape at the moment the lock goes on — recomputing it per
+        // keystroke would compound, since live apply re-syncs the fields).
+        let geomAspectLock = false;
+        let geomLockRatio = 1;
+        function setGeomAspectLock(on) {{
+            geomAspectLock = !!on;
+            const btn = document.getElementById('geomAspectLockBtn');
+            const hField = document.getElementById('selGeomHeight');
+            if (btn) {{
+                btn.style.opacity = geomAspectLock ? '1' : '0.45';
+                btn.style.background = geomAspectLock ? '#b2dfdb' : 'var(--vp-bg, #fff)';
+            }}
+            if (hField) hField.disabled = geomAspectLock;
+        }}
+        function toggleGeomAspectLock() {{
+            setGeomAspectLock(!geomAspectLock);
+            if (geomAspectLock) {{
+                const w = parseFloat(document.getElementById('selGeomSize').value);
+                const h = parseFloat(document.getElementById('selGeomHeight').value);
+                geomLockRatio = (w > 0 && !isNaN(h) && h > 0) ? (h / w) : 1;
+            }}
+        }}
+
+        // Copy the primary node's W×H to every OTHER selected node.
+        function matchSelectedSize() {{
+            const nodes = cy.$('node:selected');
+            if (nodes.length < 2) {{
+                showToast('Select at least two nodes to match size', 'warn');
+                return;
+            }}
+            const primary = (selectedElement && selectedElement.selected() && selectedElement.isNode())
+                ? selectedElement : nodes[0];
+            const w = primary.numericStyle('width');
+            const h = primary.numericStyle('height');
+            pushHistory('Resize element');
+            cy.batch(() => {{
+                nodes.forEach(n => {{
+                    if (n === primary) return;
+                    n.style({{ 'width': w + 'px', 'height': h + 'px' }});
+                }});
+            }});
+            refreshEdgeStyles(false);
+            syncSelectedGeometryInputs(primary);
+            updateHoverInfo('✓ Matched size of ' + (nodes.length - 1) + ' node(s) to ' + Math.round(w) + '×' + Math.round(h));
+        }}
+
+        // Clear per-element size overrides: nodes fall back to the global
+        // Node Size slider, edges to the global Edge Width mapping.
+        function resetSelectedSize() {{
+            const sel = cy.$(':selected');
+            if (sel.length === 0) {{
+                showToast('Select one or more elements first', 'warn');
+                return;
+            }}
+            pushHistory('Reset size');
+            cy.batch(() => {{
+                sel.forEach(el => {{
+                    if (el.isNode()) {{
+                        el.removeStyle('width');
+                        el.removeStyle('height');
+                    }} else {{
+                        el.removeStyle('width');
+                        el.removeData('customSize');
+                    }}
+                }});
+            }});
+            refreshEdgeStyles(false);
+            const primary = (selectedElement && selectedElement.selected()) ? selectedElement : sel[0];
+            syncSelectedGeometryInputs(primary);
+            updateHoverInfo('✓ Size reset to the global default');
+        }}
+
+        // Z-order: explicit per-element z-index with manual comparison so
+        // overlapping nodes can be layered front/back on demand.
+        function setSelectionZOrder(toFront) {{
+            const sel = cy.$(':selected');
+            if (sel.length === 0) {{
+                showToast('Select one or more elements first', 'warn');
+                return;
+            }}
+            pushHistory(toFront ? 'Bring to front' : 'Send to back');
+            cy.batch(() => {{
+                sel.forEach(el => el.style({{
+                    'z-index-compare': 'manual',
+                    'z-index': toFront ? 10000 : -10000
+                }}));
+            }});
+            updateHoverInfo(toFront ? '✓ Brought to front' : '✓ Sent to back');
+        }}
+
+        // Per-node shape: a stylesheet-level bypass per selected node.
+        // 'ellipse'/'round-rectangle'/'rectangle' set the shape; the
+        // sentinel '__follow__' REMOVES the override so the ribbon's global
+        // Node Shape applies to this node again.  The sync call re-renders
+        // the whole stylesheet which re-applies data(shape) passthrough for
+        // nodes without an override.
+        function applySelectedShape(shapeValue) {{
+            const nodes = cy.$('node:selected');
+            if (nodes.length === 0 || !shapeValue) {{
+                // nothing selected or the placeholder 'Keep current' option
+                if (document.getElementById('selGeomShape'))
+                    document.getElementById('selGeomShape').value = '';
+                return;
+            }}
+            pushHistory('Change node shape');
+            cy.batch(() => {{
+                nodes.forEach(n => {{
+                    if (shapeValue === '__follow__') {{
+                        n.removeStyle('shape');
+                    }} else {{
+                        n.style('shape', shapeValue);
+                    }}
+                }});
+            }});
+            updateHoverInfo('✓ Shape ' +
+                (shapeValue === '__follow__' ? 'reset to the global Node Shape' : shapeValue) +
+                ' on ' + nodes.length + ' node(s)');
+            // reset the dropdown to the placeholder after acting on it
+            document.getElementById('selGeomShape').value = '';
         }}
 
         // Apply initial opacity values from parsed input colors
@@ -10764,26 +11492,17 @@ class VisualizePath:
                 
                 // Enable node dragging in edit mode
                 cy.autoungrabify(false);
-                
-                // Add click handlers for edge drawing (use namespace to avoid conflicts)
-                cy.on('tap.editmode', 'node', function(evt) {{
-                    if (editMode) {{
-                        handleNodeClickForEdge(evt.target);
-                    }}
-                }});
-                
-                // Add double-click to edit properties (use namespace)
-                cy.on('dbltap.editmode', 'node', function(evt) {{
-                    if (editMode) {{
-                        editNodeProperties(evt.target);
-                    }}
-                }});
-                
-                cy.on('dbltap.editmode', 'edge', function(evt) {{
-                    if (editMode) {{
-                        editEdgeProperties(evt.target);
-                    }}
-                }});
+
+                // Add click handlers for edge drawing.  PLAIN listeners with
+                // tracked references: Cytoscape 3.28 does not dispatch
+                // tap/dbltap to NAMESPACED delegated listeners (verified on
+                // 3.28.1 — a namespaced dbltap listener never fires while a
+                // plain dbltap on the same gesture does), so the old
+                // namespaced registration silently killed edge drawing and
+                // double-click editing.  Removal keeps the same references.
+                cy.on('tap', 'node', onEditTapNode);
+                cy.on('dbltap', 'node', onEditDbltapNode);
+                cy.on('dbltap', 'edge', onEditDbltapEdge);
                 
                 // Note: Right-click handlers are managed globally above (lines ~4013-4040)
                 // They check editMode status to decide between hide/delete
@@ -10794,15 +11513,35 @@ class VisualizePath:
                 controls.style.display = 'none';
                 document.getElementById('cy').classList.remove('vp-editmode');
                 document.getElementById('editBadge').style.display = 'none';
-                
-                // Disable special edit handlers only (use namespace to preserve main handlers)
-                cy.off('tap.editmode');
-                cy.off('dbltap.editmode');
+
+                // Disable special edit handlers only (same references the
+                // enable branch registered — see the namespace note there)
+                cy.off('tap', 'node', onEditTapNode);
+                cy.off('dbltap', 'node', onEditDbltapNode);
+                cy.off('dbltap', 'edge', onEditDbltapEdge);
                 edgeDrawMode = false;
                 sourceNodeForEdge = null;
-                
+
                 // Remove any temporary indicators
                 cy.nodes().removeClass('edge-source');
+            }}
+        }}
+
+        // Edit-mode handlers (plain listeners — see toggleEditMode).  Each
+        // re-checks editMode so a late event after toggling off is inert.
+        function onEditTapNode(evt) {{
+            if (editMode) {{
+                handleNodeClickForEdge(evt.target);
+            }}
+        }}
+        function onEditDbltapNode(evt) {{
+            if (editMode) {{
+                editNodeProperties(evt.target);
+            }}
+        }}
+        function onEditDbltapEdge(evt) {{
+            if (editMode) {{
+                editEdgeProperties(evt.target);
             }}
         }}
         
@@ -10816,12 +11555,20 @@ class VisualizePath:
                 : (currentType === 'target' ? '{self.target_color}' : '{self.node_color[1]}');
             const currentColor = extractColorHex(node.style('background-color')) || node.data('color') || typeColor;
 
+            // Declared-group nodes carry their group name as node_type
+            // (mapping views).  The structural three are always offered;
+            // the current value is APPENDED when it is not one of them so
+            // the select can display it and Apply keeps it unchanged
+            // instead of silently rewriting the group identity to ''.
+            const typeOptions = ['source', 'intermediate', 'target'];
+            if (currentType && typeOptions.indexOf(currentType) === -1) typeOptions.push(currentType);
+
             showDialog({{
                 title: 'Edit node: ' + currentId,
                 fields: [
                     {{ key: 'label', label: 'Label', type: 'text', value: node.data('label') }},
                     {{ key: 'type', label: 'Type', type: 'select', value: currentType,
-                       options: ['source', 'intermediate', 'target'] }},
+                       options: typeOptions }},
                     {{ key: 'color', label: 'Color', type: 'color', value: currentColor }},
                 ],
                 confirmText: 'Apply',
@@ -10836,6 +11583,17 @@ class VisualizePath:
                 node.data('node_type', newType);
                 node.data('color', newColor);
                 node.style('background-color', newColor);
+
+                // Keep the SELECTED ELEMENT(S) panel honest: the header
+                // otherwise keeps showing the pre-rename label/type and the
+                // color inputs the pre-rename color until reselection.
+                if (selectedElement === node) {{
+                    document.getElementById('selectedInfo').innerHTML =
+                        `<strong>Node:</strong> ${{escapeHtml(newLabel)}} (${{escapeHtml(newType)}})`;
+                    const appliedColor = extractColorHex(node.style('background-color')) || newColor;
+                    document.getElementById('individualColor').value = appliedColor;
+                    document.getElementById('individualColorText').value = appliedColor;
+                }}
 
                 showToast('✓ Updated node: ' + currentId + ' → label="' + newLabel + '", type=' + newType, 'success');
             }}).catch(() => {{}});
@@ -10971,11 +11729,25 @@ class VisualizePath:
                     const sourceId = sourceNodeForEdge.id();
                     const targetId = node.id();
                     
-                    // Check if edge already exists
-                    const existingEdge = cy.edges(`[source = "${{sourceId}}"][target = "${{targetId}}"]`);
-                    if (existingEdge.length > 0) {{
+                    // Check if edge already exists — in BOTH orientations:
+                    // a merged bidirectional element covers the pair both
+                    // ways, so drawing the reverse direction would create
+                    // a duplicate connection.
+                    const fwdExists = cy.edges(`[source = "${{sourceId}}"][target = "${{targetId}}"]`);
+                    const revExists = cy.edges(`[source = "${{targetId}}"][target = "${{sourceId}}"]`);
+                    const bidirCovers = cy.edges(`[source = "${{sourceId}}"][target = "${{targetId}}"][bidirectional = 1]`)
+                        .concat(cy.edges(`[source = "${{targetId}}"][target = "${{sourceId}}"][bidirectional = 1]`));
+                    if (fwdExists.length > 0 || bidirCovers.length > 0) {{
                         updateHoverInfo('⚠️ Edge already exists: ' + sourceId + ' → ' + targetId);
                         // Reset edge draw mode
+                        edgeDrawMode = false;
+                        sourceNodeForEdge = null;
+                        cy.nodes().removeClass('edge-source');
+                        return;
+                    }}
+                    if (revExists.length > 0) {{
+                        updateHoverInfo('⚠️ Reverse edge exists: ' + targetId + ' → ' + sourceId +
+                            '. Delete it first if you want to redraw this pair.');
                         edgeDrawMode = false;
                         sourceNodeForEdge = null;
                         cy.nodes().removeClass('edge-source');
@@ -11408,6 +12180,15 @@ class VisualizePath:
                 if (e.hasClass('hidden') || e.hasClass('filtered') || e.hasClass('selfloop-hidden')) return;
                 if (deadEndSet.has(e.source().id()) || deadEndSet.has(e.target().id())) return;
                 if (e.source().id() === e.target().id()) return;  // skip self-loops
+                // Merged bidirectional edges carry both directions in ONE
+                // element (canonical source -> target); without this they
+                // would register as out-only for the source and in-only
+                // for the target, flagging BOTH endpoints as dead ends.
+                if (e.data('bidirectional')) {{
+                    outCount++;
+                    inCount++;
+                    return;
+                }}
                 if (e.source().id() === node.id()) outCount++;
                 else inCount++;
             }});
@@ -11687,7 +12468,7 @@ class VisualizePath:
         function buildEdgeListCSV() {{
             const header = ['source', 'target', 'weight', 'color', 'nt_type', 'nt_group',
                             'source_group', 'target_group', 'custom_groups', 'ratio', 'probability',
-                            'edge info', 'source info', 'target info'];
+                            'edge info', 'source info', 'target info', 'bidirectional_pair'];
             const edgeWeightLabelJS = '{self.edge_weight_label}';
             // {{key:val; ...}} hover-info cells for the CSV round trip.
             const formatInfoCell = (obj, extraEntries) => {{
@@ -11706,14 +12487,12 @@ class VisualizePath:
                 }});
             }});
             const labelOf = node => node.data('label') || node.id();
-            const lines = [header.join(',')];
-            cy.edges().forEach(edge => {{
-                // Prefer the signed original weight (edit mode keeps it in
-                // sync with the display weight; drawn edges set both).
-                const weightRaw = edge.data('original_weight');
-                const weight = (weightRaw !== undefined && weightRaw !== null && !isNaN(parseFloat(weightRaw)))
-                    ? parseFloat(weightRaw)
-                    : (parseFloat(edge.data('weight')) || 0);
+            // One CSV row.  The edge-scoped fields (color/NT/metrics/labels)
+            // come from the element being exported — for a merged
+            // bidirectional pair that is the SAME element for both rows;
+            // only source/target/weight differ per direction.  pairId is
+            // empty for plain directed edges.
+            const makeRow = (edge, sourceNode, targetNode, weight, pairId) => {{
                 // Base appearance is seeded from the computed style at load
                 // time and kept in sync by every color edit, so it is the
                 // authoritative current color; fall back to the live style.
@@ -11722,8 +12501,6 @@ class VisualizePath:
                 const rawColor = edge.data(EDGE_BASE_COLOR_KEY) || edge.style('line-color');
                 const color = extractColorHex(rawColor);
                 const nt = edge.data('nt_type') || '';
-                const sourceNode = edge.source();
-                const targetNode = edge.target();
                 // ratio/probability default to 0 when absent - export them
                 // as empty cells so re-import does not invent metrics
                 const ratio = edge.data('ratio');
@@ -11749,9 +12526,31 @@ class VisualizePath:
                     prob ? prob : '',
                     edgeInfo,
                     sourceInfo,
-                    targetInfo
+                    targetInfo,
+                    pairId || ''
                 ];
-                lines.push(row.map(csvEscapeField).join(','));
+                return row.map(csvEscapeField).join(',');
+            }};
+            const lines = [header.join(',')];
+            cy.edges().forEach(edge => {{
+                const d = edge.data();
+                // Merged bidirectional pair: two directional rows sharing
+                // the pair id, each with its own direction's weight.
+                if (d.bidirectional && d.weight_forward !== undefined && d.weight_reverse !== undefined) {{
+                    const u = edge.source();
+                    const v = edge.target();
+                    const pairId = labelOf(u) + '<->' + labelOf(v);
+                    lines.push(makeRow(edge, u, v, parseFloat(d.weight_forward) || 0, pairId));
+                    lines.push(makeRow(edge, v, u, parseFloat(d.weight_reverse) || 0, pairId));
+                    return;
+                }}
+                // Prefer the signed original weight (edit mode keeps it in
+                // sync with the display weight; drawn edges set both).
+                const weightRaw = edge.data('original_weight');
+                const weight = (weightRaw !== undefined && weightRaw !== null && !isNaN(parseFloat(weightRaw)))
+                    ? parseFloat(weightRaw)
+                    : (parseFloat(edge.data('weight')) || 0);
+                lines.push(makeRow(edge, edge.source(), edge.target(), weight, ''));
             }});
             return lines.join('\\n');
         }}

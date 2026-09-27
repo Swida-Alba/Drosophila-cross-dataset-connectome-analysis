@@ -90,6 +90,12 @@ For networks with bidirectional connections:
 | **Straight/Curved toggle**   | Switch between straight parallel edges and curved bezier    |
 | **Reciprocal Offset slider** | Adjust spacing between parallel edges (0-40px, default 5px) |
 
+Networks generated with **Merge Bidirectional Edges** (or from an edge list
+with a `bidirectional` column) instead render each reciprocal pair as ONE
+double-headed edge — the ribbon above then stays hidden. Width uses the
+stronger direction; hover shows both. See Network_Guide.md → Merged
+Bidirectional Edges.
+
 ### Edge Controls (Three-Column Panel)
 
 **Column 1: Edge Filtering**
@@ -117,6 +123,7 @@ For networks with bidirectional connections:
 | -------------- | -------- | ------- | ----------------------------------- |
 | **Font Size**  | 8-20px   | 12px    | Node label text                     |
 | **Node Size**  | 20-80px  | 40px    | All nodes uniformly                 |
+| **Node Shape** | dropdown | Circle  | Circle / Round Square / Sharp Square |
 | **Edge Width** | 0.5-30px | 3px     | Base edge thickness multiplier      |
 | **Arrow Size** | 3-20px   | 9px     | Arrowhead scale (normalized to 9px) |
 

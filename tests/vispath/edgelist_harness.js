@@ -169,7 +169,7 @@ console.log('EXPORTED_CSV_JSON::' + JSON.stringify(rows));
 
 const HEADER = ['source', 'target', 'weight', 'color', 'nt_type', 'nt_group',
                 'source_group', 'target_group', 'custom_groups', 'ratio', 'probability',
-                'edge info', 'source info', 'target info'];
+                'edge info', 'source info', 'target info', 'bidirectional_pair'];
 check('CSV header matches the documented columns',
     JSON.stringify(rows[0]) === JSON.stringify(HEADER),
     'got ' + JSON.stringify(rows[0]));
@@ -220,6 +220,8 @@ elements.edges.forEach((embedded, i) => {
     if (!/^(\{.*\})?$/.test(row[12])) problems.push('source info not {key:val; ...}: ' + row[12]);
     if (!/^(\{.*\})?$/.test(row[13])) problems.push('target info not {key:val; ...}: ' + row[13]);
     if (row[11] !== '' && !/\{weight:[^;}]+/.test(row[11])) problems.push('edge info missing weight: ' + row[11]);
+    // trailing bidirectional_pair cell: plain directed edges carry no pair
+    if (row[14] !== '') problems.push('bidirectional_pair not empty for plain edge: ' + row[14]);
     if (problems.length > 0) {
         rowsMatchInput = false;
         rowDetail += 'edge ' + d.source + '->' + d.target + ': ' + problems.join('; ') + ' | ';

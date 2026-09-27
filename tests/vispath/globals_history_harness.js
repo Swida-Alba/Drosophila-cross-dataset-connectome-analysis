@@ -32,7 +32,7 @@ const FUNCTIONS = [
     'captureState', 'restoreState', 'syncToggleButtons',
     'pushStateHistory', 'pushHistory', 'undo', 'redo',
     'updateUndoRedoButtons', 'updateHistoryList',
-    'restoreGlobalStyles', 'updateNodeSize', 'updateEdgeWidth',
+    'restoreGlobalStyles', 'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth',
     'updateFontSize', 'updateArrowSize', 'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
     'syncTransformInputs', 'syncGapDisplays', 'measureAxisGap', 'isVisibleElement', 'metricEdgeValue',
     'visibleNodeCentroid', 'gapAxesSwapped',
@@ -62,6 +62,9 @@ function buildScope(cy) {
         let globalEdgeLabelFontSize = 9;
         let globalArrowSize = 9;
         let globalEdgeWidthScale = 'log_e';
+        let globalNodeShape = 'circle';
+        let pendingNudge = null;
+        function flushPendingNudge() {}
         let reciprocalOffset = 5;
         let restoringHistoryState = false;
         // Edge-filter groups (referenced by applyEdgeFilter / shouldIgnoreEdge)
@@ -91,7 +94,7 @@ function buildScope(cy) {
         function makeEl(id) {
             const el = {
                 id: id, value: '', textContent: '', style: {},
-                options: [], selectedIndex: 0,
+                options: [{ textContent: '' }], selectedIndex: 0,
                 appendChild: function (o) { el.options.push(o); }
             };
             Object.defineProperty(el, 'innerHTML', {
@@ -112,7 +115,7 @@ function buildScope(cy) {
     const src = prelude + fnSources + `
         return {
             undo, redo, pushHistory, captureState, restoreState,
-            updateNodeSize, updateEdgeWidth, updateFontSize, updateArrowSize,
+            updateNodeSize, updateNodeShape, updateEdgeWidth, updateFontSize, updateArrowSize,
             updateMetric, updateEdgeWidths, refreshEdgeStyles,
             getEl: (id) => els[id] || makeEl(id),
             getUndoStack: () => undoStack, getRedoStack: () => redoStack,

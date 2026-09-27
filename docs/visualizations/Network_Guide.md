@@ -142,6 +142,56 @@ Choose the best layout for your network structure:
 - **Control**: Font Size slider
 - **Affects**: Node labels
 
+#### Node Shape
+- **Default**: Circle
+- **Options**: Circle / Round Square / Sharp Square (dropdown in the Sizes group; a global override like the Node Size slider)
+- **Generation**: the `node_shape` constructor argument (`'circle'`, `'round-square'`, `'sharp-square'`, or `'by-role'` = source/target round squares, intermediates sharp squares); a per-node `shape` graph attribute overrides the global choice
+- **Affects**: Node geometry only — labels, sizing and layouts are shape-agnostic
+
+#### Node Width / Height / Shape (per node)
+- **Where**: select a node → Position / Size panel → `W (px)`, `H (px)`, `Shape`
+- Independent dimensions: rectangles (round/sharp squares) can be non-square;
+  an empty H follows W so circles and squares stay square
+- **Shape**: per-node Circle / Round Square / Sharp Square;
+  *Follow Global* removes the override so the ribbon Node Shape applies again
+- **Live apply**: every field applies immediately on change (identical UX to
+  the ribbon Sizes spinners)
+- **Mixed selections**: when selected nodes disagree on a size, the field
+  shows *mixed* — a typed value overwrites all, an empty one keeps each
+  node's own
+- **Aspect-ratio lock** (🔗): while on, W edits scale H from the captured
+  ratio (the H field is disabled)
+- **Bundle**: applies to the whole selection — X/Y moves the primary exactly
+  and the other selected nodes keep relative placement; W/H resize every
+  selected node
+- Undoable ('Resize element'/'Move nodes'), round-trips through Save/Export
+  Layout, and edge endpoints re-anchor to the resized node automatically
+
+#### Keyboard nudging
+- Arrow keys move the selected nodes 1 px (Shift = 10 px); a rapid burst
+  coalesces into ONE undoable *Nudge nodes* entry (undo/redo flush it first)
+
+#### Align & Distribute
+- **Align H / V** (2+ nodes): put the selection on the shared mean Y / X
+- **Distribute H / V** (3+ nodes): even center-to-center spacing along X / Y
+  between the two extreme nodes, which stay put; composes with Align
+  (e.g. Align H to even the row, then Dist H to space it)
+- **Gap (px)**: a value switches distribution to fixed center-to-center
+  spacing — the first node anchors and the last one moves
+
+#### Match / Reset size & Z-order
+- **⤢ Match size** (2+ nodes): copy the primary node's W×H to the rest
+- **↺ Reset size**: clear per-element size overrides — the global Node Size
+  slider / Edge Width controls apply again (also clears an edge's manual
+  width marker)
+- **⬆ Front / ⬇ Back**: layer the selected elements above/below everything
+  (per-element z-order)
+
+#### Persistence of the new metadata
+Save/Load and Export/Import Layout carry explicit sizes, per-node shapes,
+z-order overrides and manual edge widths; a node with no stored override
+follows the global controls, exactly like the live renderer.
+
 ### 3. Edge Customization
 
 #### Edge Width Scaling Methods
@@ -590,3 +640,24 @@ vp = VisualizePath(
 - Offset is computed relative to a canonical direction (lexicographically ordered node IDs) to ensure reciprocal edges are always separated on opposite sides.
 - Curved mode disables all offset and edge-length adjustments for reciprocal edges.
 - Node size changes automatically update arrowhead positions to remain outside node boundaries.
+
+## Merged Bidirectional Edges (Sep 2026)
+
+The two-edge representation above stays the default. Two opt-in paths render a
+both-way connection as ONE edge with arrowheads at both ends:
+
+- **`merge_reciprocal_edges=True`** (constructor / "Merge Bidirectional Edges"
+  checkbox in the Net-Viz Rendering Options): every reciprocal pair with
+  non-negative weights collapses into a single double-headed element.
+- **Declared-bidirectional edge lists**: a `bidirectional` /
+  `bidirectional_pair` column flags both-way rows (a flagged single row, or
+  two rows sharing a pair id) — no duplicate reverse rows needed.
+
+Semantics: width and the weight-band filter use the **stronger** direction
+(`weight` = `original_weight` = max); hover and the Edge List CSV export show
+both directions (the export writes the pair as two directional rows sharing a
+`bidirectional_pair` id, so re-import rebuilds it). Metadata (ratio /
+probability / NT / color) adopts the stronger direction. Negative edges never
+merge — their light-blue per-direction styling is preserved. The dead-end
+filter counts a merged edge on both endpoints, and the Reciprocal Offset
+ribbon hides itself when no two-edge pairs remain.

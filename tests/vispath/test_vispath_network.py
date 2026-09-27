@@ -2040,3 +2040,566 @@ class TestVisualizationEdgeLimitConsistency:
         assert relaxed is False
         assert selected_paths is None          # weight-based fallback branch
         assert threshold == 1                   # weakest edge in the corridor
+
+
+# =============================================================================
+# Merged bidirectional edges + square-node vocabulary
+# =============================================================================
+
+def _bidir_graph():
+    """A⇄B reciprocal pair (42 / 17) plus a plain B→C edge (9)."""
+    G = FastGraph()
+    for u, v, w in [("A", "B", 42), ("B", "A", 17), ("B", "C", 9)]:
+        G.add_edge(u, v, w)
+        G.node_attrs.setdefault(u, {})["node_type"] = "intermediate"
+        G.node_attrs.setdefault(v, {})["node_type"] = "intermediate"
+    G.node_attrs["A"]["node_type"] = "source"
+    G.node_attrs["C"]["node_type"] = "target"
+    return G
+
+
+def _render_bidir_html(output_path, **kwargs):
+    """Render the bidirectional-fixture graph with extra VisualizePath
+    kwargs (merge_reciprocal_edges / node_shape / ...)."""
+    df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+    vp = VisualizePath(
+        path_file=df, output_folder=str(Path(output_path).parent),
+        showfig=False, verbose=False, network_layout="dagre", **kwargs,
+    )
+    vp._plot_cytoscape_network(
+        _bidir_graph(), output_path=str(output_path), layout="dagre",
+        open_browser=False)
+    return Path(output_path)
+
+
+def _elements_of(html_path):
+    """Parse the embedded elements JSON out of a generated network HTML."""
+    html = Path(html_path).read_text(encoding="utf-8")
+    m = re.search(r"edges:\s*(\[.*?\])\s*\n\s*\};", html, re.S)
+    assert m, "edges JSON not found"
+    m_nodes = re.search(r"nodes:\s*(\[.*?\]),\s*\n\s*edges:", html, re.S)
+    assert m_nodes, "nodes JSON not found"
+    import json
+    return (json.loads(m_nodes.group(1)), json.loads(m.group(1)),
+            Path(html_path).read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def merged_html(tmp_path_factory):
+    out = tmp_path_factory.mktemp("vispath_bidir") / "bidir_test.html"
+    return _render_bidir_html(out, merge_reciprocal_edges=True)
+
+
+class TestMergedBidirectionalEdges:
+    """merge_reciprocal_edges=True collapses a reciprocal pair into ONE
+    double-headed edge element: canonical orientation (smaller id first),
+    max-direction weight for width/filter/label, per-direction weights
+    kept for hover + CSV round trip."""
+
+    def test_pair_collapses_to_one_element(self, merged_html):
+        _nodes, edges, html = _elements_of(merged_html)
+        assert len(edges) == 2  # A⇄B merged + B→C plain
+        bidir = [e for e in edges if e["data"].get("bidirectional")]
+        assert len(bidir) == 1
+        d = bidir[0]["data"]
+        # canonical orientation: smaller id as source
+        assert (d["source"], d["target"]) == ("A", "B")
+        # max-direction semantics feed width (weight) AND the metric
+        # filter/label (original_weight) consistently
+        assert d["weight"] == 42 and d["original_weight"] == 42
+        assert d["weight_forward"] == 42 and d["weight_reverse"] == 17
+        assert d["is_negative"] == 0
+        # hover text lists both directions explicitly
+        assert "A → B: 42" in d["tooltip"] and "B → A: 17" in d["tooltip"]
+
+    def test_bidirectional_style_selector_present(self, merged_html):
+        js = _script_text(merged_html)
+        assert "selector: 'edge[bidirectional = 1]'" in js
+        assert "'source-arrow-shape': 'triangle'" in js
+        assert "'source-arrow-color': 'data(color)'" in js
+
+    def test_dead_end_counting_reads_bidirectional_flag(self, merged_html):
+        js = _script_text(merged_html)
+        # the directional in/out counting must special-case merged edges
+        assert "if (e.data('bidirectional')) {" in js
+
+    def test_hover_renders_both_directions(self, merged_html):
+        js = _script_text(merged_html)
+        assert "data.bidirectional &&" in js
+        assert "weight_forward" in js and "weight_reverse" in js
+
+    def test_csv_export_expands_merged_pair(self, merged_html):
+        js = _script_text(merged_html)
+        assert "'bidirectional_pair'" in js
+        # two rows per merged pair, sharing the pair id
+        assert "labelOf(u) + '<->' + labelOf(v)" in js
+
+    def test_default_generation_has_no_bidirectional_marks(self, network_html):
+        """Default (merge off) output must stay unchanged: no selector,
+        no bidirectional data, no source-arrow recolors."""
+        _nodes, edges, html = _elements_of(network_html)
+        assert all(not e["data"].get("bidirectional") for e in edges)
+        js = _script_text(network_html)
+        assert "edge[bidirectional = 1]" not in js
+        assert "'shape': 'data(shape)'" not in js
+        assert "'corner-radius'" not in js
+
+    def test_negative_reciprocal_pair_never_merges(self, tmp_path):
+        """Negative edges keep their per-direction light-blue styling —
+        a pair with either negative weight stays split."""
+        out = tmp_path / "negative.html"
+        df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+        vp = VisualizePath(
+            path_file=df, output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre",
+            merge_reciprocal_edges=True)
+        G = FastGraph()
+        for u, v, w in [("A", "B", 42), ("B", "A", -17), ("B", "C", 9)]:
+            G.add_edge(u, v, w)
+            G.node_attrs.setdefault(u, {})["node_type"] = "intermediate"
+            G.node_attrs.setdefault(v, {})["node_type"] = "intermediate"
+        vp._plot_cytoscape_network(
+            G, output_path=str(out), layout="dagre", open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        assert len(edges) == 3
+        assert all(not e["data"].get("bidirectional") for e in edges)
+
+    def test_metadata_adopts_stronger_direction(self, tmp_path):
+        """ratio/probability of the merged edge come from the direction
+        with the larger weight (ties keep the canonical orientation)."""
+        out = tmp_path / "stronger.html"
+        df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+        vp = VisualizePath(
+            path_file=df, output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre",
+            merge_reciprocal_edges=True)
+        G = FastGraph()
+        # reverse direction is stronger and carries the ratio
+        G.add_edge("A", "B", 42, ratio=float("nan"), probability=float("nan"))
+        G.add_edge("B", "A", 99, ratio=0.75, probability=0.25)
+        G.node_attrs.setdefault("A", {})["node_type"] = "intermediate"
+        G.node_attrs.setdefault("B", {})["node_type"] = "intermediate"
+        G.add_edge("B", "C", 9)
+        G.node_attrs.setdefault("C", {})["node_type"] = "target"
+        vp._plot_cytoscape_network(
+            G, output_path=str(out), layout="dagre", open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        bd = [e["data"] for e in edges if e["data"].get("bidirectional")]
+        assert len(bd) == 1
+        assert bd[0]["weight"] == 99
+        assert bd[0]["ratio"] == pytest.approx(0.75)
+        assert bd[0]["probability"] == pytest.approx(0.25)
+
+
+class TestDeclaredBidirectionalColumn:
+    """Edge lists may declare both-way edges via a bidirectional /
+    bidirectional_pair column — a flagged single row becomes one
+    double-headed edge; two rows sharing a pair id merge."""
+
+    def test_single_row_flag_makes_both_way_edge(self, tmp_path):
+        csv = tmp_path / "declared.csv"
+        pd.DataFrame({
+            "source": ["A", "B"], "target": ["B", "C"],
+            "weight": [5, 9],
+            "bidirectional_pair": ["A -> B (both ways)", ""],
+        }).to_csv(csv, index=False)
+        vp = VisualizePath(
+            path_file=str(csv), output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre")
+        vp.build_network()
+        out = tmp_path / "declared.html"
+        vp._plot_cytoscape_network(
+            vp.G_network, output_path=str(out), layout="dagre",
+            open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        bidir = [e["data"] for e in edges if e["data"].get("bidirectional")]
+        assert len(bidir) == 1
+        assert (bidir[0]["source"], bidir[0]["target"]) == ("A", "B")
+        # single declared row: the weight stands for both directions
+        assert bidir[0]["weight_forward"] == bidir[0]["weight_reverse"] == 5
+
+    def test_pair_id_rows_merge_with_respective_weights(self, tmp_path):
+        csv = tmp_path / "roundtrip.csv"
+        pd.DataFrame({
+            "source": ["A", "B", "B"], "target": ["B", "A", "C"],
+            "weight": [42, 17, 9],
+            "bidirectional_pair": ["A<->B", "A<->B", ""],
+        }).to_csv(csv, index=False)
+        vp = VisualizePath(
+            path_file=str(csv), output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre")
+        vp.build_network()
+        out = tmp_path / "roundtrip.html"
+        vp._plot_cytoscape_network(
+            vp.G_network, output_path=str(out), layout="dagre",
+            open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        assert len(edges) == 2  # merged A⇄B + plain B→C
+        bidir = [e["data"] for e in edges if e["data"].get("bidirectional")]
+        assert len(bidir) == 1
+        assert bidir[0]["weight"] == 42  # stronger direction
+        assert bidir[0]["weight_forward"] == 42
+        assert bidir[0]["weight_reverse"] == 17
+
+    def test_falsy_flag_values_are_ignored(self, tmp_path):
+        csv = tmp_path / "falsy.csv"
+        pd.DataFrame({
+            "source": ["A", "B"], "target": ["B", "C"],
+            "weight": [5, 9],
+            "bidirectional": ["false", "0"],
+        }).to_csv(csv, index=False)
+        vp = VisualizePath(
+            path_file=str(csv), output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre")
+        vp.build_network()
+        out = tmp_path / "falsy.html"
+        vp._plot_cytoscape_network(
+            vp.G_network, output_path=str(out), layout="dagre",
+            open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        assert all(not e["data"].get("bidirectional") for e in edges)
+
+
+class TestNodeShapes:
+    """node_shape='round-square'/'sharp-square'/'by-role' switches the node
+    geometry to the diagram-design square vocabulary; a per-node 'shape'
+    graph attribute overrides; the default stays circle (no keys emitted)."""
+
+    def test_round_square_emits_shape_passthrough(self, tmp_path):
+        out = _render_bidir_html(tmp_path / "round.html",
+                                 node_shape="round-square")
+        _nodes, edges, html = _elements_of(out)
+        assert all(n["data"]["shape"] == "round-rectangle" for n in _nodes)
+        js = _script_text(out)
+        assert "'shape': 'data(shape)'" in js
+        assert "'corner-radius': '8'" in js
+
+    def test_by_role_shapes_follow_structure(self, tmp_path):
+        out = _render_bidir_html(tmp_path / "byrole.html",
+                                 node_shape="by-role")
+        nodes, _edges, _html = _elements_of(out)
+        shapes = {n["data"]["id"]: n["data"]["shape"] for n in nodes}
+        assert shapes["A"] == "round-rectangle"  # source
+        assert shapes["C"] == "round-rectangle"  # target
+        assert shapes["B"] == "rectangle"        # intermediate
+
+    def test_per_node_shape_overrides_global(self, tmp_path):
+        df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+        vp = VisualizePath(
+            path_file=df, output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre",
+            node_shape="round-square")
+        G = _bidir_graph()
+        G.node_attrs["C"]["shape"] = "sharp-square"
+        out = tmp_path / "override.html"
+        vp._plot_cytoscape_network(
+            G, output_path=str(out), layout="dagre", open_browser=False)
+        nodes, _edges, _html = _elements_of(out)
+        shapes = {n["data"]["id"]: n["data"]["shape"] for n in nodes}
+        assert shapes["A"] == "round-rectangle"  # global choice
+        assert shapes["C"] == "rectangle"        # per-node override wins
+
+    def test_invalid_shape_warns_and_falls_back(self, tmp_path):
+        df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+        vp = VisualizePath(
+            path_file=df, output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre", node_shape="hexagon")
+        # warns once (a verbose print) and falls back to circles
+        assert vp.node_shape == "circle"
+        out = tmp_path / "invalid.html"
+        vp._plot_cytoscape_network(
+            _bidir_graph(), output_path=str(out), layout="dagre",
+            open_browser=False)
+        js = _script_text(out)
+        assert "'shape': 'data(shape)'" not in js  # fell back to circle
+
+    def test_ribbon_dropdown_and_persistence_registered(self, tmp_path):
+        out = _render_bidir_html(tmp_path / "ribbon.html",
+                                 node_shape="round-square")
+        js = _script_text(out)
+        html = out.read_text(encoding="utf-8")
+        # live dropdown in the Sizes ribbon
+        assert 'id="nodeShapeSelect"' in html
+        assert "updateNodeShape(this.value)" in html
+        assert "function updateNodeShape(shape) {" in js
+        # persistence: save/load + export layout + undo/redo
+        assert "nodeShape: globalNodeShape," in js
+        assert "let globalNodeShape =" in js
+        # undo/redo restore re-applies through the update fn
+        assert "if (gs.nodeShape !== undefined) updateNodeShape(gs.nodeShape);" in js
+
+
+class TestBidirectionalEdgesNode:
+    """Headless-Cytoscape execution of the REAL extracted functions: the
+    dead-end fix, the CSV pair expansion and the stylesheet selector."""
+
+    def test_all_bidirectional_scenarios(self, merged_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "bidir_harness.js", merged_html, node_cache)
+        assert res.returncode == 0, (
+            f"bidir harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL BIDIRECTIONAL-EDGE TESTS PASSED" in res.stdout
+
+    def test_bidir_harness_also_clean_on_plain_network(self, network_html, node_cache):
+        """The harness must degrade gracefully on a plain (merge-off)
+        generation: scenarios skip, nothing fails."""
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "bidir_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"bidir harness failed on plain network:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL BIDIRECTIONAL-EDGE TESTS PASSED" in res.stdout
+
+
+class TestEditModeHandlersAndGeometry:
+    """Edit-mode event wiring and the per-node width/height geometry editor.
+
+    Cytoscape 3.28.1 does not dispatch tap/dbltap to NAMESPACED delegated
+    listeners (verified live: a plain 'dbltap' fires on the same gesture
+    where a namespaced one stays silent), which silently killed edit-mode
+    edge drawing and double-click node renaming.  The generated template
+    must register the edit-mode handlers as PLAIN listeners with tracked
+    references, and the geometry panel must expose independent W/H."""
+
+    def test_edit_mode_handlers_are_plain_and_removable(self, network_html):
+        js = _script_text(network_html)
+        # plain registrations present (the working form)
+        assert "cy.on('tap', 'node', onEditTapNode);" in js
+        assert "cy.on('dbltap', 'node', onEditDbltapNode);" in js
+        assert "cy.on('dbltap', 'edge', onEditDbltapEdge);" in js
+        # removal by the same references
+        assert "cy.off('tap', 'node', onEditTapNode);" in js
+        assert "cy.off('dbltap', 'node', onEditDbltapNode);" in js
+        assert "cy.off('dbltap', 'edge', onEditDbltapEdge);" in js
+        # the handlers route to the edit flows and re-check editMode
+        assert "function onEditDbltapNode(evt) {" in js
+        assert "editNodeProperties(evt.target);" in js
+        assert "function onEditTapNode(evt) {" in js
+        assert "handleNodeClickForEdge(evt.target);" in js
+        # no namespaced edit-mode registrations may come back
+        assert "cy.on('tap.editmode'" not in js
+        assert "cy.on('dbltap.editmode'" not in js
+
+    def test_geometry_panel_has_independent_width_height(self, network_html):
+        js = _script_text(network_html)
+        html = network_html.read_text(encoding="utf-8")
+        # panel carries separate W/H inputs for nodes
+        assert 'id="selGeomSize"' in html and 'id="selGeomHeight"' in html
+        # selection sync fills BOTH from the element's actual style
+        assert "hField.value = Math.round(primary.numericStyle('height'));" in js
+        # apply writes width and height independently (w/h resolved per node)
+        assert "'width': w + 'px', 'height': h + 'px'" in js
+        # empty Height follows the width (square-preserving default)
+        assert "newHeight = (heightRaw === '' || heightRaw === null)" in js
+
+
+class TestInteractiveAdjustments:
+    """Live-apply geometry panel, distribute-evenly, and the edit-dialog
+    type preservation for declared-group nodes."""
+
+    def test_geometry_inputs_apply_immediately(self, network_html):
+        html = network_html.read_text(encoding="utf-8")
+        # every geometry field applies live, like the ribbon Sizes spinners
+        for field_id in ('selGeomX', 'selGeomY', 'selGeomSize', 'selGeomHeight', 'selGeomWidth'):
+            tag = f'id="{field_id}"'
+            assert tag in html, f'{field_id} missing'
+            idx = html.index(tag)
+            segment = html[idx:idx + 400]
+            assert 'oninput="applySelectedGeometry()"' in segment, f'{field_id} not live-wired'
+
+    def test_bundle_resize_checks_whole_selection(self, network_html):
+        js = _script_text(network_html)
+        # the resize trigger scans EVERY selected node — a primary that
+        # already matches must not suppress the bundle resize
+        assert "nodes.some(n => n.numericStyle('width') !== newWidth)" in js
+        assert "nodes.some(n => n.numericStyle('height') !== newHeight)" in js
+
+    def test_distribute_evenly_registered_and_gated(self, network_html):
+        html = network_html.read_text(encoding="utf-8")
+        js = _script_text(network_html)
+        assert 'id="distHBtn"' in html and 'id="distVBtn"' in html
+        assert "distributeSelectedNodes('h')" in html and "distributeSelectedNodes('v')" in html
+        assert "function distributeSelectedNodes(axis) {" in js
+        # even spacing between fixed extremes (or a fixed px gap)
+        assert "const step = fixedGap !== null ? fixedGap : (last - first) / (ordered.length - 1);" in js
+        # gated at 3+ nodes like the align buttons are at 2+
+        assert "['distHBtn', 'distVBtn'].forEach" in js
+        assert "selectedNodeCount >= 3 ? '1' : '0.4'" in js
+
+    def test_edit_dialog_preserves_declared_group_type(self, network_html):
+        js = _script_text(network_html)
+        # the type select appends the current node_type (e.g. a declared
+        # group name) when it is not one of the structural roles, so Apply
+        # cannot silently rewrite the group identity to ''
+        assert "const typeOptions = ['source', 'intermediate', 'target'];" in js
+        assert "if (currentType && typeOptions.indexOf(currentType) === -1) typeOptions.push(currentType);" in js
+
+    def test_rename_refreshes_selected_panel(self, network_html):
+        js = _script_text(network_html)
+        assert "Keep the SELECTED ELEMENT(S) panel honest" in js
+        assert "document.getElementById('individualColorText').value = appliedColor;" in js
+
+
+class TestSelectionOptimizations:
+    """The seven selection-panel optimizations: keyboard nudging, mixed-state
+    size fields, aspect-ratio lock, match size, fixed-gap distribute,
+    z-order controls, reset-size, per-node shape, and the save/export
+    metadata round-trip."""
+
+    def test_panel_has_all_optimization_controls(self, network_html):
+        html = network_html.read_text(encoding="utf-8")
+        for control_id in ('geomAspectLockBtn', 'selGeomShape', 'distGapInput',
+                           'matchSizeBtn', 'resetSizeBtn', 'zFrontBtn', 'zBackBtn'):
+            assert f'id="{control_id}"' in html, f'{control_id} missing'
+        for fn in ('toggleGeomAspectLock', 'applySelectedShape', 'matchSelectedSize',
+                   'resetSelectedSize', 'setSelectionZOrder'):
+            assert f'function {fn}(' in _script_text(network_html)
+
+    def test_geometry_sync_shows_mixed_placeholder(self, network_html):
+        js = _script_text(network_html)
+        # width/height/edge-width fields show empty + 'mixed' when the
+        # selection disagrees; the shape row shows Mixed
+        assert js.count("placeholder = 'mixed'") == 3
+        assert "options[0].textContent = 'Mixed'" in js
+        # mixed (empty) fields keep each node's own size in the apply path
+        assert "newHeight = (heightRaw === '' || heightRaw === null)" in js
+
+    def test_aspect_lock_scales_height_from_captured_ratio(self, network_html):
+        js = _script_text(network_html)
+        assert 'let geomAspectLock = false;' in js
+        assert 'geomLockRatio = (w > 0 && !isNaN(h) && h > 0) ? (h / w) : 1;' in js
+        assert 'newHeight = Math.max(1, Math.round(newWidth * geomLockRatio));' in js
+        assert "if (hField) hField.disabled = geomAspectLock;" in js
+
+    def test_fixed_gap_distribute_mode(self, network_html):
+        js = _script_text(network_html)
+        assert "const fixedGap = (!isNaN(gapRaw) && gapRaw > 0) ? gapRaw : null;" in js
+        # fixed-gap mode moves the LAST node too (first anchors the row)
+        assert "if (!fixedGap && (i === 0 || i === ordered.length - 1)) return;" in js
+
+    def test_z_order_and_reset_size_semantics(self, network_html):
+        js = _script_text(network_html)
+        assert "'z-index-compare': 'manual'," in js
+        assert "'z-index': toFront ? 10000 : -10000" in js
+        # reset clears the size bypass AND the manual edge-width marker
+        assert "el.removeStyle('width');" in js
+        assert "el.removeData('customSize');" in js
+
+    def test_per_node_shape_follow_global_sentinel(self, network_html):
+        js = _script_text(network_html)
+        assert "function applySelectedShape(shapeValue) {" in js
+        # __follow__ removes the override so the global dropdown applies again
+        assert "if (shapeValue === '__follow__') {" in js
+        assert "n.removeStyle('shape');" in js
+
+    def test_keyboard_nudge_coalesces_into_one_undo_entry(self, network_html):
+        js = _script_text(network_html)
+        assert 'let pendingNudge = null;' in js
+        assert 'function flushPendingNudge()' in js
+        assert "pushStateHistory('Nudge nodes', pendingNudge.state);" in js
+        # undo/redo commit an in-flight burst first so history stays ordered
+        assert js.count('flushPendingNudge();  // an in-flight nudge burst commits first') == 2
+        # modifier-free arrow keys only; shift steps 10px
+        assert 'const step = e.shiftKey ? 10 : 1;' in js
+
+    def test_save_export_carries_per_node_geometry(self, network_html):
+        js = _script_text(network_html)
+        # capture: nodeGeometry/edgeGeometry override lists
+        assert 'nodeGeometry: nodeGeometry' in js
+        assert 'edgeGeometry: edgeGeometry' in js
+        assert "if (item.shape) item.shape = item.shape;" in js or "item.shape = shapeOverride" in js
+        assert "if (zc === 'manual') item.zIndex = n.style('z-index');" in js
+        # restore: absence clears the override back to global controls
+        assert 'if (state.nodeGeometry) {' in js
+        assert 'if (state.edgeGeometry) {' in js
+        assert "n.removeStyle('shape');" in js
+        assert "e.removeData('customSize');" in js
+
+
+class TestStableEdgeIds:
+    """Edges carry deterministic generation-order ids (edge_N): without
+    them Cytoscape mints fresh UUIDs per page load and every id-keyed
+    persisted map (edge base colors, visibility, manual widths) silently
+    failed to restore after a reopen — a pre-existing bug the geometry
+    metadata round-trip exposed."""
+
+    def test_edges_have_stable_generation_order_ids(self, network_html, merged_html):
+        for html_path in (network_html, merged_html):
+            _nodes, edges, _html = _elements_of(html_path)
+            assert len(edges) > 0
+            for i, e in enumerate(edges):
+                assert e["data"].get("id") == f"edge_{i}", (
+                    f"edge {i} id {e['data'].get('id')!r} != edge_{i}"
+                )
+
+    def test_manual_edge_width_round_trips_through_layout_state(self, merged_html):
+        """The Save/Export state capture stores manual edge widths keyed by
+        the stable id, and the restore path clears them when absent."""
+        js = _script_text(merged_html)
+        assert "const edgeGeometry = cy.edges().map(e => {" in js
+        # capture requires an actual style BYPASS: a computed width (mapData)
+        # or a stale customSize flag left by a graph import is not an override
+        assert "const hasBypass = (el, key) => !!(el._private && el._private.style &&" in js
+        assert "if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));" in js
+        assert "e.removeStyle('width');" in js
+        assert "e.removeData('customSize');" in js
+
+
+class TestEdgeListCsvReimportRoundTrip:
+    """The full export→import boundary: an edge-list CSV exported by the
+    live network (two directional rows sharing a bidirectional_pair id)
+    must re-import through VisualizePath and rebuild the same merged
+    double-headed edges."""
+
+    def test_exported_csv_rebuilds_merged_pairs(self, tmp_path):
+        csv = tmp_path / "exported.csv"
+        # the exact column set + shape the in-HTML buildEdgeListCSV writes
+        pd.DataFrame({
+            "source": ["A", "B", "B", "C"],
+            "target": ["B", "A", "C", "B"],
+            "weight": [42, 17, 9, 5],
+            "color": ["#64748b"] * 4,
+            "source_group": ["intermediate"] * 4,
+            "target_group": ["intermediate"] * 4,
+            "bidirectional_pair": ["A<->B", "A<->B", "", ""],
+        }).to_csv(csv, index=False)
+        vp = VisualizePath(
+            path_file=str(csv), output_folder=str(tmp_path), showfig=False,
+            verbose=False, network_layout="dagre")
+        vp.build_network()
+        out = tmp_path / "reimported.html"
+        vp._plot_cytoscape_network(
+            vp.G_network, output_path=str(out), layout="dagre",
+            open_browser=False)
+        _nodes, edges, _html = _elements_of(out)
+        assert len(edges) == 3  # merged A<->B + B->C + C->B
+        bidir = [e["data"] for e in edges if e["data"].get("bidirectional")]
+        assert len(bidir) == 1
+        assert bidir[0]["weight"] == 42
+        assert bidir[0]["weight_forward"] == 42
+        assert bidir[0]["weight_reverse"] == 17
+        # the id columns survive so a second export is stable
+        assert bidir[0]["id"].startswith("edge_")
+
+
+class TestArrowColorConsistencyAndAssignRow:
+    """Arrowhead colors always follow the line (one color per edge), and the
+    Group Assign row stays inside the panel with long group names."""
+
+    def test_base_appearance_covers_source_arrow_color(self, network_html, merged_html):
+        """The highlight override paints the source arrowhead (merged
+        edges); the restore/recolor paths must repaint it too — otherwise
+        the source arrow stays stuck at the highlight color."""
+        # the bidir selector paints source arrows from the line color
+        assert "'source-arrow-color': 'data(color)'" in _script_text(merged_html)
+        js = _script_text(network_html)
+        assert "'source-arrow-color': highlightColor," in js        # highlight override
+        # ...and the base-appearance pair repaints it on clear/recolor
+        assert "'source-arrow-color': color," in js
+
+    def test_assign_select_can_shrink_inside_panel(self, network_html):
+        html = network_html.read_text(encoding="utf-8")
+        # flex-basis 0 + a min-width floor: the select truncates long group
+        # names instead of pushing the Assign button out of the panel
+        assert "flex: 1 1 0; width: auto; min-width: 70px; text-overflow: ellipsis;" in html

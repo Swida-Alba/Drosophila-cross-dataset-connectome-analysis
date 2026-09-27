@@ -211,7 +211,13 @@ aMe10,MBON01,47,#27AE60,gaba,inhibitory,intermediate,target,,0.18,0.35</code></p
     <code>target info</code> as <code>{key:val; ...}</code> cells),
     neurotransmitter annotations (<code>nt_type</code>, shown on edge hover)
     and extra numeric metrics such as <code>ratio</code> /
-    <code>probability</code> (toggleable on the edges in the network).</p>
+    <code>probability</code> (toggleable on the edges in the network).
+    A <b>declared-bidirectional</b> column (<code>bidirectional</code> or
+    <code>bidirectional_pair</code>) marks rows that traverse both ways:
+    a flagged single row becomes one double-headed edge whose weight stands
+    for both directions, and two rows sharing the same pair id merge into
+    one double-headed edge with their respective weights (the exact shape
+    the Edge List CSV export writes for merged pairs).</p>
   <div class="callout info">
     <b>Edit complex enriched graphs in a local CSV file</b>
     Typing this metadata into the in-page table does not scale. For graphs
@@ -335,6 +341,12 @@ PPL101,0,0,22</code></pre>
       shell, or distributed.</li>
     <li><b>Color Scheme</b>: swatch-preview presets (Cool, Default, Warm,
       Purple) for source / intermediate / target nodes and links.</li>
+    <li><b>Node Shape</b>: circles (default), round squares or sharp
+      squares; <b>By Role</b> draws source/target as round squares and
+      intermediates as sharp squares (flowchart convention).</li>
+    <li><b>Merge Bidirectional Edges</b>: collapse reciprocal pairs
+      (A&rarr;B + B&rarr;A) into one double-headed edge. Width uses the
+      stronger direction; hovering shows both.</li>
     <li><b>Open in Browser</b>: open the HTML results right after the run.</li>
   </ul>
   <p class="small">The network view shows at most the 500 strongest edges
@@ -347,13 +359,50 @@ PPL101,0,0,22</code></pre>
       click a node or edge to highlight its neighborhood, right-click to hide
       elements.</li>
     <li><b>Adjust</b>: live sliders for node size, font size and edge width;
-      toggle orphan nodes, self-loops and dead ends; re-run the layout.</li>
+      a Node Shape dropdown (circle / round square / sharp square - a
+      global override like the Node Size slider); toggle orphan nodes,
+      self-loops and dead ends; re-run the layout.</li>
+    <li><b>Merged bidirectional edges</b>: when generated with the merge
+      option (or from an edge list with a <code>bidirectional</code>
+      column), a reciprocal pair renders as ONE edge with arrowheads at
+      both ends. Width and the weight-band filter use the stronger
+      direction; hover and the Edge List CSV export show both directions.</li>
     <li><b>Color</b>: restyle selected elements or whole groups (source /
       intermediate / target nodes, all edges).</li>
     <li><b>Edit Mode</b> (empty canvas): add nodes, drag from one node to
-      another to connect them, double-click to edit properties, right-click
-      to delete. Every action is recorded - use Undo/Redo or the history
-      list to jump between states.</li>
+      another to connect them, double-click to edit properties (label,
+      type, color), right-click to delete. Every action is recorded - use
+      Undo/Redo or the history list to jump between states.</li>
+    <li><b>Per-node size &amp; shape</b>: with an element selected, the
+      <i>Position / Size</i> panel exposes X/Y, independent
+      <b>W</b>/<b>H</b> (px), and a per-node <b>Shape</b> dropdown
+      (Circle / Round Square / Sharp Square; <i>Follow Global</i> drops
+      the override so the ribbon Node Shape applies again). Every field
+      applies <b>immediately</b> on change (the ribbon Sizes pattern) and
+      targets the whole selection: X/Y moves the primary exactly and the
+      other selected nodes follow by the same delta; W/H resize every
+      selected node. When the selection disagrees on a size, the field
+      shows <i>mixed</i> - typing a value overwrites it, an empty one
+      keeps each node's own. The 🔗 aspect-ratio lock scales H from the
+      captured ratio while W changes.</li>
+    <li><b>Arrow-key nudging</b>: arrow keys move the selected nodes by
+      1 px (Shift = 10 px); a rapid burst coalesces into one undoable
+      <i>Nudge nodes</i> entry.</li>
+    <li><b>Align &amp; Distribute</b>: ⇔ Align H / ⇕ Align V put the
+      selected nodes on the shared mean Y / X (2+ nodes); ⇔ Dist H /
+      ⇕ Dist V spread them evenly along X / Y between the two extreme
+      nodes, which keep their positions (3+ nodes). A <b>Gap (px)</b>
+      value switches distribution to fixed center-to-center spacing (the
+      first node anchors, the last moves).</li>
+    <li><b>Match size / Reset size</b>: ⤢ Match size copies the primary
+      node's W×H to the other selected nodes; ↺ Reset size clears
+      per-element size overrides so the global Node Size / Edge Width
+      controls apply again.</li>
+    <li><b>Z-order</b>: ⬆ Front / ⬇ Back layer the selected elements
+      above/below everything else.</li>
+    <li><b>Persistence</b>: Save/Load and Export/Import Layout carry all
+      of it - explicit sizes, per-node shapes, z-order and manual edge
+      widths (absence = follow the global controls).</li>
     <li><b>Save your work</b>: Save/Load the full view state (positions,
       colors + alpha, groups, filters, controls — auto-restored when the
       file reopens), Export/Import it as JSON (legacy positions-only files
@@ -390,6 +439,10 @@ PPL101,0,0,22</code></pre>
       <td>Connection ratio and traversal probability when present; empty
         otherwise. Mapped back to the standard metric columns on
         re-import.</td></tr>
+    <tr><td><code>bidirectional_pair</code></td>
+      <td>Pair id (<code>A&lt;-&gt;B</code>) marking both-way edges. A merged
+        double-headed edge exports as its two directional rows sharing the
+        id, so re-import rebuilds the merged edge with both weights.</td></tr>
   </table>
 
   <h2>Output</h2>

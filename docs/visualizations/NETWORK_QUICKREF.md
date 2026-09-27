@@ -89,6 +89,7 @@
 ### Font & Node
 - **Font Size:** Slider (6-30 px)
 - **Node Size:** Slider (10-100 px)
+- **Node Shape:** Dropdown (Circle / Round Square / Sharp Square)
 
 ### Layout
 - **Methods:** Hierarchical, Force, Circle, Grid, Concentric

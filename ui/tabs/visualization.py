@@ -1609,6 +1609,25 @@ def create_net_viz_tab():
                 value="Cool",
                 catalog=PATH_SCHEMES,
             )
+            node_shape = select_input(
+                "Node Shape",
+                ["Circle", "Round Square", "Sharp Square", "By Role"],
+                "Circle",
+                hint=(
+                    "Node geometry in the HTML network. By Role draws "
+                    "source/target as round squares and intermediates as "
+                    "sharp squares (flowchart convention)."
+                ),
+            )
+            merge_reciprocal = checkbox_input(
+                "Merge Bidirectional Edges",
+                False,
+                hint=(
+                    "Collapse reciprocal pairs (A→B + B→A) into one "
+                    "double-headed edge; width uses the stronger direction, "
+                    "hover shows both."
+                ),
+            )
             with ui.row().classes("gap-4"):
                 show_path_fig = checkbox_input(
                     "Open in Browser",
@@ -1702,6 +1721,13 @@ def create_net_viz_tab():
                 "network_layout": path_layout.value,
                 "showfig": True if empty_canvas else show_path_fig.value,
                 "generate_empty_network": empty_canvas,
+                "node_shape": {
+                    "Circle": "circle",
+                    "Round Square": "round-square",
+                    "Sharp Square": "sharp-square",
+                    "By Role": "by-role",
+                }.get(node_shape.value, "circle"),
+                "merge_reciprocal_edges": bool(merge_reciprocal.value),
             }
             await run_panel(constructor_params)
         finally:
