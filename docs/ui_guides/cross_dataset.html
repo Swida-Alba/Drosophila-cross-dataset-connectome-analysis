@@ -190,6 +190,13 @@
     FAFB only; it is not a BANC bridge. The two BANC releases additionally
     use the metadata-backed <code>root_626</code> ↔ <code>root_888</code>
     relation as the narrow <code>banc_release_crosswalk</code> bridge.</p>
+  <p><code>fafb_alignment_cell_type</code> is a second, weaker FAFB lane
+    (96.5% vs 99.2% <code>fafb_match</code> agreement). It is
+    fallback-only: it fills a mapping just where <code>fafb_cell_type</code>
+    produced no winner — 18 types per release, all cross-name — and its
+    mappings carry the tier <code>direct alignment label</code> and are
+    disclosed in the <code>[BANC alignment fallback]</code> run-note block.
+    A curated winner or curated conflict is never touched.</p>
   <p>For a shared type queried in <code>male-cns:v0.9</code>, the mapping
     report shows <code>v0.9 type → release_alias → v1.0</code> before any
     downstream cross-dataset linker. v0.9-only names use only their native

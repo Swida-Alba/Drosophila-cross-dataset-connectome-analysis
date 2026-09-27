@@ -24,7 +24,8 @@ automatically from the public bucket (`~134 MB`, one time):
 
 - **Neuron metadata** from `compiled_data/banc_888/banc_888_meta.feather`
   (ids, curated `cell_type`, `Alternative Cell Type(s)`,
-  `fafb_cell_type`, `malecns_cell_type`, `hemibrain_cell_type`,
+  `fafb_cell_type`, `fafb_alignment_cell_type`, `malecns_cell_type`,
+  `hemibrain_cell_type`,
   `manc_cell_type`, match bodyIds, classes, neurotransmitters, proofread
   flags). Row counts are release-specific: the 2026-09-04 bucket snapshot
   yields **188,508** rows for `banc_v888` (ids as served) and **185,165**
@@ -56,9 +57,20 @@ dataset:
 | BANC column | bridge target |
 |---|---|
 | `fafb_cell_type` | FAFB v783 |
+| `fafb_alignment_cell_type` | FAFB v783 — fallback-only lane (2026-09-27) |
 | `malecns_cell_type` | male-cns v1.0 |
 | `hemibrain_cell_type` | hemibrain v1.2.1 |
 | `manc_cell_type` | MANC v1.0/v1.2.1 |
+
+`fafb_alignment_cell_type` is the weaker second FAFB lane (96.5% vs 99.2%
+`fafb_match` agreement whole-release; it anchors on the BANC type's own
+name in the disagreement cases, e.g. the ORN glomerular swaps). It fills a
+mapping only where `fafb_cell_type` yields no winner — 18 types per
+release on the 2026-09-27 tables, all cross-name (e.g. `AVLP614` →
+`CB1476`) — with the evidence tier `direct alignment label` and the
+provenance kind `cross-dataset cell type (alignment)`; curated winners and
+curated conflicts are never touched, and its own vote conflicts are
+diagnostics, not conflict records.
 
 `auto:` is a provenance prefix, not a separate namespace. A normalized
 `auto:<name>` label is eligible when `<name>` resolves to a known target type;

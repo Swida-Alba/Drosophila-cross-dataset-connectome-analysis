@@ -87,9 +87,33 @@ bridge for the corresponding namespace:
 | BANC column | target namespace | verification |
 |---|---|---|
 | `fafb_cell_type` | FAFB v783 | `fafb_match` when the FAFB table is available |
+| `fafb_alignment_cell_type` | FAFB v783 (fallback-only lane) | `fafb_match` diagnostics |
 | `malecns_cell_type` | male-cns v1.0 | `malecns_match` when the MCNS table is available |
 | `hemibrain_cell_type` | hemibrain v1.2.1 | curated label or known normalized `auto:` label |
 | `manc_cell_type` | MANC v1.0/v1.2.1 | curated label or known normalized `auto:` label |
+
+**The alignment fallback lane (2026-09-27).** `fafb_alignment_cell_type`
+is a second BANC→FAFB label lane with weaker per-row quality — its labels
+agree with the `fafb_match` bodyIds on 96.5% of verifiable rows versus
+99.2% for the curated column (whole-release measurement), and it anchors
+on the BANC type's own name in the disagreement cases (the ORN glomerular
+swaps). It is therefore **fallback-only**: a mapping is created ONLY for
+BANC types where the curated `fafb_cell_type` pass yields no winner — a
+curated winner keeps its provenance untouched, and a curated conflict
+stays fail-closed (the lane's votes are recorded as diagnostics beside
+the conflict, never as new conflict records). On the 2026-09-27 tables
+the lane fills 18 types per release, every one a genuinely cross-name
+mapping (e.g. BANC `AVLP614` → FAFB `CB1476`); ~402 types per release
+with conflicting curated votes are correctly left unfilled. Its mappings
+carry the evidence tier `direct alignment label` (below crosswalk, above
+auto) and the provenance kind `cross-dataset cell type (alignment)`, and
+runs surface them in the `[BANC alignment fallback]` block of
+`user_warning_notes.txt` with vote and `fafb_match` verification counts.
+
+The releases also publish `manc_match`, `hemibrain_match`, `fanc_match`,
+and five `*_nblast_match` columns; the mapper never reads them — only
+`fafb_match` and `malecns_match` are wired, the only locally verifiable
+optional match columns.
 
 The labels are voted per BANC primary type. A single candidate, or a
 candidate with more than half of the votes and at least twice the runner-up,
@@ -113,8 +137,9 @@ ends there — the label cell names the reached type exactly, and continuing
 into that namespace's annotation graph would only drift onto unrelated
 primaries (see the cross-reference rule below).
 
-`fafb_alignment_cell_type` is retained for search/alignment metadata only; it
-does not create a type bridge. `fanc_cell_type` is intentionally unlicensed
+`fafb_alignment_cell_type` is licensed only as the fallback label lane
+described above — it never overrides a curated label and never fills a
+curated conflict. `fanc_cell_type` is intentionally unlicensed
 until a FANC namespace and evidence policy are added.
 
 `Alternative Cell Type(s)` remains an intra-BANC annotation column. It is not
@@ -133,10 +158,29 @@ FAFB type --(additional_type(s))--> shared token --(Alternative Cell Type(s))-->
 
 Example: FAFB `s-CPDN3A` rows annotate `CB1770`/`CB1791`/`SMP229`, which
 are BANC primary types — the bridge derives all three candidates even
-though no crosswalk row connects them. The derivation walk lands the
-shared token in the other namespace (a dedicated hop) and continues over
-that namespace's own annotation edges, so every chain carries the full
-evidence (both annotation columns appear as linkers).
+though no crosswalk row connects them. (2026-09-27 audit, code-verified)
+Because those tokens are themselves BANC primaries, they land by the
+same-name identity hop: the chain reads `additional_type(s) → type`
+(`s-CPDN3A → CB1770 → CB1770[BANC]`), and the ACT column is not involved
+for this example. The two-annotation-column chain above derives when the
+shared token is NOT a BANC primary — e.g. FAFB `4I1` reaches BANC
+`FB4F_a` through the token `FB4I` (`additional_type(s) → Alternative
+Cell Type(s)`).
+
+The same pair space also carries a DIRECT curated bridge: BANC rows have
+a `fafb_cell_type` column (see "Curated BANC label bridges" above) whose
+chains outrank pure-annotation routes in the derivation order. **Token
+chaining (2026-09-27):** the label edge lands directly on the FAFB
+primary only when the cell value names it EXACTLY; a rename-resolved
+token (cell `SMP537`, FAFB primary `DN1pD`) terminates at the raw-token
+node and the chain continues through FAFB's own `additional_type(s)`
+edge (`fafb_cell_type 'SMP537' → additional_type(s) 'SMP537' → DN1pD`),
+so the rename is shown, never hidden in one hop, and both sides pool
+honest linker rows. **Curated subsumption (2026-09-27):** when the
+curated chain bridges the SAME token to the SAME target as a one-linker
+`additional_type(s)` chain, the annotation chain is dropped as redundant
+— annotation-only pairs and the composed `aT`→`ACT` routes keep their
+chains.
 
 **Cross-reference rule (within one namespace)**: a primary type's
 annotation cell that names *another primary of the same namespace* is a
@@ -168,7 +212,15 @@ untyped-neuron drop.
 The exports state how each pair was derived: `auto_type_mapping.csv`
 carries a `mapping_origin` column (`crosswalk`, `same name`, or
 `annotation bridge via <token>`); `auto_type_mapping_conflicts.csv`
-carries an `origin` column with the same distinction. Bridge pairs whose
+carries an `origin` column with the same distinction; and since the
+2026-09-27 unification the per-pair `mapping_*.csv` exports (panel
+"Export mapping") carry the SAME vocabulary in their `mapping_origin`
+column — `same name` (bare echo), `same name+evidence` (a same-name
+pair whose chain carries the verifying relation), `cross-dataset cell
+type` (curated label lane), `cross-dataset cell type (alignment)`
+(fallback lane), `crosswalk`, `annotation bridge via <tokens>`,
+`release relation`, `release alias` — so every surface distinguishes the
+label lanes. Bridge pairs whose
 endpoints have no male-cns anchor get their own rows. Ambiguity
 resolution by neuron counts is deliberately NOT applied — the conflicts
 export is the place to adjudicate those by hand.
@@ -188,6 +240,7 @@ one edge per `(home dataset, name column) -> {landing datasets}`:
 | male-cns | `hemibrainType` | hemibrain only |
 | male-cns | `mancType` | manc only (the crosswalk was built against MANC v1.0) |
 | BANC v626/v888 | `fafb_cell_type` | FAFB only |
+| BANC v626/v888 | `fafb_alignment_cell_type` | FAFB only (fallback lane) |
 | BANC v626/v888 | `malecns_cell_type` | male-cns v1.0 only |
 | BANC v626/v888 | `hemibrain_cell_type` | hemibrain only |
 | BANC v626/v888 | `manc_cell_type` | MANC v1.0/v1.2.1 only |
@@ -872,10 +925,10 @@ When running `ComparisonAnalyzer.export_results()` with `auto_type_mapping=True`
 
 1. **auto_type_mapping.csv**: Type mappings for neurons in results only
    ```csv
-   male-cns:v0.9,flywire_FAFB_v783,banc_v626,hemibrain:v1.2.1,manc:v1.0,manc:v1.2.1
-   ALIN4,ALIN4,ALIN4,lLN7,,
-   DNp01,DNp01,DNp01,DNp01,,
-   MeVPLo2,MTe07,MTe07,,,
+   male-cns:v0.9,flywire_FAFB_v783,banc_v626,banc_v888,hemibrain:v1.2.1,manc:v1.0,manc:v1.2.1
+   ALIN4,ALIN4,ALIN4,ALIN4,lLN7,,
+   DNp01,DNp01,DNp01,DNp01,DNp01,,
+   MeVPLo2,MTe07,MTe07,MTe07,,,
    ...
    ```
 

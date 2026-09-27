@@ -383,7 +383,12 @@ against — `local_data/` is disposable by design.
   never rendered — it is the connectivity-only homolog-finding result.
 - **Pool basis is decided PER SIDE**: `selected_chain` is the best single
   derivation and may be a target-side-only hop (FAFB->BANC resolves through
-  `banc_v888/fafb_cell_type`), which refines the target pool exactly while
+  `banc_v888/fafb_cell_type`, or — fallback-only, where the curated pass had
+  no winner — through `fafb_alignment_cell_type`, tier `direct alignment
+  label`, kind `cross-dataset cell type (alignment)`; since the 2026-09-27
+  token chaining, a rename-resolved label token lands at the raw-token node
+  and continues through FAFB's own `additional_type(s)` edge, so both sides
+  pool honest linker rows), which refines the target pool exactly while
   the source pool would stay at the whole type population; the source pool
   therefore takes any supported chain of the SAME endpoint that NARROWS it
   (`source_chain` records which). Subset only — never a widening, never a

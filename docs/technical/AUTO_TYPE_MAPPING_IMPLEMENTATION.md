@@ -83,19 +83,58 @@ primary `type` of the target dataset. Every edge is licensed by
 ### 3.1 Direct bridge forms (plus same-name identity everywhere)
 
 ```
-HEMI  --hT--  MCNS                        MANC --mT-- MCNS
+HEMI  --hT--  MCNS
+MANC  --mT--  MCNS
 MCNS  --fT--aT--  FAFB   |  MCNS --fT-- FAFB  |  MCNS --aT-- FAFB
-MCNS  --mct--  BANC       |  FAFB --aT--ACT-- BANC
-HEMI  --hemibrain_cell_type-- BANC
-MANC  --manc_cell_type-- BANC
-BANC v626 --banc_release_crosswalk-- BANC v888
+MCNS  --mct--  BANC
+FAFB  --fafb_cell_type--  BANC  |  FAFB --aT--ACT-- BANC  |  FAFB --aT--fafb_cell_type-- BANC  |  FAFB --aT--type-- BANC
+HEMI  --hemibrain_cell_type--  BANC
+MANC  --manc_cell_type--  BANC
+BANC v626  --banc_release_crosswalk--  BANC v888
+MCNS v0.9  --release_alias--  MCNS v1.0  (+ v0.9 native *Type fallback, §2)
 ```
 
 `hT/mT/fT` = hemibrainType/mancType/flywireType cells on the male-cns rows;
 `mct` = BANC `malecns_cell_type`; `aT` = FAFB `additional_type(s)`;
 `ACT` = BANC `Alternative Cell Type(s)`. The BANC direct bridges also use
 `fafb_cell_type`, `hemibrain_cell_type`, and `manc_cell_type` for their named
-target namespaces. MCNS `flywireType` does not land in BANC.
+target namespaces. MCNS `flywireType` does not land in BANC. In
+`FAFB --aT--type-- BANC` the trailing `type` hop is the same-name identity
+landing: the shared token is itself a BANC primary, so the aT hop stays
+inside FAFB and a `type` hop crosses into BANC (FAFB `DN1pD`
+--aT 'SMP537'--> BANC `SMP537`).
+
+(2026-09-27 audit, code-verified) One emitted edge never survives: the
+male-cns-side annotation-reverse block also offers `MCNS --ACT-- BANC` —
+MCNS type names do appear in BANC `Alternative Cell Type(s)` cells (e.g.
+`Acc. ti flexor MN` in the cells of BANC `CB0975`/`CB4187`) — but the
+MCNS~BANC registry standard admits only `malecns_cell_type` (§3.2), so the
+registry scoping strips every ACT chain for that pair. It is a
+licensed-column detour the registry refuses, not a bridge, which is why the
+diagram does not draw it.
+
+(2026-09-27 audit, probe-verified) All four FAFB↔BANC forms derive on the
+real tables. (1) `fafb_cell_type` — the curated label edge lands directly
+on the FAFB primary ONLY when the cell token names it exactly; a
+rename-resolved winner (BANC v888 `SMP537`'s fct cell `SMP537` → FAFB
+`DN1pD`, or BANC `CB1770` → FAFB `s-CPDN3A`) terminates at the raw-token
+name node and the walk continues through FAFB's own
+`additional_type(s)` edge — §token chaining (user 2026-09-27): the chain
+SHOWS the rename (`fct 'SMP537' → aT → DN1pD`) instead of hiding it in
+one hop, and both sides pool honest linker rows (3 SMP537 voters / 4 of
+8 DN1pD rows). (2) `aT--ACT` — FAFB `4I1` reaches BANC `FB4F_a` through
+the non-primary token `FB4I`. (3) `aT--fafb_cell_type` — the chained
+route is now the STANDARD shape for every renamed token, walked from
+either side (FAFB `DN1pD` --aT 'SMP537'--> token --fct--> BANC
+`SMP537`/`SMP539`; the circadian export renders 36 of 44 pairs this
+way). (4) `aT--type` — a token that IS a BANC primary lands by same-name
+identity; this form survives only for pairs with no curated bridge of
+the same token (**curated subsumption**, user 2026-09-27: a one-linker
+aT chain is dropped when an fct chain bridges the same token to the
+same target — before chaining+subsumption the linker view drew two
+PARALLEL one-linker paths on 36 of 44 circadian pairs; today it draws
+one sequential chain). The decision/provenance layer stays
+winner-resolved throughout (votes `{DN1pD: 3}`, target DN1pD).
 
 ### 3.2 Connector licenses (`ROUTE_MIDS`)
 
@@ -140,7 +179,16 @@ siblings). Registry-less pairs — every BANC pair — stop at the arrival;
 without the gate the walk wandered BANC annotation classes
 (`APDN3 → R8_unclear → T1`), landing coarse hub names and inflating a
 circadian FAFB→BANC run to 3,262 neurons (post-fix: 21/21 types, 242/242
-FAFB neurons → 42 v888 targets, 207 unique).
+FAFB neurons → 42 v888 targets, 207 unique at the 2026-09-09 fix;
+2026-09-27 refresh against the 2026-09-26 pre-alignment-lane baseline
+export: the flow table is IDENTICAL row-for-row (44 rows, 21 source
+types, 42 target types, 887/230 neurons, same statuses/relationships)
+and only the neuron-level union drifted (200 unique today; 39 targets
+under the resolver-union definition vs 42 flow-table target types —
+different counting bases, both stable) — pre-existing drift from later
+mapper rounds and the refreshed bucket, unchanged by the alignment
+fallback lane, verified both by stripping the lane in-memory and by the
+baseline export diff).
 
 ### 3.5 Data hygiene inside the walk
 
@@ -193,7 +241,16 @@ with zero row-level support on the reached types):
 stored mappings consumed by `get_mapped_type`:
 
 1. **BANC label/release overlays** — direct curated label votes and the
-   root relation fill their release-local slots; conflicts are never guessed.
+   root relation fill their release-local slots; conflicts are never
+   guessed. The `fafb_alignment_cell_type` fallback lane runs inside the
+   same overlay with a keep-rule in `record_votes`: it may fill a slot
+   ONLY where the curated `fafb_cell_type` pass left it unresolved
+   (curated winner → provenance untouched; curated conflict →
+   fail-closed, alignment votes recorded as diagnostics only, never as
+   `TypeMappingConflict` records). Its mappings carry the tier
+   `direct alignment label` and the kind
+   `cross-dataset cell type (alignment)` (2026-09-27; 18 types/release,
+   all cross-name, e.g. `AVLP614` → `CB1476`).
 2. **Crosswalk routes** (male-cns anchored, per release) — win when
    present; several `flywireType` names per male-cns type become 1-to-N
    conflicts, never guesses.
@@ -304,11 +361,19 @@ bare same-name chains name that side's identity without a per-side cell).
 For BANC's curated label bridges, `fafb_match` and `malecns_match` are
 optional provenance diagnostics only. A locally observed match may be
 counted as verified or flagged as a conflict, but it never filters a
-type-label bridge and never joins bodyIds across datasets. Each endpoint
-therefore reports its own coverage pool, even when one type covers only a
+type-label bridge and never joins bodyIds across datasets. The releases
+also publish `manc_match`, `hemibrain_match`, `fanc_match`, and five
+`*_nblast_match` columns; the mapper never reads them —
+`_banc_label_match_column` wires only `fafb_match` and `malecns_match`,
+the only locally verifiable optional match columns (2026-09-27 audit).
+Each endpoint therefore reports its own coverage pool, even when one type covers only a
 subset of the other type's population. Multiple linkers union independent
-home-side candidates. `mancBodyid` remains a release-local metadata field
-for its existing MANC evidence, not a requirement for general type mapping.
+home-side candidates. (2026-09-27 audit) `mancBodyid` is published on the
+male-cns crosswalk rows but is unused: no mapper path — and no current code
+at all — reads it, nor the neighboring `mancGroup`/`mancSerial` columns.
+The MANC↔MCNS mapping is name-only end to end: `mancType` crosswalk edges
+for derivation, per-side pool coverage for bodies, and no bodyId join or
+match-column verification in either direction.
 The virtual `banc_release_crosswalk` linker is the corresponding exception
 for BANC v626↔v888: it reads the complete `root_626`↔`root_888` relation,
 filters both sides by their requested type, and preserves repeated roots.
@@ -357,8 +422,10 @@ columns; listed per type per side, never paired across datasets.
 
 `prioritized_bridge_chains(chains, source_dataset, target_dataset)` provides a
 deterministic evidence order without consulting body counts. Direct curated
-labels and direct crosswalk evidence outrank direct auto labels, annotations,
-release metadata, indirect routes, and finally a bare same-name chain. Ties
+labels and direct crosswalk evidence outrank the alignment fallback label
+(`direct alignment label`, 2026-09-27), which outranks direct auto labels,
+annotations, release metadata, indirect routes, and finally a bare
+same-name chain. Ties
 use the number of direct/indirect linkers, chain length, and hop values. The
 older `preferred_bridge_chain()` API is now a compatibility view of the first
 ordered candidate.
@@ -519,11 +586,20 @@ eight distinct source neurons.
   "Edge Label Size" spinner (`edge_label_font_size`, default 9) wired
   through the undo history, independent of the node-label Font Size.
 - **Linker network** (`build_bridge_linker_graph`): one column per
-  bridge linker COLUMN, in canonical first-appearance order (male-cns↔FAFB:
-  `type | flywireType | additional_type(s) | type` = four columns).
+  bridge linker COLUMN, ordered by traversal SIDE (user 2026-09-27 —
+  source-home columns first, hub columns between, target-home columns
+  last; first appearance orders columns within a side, and the registry
+  order only places columns the chains did not) so every sequential
+  two-linker bridge wires left-to-right like the MCNS↔FAFB standard
+  (`type | flywireType | additional_type(s) | type`; the chained
+  FAFB→BANC routes render `type | additional_type(s) | fafb_cell_type |
+  type`).
   Layering by per-chain hop order (the old behavior) let a 1-linker
   chain's `additional_type(s)` node share the `flywireType` column and
-  let a shared linker node's position be overwritten by the last chain.
+  let a shared linker node's position be overwritten by the last chain;
+  pure registry pre-order (the interim rule) wired the FAFB→BANC
+  chained paths backwards (36 right-to-left edges on the circadian
+  export) — the side rule removes both classes.
 - **Unified header legends**: dataset chips render `CODE: full (count)`
   (`dataset_legend_meta` carries the node count and optional swatch
   override); the dynamic group chip for a code with a static chip is
@@ -532,7 +608,14 @@ eight distinct source neurons.
   `LINKER_COLORS` swatch. The Sankey note uses the same chip shape.
 - **Export mapping CSV** (user 2026-09-09, replaces the old "Export
   bridges (CSV)"): buttons `Export mapping` (per pair) and
-  `Export mapping — all pairs (CSV)`; filenames `mapping_*.csv`.  One
+  `Export mapping — all pairs (CSV)`; filenames `mapping_*.csv`.
+  `mapping_origin` uses the unified mapper-provenance vocabulary
+  (2026-09-27 — `same name` / `same name+evidence` / `cross-dataset
+  cell type` / `cross-dataset cell type (alignment)` / `crosswalk` /
+  `annotation bridge via <tokens>` / `release relation` / `release
+  alias`, derived from the selected chain's linkers by
+  `_pair_mapping_origin`; previously the column only ever read
+  `mapped`/`same name`).  One
   FIXED column set for every pair — 37 columns, verified against the real
   export: `source_dataset, source_entry, matched_column, source_type,
   target_dataset, target_type, relationship, source_neurons, target_neurons,
@@ -668,9 +751,19 @@ Probes under `local_data/`: `repro_two_flows.py` (surface parity),
 ## 9. Known limits
 
 - `optic-lobe` and `manc:v1.2.3` are not in the male-cns crosswalk table
-  and therefore have no verified mappings (same-name only).
-- BANC `fafb_alignment_cell_type` remains search/alignment-only and
-  `fanc_cell_type` remains deliberately unlicensed.
+  and therefore have no verified mappings (same-name only). `manc:v1.2.3`
+  additionally carries a latent `BRIDGE_STANDARD` registry row — the
+  namespace is in neither `DATASET_PRIORITY` nor the source map's
+  `mancType` landings, so that row can never be exercised (2026-09-27
+  audit).
+- BANC `fafb_alignment_cell_type` is licensed as the fallback-only FAFB
+  label lane (2026-09-27 — see §4; never overrides a curated winner and
+  never fills a curated conflict), while `fanc_cell_type` remains
+  deliberately unlicensed. `banc_public_data`'s `_ALT_TYPE_COLUMNS`
+  continues to fold alignment values into the regenerated
+  `Alternative Cell Type(s)` passthrough — coexistence is intended: the
+  converter pipeline and the mapper lane read the same source column
+  independently.
 - MCNS v0.9 is intentionally name-aliased to v1.0 only for shared primary
   names. Its body IDs remain native, and v0.9-only fallback labels are lower
   tier than the certified v1.0 crosswalk.
