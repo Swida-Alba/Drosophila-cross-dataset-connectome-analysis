@@ -404,9 +404,13 @@ Same layout as Section 5, plus:
 ## 6c. Morphology Comparison (MorphologyProfileComparer)
 
 Intra-dataset N×N morphology comparison (Morphology tab → Comparison
-sub-tab with exactly one selected dataset): 2+ queried neurons (types,
-bodyIds, or patterns) produce a bodyId-level similarity matrix and a
-type-level aggregation. With two or more datasets the same sub-tab
+sub-tab with exactly one selected dataset): queried neurons, types, or
+patterns produce a bodyId-level similarity matrix and a type-level
+aggregation. The population gate counts **neurons in scope, not matrix
+rows**, so one type with several members is a legitimate run (its aggregate
+cell is that type's cohesion, and the pairwise detail is the bodyId matrix);
+a query that resolves to a single neuron raises.
+With two or more datasets the same sub-tab
 dispatches to the cross-dataset comparison — see Section 6d
 (`morph_cross_*` folders under `local_data/morph_cross_dataset/`). The type-level entry is the
 mean over the cross-member bodyId pairs; the diagonal is the type's
@@ -628,8 +632,23 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 
 #### Overview
 *   **`report.html`**: Overall HTML report linking every metric and heatmap
-*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed)
-*   **`README.txt`**: Human-readable summary with the output structure
+*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing
+*   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`)
+
+#### Single-Dataset Results (`type_level/` · `group_level/`, `bodyid_level/`)
+Written when exactly one dataset is selected. A level gets a folder **only if
+it was computed** — at `aggregation_level='bodyid'` nothing is pooled, so there
+is no pooled-level folder and no `profiles/aggregated/`. The pooled folder
+names the axes it holds: `type_level/` for the type level, `group_level/` for
+custom groups (same rule the morphology comparison applies).
+
+*   **`type_level/results/type_similarity_{metric}_{direction}.csv`** / **`group_level/results/group_similarity_{metric}_{direction}.csv`**: Pooled-profile matrices, type×type or group×group. A run that resolves to a **single** row writes the trivial 1.0 self-cell; the pairwise information is in `bodyid_level/`
+*   **`type_level/visualization/heatmap_type_{direction}_{metric}.html`** (or `heatmap_group_*`): pooled-level heatmaps, in the same folder as their matrices
+*   **`bodyid_level/results/bodyid_similarity_{metric}_{direction}.csv`**: Member×member matrix. The rows are individual neurons at the type and bodyId levels (`aggregation_level='bodyid'`, where this IS the main result); at the custom group level they are the grouping board's members, labelled `{member}_{group}` — so a member named as a type contributes that type's pooled profile, not one row per neuron
+*   **`bodyid_level/results/type_avg_bodyid_similarity_{metric}_{direction}.csv`**: Averages of those pair scores per matrix row (diagonal = that row's own cohesion; a group's axis is its group label). At the bodyId level this is folded from the matrix beside it rather than re-scored, so the two can never disagree
+*   **`bodyid_level/visualization/heatmap_bodyid_{direction}_{metric}.html`** and **`heatmap_type_avg_{direction}_{metric}.html`**: Interactive heatmaps
+*   **`profiles/individual/{bodyId}_{type}_profile.json`**: One profile per compared row member (`'type'` in the JSON is the matrix row label; `'neuron_type'` is the neuron's real type). **`profiles/aggregated/{type}_profile.json`**: the pooled profile behind each matrix row (pooled levels only)
+*   The run needs at least two **neurons** in scope, not two rows; a query that resolves to a single neuron raises rather than exporting an empty folder. A run left with a single row keeps its bodyId pass despite `skip_bodyId_level` — but only inside the same 1000-bodyId budget the `'auto'` rule enforces, because the pair loop is quadratic
 
 #### Intra-Dataset Results (`intra_dataset/{dataset_folder}/`)
 *   **`results/similarity_{direction}_{metric}.csv`**: Type-level N×N similarity matrices

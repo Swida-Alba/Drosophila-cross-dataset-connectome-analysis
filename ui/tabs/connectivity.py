@@ -307,7 +307,10 @@ def create_connectivity_tab():
                 query_input = neuron_list_input(
                     label="Neurons to Compare",
                     placeholder="Type or upload CSV/TSV/Excel (e.g., aMe12, aMe10, aMe9)",
-                    hint="Enter 2+ neurons to compare profiles. Upload CSV/TSV/Excel for large lists.",
+                    hint="Enter neuron types, bodyIds, or patterns (e.g. "
+                         "aMe.*); one entry is enough — a single type still "
+                         "compares its own neurons. Upload CSV/TSV/Excel for "
+                         "large lists.",
                     suggestions=_comparison_suggest,
                     available_neurons=lambda: list(datasets_select.value or [])
                     if datasets_select is not None else [],
@@ -384,15 +387,19 @@ def create_connectivity_tab():
                                 "Aggregation Level", ["type", "bodyid", "custom group"], "type",
                                 hint="'type': each matched neuron type is one row — patterns like "
                                      "'aMe.*' or name-filter inputs expand into their independent "
-                                     "types. 'bodyid': every individual neuron is one row. "
-                                     "'custom group': rows come from the custom grouping board below.",
+                                     "types. 'bodyid': every individual neuron is one row, and the "
+                                     "matrices are filed under bodyid_level/ (with the per-type "
+                                     "average folded from them). "
+                                     "'custom group': rows come from the custom grouping board above.",
                             ).props('id=select-aggregation')
                             skip_bodyid_level = select_input(
                                 "BodyId-Level Computation", ["auto", "skip", "compute"], "auto",
                                 hint="'auto': skip bodyId matrices only when >1000 bodyIds. "
-                                     "'skip': type-level only. 'compute': always include bodyId "
-                                     "and type-average-bodyId matrices. Type and bodyId levels "
-                                     "are both available in the comparison output.",
+                                     "'skip': type-level matrices only. 'compute': always include "
+                                     "bodyId and type-average-bodyId matrices. A run left with a "
+                                     "single comparison row keeps the bodyId pass whatever this "
+                                     "says while it stays under the 1000-bodyId budget — its "
+                                     "pooled cell is that row compared with itself.",
                             )
                         with ui.row().classes("gap-4"):
                             show_figures = checkbox_input(
@@ -548,12 +555,13 @@ def create_connectivity_tab():
         # not a missing input — requiring one would make a disabled box
         # unrunnable.
         if not query and not is_custom_group:
-            ui.notify("Please enter at least one neuron", type="warning")
+            ui.notify("Please enter at least one neuron, type, or pattern",
+                      type="warning")
             return
 
         selected_datasets = list(datasets_select.value or [])
         if not selected_datasets:
-            ui.notify("Select one or more datasets", type="warning")
+            ui.notify("Please select at least one dataset", type="warning")
             return
 
         skip_bodyid_param = {
@@ -629,24 +637,29 @@ def create_connectivity_tab():
                 output_dir=output_path,
             )
 
+            succeeded = result.get("returncode") == 0
+            if result.get("cancelled"):
+                comparison_output.set_status("Cancelled", "red")
+            else:
+                comparison_output.set_status(
+                    "Completed" if succeeded else "Failed",
+                    "green" if succeeded else "red",
+                )
             # The comparison pipeline resolves the query before comparing
             # profiles, so a completed run means the queried chips are useful
             # history entries for the selected datasets — except in custom
             # group mode, where those chips were not what the run used.
-            if result["returncode"] == 0 and not is_custom_group:
+            if succeeded and not is_custom_group:
                 from ..history_store import record as _record_history
                 _record_history(
                     [str(v) for v in query],
                     datasets=list(selected_datasets),
                 )
 
-            comparison_output.set_status(
-                "Completed" if result["returncode"] == 0 else "Failed",
-                "green" if result["returncode"] == 0 else "red",
-            )
-            comparison_output.show_files(
-                result["files"], result.get("output_folder") or output_path
-            )
+            files = result.get("files", [])
+            if files:
+                comparison_output.show_files(
+                    list(files), result.get("output_folder") or output_path)
         finally:
             comparison_output.set_running(False)
 

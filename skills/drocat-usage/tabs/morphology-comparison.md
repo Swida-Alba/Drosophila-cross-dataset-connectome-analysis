@@ -68,9 +68,14 @@ python skills/drocat-usage/scripts/run_direct.py \
 - **Row semantics follow `aggregation_level`.** `type`: each queried type is
   one row, and a bodyId query resolves to its type. `bodyid`: every
   individual neuron is its own row, so two neurons of the same type can be
-  compared — at the type level they fold into one row and the run refuses.
-  `custom`: rows are the source-side groups of `custom_mapping_file` and the
-  query is ignored. Patterns always expand (to types, or to their neurons).
+  compared as themselves — the thing the type level folds away. `custom`:
+  rows are the source-side groups of `custom_mapping_file` and the query is
+  ignored. Patterns always expand (to types, or to their neurons).
+- **The gate is two NEURONS in scope, not two rows.** One type runs at every
+  level: at the type level its single aggregate cell is that type's cohesion
+  (mean pairwise score, not 1.0) and `bodyid_level/` carries the pairwise
+  detail; at the bodyId level its neurons are the rows. A query resolving to
+  one neuron raises, and the message names what collapsed it.
 - **A bodyId named in the query is never dropped** by `max_members_per_type`
   or `max_total_neurons`; those caps only ever remove other members. The
   `row` column tells you which matrix row a neuron fed; `type` stays its real

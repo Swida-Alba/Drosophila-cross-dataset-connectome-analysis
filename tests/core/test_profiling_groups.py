@@ -237,10 +237,13 @@ def test_bodyid_aggregation_expands_coarse_label_to_neurons():
 
 
 # ---------------------------------------------------------------------------
-# run(): bodyid aggregation uses the main matrices (bodyId-level steps skipped)
+# run(): bodyid aggregation FILES the main matrices as bodyId-level results
 # ---------------------------------------------------------------------------
 
-def test_run_bodyid_aggregation_skips_bodyid_level_matrices(monkeypatch):
+def test_run_bodyid_aggregation_files_bodyid_matrices_and_type_average(monkeypatch):
+    """The compared rows ARE individual neurons, so the main matrices are the
+    bodyId-level results. Neither the separate pair loop nor a re-scored type
+    average may run: both would recompute the pairs just scored."""
     comparer = _make_comparer(query=["Mi1", "Tm3"], aggregation_level="bodyid")
 
     profile = object()
@@ -250,15 +253,29 @@ def test_run_bodyid_aggregation_skips_bodyid_level_matrices(monkeypatch):
     monkeypatch.setattr(comparer, "_compute_similarity_matrices",
                         lambda profiles: {"combined": {"jaccard": None}})
     monkeypatch.setattr(comparer, "_compute_bodyid_similarity_matrices",
-                        lambda *a: {})
+                        lambda *a: (_ for _ in ()).throw(AssertionError(
+                            "the bodyId pair loop must not re-score the main matrices")))
     monkeypatch.setattr(comparer, "_compute_type_avg_bodyid_matrices",
                         lambda *a: (_ for _ in ()).throw(AssertionError(
-                            "type-avg-bodyId must be skipped for bodyid aggregation")))
-    monkeypatch.setattr(comparer, "_save_results",
-                        lambda *a, **k: {"output_path": "/tmp/x", "matrices_saved": []})
+                            "the type average must be folded from existing scores")))
+    monkeypatch.setattr(comparer, "_type_avg_from_pair_matrices",
+                        lambda pair_matrices, bodyid: {"combined": {"jaccard": 1.0}})
+    saved = {}
+
+    def _save(type_profiles, bodyid_profiles, type_matrices,
+              bodyid_matrices, type_avg_matrices):
+        saved.update(type_matrices=type_matrices,
+                     bodyid_matrices=bodyid_matrices,
+                     type_avg_matrices=type_avg_matrices)
+        return {"output_path": "/tmp/x", "matrices_saved": []}
+
+    monkeypatch.setattr(comparer, "_save_results", _save)
 
     result = comparer.run()
-    assert result["bodyid_level_skipped"] is True
+    assert saved["type_matrices"] == {}
+    assert saved["bodyid_matrices"] == {"combined": {"jaccard": None}}
+    assert saved["type_avg_matrices"] == {"combined": {"jaccard": 1.0}}
+    assert result["bodyid_level_skipped"] is False
 
 
 def test_run_type_aggregation_still_computes_bodyid_matrices(monkeypatch):
@@ -279,6 +296,66 @@ def test_run_type_aggregation_still_computes_bodyid_matrices(monkeypatch):
 
     result = comparer.run()
     assert result["bodyid_level_skipped"] is False
+
+
+def test_run_single_row_keeps_the_bodyid_pass_despite_the_cost_skip(monkeypatch):
+    """skip_bodyId_level cannot leave a one-row run with nothing but that row
+    pooled against itself (1.0 on every metric)."""
+    comparer = _make_comparer(query=["Mi1"], aggregation_level="type",
+                              skip_bodyId_level=True)
+
+    profile = object()
+    monkeypatch.setattr(comparer, "_extract_all_profiles",
+                        lambda: ({"Mi1": profile},
+                                 {("Mi1", 1): profile, ("Mi1", 2): profile}))
+    called = []
+    monkeypatch.setattr(comparer, "_compute_similarity_matrices",
+                        lambda profiles: {"combined": {"jaccard": None}})
+    monkeypatch.setattr(comparer, "_compute_bodyid_similarity_matrices",
+                        lambda profiles: called.append("bodyid") or {"combined": {}})
+    monkeypatch.setattr(comparer, "_compute_type_avg_bodyid_matrices",
+                        lambda profiles: called.append("type_avg") or {"combined": {}})
+    monkeypatch.setattr(comparer, "_save_results",
+                        lambda *a, **k: {"output_path": "/tmp/x", "matrices_saved": []})
+
+    result = comparer.run()
+    assert called == ["bodyid", "type_avg"]
+    assert result["bodyid_level_skipped"] is False
+
+
+def test_single_row_keeps_the_cost_skip_beyond_the_bodyid_budget(monkeypatch):
+    """The override saves a run from a meaningless 1.0 cell; it must not burn
+    hours doing it, so past the 1000-bodyId budget the auto skip stands."""
+    comparer = _make_comparer(query=["Mi1"], aggregation_level="type")
+
+    profile = object()
+    monkeypatch.setattr(comparer, "_extract_all_profiles",
+                        lambda: ({"Mi1": profile},
+                                 {("Mi1", i): profile for i in range(1001)}))
+    called = []
+    monkeypatch.setattr(comparer, "_compute_similarity_matrices",
+                        lambda profiles: {"combined": {"jaccard": None}})
+    monkeypatch.setattr(comparer, "_compute_bodyid_similarity_matrices",
+                        lambda profiles: called.append("bodyid") or {})
+    monkeypatch.setattr(comparer, "_compute_type_avg_bodyid_matrices",
+                        lambda profiles: called.append("type_avg") or {})
+    monkeypatch.setattr(comparer, "_save_results",
+                        lambda *a, **k: {"output_path": "/tmp/x", "matrices_saved": []})
+
+    result = comparer.run()
+    assert called == []
+    assert result["bodyid_level_skipped"] is True
+
+
+def test_run_refuses_when_fewer_than_two_neurons_are_in_scope(monkeypatch):
+    """One neuron is not a comparison — and the refusal must raise, because the
+    runner discards the return dict and would report Completed with no files."""
+    comparer = _make_comparer(query=["Mi1"], aggregation_level="bodyid")
+    profile = object()
+    monkeypatch.setattr(comparer, "_extract_all_profiles",
+                        lambda: ({"1_Mi1": profile}, {("Mi1", 1): profile}))
+    with pytest.raises(ValueError, match="at least two neurons"):
+        comparer.run()
 
 
 # ---------------------------------------------------------------------------

@@ -194,6 +194,10 @@ class MorphologyProfileComparer:
 
     The bodyId × bodyId matrix is always the scored primitive: the other
     matrices are block means over it.
+
+    A run needs at least two NEURONS in scope, not two rows: one type with
+    several members answers "how similar are these neurons to each other", so
+    it is a legitimate comparison rather than a refusal.
     """
 
     def __init__(
@@ -271,7 +275,9 @@ class MorphologyProfileComparer:
         """
         tokens = self._query_tokens()
         if not tokens and self.aggregation_level != "custom":
-            raise ValueError("Please provide at least two neurons to compare.")
+            raise ValueError(
+                "Morphology comparison needs a query: enter one or more neuron "
+                "types, bodyIds, or a pattern.")
 
         type_map, instance_map = _load_neuron_type_map(
             self.dataset, str(self.project_root))
@@ -463,18 +469,35 @@ class MorphologyProfileComparer:
         return rows
 
     def _check_population(self, members: "Dict[str, List[object]]") -> None:
-        """Row-count and NBLAST-cost gates, before any scoring work starts."""
-        if len(members) < 2:
-            hint = ""
-            if self.aggregation_level == "type" and len(self._pinned) >= 2:
-                hint = (" bodyId queries resolve to their type at this level; "
-                        "set Aggregation Level to 'bodyid' to compare "
-                        "individual neurons.")
-            raise ValueError(
-                f"Morphology comparison needs at least two resolved rows; "
-                f"query resolved {len(members)} at the "
-                f"{self.aggregation_level} level.{hint}")
+        """Neuron-count and NBLAST-cost gates, before any scoring work starts.
+
+        The gate counts NEURONS, not rows: one type with several members is a
+        legitimate comparison. Its aggregate cell is that type's cohesion and
+        its bodyId matrix holds the pairwise detail, so a second row was never
+        what made the run worth doing.
+        """
         total = sum(len(v) for v in members.values())
+        if total < 2:
+            kind = self._row_axis_label(
+                'bodyid' if self.aggregation_level == 'bodyid' else 'type')
+            hint = ""
+            if self.aggregation_level == "bodyid" and self.max_members_per_type < 2:
+                hint = (" 'Max Members per Type' is below 2, which leaves every "
+                        "type at most one neuron to compare.")
+            raise ValueError(
+                f"Morphology comparison needs at least two neurons: the query "
+                f"resolved {total} neuron(s) in {len(members)} {kind} row(s) at "
+                f"the {self.aggregation_level} level.{hint}")
+        if len(members) == 1:
+            note = (f"Single {self._row_axis_label('type')} row "
+                    f"'{next(iter(members))}': the aggregate matrix reports that "
+                    "row's own cohesion, and the bodyId matrix carries the "
+                    "pairwise detail between its neurons.")
+            if self.aggregation_level == "type" and self._pinned:
+                note += (" bodyId queries fold into their type at this level; set"
+                         " Aggregation Level to 'bodyid' to keep the neurons as"
+                         " separate rows.")
+            self._log(note)
         # NBLAST scores every neuron pair and never truncates silently, so it
         # is refused up front. The bound is the population that would actually
         # be scored — min(total, max_total_neurons) — not the raw query size,

@@ -92,6 +92,19 @@ result: ComparisonResult = ProfileComparator.compare_profiles(...)
 
 ## Notes
 
+- `ConnectivityProfileComparer.run()` gates on **neurons in scope (≥2), not
+  rows**, and raises `ValueError` on refusal (returning an error dict would let
+  the runner exit 0 and the panel report Completed with no files). At
+  `aggregation_level='bodyid'` the main matrices ARE the bodyId comparison: they
+  are filed under `bodyid_level/results/bodyid_similarity_*`, `type_avg_bodyid_*`
+  is folded from those same scores, and neither `type_level/` nor
+  `profiles/aggregated/` is created because nothing was pooled.
+  `skip_bodyId_level` cannot skip the bodyId pass on a run left with one
+  comparison row while that row stays inside the 1000-bodyId auto budget (the
+  pair loop is quadratic, so past it the skip stands and the log says so).
+- The pooled level's folder names its axes (`_aggregate_names()`):
+  `type_level/type_similarity_*` at `type`, `group_level/group_similarity_*` at
+  `custom`. The internal level key stays `'type'`; only the artifact names move.
 - Morphology enrichment of homolog results (the former
   `morph_v2_similarity`/`morph_nblast` columns) is disabled; results carry
   connectivity scores only.

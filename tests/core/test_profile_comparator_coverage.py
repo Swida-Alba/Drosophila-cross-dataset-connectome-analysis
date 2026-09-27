@@ -2787,11 +2787,16 @@ def test_comparer_run_single_dataset_insufficient(tmp_path):
         profiles={('1', DS_A): _rich_profile(1, DS_A)},
         bodyids={('OnlyOne', DS_A): [1]},
     )
-    res = comp.run()
-    assert res == {'n_type_profiles': 1, 'error': 'Insufficient profiles'}
+    # Raise, do not return an error dict: the runner discards return values,
+    # so a silent refusal shows up in the panel as Completed with no files.
+    with pytest.raises(ValueError, match='at least two neurons in scope'):
+        comp.run()
 
 
 def test_comparer_run_bodyid_aggregation(tmp_path, pc_fake_repo):
+    """One type at bodyId level is a legitimate run: the pairwise detail is the
+    result, and it is filed under bodyid_level/ — not under type_level/, whose
+    pooled-profile semantics this selection never produces."""
     comp = _comparer([1, 2], tmp_path, aggregation_level='bodyid')
     fake = _FakeProfilerFull(
         profiles={
@@ -2803,10 +2808,76 @@ def test_comparer_run_bodyid_aggregation(tmp_path, pc_fake_repo):
     comp.profiler = fake
     res = comp.run()
     assert res['n_type_profiles'] == 2
-    # bodyid aggregation skips the separate bodyId-level steps
-    assert res['bodyid_level_skipped'] is True
-    assert res['bodyid_matrices'] == {}
+    assert res['bodyid_level_skipped'] is False
+    assert res['type_matrices'] == {}
+    assert set(res['bodyid_matrices']) == {'overall', 'upstream', 'downstream'}
+    assert set(res['type_avg_matrices']) == {'overall', 'upstream', 'downstream'}
     assert '1_T1' in res['type_labels']
+
+    out = Path(res['output_path'])
+    assert len(list((out / 'bodyid_level' / 'results').glob(
+        'bodyid_similarity_*.csv'))) == 15
+    assert len(list((out / 'bodyid_level' / 'results').glob(
+        'type_avg_bodyid_similarity_*.csv'))) == 15
+    # Nothing was pooled, so neither the type matrices nor their folder exist
+    assert not (out / 'type_level').exists()
+    assert not (out / 'profiles' / 'aggregated').exists()
+    assert len(list((out / 'profiles' / 'individual').glob('*.json'))) == 2
+    readme = (out / 'README.txt').read_text(encoding='utf-8')
+    assert 'Levels computed: bodyid-level, type-average of bodyId pairs' in readme
+    assert 'type_level/results' not in readme
+    report = (out / 'report.html').read_text(encoding='utf-8')
+    assert 'Type-level' not in report
+    assert 'BodyId-level' in report and 'Type-average BodyId' in report
+    assert 'not computed for this run' not in report
+    params = json.loads((out / 'parameters.json').read_text(encoding='utf-8'))
+    assert params['row_kind'] == 'neuron'
+    assert params['levels_computed'] == ['bodyid-level',
+                                         'type-average of bodyId pairs']
+
+
+def test_comparer_run_custom_group_aggregation(tmp_path, pc_fake_repo):
+    """A group×group matrix is filed under group_level/, not type_level/.
+
+    The folder and file names describe the axes, so the custom level cannot
+    read as a type comparison — the same rule the morphology comparer applies
+    to the same selection. ``bodyid_profiles`` is keyed by the GROUP and its
+    member item (measured on real data: ``('pair-set', 'APL')``), which is why
+    the row-average below reads as group-average.
+    """
+    comp = _comparer([['T1', 'T2'], ['T3']], tmp_path,
+                     aggregation_level='custom group', skip_bodyId_level=False)
+    p1, p2, p3 = (_rich_profile(1, DS_A), _rich_profile(2, DS_A),
+                  _rich_profile(3, DS_A))
+    p1.neuron_type = 'T1'
+    p2.neuron_type = 'T2'
+    p3.neuron_type = 'T3'
+    comp._extract_all_profiles = lambda: (
+        {'GroupA': p1, 'GroupB': p3},
+        {('GroupA', 'T1'): p1, ('GroupA', 'T2'): p2, ('GroupB', 'T3'): p3})
+    res = comp.run()
+
+    out = Path(res['output_path'])
+    assert len(list((out / 'group_level' / 'results').glob(
+        'group_similarity_*.csv'))) == 15
+    assert not (out / 'type_level').exists()
+    assert len(list((out / 'bodyid_level' / 'results').glob(
+        'bodyid_similarity_*.csv'))) == 15
+    avg = pd.read_csv(out / 'bodyid_level' / 'results'
+                      / 'type_avg_bodyid_similarity_jaccard_overall.csv',
+                      index_col=0)
+    assert list(avg.index.astype(str)) == ['GroupA', 'GroupB']
+    params = json.loads((out / 'parameters.json').read_text(encoding='utf-8'))
+    assert params['row_kind'] == 'group'
+    assert params['levels_computed'] == ['group-level', 'bodyId-level',
+                                         'Group-average of bodyId pairs']
+    report = (out / 'report.html').read_text(encoding='utf-8')
+    assert 'Group-level' in report and 'Type-level' not in report
+    assert 'group_level/results/group_similarity_jaccard_overall.csv' in report
+    assert 'Custom group' in report, "the group axes must be titled as groups"
+    readme = (out / 'README.txt').read_text(encoding='utf-8')
+    assert 'group_level/results/' in readme and 'type_level/' not in readme
+    assert 'Group-average of bodyId pairs' in readme
 
 
 def test_comparer_run_multi_dataset(tmp_path, pc_fake_repo):
@@ -2888,16 +2959,14 @@ def test_comparer_run_cross_dataset(tmp_path):
     meta = json.loads((out / 'metadata.json').read_text(encoding='utf-8'))
     assert meta['datasets'] == [DS_A, DS_B]
 
-    # no resolvable profiles -> early error dict
+    # no resolvable profiles -> raises rather than exiting 0 with no files
     comp_empty = ConnectivityProfileComparer(
         {DS_A: ['Nope'], DS_B: ['Nada']},
         output_dir=str(tmp_path), verbose=False,
         generate_heatmaps=False, use_auto_type_mapping=False)
     comp_empty.profiler = _FakeProfilerFull()
-    res_empty = comp_empty.run()
-    assert res_empty == {'is_cross_dataset': True,
-                         'error': 'No profiles extracted',
-                         'n_type_profiles': 0}
+    with pytest.raises(ValueError, match='no profiles extracted'):
+        comp_empty.run()
 
 
 def test_comparer_compare_intra_inter_type(tmp_path):
@@ -3243,8 +3312,9 @@ def test_comparer_run_ensure_cache_branch(tmp_path, monkeypatch):
         profiles={('1', DS_A): _rich_profile(1, DS_A)},
         bodyids={('OnlyOne', DS_A): [1]},
     )
-    res = comp.run()  # cache ensured first, then insufficient profiles
-    assert res == {'n_type_profiles': 1, 'error': 'Insufficient profiles'}
+    # cache ensured first, then the population refusal raises
+    with pytest.raises(ValueError, match='at least two neurons in scope'):
+        comp.run()
 
 
 def test_comparer_intra_inter_ensure_cache_and_profile_error(

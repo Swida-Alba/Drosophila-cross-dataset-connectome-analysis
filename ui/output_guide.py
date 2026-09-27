@@ -1326,8 +1326,68 @@ TOOL_GUIDE_SPECS = {
              "description": "All analysis parameters (query, datasets, "
                             "top_k/top_m, thresholds, metrics)."},
             {"pattern": "README.txt",
-             "description": "Human-readable summary with the output "
-                            "structure."},
+             "description": "Human-readable summary listing only the folders "
+                            "this run wrote."},
+            {"pattern": "type_level/results/type_similarity_*.csv",
+             "description": "ONE-DATASET runs at the type level: pooled "
+                            "profiles compared, one file per direction × "
+                            "metric. A bodyId-level run writes no such folder "
+                            "(nothing was pooled), and a custom group run "
+                            "writes group_level/ instead, because its axes "
+                            "are groups.",
+             "matrix": "rows/columns = neuron types, values = similarity for "
+                       "the metric/direction in the "
+                       "file name",
+             "columns": _PROFILING_METRIC_COLUMNS},
+            {"pattern": "group_level/results/group_similarity_*.csv",
+             "description": "ONE-DATASET runs at the custom group level: the "
+                            "same pooled matrix, named for its group axes.",
+             "matrix": "rows/columns = custom group labels, values = "
+                       "similarity for the metric/direction in the file name",
+             "columns": _PROFILING_METRIC_COLUMNS},
+            {"pattern": "type_level/visualization/heatmap_type_*.html",
+             "description": "ONE-DATASET type-level interactive heatmaps "
+                            "(same folder as its matrices); at the custom "
+                            "group level the twin is "
+                            "group_level/visualization/"
+                            "heatmap_group_*.html."},
+            {"pattern": "bodyid_level/results/bodyid_similarity_*.csv",
+             "description": "ONE-DATASET runs: member-to-member similarity. "
+                            "The rows are individual neurons at the type and "
+                            "bodyId levels; at the custom group level they are "
+                            "the grouping board's members, so a member named "
+                            "as a type contributes that type's pooled profile.",
+             "matrix": "rows/columns = '{bodyId}_{instance}' (or "
+                       "'{bodyId}_{type}_{L|R}' on FAFB/BANC) labels, "
+                       "values = similarity",
+             "columns": _PROFILING_METRIC_COLUMNS},
+            {"pattern": "bodyid_level/results/type_avg_bodyid_similarity_*.csv",
+             "description": "ONE-DATASET runs: per-type averages of the bodyId "
+                            "pair scores (diagonal = intra-type cohesion). At "
+                            "the bodyId level this is folded from the matrices "
+                            "beside it, so a bodyId run still yields a "
+                            "per-type view.",
+             "matrix": "rows/columns = neuron types, values = averaged "
+                       "similarity",
+             "columns": _PROFILING_METRIC_COLUMNS},
+            {"pattern": "bodyid_level/visualization/heatmap_bodyid_*.html",
+             "description": "ONE-DATASET bodyId-level interactive heatmaps."},
+            {"pattern": "bodyid_level/visualization/heatmap_type_avg_*.html",
+             "description": "ONE-DATASET type-average-of-bodyId heatmaps."},
+            {"pattern": "profiles/individual/*_profile.json",
+             "description": "ONE-DATASET runs: the connectivity profile of "
+                            "each individual neuron compared. Read the keys "
+                            "against the run's level: 'type' holds the MATRIX "
+                            "ROW the neuron fed (its own display label at the "
+                            "bodyId level, the group label at the custom "
+                            "group level), while 'neuron_type' is always the "
+                            "neuron's real resolved type."},
+            {"pattern": "profiles/aggregated/*_profile.json",
+             "description": "ONE-DATASET runs at the type or custom group "
+                            "level: the pooled profile behind each matrix row "
+                            "('type' is that row label, so a group's file "
+                            "carries the group name). Absent for a "
+                            "bodyId-level run."},
             {"pattern": "intra_dataset/*/results/similarity_*.csv",
              "description": "Type-level N×N similarity matrices, one file "
                             "per direction × metric.",

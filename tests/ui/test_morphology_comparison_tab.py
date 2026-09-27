@@ -144,3 +144,74 @@ def test_custom_group_mode_disables_the_ignored_query_input():
     assert disabled(), "the query walker found no interactive child to disable"
     aggregation.set_value("type")
     assert disabled() == []
+
+
+# ------------------------------------------------------- run-time level clamp
+def test_cross_runs_never_inherit_the_intra_aggregation_level():
+    """A stale 'custom group' used to mark the query optional on a CROSS run,
+    so two datasets with an empty query passed every guard and silently skipped
+    both the grouping resolution and the history record."""
+    from ui.tabs.morphology import _comparison_aggregation
+
+    assert _comparison_aggregation(True, "custom group") == "type"
+    assert _comparison_aggregation(True, "bodyid") == "type"
+    assert _comparison_aggregation(False, "custom group") == "custom group"
+    assert _comparison_aggregation(False, "bodyid") == "bodyid"
+    assert _comparison_aggregation(False, None) == "type"
+    # A value the option list no longer offers (NBLAST reset) cannot ride along
+    assert _comparison_aggregation(False, "not-a-level") == "type"
+
+
+def test_the_ui_no_longer_refuses_a_single_neuron_entry():
+    """The population gate lives in the backend, where it counts NEURONS: one
+    type still yields its bodyId pairwise matrix, so the tab must not veto the
+    entry before the run starts."""
+    source = (Path(__file__).resolve().parents[2]
+              / "ui" / "tabs" / "morphology.py").read_text(encoding="utf-8")
+    assert "Please enter at least two neurons" not in source
+    assert "at least one neuron, type, or pattern" in source
+
+
+def test_aggregation_level_sits_in_advanced_settings():
+    """Layout parity with the Connectivity tab: the level select lives inside
+    the Advanced Settings card, and the grouping board stays ABOVE it (moving
+    the board would break the one-advanced-card-last rule)."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    from ui.tabs.morphology import create_morphology_tab
+
+    client = Client(page("/morph-comparison-advanced-placement"))
+    with client:
+        create_morphology_tab()
+        advanced = _by_element_id(client, "card-morphology-advanced")
+        aggregation = _by_element_id(client, "select-aggregation")
+        board = _by_element_id(client, "card-morph-custom-group")
+
+    descendants = {id(el) for el in _descendants(advanced)}
+    assert id(aggregation) in descendants, (
+        "the level select is not inside the Advanced Settings card")
+    assert id(board) not in descendants, (
+        "the grouping board moved into the advanced card, which must stay the "
+        "last child of the comparison column")
+
+
+def test_intra_comparison_exposes_its_own_cache_switch():
+    """Parity with the Connectivity tab: the cache choice is a control the user
+    can see, not a default the tab reads silently on their behalf."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    from ui.tabs.morphology import create_morphology_tab
+
+    client = Client(page("/morph-comparison-use-cache"))
+    with client:
+        create_morphology_tab()
+        advanced = _by_element_id(client, "card-morphology-advanced")
+        switches = [el for el in _descendants(advanced)
+                    if getattr(el, "text", None) == "Use Cache"]
+
+    assert len(switches) == 1, "expected exactly one Use Cache switch"
+    source = (Path(__file__).resolve().parents[2]
+              / "ui" / "tabs" / "morphology.py").read_text(encoding="utf-8")
+    assert '"use_cache": bool(comparison_use_cache.value),' in source

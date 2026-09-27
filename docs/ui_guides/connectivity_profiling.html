@@ -23,8 +23,10 @@
 
   <h2>Quick start</h2>
   <ol>
-    <li>Enter 2+ neurons (e.g. <code>aMe12</code>, <code>aMe10</code>,
-      <code>aMe9</code>).</li>
+    <li>Enter one or more neurons (e.g. <code>aMe12</code>, <code>aMe10</code>,
+      <code>aMe9</code>). The gate counts <b>neurons in scope, not matrix
+      rows</b>: a single type is a legitimate run because its bodyId matrices
+      compare its own neurons.</li>
     <li>Pick one or more datasets (one dataset with multiple thresholds is also
       supported; two or more datasets enable the cross-dataset mode).</li>
     <li>Click <b>Run Comparison</b>; open <b>report.html</b> in the output folder
@@ -66,7 +68,7 @@
     <tr><td>Top K Partners</td><td>25</td><td>Top partners per direction by synapse weight</td></tr>
     <tr><td>Min Unique Types (M)</td><td>5</td><td>Minimum partner types; K expands automatically if fewer</td></tr>
     <tr><td>Min Synapse Threshold</td><td>3</td><td>Connection weight cutoff for profiles</td></tr>
-    <tr><td>Aggregation Level</td><td>type</td><td><b>type</b> (each matched type is one row; patterns expand to independent types), <b>bodyid</b> (per neuron), or <b>custom group</b> (rows from the <b>Custom Groups (LabelMapper)</b> panel that appears — define groups inline or reload them from history; see the <a href="label_mapper.html">label-mapper guide</a>)</td></tr>
+    <tr><td>Aggregation Level<br><span class="small">(Advanced Settings)</span></td><td>type</td><td><b>type</b> (each matched type is one row; patterns expand to independent types), <b>bodyid</b> (every individual neuron is one row: nothing is pooled, so its matrices are filed under <code>bodyid_level/</code> and no <code>type_level/</code> folder or report tab is written), or <b>custom group</b> (rows from the <b>Custom Groups (LabelMapper)</b> board above the card — define groups inline or reload them from history; see the <a href="label_mapper.html">label-mapper guide</a>; their matrix is filed as <code>group_level/group_similarity_*</code>, because its axes are groups). A one-dataset run at the bodyId level also gets <code>type_avg_bodyid_*</code>, folded from the same pair scores, so a per-type view is never lost.</td></tr>
     <tr><td>Direction</td><td>both</td><td>upstream, downstream, or both</td></tr>
   </table>
 
@@ -96,7 +98,13 @@
   <h2>Advanced options</h2>
   <ul>
     <li><b>BodyId-Level Computation</b>: auto (skip over 1000 bodyIds),
-      skip, or compute always.</li>
+      skip, or compute always. A run left with a <b>single</b> comparison row
+      keeps the bodyId pass whatever this says — its pooled cell is that row
+      pooled and compared with itself, i.e. 1.0 on every metric, so the bodyId
+      matrices are the only information the run can carry. That override stops
+      past the 1000-bodyId budget, because the pair loop is quadratic: one
+      coarse label can hold tens of thousands of neurons, and the log then says
+      to narrow the query or force <code>compute</code>.</li>
     <li><b>Generate Heatmaps</b>: hierarchical (Ward) reordering of matrices,
       written as editable VisPath heatmaps plus Plotly heatmaps in the report.</li>
     <li><b>Show Figures</b>: open heatmaps in the browser.</li>
@@ -111,7 +119,22 @@
     a sanitized query name (e.g. <code>aMe.*</code> → <code>aMe</code>):</p>
   <pre><code>{output_dir}/profiling_MCNS_aMe_20260815_143922/
   report.html                        # overall summary with ALL heatmaps
-  parameters.json, README.txt
+  parameters.json, README.txt        # README lists only the folders written
+  # ---- ONE dataset: level folders appear only for levels that ran ----
+  type_level/                        # type level only (custom groups write
+    results/type_similarity_{metric}_{direction}.csv
+    visualization/heatmap_type_{direction}_{metric}.html
+  group_level/                       # custom group level: same matrix, named
+    results/group_similarity_{metric}_{direction}.csv   # for its group axes
+    visualization/heatmap_group_{direction}_{metric}.html
+  bodyid_level/                      # every level except a skipped bodyId pass
+    results/bodyid_similarity_{metric}_{direction}.csv
+    results/type_avg_bodyid_similarity_{metric}_{direction}.csv
+    visualization/heatmap_bodyid_*.html, heatmap_type_avg_*.html
+  profiles/
+    individual/{bodyId}_{type}_profile.json
+    aggregated/{type}_profile.json   # absent at the bodyId level (nothing pooled)
+  # ---- two or more datasets ----
   intra_dataset/{dataset_folder}/    # per-dataset N×N comparisons
     results/similarity_{direction}_{metric}.csv             # type level
     results/bodyid_similarity_{metric}_{direction}.csv      # bodyId level
@@ -137,9 +160,9 @@
 
   <div class="callout warn">
     <b>First run on a new dataset</b> - profile extraction needs connection
-    data. If the cache is empty the tool may take a long time or return
-    insufficient profiles; run a small Find Path/Direct query first to warm
-    the cache.
+    data. If the cache is empty the tool may take a long time or refuse the run
+    for want of two neurons in scope; run a small Find Path/Direct query first
+    to warm the cache.
   </div>
 
   <div class="callout info">

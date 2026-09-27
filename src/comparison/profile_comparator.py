@@ -11180,7 +11180,7 @@ class ConnectivityProfileComparer:
             #    row — mirroring the network tab's multi-column resolution.
             #    This must run before the union lookup in get_bodyids_for_type,
             #    which would otherwise collapse the whole label into a single
-            #    row and trip the "Need at least 2 type profiles" guard.
+            #    row and trip the "at least two neurons in scope" refusal.
             label_resolver = getattr(self.profiler, 'get_types_for_label', None)
             label_groups = (
                 label_resolver(item_str, dataset) if label_resolver else {}
@@ -12365,6 +12365,64 @@ class ConnectivityProfileComparer:
         
         return all_matrices
 
+    def _aggregate_names(self) -> Tuple[str, str, str, str]:
+        """``(folder, csv stem, heatmap prefix, report title)`` for the aggregate.
+
+        The internal level key stays ``'type'``, but the on-disk names describe
+        the axes: at ``aggregation_level='custom'`` the matrix is group×group,
+        so it belongs in ``group_level/`` rather than a folder that claims
+        types — which is what the morphology comparer already does for the same
+        selection, so the two tabs agree on the artifact names per level.
+        """
+        if self.aggregation_level == 'custom':
+            return ('group_level', 'group_similarity', 'group', 'Group-level')
+        return ('type_level', 'type_similarity', 'type', 'Type-level')
+
+    def _type_avg_from_pair_matrices(
+        self,
+        pair_matrices: Dict[str, Dict[str, pd.DataFrame]],
+        bodyid_profiles: Dict[Tuple[str, int], ConnectivityProfile],
+    ) -> Dict[str, Dict[str, pd.DataFrame]]:
+        """Fold a neuron-pair matrix into a per-type average.
+
+        Same numbers as ``_compute_type_avg_bodyid_matrices`` (intra-type cell
+        = mean over within-type pairs excluding self-comparisons, off-diagonal
+        = mean over cross-type pairs, single-neuron diagonal = 1.0), but
+        averaged from scores that already exist. At
+        ``aggregation_level='bodyid'`` the pair matrix IS the main result, so
+        re-scoring every pair to build the type view would double the run for
+        identical values.
+
+        Rows are grouped by ``profile.neuron_type`` because at bodyId level the
+        matrix axes are per-neuron display labels
+        (``{bodyId}_{instance}`` / ``{bodyId}_{type}_{L|R}``), which would each
+        read as a one-neuron type.
+        """
+        label_to_type = {}
+        for (row_label, _bid), profile in bodyid_profiles.items():
+            label_to_type[str(row_label)] = str(
+                getattr(profile, 'neuron_type', None) or row_label)
+
+        folded = {}
+        for direction, metric_matrices in pair_matrices.items():
+            by_metric = {}
+            for metric, matrix in metric_matrices.items():
+                types = [label_to_type.get(str(label), str(label))
+                         for label in matrix.index]
+                off_diag = matrix.where(
+                    ~np.eye(matrix.shape[0], dtype=bool), np.nan)
+                off_diag.index = off_diag.columns = types
+                blocks = (off_diag.stack(dropna=False)
+                          .groupby(level=[0, 1])
+                          .mean()
+                          .unstack())
+                ordered = sorted(set(types))
+                blocks = (blocks.reindex(index=ordered, columns=ordered)
+                          .fillna(1.0))
+                by_metric[metric] = blocks.astype(float)
+            folded[direction] = by_metric
+        return folded
+
     def _save_results(
         self,
         type_profiles: Dict[str, ConnectivityProfile],
@@ -12376,22 +12434,36 @@ class ConnectivityProfileComparer:
         """
         Save results to output directory with separated type-level and bodyId-level outputs.
         
+        Only levels this run computed get a folder. At
+        ``aggregation_level='bodyid'`` the compared rows ARE individual
+        neurons, so the matrices land in ``bodyid_level/`` (as
+        ``bodyid_similarity_*`` plus the folded ``type_avg_bodyid_*``) and
+        neither ``type_level/`` nor ``profiles/aggregated/`` is created —
+        nothing was pooled, and an empty folder named ``type_level`` reads as
+        a comparison that ran. At ``aggregation_level='custom'`` the pooled
+        matrix is group×group, so it lands in ``group_level/`` instead of a
+        folder that claims types.
+        
         Output Structure:
             {output_dir}/profiling_{query_name}_{timestamp}/
             ├── parameters.json
             ├── README.txt
             ├── profiles/
             │   ├── individual/          # Individual bodyId profiles
-            │   └── aggregated/          # Type-aggregated profiles
-            ├── type_level/
-            │   ├── results/             # Type-aggregated similarity matrices
-            │   └── visualization/       # Type-level heatmaps
+            │   └── aggregated/          # Type-aggregated profiles (pooled levels)
+            ├── type_level/                # pooled level: 'type'
+            │   ├── results/             # Pooled similarity matrices
+            │   └── visualization/       # Pooled-level heatmaps
+            ├── group_level/             # pooled level at 'custom' instead,
+            │                            # with group_similarity_*.csv
             └── bodyid_level/
                 ├── results/             # BodyId similarity matrices + type-avg-bodyId matrices
                 └── visualization/       # BodyId heatmaps + type-avg heatmaps
         
         Args:
             type_profiles: Dictionary mapping type_label -> aggregated ConnectivityProfile
+                (at bodyId aggregation this maps each neuron's display label -> its
+                individual profile, and is the source of the bodyId matrices)
             bodyid_profiles: Dictionary mapping (type_label, bodyId) -> individual ConnectivityProfile
             type_matrices: Type-level similarity matrices (aggregated profiles)
             bodyid_matrices: BodyId-level similarity matrices
@@ -12405,21 +12477,33 @@ class ConnectivityProfileComparer:
         self._log(f"📁 Output folder: {output_path}")
         
         # Create main directory structure
+        bodyid_is_main = self.aggregation_level == 'bodyid'
+        agg_dir_name, agg_csv_stem, agg_prefix, _agg_title = self._aggregate_names()
+        agg_word = 'group' if agg_prefix == 'group' else 'type'
         profiles_dir = output_path / 'profiles'
         individual_dir = profiles_dir / 'individual'
-        aggregated_dir = profiles_dir / 'aggregated'
-        
-        type_level_dir = output_path / 'type_level'
-        type_results_dir = type_level_dir / 'results'
-        type_viz_dir = type_level_dir / 'visualization'
-        
-        bodyid_level_dir = output_path / 'bodyid_level'
-        bodyid_results_dir = bodyid_level_dir / 'results'
-        bodyid_viz_dir = bodyid_level_dir / 'visualization'
-        
-        # Create all directories
-        for d in [individual_dir, aggregated_dir, type_results_dir, type_viz_dir, 
-                  bodyid_results_dir, bodyid_viz_dir]:
+        dirs_to_create = [individual_dir]
+
+        agg_results_dir = agg_viz_dir = None
+        if type_matrices:
+            agg_level_dir = output_path / agg_dir_name
+            agg_results_dir = agg_level_dir / 'results'
+            agg_viz_dir = agg_level_dir / 'visualization'
+            dirs_to_create += [agg_results_dir, agg_viz_dir]
+
+        bodyid_results_dir = bodyid_viz_dir = None
+        if bodyid_matrices or type_avg_matrices:
+            bodyid_level_dir = output_path / 'bodyid_level'
+            bodyid_results_dir = bodyid_level_dir / 'results'
+            bodyid_viz_dir = bodyid_level_dir / 'visualization'
+            dirs_to_create += [bodyid_results_dir, bodyid_viz_dir]
+
+        aggregated_dir = None
+        if not bodyid_is_main:
+            aggregated_dir = profiles_dir / 'aggregated'
+            dirs_to_create.append(aggregated_dir)
+
+        for d in dirs_to_create:
             d.mkdir(parents=True, exist_ok=True)
         
         saved_files = {
@@ -12430,8 +12514,29 @@ class ConnectivityProfileComparer:
         }
         
         metrics_list = ['jaccard', 'weighted_jaccard', 'cosine', 'rank_corr', 'rank_corr_union']
-        directions_available = list(type_matrices.keys())
+        # Whichever level ran supplies the direction list: at bodyId level
+        # type_matrices is empty, and the README/parameters lines would go
+        # blank otherwise.
+        directions_available = (list(type_matrices.keys())
+                                or list(bodyid_matrices.keys())
+                                or list(type_avg_matrices.keys()))
         
+        aggregate_level = ('group-level' if self.aggregation_level == 'custom'
+                           else 'type-level')
+        levels_computed = ([f'{self.aggregation_level}-level']
+                           if bodyid_is_main else
+                           ([aggregate_level] if type_matrices else []))
+        row_avg_label = (f'{agg_word.capitalize()}-average of bodyId pairs'
+                         if agg_word != 'type'
+                         else 'type-average of bodyId pairs')
+        if not bodyid_is_main:
+            if bodyid_matrices:
+                levels_computed.append('bodyId-level')
+            if type_avg_matrices:
+                levels_computed.append(row_avg_label)
+        elif type_avg_matrices:
+            levels_computed.append('type-average of bodyId pairs')
+
         # Save parameters
         params = {
             'query': self.query if not self._custom_group_names else 
@@ -12440,6 +12545,9 @@ class ConnectivityProfileComparer:
             'group_map_csv': self.group_map_csv,
             'custom_mapping_file': self.custom_mapping_file,
             'aggregation_level': self.aggregation_level,
+            'row_kind': 'neuron' if bodyid_is_main else (
+                'group' if self.aggregation_level == 'custom' else 'type'),
+            'levels_computed': levels_computed,
             'query_name': self.query_name,
             'dataset': self.dataset,
             'top_k': self.top_k,
@@ -12463,72 +12571,129 @@ class ConnectivityProfileComparer:
         
         # Save README
         query_display = self._custom_group_names if self._custom_group_names else self.query
+
+        # List only the folders this run created: a bodyId-level run that
+        # documents a type_level/ it never wrote is the mislabelling this
+        # layout fix exists to remove.
+        layout = [('profiles/individual/',
+                   'Individual bodyId connectivity profiles')]
+        if aggregated_dir is not None:
+            layout.append(('profiles/aggregated/',
+                           f'{agg_word.capitalize()}-aggregated (mean-pooled) profiles'))
+        if agg_results_dir is not None:
+            layout.append((f'{agg_dir_name}/results/',
+                           f'{agg_csv_stem}_{{metric}}_{{direction}}.csv'))
+            layout.append((f'{agg_dir_name}/visualization/',
+                           f'heatmap_{agg_prefix}_{{direction}}_{{metric}}.html'))
+        if bodyid_results_dir is not None:
+            if bodyid_matrices:
+                layout.append(('bodyid_level/results/',
+                               'bodyid_similarity_{metric}_{direction}.csv'))
+            if type_avg_matrices:
+                layout.append(('bodyid_level/results/',
+                               'type_avg_bodyid_similarity_{metric}_{direction}.csv'))
+            layout.append(('bodyid_level/visualization/',
+                           'heatmap_bodyid_* / heatmap_type_avg_{direction}_{metric}.html'))
+
+        notes = []
+        if type_matrices:
+            notes.append(
+                f'- {agg_dir_name}: Compares aggregated (mean-pooled) '
+                f'{agg_word} profiles')
+        if bodyid_matrices:
+            notes.append(
+                '- bodyid_level/bodyid_*: '
+                + ('Board member-to-member comparisons (axes are '
+                   '"{member}_{group}")' if agg_word == 'group'
+                   else 'Direct bodyId-to-bodyId comparisons'))
+        if type_avg_matrices and bodyid_is_main:
+            notes.append(
+                "- aggregation_level='bodyid': the compared rows ARE individual neurons,"
+                ' so nothing was pooled and type_level/ was not written. type_avg_*'
+                ' averages those same pair scores per resolved type.')
+        else:
+            if type_avg_matrices:
+                notes.append(
+                    f'- bodyid_level/type_avg_*: {agg_word.capitalize()}'
+                    ' similarities averaged from the member-pair scores'
+                    ' (diagonal = intra-row avg, off-diagonal = inter-row avg)')
+            if len(type_profiles) < 2:
+                notes.append(
+                    f'- Single comparison row: its {agg_prefix} level cell is that row'
+                    ' pooled against itself (1.0); bodyid_level/ carries the pairwise'
+                    ' detail')
+            if not (bodyid_matrices or type_avg_matrices):
+                notes.append(
+                    f'- bodyId-level matrices were skipped (skip_bodyId_level='
+                    f'{self.skip_bodyId_level!r}); {agg_dir_name}/ only')
+        notes.extend([
+            "- profiles/*.json: 'type' is the MATRIX ROW label (a type, a group,",
+            "  or the neuron's own display label); 'neuron_type' is always the",
+            "  neuron's real resolved type",
+            "- bodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
+            "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
+            "  is the fallback when the neuron table has no metadata",
+            "- at the custom group level those rows are the board's MEMBERS",
+            f"  keyed by their group ('{{member}}_{{group}}'), so a member named",
+            "  as a type contributes that type's pooled profile rather than one",
+            "  row per neuron",
+            "- report.html: Overall report linking every metric and heatmap",
+            "",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        ])
+
         readme_lines = [
             "Connectivity Profile Comparison Results",
             "=" * 40,
             f"Query: {query_display}",
             f"Dataset: {self.dataset}",
-            f"Type Profiles: {len(type_profiles)}",
+            f"Aggregation level: {self.aggregation_level}",
+            f"Comparison rows ({'individual neurons' if bodyid_is_main else 'pooled types/groups'}): "
+            f"{len(type_profiles)}",
             f"BodyId Profiles: {len(bodyid_profiles)}",
             f"Metrics: {', '.join(metrics_list)}",
             f"Directions: {', '.join(directions_available)}",
+            f"Levels computed: {', '.join(levels_computed)}",
             "",
-            "Output Structure:",
-            "├── parameters.json",
-            "├── README.txt",
-            "├── profiles/",
-            "│   ├── individual/          # Individual bodyId profiles (connectivity)",
-            "│   └── aggregated/          # Type-aggregated profiles",
-            "├── type_level/",
-            "│   ├── results/             # Type-aggregated similarity matrices",
-            "│   └── visualization/       # Type-level heatmaps",
-            "└── bodyid_level/",
-            "    ├── results/",
-            "    │   ├── bodyid_similarity_{metric}_{direction}.csv",
-            "    │   └── type_avg_bodyid_similarity_{metric}_{direction}.csv",
-            "    └── visualization/",
-            "        ├── heatmap_bodyid_{direction}_{metric}.html",
-            "        └── heatmap_type_avg_{direction}_{metric}.html",
-            "",
-            "Notes:",
-            "- type_level: Compares aggregated (mean-pooled) type profiles",
-            "- bodyid_level/bodyid_*: Direct bodyId-to-bodyId comparisons",
-            "- bodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
-            "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
-            "  is the fallback when the neuron table has no metadata",
-            "- bodyid_level/type_avg_*: Type similarities averaged from bodyId pairs",
-            "  (diagonal = intra-type avg, off-diagonal = inter-type avg)",
-            "- report.html: Overall report linking every metric and heatmap",
-            "",
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "Folders written by this run:",
+            "  parameters.json / README.txt / report.html",
         ]
-        
+        last_folder = None
+        for folder, detail in layout:
+            head = f'  {folder:<32}' if folder != last_folder else ' ' * 35
+            readme_lines.append(f'{head}{detail}')
+            last_folder = folder
+        readme_lines += ["", "Notes:"] + notes
+
         with open(output_path / 'README.txt', 'w', encoding='utf-8') as f:
             f.write('\n'.join(readme_lines))
         
         # === Save Type-Level Results ===
-        self._log("Saving type-level results...")
-        for direction, metric_matrices in type_matrices.items():
-            for metric, matrix in metric_matrices.items():
-                csv_path = type_results_dir / f'type_similarity_{metric}_{direction}.csv'
-                matrix.to_csv(csv_path)
-                saved_files['matrices_saved'].append(str(csv_path))
+        if type_matrices:
+            self._log(f"Saving {agg_dir_name.replace('_level', '')}-level results...")
+            for direction, metric_matrices in type_matrices.items():
+                for metric, matrix in metric_matrices.items():
+                    csv_path = agg_results_dir / f'{agg_csv_stem}_{metric}_{direction}.csv'
+                    matrix.to_csv(csv_path)
+                    saved_files['matrices_saved'].append(str(csv_path))
         
         # === Save BodyId-Level Results ===
-        self._log("Saving bodyId-level results...")
-        for direction, metric_matrices in bodyid_matrices.items():
-            for metric, matrix in metric_matrices.items():
-                csv_path = bodyid_results_dir / f'bodyid_similarity_{metric}_{direction}.csv'
-                matrix.to_csv(csv_path)
-                saved_files['matrices_saved'].append(str(csv_path))
+        if bodyid_matrices:
+            self._log("Saving bodyId-level results...")
+            for direction, metric_matrices in bodyid_matrices.items():
+                for metric, matrix in metric_matrices.items():
+                    csv_path = bodyid_results_dir / f'bodyid_similarity_{metric}_{direction}.csv'
+                    matrix.to_csv(csv_path)
+                    saved_files['matrices_saved'].append(str(csv_path))
         
         # === Save Type-Avg-BodyId Results ===
-        self._log("Saving type-avg-bodyId results...")
-        for direction, metric_matrices in type_avg_matrices.items():
-            for metric, matrix in metric_matrices.items():
-                csv_path = bodyid_results_dir / f'type_avg_bodyid_similarity_{metric}_{direction}.csv'
-                matrix.to_csv(csv_path)
-                saved_files['matrices_saved'].append(str(csv_path))
+        if type_avg_matrices:
+            self._log("Saving type-avg-bodyId results...")
+            for direction, metric_matrices in type_avg_matrices.items():
+                for metric, matrix in metric_matrices.items():
+                    csv_path = bodyid_results_dir / f'type_avg_bodyid_similarity_{metric}_{direction}.csv'
+                    matrix.to_csv(csv_path)
+                    saved_files['matrices_saved'].append(str(csv_path))
         
         self._log(f"Saved {len(saved_files['matrices_saved'])} similarity matrices")
         
@@ -12561,41 +12726,51 @@ class ConnectivityProfileComparer:
             saved_files['profiles_saved'].append(str(profile_path))
         
         # === Save Aggregated Type Profiles ===
-        for type_label, profile in type_profiles.items():
-            safe_label = str(type_label).replace('/', '_').replace(':', '_').replace('.', '_')
-            
-            profile_data = {
-                'type': type_label,
-                'dataset': profile.dataset,
-                'num_neurons_aggregated': profile.num_neurons_aggregated,
-                'upstream_partners': {str(k): float(v) for k, v in profile.upstream_partners.items()},
-                'downstream_partners': {str(k): float(v) for k, v in profile.downstream_partners.items()},
-                'upstream_ranks': {str(k): int(v) for k, v in (profile.upstream_ranks or {}).items()},
-                'downstream_ranks': {str(k): int(v) for k, v in (profile.downstream_ranks or {}).items()},
-                'total_upstream_weight': float(profile.total_upstream_weight),
-                'total_downstream_weight': float(profile.total_downstream_weight),
-            }
-            
-            profile_path = aggregated_dir / f'{safe_label}_profile.json'
-            with open(profile_path, 'w', encoding='utf-8') as f:
-                json.dump(profile_data, f, indent=2)
-            saved_files['profiles_saved'].append(str(profile_path))
+        # At bodyId aggregation type_profiles maps each neuron's display label
+        # to that same individual profile, so writing it here would duplicate
+        # profiles/individual/ under a folder that claims pooled data.
+        if aggregated_dir is not None:
+            for type_label, profile in type_profiles.items():
+                safe_label = str(type_label).replace('/', '_').replace(':', '_').replace('.', '_')
+                
+                profile_data = {
+                    'type': type_label,
+                    'dataset': profile.dataset,
+                    'num_neurons_aggregated': profile.num_neurons_aggregated,
+                    'upstream_partners': {str(k): float(v) for k, v in profile.upstream_partners.items()},
+                    'downstream_partners': {str(k): float(v) for k, v in profile.downstream_partners.items()},
+                    'upstream_ranks': {str(k): int(v) for k, v in (profile.upstream_ranks or {}).items()},
+                    'downstream_ranks': {str(k): int(v) for k, v in (profile.downstream_ranks or {}).items()},
+                    'total_upstream_weight': float(profile.total_upstream_weight),
+                    'total_downstream_weight': float(profile.total_downstream_weight),
+                }
+                
+                profile_path = aggregated_dir / f'{safe_label}_profile.json'
+                with open(profile_path, 'w', encoding='utf-8') as f:
+                    json.dump(profile_data, f, indent=2)
+                saved_files['profiles_saved'].append(str(profile_path))
         
         self._log(f"Saved {len(saved_files['profiles_saved'])} connectivity profiles")
         
         # === Generate Heatmaps ===
         if self.generate_heatmaps:
-            # Type-level heatmaps
-            self._log("Generating type-level heatmaps...")
-            self._generate_heatmaps_vispath(type_matrices, type_viz_dir, saved_files, prefix='type')
+            # Type-level (or group-level) heatmaps
+            if type_matrices:
+                self._log(f"Generating {agg_prefix} level heatmaps...")
+                self._generate_heatmaps_vispath(type_matrices, agg_viz_dir,
+                                                saved_files, prefix=agg_prefix)
             
             # BodyId-level heatmaps  
-            self._log("Generating bodyId-level heatmaps...")
-            self._generate_heatmaps_vispath(bodyid_matrices, bodyid_viz_dir, saved_files, prefix='bodyid')
+            if bodyid_matrices:
+                self._log("Generating bodyId-level heatmaps...")
+                self._generate_heatmaps_vispath(bodyid_matrices, bodyid_viz_dir,
+                                                saved_files, prefix='bodyid')
             
             # Type-avg-bodyId heatmaps
-            self._log("Generating type-avg-bodyId heatmaps...")
-            self._generate_heatmaps_vispath(type_avg_matrices, bodyid_viz_dir, saved_files, prefix='type_avg')
+            if type_avg_matrices:
+                self._log("Generating type-avg-bodyId heatmaps...")
+                self._generate_heatmaps_vispath(type_avg_matrices, bodyid_viz_dir,
+                                                saved_files, prefix='type_avg')
 
         # Keep one report entry point for the single-dataset workflow too.
         # It is still useful when heatmaps are disabled because all exported
@@ -12758,11 +12933,25 @@ class ConnectivityProfileComparer:
         """Create the tabbed single-dataset report with clustered heatmaps."""
         from html import escape
 
-        sections = [
-            ('Type-level', type_matrices, 'type', 'type_similarity'),
-            ('BodyId-level', bodyid_matrices, 'bodyid', 'bodyid_similarity'),
-            ('Type-average BodyId', type_avg_matrices, 'type_avg', 'type_avg_bodyid_similarity'),
-        ]
+        # A level this run could not have produced gets no section. At
+        # aggregation_level='bodyid' nothing is pooled, so a 'Type-level' card
+        # reading "not computed" would advertise an input the user never
+        # withheld. The empty-matrix placeholder stays for a level that WAS
+        # possible and was skipped for cost (skip_bodyId_level over 1000
+        # bodyIds).
+        sections = []
+        agg_dir_name, agg_csv_stem, agg_prefix, agg_title = self._aggregate_names()
+        agg_axis = ('Custom group' if self.aggregation_level == 'custom'
+                    else 'Neuron type')
+        if self.aggregation_level != 'bodyid':
+            sections.append(
+                (agg_title, type_matrices, agg_prefix, agg_csv_stem, agg_axis))
+        sections.append(
+            ('BodyId-level', bodyid_matrices, 'bodyid', 'bodyid_similarity',
+             'Neuron'))
+        sections.append(
+            ('Type-average BodyId', type_avg_matrices, 'type_avg',
+             'type_avg_bodyid_similarity', agg_axis))
         directions = self._report_directions()
         dataset_label = str(self.dataset)
         lines = [
@@ -12802,7 +12991,7 @@ class ConnectivityProfileComparer:
                         f"<div class='direction-intro'><h3 class='direction-title'>{escape(direction_label)}</h3>"
                         f"<div class='direction-note'>{escape(self._direction_note(direction))}</div></div>"
                     )
-                    for level_title, matrices, prefix, csv_prefix in sections:
+                    for level_title, matrices, prefix, csv_prefix, axis_label in sections:
                         lines.append(
                             f"<section class='level-block'><div class='level-heading'>"
                             f"<h3>{escape(level_title)}</h3>"
@@ -12833,7 +13022,7 @@ class ConnectivityProfileComparer:
                             lines, output_path, metric_matrices,
                             f'{level_title} · {direction_label}',
                             csv_paths, vispath_paths,
-                            'Neuron / type', 'Neuron / type', plotly_state,
+                            axis_label, axis_label, plotly_state,
                             square_cells=True,
                         )
                         lines.append('</section>')
@@ -12882,6 +13071,7 @@ class ConnectivityProfileComparer:
         styles = self._report_metric_styles()
         prefix_display = {
             'type': 'Type-Level',
+            'group': 'Group-Level',
             'bodyid': 'BodyId-Level',
             'type_avg': 'Type-Avg-BodyId',
         }.get(prefix, prefix.title() if prefix else '')
@@ -12950,14 +13140,24 @@ class ConnectivityProfileComparer:
         """
         Run the connectivity profile comparison analysis.
         
-        Performs both type-level and bodyId-level comparisons:
+        Requires at least TWO NEURONS in scope, not two comparison rows: one
+        type with several members is a legitimate run, because its bodyId
+        matrices carry the pairwise detail while its single type-level cell is
+        that type pooled against itself.
         
         Output Structure:
-            1. Type-Level: Compares aggregated (mean-pooled) type profiles
+            1. Pooled level ('type' / 'custom'): aggregated (mean-pooled)
+               profiles -> ``type_level/``, or ``group_level/`` at the custom
+               level so the folder names the axes it holds
             2. BodyId-Level (if not skipped via skip_bodyId_level parameter):
                - Direct bodyId-to-bodyId similarity (labels: {bodyId}_{type})
                - Type-avg-bodyId: Type similarities averaged from bodyId pairs
                  (diagonal = intra-type avg, off-diagonal = inter-type avg)
+            3. aggregation_level='bodyid': the compared rows ARE individual
+               neurons, so those matrices are the bodyId-level results and are
+               filed under bodyid_level/ (with the per-type average folded
+               from the same scores). No type_level/ and no pooled profiles
+               are written, because nothing was pooled.
         
         For cross-dataset mode (query is dict), generates N×M similarity matrices
         comparing types from the first dataset (rows) against the second dataset (columns).
@@ -12965,12 +13165,13 @@ class ConnectivityProfileComparer:
         
         Returns:
             Dictionary with results summary including:
-            - n_type_profiles: Number of type profiles
+            - n_type_profiles: Number of comparison rows
             - n_bodyid_profiles: Number of bodyId profiles  
             - output_path: Path to output directory
             - matrices_saved: List of saved matrix file paths
             - heatmaps_generated: List of generated heatmap paths
-            - type_matrices: Type-level similarity matrices
+            - type_matrices: Type-level similarity matrices (empty dict at
+              aggregation_level='bodyid')
             - bodyid_matrices: BodyId-level similarity matrices (empty dict if skipped)
             - type_avg_matrices: Type-averaged-from-bodyId matrices (empty dict if skipped)
             - bodyid_level_skipped: Boolean indicating if bodyId computation was skipped
@@ -13012,20 +13213,29 @@ class ConnectivityProfileComparer:
         self._log("Extracting type-aggregated and bodyId-level profiles...")
         type_profiles, bodyid_profiles = self._extract_all_profiles()
         
-        if len(type_profiles) < 2:
-            self._log("Error: Need at least 2 type profiles to compare")
-            return {'n_type_profiles': len(type_profiles), 'error': 'Insufficient profiles'}
-        
-        # Determine whether to skip bodyId-level computation
+        # The gate counts NEURONS, not comparison rows: one type with two
+        # members is a legitimate run because its bodyId matrix answers "how
+        # similar are these neurons to each other". Raise rather than return
+        # an error dict — the runner discards the return value, so a refusal
+        # that exits 0 reaches the panel as "Completed with no files".
+        if len(type_profiles) < 2 and len(bodyid_profiles) < 2:
+            raise ValueError(
+                "Connectivity comparison needs at least two neurons in scope: "
+                f"query {self._format_query_for_log(self.query)} resolved "
+                f"{len(type_profiles)} comparison row(s) and "
+                f"{len(bodyid_profiles)} individual neuron(s) at the "
+                f"'{self.aggregation_level}' level."
+            )
+
+        # Decide which passes run. At aggregation_level='bodyid' the profiles
+        # already ARE individual neurons, so the main matrices are the bodyId
+        # results and the separate pair loop would only re-score them.
         n_bodyid = len(bodyid_profiles)
-        if self.aggregation_level == 'bodyid':
-            # The main matrices already compare individual bodyIds, so the
-            # separate bodyId-level and type-avg-bodyId steps would only
-            # duplicate them.
-            do_skip_bodyid = True
-            self._log("⚠️  aggregation_level='bodyid': the main matrices already compare "
-                      "individual neurons, so the separate bodyId-level and type-avg-bodyId "
-                      "matrices are skipped.")
+        bodyid_is_main = self.aggregation_level == 'bodyid'
+        if bodyid_is_main:
+            do_skip_bodyid = False
+            self._log("aggregation_level='bodyid': the main matrices compare "
+                      "individual neurons and are filed under bodyid_level/.")
         elif self.skip_bodyId_level == 'auto':
             do_skip_bodyid = n_bodyid > 1000
             if do_skip_bodyid:
@@ -13036,24 +13246,52 @@ class ConnectivityProfileComparer:
             do_skip_bodyid = bool(self.skip_bodyId_level)
             if do_skip_bodyid:
                 self._log(f"Skipping bodyId-level computation (skip_bodyId_level={self.skip_bodyId_level})")
-        
-        # Step 2: Compute type-level similarity matrices (aggregated profiles)
+
+        if len(type_profiles) < 2 and do_skip_bodyid:
+            # A single row at the type level is one pooled profile compared
+            # with itself: 1.0 on every metric, no information. The bodyId
+            # pass is what makes such a run worth doing — but only within the
+            # budget the auto rule exists to enforce, since one coarse label
+            # can hold tens of thousands of neurons and the pair loop is
+            # quadratic. Past it the skip stands and the log says so.
+            if n_bodyid <= 1000:
+                do_skip_bodyid = False
+                self._log("Only one comparison row resolved: keeping the bodyId-level "
+                          "pass so the run still yields pairwise detail.")
+            else:
+                self._log(f"Only one comparison row resolved and its {n_bodyid:,} neurons "
+                          f"pass the 1000-bodyId budget, so the bodyId-level pass stays "
+                          f"skipped: the single {self.aggregation_level}-level cell is "
+                          f"that row pooled against itself (1.0). Narrow the query, or "
+                          f"set skip_bodyId_level=False to force the pairwise run.")
+
+        # Step 2: Compute similarity matrices for the selected level
         self._progress(3, 4, "Computing similarity matrices")
-        self._log("Computing type-level similarity matrices (aggregated profiles)...")
-        type_matrices = self._compute_similarity_matrices(type_profiles)
-        
-        # Steps 3-4: Compute bodyId-level matrices (if not skipped)
-        if do_skip_bodyid:
-            bodyid_matrices = {}
-            type_avg_matrices = {}
+        if bodyid_is_main:
+            self._log("Computing bodyId-level similarity matrices "
+                      "(individual neuron profiles)...")
+            bodyid_matrices = self._compute_similarity_matrices(type_profiles)
+            type_matrices = {}
+            # Fold the per-type view out of the scores just computed instead of
+            # re-running the pair loop over the same profiles.
+            type_avg_matrices = self._type_avg_from_pair_matrices(
+                bodyid_matrices, bodyid_profiles)
         else:
-            # Step 3: Compute bodyId-level similarity matrices
-            self._log("Computing bodyId-level similarity matrices...")
-            bodyid_matrices = self._compute_bodyid_similarity_matrices(bodyid_profiles)
-            
-            # Step 4: Compute type-avg-bodyId matrices (average bodyId similarities per type pair)
-            self._log("Computing type-avg-bodyId similarity matrices...")
-            type_avg_matrices = self._compute_type_avg_bodyid_matrices(bodyid_profiles)
+            self._log("Computing type-level similarity matrices (aggregated profiles)...")
+            type_matrices = self._compute_similarity_matrices(type_profiles)
+
+            # Steps 3-4: Compute bodyId-level matrices (if not skipped)
+            if do_skip_bodyid:
+                bodyid_matrices = {}
+                type_avg_matrices = {}
+            else:
+                # Step 3: Compute bodyId-level similarity matrices
+                self._log("Computing bodyId-level similarity matrices...")
+                bodyid_matrices = self._compute_bodyid_similarity_matrices(bodyid_profiles)
+
+                # Step 4: Compute type-avg-bodyId matrices (average bodyId similarities per type pair)
+                self._log("Computing type-avg-bodyId similarity matrices...")
+                type_avg_matrices = self._compute_type_avg_bodyid_matrices(bodyid_profiles)
         
         # Step 5: Save all results
         save_label = ("Saving matrices, profiles, and heatmaps"
@@ -13071,18 +13309,27 @@ class ConnectivityProfileComparer:
         self._log("CONNECTIVITY PROFILING COMPLETE")
         self._log("=" * 60)
         self._log(f"Output: {output_path}")
-        self._log(f"Type profiles compared: {len(type_profiles)}")
+        self._log(f"Comparison rows: {len(type_profiles)}")
         self._log(f"BodyId profiles compared: {len(bodyid_profiles)}")
         if do_skip_bodyid:
-            self._log(f"BodyId-level matrices: SKIPPED (n={n_bodyid} > 1000)")
-        self._log(f"Types ({len(type_profiles)} total): {self._format_query_for_log(self._sort_types_string_first(list(type_profiles.keys())))}")
+            self._log(f"BodyId-level matrices: SKIPPED "
+                      f"(skip_bodyId_level={self.skip_bodyId_level}, n={n_bodyid})")
+        row_kind = ('Neurons' if bodyid_is_main else
+                    'Groups' if self.aggregation_level == 'custom' else 'Types')
+        self._log(f"{row_kind} ({len(type_profiles)} total): {self._format_query_for_log(self._sort_types_string_first(list(type_profiles.keys())))}")
         self._log("")
         self._log("Output includes:")
-        self._log("  - type_level/: Type-aggregated similarity matrices & heatmaps")
-        if not do_skip_bodyid:
+        if type_matrices:
+            agg_dir_name, _agg_stem, _agg_prefix, agg_title = self._aggregate_names()
+            self._log(f"  - {agg_dir_name}/: {agg_title} similarity matrices "
+                      "& heatmaps")
+        if bodyid_matrices or type_avg_matrices:
             self._log("  - bodyid_level/: BodyId similarity + type-avg-bodyId matrices & heatmaps")
         self._log("  - profiles/individual/: Individual bodyId connectivity profiles")
-        self._log("  - profiles/aggregated/: Type-aggregated connectivity profiles")
+        if not bodyid_is_main:
+            pooled = 'group' if self.aggregation_level == 'custom' else 'type'
+            self._log(f"  - profiles/aggregated/: {pooled.capitalize()}-aggregated"
+                      " connectivity profiles")
         
         return {
             'n_type_profiles': len(type_profiles),
@@ -13385,7 +13632,10 @@ class ConnectivityProfileComparer:
                     level_matrices = raw_matrices
 
                 level_specs = (
-                    ('type', 'Type level', 'similarity', 'intra'),
+                    ('type',
+                     'Group level' if self.aggregation_level == 'custom'
+                     else 'Type level',
+                     'similarity', 'intra'),
                     ('bodyid', 'BodyId level', 'bodyid_similarity', 'intra_bodyid'),
                     (
                         'type_avg_bodyid',
@@ -13662,6 +13912,18 @@ class ConnectivityProfileComparer:
                 skip_bodyid = n_bodyid > 1000
             else:
                 skip_bodyid = bool(self.skip_bodyId_level)
+            if len(type_profiles) < 2 and skip_bodyid and n_bodyid <= 1000:
+                # One row's type-level matrix is that row pooled against
+                # itself; the bodyId pass is the only informative output —
+                # inside the same quadratic budget the auto rule enforces.
+                skip_bodyid = False
+                self._log(f"Only one comparison row in {ds}: keeping the "
+                          f"bodyId-level pass so the run yields pairwise detail.")
+            elif len(type_profiles) < 2 and skip_bodyid:
+                self._log(f"Only one comparison row in {ds} and its {n_bodyid:,} "
+                          f"neurons pass the 1000-bodyId budget, so the bodyId "
+                          f"pass stays skipped and its pooled-level matrix holds "
+                          f"that row against itself (1.0).")
             if skip_bodyid:
                 self._log(
                     f"Skipping bodyId-level intra-dataset matrices for {ds} "
@@ -13678,6 +13940,22 @@ class ConnectivityProfileComparer:
 
             matrices_by_dataset[ds] = level_matrices
         
+        # Nothing resolved anywhere: raise rather than write a report full of
+        # empty sections. The runner discards the return value, so a silent
+        # refusal would reach the panel as "Completed" with no usable files.
+        if (not any(len(rows) >= 2 for rows in profiles_by_dataset.values())
+                and not any(len(rows) >= 2
+                            for rows in bodyid_profiles_by_dataset.values())):
+            raise ValueError(
+                "Connectivity comparison needs at least two neurons in scope: query "
+                f"{self._format_query_for_log(self.query)} resolved "
+                + '; '.join(
+                    f"{ds}: {len(profiles_by_dataset[ds])} row(s) / "
+                    f"{len(bodyid_profiles_by_dataset[ds])} neuron(s)"
+                    for ds in ds_list)
+                + f" at the '{self.aggregation_level}' level."
+            )
+
         # Step 2: inter-dataset comparisons (same queried neuron across datasets)
         self._progress(3, 4, "Computing inter-dataset matrices")
         self._log("")
@@ -13755,6 +14033,11 @@ class ConnectivityProfileComparer:
         
         Returns:
             Dictionary with results summary for cross-dataset comparison.
+
+        Raises:
+            ValueError: when one side resolves no profiles at all, so the run
+                cannot compare anything (the runner would otherwise report a
+                completed run with no files).
         """
         ds_list = list(self._cross_dataset_query.keys())
         self._log("=" * 60)
@@ -13779,12 +14062,14 @@ class ConnectivityProfileComparer:
         n_cols = len(col_labels)
         
         if n_rows == 0 or n_cols == 0:
-            self._log("Error: No profiles extracted from one or both datasets")
-            return {
-                'is_cross_dataset': True,
-                'error': 'No profiles extracted',
-                'n_type_profiles': 0,
-            }
+            # Raise, do not return an error dict: the runner discards return
+            # values, so a silent refusal reads as Completed with no files.
+            raise ValueError(
+                "Cross-dataset connectivity comparison found no profiles "
+                f"extracted from one or both datasets: {ds_list[0]} resolved "
+                f"{n_rows} row(s), {ds_list[1]} resolved {n_cols} row(s). Check "
+                "the queried names in both datasets, or toggle Auto Type Mapping."
+            )
         
         # Step 2: Compute cross-dataset similarity matrices
         self._progress(3, 4, "Computing similarity matrices")

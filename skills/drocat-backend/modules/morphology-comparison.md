@@ -59,8 +59,11 @@ NeuPrint datasets missing a token).
   uses too, so the two tabs cannot disagree about what a group is.
 - **Pinning**: a bodyId named in the query is protected from both
   `max_members_per_type` and `max_total_neurons` — those caps remove other
-  members only. `_check_population` refuses below two rows and names the level
-  (a two-bodyId query folding to one type says to switch levels).
+  members only. `_check_population` gates on **neurons in scope, not rows**:
+  one type with two members runs (its aggregate cell is the type's cohesion),
+  and a query that resolves to a single neuron refuses, naming the count and
+  what collapsed it (`Max Members per Type` below 2 at the bodyId level).
+  Folding bodyIds into one type at the type level is logged, not refused.
 - **vector_v2**: warms the per-dataset `SkeletonVectorCacheV2` via
   `vectors_for`; with `fetch_online=True` (default) cache misses are
   fetched through the API — `fetch_skeletons_on_demand_batch` on NeuPrint,

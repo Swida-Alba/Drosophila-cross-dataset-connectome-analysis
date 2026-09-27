@@ -16,7 +16,7 @@
   <h1>Comparison <span class="tag">Morphology tab</span></h1>
   <p class="lede">
     Compare the morphology of already-identified neurons <b>within one
-    dataset</b>: enter 2+ neurons (types, bodyIds, or patterns) and get the
+    dataset</b>: enter neurons, types, or patterns and get the
     N×N similarity matrix at the bodyId level plus a type-level aggregation,
     with interactive heatmaps and a summary report.
   </p>
@@ -37,14 +37,24 @@
       comparison is deferred there pending vector-quality validation of the
       public L2/full skeletons, not because skeletons are missing; BANC 3D
       visualization and pathfinding work).</li>
-    <li>Enter <b>2+ neurons</b>: exact types, bodyIds, or patterns
+    <li>Enter <b>one or more</b> neurons: exact types, bodyIds, or patterns
       (e.g. <code>aMe.*</code>) — or pick <b>custom group</b> as the
       Aggregation Level and define the groups on the grouping board instead.</li>
-    <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) to
-      decide what one matrix row is.</li>
+    <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) in
+      <b>Advanced Settings</b> to decide what one matrix row is.</li>
     <li>Click <b>Run Comparison</b>; open <code>report.html</code> in the
       output folder.</li>
   </ol>
+
+  <div class="callout info">
+    <b>The gate is neurons, not rows.</b> A run needs at least <b>two
+    neurons</b> in scope, so <b>one type</b> is a legitimate comparison: its
+    aggregate cell is that type's own cohesion (the mean pairwise score among
+    its members, not 1.0) and the bodyId matrix carries the pairwise detail.
+    One query that resolves to a single neuron is refused, with the message
+    naming what collapsed it — the query itself, or
+    <b>Max Members per Type</b> being below 2 at the bodyId level.
+  </div>
 
   <h2>Aggregation Level — what one matrix row is</h2>
   <ul>
@@ -123,9 +133,14 @@
       population; truncation walks the rows in order and never drops a neuron
       you queried by bodyId. NBLAST judges its 30-neuron limit against this
       capped size, so a cap below 30 is honoured rather than refused</td></tr>
-    <tr><td>Fetch Missing Skeletons Online</td><td>on</td><td>Pull
+    <tr><td>Fetch Missing Skeletons Online<br><span class="small">(Advanced Settings)</span></td><td>on</td><td>Pull
       skeletons for cache misses through the API into the shared cache
       (turn off for a strictly offline comparison)</td></tr>
+    <tr><td>Use Cache<br><span class="small">(Advanced Settings)</span></td><td>on</td><td>Serve
+      neuron vectors from the dataset's local cache instead of recomputing
+      them — the same switch the Connectivity ▸ Comparison card offers, so
+      neither tab hides a cache decision behind a default. The cross-dataset
+      comparison always uses the cache</td></tr>
     <tr><td>Generate Heatmaps</td><td>on</td><td>Interactive (VisPath)
       heatmaps, one per computed level</td></tr>
     <tr><td>3D Skeleton Visualization</td><td>off</td><td>Render the

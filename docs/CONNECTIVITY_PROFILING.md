@@ -141,8 +141,17 @@ comparer = ConnectivityProfileComparer(
 
 | Parameter           | Description                               | Default  |
 | ------------------- | ----------------------------------------- | -------- |
-| `aggregation_level` | `'bodyid'` or `'type'`                    | `'type'` |
+| `aggregation_level` | `'bodyid'`, `'type'`, or `'custom'` (`'custom group'` also accepted) | `'type'` |
+| `skip_bodyId_level` | `'auto'` (skip over 1000 bodyIds), `True`, or `False` | `'auto'` |
 | `direction`         | `'upstream'`, `'downstream'`, or `'both'` | `'both'` |
+
+At `'bodyid'` the compared rows are individual neurons, so their matrices are
+filed under `bodyid_level/` and no pooled level is written. `skip_bodyId_level`
+cannot empty a run left with a single comparison row: that row's pooled cell is
+itself pooled against itself (1.0 on every metric), so the bodyId pass is kept —
+unless the population passes the same 1000-bodyId budget the `'auto'` rule
+enforces, because the pair loop is quadratic. Past it the skip stands and the
+log names the fix.
 
 **Note:** ALL similarity metrics are computed automatically:
 - `jaccard`: Set-based overlap (0-1)
@@ -220,43 +229,38 @@ $$\text{RankCorr}_{union} = \rho_{spearman}(union)$$
 
 ## Output Structure
 
+One dataset (levels are written only when they ran — a `bodyid` run pools
+nothing, so it has no `type_level/` and no `profiles/aggregated/`):
+
 ```
-{output_dir}/profiling_{query_name}_{timestamp}/
-├── parameters.json
-├── README.txt
-├── results/
-│   ├── similarity_jaccard_combined.csv
-│   ├── similarity_jaccard_upstream.csv
-│   ├── similarity_jaccard_downstream.csv
-│   ├── similarity_cosine_combined.csv
-│   ├── similarity_cosine_upstream.csv
-│   ├── similarity_cosine_downstream.csv
-│   ├── similarity_rank_corr_combined.csv
-│   ├── similarity_rank_corr_upstream.csv
-│   ├── similarity_rank_corr_downstream.csv
-│   ├── similarity_rank_corr_union_combined.csv
-│   ├── similarity_rank_corr_union_upstream.csv
-│   └── similarity_rank_corr_union_downstream.csv
-├── profiles/
-│   ├── profiles_summary.json     # Summary metadata
-│   ├── individual/               # Raw connectivity profiles per bodyId
-│   │   └── {type}_{bodyId}_profile.json
-│   └── aggregated/               # Type-aggregated profiles
-│       └── {type}_profile.json
-└── visualization/
-    ├── heatmap_combined_jaccard.html
-    ├── heatmap_combined_cosine.html
-    ├── heatmap_combined_rank_corr.html
-    ├── heatmap_combined_rank_corr_union.html
-    ├── heatmap_upstream_jaccard.html
-    ├── heatmap_upstream_cosine.html
-    ├── heatmap_upstream_rank_corr.html
-    ├── heatmap_upstream_rank_corr_union.html
-    ├── heatmap_downstream_jaccard.html
-    ├── heatmap_downstream_cosine.html
-    ├── heatmap_downstream_rank_corr.html
-    └── heatmap_downstream_rank_corr_union.html
+{output_dir}/profiling_{dataset}_{query_name}_{timestamp}/
+├── parameters.json                  # incl. row_kind + levels_computed
+├── README.txt                       # lists only the folders this run wrote
+├── report.html                      # tabbed report over every metric matrix
+├── type_level/                      # 'type' level
+│   ├── results/type_similarity_{metric}_{direction}.csv
+│   └── visualization/heatmap_type_{direction}_{metric}.html
+├── group_level/                     # 'custom' level: same matrix, group axes
+│   ├── results/group_similarity_{metric}_{direction}.csv
+│   └── visualization/heatmap_group_{direction}_{metric}.html
+├── bodyid_level/
+│   ├── results/bodyid_similarity_{metric}_{direction}.csv
+│   ├── results/type_avg_bodyid_similarity_{metric}_{direction}.csv
+│   └── visualization/heatmap_bodyid_*.html, heatmap_type_avg_*.html
+└── profiles/
+    ├── individual/{bodyId}_{type}_profile.json
+    └── aggregated/{type}_profile.json
 ```
+
+`direction` is `overall` (both), `upstream` or `downstream`; `metric` is
+`jaccard`, `weighted_jaccard`, `cosine`, `rank_corr` or `rank_corr_union`.
+At the `bodyid` level the `bodyid_similarity_*` matrices ARE the comparison
+(their axes are individual neurons), and `type_avg_bodyid_*` is folded from
+those same pair scores so a per-type view is never lost.
+
+Two or more datasets profile the same query per dataset and add the
+inter-dataset comparison — see `docs/OUTPUT_FILES.md` §8 for the
+`intra_dataset/` + `cross_dataset/` layout.
 
 ## Visualization Features
 
@@ -381,10 +385,16 @@ python src/build_connection_cache.py male-cns:v0.9
 
 ### Not Enough Profiles
 
-Check that:
+A run needs at least two **neurons** in scope, not two rows, and it raises
+`ValueError` when it does not get them (so the runner exits non-zero instead of
+reporting a completed run with no files). Check that:
+
 1. Neuron types exist in the dataset
 2. BodyIds are valid for the dataset
 3. group_map_csv file path is correct and has required columns
+
+One type whose query resolves to a single row is still a valid run: its
+`bodyid_level/` matrices compare that type's own neurons.
 
 ### Memory Issues with Large Comparisons
 

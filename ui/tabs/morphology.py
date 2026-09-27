@@ -17,6 +17,7 @@ from ..config import (
     MORPH_METHOD_OPTIONS,
     PROJECT_ROOT,
     SRC_DIR,
+    get_tab_output_dir,
     get_user_default,
 )
 from ..components.common import (
@@ -122,6 +123,33 @@ MORPH_AGGREGATION_OPTIONS = ["type", "bodyid", "custom group"]
 _AGGREGATION_PARAM_VALUES = {
     "type": "type", "bodyid": "bodyid", "custom group": "custom",
 }
+
+
+def _resolve_comparison_output_dir(value):
+    """Resolve the Comparison sub-tab's output path before a run starts.
+
+    A dir_input that has not emitted its first browser change event reads as
+    empty (open the tab and click Run immediately), which would hand the
+    backend an empty output_dir. Same shape as the Connectivity tab's helper.
+    """
+    selected = str(value or "").strip()
+    return selected or str(
+        get_tab_output_dir("morphology_comparison")).strip()
+
+
+def _comparison_aggregation(cross: bool, value) -> str:
+    """The aggregation level a comparison run actually uses.
+
+    'custom group' rows are read from THIS dataset's grouping board, so a
+    cross run has no level to take: it uses the type level whatever the
+    (hidden) select still holds. Reading the select before this clamp used to
+    let a stale 'custom group' mark the query optional on a cross run, which
+    then passed every guard with an empty query.
+    """
+    if cross:
+        return "type"
+    level = str(value or "type")
+    return level if level in MORPH_AGGREGATION_OPTIONS else "type"
 
 
 def create_morphology_tab():
@@ -359,10 +387,12 @@ def create_morphology_tab():
                     label="Neurons to Compare",
                     placeholder="Type or upload CSV/TSV/Excel (e.g., aMe12, aMe10, aMe9)",
                     hint="Enter neuron types, bodyIds, or patterns "
-                         "(e.g. aMe.*). What one matrix row is depends on "
-                         "Aggregation Level below: a type (bodyIds resolve to "
-                         "their type), an individual neuron, or a custom "
-                         "group. With two or more datasets, types are resolved "
+                         "(e.g. aMe.*); one entry is enough — a single type "
+                         "still compares its own neurons. What one matrix row "
+                         "is depends on Aggregation Level in Advanced "
+                         "Settings below: a type (bodyIds resolve to their "
+                         "type), an individual neuron, or a custom group. "
+                         "With two or more datasets, types are resolved "
                          "per dataset (same-name/pattern, or via Auto Type "
                          "Mapping) and missing types show up as explicit empty "
                          "rows.",
@@ -390,20 +420,6 @@ def create_morphology_tab():
                 # --- intra-dataset-only parameters (exactly one dataset) ---
                 with ui.column().classes("w-full gap-1").props(
                         'id=card-morph-comparison-intra') as intra_params_box:
-                    with param_grid(2):
-                        comparison_aggregation = select_input(
-                            "Aggregation Level", MORPH_AGGREGATION_OPTIONS,
-                            "type",
-                            hint="'type': each queried type is one matrix row "
-                                 "(bodyId inputs resolve to their type). "
-                                 "'bodyid': every individual neuron is its own "
-                                 "row, so the bodyId matrix IS the comparison "
-                                 "and no type-level matrix is written. "
-                                 "'custom group': rows come from the grouping "
-                                 "board below; its query box is disabled in "
-                                 "this mode.",
-                        ).props('id=select-aggregation')
-
                     # Custom grouping board (same inline/preset mechanism as
                     # the Connectivity Comparison sub-tab), shown only for the
                     # 'custom group' level.
@@ -523,6 +539,33 @@ def create_morphology_tab():
                 with ui.expansion(
                     "Advanced Settings", icon="settings_suggest",
                 ).classes("w-full drocat-section-expansion"):
+                        # Inside the expansion, like the Connectivity tab's
+                        # Aggregation Level select: both tabs then offer the
+                        # three levels from the same place.
+                        with param_grid(2):
+                            comparison_aggregation = select_input(
+                                "Aggregation Level", MORPH_AGGREGATION_OPTIONS,
+                                "type",
+                                hint="'type': each queried type is one matrix row "
+                                     "(bodyId inputs resolve to their type). "
+                                     "'bodyid': every individual neuron is its own "
+                                     "row, so the bodyId matrix IS the comparison "
+                                     "and no type-level matrix is written. "
+                                     "'custom group': rows come from the grouping "
+                                     "board above; its query box is disabled in "
+                                     "this mode.",
+                            ).props('id=select-aggregation')
+
+                        comparison_use_cache = checkbox_input(
+                            "Use Cache", get_user_default("use_cache"),
+                            hint="Serve neuron vectors from the dataset's "
+                                 "local cache instead of recomputing them. "
+                                 "Turn off to rebuild from the connection and "
+                                 "skeleton data. Same setting as the Find "
+                                 "Similar panel above; the cross-dataset "
+                                 "comparison always uses the cache.",
+                        )
+
                         comparison_fetch = checkbox_input(
                             "Fetch Missing Skeletons Online", True,
                             hint="Pull skeletons for neurons missing from "
@@ -769,23 +812,19 @@ def create_morphology_tab():
         if not selected:
             ui.notify("Please select at least one dataset", type="warning")
             return
-        aggregation = str(comparison_aggregation.value or "type")
+        cross = len(selected) > 1
+        aggregation = _comparison_aggregation(cross, comparison_aggregation.value)
         # Custom rows come from the grouping board, not from the query box.
         query_optional = aggregation == "custom group"
         mode, neurons = comparison_query_input.get_value()
         query = apply_filter_mode(neurons, mode)
-        if (not query_optional and len(query) < 2 and len(selected) == 1):
-            ui.notify(
-                "Please enter at least two neurons to compare",
-                type="warning",
-            )
-            return
+        # One item is a legitimate query: the backend gate counts the neurons
+        # in scope, and a single type still yields its bodyId pairwise matrix.
         if not query and not query_optional:
-            ui.notify("Please enter at least one query neuron",
+            ui.notify("Please enter at least one neuron, type, or pattern",
                       type="warning")
             return
 
-        cross = len(selected) > 1
         if cross:
             rejected = [d for d in selected
                         if d not in _cross_allowed_datasets()]
@@ -813,7 +852,7 @@ def create_morphology_tab():
         # Custom-group rows need a mapping (preset or inline); resolve it
         # before the running state so an invalid board aborts cleanly.
         mapping_path = None
-        if not cross and aggregation == "custom group":
+        if aggregation == "custom group":
             mapping_path, mapping_ok = resolve_grouping()
             if not mapping_ok:
                 return
@@ -825,6 +864,10 @@ def create_morphology_tab():
 
         comparison_output.clear()
         comparison_output.set_running(True)
+        # One resolved path for the backend constructor, the output scanner and
+        # the history record, so they can never disagree.
+        output_path = _resolve_comparison_output_dir(
+            comparison_output_dir.value)
         try:
             if cross:
                 reference = cross_reference.value
@@ -833,7 +876,7 @@ def create_morphology_tab():
                 constructor_params = {
                     "datasets": selected,
                     "query": query,
-                    "output_dir": comparison_output_dir.value,
+                    "output_dir": output_path,
                     "max_members_per_type": int(comparison_max_members.value),
                     "null_k": int(cross_null_k.value),
                     "reference_template": reference,
@@ -860,13 +903,13 @@ def create_morphology_tab():
                     "max_members_per_type": int(comparison_max_members.value),
                     "max_total_neurons": int(comparison_max_total.value),
                     "fetch_online": bool(comparison_fetch.value),
-                    "output_dir": comparison_output_dir.value,
+                    "output_dir": output_path,
                     "saveas": "",
                     "generate_heatmaps": bool(comparison_heatmaps.value),
                     "show_figures": bool(comparison_show_figures.value),
                     "verbose": True,
                     "n_workers": 8,
-                    "use_cache": get_user_default("use_cache"),
+                    "use_cache": bool(comparison_use_cache.value),
                     "visualize": viz_on,
                     "visualization_settings": (
                         visualization_values if viz_on else {}),
@@ -877,7 +920,7 @@ def create_morphology_tab():
 
             result = await comparison_output.run(
                 comparison_runner, tool, constructor_params,
-                "run", output_dir=comparison_output_dir.value,
+                "run", output_dir=output_path,
             )
             succeeded = result.get("returncode") == 0
             if result.get("cancelled"):
@@ -900,7 +943,7 @@ def create_morphology_tab():
                 comparison_output.show_files(
                     list(files),
                     result.get("output_folder")
-                    or comparison_output_dir.value,
+                    or output_path,
                 )
         finally:
             comparison_output.set_running(False)

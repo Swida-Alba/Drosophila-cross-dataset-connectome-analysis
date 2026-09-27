@@ -519,11 +519,58 @@ def test_nblast_contra_pairs_excluded_from_type_means(monkeypatch, tmp_path):
 
 
 # ------------------------------------------------------------ guards/input
-def test_fewer_than_two_types_raises(vector_setup):
-    comparer = mc.MorphologyProfileComparer(
+def test_one_type_with_two_neurons_runs(vector_setup):
+    """The population gate counts NEURONS, not rows: one type with two members
+    is a legitimate comparison whose aggregate cell is that type's cohesion."""
+    result = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["aMe12"],
+        output_dir=str(vector_setup), generate_heatmaps=False,
+        verbose=False).run()
+    assert result["rows_compared"] == 1
+    aggregate = _read_matrix(
+        Path(result["output_folder"]) / "type_level"
+        / "type_similarity_vector_v2.csv")
+    assert list(aggregate.index) == ["aMe12"]
+    # aMe12's two members are identical vectors: cohesion 1.0
+    assert aggregate.loc["aMe12", "aMe12"] == pytest.approx(1.0)
+    assert _body_labels(result) == [_lbl(1), _lbl(2)]
+
+
+def test_one_type_at_bodyid_level_runs(vector_setup):
+    """A single type at the bodyId level was never the backend's problem: the
+    rows are its neurons, so the pairwise matrix is complete either way."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12"], aggregation_level="bodyid",
+        output_dir=str(vector_setup), generate_heatmaps=False,
+        verbose=False).run()
+    assert result["rows_compared"] == 2
+    assert _body_labels(result) == [_lbl(1), _lbl(2)]
+    assert not (Path(result["output_folder"]) / "type_level").exists()
+
+
+def test_single_neuron_query_raises(vector_setup):
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["PPL1*"],
         output_dir=str(vector_setup), generate_heatmaps=False, verbose=False)
-    with pytest.raises(ValueError, match="at least two"):
+    with pytest.raises(ValueError, match="at least two neurons"):
+        comparer.run()
+
+
+def test_bodyid_cap_of_one_names_the_cap(vector_setup):
+    """A refusal the user can act on: the cap, not the query, emptied the run."""
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12"], aggregation_level="bodyid",
+        max_members_per_type=1, output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False)
+    with pytest.raises(ValueError, match="Max Members per Type"):
+        comparer.run()
+
+
+def test_empty_query_names_the_query_not_a_min_count(vector_setup):
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=[],
+        output_dir=str(vector_setup), generate_heatmaps=False, verbose=False)
+    with pytest.raises(ValueError, match="needs a query"):
         comparer.run()
 
 
@@ -853,14 +900,16 @@ def test_bodyid_level_rows_are_neurons(vector_setup):
     assert result["rows_compared"] == 2
 
 
-def test_type_level_fold_hint_names_the_level(vector_setup):
-    """The <2-rows refusal says WHY the query collapsed and what to change."""
-    comparer = mc.MorphologyProfileComparer(
+def test_type_level_fold_hint_moves_to_the_log_once_it_runs(vector_setup, capsys):
+    """Two bodyIds of ONE type fold into one row at the type level: that is a
+    run now rather than a refusal, so the level pointer became a log line."""
+    result = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["1", "2"],
         aggregation_level="type", output_dir=str(vector_setup),
-        generate_heatmaps=False, verbose=False)
-    with pytest.raises(ValueError, match="Aggregation Level"):
-        comparer.run()
+        generate_heatmaps=False, verbose=True).run()
+    assert result["rows_compared"] == 1
+    assert _body_labels(result) == [_lbl(1), _lbl(2)]
+    assert "Aggregation Level to 'bodyid'" in capsys.readouterr().out
 
 
 def test_queried_bodyid_survives_the_member_cap(vector_setup):
