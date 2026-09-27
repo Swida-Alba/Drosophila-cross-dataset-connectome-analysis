@@ -150,6 +150,7 @@ def test_crosswalk_and_banc_label_values_hit_their_target_namespaces(mapper):
 
     target_for_column = {
         'fafb_cell_type': FAFB,
+        'fafb_alignment_cell_type': FAFB,
         'malecns_cell_type': MCNS,
         'hemibrain_cell_type': HB,
         'manc_cell_type': MANC,

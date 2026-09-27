@@ -3851,8 +3851,9 @@ def _load_coverage_index(dataset: str) -> Optional["CachedNeuronIndex"]:
         # MCNS crosswalks and endpoint-side annotation columns.
         "flywireType", "additional_type(s)", "Alternative Cell Type(s)",
         "hemibrainType", "mancType",
-        # BANC's curated label bridges.
-        "fafb_cell_type", "malecns_cell_type", "manc_cell_type",
+        # BANC's curated label bridges + the alignment fallback lane.
+        "fafb_cell_type", "fafb_alignment_cell_type",
+        "malecns_cell_type", "manc_cell_type",
         "hemibrain_cell_type",
     }
     try:

@@ -285,11 +285,13 @@ BRIDGE_STANDARD = {
     ),
     ('flywire_FAFB_v783', 'banc_v626'): (
         ('fafb_cell_type', 'banc_v626'),
+        ('fafb_alignment_cell_type', 'banc_v626'),
         ('additional_type(s)', 'flywire_FAFB_v783'),
         ('Alternative Cell Type(s)', 'banc_v626'),
     ),
     ('flywire_FAFB_v783', 'banc_v888'): (
         ('fafb_cell_type', 'banc_v888'),
+        ('fafb_alignment_cell_type', 'banc_v888'),
         ('additional_type(s)', 'flywire_FAFB_v783'),
         ('Alternative Cell Type(s)', 'banc_v888'),
     ),
@@ -341,6 +343,7 @@ LINKER_COLORS = {
     'hemibrainType': '#14b8a6',
     'mancType': '#ef4444',
     'fafb_cell_type': '#0ea5e9',
+    'fafb_alignment_cell_type': '#38bdf8',
     'malecns_cell_type': '#6366f1',
     'manc_cell_type': '#e11d48',
     'hemibrain_cell_type': '#0f766e',
@@ -350,8 +353,31 @@ LINKER_COLORS = {
 
 
 CROSSWALK_COLUMNS = ("flywireType", "hemibrainType", "mancType")
+# The alignment-fallback label column: a second BANC→FAFB label lane that
+# may fill a mapping ONLY where the curated fafb_cell_type pass yields no
+# winner (keep-rule in record_votes).  It rides the BANC label machinery
+# (overlay reads, terminal linkers, hop home, source-map licensing) but
+# classifies at its own, lower evidence tier.
+ALIGNMENT_LABEL_COLUMNS = frozenset({"fafb_alignment_cell_type"})
+
+
+def label_lane_kind(column: str) -> str:
+    """Provenance ``kind`` for one BANC label lane.
+
+    The four curated label columns keep the historical kind verbatim —
+    ``conflict.origin == 'cross-dataset cell type'`` equality gates
+    structural-split classification — while the alignment fallback lane
+    renders its own distinguishable kind so exports and support surfaces
+    can never mistake a fallback mapping for a curated one.
+    """
+    if column in ALIGNMENT_LABEL_COLUMNS:
+        return 'cross-dataset cell type (alignment)'
+    return 'cross-dataset cell type'
+
+
 BANC_LABEL_COLUMNS = (
     "fafb_cell_type",
+    "fafb_alignment_cell_type",
     "malecns_cell_type",
     "manc_cell_type",
     "hemibrain_cell_type",
@@ -422,6 +448,11 @@ BRIDGE_SOURCE_MAP: Dict[tuple, Set[str]] = {
         "banc_v888"},
     ("banc_v626", "fafb_cell_type"): {"flywire_FAFB_v783"},
     ("banc_v888", "fafb_cell_type"): {"flywire_FAFB_v783"},
+    # alignment-fallback lane: same landing namespace as the curated label,
+    # gated by the record_votes keep-rule (never overrides an fct winner
+    # and never fills an fct-conflicted slot)
+    ("banc_v626", "fafb_alignment_cell_type"): {"flywire_FAFB_v783"},
+    ("banc_v888", "fafb_alignment_cell_type"): {"flywire_FAFB_v783"},
     ("banc_v626", "malecns_cell_type"): {"male-cns:v1.0"},
     ("banc_v888", "malecns_cell_type"): {"male-cns:v1.0"},
     ("banc_v626", "manc_cell_type"): {"manc:v1.0", "manc:v1.2.1"},
@@ -531,6 +562,10 @@ def linker_evidence_tier(column: str, raw_value: Any = "",
     """Classify one linker without using coverage or population size."""
     if indirect:
         return "indirect route"
+    if column in ALIGNMENT_LABEL_COLUMNS:
+        # checked before the BANC label branch so the fallback lane keeps
+        # its own tier instead of inheriting curated/auto
+        return "direct alignment label"
     if column in BANC_LABEL_COLUMNS:
         return ("direct auto label" if str(raw_value or "").casefold()
                 .startswith("auto:") else "direct curated label")
@@ -567,12 +602,13 @@ def prioritized_bridge_chains(chains, source_dataset: str,
         tier_order = {
             "direct curated label": 0,
             "direct crosswalk": 1,
-            "direct auto label": 2,
-            "direct annotation": 3,
-            "direct release relation": 4,
-            "direct metadata": 4,
-            "indirect route": 5,
-            "same name": 6,
+            "direct alignment label": 2,
+            "direct auto label": 3,
+            "direct annotation": 4,
+            "direct release relation": 5,
+            "direct metadata": 5,
+            "indirect route": 6,
+            "same name": 7,
         }
         best_tier = min(
             (tier_order.get(linker.get("evidence_tier", "direct metadata"), 4)
@@ -2496,6 +2532,7 @@ class CrossDatasetTypeMapper:
     def _banc_label_targets(self, column: str) -> Set[str]:
         return {
             'fafb_cell_type': {'flywire_FAFB_v783'},
+            'fafb_alignment_cell_type': {'flywire_FAFB_v783'},
             'malecns_cell_type': {'male-cns:v1.0'},
             'manc_cell_type': {'manc:v1.0', 'manc:v1.2.1'},
             'hemibrain_cell_type': {'hemibrain:v1.2.1'},
@@ -2504,9 +2541,12 @@ class CrossDatasetTypeMapper:
     def _banc_label_match_column(self, column: str) -> Optional[str]:
         # Only FAFB and MCNS have locally verifiable optional match columns.
         # They annotate provenance/quality; they must not gate the type label
-        # or make the type mapper depend on a bodyId-to-bodyId mapping.
+        # or make the type mapper depend on a bodyId-to-bodyId mapping.  The
+        # alignment lane reads the same fafb_match diagnostics as the curated
+        # lane (96.5% agreement vs 99.2% — surfaced, never gating).
         return {
             'fafb_cell_type': 'fafb_match',
+            'fafb_alignment_cell_type': 'fafb_match',
             'malecns_cell_type': 'malecns_match',
         }.get(column)
 
@@ -2765,7 +2805,18 @@ class CrossDatasetTypeMapper:
         ]
 
     def _apply_banc_label_overlay(self) -> None:
-        """Use BANC's curated per-dataset label columns as direct bridges."""
+        """Use BANC's curated per-dataset label columns as direct bridges.
+
+        The four curated columns vote per BANC primary under the
+        dominant-vote rule (>50% and >=2x runner-up).  ``fafb_alignment_
+        cell_type`` rides the same machinery as a FALLBACK-only lane
+        (2026-09-27): ``record_votes`` gates it so it may fill a slot only
+        where the curated ``fafb_cell_type`` pass left it unresolved — a
+        curated winner keeps its provenance, a curated conflict stays
+        fail-closed, and the lane's own vote conflicts are diagnostics in
+        ``_banc_label_votes`` (surfaced via ``alignment_fallback_rows``),
+        never ``TypeMappingConflict`` records.
+        """
         import polars as pl
 
         label_columns = BANC_LABEL_COLUMNS
@@ -2804,6 +2855,24 @@ class CrossDatasetTypeMapper:
                 'raw_values': raw_values,
             }
             winner = self._dominant_vote(votes)
+            if column in ALIGNMENT_LABEL_COLUMNS:
+                # §alignment fallback lane keep-rule: this lane may fill a
+                # slot ONLY where the curated fafb_cell_type pass left it
+                # unresolved.  A slot the curated pass filled (any winner)
+                # must keep its provenance untouched, and a curated conflict
+                # stays fail-closed — filling it would silently adjudicate
+                # the curated vote with weaker evidence.  Alignment vote
+                # conflicts are diagnostics (kept in _banc_label_votes),
+                # never TypeMappingConflict records.
+                target_keys = [
+                    target_key for target_key in target_keys
+                    if (not self._type_mappings.get(banc_key, {}).get(
+                            banc_type, {}).get(target_key)
+                        and not self._has_conflict(
+                            banc_key, target_key, banc_type))
+                ]
+                if not target_keys or winner is None:
+                    return
             if winner is None:
                 if len(votes) > 1:
                     for target_key in target_keys:
@@ -2864,13 +2933,27 @@ class CrossDatasetTypeMapper:
                     'winner_raw_values': list(raw_values.get(winner, [])),
                     'alternates': alternates,
                 })
-                edge = (target_key, winner, column, linker_value, banc_key)
+                # §token chaining (user 2026-09-27): a label edge may
+                # land directly on the target-native primary only when
+                # the cell token names it EXACTLY.  A rename-resolved
+                # winner (cell 'SMP537' -> FAFB 'DN1pD') terminates at
+                # the raw-token name node instead; the walk continues
+                # from that node through the target namespace's own
+                # additional_type(s) edge, so the chain reads
+                # fct 'SMP537' -> aT -> DN1pD instead of hiding the
+                # rename inside one hop.  The decision/provenance layer
+                # stays winner-resolved (target: winner, unchanged).
+                canonical_token = canonical_linker_token(linker_value)
+                arrival = (winner if canonical_token == winner
+                           else canonical_token)
+                edge = (target_key, arrival, column, linker_value,
+                        banc_key)
                 if edge not in self._banc_label_edges[(banc_key, banc_type)]:
                     self._banc_label_edges[(banc_key, banc_type)].append(edge)
                 self._bridge_provenance[(
                     banc_key, banc_type, target_key
                 )] = {
-                    'kind': 'cross-dataset cell type',
+                    'kind': label_lane_kind(column),
                     'column': column,
                     'target': winner,
                     'linker_value': linker_value,
@@ -3021,14 +3104,29 @@ class CrossDatasetTypeMapper:
                     reverse_edge = (
                         banc_key, banc_type, record['column'],
                         record['linker_value'], banc_key)
+                    # §token chaining: the reverse edge hangs off the
+                    # token node when the label cell renames (same rule
+                    # as the forward edge) — exact matches keep the
+                    # direct node.
+                    token_node = canonical_linker_token(
+                        record['linker_value'])
+                    edge_node = (winner if token_node == winner
+                                 else token_node)
                     if reverse_edge not in self._banc_label_edges[(
-                            target_key, winner)]:
-                        self._banc_label_edges[(target_key, winner)].append(
-                            reverse_edge)
+                            target_key, edge_node)]:
+                        self._banc_label_edges[(
+                            target_key, edge_node)].append(reverse_edge)
+                record_columns = {
+                    reverse_label_records[(
+                        target_key, winner, banc_key, bt)]['column']
+                    for bt in source_types
+                }
                 self._bridge_provenance[(
                     target_key, winner, banc_key
                 )] = {
-                    'kind': 'cross-dataset cell type',
+                    'kind': (label_lane_kind(next(iter(record_columns)))
+                             if len(record_columns) == 1
+                             else 'cross-dataset cell type'),
                     'column': 'multiple',
                     'target': None,
                     'conflict': True,
@@ -3056,14 +3154,16 @@ class CrossDatasetTypeMapper:
             reverse_edge = (
                 banc_key, banc_type, record['column'],
                 record['linker_value'], banc_key)
-            if reverse_edge not in self._banc_label_edges[(target_key,
-                                                           winner)]:
-                self._banc_label_edges[(target_key, winner)].append(
-                    reverse_edge)
+            token_node = canonical_linker_token(record['linker_value'])
+            edge_node = (winner if token_node == winner else token_node)
+            if reverse_edge not in self._banc_label_edges[(
+                    target_key, edge_node)]:
+                self._banc_label_edges[(
+                    target_key, edge_node)].append(reverse_edge)
             self._bridge_provenance[(
                 target_key, winner, banc_key
             )] = {
-                'kind': 'cross-dataset cell type',
+                'kind': label_lane_kind(record['column']),
                 'column': record['column'],
                 'target': banc_type,
                 'linker_value': record['linker_value'],
@@ -4425,6 +4525,13 @@ class CrossDatasetTypeMapper:
                 reverse = None
             support = self._bridge_support_for_pair(
                 rival, source_dataset, rival, target_dataset)
+            if support is None:
+                # A label-lane rival (e.g. a BANC type whose curated or
+                # alignment label names the selected type) has no own-name
+                # pair — its vote evidence lives on the rival -> selected
+                # pair, which is exactly the relation being disclosed.
+                support = self._bridge_support_for_pair(
+                    rival, target_dataset, raw, source_dataset)
             rows.append({
                 'rival': rival,
                 'rival_has_own_clean_pair': bool(own_pair),
@@ -4913,8 +5020,11 @@ class CrossDatasetTypeMapper:
                 if base:
                     normalized_filter_types.add(base)
         
-        # Determine which columns/datasets to include
-        all_datasets = ['male-cns:v1.0', 'flywire_FAFB_v783', 'banc_v626', 
+        # Determine which columns/datasets to include.  Both BANC releases
+        # are separate mapping namespaces and get their own column (a v888
+        # selection must never read through the v626 column).
+        all_datasets = ['male-cns:v1.0', 'flywire_FAFB_v783', 'banc_v626',
+                        'banc_v888',
                         'hemibrain:v1.2.1', 'manc:v1.0', 'manc:v1.2.1']
         if datasets:
             # Column labels keep the REQUESTED (release-specific) names;
@@ -5207,6 +5317,54 @@ class CrossDatasetTypeMapper:
                 counts[snf['disposition']] = (
                     counts.get(snf['disposition'], 0) + 1)
         return counts
+
+    def alignment_fallback_rows(
+            self,
+            filter_types: Optional[Set[str]] = None,
+            datasets: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run-scoped rows of alignment-fallback mappings for the notes block.
+
+        One row per BANC type whose FAFB mapping was filled by the
+        ``fafb_alignment_cell_type`` lane (the curated ``fafb_cell_type``
+        pass yielded no winner), scoped like :meth:`same_name_first_summary`
+        (result types + run datasets).  Carries the vote and ``fafb_match``
+        verification counts so the weak-evidence class stays visible.
+        """
+        if not self._loaded:
+            if not self.load():
+                return []
+        ds_keys = ({self._get_type_mapping_key(d) for d in datasets}
+                   if datasets else None)
+        rows: List[Dict[str, Any]] = []
+        for (banc_key, column, banc_type), record in sorted(
+                self._banc_label_votes.items()):
+            if column != 'fafb_alignment_cell_type':
+                continue
+            votes = record.get('votes') or {}
+            if not votes:
+                continue
+            if ds_keys is not None and banc_key not in ds_keys:
+                continue
+            if filter_types is not None and banc_type not in filter_types:
+                continue
+            for target_key in sorted(self._banc_label_targets(column)):
+                prov = self._bridge_provenance.get(
+                    (banc_key, banc_type, target_key))
+                if not prov or prov.get('column') != column:
+                    continue
+                verified = prov.get('verified_votes') or {}
+                rows.append({
+                    'source_dataset': banc_key,
+                    'source_type': banc_type,
+                    'target_dataset': target_key,
+                    'target_type': prov.get('target'),
+                    'total_votes': int(sum(votes.values())),
+                    'verified_votes': int(sum(verified.values())),
+                    'winner_votes': int(
+                        votes.get(prov.get('target'), 0)),
+                })
+        return rows
 
     def multivalue_summary(
             self,
@@ -6747,6 +6905,43 @@ class CrossDatasetTypeMapper:
             ]
             filtered.extend(verified or group)
         bridges = filtered
+        # Curated-subsumes-annotation (user 2026-09-27): a one-linker
+        # ``additional_type(s)`` chain whose token a curated
+        # ``fafb_cell_type`` chain already bridges to the SAME target is
+        # redundant — the FAFB annotation cell mirrors the very name the
+        # BANC label votes for.  Without this rule the linker network
+        # drew two PARALLEL one-linker paths (aT 'CB1770' next to fct
+        # 'CB1770') for the same pair.  Composed annotation routes
+        # (aT→ACT), aT-only pairs, and same-target chains whose tokens
+        # disagree are untouched.
+        def _std_linkers(chain):
+            return [l for l in standardize_bridge(
+                chain, source_dataset, target_dataset)
+                if l["kind"] == "linker"]
+
+        by_end = {}
+        for chain in bridges:
+            by_end.setdefault(chain[-1]["value"], []).append(chain)
+        if any(hop.get("column") == "fafb_cell_type"
+               for chain in bridges for hop in chain[1:]):
+            # token -> the targets a curated fct chain bridges it to
+            curated_token_ends = {}
+            for chain in bridges:
+                for linker in _std_linkers(chain):
+                    if linker["column"] == "fafb_cell_type":
+                        curated_token_ends.setdefault(
+                            linker["value"], set()).add(chain[-1]["value"])
+            kept: List[List[Dict[str, str]]] = []
+            for chain in bridges:
+                linkers = _std_linkers(chain)
+                subsumed = (
+                    len(linkers) == 1
+                    and linkers[0]["column"] == "additional_type(s)"
+                    and chain[-1]["value"] in curated_token_ends.get(
+                        linkers[0]["value"], ()))
+                if not subsumed:
+                    kept.append(chain)
+            bridges = kept
         # Honour the public bridge budget and make the preferred direct label
         # or release relation win over longer annotation alternatives.
         bridges.sort(key=lambda chain: (
@@ -7245,8 +7440,13 @@ class CrossDatasetTypeMapper:
             for name, cnt in shown:
                 v = int(verified.get(name, 0))
                 a = int(auto.get(name, 0))
-                tag = f" (curated {v})" if v else (f" (auto {a or cnt})" if a
-                                                   else "")
+                if v:
+                    # alignment-fallback votes verified by fafb_match are
+                    # match-verified, not curated — keep the wording honest
+                    tag = (f" (verified {v})"
+                           if 'alignment' in kind else f" (curated {v})")
+                else:
+                    tag = f" (auto {a or cnt})" if a else ""
                 parts.append(f"{name}={cnt}{tag}")
             if len(ordered) > len(shown):
                 parts.append(f"+{len(ordered) - len(shown)} more candidates")

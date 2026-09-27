@@ -337,10 +337,12 @@ def test_bridges_csv_contract():
         'source_pool,source_total,target_pool,target_total,'
         'source_body_ids,target_body_ids,'
         'pool_coverage,pool_coverage_basis')
-    # linker-bearing row: explicit endpoints, matched entry + column
+    # linker-bearing row: explicit endpoints, matched entry + column; a
+    # same-name pair whose chain carries the verifying relation reads
+    # same name+evidence (2026-09-27 origin unification)
     assert lines[1].startswith(
         'male-cns:v1.0,T1,type,T1,flywire_FAFB_v783,T1,1-to-1,4,4,')
-    assert 'flywireType' in lines[1] and ',mapped,' in lines[1]
+    assert 'flywireType' in lines[1] and ',same name+evidence,' in lines[1]
     # bare same-name row: no linker columns, same-name origin, pool
     # coverage + FULL per-type bodyId populations filled (quoting handles
     # the comma in the type name)

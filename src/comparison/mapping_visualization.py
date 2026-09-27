@@ -1278,6 +1278,7 @@ def build_bridge_linker_graph(flows, *, source_dataset: str,
     # column as another chain's flywireType nodes, and a shared linker
     # node's position was overwritten by whichever chain processed last.
     observed_columns: List[str] = []
+    column_homes: Dict[str, str] = {}
     for flow in ordered:
         pool = get_mapping_pool(pools, flow)
         chains = (pool.get("valid_chains")
@@ -1289,17 +1290,36 @@ def build_bridge_linker_graph(flows, *, source_dataset: str,
                     if l.get("kind") == "linker"):
                 if linker["column"] not in observed_columns:
                     observed_columns.append(linker["column"])
+                    column_homes[linker["column"]] = str(
+                        linker.get("home", ""))
     from comparison.cross_dataset_type_mapper import BRIDGE_STANDARD
     registry = (
         BRIDGE_STANDARD.get((source_dataset, target_dataset))
         or BRIDGE_STANDARD.get((target_dataset, source_dataset))
         or ()
     )
-    column_order = [
-        column for column, _home in registry if column in observed_columns
-    ]
+    # §layout + §token chaining (user 2026-09-27): order the columns by
+    # traversal SIDE — a sequential two-linker bridge leaves the source
+    # namespace through a source-side (or hub) column and enters the
+    # target through a target-side column, so side ordering wires every
+    # chain left-to-right exactly like the MCNS --flywireType--aT-- FAFB
+    # standard (FAFB --aT--> token --fct--> BANC puts additional_type(s)
+    # before fafb_cell_type).  First appearance orders columns WITHIN a
+    # side; the registry order only places columns the chains did not.
+    def _side_rank(column: str) -> int:
+        home = column_homes.get(column, "")
+        if home == source_dataset:
+            return 0
+        if home == target_dataset:
+            return 2
+        return 1
+
+    column_order = sorted(
+        observed_columns, key=lambda column: (
+            _side_rank(column), observed_columns.index(column)))
     column_order.extend(
-        column for column in observed_columns if column not in column_order
+        column for column, _home in registry
+        if column in observed_columns and column not in column_order
     )
     column_layer = {column: index + 1
                     for index, column in enumerate(column_order)}
@@ -1430,6 +1450,8 @@ _LINKER_LEGEND_DESC = {
     "hemibrainType": "male-cns crosswalk column (hT)",
     "mancType": "male-cns crosswalk column (mT)",
     "fafb_cell_type": "BANC curated FAFB label",
+    "fafb_alignment_cell_type":
+        "BANC alignment-derived FAFB label (fallback lane)",
     "malecns_cell_type": "BANC curated MCNS label (mct)",
     "hemibrain_cell_type": "BANC curated hemibrain label",
     "manc_cell_type": "BANC curated MANC label",
@@ -3306,7 +3328,7 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
             flow.get("foreign_count") or 0,
             info["text"],
             "; ".join(linker["column"] for linker in linkers),
-            "same name" if not linkers else "mapped",
+            _pair_mapping_origin(linkers, src_type, foreign),
             pool.get("source_pool_size", ""),
             source_total if source_total is not None else "",
             pool.get("target_pool_size", ""),
@@ -3332,7 +3354,7 @@ def build_bridges_csv(flows, *, pools=None, extended: bool = False) -> Optional[
             selected_info["text"],
             info["text"],
             "; ".join(linker["column"] for linker in linkers),
-            "same name" if not linkers else "mapped",
+            _pair_mapping_origin(linkers, src_type, foreign),
             flow.get("mapping_status") or "mapped",
             pool.get("selected_chain_rank", ""),
             pool.get("valid_chain_count", ""),
@@ -3481,6 +3503,48 @@ def annotate_branch_records(records: List[Dict[str, Any]]) -> None:
         r['branches_disjoint'] = disjoint
 
 
+def _pair_mapping_origin(linkers, source_type, target_type) -> str:
+    """Unified ``mapping_origin`` for one per-pair mapping row.
+
+    Same vocabulary as the compact ``auto_type_mapping.csv`` export and
+    ``_bridge_provenance`` kinds (2026-09-27 unification — the per-pair
+    column previously read only ``mapped``/``same name`` and could not
+    distinguish the label lanes): a linker-less row is a bare ``same
+    name`` echo; a same-name pair whose chain carries the verifying
+    relation is ``same name+evidence``; otherwise the lane that provided
+    the linkers names the origin, alignment lane included.
+    """
+    if not linkers:
+        return 'same name'
+    from comparison.cross_dataset_type_mapper import (
+        ALIGNMENT_LABEL_COLUMNS,
+        ANNOTATION_COLUMNS,
+        BANC_LABEL_COLUMNS,
+        BANC_RELEASE_LINKER,
+        CROSSWALK_COLUMNS,
+        RELEASE_ALIAS_LINKER,
+    )
+    columns = [str(linker.get('column', '')) for linker in linkers]
+    if str(source_type or '') == str(target_type or ''):
+        return 'same name+evidence'
+    if any(column in ALIGNMENT_LABEL_COLUMNS for column in columns):
+        return 'cross-dataset cell type (alignment)'
+    if any(column in BANC_LABEL_COLUMNS for column in columns):
+        return 'cross-dataset cell type'
+    if any(column in CROSSWALK_COLUMNS for column in columns):
+        return 'crosswalk'
+    tokens = sorted({str(linker.get('value', '')) for linker in linkers
+                     if linker.get('column') in ANNOTATION_COLUMNS
+                     and linker.get('value')})
+    if tokens:
+        return 'annotation bridge via ' + ', '.join(tokens)
+    if BANC_RELEASE_LINKER in columns:
+        return 'release relation'
+    if RELEASE_ALIAS_LINKER in columns:
+        return 'release alias'
+    return 'mapped'
+
+
 def branches_to_per_bridge_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Per-bridge CSV rows (§3): one row per (type pair, bridge chain).
 
@@ -3541,9 +3605,8 @@ def branches_to_per_bridge_rows(records: List[Dict[str, Any]]) -> List[Dict[str,
                 f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
                 for h in (r.get('chain') or [])) if r.get('chain') else '',
             'bridge_columns': linker_cols,
-            'mapping_origin': ('same name' if not linkers and
-                               r.get('chain') == [] else
-                               ('mapped' if linkers else 'same name')),
+            'mapping_origin': _pair_mapping_origin(
+                linkers, r.get('source_type', ''), r.get('target_type', '')),
             'mapping_status': r.get('parent_status') or '',
             'selected_bridge_rank': (r.get('chain_rank')
                                      if r.get('is_selected') else ''),

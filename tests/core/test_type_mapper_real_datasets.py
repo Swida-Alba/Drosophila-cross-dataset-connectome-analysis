@@ -1997,3 +1997,157 @@ def test_target_taxonomy_query_bridges_across_datasets(mapper):
     # sources: identity names everywhere (query content unchanged)
     for ds in (MCNS, FW, BANC):
         assert p.get_source_neurons_for_dataset(ds) == ['L2']
+
+
+# ---------------------------------------------------------------------------
+# Curated-subsumes-annotation (user 2026-09-27): a one-linker
+# ``additional_type(s)`` chain whose token a curated ``fafb_cell_type``
+# chain already bridges to the SAME target is redundant — the linker
+# network drew two PARALLEL one-linker paths (aT 'CB1770' beside fct
+# 'CB1770').  aT-only pairs, composed aT→ACT routes, and same-target
+# chains whose tokens disagree keep their chains.
+# ---------------------------------------------------------------------------
+
+BANC888 = 'banc_v888'
+
+
+def test_curated_subsumes_same_token_annotation_landing(mapper):
+    chains = mapper.get_type_bridges('s-CPDN3A', FW, BANC, max_bridges=0)
+    assert chains
+    by_end = {}
+    for chain in chains:
+        linkers = [l for l in standardize_bridge(chain, FW, BANC)
+                   if l['kind'] == 'linker']
+        by_end.setdefault(chain[-1]['value'], []).append(
+            [l['column'] for l in linkers])
+    # every fct-bridged target lost its parallel one-linker aT chain
+    for end, shapes in by_end.items():
+        if ['fafb_cell_type'] in shapes:
+            assert ['additional_type(s)'] not in shapes, end
+    # the curated bridges themselves are untouched
+    assert any('fafb_cell_type' in s for shapes in by_end.values()
+               for s in shapes)
+
+
+def test_annotation_only_pair_keeps_its_at_chain(mapper):
+    # CB3767 has NO fct chain from s-CPDN3C (the curated vote disagrees),
+    # so its annotation-landing chain survives subsumption
+    chains = mapper.get_type_bridges('s-CPDN3C', FW, BANC, max_bridges=0)
+    shapes = {tuple(h['column'] for h in chain[1:]): chain[-1]['value']
+              for chain in chains}
+    assert shapes.get(('fafb_cell_type',)) != 'CB3767'
+    assert ('additional_type(s)', 'type') in shapes
+    assert shapes[('additional_type(s)', 'type')] == 'CB3767'
+
+
+def test_composed_at_act_chain_survives_subsumption(mapper):
+    # 4I1 -> FB4F_a travels the two-annotation-column standard; the fct
+    # column has no chain there, so nothing is subsumed
+    chains = mapper.get_type_bridges('4I1', FW, BANC, max_bridges=0)
+    assert any(
+        'Alternative Cell Type(s)' in tuple(h['column'] for h in chain[1:])
+        for chain in chains)
+
+
+def test_reverse_direction_subsumes_the_all_annotation_route(mapper):
+    # BANC SMP537 -> FAFB: the curated label bridges token 'SMP537' to
+    # DN1pD, so the independent all-aT route through the same token is
+    # subsumed — the pair keeps exactly its curated chain
+    chains = mapper.get_type_bridges('SMP537', BANC888, FW, max_bridges=0)
+    assert chains
+    assert all(chain[1]['column'] == 'fafb_cell_type' for chain in chains)
+    assert chains[0][-1]['value'] == 'DN1pD'
+
+
+# ---------------------------------------------------------------------------
+# §token chaining (user 2026-09-27): a fafb_cell_type edge lands directly
+# on the FAFB primary only when the cell token names it EXACTLY.  A
+# rename-resolved winner (cell 'SMP537' -> 'DN1pD') terminates at the raw
+# token node and the walk continues through FAFB's own
+# additional_type(s) edge — the chain SHOWS the rename instead of hiding
+# it in one hop.  Decision/provenance stay winner-resolved.
+# ---------------------------------------------------------------------------
+
+def test_token_chained_label_edge_for_renamed_winner(mapper):
+    chains = mapper.get_type_bridges('SMP537', 'banc_v888', FW,
+                                     max_bridges=0)
+    assert chains, 'SMP537 -> FAFB must derive'
+    shapes = {tuple(h['column'] for h in chain[1:]): chain for chain in
+              chains}
+    chained = shapes.get(('fafb_cell_type', 'additional_type(s)'))
+    assert chained is not None, sorted(map(str, shapes))
+    assert chained[-1]['value'] == 'DN1pD'
+    # no direct one-hop fct->DN1pD chain survives for a renamed token
+    assert ('fafb_cell_type',) not in shapes
+    # the decision layer stays winner-resolved
+    decision = mapper.get_mapping_decision('SMP537', 'banc_v888', FW)
+    assert decision['status'] == 'mapped'
+    assert decision['target_type'] == 'DN1pD'
+    assert decision['support']['votes'] == {'DN1pD': 3}
+
+
+def test_exact_match_label_edge_stays_direct(mapper):
+    # Mi1's fct cell names the FAFB primary Mi1 exactly — one linker
+    chains = mapper.get_type_bridges('Mi1', 'banc_v626', FW, max_bridges=0)
+    shapes = [tuple(h['column'] for h in chain[1:]) for chain in chains]
+    assert ('fafb_cell_type',) in shapes, shapes
+
+
+def test_reverse_chained_route_is_at_then_fct(mapper):
+    # FAFB DN1pD -> BANC: the aT hop reaches the token node, the fct hop
+    # crosses into BANC (user form 3), for both SMP537 and SMP539
+    chains = mapper.get_type_bridges('DN1pD', FW, 'banc_v888',
+                                     max_bridges=0)
+    shapes = {tuple(h['column'] for h in chain[1:]): chain[-1]['value']
+              for chain in chains}
+    assert shapes.get(
+        ('additional_type(s)', 'fafb_cell_type')) in ('SMP537', 'SMP539')
+    ends = {chain[-1]['value'] for chain in chains}
+    assert {'SMP537', 'SMP539'} <= ends
+
+
+def test_chained_pair_pools_linker_rows_on_both_sides(mapper):
+    from ui.neuron_index import resolve_prioritized_bridge_pool
+    chains = mapper.get_type_bridges('SMP537', 'banc_v888', FW,
+                                     max_bridges=0)
+    pool = resolve_prioritized_bridge_pool(
+        'banc_v888', FW, chains, 'SMP537', 'DN1pD')
+    assert pool['resolution_status'] == 'supported'
+    assert pool['source_basis'] == 'linker rows'
+    assert pool['target_basis'] == 'linker rows'
+    # 3 BANC voters + the DN1pD rows whose aT cell carries SMP537
+    assert pool['source_pool_size'] == 3
+    assert pool['target_pool_size'] == 4
+    assert pool['target_type_total'] == 8
+
+
+def test_linker_columns_order_by_traversal_side(mapper):
+    """§token chaining alignment (user 2026-09-27): sequential two-linker
+    bridges must wire left-to-right in the linker network for EVERY pair,
+    like the MCNS --flywireType--aT-- FAFB standard.  Columns order by
+    traversal SIDE (source-home columns first, target-home last), so the
+    FAFB --aT--> token --fct--> BANC chain puts additional_type(s) before
+    fafb_cell_type while MCNS -> FAFB keeps flywireType first."""
+    from comparison.mapping_visualization import (
+        build_bridge_linker_graph, origin_seeded_flows)
+
+    fwd_flows = origin_seeded_flows('male-cns:v1.0', ['CL125'], FW)
+    graph = build_bridge_linker_graph(
+        fwd_flows, source_dataset=MCNS, target_dataset=FW)
+    assert graph.graph['linker_columns'] == [
+        'flywireType', 'additional_type(s)']
+
+    rev_flows = origin_seeded_flows(FW, ['DN1pD'], BANC888)
+    graph = build_bridge_linker_graph(
+        rev_flows, source_dataset=FW, target_dataset=BANC888)
+    columns = graph.graph['linker_columns']
+    assert 'additional_type(s)' in columns and 'fafb_cell_type' in columns
+    assert columns.index('additional_type(s)') < columns.index(
+        'fafb_cell_type')
+    # every linker->linker edge flows left-to-right
+    for src, dst in graph.edges():
+        a = graph.nodes[src].get('node_type')
+        b = graph.nodes[dst].get('node_type')
+        if a == 'linker' and b == 'linker':
+            assert (graph.nodes[dst]['position']['x']
+                    > graph.nodes[src]['position']['x']), (src, dst)

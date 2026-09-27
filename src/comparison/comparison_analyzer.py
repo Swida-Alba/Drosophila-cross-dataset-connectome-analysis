@@ -1114,7 +1114,8 @@ class ComparisonAnalyzer:
     _STATE_NOTE_PREFIXES = ('[same-name-first]',
                             '[multi-value type cells]',
                             '[merge policy]',
-                            '[BANC auto labels]')
+                            '[BANC auto labels]',
+                            '[BANC alignment fallback]')
     # Tagged bullet families that are NOT state-owned: their bullets always
     # survive, and one ends an enclosing state block.
     _FOREIGN_BULLET_TAGS = ('[untyped dropped]',)
@@ -2776,6 +2777,38 @@ class ComparisonAnalyzer:
                 f"{len(rows)} mapping(s) rest on auto-transferred labels "
                 f"only (no curated vote) — by direction: {direction_txt}.\n"
                 f"{listed}{more}\n"
+                "These remain valid; to exclude or override them use the "
+                "custom label mapper (LabelMapper / overall_mapping_json).")
+        # Alignment-fallback lane disclosure: mappings the weaker
+        # fafb_alignment_cell_type lane filled where the curated
+        # fafb_cell_type pass had no winner (mapper keep-rule; curated
+        # winners and curated conflicts are never touched).
+        try:
+            mapper = self.parameters._auto_type_mapper
+            al_rows = mapper.alignment_fallback_rows(
+                filter_types=set(result_types or []) or None,
+                datasets=dataset_names or [])
+        except Exception as exc:  # noqa: BLE001
+            al_rows = []
+            self._log(f"BANC alignment-fallback scan skipped: {exc}")
+        if al_rows:
+            listed_al = '\n'.join(
+                f"- {row['source_dataset']} {row['source_type']} -> "
+                f"{row['target_dataset']} {row['target_type']} "
+                f"({row['winner_votes']}/{row['total_votes']} alignment "
+                f"vote(s), {row['verified_votes']} fafb_match-verified)"
+                for row in al_rows[:20])
+            more_al = (f"\n... and {len(al_rows) - 20} more"
+                       if len(al_rows) > 20 else '')
+            blocks.append(
+                '[BANC alignment fallback] '
+                f"{len(al_rows)} mapping(s) in this run were filled by the "
+                "fafb_alignment_cell_type fallback lane (no curated "
+                "fafb_cell_type winner) — a lower-evidence tier; the "
+                "fafb_match column agrees with it less often than with "
+                "curated labels (96.5% vs 99.2% whole-release), so please "
+                f"double check these before interpretation.\n{listed_al}"
+                f"{more_al}\n"
                 "These remain valid; to exclude or override them use the "
                 "custom label mapper (LabelMapper / overall_mapping_json).")
         # Same-name-first disclosure + multi-value `type` cells
