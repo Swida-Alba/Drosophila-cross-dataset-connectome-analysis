@@ -928,13 +928,19 @@ def expand_profile_types(
     """Convert a dataset-local profile into the comparison namespace.
 
     This is the status-aware replacement for raw
-    ``standardize_partner_types`` consumption.  Per contributor type:
+    ``standardize_partner_types`` consumption.  The decision is consulted
+    BRIDGE-INCLUSIVE (2026-09-27 duality alignment): a bridge-derived
+    fan-out reads ``valid_split_evidence`` here exactly as on the
+    decision surface, so its weight splits like a crosswalk split's.
+    Per contributor type:
 
     * ``mapped`` — weight moves to the unique canonical target;
     * ``valid_split_evidence`` — weight is distributed EVENLY across all
       licensed targets (``split_policy='even'``: total mass preserved, no
-      arbitrary branch, no double counting);
-    * ``bridged`` — same as mapped (unique bridge-derived target);
+      arbitrary branch, no double counting) — crosswalk splits AND
+      bridge-derived fan-outs alike;
+    * ``bridged`` — same as mapped (weight moves to the single bridge
+      end);
     * ``evidence_only`` — excluded by default; distributed like a split
       only when ``allow_evidence_only=True``;
     * ``conflict`` — excluded; never compared by raw same-name;
