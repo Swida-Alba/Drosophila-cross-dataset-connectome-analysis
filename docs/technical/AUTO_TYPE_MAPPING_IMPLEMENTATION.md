@@ -216,15 +216,20 @@ without the gate the walk wandered BANC annotation classes
 (`APDN3 → R8_unclear → T1`), landing coarse hub names and inflating a
 circadian FAFB→BANC run to 3,262 neurons (post-fix: 21/21 types, 242/242
 FAFB neurons → 42 v888 targets, 207 unique at the 2026-09-09 fix;
-2026-09-27 refresh against the 2026-09-26 pre-alignment-lane baseline
-export: the flow table is IDENTICAL row-for-row (44 rows, 21 source
-types, 42 target types, 887/230 neurons, same statuses/relationships)
-and only the neuron-level union drifted (200 unique today; 39 targets
-under the resolver-union definition vs 42 flow-table target types —
-different counting bases, both stable) — pre-existing drift from later
-mapper rounds and the refreshed bucket, unchanged by the alignment
-fallback lane, verified both by stripping the lane in-memory and by the
-baseline export diff).
+2026-09-27 reconciliation (supersedes an interim drift note): the flow
+basis reproduces the 09-09 figures EXACTLY — 42 received types,
+population union 207, claim 205 + out-map 2 (the flow table was
+byte-identical across every 2026-09-27 round; no historical drift).  A
+second, stricter counting basis exists alongside it: the
+resolver-licensed union (``mapped_type_targets`` — the panel/viewer
+summary backend) reads 40 types / 202 neurons (claim 200 + out-map 2),
+because same-name-first licensing resolves FAFB `APDN3` → BANC `APDN3`
+and therefore drops the two aT-token ends `LMTe01` (4 neurons) and
+`LTe71` (1 neuron) that the flow table keeps as evidence.  The two
+bases answer different questions — full bridge-evidence reach vs
+licensed query resolution; comparing one against the other produced an
+interim "drift" impression that was a counting-basis artifact, now
+corrected.
 
 ### 3.5 Data hygiene inside the walk
 
