@@ -604,8 +604,10 @@ not):
 - L1 is the mapper's claim set (IM): `242→204` is the claim envelope;
   204/219 is claim coverage of the in-map types' populations (the 15
   remainder are `family` material).
-- L2 provenance splits the claim: **row-backed** (a crosswalk row names
-  the bodyId via its `additional_type` / `flywireType` value) vs
+- L2 provenance splits the claim: **row-backed** (a linker-column value
+  names the bodyId — `additional_type(s)`, `flywireType`, or a BANC
+  label column such as `fafb_cell_type` /
+  `fafb_alignment_cell_type`) vs
   **name-asserted** (pooled identity: same-name pairs claim full
   populations with no per-bodyId rows — DN1a / DN1pA / DN1pB / l-LNv;
   s-LNv resolves via rows instead). This is why a wide `full population`

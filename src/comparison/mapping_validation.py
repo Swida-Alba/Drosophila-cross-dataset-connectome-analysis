@@ -3428,7 +3428,7 @@ class MappingValidator:
                    or {}).get('alt') or []
             if alt:
                 fields['alt_chain_of_parent'] = ';'.join(sorted(alt))
-            if dec['status'] in ('mapped', 'valid_split_evidence') \
+            if dec['status'] in ('mapped', 'bridged', 'valid_split_evidence') \
                     and dec['home_real']:
                 if alt:
                     fields['invader_class'] = 'alternate-chain'
@@ -3438,7 +3438,7 @@ class MappingValidator:
                 else:
                     fields['invader_class'] = 'backward'
                     fields['invader_label'] = f'backward · {dec["mapped"]}'
-            elif dec['status'] in ('mapped', 'valid_split_evidence'):
+            elif dec['status'] in ('mapped', 'bridged', 'valid_split_evidence'):
                 fields['invader_class'] = 'hollow-backward'
             else:
                 fields['invader_class'] = 'unmapped'
@@ -3567,7 +3567,7 @@ class MappingValidator:
             srcs = [s for s in str(bm).split('/') if s]
         elif getattr(self, 'mapper', None) is not None:
             dec = self._backward_decision(t)
-            if dec.get('status') in ('mapped', 'valid_split_evidence'):
+            if dec.get('status') in ('mapped', 'bridged', 'valid_split_evidence'):
                 srcs = [s for s in str(dec.get('mapped') or '').split('/')
                         if s]
             home_real = bool(dec.get('home_real'))

@@ -2429,14 +2429,20 @@ class ComparisonParameters:
             )
             if source_ds:
                 from .type_resolver import (
-                    STATUS_VALID_SPLIT, resolve_valid_targets,
+                    STATUS_MAPPED, STATUS_VALID_SPLIT, resolve_valid_targets,
                 )
                 res = resolve_valid_targets(
                     self._auto_type_mapper, neuron, source_ds, dataset)
-                if res.status == STATUS_VALID_SPLIT and res.target_types:
-                    # A valid split has real per-branch evidence: query all
-                    # licensed branches instead of silently keeping the raw
-                    # name (which would match nothing in this dataset).
+                multi = (res.status in (STATUS_VALID_SPLIT, STATUS_MAPPED)
+                         and len(res.target_types or ()) > 1)
+                if multi:
+                    # A licensed split OR a bridge-derived fan-out has real
+                    # per-branch evidence: query all licensed branches
+                    # instead of silently keeping the raw name (which would
+                    # match nothing in this dataset).  2026-09-27 duality
+                    # alignment — candidate discovery licenses the fan-out;
+                    # the decision surface reads the same edge
+                    # valid_split_evidence.
                     resolved.extend(str(t) for t in res.target_types)
                 elif res.equivalence_key:
                     resolved.append(res.equivalence_key)

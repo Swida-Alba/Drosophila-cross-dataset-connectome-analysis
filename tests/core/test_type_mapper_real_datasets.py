@@ -2151,3 +2151,37 @@ def test_linker_columns_order_by_traversal_side(mapper):
         if a == 'linker' and b == 'linker':
             assert (graph.nodes[dst]['position']['x']
                     > graph.nodes[src]['position']['x']), (src, dst)
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-27 duality alignment: the three re-derivation sites (profile
+# weight canonicalization, query expansion, Route A members) consult the
+# BRIDGE-INCLUSIVE decision, so a bridge-derived fan-out (pure-ACT etc.)
+# behaves identically to a crosswalk split — weight splits evenly, Route
+# A returns all branches.  Also: curated subsumption compares CANONICAL
+# tokens, so an auto:-spelled fct token subsumes its aT twin.
+# ---------------------------------------------------------------------------
+
+def test_profile_weight_splits_for_bridge_derived_fanout(mapper):
+    from comparison.type_resolver import MapperSnapshot, expand_profile_types
+    snap = MapperSnapshot(mapper)
+    res = expand_profile_types(
+        mapper, {'AN_GNG_161': 10.0}, FW, snapshot=snap,
+        target_dataset=BANC)
+    # the pure-ACT fan-out splits evenly across its two BANC targets
+    # (pre-fix it stranded under the raw name with fallback_used=True)
+    assert res.canonical == {'AN07B060': 5.0, 'AN18B053': 5.0}
+    assert res.fallback_used is False
+    # the crosswalk split is unchanged
+    res2 = expand_profile_types(
+        mapper, {'PLP120': 10.0}, FW, snapshot=snap, target_dataset=BANC)
+    assert res2.canonical == {
+        'PLP069': 5.0, 'PLP120,PLP145': 5.0}
+
+
+def test_route_a_expansion_parity_for_fanout_and_split(mapper):
+    from comparison.query_resolver import _member_targets
+    fanout = _member_targets(mapper, 'AN_GNG_161', FW, BANC)
+    split = _member_targets(mapper, 'PLP120', FW, BANC)
+    assert fanout == ['AN07B060', 'AN18B053']
+    assert split == ['PLP069', 'PLP120,PLP145']

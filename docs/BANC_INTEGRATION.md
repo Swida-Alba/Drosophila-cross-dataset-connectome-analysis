@@ -82,8 +82,15 @@ removed from the curated type-label vote. The mapper records the winning
 label, vote counts, verified votes, verification conflicts, raw/canonical
 values, and alternates in bridge provenance. BANC labels are direct-only and
 never turn BANC into a connector between unrelated datasets. A label hop is
-also a derivation endpoint: once it lands in the target namespace, nothing may
-follow it. Because `Alternative Cell Type(s)`
+a derivation endpoint once it lands in the target namespace with the cell
+token naming the target type exactly; a rename-resolved token (e.g. cell
+`SMP537`, FAFB primary `DN1pD`) terminates at the raw-token name node and
+the chain continues through the target namespace's own
+`additional_type(s)` edge (2026-09-27 token chaining), and when a curated
+chain bridges the same token to the same target as a one-linker
+annotation chain, that annotation chain is dropped (curated subsumption) —
+see AUTO_TYPE_MAPPING.md for the full five-form FAFB↔BANC semantics.
+Because `Alternative Cell Type(s)`
 concatenates the other datasets' curated labels, a primary's annotation cell
 naming another BANC primary is a cross-reference, not a rename — the
 derivation walk refuses to hop through it (this closed the `l-LNv → BM_*`

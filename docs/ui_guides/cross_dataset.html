@@ -203,8 +203,15 @@
     <code>*Type</code> fallback and never borrow v1.0 body IDs.</p>
   <p>Derivation guards keep the bridges honest: a curated BANC label hop
     (<code>fafb_cell_type</code> et al.) ends the derivation once it lands
-    in the target namespace — nothing may chain after it into annotation
-    name graphs; a primary's annotation cell naming another primary of the
+    in the target namespace <em>when the cell token names the target type
+    exactly</em> — a rename-resolved token terminates at the raw-token name
+    node and the chain continues through FAFB's own
+    <code>additional_type(s)</code> edge (2026-09-27 token chaining:
+    <code>fct 'SMP537' → aT → DN1pD</code>), so the rename is shown rather
+    than hidden in one hop; when a curated chain bridges the same token to
+    the same target as a one-linker annotation chain, the annotation chain
+    is dropped as redundant (curated subsumption). A primary's annotation
+    cell naming another primary of the
     same namespace is a cross-reference, not a rename, and is never hopped
     through; and a derivation whose target-side evidence pools zero rows on
     the reached type is dropped rather than rendered with a

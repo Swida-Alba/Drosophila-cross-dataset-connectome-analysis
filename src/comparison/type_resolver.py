@@ -958,7 +958,14 @@ def expand_profile_types(
         ck = (src, raw, tgt)
         hit = decision_cache.get(ck) if decision_cache is not None else None
         if hit is None:
-            hit = snap.decision(raw, src, tgt, include_bridges=False)
+            # Bridge-INCLUSIVE (user 2026-09-27 duality fix): candidate
+            # discovery already licenses bridge-derived fan-outs; profile
+            # weight canonicalization must consult the same truth, or the
+            # fan-out's mass strands under the raw name (its BANC-side
+            # counterparts are compared but never receive weight).  With
+            # bridges, a mapped-multi fan-out reads valid_split_evidence
+            # and takes the even-split branch below.
+            hit = snap.decision(raw, src, tgt, include_bridges=True)
             if decision_cache is not None:
                 decision_cache[ck] = hit
         return hit
@@ -995,7 +1002,7 @@ def expand_profile_types(
             return
         d = _cache_get(base_key, source_dataset, target_ds)
         status = d.get('status', STATUS_UNMAPPED)
-        if status == STATUS_MAPPED:
+        if status in (STATUS_MAPPED, STATUS_BRIDGED):
             tgt = d.get('target_type')
             if tgt and _is_stale_claim(mapper, base_key, source_dataset,
                                        target_ds, str(tgt)):
@@ -1006,11 +1013,13 @@ def expand_profile_types(
                 status_counts[STATUS_CLAIMED] += 1
                 return
             if tgt:
-                _add(prefix + str(tgt), weight, STATUS_MAPPED)
+                # a single-end `bridged` partner carries FULL weight to its
+                # one bridge end (a fan-out would be valid_split_evidence)
+                _add(prefix + str(tgt), weight, status)
             else:
                 _add(prefix + base_key, weight, STATUS_UNMAPPED)
                 fallback_used = True
-            status_counts[STATUS_MAPPED] += 1
+            status_counts[status] += 1
         elif status == STATUS_VALID_SPLIT:
             tgts = [str(t) for t in (d.get('target_types') or ())
                     if t]

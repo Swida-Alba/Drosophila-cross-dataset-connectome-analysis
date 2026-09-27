@@ -5121,10 +5121,17 @@ def collect_value_mapped_matches(
                     continue
                 if not res:
                     continue
-                if res.get("status") in ("claimed", "conflict"):
+                if res.get("status") in ("claimed", "conflict",
+                                         "evidence_only"):
+                    # disclosure-only statuses: name nothing (the
+                    # suggestion contract excludes claimed / evidence-only
+                    # / conflicts)
                     continue
-                if res.get("status") in ("one of N", "splits into"):
-                    # disclosure-only shapes: name them without counts
+                if res.get("kind") in ("one of N", "splits into"):
+                    # disclosure-only SHAPES (the guard reads kind, not
+                    # status — a mapped 'one of N' carries status 'mapped'):
+                    # the candidates are licensed for expansion elsewhere,
+                    # but value-match suggestions stay conservative
                     continue
                 for name in res.get("targets") or ():
                     name = str(name or "").strip()

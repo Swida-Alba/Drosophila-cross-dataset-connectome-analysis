@@ -147,7 +147,18 @@ alignment lane 18; v888 — fct 7,484, pure-ACT 2,273 (selected 1,803),
 aT→ACT 421 (selected 199), aT→type 297 (selected 287), aT→fct 113,
 bare 114, alignment 18. All classes reach the decision layer, pooling
 (linker-row or full-population bases per hop home) and the mapping
-exports.
+exports. A rarer composed continuation also derives per the registry
+standard — `aT → type → ACT → ACT` (a same-name hop INTO BANC mid-chain
+followed by ACT walking; 17 pairs in v626, 21 in v888, e.g.
+`M_adPNm4a`); subsumption can never fire on it (two or more linkers).
+Two semantic confirmations recorded with the 2026-09-27 review: (a) §12
+incoming families are wider for split tokens — a token whose alt entry
+splits to multiple primaries now appears in every split sibling's
+family (consistent with split semantics); (b) the alignment fallback
+lane can demote an existing canonical reverse mapping to a 1-to-N
+conflict via the reverse materialization when it adds an extra claimant
+for the same FAFB winner — fail-closed by design, identical to curated
+treatment.
 
 **(5) `ACT--ACT` (pure-ACT landing)** — the mirror of the aT lane: a
 FAFB primary whose OWN name appears in a BANC primary's
@@ -336,9 +347,38 @@ per distinct `(source_dataset, type[, target])` resolver input, deduped
 across repeated lookups (path rows, edges, shared query items). A second,
 distinctly keyed metric `mapping_partner_type_resolutions_by_status`
 reports contributor-type *occurrences* inside canonicalized profiles and is
-never conflated with the primary counts. Each surface holds ONE mapper
-snapshot per run (reset per search) so load state and decision caches are
-shared across expansions.
+    never conflated with the primary counts. Each surface holds ONE mapper
+    snapshot per run (reset per search) so load state and decision caches are
+    shared across expansions.
+
+**Status-label duality — documented as intended (user 2026-09-27), with
+the behavioral divergences CLOSED.** The decision layer keeps
+`valid_split_evidence` as its strict policy label for every 1-to-N
+bridge-derived fan-out, while the resolver's consumer-facing label stays
+`mapped` (kind `one of N`); the target lists are always identical. The
+duality was NOT behaviorally free: three consumers re-derived a stricter
+`include_bridges=False` decision and diverged from candidate discovery
+(which honors the resolver's licensing) — all three now consult the
+bridge-inclusive decision (2026-09-27 alignment):
+
+- `expand_profile_types` — profile weight now splits EVENLY across a
+  bridge-derived fan-out's targets and a single-end `bridged` partner
+  carries full weight to its bridge end (before: the fan-out's mass
+  stranded under the raw name with `fallback_used=True`, silently
+  depressing cross-dataset similarity; quantified on FAFB→banc_v626:
+  203 `unmapped → bridged` + 89 `unmapped → valid_split_evidence`
+  transitions). `canonical_merge_key` still derives raw-name keys for
+  fan-outs (merging is a separate concern) — its status *label* may
+  differ between the two surfaces while the key stays byte-identical;
+- `query_resolver` — a mapped-multi resolution keeps STATUS_VALID_SPLIT
+  semantics (survives `drop_unresolved`) instead of being demoted to
+  evidence_only, and Route A `_member_targets` returns all branches;
+- `comparison_parameters` Route A — the split branch admits
+  mapped-multi target lists (parity with crosswalk splits).
+
+`canonical_merge_key` and `resolve_flow_status` were verified
+status-agnostic; the merge-policy and TM VEV stage-1 surfaces read the
+decision (bridges included) and needed no change.
 
 Consumers: homolog finding (candidate expansion, same-type rescue, the
 mapping-aware vector prefilter, type-level same-type marking),

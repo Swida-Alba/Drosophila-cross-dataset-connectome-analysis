@@ -5029,8 +5029,9 @@ class CrossDatasetTypeMapper:
         if datasets:
             # Column labels keep the REQUESTED (release-specific) names;
             # value lookups resolve through each dataset's mapping-key
-            # namespace (banc_v888 -> 'banc_v626', flywire_BANC_* -> the
-            # same). Releases sharing a namespace collapse to one column.
+            # namespace.  banc_v626 and banc_v888 are SEPARATE namespaces
+            # (each resolves against its own release tables), so both get
+            # their own column; flywire_BANC_* keys collapse to banc_v626.
             output_datasets = []
             lookup_keys = {}
             for d in datasets:
@@ -6919,18 +6920,23 @@ class CrossDatasetTypeMapper:
                 chain, source_dataset, target_dataset)
                 if l["kind"] == "linker"]
 
-        by_end = {}
-        for chain in bridges:
-            by_end.setdefault(chain[-1]["value"], []).append(chain)
         if any(hop.get("column") == "fafb_cell_type"
                for chain in bridges for hop in chain[1:]):
-            # token -> the targets a curated fct chain bridges it to
+            # token -> the targets a curated fct chain bridges it to.
+            # Keys are CANONICAL tokens (2026-09-27 audit): the raw value
+            # may carry an `auto:` prefix when no curated spelling exists,
+            # and the aT twin's token never does — raw keys would miss
+            # that dedup.
+            def _token(linker):
+                return str(linker.get("canonical_value")
+                           or linker["value"])
+
             curated_token_ends = {}
             for chain in bridges:
                 for linker in _std_linkers(chain):
                     if linker["column"] == "fafb_cell_type":
                         curated_token_ends.setdefault(
-                            linker["value"], set()).add(chain[-1]["value"])
+                            _token(linker), set()).add(chain[-1]["value"])
             kept: List[List[Dict[str, str]]] = []
             for chain in bridges:
                 linkers = _std_linkers(chain)
@@ -6938,7 +6944,7 @@ class CrossDatasetTypeMapper:
                     len(linkers) == 1
                     and linkers[0]["column"] == "additional_type(s)"
                     and chain[-1]["value"] in curated_token_ends.get(
-                        linkers[0]["value"], ()))
+                        _token(linkers[0]), ()))
                 if not subsumed:
                     kept.append(chain)
             bridges = kept

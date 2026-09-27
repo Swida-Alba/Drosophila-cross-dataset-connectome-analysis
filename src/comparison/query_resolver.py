@@ -348,16 +348,23 @@ def _resolve_type_token(token, datasets, mapper, *, role,
                 confidence=CONFIDENCE[STATUS_VALID_SPLIT],
                 note='valid split: all licensed branches'))
             continue
-        # Mapped/bridged but not a unique target ("one of N"): surface the
-        # candidate targets instead of reporting the token as unresolved.
-        if res.status in (TR_MAPPED, TR_BRIDGED) and res.target_types:
+        # Mapped/bridged but not a unique target ("one of N"): keep the
+        # candidate targets as a licensed VALID_SPLIT-style expansion.
+        # (2026-09-27 duality alignment: candidate discovery licenses a
+        # bridge-derived fan-out — the same edge reads valid_split_evidence
+        # on the decision surface — so its branches are as defensible a
+        # query as a crosswalk split's.  Demoting them to evidence_only
+        # made `drop_unresolved` silently drop bridge-derived partners
+        # while keeping crosswalk splits.)
+        if res.status in (TR_MAPPED, TR_BRIDGED) and len(
+                res.target_types or ()) > 1:
             out.append(QueryResolution(
                 token=token, dataset=ds, role=role,
-                status=STATUS_EVIDENCE_ONLY, method='mapped_type',
+                status=STATUS_VALID_SPLIT, method='mapped_type',
                 target_types=[str(t) for t in res.target_types],
                 evidence_chain=kind,
-                confidence=CONFIDENCE[STATUS_EVIDENCE_ONLY],
-                note='one of several candidates; no unique target'))
+                confidence=CONFIDENCE[STATUS_VALID_SPLIT],
+                note='one of N fan-out: all licensed branches'))
             continue
         if res.status == TR_EVIDENCE:
             out.append(QueryResolution(
@@ -487,15 +494,21 @@ def _member_targets(mapper, member, hit_ds, ds) -> List[str]:
         res = resolve_valid_targets(mapper, member, hit_ds, ds)
     except Exception:
         return []
-    # RES-10: only a UNIQUE equivalence or a licensed split contributes —
-    # a multi-target `mapped` union is one-of-N evidence (RES-1 keeps that
-    # status evidence-only), never a defensible query expansion.
-    if res.status == STATUS_VALID_SPLIT:
+    # RES-10 as amended 2026-09-27: a UNIQUE equivalence, a licensed
+    # split, OR a multi-target mapped fan-out (candidate discovery
+    # licenses it — the decision surface reads the same edge
+    # valid_split_evidence) contributes its branches; single-end bridged
+    # partners map to their one end.  Only evidence-only/unmapped unions
+    # contribute nothing.
+    if res.status in (STATUS_VALID_SPLIT, STATUS_MAPPED) and len(
+            res.target_types or ()) > 1:
         return [str(t) for t in (res.target_types or ())]
     if res.status == STATUS_MAPPED and res.equivalence_key is not None:
         return [str(res.equivalence_key)]
-    if res.status == STATUS_BRIDGED and len(res.target_types or ()) == 1:
-        return [str(res.target_types[0])]
+    if res.status == STATUS_BRIDGED:
+        if len(res.target_types or ()) == 1:
+            return [str(res.target_types[0])]
+        return [str(t) for t in (res.target_types or ())]
     return []
 
 
