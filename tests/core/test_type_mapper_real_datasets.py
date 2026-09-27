@@ -2185,3 +2185,22 @@ def test_route_a_expansion_parity_for_fanout_and_split(mapper):
     split = _member_targets(mapper, 'PLP120', FW, BANC)
     assert fanout == ['AN07B060', 'AN18B053']
     assert split == ['PLP069', 'PLP120,PLP145']
+
+
+def test_disclosure_targets_decision_key(mapper):
+    """§three-tier delivery (user 2026-09-27): get_mapping_decision
+    carries the disclosure ends — bridge evidence the decision declined —
+    each with its reason.  Boundary-clean: observations only."""
+    d = mapper.get_mapping_decision('s-CPDN3C', FW, BANC888)
+    assert d['status'] == 'valid_split_evidence'
+    assert d['disclosure_targets'] == [
+        {'target': 'CB3767', 'reason': 'branch_not_adopted'}]
+    d2 = mapper.get_mapping_decision('APDN3', FW, BANC888)
+    assert d2['status'] == 'mapped'
+    assert {t['target']: t['reason']
+            for t in d2['disclosure_targets']} == {
+        'LMTe01': 'same_name_first_rival',
+        'LTe71': 'same_name_first_rival'}
+    # an unambiguous clean pair carries no disclosure
+    d3 = mapper.get_mapping_decision('Mi1', FW, BANC)
+    assert d3['disclosure_targets'] == []

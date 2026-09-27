@@ -604,6 +604,14 @@ not):
 - L1 is the mapper's claim set (IM): `242→204` is the claim envelope;
   204/219 is claim coverage of the in-map types' populations (the 15
   remainder are `family` material).
+- **Three-tier readout (2026-09-27)**: the run's bodyId figures come in
+  three tiers and every surface names its tier — CLAIM (adopted flows
+  only; the branches and headline counts), REACH (all flows' pools; the
+  CSVs' all-valid scopes), DISCLOSURE (reach − claim: declined ends with
+  reasons, in `mapping/disclosure_evidence.csv` and the report's
+  "Disclosure evidence" section; verified under `--verify-suspects` into
+  a separate advisory bin, never the headlines). When quoting numbers,
+  state the tier.
 - L2 provenance splits the claim: **row-backed** (a linker-column value
   names the bodyId — `additional_type(s)`, `flywireType`, or a BANC
   label column such as `fafb_cell_type` /

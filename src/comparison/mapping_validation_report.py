@@ -544,6 +544,10 @@ ARTIFACT_LINES: List[Tuple[str, str]] = [
     ('mapping/same_name_excluded.csv',
      'queried types held/excluded by the same-name-first rule, or '
      'multi-value cells (advisory accounting)'),
+    ('mapping/disclosure_evidence.csv',
+     'the three-tier disclosure ends — bridge evidence the decision '
+     'declined, with decline reason and advisory verification '
+     '(2026-09-27; written when any were recorded)'),
     ('mapping/suspects_verification.csv',
      'rival-suspect connectivity verification (opt-in, advisory)'),
     ('set_coverage.json', 'set-level coverage (§1, §4)'),
@@ -828,6 +832,8 @@ def collect_run_data(run_dir: Path,
         _run_file(run_dir, 'same_name_excluded.csv'))
     suspects_rows = _read_csv_rows(
         _run_file(run_dir, 'suspects_verification.csv'))
+    disclosure_rows = _read_csv_rows(
+        _run_file(run_dir, 'disclosure_evidence.csv'))
 
     # -- pooling mode: the unsupervised pool and its post-hoc comparison ----
     pooling_xval = _read_json(
@@ -1180,6 +1186,7 @@ def collect_run_data(run_dir: Path,
         'side_counts': side_counts,
         'pair_rows': pair_rows,
         'same_name_excluded': same_name_excluded,
+        'disclosure_evidence': disclosure_rows,
         'suspects_verification': suspects_rows,
         'pooling_xval': pooling_xval,
         'pooling_pool': pooling_pool,
@@ -1526,6 +1533,21 @@ def _hero(d: Dict) -> str:
     # another mode's run, two screens above the answer (issue 13), so the
     # headline now names the level it is quoting and puts the pool first.
     headline = supervised
+    # §three-tier qualifier (user 2026-09-27): the supervised ladder quotes
+    # the CLAIM tier only; the disclosure ends (declined but
+    # evidence-reached) ride the same run as advisory material — name both
+    # so the headline cannot be read as the full evidence reach.
+    _disc_rows = _read_csv_rows(
+        _run_file(rd, 'disclosure_evidence.csv'))
+    if _disc_rows:
+        _disc_types = len({str(r.get('target_type') or '')
+                           for r in _disc_rows})
+        supervised += (
+            f" · <span class='mv-note'>disclosure evidence "
+            f"+{_esc(len(_disc_rows))} row(s) / "
+            f"{_esc(_disc_types)} declined type(s) — advisory, not in "
+            'the claim set (see the Mapping tab)</span>')
+        headline = supervised
     px = (d.get('pooling_xval') or {}) if str(mode) == 'pooling' else {}
     psrc = d.get('pooling_sources') or []
     if px and psrc:
@@ -1829,6 +1851,38 @@ def _coverage_tab(d: Dict) -> str:
             'rule shaped this run\'s pair set. Never a gate.',
             _kv_block('', snf_rows),
             ['same-name-first', 'suspects', 'multi-value type cells']))
+
+    # §three-tier readout (user 2026-09-27): the DISCLOSURE tier — ends
+    # the mapper decision declined but the derivation evidence reaches.
+    # Advisory only: these rows never entered the claim set, the branch
+    # pools, or any headline count above.
+    disc_rows = d.get('disclosure_evidence') or []
+    if disc_rows:
+        from collections import Counter as _C
+        by_reason = _C(str(r.get('decline_reason') or '?')
+                       for r in disc_rows)
+        disc_items = [
+            (f"{_esc(r.get('source_type', '?'))} → "
+             f"{_esc(r.get('target_type', '?'))}",
+             f"declined: {_esc(r.get('decline_reason', '?'))}"
+             + (f" · verification: {_esc(r.get('verdict'))}"
+                if str(r.get('verdict') or '').strip() else
+                ' · unverified (run without --verify-suspects)'))
+            for r in disc_rows[:12]
+        ]
+        if len(disc_rows) > 12:
+            disc_items.append(
+                (f'+{len(disc_rows) - 12} more row(s)', ''))
+        cards.append(_section_card(
+            'Disclosure evidence (declined, not claimed)',
+            'Bridge ends the scoped decision declined — same-name-first '
+            'rivals, fan-out branches outside the adopted list, '
+            'vote-conflicted candidates. The evidence reaches them; the '
+            'claim set does not. Verified with the ordinary machinery '
+            'when --verify-suspects ran; never in the headline counts.',
+            _kv_block('', disc_items),
+            ['three-tier', 'disclosure',
+             ', '.join(f'{k}×{v}' for k, v in sorted(by_reason.items()))]))
 
     return ''.join(cards)
 

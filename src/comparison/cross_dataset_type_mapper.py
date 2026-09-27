@@ -4603,6 +4603,44 @@ class CrossDatasetTypeMapper:
                 out.append(detail)
         return out
 
+    def _disclosure_targets(
+            self, raw_type: str, source_dataset: str, target_dataset: str,
+            adopted: Optional[Set[str]] = None,
+            rivals: Optional[Set[str]] = None,
+            conflicted: Optional[Set[str]] = None) -> List[Dict[str, str]]:
+        """Bridge ends the decision did NOT adopt, each with its reason.
+
+        §three-tier delivery (user 2026-09-27): the mapper CARRIES the
+        full evidence reach alongside the adopted claim — the ends the
+        derivation walk reaches that the scoped decision declined (a
+        same-name-first rival, a fan-out branch outside the adopted list,
+        a vote-conflicted candidate).  Boundary-clean by construction:
+        this lists observations, never gates or verifies anything.
+        """
+        if not raw_type:
+            return []
+        try:
+            bridges = self.get_type_bridges(
+                raw_type, source_dataset, target_dataset, max_bridges=0)
+        except Exception:
+            return []
+        rivals = rivals or set()
+        conflicted = conflicted or set()
+        adopted = adopted or set()
+        out: List[Dict[str, str]] = []
+        for end in sorted({str(c[-1].get('value')) for c in bridges
+                           if c and c[-1].get('value')}):
+            if end in adopted:
+                continue
+            if end in rivals:
+                reason = 'same_name_first_rival'
+            elif end in conflicted:
+                reason = 'vote_conflict_declined'
+            else:
+                reason = 'branch_not_adopted'
+            out.append({'target': end, 'reason': reason})
+        return out
+
     def get_mapping_decision(
         self,
         source_type: Union[str, int, None],
@@ -4730,6 +4768,11 @@ class CrossDatasetTypeMapper:
                         for t in ([selected]
                                   + list(_snf['rivals']))
                     }
+                    if include_bridges:
+                        result['disclosure_targets'] = (
+                            self._disclosure_targets(
+                                raw_type, source_dataset, target_dataset,
+                                {selected}, set(_snf['rivals'])))
                     return result
             # Crosswalk conflicts are structural evidence in the direction
             # represented by the source table.  Reverse BANC-label fan-out
@@ -4758,6 +4801,16 @@ class CrossDatasetTypeMapper:
                     raw_type, source_dataset, t, target_dataset)
                 for t in result['target_types']
             }
+            if include_bridges:
+                # a plain `conflict` adopts nothing — its target_types are
+                # the DECLINED candidates, not a claim
+                _adopts = set(result['target_types']) \
+                    if result['status'] != 'conflict' else set()
+                _declined = set(result['target_types']) \
+                    if result['status'] == 'conflict' else None
+                result['disclosure_targets'] = self._disclosure_targets(
+                    raw_type, source_dataset, target_dataset,
+                    _adopts, conflicted=_declined)
             return result
 
         mapped = self.get_mapped_type(
@@ -4776,6 +4829,9 @@ class CrossDatasetTypeMapper:
                 else '1-to-1')
             result['support'] = self._bridge_support_for_pair(
                 raw_type, source_dataset, mapped, target_dataset)
+            if include_bridges:
+                result['disclosure_targets'] = self._disclosure_targets(
+                    raw_type, source_dataset, target_dataset, {mapped})
             return result
 
         # Some sanctioned overlays (notably a direct BANC label bridge in

@@ -1193,6 +1193,18 @@ and no other dataset's agreement is joined into this mode's pool.
     type with `disposition`, `selected`, `rivals` and `reason` — advisory
     accounting that says WHY a queried type is missing; never a gate
     (plan `plan-tmvev-samename-first-consumers.md`).
+*   **`disclosure_evidence.csv`** (2026-09-27 three-tier readout): the
+    DISCLOSURE tier — bridge ends the mapper decision declined but the
+    derivation evidence reaches (delivered via the decision's
+    `disclosure_targets` key). One row per declined end with
+    `decline_reason` (`same_name_first_rival` / `branch_not_adopted` /
+    `vote_conflict_declined`) and, when `--verify-suspects` ran, the same
+    machinery's `verdict` / `rank_union` observations. Advisory bin:
+    never the claim set, never the headline counts (the report renders
+    the same rows in its "Disclosure evidence" section and the headline
+    carries a `+N row(s) disclosure` qualifier). Written only when a
+    run recorded any. `mapping_export.csv` gains the additive `tier`
+    column (`claim` on every ordinary row).
 *   **`source_candidates.csv`** (re-aimed 2026-09-18, user option 2):
     the D-B8 backward mirror of candidate admission — sources claimed by
     NO branch whose best-ranked scan hits land in a branch pool AND pass

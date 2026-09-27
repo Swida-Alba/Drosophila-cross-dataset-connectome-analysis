@@ -288,8 +288,14 @@ def test_cb4091_stale_crosswalk_claim_is_not_counted_as_mapped(panel_client):
     assert not outcome['pair_flows']
     assert mcns['mapped_types'] == 0 and mcns['mapped_neurons'] == 0
     assert mcns['mapped'] == '0'
+    # §three-tier (2026-09-27): the summary gains the reach/disclosure
+    # fields — additive zeros here (no flows at all, so no evidence reach
+    # beyond the empty claim either)
     assert fafb == {'dataset': FAFB, 'types': 0, 'neurons': 0,
                     'mapped_types': 0, 'mapped_neurons': 0, 'mapped': '0',
+                    'reach_types': 0, 'reach_neurons': 0, 'reach': '0',
+                    'disclosure_types': 0, 'disclosure_bodies': 0,
+                    'disclosure_detail': [],
                     # an unfulfilled claim fabricates neither a mapped count
                     # NOR an out-map overhang — FAFB has no neurons of the
                     # type, so there is nothing left out of the map either
@@ -797,3 +803,41 @@ def test_composed_sankey_button_sits_beside_the_mapping_graph(panel_client):
     texts = ([str(getattr(b, 'text', '')) for b in _buttons(client)]
              + _labels(client))
     assert any('Mapping sankey (HTML)' in t for t in texts), texts
+
+
+def test_three_tier_summary_claim_reach_disclosure():
+    """§three-tier readout (user 2026-09-27): the summary publishes the
+    CLAIM set (pure claim basis — bodies AND types adopted-only), the
+    EVIDENCE REACH (every flow's pools, disclosure ends included), and the
+    disclosure detail with decline reasons — so no two surfaces can be
+    mistaken for one number.  Anchored on circadian FAFB -> banc_v888:
+    claim 198(39 types), reach 205(42 types), disclosure 3 types / 7
+    bodies (LMTe01+LTe71 same-name-first rivals of APDN3; CB3767 fan-out
+    branch not adopted), out-map 2."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+    outcome = _compute_type_mapping(
+        ['circadian_clock'], ['flywire_FAFB_v783', 'banc_v888'], 'exact')
+    row = next(r for r in outcome['summary']
+               if r['dataset'] == 'banc_v888')
+    assert row['mapped'] == '198(39 types)'
+    assert row['reach'] == '205(42 types)'
+    assert row['disclosure_types'] == 3
+    assert row['disclosure_bodies'] == 7
+    assert row['out_map'] == 2
+    detail = {d['type']: d['reason'] for d in row['disclosure_detail']}
+    assert detail.get('LMTe01') == (
+        "same-name-first rival — 'APDN3' selected instead")
+    assert detail.get('LTe71') == (
+        "same-name-first rival — 'APDN3' selected instead")
+    assert detail.get('CB3767') == (
+        'fan-out branch not adopted by the decision '
+        '(valid_split_evidence)')
+    # MCNS keeps the ratified claim figures — claim == reach there
+    outcome_m = _compute_type_mapping(
+        ['circadian_clock'], ['flywire_FAFB_v783', 'male-cns:v1.0'],
+        'exact')
+    row_m = next(r for r in outcome_m['summary']
+                 if r['dataset'] == 'male-cns:v1.0')
+    assert row_m['mapped'] == '204(40 types)'
+    assert row_m['reach'] == '204(40 types)'
+    assert row_m['out_map'] == 15

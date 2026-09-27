@@ -422,6 +422,29 @@ sums per-flow counts — shared targets (`s-LNv`, `5thsLNv_LNd6` hit by two
 flows, `SMP227` by three) are counted once; the old Σ-with-multiplicity
 reported 243.
 
+### 5.1 The three-tier readout (user 2026-09-27) — claim · reach · disclosure
+
+The same query legitimately produces three bodyId figures; every surface
+states which tier it shows, and no two surfaces may publish different
+numbers for the same tier:
+
+| Tier | Definition | Circadian FAFB→banc_v888 | Surfaces |
+|---|---|---|---|
+| **Claim** | flows the scoped decision ADOPTED (`flow_is_claimed`: target ∈ `mapping_target_types`), pure basis — bodies AND types | `198(39 types)` | panel `Mapped neurons`, TM VEV branches/headlines, the 204-MCNS convention |
+| **Reach** | every flow's pools, disclosure ends included | `205(42 types)` | panel `Evidence reach (all flows)`, the CSVs' all-valid scopes, the coverage tables |
+| **Disclosure** | reach − claim, per declined end with its reason | 3 types / 7 bodies (LMTe01/LTe71 same-name-first rivals of APDN3; CB3767 fan-out branch not adopted) | panel hover detail, the decision's `disclosure_targets` key, TM VEV `disclosure_evidence.csv` + report section |
+
+Delivery and handling: `get_mapping_decision(include_bridges=True)`
+carries `disclosure_targets` (`{target, reason}` — `same_name_first_rival`
+/ `branch_not_adopted` / `vote_conflict_declined`); boundary-clean, the
+mapper never consumes it. TM VEV records every disclosure end
+(`_pairs_for_type`, before the fail-closed returns), verifies them with
+the ordinary machinery under `--verify-suspects` into a SEPARATE bin
+(`TypePair.tier='disclosure'`), renders the "Disclosure evidence" section
++ `disclosure_evidence.csv`, and qualifies the headline — the claim tier
+stays the single headline basis everywhere (panel parity preserved).
+Out-map remains claim-scope by design.
+
 ## 6. BodyId pooling and the pool fix
 
 `pool_bridge_body_ids` pools, per standardized linker, the bodyIds of the

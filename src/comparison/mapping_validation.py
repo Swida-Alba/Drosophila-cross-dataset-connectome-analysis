@@ -473,6 +473,12 @@ class TypePair:
     # None for ordinary pairs.  Advisory marking only — the pair validates
     # exactly like any other mapped pair.
     same_name_first: Optional[dict] = None
+    # §three-tier readout (user 2026-09-27): 'claim' (default — the pair
+    # validates into the ordinary bins) or 'disclosure' (an end the mapper
+    # decision declined but the evidence reaches; verified with the same
+    # machinery into the SEPARATE disclosure bin — never the headline
+    # counts, preserving panel parity).
+    tier: str = 'claim'
 
     @property
     def key(self) -> Tuple[str, str]:
@@ -1073,6 +1079,7 @@ RUN_FILE_LAYOUT: Dict[str, str] = {
     # mapping provenance
     'mapping_export.csv': 'mapping',
     'same_name_excluded.csv': 'mapping',
+    'disclosure_evidence.csv': 'mapping',
     'suspects_verification.csv': 'mapping',
     # root: deliverables + parameter/meta
     'README.txt': '',
@@ -1226,7 +1233,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
         'dup'],
     'mapping_export.csv': [
         'source_dataset', 'source_type', 'target_dataset', 'target_type',
-        'relationship', 'mapping_status', 'same_name_first',
+        'relationship', 'mapping_status', 'tier',
+        'same_name_first',
         'same_name_rivals', 'query', 'is_selected', 'chain_rank',
         'selected_bridge', 'source_bridge', 'bridge_linkers',
         'selected_linker_values',
@@ -1243,6 +1251,13 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'same_name_excluded.csv': [
         'query', 'source_type', 'decision_status', 'disposition',
         'selected', 'n_rivals', 'rivals', 'reason'],
+    # §three-tier delivery (user 2026-09-27): the ends the mapper decision
+    # DECLINED but the derivation evidence reaches, with the decline
+    # reason and — when --verify-suspects ran — the same-machinery
+    # verification verdicts.  Advisory bin: never the headline counts.
+    'disclosure_evidence.csv': [
+        'query', 'source_type', 'target_type', 'decline_reason',
+        'decision_status', 'verdict', 'rank_union'],
     'source_candidates.csv': [
         'source_bodyId', 'source_type', 'target_bodyId', 'target_type',
         'rank_union', 'jaccard', 'morph_v2_similarity', 'morph_bar',
@@ -2492,6 +2507,25 @@ class MappingValidator:
             src_type, cfg.source_dataset, cfg.target_dataset)
         status = dec.get('status')
         snf = dec.get('same_name_first') or {}
+        # §three-tier delivery (user 2026-09-27): record the DISCLOSURE
+        # ends — bridge evidence the decision declined — regardless of
+        # the status path below (conflict/unmapped types return early and
+        # would otherwise lose them entirely).  Advisory only.
+        for disc in (dec.get('disclosure_targets') or []):
+            if not hasattr(self, '_disclosure_records'):
+                self._disclosure_records = []
+                self._disclosure_recorded = set()
+            rkey = (str(query), str(src_type), str(disc.get('target')))
+            if rkey in self._disclosure_recorded:
+                continue
+            self._disclosure_recorded.add(rkey)
+            self._disclosure_records.append({
+                'query': str(query),
+                'source_type': str(src_type),
+                'target_type': str(disc.get('target') or ''),
+                'decline_reason': str(disc.get('reason') or ''),
+                'decision_status': str(status),
+            })
         if status in ('conflict', 'unmapped'):
             if self._is_multivalue(src_type, cfg.source_dataset):
                 # P4: multi-value cells stay ATOMIC (locked decision) —
@@ -5827,6 +5861,78 @@ class MappingValidator:
         except Exception:  # noqa: BLE001
             return None
 
+    def _verify_disclosure_targets(self, src_type: str, pool: List[int],
+                                   scans: Dict[int, pd.DataFrame],
+                                   decision: Optional[Dict],
+                                   target_id2type=None, sizes=None,
+                                   weights=None, source_sides=None,
+                                   target_sides=None) -> None:
+        """Verify the DISCLOSURE ends with the ordinary machinery.
+
+        §three-tier (user 2026-09-27): the ends the mapper decision
+        declined but the evidence reaches (decision['disclosure_targets'])
+        get the SAME per-pair validation as claim pairs, routed into the
+        SEPARATE disclosure accumulator — the verdicts annotate
+        disclosure_evidence.csv and never touch the headline counts
+        (panel parity preserved).  Advisory, same class as the suspects
+        pass.
+        """
+        if not decision or not decision.get('disclosure_targets'):
+            return
+        if not hasattr(self, '_disclosure_verification'):
+            self._disclosure_verification = {}
+        cfg = self.cfg
+        for disc in decision['disclosure_targets']:
+            tgt_type = str(disc.get('target') or '')
+            if not tgt_type:
+                continue
+            vkey = (str(self._current_query or src_type), str(src_type),
+                    tgt_type)
+            if vkey in self._disclosure_verification:
+                continue
+            tgt_pool = self._bodyids_for(tgt_type, cfg.target_dataset)
+            if not tgt_pool:
+                self.log(f'  [disclosure] {src_type}: {tgt_type!r} has no '
+                         'target pool — recorded unverified')
+                self._disclosure_verification[vkey] = {
+                    'verdict': 'no_target_pool', 'rank_union': ''}
+                continue
+            dpair = TypePair(
+                source_dataset=cfg.source_dataset,
+                source_type=src_type,
+                source_pool=sorted(int(b) for b in pool),
+                target_dataset=cfg.target_dataset,
+                target_type=tgt_type,
+                target_pool=tgt_pool,
+                relationship='disclosure',
+                status='disclosure',
+                tier='disclosure',
+                query=str(self._current_query or src_type))
+            try:
+                res = self.validate_pair(
+                    dpair, scans, target_id2type, sizes=sizes,
+                    weights=weights, source_sides=source_sides,
+                    target_sides=target_sides)
+                rows = res['rows'] or []
+                from collections import Counter as _C
+                verdicts = _C(str(r.get('verdict') or '') for r in rows)
+                best_ru = max(
+                    (r.get('rank_union') for r in rows
+                     if isinstance(r.get('rank_union'), (int, float))),
+                    default='')
+                self._disclosure_verification[vkey] = {
+                    'verdict': '; '.join(
+                        f'{v}×{n}' for v, n in sorted(verdicts.items()))
+                    or 'no_rows',
+                    'rank_union': best_ru,
+                }
+                self.log(f'  [disclosure] {src_type} -> {tgt_type} '
+                         f"({disc.get('reason')}): "
+                         f"{self._disclosure_verification[vkey]['verdict']}")
+            except Exception as exc:  # noqa: BLE001 — advisory only
+                self._disclosure_verification[vkey] = {
+                    'verdict': f'verification_failed: {exc}', 'rank_union': ''}
+
     def _verify_suspects_for_type(self, src_type: str, pool: List[int],
                                   scans: Dict[int, pd.DataFrame],
                                   decision: Optional[Dict],
@@ -6242,6 +6348,18 @@ class MappingValidator:
                     self._verify_suspects_for_type(
                         src_type, pool, scans,
                         self._suspects_decision(src_type),
+                        target_id2type=target_id2type,
+                        sizes=self._target_sizes,
+                        weights=self._target_weights,
+                        source_sides=self._source_sides,
+                        target_sides=self._target_sides)
+                    # §three-tier: the disclosure ends of the SAME type
+                    # get the same verification (advisory, separate bin)
+                    self._verify_disclosure_targets(
+                        src_type, pool, scans,
+                        self.mapper.get_mapping_decision(
+                            src_type, cfg.source_dataset,
+                            cfg.target_dataset),
                         target_id2type=target_id2type,
                         sizes=self._target_sizes,
                         weights=self._target_weights,
@@ -6673,6 +6791,22 @@ class MappingValidator:
                                                         _morph_idx))
         _write_run_csv(rd, 'same_name_excluded.csv',
                        getattr(self, '_same_name_excluded', None) or [])
+        # §three-tier delivery: the disclosure ends (declined but
+        # evidence-reached), annotated with the advisory verification
+        # verdicts when --verify-suspects ran.  Written only when any were
+        # recorded — a run with no disclosure gains no file (the pooling
+        # precedent).
+        _disc_rows = list(getattr(self, '_disclosure_records', None) or [])
+        if _disc_rows:
+            _disc_ver = getattr(self, '_disclosure_verification',
+                                None) or {}
+            for row in _disc_rows:
+                v = _disc_ver.get((str(row.get('query')),
+                                   str(row.get('source_type')),
+                                   str(row.get('target_type')))) or {}
+                row['verdict'] = v.get('verdict', '')
+                row['rank_union'] = v.get('rank_union', '')
+            _write_run_csv(rd, 'disclosure_evidence.csv', _disc_rows)
         if getattr(self.cfg, 'verify_suspects', False):
             _write_run_csv(rd, 'suspects_verification.csv',
                            getattr(self, '_suspects_verification_rows', None)
@@ -6942,6 +7076,7 @@ class MappingValidator:
                 'target_type': p.target_type,
                 'relationship': p.relationship,
                 'mapping_status': p.status,
+                'tier': getattr(p, 'tier', 'claim'),
                 'same_name_first': bool(p.same_name_first),
                 'same_name_rivals': ';'.join(
                     p.same_name_first.get('rivals') or [])

@@ -431,29 +431,68 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     # 11.  Every surface that shows this number says which population it is.
     pop_by_target_type: Dict[Tuple[str, str], set] = {}
     claimed_for_target_type: Dict[Tuple[str, str], set] = {}
+    # §three-tier readout (user 2026-09-27): alongside the claim tier,
+    # accumulate the EVIDENCE-REACH tier — every flow's pools, including
+    # the DISCLOSURE rows the decision declined (a same-name rival, a
+    # vote-declined annotation pair).  The reach tier is what the CSVs'
+    # all-valid scopes and the coverage tables already publish; the strip
+    # now states both so the readout cannot be mistaken for one number.
+    reach_by_ds: Dict[str, set] = {}
+    reach_by_type: Dict[Tuple[str, str, str], set] = {}
+    reach_types_by_ds: Dict[str, set] = {}
+    claim_types_by_ds: Dict[str, set] = {}
+    disclosure_by_ds: Dict[str, List[Dict[str, Any]]] = {}
     for (src, tgt), flows in pair_flows.items():
         for f in flows:
-            if not flow_is_claimed(f):
-                continue
+            claimed = flow_is_claimed(f)
             key = mapping_pool_key(src, tgt, f.get("source_type"),
                                    f.get("foreign_type"))
             pool = pools.get(key)
             tb = (pool or {}).get("target_body_ids") or []
             tkey = (tgt, str(f.get("foreign_type") or ""))
-            # str-normalized on both sides: the same ids the card and the CSV
-            # compare, and it cannot raise on a local release's id spelling
-            pop_by_target_type.setdefault(tkey, set()).update(
-                str(b) for b in ((pool or {}).get("target_type_body_ids")
-                                 or []))
-            claimed_for_target_type.setdefault(tkey, set()).update(
-                str(b) for b in tb)
+            if claimed:
+                # str-normalized on both sides: the same ids the card and
+                # the CSV compare, and it cannot raise on a local release's
+                # id spelling
+                pop_by_target_type.setdefault(tkey, set()).update(
+                    str(b) for b in ((pool or {}).get("target_type_body_ids")
+                                     or []))
+                claimed_for_target_type.setdefault(tkey, set()).update(
+                    str(b) for b in tb)
+                if not tb:
+                    continue
+                claim_types_by_ds.setdefault(tgt, set()).add(
+                    str(f.get("foreign_type") or ""))
+                claimed_by_ds.setdefault(tgt, set()).update(
+                    int(b) for b in tb)
+                claimed_by_type.setdefault(
+                    (src, f.get("source_type"), tgt), set()).update(
+                    int(b) for b in tb)
+            # reach tier: adopted and disclosure alike
+            if f.get("foreign_type"):
+                reach_types_by_ds.setdefault(tgt, set()).add(
+                    str(f["foreign_type"]))
             if not tb:
                 continue
-            claimed_by_ds.setdefault(tgt, set()).update(
-                int(b) for b in tb)
-            claimed_by_type.setdefault(
+            reach_by_ds.setdefault(tgt, set()).update(int(b) for b in tb)
+            reach_by_type.setdefault(
                 (src, f.get("source_type"), tgt), set()).update(
                 int(b) for b in tb)
+            if not claimed:
+                snf = f.get("same_name_first") or {}
+                if f.get("suspects") and snf.get("selected"):
+                    reason = (f"same-name-first rival — "
+                              f"'{snf['selected']}' selected instead")
+                elif (f.get("mapping_status") == "conflict"):
+                    reason = "conflict — fail-closed"
+                else:
+                    reason = ("fan-out branch not adopted by the decision "
+                              f"({f.get('mapping_status') or 'evidence'})")
+                disclosure_by_ds.setdefault(tgt, []).append({
+                    "type": str(f.get("foreign_type") or ""),
+                    "bodies": len({int(b) for b in tb}),
+                    "reason": reason,
+                })
 
     def _out_map_ids(target_dataset: str, foreign_type: str) -> set:
         """The out-map bodyId set of one received type in one dataset."""
@@ -533,7 +572,12 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
     # only counts as mapped when the target dataset actually has neurons of
     # that type — a crosswalk claim naming an absent type is reported on the
     # orphan entry instead of inflating the target's mapped counts.
-    recv_types_by_ds: Dict[str, set] = {ds: set() for ds in datasets}
+    # Resolver-half orphan accounting: a resolver claim naming a type the
+    # target dataset lacks registers an orphan so the claim renders.  (The
+    # resolver's PRESENT licensed targets no longer feed the summary's
+    # mapped figures — since the 2026-09-27 three-tier readout the Mapped
+    # cell is pure claim basis and the resolver-licensed-but-declined
+    # names surface through the Evidence reach column instead.)
     if mapper is not None and getattr(mapper, "_loaded", False):
         # One cache pair per compute: the resolver memoizes alias
         # candidates and bridge chains per (type, source, target), so a
@@ -554,8 +598,6 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                     if not targets:
                         continue
                     t_counts = count_types_in_index(indexes[target], targets)
-                    present = [t for t in targets if t_counts.get(t, 0)]
-                    recv_types_by_ds[target].update(present)
                     absent = [t for t in targets if not t_counts.get(t, 0)]
                     if absent:
                         entry = orphan_by_key.get((origin, target, otype))
@@ -575,32 +617,30 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
                                 (origin, target), []).append(entry)
                             orphan_by_key[(origin, target, otype)] = entry
                         entry["claimed"].extend(absent)
-    # The flow ends are the bridge half of the same resolution — again the
-    # ADOPTED ends only, so the type count and the neuron count describe
-    # one and the same claim set.
-    for (s, t), fl in pair_flows.items():
-        recv_types_by_ds.setdefault(t, set()).update(
-            f.get("foreign_type") or "" for f in fl
-            if f.get("foreign_type") and flow_is_claimed(f))
 
     summary = []
     for ds in datasets:
         matched = origins.get(ds, [])
         neurons = (sum(count_types_in_index(
             indexes[ds], matched).values()) if matched else 0)
-        recv_types = recv_types_by_ds.get(ds, set())
-        recv_counts = (count_types_in_index(indexes[ds], sorted(recv_types))
-                       if recv_types else {})
-        # Flow ends are bridge-validated, but only names with neurons count
-        # as mapped here (parity with the resolver-validated half above).
-        recv_present = {t for t, c in recv_counts.items() if c}
-        # mapped_neurons = the CLAIM SET (union of branch-resolved target
-        # pools received into this dataset), per the ratified 242→204
-        # convention — not the received types' full populations.  The
-        # mapped counts are what this dataset RECEIVES; a dataset that
-        # only issues the query reads 0 here and shows its issued side
-        # through Matched types / Neurons (user 2026-09-14).
+        # §three-tier (2026-09-27): the MAPPED cell is PURE claim basis —
+        # its type count is the adopted types whose pools actually claimed
+        # bodyIds, so bodies and types describe one and the same set (the
+        # old count mixed in resolver-licensed names the decision
+        # declined).  The reach tier carries the full evidence touch.
+        claim_types = claim_types_by_ds.get(ds, set())
         recv_neurons = len(claimed_by_ds.get(ds, set()))
+        reach_counts = (count_types_in_index(
+            indexes[ds], sorted(reach_types_by_ds.get(ds, set())))
+            if reach_types_by_ds.get(ds) else {})
+        reach_present = {t for t, c in reach_counts.items() if c}
+        reach_neurons = len(reach_by_ds.get(ds, set()))
+        disclosure = disclosure_by_ds.get(ds, [])
+        # exclusive disclosure = reach − claim (bodies the evidence touches
+        # but the decision did not adopt); the per-flow detail list carries
+        # the decline reasons for the hover
+        disclosure_bodies = reach_neurons - recv_neurons
+        disclosure_types = len(reach_present - claim_types)
         out_map = len(out_map_by_ds.get(ds, set()))
         unmapped = len({e["type"] for (s, _t), v in orphans.items()
                         if s == ds for e in v})
@@ -608,10 +648,17 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
             "dataset": ds,
             "types": len(matched),
             "neurons": neurons,
-            "mapped_types": len(recv_present),
+            "mapped_types": len(claim_types),
             "mapped_neurons": recv_neurons,
             "mapped": _format_mapped_neurons(recv_neurons,
-                                             len(recv_present)),
+                                             len(claim_types)),
+            "reach_types": len(reach_present),
+            "reach_neurons": reach_neurons,
+            "reach": _format_mapped_neurons(reach_neurons,
+                                            len(reach_present)),
+            "disclosure_types": disclosure_types,
+            "disclosure_bodies": disclosure_bodies,
+            "disclosure_detail": disclosure,
             "out_map": out_map,
             "unmapped": unmapped,
         })
@@ -1543,18 +1590,38 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "dataset."},
                         {"name": "mapped", "label": "Mapped neurons",
                          "field": "mapped", "align": "left",
-                         "tooltip": "Branch-claimed bodyIds received INTO "
-                                    "this dataset (union of the branches' "
-                                    "resolved pools — the claim set), with "
-                                    "'(k types)' from 2 distinct received "
-                                    "types up. The received types' full "
-                                    "populations are the reference "
-                                    "denominator. A claimed type that has "
-                                    "no neurons here does not count — it "
-                                    "is listed under orphans. A dataset "
-                                    "that only issues the query receives "
-                                    "0 — its issued side is Matched "
-                                    "types / Neurons."},
+                         "tooltip": "The CLAIM set: branch-claimed bodyIds "
+                                    "received INTO this dataset (union of "
+                                    "the ADOPTED branches' resolved pools), "
+                                    "with '(k types)' from 2 distinct "
+                                    "adopted types up. Pure claim basis "
+                                    "(2026-09-27): only pairs the scoped "
+                                    "decision ADOPTED count — a same-name "
+                                    "rival it declined, or a fan-out branch "
+                                    "it did not adopt, is listed in the "
+                                    "pair table as a disclosure row and "
+                                    "shows under Evidence reach instead. "
+                                    "The received types' full populations "
+                                    "are the reference denominator. A "
+                                    "claimed type that has no neurons here "
+                                    "does not count — it is listed under "
+                                    "orphans. A dataset that only issues "
+                                    "the query receives 0 — its issued "
+                                    "side is Matched types / Neurons."},
+                        {"name": "reach", "label": "Evidence reach (all flows)",
+                         "field": "reach", "align": "left",
+                         "tooltip": "The REACH tier: every flow's pools "
+                                    "unioned — the ADOPTED claim set PLUS "
+                                    "the disclosure ends the decision "
+                                    "declined (a same-name rival, a "
+                                    "vote-declined annotation pair). This "
+                                    "is the same scope the CSVs' all-valid "
+                                    "columns and the coverage tables "
+                                    "publish. claim ≤ reach always; the "
+                                    "difference is the disclosure "
+                                    "material, listed per type with its "
+                                    "decline reason in the pair table's "
+                                    "'not adopted' rows."},
                         {"name": "out_map",
                          "label": "Out-map (in-map types)",
                          "field": "out_map", "align": "left",
