@@ -35,6 +35,7 @@ from comparison.mapping_validation_report import (  # noqa: E402
     _homolog_morph_cell,
     _topn_hover,
     build_report_document,
+    collect_and_write,
     collect_run_data,
 )
 
@@ -167,6 +168,7 @@ def test_legacy_folder_renders_the_absent_state(run_dir: Path):
     assert "forward_matches.csv absent" in fwd
     bwd = _homolog_backward_tab(d)
     assert "target_matches.csv absent" in bwd
+    assert "Queried-type return" not in bwd
     # the full document still assembles over a legacy folder
     html = build_report_document(d)
     assert "Homolog · forward" in html and "Homolog · backward" in html
@@ -243,8 +245,111 @@ def test_backward_tab_renders_legacy_nan_type_cells_as_untyped(
     assert "<td>nan<" not in fwd and "<td>nan<" not in bwd
     # the forward primary-match cell reads the normalized type inline
     assert "301 · untyped" in fwd
-    assert "· untyped —" in bwd  # the group summary spells the pipeline word
+    # the flat table (user 2026-09-28) has no group summaries left — the
+    # normalized type lives only in the row cells ('neuron</summary>' is
+    # the old per-group summary; the glossary details says 'Definitions')
+    assert "neuron</summary>" not in bwd and "neurons</summary>" not in bwd
     assert "<td>901</td><td>untyped</td>" in bwd
+
+
+def test_homolog_tabs_are_one_flat_table_sorted_by_type(run_dir: Path):
+    # user 2026-09-28: the per-(allocation, type) <details> groups go —
+    # one table per tab, every row in it, sorted by the type column
+    # (case-insensitive) then the primary Jaccard
+    _write_csv(run_dir / "forward_matches.csv", _FWD_HEADER, [
+        ["101", "B", "301", "X", 0.5, -0.1, True, _PAYLOAD, 40, "run",
+         None, None, ""],
+        ["102", "A", "302", "Y", 0.4, 0.0, False, "", 30, "run",
+         None, None, ""],
+        ["103", "a", "303", "Z", 0.3, 0.1, False, "", 20, "run",
+         None, None, ""],
+    ])
+    _write_csv(run_dir / "target_matches.csv", _TGT_HEADER, [
+        ["901", "Y", "verified", "A→Y", "201", "A", 0.4, 0.2, True,
+         _PAYLOAD, 12, "run", None, None, ""],
+        ["902", "x", "", "", "202", "B", 0.1, -0.2, False, "", 8,
+         "run", None, None, ""],
+        ["903", "X", "", "", "", "", None, None, "", "", 0,
+         "no_profile", None, None, ""],
+    ])
+    d = collect_run_data(run_dir)
+    fwd = _homolog_forward_tab(d)
+    bwd = _homolog_backward_tab(d)
+    for html in (fwd, bwd):
+        # one flat per-bodyId section: the old group tables rendered
+        # '<label> · <type> — N neuron(s)</summary>' summaries
+        assert "neuron</summary>" not in html
+        assert "neurons</summary>" not in html
+        assert "grouped by allocation" not in html
+        assert ("<h2 class='section-heading'>Per-bodyId matches</h2>"
+                in html)
+    # forward: a/A tie on the lowered key -> jaccard desc (102 before 103),
+    # then B; the allocation stays a per-row cell
+    assert fwd.index("102") < fwd.index("103") < fwd.index("101")
+    assert "<td>verified</td>" in bwd
+    # backward: x (0.1) before X (no profile) before Y
+    assert bwd.index("902") < bwd.index("903") < bwd.index("901")
+
+
+def test_backward_tab_counts_the_queried_type_return_both_sides(
+        run_dir: Path):
+    # user 2026-09-28: how many target bodyIds have a primary source match
+    # whose type is one of the query's appeared source types, and how many
+    # distinct source bodyIds that claims back
+    _write_csv(run_dir / "forward_matches.csv", _FWD_HEADER, [
+        ["101", "A", "301", "X", 0.5, -0.1, True, _PAYLOAD, 40, "run",
+         None, None, ""],
+        ["102", "B", "302", "Y", 0.4, 0.0, False, "", 30, "run",
+         None, None, ""],
+        ["103", "C", "303", "Z", 0.3, 0.1, False, "", 20, "run",
+         None, None, ""],
+    ])
+    _write_csv(run_dir / "target_matches.csv", _TGT_HEADER, [
+        # lands on queried type A -> counted
+        ["901", "X", "verified", "A→X", "201", "A", 0.4, 0.2, True,
+         _PAYLOAD, 12, "run", None, None, ""],
+        # lands on queried type B -> counted
+        ["902", "Y", "", "", "202", "B", 0.3, 0.1, False, "", 10,
+         "run", None, None, ""],
+        # lands on a type outside the query's set -> not counted
+        ["903", "Z", "", "", "203", "Q", 0.2, 0.0, False, "", 9,
+         "run", None, None, ""],
+        # never scanned -> no primary source -> not counted
+        ["904", "W", "", "", "", "", None, None, "", "", 0,
+         "no_profile", None, None, ""],
+    ])
+    d = collect_run_data(run_dir)
+    html = _homolog_backward_tab(d)
+    assert "Queried-type return" in html
+    assert "2 of 4" in html
+    assert "2 distinct source bodyIds" in html
+    assert "<td>A</td><td>1</td>" in html and "<td>B</td><td>1</td>" in html
+    # a queried type with no landing is disclosed, not dropped
+    assert "No target bodyId lands on: C" in html
+
+
+def test_backward_tab_skips_the_return_block_without_forward_rows(
+        run_dir: Path):
+    _write_csv(run_dir / "target_matches.csv", _TGT_HEADER, [
+        ["901", "X", "", "", "201", "A", 0.4, 0.2, True, _PAYLOAD, 12,
+         "run", None, None, ""],
+    ])
+    d = collect_run_data(run_dir)
+    assert "Queried-type return" not in _homolog_backward_tab(d)
+
+
+def test_collect_and_write_out_path_leaves_the_run_untouched(run_dir: Path):
+    # user 2026-09-28: regenerate a past run's report for testing without
+    # touching the run folder
+    _write_csv(run_dir / "forward_matches.csv", _FWD_HEADER, [
+        ["101", "A", "301", "X", 0.5, -0.1, True, _PAYLOAD, 40, "run",
+         None, None, ""]])
+    out = run_dir.parent / "elsewhere" / "regen.report.html"
+    assert not out.exists()
+    wrote = collect_and_write(run_dir, with_notes=False, out_path=out)
+    assert wrote == out and out.exists()
+    assert not (run_dir / "report.html").exists()
+    assert "Homolog · forward" in out.read_text(encoding="utf-8")
 
 
 def test_morph_cell_rederives_the_branch_bar_verdict_offline():
@@ -445,7 +550,8 @@ def test_deep_window_rows_reach_the_forward_allocation(run_dir: Path):
     d = collect_run_data(run_dir)
     assert d["forward_alloc"]["103"]["bins"] == ["examinees"]
     html = _homolog_forward_tab(d)
-    assert "examinees · C" in html
+    # row cells run bodyId -> type -> allocation
+    assert "<td>103</td><td>C</td><td>examinees</td>" in html
 
 
 def test_finalize_target_rows_attach_categories_branches_and_morph():
