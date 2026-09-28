@@ -35,7 +35,7 @@ const FUNCTIONS = [
     'updateUndoRedoButtons', 'updateHistoryList', 'jumpToHistory',
     'restoreGlobalStyles', 'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth',
     'updateFontSize', 'updateArrowSize', 'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
-    'syncSelectedGeometryInputs', 'updateAlignButtons', 'alignSelectedNodes',
+    'syncSelectedGeometryInputs', 'updateAlignButtons', 'alignSelectedNodes', 'extractColorHex', 'hasBypass',
     'syncTransformInputs', 'syncGapDisplays', 'measureAxisGap', 'isVisibleElement', 'metricEdgeValue',
     'visibleNodeCentroid', 'gapAxesSwapped',
     'updateEdgeMetricLabels',
@@ -76,8 +76,14 @@ function buildScope(cy) {
         let globalArrowSize = 9;
         let globalEdgeWidthScale = 'log_e';
         let globalNodeShape = 'circle';
+        let reciprocalMode = 'straight';
+        function applyReciprocalMode(m) { reciprocalMode = m; }
+        function syncReciprocalControls() {}
         let pendingNudge = null;
         function flushPendingNudge() {}
+        let pendingStyle = null;
+        function queueStyleHistory(label) {}
+        function flushPendingStyle() {}
         let reciprocalOffset = 5;
         let restoringHistoryState = false;
         // Layout transform trackers mirrored by captureState's globalStyles
@@ -119,7 +125,7 @@ function buildScope(cy) {
         return {
             undo, redo, pushHistory, pushStateHistory, captureState, restoreState,
             registerDragHistory, alignSelectedNodes, captureStyleBypass,
-            updateAlignButtons,
+            updateAlignButtons, syncSelectedGeometryInputs,
             getEl: (id) => els[id] || makeEl(id),
             jumpToHistory, updateIgnoredEdges, syncToggleButtons,
             getUndoStack: () => undoStack, getRedoStack: () => redoStack,
@@ -380,15 +386,16 @@ function check(name, got, expected) {
     api.alignSelectedNodes('v');
     check('aligned to mean X', cy.nodes().map(n => n.position().x), [50, 50, 50]);
     check('Y untouched', cy.nodes().map(n => n.position().y), [10, 30, 50]);
-    // geometry modifiers + confirm button hide when nothing is selected
+    // geometry modifier GROUPS hide when nothing is selected (the Apply
+    // Size/Position button itself was removed — every field is live)
     cy.$(':selected').unselect();
     api.updateAlignButtons();
-    check('geometry apply hidden with no selection', api.getEl('applyGeometryBtn').style.display, 'none');
     check('node geometry group hidden', api.getEl('geomNodeGroup').style.display, 'none');
     check('edge geometry group hidden', api.getEl('geomEdgeGroup').style.display, 'none');
     cy.getElementById('A').select();
     api.updateAlignButtons();
-    check('geometry apply shown with selection', api.getEl('applyGeometryBtn').style.display, 'block');
+    api.syncSelectedGeometryInputs(cy.getElementById('A'));
+    check('node geometry group shown with selection', api.getEl('geomNodeGroup').style.display, 'block');
 }
 
 // ===== Test L: computed (non-bypass) style entries are NOT snapshotted =====

@@ -36,6 +36,7 @@ const FUNCTIONS = [
     'captureStyleBypass', 'captureState', 'pushHistory', 'syncToggleButtons',
     // global style update fns
     'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth', 'updateFontSize', 'updateArrowSize',
+    'hasBypass',
     'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
     'updateEdgeMetricLabels',
     // edge filter chain
@@ -47,7 +48,7 @@ const FUNCTIONS = [
     'reapplyDeadEndHiding', 'reapplyOrphanHiding', 'reapplySelfLoopHiding',
     // surface controls
     'toggleLabels', 'toggleEdgeWeightLabels', 'effectiveEdgeLabelColor',
-    'toggleReciprocalMode', 'updateReciprocalSliderState',
+    'setReciprocalMode', 'applyReciprocalMode', 'syncReciprocalControls',
     'applyBackground', 'applyLabelFontColor', 'extractColorHex',
     // groups
     'groupMembers', 'groupLabel', 'groupDefaultFor', 'legendChip', 'refreshLegend',
@@ -101,8 +102,14 @@ function buildScope(cy) {
         let globalNodeShape = 'circle';
         let pendingNudge = null;
         function flushPendingNudge() {}
+        let pendingStyle = null;
+        function queueStyleHistory(label) {}
+        function flushPendingStyle() {}
         let straightReciprocalEdgesEnabled = false;
         let reciprocalOffset = 5;
+        let reciprocalMode = 'straight';
+        const edgeWeightLabelForTooltip = 'synapses';
+
         let restoringHistoryState = false;
         let lastGapX = null;
         let lastGapY = null;
@@ -151,6 +158,7 @@ function buildScope(cy) {
             const el = {
                 id: id, value: '', textContent: '', disabled: false,
                 style: {}, dataset: {}, options: [{ textContent: '' }],
+                addEventListener: function () {},
                 classList: makeClassList(),
                 appendChild: function (o) { el.options.push(o); },
                 remove: function () {},

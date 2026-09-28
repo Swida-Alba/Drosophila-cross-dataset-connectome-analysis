@@ -85,6 +85,7 @@
 - **Width:** Slider (1-20 px)
 - **Arrow Size:** Slider (3-20 px)
 - **Filter:** Hide by weight ⭐
+- **Reciprocal Edges:** Straight / Curved / Merged (+ Offset slider, Straight only)
 
 ### Font & Node
 - **Font Size:** Slider (6-30 px)

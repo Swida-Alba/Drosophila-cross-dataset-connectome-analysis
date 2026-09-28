@@ -148,6 +148,13 @@ Choose the best layout for your network structure:
 - **Generation**: the `node_shape` constructor argument (`'circle'`, `'round-square'`, `'sharp-square'`, or `'by-role'` = source/target round squares, intermediates sharp squares); a per-node `shape` graph attribute overrides the global choice
 - **Affects**: Node geometry only — labels, sizing and layouts are shape-agnostic
 
+#### Node Outline (per node)
+- **Where**: select nodes → Outline row → pattern, Color, Alpha %, Width (px)
+- Pattern: Solid / Dashed / Dotted / Double; color and opacity apply
+  immediately like every panel control; nodes are borderless by default —
+  a width > 0 reveals the outline (0 hides it again)
+- Undoable and persisted through Save/Export Layout
+
 #### Node Width / Height / Shape (per node)
 - **Where**: select a node → Position / Size panel → `W (px)`, `H (px)`, `Shape`
 - Independent dimensions: rectangles (round/sharp squares) can be non-square;
@@ -166,6 +173,13 @@ Choose the best layout for your network structure:
   selected node
 - Undoable ('Resize element'/'Move nodes'), round-trips through Save/Export
   Layout, and edge endpoints re-anchor to the resized node automatically
+
+#### Edge Line Style (pattern + color + alpha)
+- **Where**: select edges → Width (edge) group → Pattern dropdown, Color
+  swatch, Alpha %
+- Each control applies immediately to every selected edge (line +
+  both arrowheads); the weight label keeps full opacity
+- Undoable and persisted through Save/Export Layout
 
 #### Keyboard nudging
 - Arrow keys move the selected nodes 1 px (Shift = 10 px); a rapid burst
@@ -641,23 +655,41 @@ vp = VisualizePath(
 - Curved mode disables all offset and edge-length adjustments for reciprocal edges.
 - Node size changes automatically update arrowhead positions to remain outside node boundaries.
 
-## Merged Bidirectional Edges (Sep 2026)
+## Reciprocal Edges: Straight / Curved / Merged (Sep 2026)
 
-The two-edge representation above stays the default. Two opt-in paths render a
-both-way connection as ONE edge with arrowheads at both ends:
+How a reciprocal pair (A→B + B→A) renders is a LIVE mode in the
+**Reciprocal Edges** ribbon group — a segmented switch, no regeneration
+needed:
 
-- **`merge_reciprocal_edges=True`** (constructor / "Merge Bidirectional Edges"
-  checkbox in the Net-Viz Rendering Options): every reciprocal pair with
-  non-negative weights collapses into a single double-headed element.
+- **Straight** (default): both halves drawn as parallel straight lines,
+  separated by the Offset slider.
+- **Curved**: both halves drawn as bezier curves.
+- **Merged**: ONE double-headed edge per pair — the reverse half is hidden,
+  the canonical half gains a source-side arrowhead.
+
+Semantics in Merged mode: width and the weight-band filter use the
+**stronger** direction (`weight` = `original_weight` = max); hover shows both
+directions; the canonical half keeps its own metadata (ratio / probability /
+NT / color). Negative pairs never merge — their light-blue per-direction
+styling is preserved. The dead-end filter counts a merged edge on both
+endpoints.
+
+Switching is lossless: un-merging restores each half's original weight,
+tooltip and width. The chosen mode persists through Save/Load, Export/Import
+Layout and undo/redo (older exports with the legacy `enabled` boolean still
+import — read as Straight/Curved).
+
+Two opt-in paths select the INITIAL mode (or make a pair double-headed
+permanently):
+
+- **`merge_reciprocal_edges=True`** (constructor / "Merge Bidirectional
+  Edges" checkbox in the Net-Viz Rendering Options): the page loads in
+  Merged mode.
 - **Declared-bidirectional edge lists**: a `bidirectional` /
-  `bidirectional_pair` column flags both-way rows (a flagged single row, or
-  two rows sharing a pair id) — no duplicate reverse rows needed.
+  `bidirectional_pair` column flags both-way rows — a flagged single row has
+  no reverse half to toggle, so it renders double-headed in EVERY mode; two
+  rows sharing a pair id form a toggleable pair.
 
-Semantics: width and the weight-band filter use the **stronger** direction
-(`weight` = `original_weight` = max); hover and the Edge List CSV export show
-both directions (the export writes the pair as two directional rows sharing a
-`bidirectional_pair` id, so re-import rebuilds it). Metadata (ratio /
-probability / NT / color) adopts the stronger direction. Negative edges never
-merge — their light-blue per-direction styling is preserved. The dead-end
-filter counts a merged edge on both endpoints, and the Reciprocal Offset
-ribbon hides itself when no two-edge pairs remain.
+Anchoring note: reciprocal-pair endpoints anchor to each node's rim along
+the line using BOTH width and height (ray-box), so resized rectangles keep
+their arrowheads on the edge.

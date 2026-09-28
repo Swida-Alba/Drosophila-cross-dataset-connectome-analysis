@@ -125,6 +125,20 @@ function makeDeadEndFn(cy) {
     return new Function('cy', src + '\nreturn isDeadEndNodeIn;')(cy);
 }
 
+// Runtime mode switcher: applyReciprocalMode extracted from the page with
+// its page-global collaborators (edge-weight label, label refresh, filter
+// re-apply) stubbed.  `reciprocalMode` is the page-global it mutates.
+function makeModeFn(cy) {
+    const src = "let reciprocalMode = 'straight';\n" +
+        "const weightLabel = 'synapses';\n" +
+        "const updateEdgeMetricLabels = () => {};\n" +
+        "const applyEdgeFilter = () => {};\n" +
+        "const document = { getElementById: () => null };\n" +
+        extractFunction('applyReciprocalMode', html) + '\n';
+    return new Function('cy', src + '\n' +
+        'return { apply: applyReciprocalMode, mode: () => reciprocalMode };')(cy);
+}
+
 const elements = new Function('return (' + extractElementsObject(html) + ')')();
 const styleArray = new Function('return ' + extractStyleArray(html))();
 
@@ -168,6 +182,9 @@ function check(name, pass, detail) {
 // out for both endpoints (the directional reading flags both ends). ---
 {
     const cy = buildGraph();
+    // reproduce the page-load behavior: merge pairs whose initial mode is
+    // merged (a no-op for straight-initial generations)
+    makeModeFn(cy).apply('merged');
     const bidirEdges = cy.edges('[bidirectional = 1]');
     check('graph contains merged bidirectional edges when data has them',
         elements.edges.some(e => e.data && e.data.bidirectional)
@@ -193,6 +210,7 @@ function check(name, pass, detail) {
 // rows sharing the pair id; plain edges keep an empty pair cell. ---
 {
     const cy = buildGraph();
+    makeModeFn(cy).apply('merged');
     const exporter = makeExporter(cy, {});
     exporter.init();
     const rows = parseCSV(exporter.build());
@@ -220,11 +238,28 @@ function check(name, pass, detail) {
         if (revRow) check('reverse row carries its own weight', parseFloat(revRow[2]) === revW,
             revRow[2] + ' != ' + revW);
     }
-    // Row count: plain edges one row each, merged pairs two rows.
-    const expectedRows = 1 + cy.edges().toArray().reduce(
-        (n, e) => n + (e.data('bidirectional') ? 2 : 1), 0);
+    // Row count: hidden pair halves skipped, merged pairs two rows.
+    const expectedRows = 1 + cy.edges().toArray().filter(e => !e.hasClass('pair-hidden'))
+        .reduce((n, e) => n + (e.data('bidirectional') ? 2 : 1), 0);
     check('CSV row count matches plain+expanded edges', rows.length === expectedRows,
         'rows=' + rows.length + ' expected=' + expectedRows);
+
+    // MODE SWITCH: straight un-hides the reverse halves, clears the
+    // bidirectional flags, and both halves export with the shared pair id
+    makeModeFn(cy).apply('straight');
+    const rows2 = parseCSV(exporter.build());
+    if (elements.edges.some(e => e.data && e.data.pair_id)) {
+        const pairRows = rows2.filter(r => r[pairCol] && r[pairCol].includes('<->'));
+        check('straight mode: both halves export with the shared pair id',
+            pairRows.length === elements.edges.filter(e => e.data && e.data.pair_id).length,
+            'pairRows=' + pairRows.length);
+        check('straight mode: no bidirectional flags remain',
+            cy.edges('[bidirectional = 1]').length === 0,
+            'flags=' + cy.edges('[bidirectional = 1]').length);
+        check('straight mode: hidden halves unhidden',
+            cy.edges('.pair-hidden').length === 0,
+            'hidden=' + cy.edges('.pair-hidden').length);
+    }
 }
 
 // --- Scenario 4: node shape passthrough resolves on the rendered nodes

@@ -448,11 +448,12 @@ class VisualizePath:
             Default: None
             
         straight_reciprocal_edges : bool, optional
-            If True, reciprocal (bidirectional) edges in network visualization will be 
-            displayed as straight lines instead of curved lines.
-            This makes it easier to see both directions clearly without visual overlap.
-            Cytoscape.js supports this via 'curve-style' and 'control-point-distances'.
-            Default: False (uses curved lines for reciprocal edges)
+            Initial rendering for reciprocal pairs when
+            merge_reciprocal_edges is False: True = two parallel straight
+            lines (offset-applied), False = curved bezier pair.  The
+            generated page's Reciprocal Edges ribbon can switch modes
+            (Straight / Curved / Merged) live.
+            Default: True (straight parallel lines)
             
         generate_empty_network : bool, optional
             If True, generates an empty network HTML template without requiring
@@ -508,12 +509,13 @@ class VisualizePath:
             Default: 'circle'
 
         merge_reciprocal_edges : bool, optional
-            If True, a reciprocal pair A→B + B→A collapses into ONE edge
-            element with arrowheads at both ends.  Width and the
-            weight-band filter use the STRONGER direction; hover and the
-            Edge List CSV export show both directions.  Edges with
-            negative weights never merge (the negative style is
-            per-direction).
+            If True, the page loads in the Merged reciprocal mode: each
+            reciprocal pair A→B + B→A renders as ONE double-headed edge
+            (both halves are still emitted as elements; the mode is a live
+            ribbon switch).  Width and the weight-band filter use the
+            STRONGER direction; hover and the Edge List CSV export show
+            both directions.  Pairs with negative weights never merge (the
+            negative style is per-direction).
             Default: False
 
         Raises
@@ -4767,12 +4769,16 @@ class VisualizePath:
         has_bidirectional_edges = False  # Merged/declared double-headed edges
 
         # ---- Merged bidirectional edge planning ----
-        # A reciprocal pair (or a pair the edge list declares bidirectional
-        # via its bidirectional/bidirectional_pair column) collapses into
-        # ONE element with arrowheads at both ends.  Width, filters and
-        # labels use the STRONGER direction; hover and the Edge List CSV
-        # keep both.  Negative edges never merge — the light-blue
-        # negative style is per-direction.
+        # ---- Reciprocal pair metadata (runtime-renderable) ----
+        # Both halves of a reciprocal pair are ALWAYS emitted as separate
+        # directional elements; how a pair RENDERS is a live UI mode
+        # (straight parallel lines / curved pair / merged single
+        # double-headed edge) driven by the Reciprocal Edges ribbon.  Each
+        # half carries a shared pair_id + canonical marker so the runtime
+        # merge can hide the reverse half and restyle the canonical half,
+        # and the Edge List CSV keeps the pair id on both rows so a re-import
+        # rebuilds the merge.  Declared-bidirectional single rows (only one
+        # row exists) stay double-headed at generation in every mode.
         directed_edges = {(s, t): d for s, t, d in G.edges(data=True)}
         declared_bidir = getattr(self, 'custom_edge_bidirectional', None) or {}
 
@@ -4788,14 +4794,8 @@ class VisualizePath:
                 continue
             fwd = directed_edges.get((u, v))
             rev = directed_edges.get((v, u))
-            if fwd is None or rev is None:
-                continue
-            declared = ((u, v) in declared_bidir or (v, u) in declared_bidir)
-            if not (declared or self.merge_reciprocal_edges):
-                continue
-            if fwd.get('weight', 0) < 0 or rev.get('weight', 0) < 0:
-                continue
-            merge_pairs.add((u, v))
+            if fwd is not None and rev is not None:
+                merge_pairs.add((u, v))
 
         def _edge_payload(source, target, data):
             """Per-direction fields for one directed edge (no bidirectional
@@ -4850,62 +4850,23 @@ class VisualizePath:
             }
 
         for source, target, data in G.edges(data=True):
-            # Reverse halves of merged pairs are skipped — the canonical
-            # half emits the single double-headed element for the pair.
             pair = ((source, target) if str(source) < str(target)
                     else (target, source)) if source != target else None
-            if pair is not None and pair in merge_pairs and (source, target) != pair:
-                continue
+            is_pair_half = pair is not None and pair in merge_pairs
 
-            if pair is not None and pair in merge_pairs:
+            payload = _edge_payload(source, target, data)
+            weight = data.get('weight', 0)
+
+            if is_pair_half:
                 u, v = pair
-                fwd = directed_edges[(u, v)]
-                rev = directed_edges[(v, u)]
-                w_fwd = fwd.get('weight', 0)
-                w_rev = rev.get('weight', 0)
-                # Metadata (ratio/probability/NT/color/labels) adopts the
-                # STRONGER direction; ties keep the canonical orientation.
-                stronger_src, stronger_tgt, stronger_data = (
-                    (u, v, fwd) if w_fwd >= w_rev else (v, u, rev))
-                payload = _edge_payload(stronger_src, stronger_tgt, stronger_data)
-                max_w = max(w_fwd, w_rev)
-                tooltip_parts = [
-                    f"{u} → {v}: {_fmt_weight(w_fwd)} {self.edge_weight_label}",
-                    f"{v} → {u}: {_fmt_weight(w_rev)} {self.edge_weight_label}",
-                ]
-                # Keep the stronger direction's context lines after the
-                # two weight lines (drop its now-redundant Weight line).
-                for line in payload['tooltip'].split("\n")[1:]:
-                    tooltip_parts.append(line)
-                edges_data.append({
-                    'data': {
-                        'source': u,
-                        'target': v,
-                        'weight': max_w,  # Stronger direction (width/filter/label)
-                        'original_weight': max_w,  # metricEdgeValue reads this
-                        'weight_forward': w_fwd,   # u → v (canonical forward)
-                        'weight_reverse': w_rev,   # v → u
-                        'bidirectional': 1,
-                        'is_negative': 0,
-                        'nt_type': payload['nt_type'],
-                        'color': payload['color'],
-                        'ratio': payload['ratio'],
-                        'probability': payload['probability'],
-                        'tooltip': "\n".join(tooltip_parts),
-                        'custom_labels': payload['custom_labels'],
-                    }
-                })
-                edge_weights.append(max_w)
-                has_bidirectional_edges = True
-                continue
+                payload['pair_id'] = f"{u}<->{v}"
+                payload['pair_canonical'] = 1 if source == u else 0
 
             # Declared-bidirectional single row (no stored reverse): one
             # both-way edge whose weight stands for both directions.
             standalone_declared = (pair is not None
                                    and (source, target) in declared_bidir
-                                   and pair not in merge_pairs)
-            payload = _edge_payload(source, target, data)
-            weight = data.get('weight', 0)
+                                   and not is_pair_half)
             if standalone_declared:
                 payload['bidirectional'] = 1
                 payload['weight_forward'] = weight
@@ -5028,10 +4989,12 @@ class VisualizePath:
             nt_edge_group_options = "\n                                    ".join(nt_option_parts)
 
         # Double-headed edges: one selector adds the source-side
-        # arrowhead to every merged/declared bidirectional edge.  Empty
-        # when none exist, so the default generation stays byte-identical.
+        # arrowhead to every merged/declared bidirectional edge.  Injected
+        # whenever pairs or declared rows EXIST (not only when merged is
+        # the initial mode) so switching to Merged at runtime works; the
+        # selector matches nothing until edges carry bidirectional = 1.
         bidir_edge_styles = ""
-        if has_bidirectional_edges:
+        if has_bidirectional_edges or merge_pairs:
             bidir_edge_styles = """{
                     selector: 'edge[bidirectional = 1]',
                     style: {
@@ -6171,11 +6134,25 @@ class VisualizePath:
             </div>
             </div>
             <div id="reciprocalOffsetControls" class="vp-ribbon-group" style="display: none;">
-            <label class="vp-group-title" for="reciprocalOffsetSlider">Reciprocal Offset</label>
+            <label class="vp-group-title">Reciprocal Edges</label>
             <div class="vp-spinner-row">
-                <button id="reciprocalModeToggle" onclick="toggleReciprocalMode()" title="Draw reciprocal edge pairs curved (offset) or straight on top of each other" style="padding: 4px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--vp-border); background: #4caf50; color: white; cursor: pointer; flex: 0 0 auto;">Straight</button>
-                <input type="number" id="reciprocalOffsetSlider" min="0" step="1" value="5" title="Separation in pixels between the opposite edges of a reciprocal pair (live; bound by initializeReciprocalOffsetControls)">
-                <span class="vp-unit">px</span>
+                <!-- 3-way mode switch: Straight/Curved render BOTH halves of
+                     a reciprocal pair (parallel or bezier); Merged collapses
+                     each pair into ONE double-headed edge at runtime. -->
+                <div style="display: inline-flex; border: 1px solid var(--vp-border); border-radius: 4px; overflow: hidden;">
+                    <button type="button" id="reciprocalModeStraight" onclick="setReciprocalMode('straight')" title="Both halves drawn as straight parallel lines (offset applies)" style="padding: 4px 8px; font-size: 11px; border: none; background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Straight</button>
+                    <button type="button" id="reciprocalModeCurved" onclick="setReciprocalMode('curved')" title="Both halves drawn as bezier curves" style="padding: 4px 8px; font-size: 11px; border: none; border-left: 1px solid var(--vp-border); background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Curved</button>
+                    <button type="button" id="reciprocalModeMerged" onclick="setReciprocalMode('merged')" title="One double-headed edge per pair; width uses the stronger direction, hover shows both" style="padding: 4px 8px; font-size: 11px; border: none; border-left: 1px solid var(--vp-border); background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Merged</button>
+                </div>
+            </div>
+            <div class="vp-spinner-row" id="reciprocalOffsetRow">
+                <!-- .vp-spinner wrapper carries the small 11px label style —
+                     a bare label here rendered at the page default size -->
+                <div class="vp-spinner vp-spinner-inline">
+                    <label for="reciprocalOffsetSlider" title="Separation in pixels between the opposite edges of a reciprocal pair (live; Straight mode only)">Offset</label>
+                    <input type="number" id="reciprocalOffsetSlider" min="0" step="1" value="5" title="Separation in pixels between the opposite edges of a reciprocal pair (live; Straight mode only)">
+                    <span class="vp-unit">px</span>
+                </div>
             </div>
             </div>
             <div class="vp-ribbon-group" style="width: 258px;">
@@ -6269,11 +6246,10 @@ class VisualizePath:
             <span id="datasetLegend" style="display: contents;">{dataset_legend_html}</span>
         </div>
         <div class="info">
-            <!-- Rendered-element count: with merged bidirectional edges
-                 the canvas shows fewer edges than the graph holds
-                 (a reciprocal pair is ONE element), so the graph's edge
-                 count would overstate what is drawn. -->
-            <strong>{G.number_of_nodes()}</strong> nodes, <strong>{len(edges_data)}</strong> connections ·
+            <!-- Live counts: the reciprocal mode hides reverse halves at
+                 runtime, so the connection number must follow the CURRENT
+                 canvas, not the generation-time element list. -->
+            <strong>{G.number_of_nodes()}</strong> nodes, <strong><span id="footerEdgeCount">{len(edges_data)}</span></strong> connections ·
             Press <strong>?</strong> for help
         </div>
     </div>
@@ -6343,14 +6319,14 @@ class VisualizePath:
                         <div class="color-group">
                             <label>Color:</label>
                             <div class="color-input-group">
-                                <input type="color" id="individualColor" value="#3498db" title="Color for the selected element(s)">
-                                <input type="text" id="individualColorText" value="#3498db" readonly title="Selected color in hex">
+                                <input type="color" id="individualColor" value="#3498db" title="Color for the selected element(s) — applies immediately (the input listener applies live)">
+                                <input type="text" id="individualColorText" value="#3498db"  title="Selected color as hex — type a value and it applies immediately">
                             </div>
                         </div>
                         <div class="color-group">
                             <label>Opacity:</label>
                             <div class="color-input-group">
-                                <input type="number" id="individualOpacity" min="0" max="100" step="1" value="100" oninput="updateOpacityDisplay('individual', this.value)" title="Opacity for the selected element(s)">
+                                <input type="number" id="individualOpacity" min="0" max="100" step="1" value="100" oninput="updateOpacityDisplay('individual', this.value)" title="Opacity for the selected element(s) — applies immediately">
                                 <span class="alpha-value" id="individualOpacityValue">100%</span>
                             </div>
                         </div>
@@ -6363,7 +6339,7 @@ class VisualizePath:
                                      the 70px floor keep the select usable
                                      with truncation for long names -->
                                 <select id="assignGroupSelect" title="Target group for the selected nodes (every node belongs to exactly one group)" style="flex: 1 1 0; width: auto; min-width: 70px; text-overflow: ellipsis;"></select>
-                                <button class="apply-btn" onclick="assignSelectedToGroup()" title="Move the selected nodes into this group; Unassigned empties them from every group" style="flex: 0 0 auto; background: #2196f3; padding: 5px 8px;">Assign</button>
+                                <button class="apply-btn" onclick="assignSelectedToGroup()" title="Move the selected nodes into this group; Unassigned empties them from every group" style="flex: 0 0 auto; width: auto; background: #2196f3; padding: 5px 8px;">Assign</button>
                             </div>
                         </div>
                         <!-- Geometry: precise numeric size/position editing.
@@ -6385,6 +6361,10 @@ class VisualizePath:
                                 <span>H&nbsp;(px)</span>
                                 <input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Height in pixels of the selected node (squares: kept equal to width)">
                             </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Label&nbsp;px</span>
+                                <input type="number" id="selNodeFontSize" min="1" step="1" oninput="applyNodeFontSize(this.value)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Label font size in px for the selected nodes (applies immediately; empty = follow the global Font Size slider)">
+                            </div>
                             <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
                                 <span>Shape</span>
                                 <select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node geometry: Keep = no change; Follow Global = drop this node's override so the ribbon Node Shape applies again" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
@@ -6396,12 +6376,47 @@ class VisualizePath:
                                 </select>
                                 <button type="button" id="geomAspectLockBtn" onclick="toggleGeomAspectLock()" title="Aspect-ratio lock: when on, editing W scales H proportionally from the shape the selection had when the lock went on" style="padding: 2px 5px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 3px; background: var(--vp-bg, #fff); color: inherit; opacity: 0.45;">🔗</button>
                             </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Outline</span>
+                                <select id="nodeOutlinePattern" onchange="applyNodeOutline({{ borderStyle: this.value }})" title="Outline pattern for the selected nodes (applies immediately)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                    <option value="solid">Solid</option>
+                                    <option value="dashed">Dashed</option>
+                                    <option value="dotted">Dotted</option>
+                                    <option value="double">Double</option>
+                                </select>
+                                <span>Color</span>
+                                <input type="color" id="nodeOutlineColor" value="#000000" title="Outline color (applies immediately)" style="width: 100%; height: 22px; padding: 0; border: 1px solid var(--vp-border); border-radius: 3px; background: none; cursor: pointer;">
+                                <input type="text" id="nodeOutlineColorText" value="#000000" title="Outline color as hex — type a value like #ff8800 and it applies immediately" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 10px; font-family: monospace;">
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Alpha&nbsp;%</span>
+                                <input type="number" id="nodeOutlineAlpha" min="0" max="100" step="5" value="100" oninput="applyNodeOutline({{ borderOpacity: parseFloat(this.value) / 100 }})" title="Outline opacity in % (applies immediately)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                <span>Width&nbsp;(px)</span>
+                                <input type="number" id="nodeOutlineWidth" min="0" step="0.5" value="1.5" oninput="applyNodeOutline({{ borderWidth: parseFloat(this.value) }})" title="Outline width in px; 0 hides the outline" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                            </div>
                         </div>
                         <div class="color-group" id="geomEdgeGroup" style="display: none;">
                             <label>Width (edge):</label>
                             <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; font-size: 10px; color: #555;">
                                 <span>Width&nbsp;(px)</span>
                                 <input type="number" id="selGeomWidth" min="0.5" step="0.5" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected edge (applies immediately)">
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Pattern</span>
+                                <select id="edgeLinePattern" onchange="applyEdgeLineStyle({{ lineStyle: this.value }})" title="Line pattern for the selected edges (applies immediately)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                    <option value="solid">Solid</option>
+                                    <option value="dashed">Dashed</option>
+                                    <option value="dotted">Dotted</option>
+                                    <option value="double">Double</option>
+                                </select>
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Color</span>
+                                <input type="color" id="edgeLineColor" value="#64748b" title="Line color (applies immediately; arrows follow the line)" style="width: 100%; height: 22px; padding: 0; border: 1px solid var(--vp-border); border-radius: 3px; background: none; cursor: pointer;">
+                                <span>Hex</span>
+                                <input type="text" id="edgeLineColorText" value="#64748b" title="Line color as hex — type a value like #ff8800 and it applies immediately" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 10px; font-family: monospace;">
+                                <span>Alpha&nbsp;%</span>
+                                <input type="number" id="edgeLineAlpha" min="0" max="100" step="5" value="100" oninput="applyEdgeLineStyle({{ alpha: parseFloat(this.value) / 100 }})" title="Line opacity in % (applies immediately; the weight label keeps full opacity)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
                             </div>
                             <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Edges are anchored to their endpoints — no free position.</div>
                         </div>
@@ -6421,8 +6436,6 @@ class VisualizePath:
                             <button class="btn" id="zFrontBtn" onclick="setSelectionZOrder(true)" title="Bring the selected elements in front of everything else" style="font-size: 10px; padding: 5px; background: #5c6bc0; opacity: 0.4;">⬆ Front</button>
                             <button class="btn" id="zBackBtn" onclick="setSelectionZOrder(false)" title="Send the selected elements behind everything else" style="font-size: 10px; padding: 5px; background: #5c6bc0; opacity: 0.4;">⬇ Back</button>
                         </div>
-                        <button class="apply-btn" onclick="applyIndividualColor()" title="Apply the chosen color and opacity to the selected elements">Apply to Selected</button>
-                        <button class="apply-btn" id="applyGeometryBtn" onclick="applySelectedGeometry()" title="Apply the numeric position/size values to the selected element" style="background: #00838f;">Apply Size/Position</button>
                         <button class="clear-selection-btn" onclick="clearSelection()" title="Deselect all elements">Clear Selection</button>
                     </div>
                 </div>
@@ -6689,6 +6702,13 @@ class VisualizePath:
                     }}
                 }},
                 {{
+                    // reverse half of a runtime-merged reciprocal pair
+                    selector: 'edge.pair-hidden',
+                    style: {{
+                        'display': 'none'
+                    }}
+                }},
+                {{
                     selector: 'edge',
                     style: {{
                         'width': 'mapData(scaled_width, {min_scaled_width}, {max_scaled_width}, 1, 10)',
@@ -6804,7 +6824,11 @@ class VisualizePath:
             autounselectify: false
         }});
 
-        let straightReciprocalEdgesEnabled = {'true' if self.straight_reciprocal_edges else 'false'};
+        // Reciprocal-pair rendering mode: 'straight' (two parallel offset
+        // lines), 'curved' (bezier pair) or 'merged' (ONE double-headed
+        // edge).  merge_reciprocal_edges picks the initial mode; the
+        // Reciprocal Edges ribbon switches it live.
+        let reciprocalMode = '{'merged' if self.merge_reciprocal_edges else ('straight' if self.straight_reciprocal_edges else 'curved')}';
         const highlightColor = '{self.highlight_color}';
         const highlightOpacity = {self.highlight_opacity};
         const defaultReciprocalOffset = 5;
@@ -7232,7 +7256,14 @@ class VisualizePath:
         cy.resize();
         cy.fit();
 
-        initializeReciprocalOffsetControls();
+        // Initial reciprocal mode: DOM sync is safe here (its variables are
+        // already initialized), but the merge itself touches globals
+        // declared further down (TDZ) — defer it like the other late init.
+        syncReciprocalControls();
+        setTimeout(() => {{
+            applyReciprocalMode(reciprocalMode);
+            refreshEdgeStyles(false);
+        }}, 0);
 
         const applyReciprocalOffsets = () => refreshEdgeStyles(false);
         setTimeout(applyReciprocalOffsets, 0);
@@ -7449,6 +7480,25 @@ class VisualizePath:
         cy.on('unselect', 'edge', function(evt) {{
             clearEdgeHighlightOverride(evt.target);
         }});
+
+        // Live style-control history coalescing: dragging the color picker
+        // or typing an opacity/geometry value fires many input events; the
+        // PRE-burst snapshot is captured once and committed as a single
+        // undoable entry when the burst goes quiet (same contract as the
+        // nudge flush — undo/redo flush it first).
+        let pendingStyle = null;
+        function queueStyleHistory(label) {{
+            if (!pendingStyle || pendingStyle.label !== label) flushPendingStyle();
+            if (!pendingStyle) pendingStyle = {{ label: label, state: captureState(), timer: null }};
+            clearTimeout(pendingStyle.timer);
+            pendingStyle.timer = setTimeout(flushPendingStyle, 700);
+        }}
+        function flushPendingStyle() {{
+            if (!pendingStyle) return;
+            if (pendingStyle.timer) clearTimeout(pendingStyle.timer);
+            pushStateHistory(pendingStyle.label, pendingStyle.state);
+            pendingStyle = null;
+        }}
 
         // Arrow-key nudge burst coalescing (see the keydown handler below):
         // one pre-burst snapshot, committed as a single undoable
@@ -8573,6 +8623,15 @@ class VisualizePath:
         // older builds (missing keys, flat control values, no per-element
         // alpha) still load.
 
+        // Style BYPASS test shared by the state capture, the geometry
+        // seeding and the outline persistence: only true for explicit
+        // per-element overrides — computed stylesheet values (mapData
+        // widths, data(shape) passthrough) are not overrides.
+        function hasBypass(el, key) {{
+            return !!(el._private && el._private.style &&
+                el._private.style[key] && el._private.style[key].bypass === true);
+        }}
+
         function captureNetworkState() {{
             // Node alpha lives in the background-opacity style bypass
             // (body-only: the label font keeps full opacity — whole-element
@@ -8616,11 +8675,10 @@ class VisualizePath:
             // the manual-edge-width marker.  Only OVERRIDES are stored —
             // nodes without one fall back to the global controls, exactly
             // like the live renderer.  Width detection reads the style
-            // BYPASS flag, not a value comparison: a computed width (e.g.
-            // mapData on edges) is not an override, and a graph-JSON import
-            // can leave a customSize flag behind without its style.
-            const hasBypass = (el, key) => !!(el._private && el._private.style &&
-                el._private.style[key] && el._private.style[key].bypass === true);
+            // BYPASS flag (hasBypass, defined at script scope), not a value
+            // comparison: a computed width (e.g. mapData on edges) is not
+            // an override, and a graph-JSON import can leave a customSize
+            // flag behind without its style.
             const nodeGeometry = cy.nodes().map(n => {{
                 const item = {{ id: n.id() }};
                 const wBypass = hasBypass(n, 'width');
@@ -8631,6 +8689,17 @@ class VisualizePath:
                 // passthrough value (data(shape) or the global dropdown)
                 const shapeOverride = hasBypass(n, 'shape') ? n._private.style.shape.value : null;
                 if (shapeOverride) item.shape = shapeOverride;
+                // outline overrides from the Node Outline controls
+                const borderParts = ['border-style', 'border-color', 'border-opacity', 'border-width']
+                    .filter(k => hasBypass(n, k));
+                if (borderParts.length) {{
+                    item.borderStyle = n.style('border-style');
+                    item.borderColor = n.style('border-color');
+                    item.borderOpacity = parseFloat(n.style('border-opacity'));
+                    item.borderWidth = parseFloat(n.style('border-width'));
+                }}
+                // per-node label font size override
+                if (hasBypass(n, 'font-size')) item.fontSize = parseFloat(n.style('font-size'));
                 // z-order override: captured only when manual
                 const zc = n.style('z-index-compare');
                 if (zc === 'manual') item.zIndex = n.style('z-index');
@@ -8639,6 +8708,7 @@ class VisualizePath:
             const edgeGeometry = cy.edges().map(e => {{
                 const item = {{ id: e.id() }};
                 if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));
+                if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');
                 return item;
             }}).filter(item => Object.keys(item).length > 1);
             return {{
@@ -8676,7 +8746,9 @@ class VisualizePath:
                 edgeWeightLabels: (document.getElementById('toggleEdgeWeightsBtn')?.dataset.showing === '1'),
                 hemisphereMirrorEnabled: hemisphereMirrorEnabled,
                 reciprocal: {{
-                    enabled: straightReciprocalEdgesEnabled,
+                    mode: reciprocalMode,
+                    // legacy key for older builds that read `enabled`
+                    enabled: reciprocalMode === 'straight',
                     offset: reciprocalOffset
                 }},
                 filter: {{
@@ -8860,18 +8932,22 @@ class VisualizePath:
 
                 // --- reciprocal edges (mode + offset) ---
                 if (state.reciprocal) {{
-                    if (state.reciprocal.enabled !== undefined &&
-                        !!state.reciprocal.enabled !== straightReciprocalEdgesEnabled) {{
-                        toggleReciprocalMode();
+                    // mode: new key; fall back to the legacy `enabled` bool
+                    // (true = straight, false = curved) from older exports
+                    let mode = state.reciprocal.mode;
+                    if (mode === undefined && state.reciprocal.enabled !== undefined) {{
+                        mode = state.reciprocal.enabled ? 'straight' : 'curved';
+                    }}
+                    if (mode !== undefined && mode !== reciprocalMode) {{
+                        applyReciprocalMode(mode);
                     }}
                     if (state.reciprocal.offset !== undefined && Number.isFinite(Number(state.reciprocal.offset))) {{
                         const slider = document.getElementById('reciprocalOffsetSlider');
                         if (slider) slider.value = state.reciprocal.offset;
                         reciprocalOffset = Number(state.reciprocal.offset);
-                        const valueLabel = document.getElementById('reciprocalOffsetValue');
-                        if (valueLabel) valueLabel.textContent = Math.round(reciprocalOffset) + 'px';
                         refreshEdgeStyles(false);
                     }}
+                    syncReciprocalControls();
                 }}
 
                 // --- edge weight labels + label position ---
@@ -8965,6 +9041,21 @@ class VisualizePath:
                         }}
                         if (item.shape !== undefined) n.style('shape', item.shape);
                         else n.removeStyle('shape');
+                        if (item.fontSize !== undefined) n.style('font-size', item.fontSize + 'px');
+                        else n.removeStyle('font-size');
+                        if (item.borderStyle !== undefined || item.borderColor !== undefined) {{
+                            n.style({{
+                                'border-style': (item.borderStyle !== undefined ? item.borderStyle : 'solid'),
+                                'border-color': (item.borderColor !== undefined ? item.borderColor : '#000000'),
+                                'border-opacity': (item.borderOpacity !== undefined ? item.borderOpacity : 1),
+                                'border-width': (item.borderWidth !== undefined ? item.borderWidth : 1.5) + 'px'
+                            }});
+                        }} else {{
+                            n.removeStyle('border-style');
+                            n.removeStyle('border-color');
+                            n.removeStyle('border-opacity');
+                            n.removeStyle('border-width');
+                        }}
                         if (item.zIndex !== undefined) {{
                             n.style({{ 'z-index-compare': 'manual', 'z-index': item.zIndex }});
                         }} else {{
@@ -8984,6 +9075,11 @@ class VisualizePath:
                         }} else {{
                             e.removeStyle('width');
                             e.removeData('customSize');
+                        }}
+                        if (item && item.lineStyle !== undefined) {{
+                            e.style('line-style', item.lineStyle);
+                        }} else {{
+                            e.removeStyle('line-style');
                         }}
                     }});
                 }}
@@ -9121,6 +9217,7 @@ class VisualizePath:
                     edgeWidthScale: globalEdgeWidthScale,
                     nodeShape: globalNodeShape,
                     metric: currentMetric,
+                    reciprocalMode: reciprocalMode,
                     reciprocalOffset: reciprocalOffset,
                     // Layout transform trackers so undo/redo also restores
                     // the absolute gaps / rotation base exactly.
@@ -9209,8 +9306,10 @@ class VisualizePath:
                     reciprocalOffset = gs.reciprocalOffset;
                     const rSlider = document.getElementById('reciprocalOffsetSlider');
                     if (rSlider) rSlider.value = gs.reciprocalOffset;
-                    const rLabel = document.getElementById('reciprocalOffsetValue');
-                    if (rLabel) rLabel.textContent = Math.round(gs.reciprocalOffset) + 'px';
+                }}
+                if (gs.reciprocalMode !== undefined && gs.reciprocalMode !== reciprocalMode) {{
+                    applyReciprocalMode(gs.reciprocalMode);
+                    syncReciprocalControls();
                 }}
                 // Restore the layout transform trackers (absolute gaps and
                 // rotation base) and re-sync their spinners so the next
@@ -9320,6 +9419,9 @@ class VisualizePath:
             const selected = cy.$(':selected');
             if (selected.length === 0) {{
                 syncSelectedGeometryInputs(null);
+                // the group dropdown resets too — otherwise the previous
+                // node's group lingers after everything is deselected
+                syncAssignSelectToSelection();
                 updateSelectionChip();
                 return;
             }}
@@ -9332,11 +9434,16 @@ class VisualizePath:
                 primary = (evt.target && evt.target.selected()) ? evt.target : selected[0];
             }}
             syncSelectedGeometryInputs(primary);
+            // Same ordering race as the geometry rows: the tap handler
+            // runs before the element is marked selected, so the assign
+            // dropdown must be refreshed here too.
+            syncAssignSelectToSelection();
             updateSelectionChip();
         }});
 
         function undo() {{
             flushPendingNudge();  // an in-flight nudge burst commits first
+            flushPendingStyle();  // same for a live color/style burst
             if (undoStack.length === 0) return;
             const entry = undoStack[undoStack.length - 1];
             redoStack.push({{ label: entry.label, state: captureState() }});
@@ -9347,6 +9454,7 @@ class VisualizePath:
 
         function redo() {{
             flushPendingNudge();  // an in-flight nudge burst commits first
+            flushPendingStyle();  // same for a live color/style burst
             if (redoStack.length === 0) return;
             const entry = redoStack[redoStack.length - 1];
             undoStack.push({{ label: entry.label, state: captureState() }});
@@ -9472,7 +9580,7 @@ class VisualizePath:
             // arrows would miss the node centers.
             const visibleEdgeCounts = new Map();
             cy.edges().forEach(e => {{
-                if (!e.hasClass('hidden') && !e.hasClass('filtered')) {{
+                if (!e.hasClass('hidden') && !e.hasClass('filtered') && !e.hasClass('pair-hidden')) {{
                     const key = e.source().id() + '→' + e.target().id();
                     visibleEdgeCounts.set(key, (visibleEdgeCounts.get(key) || 0) + 1);
                 }}
@@ -9522,31 +9630,45 @@ class VisualizePath:
                     return;
                 }}
 
-                // Anchor distances must follow the ACTUAL size of each
-                // endpoint node: nodes can be individually resized via the
-                // geometry editor, so the global slider is only a fallback
-                // for nodes that still use the default stylesheet width.
-                const globalNodeSize = parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
-                const sourceNodeSize = edge.source().numericStyle('width') || globalNodeSize;
-                const targetNodeSize = edge.target().numericStyle('width') || globalNodeSize;
-                
+                // Anchor distances must follow the ACTUAL size and SHAPE of
+                // each endpoint node: nodes can be individually resized via
+                // the geometry editor (width and height independently for
+                // rectangles), so the global slider is only a fallback. The
+                // old width/2 distance was a circle assumption — on tall
+                // nodes it buried the arrowhead under the node, on wide
+                // ones it left it detached from the rim.
+                const rimDistance = (node, dx, dy) => {{
+                    const hw = (node.numericStyle('width') ||
+                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40)) / 2;
+                    const hh = (node.numericStyle('height') ||
+                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40)) / 2;
+                    // normalized direction components (dx,dy are raw deltas)
+                    const len = Math.hypot(dx, dy) || 1;
+                    const adx = Math.abs(dx) / len || 1e-6;
+                    const ady = Math.abs(dy) / len || 1e-6;
+                    // ray-box intersection: distance from center to the
+                    // rectangle rim along the (canonical) line direction
+                    return Math.min(hw / adx, hh / ady);
+                }};
+
                 // Compute perpendicular offset in CANONICAL direction (smaller ID -> larger ID)
                 // to ensure reciprocal edges offset in opposite directions relative to canvas
                 const canonicalSourceId = source < target ? source : target;
                 const canonicalTargetId = source < target ? target : source;
                 const canonicalSourcePos = cy.getElementById(canonicalSourceId).position();
                 const canonicalTargetPos = cy.getElementById(canonicalTargetId).position();
-                
+
                 const canonicalDx = canonicalTargetPos.x - canonicalSourcePos.x;
                 const canonicalDy = canonicalTargetPos.y - canonicalSourcePos.y;
                 const canonicalDistance = Math.hypot(canonicalDx, canonicalDy);
-                
+
                 let sourceOffsetX = 0;
                 let sourceOffsetY = 0;
                 let targetOffsetX = 0;
                 let targetOffsetY = 0;
-                let sourceDistance = sourceNodeSize / 2;
-                let targetDistance = targetNodeSize / 2;
+                // each endpoint anchors to ITS OWN rim along the line
+                let sourceDistance = rimDistance(edge.source(), canonicalDx, canonicalDy);
+                let targetDistance = rimDistance(edge.target(), -canonicalDx, -canonicalDy);
                 let perpX = 0;
                 let perpY = 0;
 
@@ -9566,7 +9688,7 @@ class VisualizePath:
                     targetOffsetY = offsetMagnitude * canonicalSign;
                 }}
 
-                if (straightReciprocalEdgesEnabled) {{
+                if (reciprocalMode === 'straight') {{
                     // Reciprocal edges: keep them straight but offset slightly so they don't overlap
                     applyStraightEdgeStyle(edge);
 
@@ -9597,79 +9719,131 @@ class VisualizePath:
             }}
         }}
 
-        function initializeReciprocalOffsetControls() {{
+        // Show the Reciprocal Edges group whenever pair metadata exists
+        // (ANY visibility — hidden reverse halves must stay switchable),
+        // sync the segmented control, and gate the offset row to Straight.
+        function syncReciprocalControls() {{
             const container = document.getElementById('reciprocalOffsetControls');
             const slider = document.getElementById('reciprocalOffsetSlider');
-            const valueLabel = document.getElementById('reciprocalOffsetValue');
 
-            if (!container || !slider) {{
+            if (!container) {{
                 return;
             }}
 
-            // The offset controls only matter when reciprocal pairs exist
-            // on the canvas — keep the group hidden otherwise.  One pass
-            // over the directed pairs: a per-edge selector scan is O(E²)
-            // on large graphs and breaks on ids containing quotes.
-            const directedPairs = new Set();
-            let hasReciprocalPairs = false;
+            let hasPairs = false;
             cy.edges().forEach(e => {{
-                const source = e.source().id();
-                const target = e.target().id();
-                if (directedPairs.has(target + '\u0000' + source)) {{
-                    hasReciprocalPairs = true;
-                }}
-                directedPairs.add(source + '\u0000' + target);
+                if (e.data('pair_id') || e.data('bidirectional')) hasPairs = true;
             }});
-            container.style.display = hasReciprocalPairs ? 'flex' : 'none';
-            slider.value = defaultReciprocalOffset;
-            reciprocalOffset = defaultReciprocalOffset;
-            if (valueLabel) valueLabel.textContent = `${{defaultReciprocalOffset}}px`;
-            
-            // Update slider enabled state based on current mode
-            updateReciprocalSliderState();
+            container.style.display = hasPairs ? 'flex' : 'none';
+
+            [['reciprocalModeStraight', 'straight'],
+             ['reciprocalModeCurved', 'curved'],
+             ['reciprocalModeMerged', 'merged']].forEach(([id, mode]) => {{
+                const btn = document.getElementById(id);
+                if (btn) {{
+                    const active = reciprocalMode === mode;
+                    btn.style.background = active ? '#2196f3' : 'var(--vp-bg, #fff)';
+                    btn.style.color = active ? '#fff' : 'inherit';
+                }}
+            }});
+
+            const offsetRow = document.getElementById('reciprocalOffsetRow');
+            if (offsetRow) offsetRow.style.display = reciprocalMode === 'straight' ? 'flex' : 'none';
+            if (slider) slider.disabled = reciprocalMode !== 'straight';
 
             if (!slider.dataset.bound) {{
                 slider.addEventListener('input', function(event) {{
                     const newOffset = parseFloat(event.target.value) || 0;
                     if (!restoringHistoryState && newOffset !== reciprocalOffset) pushHistory('Adjust reciprocal offset');
                     reciprocalOffset = newOffset;
-                    if (valueLabel) valueLabel.textContent = `${{Math.round(reciprocalOffset)}}px`;
                     refreshEdgeStyles(false);
                 }});
                 slider.dataset.bound = 'true';
             }}
         }}
-        
-        function updateReciprocalSliderState() {{
-            const slider = document.getElementById('reciprocalOffsetSlider');
-            if (!slider) return;
-            
-            if (straightReciprocalEdgesEnabled) {{
-                slider.disabled = false;
-                slider.style.opacity = '1';
-                slider.style.cursor = 'pointer';
-            }} else {{
-                slider.disabled = true;
-                slider.style.opacity = '0.4';
-                slider.style.cursor = 'not-allowed';
-            }}
+
+        // Runtime mode switch.  Both halves of every reciprocal pair are
+        // always present as elements (Python annotates them with pair_id);
+        // merging HIDES the reverse half and restyles the canonical half as
+        // a double-headed edge (max weight, both-direction tooltip), and
+        // un-merging restores the originals and unhides.  Declared single
+        // rows (bidirectional without a pair) render double-headed in every
+        // mode.  Pairs with negative weights never merge.
+        function applyReciprocalMode(mode) {{
+            reciprocalMode = mode;
+            const pairs = {{}};
+            cy.edges().forEach(e => {{
+                const pid = e.data('pair_id');
+                if (pid) (pairs[pid] = pairs[pid] || []).push(e);
+            }});
+            const weightLabel = {json_safe(self.edge_weight_label)};
+            cy.batch(() => {{
+                Object.values(pairs).forEach(halves => {{
+                    if (halves.length < 2) return;
+                    const canon = halves.find(h => h.data('pair_canonical') === 1) || halves[0];
+                    const rev = halves.find(h => h !== canon);
+                    if (mode === 'merged') {{
+                        const wCanon = Number(canon.data('weight')) || 0;
+                        const wRev = Number(rev.data('weight')) || 0;
+                        if (wCanon < 0 || wRev < 0) return;  // negative style is per-direction
+                        const wMax = Math.max(wCanon, wRev);
+                        const scaledMax = Math.max(canon.data('scaled_width') || 0,
+                                                   rev.data('scaled_width') || 0);
+                        // stash the originals so un-merging is lossless
+                        canon.data('pair_weight_canon', wCanon);
+                        canon.data('pair_weight_rev', wRev);
+                        canon.data('pair_tooltip_canon', canon.data('tooltip'));
+                        canon.data('pair_scaled_canon', canon.data('scaled_width'));
+                        canon.data({{
+                            bidirectional: 1,
+                            weight: wMax,
+                            original_weight: wMax,   // metricEdgeValue reads this
+                            weight_forward: wCanon,
+                            weight_reverse: wRev,
+                            scaled_width: scaledMax,
+                            tooltip: `${{canon.source().id()}} → ${{canon.target().id()}}: ${{wCanon.toLocaleString()}} ${{weightLabel}}\\n${{canon.target().id()}} → ${{canon.source().id()}}: ${{wRev.toLocaleString()}} ${{weightLabel}}`,
+                        }});
+                        rev.addClass('pair-hidden');
+                    }} else {{
+                        // straight / curved: both halves visible as plain
+                        // directional edges again
+                        if (canon.data('bidirectional') === 1) {{
+                            canon.data({{
+                                bidirectional: 0,
+                                weight: canon.data('pair_weight_canon'),
+                                original_weight: canon.data('pair_weight_canon'),
+                                tooltip: canon.data('pair_tooltip_canon'),
+                                scaled_width: canon.data('pair_scaled_canon'),
+                            }});
+                            canon.removeData('weight_forward');
+                            canon.removeData('weight_reverse');
+                        }}
+                        rev.removeClass('pair-hidden');
+                    }}
+                }});
+            }});
+            updateEdgeMetricLabels();
+            applyEdgeFilter();
+            // Count via the CLASS, not ':visible': cy.batch defers the
+            // visibility-state commit, so a same-tick ':visible' read
+            // reports the PRE-mode count (lag observed as 44 vs 22).
+            const fc = document.getElementById('footerEdgeCount');
+            if (fc) fc.textContent = String(
+                cy.edges().length - cy.edges('.pair-hidden').length);
         }}
-        
-        function toggleReciprocalMode() {{
-            straightReciprocalEdgesEnabled = !straightReciprocalEdgesEnabled;
-            const toggleBtn = document.getElementById('reciprocalModeToggle');
-            
-            if (straightReciprocalEdgesEnabled) {{
-                toggleBtn.textContent = 'Straight';
-                toggleBtn.style.background = '#4caf50';
-            }} else {{
-                toggleBtn.textContent = 'Curved';
-                toggleBtn.style.background = '#ff9800';
+
+        function setReciprocalMode(mode) {{
+            if (reciprocalMode === mode) {{
+                syncReciprocalControls();
+                return;
             }}
-            
-            updateReciprocalSliderState();
-            refreshEdgeStyles(true);
+            pushHistory('Reciprocal mode: ' + mode);
+            applyReciprocalMode(mode);
+            refreshEdgeStyles(false);
+            syncReciprocalControls();
+            updateHoverInfo('✓ Reciprocal edges: ' + mode);
         }}
+
 
         // Edge labels follow the ACTIVE connection metric: weight shows a
         // BARE number — no unit suffix; ratio/probability show the plain
@@ -9935,6 +10109,12 @@ class VisualizePath:
         function updateOpacityDisplay(type, value) {{
             const echo = document.getElementById(type + 'OpacityValue');
             if (echo) echo.textContent = value + '%';
+            // live apply for the SELECTION opacity input: the selected
+            // elements recolor immediately (burst-coalesced history).
+            // 'group'/'global' callers keep the display-only behavior.
+            if (type === 'individual' && cy.$(':selected').length > 0) {{
+                applyIndividualColor(true);
+            }}
         }}
         
         // Recalculate and update all edge widths based on scaling method
@@ -10155,6 +10335,9 @@ class VisualizePath:
         }});
         document.getElementById('individualColor').addEventListener('input', function(e) {{
             document.getElementById('individualColorText').value = e.target.value;
+            if (document.getElementById('individualControls').style.display !== 'none') {{
+                applyIndividualColor(true);
+            }}
         }});
 
         const EDGE_BASE_COLOR_KEY = '__baseColor';
@@ -10393,7 +10576,19 @@ class VisualizePath:
             const sel = document.getElementById('assignGroupSelect');
             if (!sel) return;
             const nodes = cy.$(':selected').nodes();
-            if (nodes.length === 0) return;
+            // Groups are NODE memberships: with no selected nodes (an
+            // edge-only selection, or the first tap where Cytoscape has
+            // not marked the element selected yet) the dropdown must
+            // reset to Unassigned and disable — the previously shown
+            // group must not bleed through.
+            if (nodes.length === 0) {{
+                sel.value = 'unassigned';
+                sel.disabled = true;
+                sel.title = 'Groups apply to nodes — select a node to assign it';
+                return;
+            }}
+            sel.disabled = false;
+            sel.title = 'Target group for the selected nodes (every node belongs to exactly one group)';
             const first = nodes[0].data('assigned_group') || '';
             const mixed = nodes.toArray().some(n => (n.data('assigned_group') || '') !== first);
             const val = (mixed || first === '') ? 'unassigned' : (customGroups[first] ? 'custom_' + first : first);
@@ -10942,15 +11137,18 @@ class VisualizePath:
         }}
 
         // Apply color and opacity to ALL selected elements (supports multi-selection!)
-        function applyIndividualColor() {{
+        // LIVE color/opacity application (the Apply to Selected button was
+        // removed): every input event applies and the burst coalesces into
+        // one 'Color change' history entry via queueStyleHistory.
+        function applyIndividualColor(live) {{
             const selectedElements = getSelectedElements();
 
             if (selectedElements.length === 0) {{
-                showToast('Please select one or more nodes/edges first', 'warn');
+                if (!live) showToast('Please select one or more nodes/edges first', 'warn');
                 return;
             }}
-            
-            pushHistory('Color change');
+
+            queueStyleHistory('Color change');
             const color = document.getElementById('individualColor').value;
             const opacity = document.getElementById('individualOpacity').value / 100;
             
@@ -10981,14 +11179,6 @@ class VisualizePath:
                 }}
             }});
             
-            console.log(`Applied color+opacity to ${{nodesUpdated}} node(s) and ${{edgesUpdated}} edge(s):`, color, opacity);
-            
-            // Update info display
-            if (nodesUpdated + edgesUpdated > 1) {{
-                document.getElementById('selectedInfo').innerHTML = 
-                    `<strong>✓ Updated:</strong><br>` +
-                    `${{nodesUpdated}} node(s), ${{edgesUpdated}} edge(s)`;
-            }}
         }}
 
         // Clear selection (all selected elements)
@@ -11048,6 +11238,26 @@ class VisualizePath:
                     hField.placeholder = '';
                     hField.value = Math.round(primary.numericStyle('height'));
                 }}
+                // Outline controls seed from the primary node's ACTUAL
+                // border (style/color/opacity/width)
+                const outlineSel = document.getElementById('nodeOutlinePattern');
+                const outlineColor = document.getElementById('nodeOutlineColor');
+                const outlineAlpha = document.getElementById('nodeOutlineAlpha');
+                const outlineWidth = document.getElementById('nodeOutlineWidth');
+                if (outlineSel && outlineColor) {{
+                    outlineSel.value = primary.style('border-style') || 'solid';
+                    outlineColor.value = extractColorHex(primary.style('border-color')) || '#000000';
+                    outlineAlpha.value = Math.round(parseFloat(primary.style('border-opacity') || 1) * 100);
+                    outlineWidth.value = Math.round(parseFloat(primary.style('border-width') || 0) * 10) / 10;
+                }}
+                // Label font size seeds from the primary node; a font-size
+                // BYPASS shows its px value, otherwise the global slider
+                const labelField = document.getElementById('selNodeFontSize');
+                if (labelField) {{
+                    labelField.value = hasBypass(primary, 'font-size')
+                        ? Math.round(parseFloat(primary.style('font-size')))
+                        : Math.round(parseFloat(document.getElementById('fontSizeSlider')?.value || 12));
+                }}
                 // Shape row: show the primary's effective shape; 'mixed'
                 // when the selection disagrees. The value stays '' (Keep)
                 // — acting happens via applySelectedShape's onchange.
@@ -11074,6 +11284,20 @@ class VisualizePath:
                 }} else {{
                     wField.placeholder = '';
                     wField.value = Math.round(primary.numericStyle('width') * 10) / 10;
+                }}
+                // Line style controls seed from the primary edge's base
+                // appearance (the color/alpha the recolor paths read back)
+                const linePattern = document.getElementById('edgeLinePattern');
+                const lineColor = document.getElementById('edgeLineColor');
+                const lineAlpha = document.getElementById('edgeLineAlpha');
+                if (linePattern) linePattern.value = primary.style('line-style') || 'solid';
+                if (lineColor && lineAlpha) {{
+                    lineColor.value = extractColorHex(
+                        primary.data(EDGE_BASE_COLOR_KEY) || primary.style('line-color')) || '#64748b';
+                    const op = (primary.data(EDGE_BASE_OPACITY_KEY) !== undefined)
+                        ? parseFloat(primary.data(EDGE_BASE_OPACITY_KEY))
+                        : (parseFloat(primary.style('line-opacity')) || 1);
+                    lineAlpha.value = Math.round(op * 100);
                 }}
             }}
             updateAlignButtons();
@@ -11104,8 +11328,6 @@ class VisualizePath:
                 if (btn) btn.style.opacity = cy.$(':selected').length > 0 ? '1' : '0.4';
             }});
             const anySelected = cy.$(':selected').length > 0;
-            const applyGeom = document.getElementById('applyGeometryBtn');
-            if (applyGeom) applyGeom.style.display = anySelected ? 'block' : 'none';
             if (!anySelected) {{
                 const ng = document.getElementById('geomNodeGroup');
                 const eg = document.getElementById('geomEdgeGroup');
@@ -11158,7 +11380,10 @@ class VisualizePath:
                 const wantResize = wantResizeW || wantResizeH;
                 if (!wantMove && !wantResize) return;
 
-                pushHistory(wantResize ? 'Resize element' : 'Move nodes');
+                // live typing/arrow bursts coalesce into one undo entry
+                // (queued AFTER the change check so no-op events commit nothing)
+                queueStyleHistory('Resize nodes');
+
                 if (wantMove) {{
                     // primary goes to the exact coordinates; every other
                     // selected node shifts by the same delta so their
@@ -11192,7 +11417,8 @@ class VisualizePath:
                 const newWidth = parseFloat(document.getElementById('selGeomWidth').value);
                 if (isNaN(newWidth) || newWidth <= 0 || newWidth === primary.numericStyle('width')) return;
 
-                pushHistory('Resize element');
+                queueStyleHistory('Resize nodes');
+
                 cy.batch(() => {{
                     edges.forEach(e => {{
                         // style bypass wins over the stylesheet mapData used
@@ -11339,6 +11565,7 @@ class VisualizePath:
                     if (el.isNode()) {{
                         el.removeStyle('width');
                         el.removeStyle('height');
+                        el.removeStyle('font-size');
                     }} else {{
                         el.removeStyle('width');
                         el.removeData('customSize');
@@ -11367,6 +11594,113 @@ class VisualizePath:
                 }}));
             }});
             updateHoverInfo(toFront ? '✓ Brought to front' : '✓ Sent to back');
+        }}
+
+        // Direct hex input for every color swatch: the text field applies
+        // live (a # is optional — 'ff8800' works) and mirrors swatch edits.
+        function bindHexPair(swatchId, textId, onColor) {{
+            const swatch = document.getElementById(swatchId);
+            const text = document.getElementById(textId);
+            if (!swatch || !text) return;
+            swatch.addEventListener('input', () => {{
+                text.value = swatch.value;
+                onColor(swatch.value);   // the picker applies too, not just typing
+            }});
+            text.addEventListener('input', () => {{
+                let v = text.value.trim();
+                if (v === '') return;
+                if (!v.startsWith('#')) v = '#' + v;
+                if (!/^#([0-9a-f]{{3}}|[0-9a-f]{{6}})$/i.test(v)) return;  // incomplete/invalid: ignore
+                swatch.value = v;
+                onColor(v);
+            }});
+        }}
+
+        // Per-node label font size: empty input = follow the global Font
+        // Size slider (bypass removed); a value sets a per-node bypass.
+        function applyNodeFontSize(size) {{
+            const nodes = cy.$('node:selected');
+            if (nodes.length === 0) return;
+            const v = parseFloat(size);
+            queueStyleHistory('Change label size');
+            cy.batch(() => {{
+                nodes.forEach(n => {{
+                    if (!isNaN(v) && v > 0) n.style('font-size', v + 'px');
+                    else n.removeStyle('font-size');
+                }});
+            }});
+        }}
+
+        // NODE OUTLINE group: border pattern/color/opacity/width for the
+        // selected nodes, applied immediately on change (each control sends
+        // a partial patch).  Nodes are borderless by default — a width > 0
+        // makes the outline visible; 0 hides it again.
+        function applyNodeOutline(patch) {{
+            const nodes = cy.$('node:selected');
+            if (nodes.length === 0) return;
+            queueStyleHistory('Change node outline');
+            cy.batch(() => {{
+                nodes.forEach(n => {{
+                    const style = {{}};
+                    if (patch.borderStyle !== undefined) style['border-style'] = patch.borderStyle;
+                    if (patch.borderColor !== undefined) style['border-color'] = patch.borderColor;
+                    if (patch.borderOpacity !== undefined) style['border-opacity'] = patch.borderOpacity;
+                    if (patch.borderWidth !== undefined) style['border-width'] = patch.borderWidth + 'px';
+                    // A look change on a BORDERLESS node (effective width
+                    // 0) would be invisible — auto-raise the width to 2px
+                    // so the chosen outline actually shows. The check must
+                    // use the BYPASS flag: while selected, style() reads
+                    // the node:selected 4px, and while deselected it reads
+                    // the base 0px — neither tells us whether an override
+                    // exists.
+                    const setsLook = patch.borderStyle !== undefined ||
+                        patch.borderColor !== undefined || patch.borderOpacity !== undefined;
+                    const widthOverridden = hasBypass(n, 'border-width') &&
+                        parseFloat(n.style('border-width')) > 0;
+                    if (setsLook && patch.borderWidth === undefined && !widthOverridden) {{
+                        style['border-width'] = '2px';
+                    }}
+                    if (Object.keys(style).length) n.style(style);
+                }});
+            }});
+            updateHoverInfo('✓ Outline updated on ' + nodes.length + ' node(s)');
+        }}
+
+        // Wire every color swatch to its hex text companion.
+        bindHexPair('nodeOutlineColor', 'nodeOutlineColorText',
+            v => applyNodeOutline({{ borderColor: v }}));
+        bindHexPair('edgeLineColor', 'edgeLineColorText',
+            v => applyEdgeLineStyle({{ color: v }}));
+        bindHexPair('individualColor', 'individualColorText',
+            v => applyIndividualColor(true));
+
+        // EDGE LINE style group: pattern + color + alpha for the selected
+        // edges.  Color rides the edge's base appearance (line + BOTH
+        // arrowheads + the __baseColor/__baseOpacity keys the CSV export
+        // and highlight restore read); body-only alpha keeps the weight
+        // label fully opaque.
+        function applyEdgeLineStyle(patch) {{
+            const edges = cy.$('edge:selected');
+            if (edges.length === 0) return;
+            queueStyleHistory('Change edge style');
+            cy.batch(() => {{
+                edges.forEach(e => {{
+                    if (patch.lineStyle !== undefined) {{
+                        e.style('line-style', patch.lineStyle);
+                    }}
+                    const color = (patch.color !== undefined) ? patch.color
+                        : (e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'));
+                    const alpha = (patch.alpha !== undefined)
+                        ? Math.max(0, Math.min(1, patch.alpha))
+                        : (e.data(EDGE_BASE_OPACITY_KEY) !== undefined
+                            ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
+                            : (parseFloat(e.style('line-opacity')) || 1));
+                    if (patch.color !== undefined || patch.alpha !== undefined) {{
+                        setEdgeBaseAppearance(e, color, alpha);
+                    }}
+                }});
+            }});
+            updateHoverInfo('✓ Line style applied to ' + edges.length + ' edge(s)');
         }}
 
         // Per-node shape: a stylesheet-level bypass per selected node.
@@ -12177,7 +12511,7 @@ class VisualizePath:
             let outCount = 0;
             let inCount = 0;
             node.connectedEdges().forEach(e => {{
-                if (e.hasClass('hidden') || e.hasClass('filtered') || e.hasClass('selfloop-hidden')) return;
+                if (e.hasClass('hidden') || e.hasClass('filtered') || e.hasClass('selfloop-hidden') || e.hasClass('pair-hidden')) return;
                 if (deadEndSet.has(e.source().id()) || deadEndSet.has(e.target().id())) return;
                 if (e.source().id() === e.target().id()) return;  // skip self-loops
                 // Merged bidirectional edges carry both directions in ONE
@@ -12533,6 +12867,9 @@ class VisualizePath:
             }};
             const lines = [header.join(',')];
             cy.edges().forEach(edge => {{
+                // the reverse half of a runtime-merged pair is hidden — the
+                // canonical half exports the pair as its two directional rows
+                if (edge.hasClass('pair-hidden')) return;
                 const d = edge.data();
                 // Merged bidirectional pair: two directional rows sharing
                 // the pair id, each with its own direction's weight.
@@ -12550,7 +12887,9 @@ class VisualizePath:
                 const weight = (weightRaw !== undefined && weightRaw !== null && !isNaN(parseFloat(weightRaw)))
                     ? parseFloat(weightRaw)
                     : (parseFloat(edge.data('weight')) || 0);
-                lines.push(makeRow(edge, edge.source(), edge.target(), weight, ''));
+                // an UNMERGED pair half keeps its pair id so a re-import
+                // rebuilds the merge regardless of the current mode
+                lines.push(makeRow(edge, edge.source(), edge.target(), weight, d.pair_id || ''));
             }});
             return lines.join('\\n');
         }}

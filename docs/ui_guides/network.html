@@ -344,9 +344,10 @@ PPL101,0,0,22</code></pre>
     <li><b>Node Shape</b>: circles (default), round squares or sharp
       squares; <b>By Role</b> draws source/target as round squares and
       intermediates as sharp squares (flowchart convention).</li>
-    <li><b>Merge Bidirectional Edges</b>: collapse reciprocal pairs
-      (A&rarr;B + B&rarr;A) into one double-headed edge. Width uses the
-      stronger direction; hovering shows both.</li>
+    <li><b>Merge Bidirectional Edges</b>: start the network in Merged
+      mode &mdash; reciprocal pairs (A&rarr;B + B&rarr;A) render as one
+      double-headed edge. Width uses the stronger direction; hovering
+      shows both. The mode stays switchable in the generated HTML.</li>
     <li><b>Open in Browser</b>: open the HTML results right after the run.</li>
   </ul>
   <p class="small">The network view shows at most the 500 strongest edges
@@ -362,17 +363,25 @@ PPL101,0,0,22</code></pre>
       a Node Shape dropdown (circle / round square / sharp square - a
       global override like the Node Size slider); toggle orphan nodes,
       self-loops and dead ends; re-run the layout.</li>
-    <li><b>Merged bidirectional edges</b>: when generated with the merge
-      option (or from an edge list with a <code>bidirectional</code>
-      column), a reciprocal pair renders as ONE edge with arrowheads at
-      both ends. Width and the weight-band filter use the stronger
-      direction; hover and the Edge List CSV export show both directions.</li>
+    <li><b>Merged bidirectional edges</b>: the Reciprocal Edges ribbon
+      switches each reciprocal pair between <b>Straight</b> (parallel
+      lines), <b>Curved</b> (bezier pair) and <b>Merged</b> (one edge with
+      arrowheads at both ends) &mdash; live, no regeneration. In Merged
+      mode width and the weight-band filter use the stronger direction;
+      hover and the Edge List CSV export show both directions.</li>
     <li><b>Color</b>: restyle selected elements or whole groups (source /
       intermediate / target nodes, all edges).</li>
     <li><b>Edit Mode</b> (empty canvas): add nodes, drag from one node to
       another to connect them, double-click to edit properties (label,
       type, color), right-click to delete. Every action is recorded - use
       Undo/Redo or the history list to jump between states.</li>
+    <li><b>Edge style</b>: with edges selected, the <i>Edge style</i>
+      group applies the line pattern (Solid / Dashed / Dotted / Double),
+      color and opacity &mdash; each control applies immediately; arrows
+      follow the line color and the weight label keeps full opacity.</li>
+    <li><b>Node outline</b>: with nodes selected, the <i>Outline</i> row
+      applies the border pattern (Solid / Dashed / Dotted / Double), color,
+      opacity and width &mdash; each control applies immediately.</li>
     <li><b>Per-node size &amp; shape</b>: with an element selected, the
       <i>Position / Size</i> panel exposes X/Y, independent
       <b>W</b>/<b>H</b> (px), and a per-node <b>Shape</b> dropdown

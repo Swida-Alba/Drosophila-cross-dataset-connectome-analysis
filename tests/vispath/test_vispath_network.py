@@ -237,7 +237,8 @@ class TestGeneratedHtmlStructure:
                         'geomNodeGroup', 'geomEdgeGroup',
                         'alignHBtn', 'alignVBtn'):
             assert f'id="{elem_id}"' in html, f'missing element {elem_id}'
-        assert 'onclick="applySelectedGeometry()"' in html
+        # the panel is fully live: the geometry inputs apply on input
+        assert html.count('oninput="applySelectedGeometry()"') >= 5
         assert 'onclick="alignSelectedNodes(\'h\')"' in html
         assert 'onclick="alignSelectedNodes(\'v\')"' in html
         assert "function applySelectedGeometry" in js
@@ -253,8 +254,10 @@ class TestGeneratedHtmlStructure:
         # AND edges), and the size/position modifiers + confirm button are
         # hidden while nothing is selected
         assert "cy.on('select unselect', 'node, edge'" in js
-        assert 'id="applyGeometryBtn"' in html
-        assert "applyGeom.style.display = anySelected ? 'block' : 'none'" in js
+        # (the Apply Size/Position button was removed — every field is live)
+        # removed with the button — updateAlignButtons only manages the
+        # geometry GROUP visibility now
+        assert "applyGeom.style.display" not in js
         # manual edge widths are marked so they are recognizable as custom
         assert "e.data('customSize', true)" in js
 
@@ -341,11 +344,15 @@ class TestGeneratedHtmlStructure:
         edges to their ACTUAL size, not the global node-size slider."""
         js = _script_text(network_html)
         # refreshEdgeStyles derives the anchor distances from each endpoint
-        # node's computed width, with the global slider only as fallback
-        assert "const sourceNodeSize = edge.source().numericStyle('width')" in js
-        assert "const targetNodeSize = edge.target().numericStyle('width')" in js
-        assert "let sourceDistance = sourceNodeSize / 2;" in js
-        assert "let targetDistance = targetNodeSize / 2;" in js
+        # node's rim along the line — BOTH dimensions (the old width/2
+        # circle assumption buried arrowheads on tall nodes and detached
+        # them on wide ones)
+        assert "const rimDistance = (node, dx, dy) => {" in js
+        assert "const hw = (node.numericStyle('width') ||" in js
+        assert "const hh = (node.numericStyle('height') ||" in js
+        assert "return Math.min(hw / adx, hh / ady);" in js
+        assert "let sourceDistance = rimDistance(edge.source(), canonicalDx, canonicalDy);" in js
+        assert "let targetDistance = rimDistance(edge.target(), -canonicalDx, -canonicalDy);" in js
         # the geometry editor refreshes edge styles after resizing
         assert "refreshEdgeStyles(false);  // keep endpoints/offsets attached to resized nodes" in js
 
@@ -2096,21 +2103,27 @@ class TestMergedBidirectionalEdges:
     max-direction weight for width/filter/label, per-direction weights
     kept for hover + CSV round trip."""
 
-    def test_pair_collapses_to_one_element(self, merged_html):
-        _nodes, edges, html = _elements_of(merged_html)
-        assert len(edges) == 2  # A⇄B merged + B→C plain
-        bidir = [e for e in edges if e["data"].get("bidirectional")]
-        assert len(bidir) == 1
-        d = bidir[0]["data"]
-        # canonical orientation: smaller id as source
-        assert (d["source"], d["target"]) == ("A", "B")
-        # max-direction semantics feed width (weight) AND the metric
-        # filter/label (original_weight) consistently
-        assert d["weight"] == 42 and d["original_weight"] == 42
-        assert d["weight_forward"] == 42 and d["weight_reverse"] == 17
-        assert d["is_negative"] == 0
-        # hover text lists both directions explicitly
-        assert "A → B: 42" in d["tooltip"] and "B → A: 17" in d["tooltip"]
+    def test_pair_halves_annotated_and_initial_mode_merged(self, merged_html):
+        """merge_reciprocal_edges=True emits BOTH halves (annotated with a
+        shared pair id) and starts the page in Merged mode — the collapse
+        happens at runtime so the ribbon can switch modes live."""
+        nodes, edges, html = _elements_of(merged_html)
+        assert len(edges) == 3  # A→B + B→A (a pair) + B→C plain
+        # both halves carry the shared pair id; canonical = smaller id first
+        halves = [e for e in edges if e["data"].get("pair_id") == "A<->B"]
+        assert len(halves) == 2
+        canon = [h for h in halves if h["data"].get("pair_canonical") == 1]
+        assert len(canon) == 1
+        assert (canon[0]["data"]["source"], canon[0]["data"]["target"]) == ("A", "B")
+        # each half keeps its own direction's weight
+        weights = sorted(h["data"]["weight"] for h in halves)
+        assert weights == [17, 42]
+        # the initial mode is baked into the page script
+        js = _script_text(merged_html)
+        assert "let reciprocalMode = 'merged';" in js
+        # plain third edge is unannotated
+        plain = [e for e in edges if not e["data"].get("pair_id")]
+        assert len(plain) == 1 and not plain[0]["data"].get("pair_canonical")
 
     def test_bidirectional_style_selector_present(self, merged_html):
         js = _script_text(merged_html)
@@ -2184,11 +2197,19 @@ class TestMergedBidirectionalEdges:
         vp._plot_cytoscape_network(
             G, output_path=str(out), layout="dagre", open_browser=False)
         _nodes, edges, _html = _elements_of(out)
-        bd = [e["data"] for e in edges if e["data"].get("bidirectional")]
-        assert len(bd) == 1
-        assert bd[0]["weight"] == 99
-        assert bd[0]["ratio"] == pytest.approx(0.75)
-        assert bd[0]["probability"] == pytest.approx(0.25)
+        import json as _json
+        print('EDGE KEYS SAMPLE:', [list(e.keys()) for e in edges[:2]])
+        print('EDGES PARSE COUNT:', len(edges))
+        # both halves annotated; each keeps its own weight/metadata (the
+        # runtime merge applies max to the canonical half's weight)
+        halves = [e["data"] for e in edges if e["data"].get("pair_id") == "A<->B"]
+        assert len(halves) == 2
+        canon = [h for h in halves if h.get("pair_canonical") == 1][0]
+        assert canon["weight"] == 42 and canon["pair_canonical"] == 1
+        rev = [h for h in halves if h.get("pair_canonical") != 1][0]
+        assert rev["weight"] == 99 and rev["ratio"] == pytest.approx(0.75)
+        js = _script_text(out)
+        assert "let reciprocalMode = 'merged';" in js
 
 
 class TestDeclaredBidirectionalColumn:
@@ -2234,12 +2255,13 @@ class TestDeclaredBidirectionalColumn:
             vp.G_network, output_path=str(out), layout="dagre",
             open_browser=False)
         _nodes, edges, _html = _elements_of(out)
-        assert len(edges) == 2  # merged A⇄B + plain B→C
-        bidir = [e["data"] for e in edges if e["data"].get("bidirectional")]
-        assert len(bidir) == 1
-        assert bidir[0]["weight"] == 42  # stronger direction
-        assert bidir[0]["weight_forward"] == 42
-        assert bidir[0]["weight_reverse"] == 17
+        assert len(edges) == 3  # annotated A→B + B→A pair + plain B→C
+        halves = [e["data"] for e in edges if e["data"].get("pair_id") == "A<->B"]
+        assert len(halves) == 2
+        canon = [h for h in halves if h.get("pair_canonical") == 1][0]
+        assert canon["weight"] == 42  # stronger direction stays on canonical
+        rev = [h for h in halves if h.get("pair_canonical") != 1][0]
+        assert rev["weight"] == 17
 
     def test_falsy_flag_values_are_ignored(self, tmp_path):
         csv = tmp_path / "falsy.csv"
@@ -2540,7 +2562,7 @@ class TestStableEdgeIds:
         assert "const edgeGeometry = cy.edges().map(e => {" in js
         # capture requires an actual style BYPASS: a computed width (mapData)
         # or a stale customSize flag left by a graph import is not an override
-        assert "const hasBypass = (el, key) => !!(el._private && el._private.style &&" in js
+        assert "function hasBypass(el, key) {" in js
         assert "if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));" in js
         assert "e.removeStyle('width');" in js
         assert "e.removeData('customSize');" in js
@@ -2573,14 +2595,13 @@ class TestEdgeListCsvReimportRoundTrip:
             vp.G_network, output_path=str(out), layout="dagre",
             open_browser=False)
         _nodes, edges, _html = _elements_of(out)
-        assert len(edges) == 3  # merged A<->B + B->C + C->B
-        bidir = [e["data"] for e in edges if e["data"].get("bidirectional")]
-        assert len(bidir) == 1
-        assert bidir[0]["weight"] == 42
-        assert bidir[0]["weight_forward"] == 42
-        assert bidir[0]["weight_reverse"] == 17
-        # the id columns survive so a second export is stable
-        assert bidir[0]["id"].startswith("edge_")
+        assert len(edges) == 4  # annotated A→B + B→A pair + B→C + C→B
+        halves = [e["data"] for e in edges if e["data"].get("pair_id") == "A<->B"]
+        assert len(halves) == 2
+        weights = sorted(h["weight"] for h in halves)
+        assert weights == [17, 42]  # both directions survive the import
+        # every edge keeps a stable id so a second export round-trips
+        assert all(e["data"]["id"].startswith("edge_") for e in edges)
 
 
 class TestArrowColorConsistencyAndAssignRow:
@@ -2603,3 +2624,222 @@ class TestArrowColorConsistencyAndAssignRow:
         # flex-basis 0 + a min-width floor: the select truncates long group
         # names instead of pushing the Assign button out of the panel
         assert "flex: 1 1 0; width: auto; min-width: 70px; text-overflow: ellipsis;" in html
+
+
+class TestReciprocalModeSwitch:
+    """The Reciprocal Edges ribbon: a 3-way Straight/Curved/Merged switch
+    that operates at RUNTIME on annotated pair halves (both halves are
+    always emitted; merging hides the reverse half and restyles the
+    canonical one)."""
+
+    def test_mode_switch_machinery_present(self, merged_html):
+        js = _script_text(merged_html)
+        html = merged_html.read_text(encoding="utf-8")
+        assert "let reciprocalMode = 'merged';" in js
+        assert "function applyReciprocalMode(mode) {" in js
+        assert "function setReciprocalMode(mode) {" in js
+        assert "function syncReciprocalControls() {" in js
+        # segmented control buttons
+        for btn_id in ('reciprocalModeStraight', 'reciprocalModeCurved', 'reciprocalModeMerged'):
+            assert f'id="{btn_id}"' in html
+        # pair annotation + hidden class styling
+        assert "'pair_id'" in js.replace("pair_id'", "'pair_id'") or "'pair_id':" in js
+        assert "selector: 'edge.pair-hidden'" in js
+
+    def test_generation_annotates_pairs_instead_of_collapsing(self, merged_html):
+        _nodes, edges, _html = _elements_of(merged_html)
+        halves = [e for e in edges if e["data"].get("pair_id")]
+        assert len(halves) == 2  # A→B + B→A
+        flags = [e for e in edges if e["data"].get("bidirectional")]
+        assert flags == []  # merging happens at runtime, not generation
+        canon = [h for h in halves if h["data"].get("pair_canonical") == 1]
+        assert len(canon) == 1
+
+    def test_initial_mode_reflects_generation_params(self, tmp_path):
+        # merge=True → 'merged'; straight default → 'straight';
+        # straight=False + merge=False → 'curved'
+        df = pd.DataFrame({"path_block": ["S>A>B>T"], "weights": [[5]]})
+        for kwargs, expected in [
+            ({"merge_reciprocal_edges": True}, "merged"),
+            ({}, "straight"),
+            ({"straight_reciprocal_edges": False}, "curved"),
+        ]:
+            vp = VisualizePath(
+                path_file=df, output_folder=str(tmp_path), showfig=False,
+                verbose=False, network_layout="dagre", **kwargs)
+            out = tmp_path / f"mode_{expected}.html"
+            vp._plot_cytoscape_network(
+                _bidir_graph(), output_path=str(out), layout="dagre",
+                open_browser=False)
+            assert f"let reciprocalMode = '{expected}';" in _script_text(out), kwargs
+
+
+class TestLiveColorOpacity:
+    """The Color/Opacity inputs apply immediately (the Apply to Selected
+    and Apply Size/Position buttons were removed as redundant), with
+    drag/typing bursts coalesced into ONE undoable history entry."""
+
+    def test_color_opacity_inputs_apply_live(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        js = _script_text(merged_html)
+        # color input listener applies live (text sync + apply)
+        assert "applyIndividualColor(true);" in js
+        # opacity input routes through updateOpacityDisplay's live branch
+        assert 'oninput="updateOpacityDisplay(\'individual\', this.value)"' in html
+        assert "if (type === 'individual' && cy.$(':selected').length > 0) {" in js
+        assert "applyIndividualColor(true);" in js
+
+    def test_apply_buttons_removed(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        # no BUTTON carries the removed labels (a comment explaining the
+        # removal is fine)
+        for btn in html.split('<button')[1:]:
+            label = btn.split('</button>')[0]
+            assert 'Apply to Selected' not in label, 'Apply to Selected button still present'
+            assert 'Apply Size/Position' not in label, 'Apply Size/Position button still present'
+        # but the live implementations remain
+        js = _script_text(merged_html)
+        assert "function applyIndividualColor(live) {" in js
+        assert "function applySelectedGeometry() {" in js
+
+    def test_style_burst_coalescing(self, merged_html):
+        js = _script_text(merged_html)
+        assert "let pendingStyle = null;" in js
+        assert "function queueStyleHistory(label) {" in js
+        assert "function flushPendingStyle()" in js
+        # undo/redo flush an in-flight burst before acting (queue-internal,
+        # undo, redo)
+        assert js.count("flushPendingStyle();") >= 3
+
+
+class TestEdgeStyleControl:
+    """The Edge style group (pattern + color + alpha) applies live to the
+    selected edges and round-trips through the layout state."""
+
+    def test_edge_line_style_group_wired(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        js = _script_text(merged_html)
+        assert 'id="edgeLinePattern"' in html
+        assert 'id="edgeLineColor"' in html
+        assert 'id="edgeLineAlpha"' in html
+        assert "function applyEdgeLineStyle(patch) {" in js
+        # pattern rides line-style; color/alpha apply LIVE on input and ride
+        # the base appearance (line + BOTH arrowheads + the
+        # __baseColor/__baseOpacity keys)
+        assert 'onchange="applyEdgeLineStyle({ lineStyle: this.value })"' in html
+        assert 'oninput="applyEdgeLineStyle({ alpha: parseFloat(this.value) / 100 })"' in html
+        # the color swatch + hex text companion are bound together
+        assert "bindHexPair('edgeLineColor', 'edgeLineColorText'," in js
+        assert "v => applyEdgeLineStyle({ color: v })" in js
+        # bursts coalesce into one undo entry
+        assert "queueStyleHistory('Change edge style');" in js
+        assert "e.style('line-style', patch.lineStyle);" in js
+        assert "setEdgeBaseAppearance(e, color, alpha);" in js
+        assert "'source-arrow-color': color," in js
+        # capture/restore carry the pattern override
+        assert "if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');" in js
+        assert "e.removeStyle('line-style');" in js
+
+    def test_edge_line_controls_seed_from_selection(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        # color/alpha seed from the primary edge's base appearance
+        assert "primary.data(EDGE_BASE_COLOR_KEY) || primary.style('line-color')) || '#64748b';" in html
+        assert "lineAlpha.value = Math.round(op * 100);" in html
+
+    def test_offset_label_uses_spinner_typography(self, merged_html):
+        """The Offset label sits in a .vp-spinner wrapper — a bare label in
+        the row rendered at the page default size (~16px), wildly larger
+        than every sibling control."""
+        html = merged_html.read_text(encoding="utf-8")
+        idx = html.index('id="reciprocalOffsetRow"')
+        segment = html[idx:idx + 400]
+        assert '<div class="vp-spinner vp-spinner-inline">' in segment
+
+    def test_footer_connection_count_is_mode_aware(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        js = _script_text(merged_html)
+        # the count is a live span updated by the mode switch, not a
+        # generation-baked number
+        assert 'id="footerEdgeCount"' in html
+        # counted via the class, not ':visible' (cy.batch defers the
+        # visibility commit — a same-tick read lags one switch)
+        assert "cy.edges().length - cy.edges('.pair-hidden').length);" in js
+
+
+class TestAssignGroupPanelBehavior:
+    """The Group dropdown in the Selection panel: resets on empty/edge-only
+    selection (groups are node memberships), syncs on the select event (the
+    tap handler runs before Cytoscape marks the first click selected), and
+    the Assign button no longer overflows the panel."""
+
+    def test_assign_sync_handles_empty_and_edge_selection(self, merged_html):
+        js = _script_text(merged_html)
+        # empty/edge-only selection: reset to Unassigned and disable
+        assert "if (nodes.length === 0) {" in js
+        assert "sel.value = 'unassigned';" in js
+        assert "sel.disabled = true;" in js
+        assert "sel.title = 'Groups apply to nodes — select a node to assign it';" in js
+        # node selection re-enables
+        assert "sel.disabled = false;" in js
+
+    def test_select_event_refreshes_assign_dropdown(self, merged_html):
+        """The select/unselect handler must call the assign sync — the tap
+        handler runs before the first click marks the element selected, so
+        the tap-time sync alone leaves the dropdown stale."""
+        js = _script_text(merged_html)
+        assert js.count("syncAssignSelectToSelection();") >= 3  # event paths + def
+
+    def test_assign_button_width_defeats_apply_btn_rule(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        # .apply-btn is width:100% — the Assign button must override it or
+        # it overflows the panel next to the group select
+        assert "flex: 0 0 auto; width: auto; background: #2196f3" in html
+
+
+class TestNodeOutline:
+    """The Node Outline controls (pattern/color/alpha/width) apply the
+    border style to selected nodes and round-trip through the layout
+    state."""
+
+    def test_node_outline_group_wired(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        js = _script_text(merged_html)
+        for control_id in ('nodeOutlinePattern', 'nodeOutlineColor',
+                           'nodeOutlineAlpha', 'nodeOutlineWidth'):
+            assert f'id="{control_id}"' in html
+        assert "function applyNodeOutline(patch) {" in js
+        # each control sends its partial patch, applied live on input/change
+        assert 'onchange="applyNodeOutline({ borderStyle: this.value })"' in html
+        assert 'oninput="applyNodeOutline({ borderOpacity: parseFloat(this.value) / 100 })"' in html
+        assert 'oninput="applyNodeOutline({ borderWidth: parseFloat(this.value) })"' in html
+        # the color swatch + its hex text companion are bound together and
+        # both apply through bindHexPair's onColor callback
+        assert "bindHexPair('nodeOutlineColor', 'nodeOutlineColorText'," in js
+        assert "v => applyNodeOutline({ borderColor: v })" in js
+        # a LOOK change on a borderless node auto-raises the width to 2px —
+        # the check must use the bypass flag (style() reads the selected
+        # state's 4px, which masked the invisible-outline bug)
+        assert "const widthOverridden = hasBypass(n, 'border-width') &&" in js
+        assert "parseFloat(n.style('border-width')) > 0;" in js
+        assert "if (setsLook && patch.borderWidth === undefined && !widthOverridden) {" in js
+        # bursts coalesce into one undo entry
+        assert "queueStyleHistory('Change node outline');" in js
+
+    def test_node_outline_seeds_from_selection(self, merged_html):
+        html = merged_html.read_text(encoding="utf-8")
+        # the controls seed from the primary node's ACTUAL border
+        assert "outlineSel.value = primary.style('border-style') || 'solid';" in html
+        assert "outlineColor.value = extractColorHex(primary.style('border-color')) || '#000000';" in html
+        assert "outlineAlpha.value = Math.round(parseFloat(primary.style('border-opacity') || 1) * 100);" in html
+        assert "outlineWidth.value = Math.round(parseFloat(primary.style('border-width') || 0) * 10) / 10;" in html
+
+    def test_outline_persistence_round_trip_keys(self, merged_html):
+        js = _script_text(merged_html)
+        # capture reads all four border dimensions via bypass checks
+        assert "['border-style', 'border-color', 'border-opacity', 'border-width']" in js
+        assert "item.borderColor = n.style('border-color');" in js
+        assert "item.borderOpacity = parseFloat(n.style('border-opacity'));" in js
+        # restore applies the full outline; absence clears it
+        assert "'border-opacity': (item.borderOpacity !== undefined ? item.borderOpacity : 1)," in js
+        assert "n.removeStyle('border-color');" in js
+        assert "n.removeStyle('border-opacity');" in js

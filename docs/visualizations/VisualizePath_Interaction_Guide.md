@@ -87,8 +87,8 @@ For networks with bidirectional connections:
 
 | Control                      | Function                                                    |
 | ---------------------------- | ----------------------------------------------------------- |
-| **Straight/Curved toggle**   | Switch between straight parallel edges and curved bezier    |
-| **Reciprocal Offset slider** | Adjust spacing between parallel edges (0-40px, default 5px) |
+| **Straight / Curved / Merged** | Switch how each reciprocal pair renders: parallel lines, bezier pair, or ONE double-headed edge |
+| **Offset slider**            | Adjust spacing between parallel edges (Straight mode only; 0-40px, default 5px) |
 
 Networks generated with **Merge Bidirectional Edges** (or from an edge list
 with a `bidirectional` column) instead render each reciprocal pair as ONE

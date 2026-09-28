@@ -63,8 +63,14 @@ function buildScope(cy) {
         let globalArrowSize = 9;
         let globalEdgeWidthScale = 'log_e';
         let globalNodeShape = 'circle';
+        let reciprocalMode = 'straight';
+        function applyReciprocalMode(m) { reciprocalMode = m; }
+        function syncReciprocalControls() {}
         let pendingNudge = null;
         function flushPendingNudge() {}
+        let pendingStyle = null;
+        function queueStyleHistory(label) {}
+        function flushPendingStyle() {}
         let reciprocalOffset = 5;
         let restoringHistoryState = false;
         // Edge-filter groups (referenced by applyEdgeFilter / shouldIgnoreEdge)
