@@ -66,6 +66,7 @@ const FUNCTIONS = [
 
 function buildScope(cy) {
     const fnSources = FUNCTIONS.map(f => extractFunction(f, html)).join('\n');
+    if (process.env.DUMP_EVAL) fs.writeFileSync('/tmp/persist_eval.js', fnSources);
 
     const prelude = `
         // --- storage + history stubs ---
@@ -103,11 +104,11 @@ function buildScope(cy) {
         let pendingNudge = null;
         function flushPendingNudge() {}
         let pendingStyle = null;
+        let reciprocalMode = 'straight';
         function queueStyleHistory(label) {}
         function flushPendingStyle() {}
         let straightReciprocalEdgesEnabled = false;
         let reciprocalOffset = 5;
-        let reciprocalMode = 'straight';
         const edgeWeightLabelForTooltip = 'synapses';
 
         let restoringHistoryState = false;

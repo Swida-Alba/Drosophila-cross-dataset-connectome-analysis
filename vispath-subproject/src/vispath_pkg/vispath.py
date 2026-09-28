@@ -6125,8 +6125,10 @@ class VisualizePath:
                 </div>
                 <div class="vp-spinner vp-spinner-inline">
                     <label for="nodeShapeSelect" title="Node geometry: circles (default), or the flowchart square vocabulary">Node Shape</label>
-                    <select id="nodeShapeSelect" onchange="updateNodeShape(this.value)" title="Node geometry: circles (default), or the flowchart square vocabulary" style="padding: 4px 6px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-bg, #fff); color: inherit;">
-                        <option value="circle" {'selected' if self.node_shape == 'circle' else ''}>Circle</option>
+                    <select id="nodeShapeSelect" onchange="updateNodeShape(this.value)" title="Node geometry: Ellipse (free W/H), Circle (locked W=H), Diamond, or the flowchart square vocabulary" style="padding: 4px 6px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-bg, #fff); color: inherit;">
+                        <option value="ellipse" {'selected' if self.node_shape == 'circle' else ''}>Ellipse</option>
+                        <option value="circle" title="Perfect circle: width and height locked equal">Circle</option>
+                        <option value="diamond">Diamond</option>
                         <option value="round-square" {'selected' if self.node_shape in ('round-square', 'by-role') else ''}>Round Square</option>
                         <option value="sharp-square" {'selected' if self.node_shape == 'sharp-square' else ''}>Sharp Square</option>
                     </select>
@@ -6367,9 +6369,11 @@ class VisualizePath:
                             </div>
                             <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
                                 <span>Shape</span>
-                                <select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node geometry: Keep = no change; Follow Global = drop this node's override so the ribbon Node Shape applies again" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                <select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node shape: Keep = no change; Ellipse = free W/H; Circle = perfect circle (W locked equal to H); Diamond; Follow Global = drop this node's override so the ribbon Node Shape applies again" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
                                     <option value="">Keep current</option>
-                                    <option value="ellipse">Circle</option>
+                                    <option value="ellipse">Ellipse</option>
+                                    <option value="__circle__">Circle</option>
+                                    <option value="diamond">Diamond</option>
                                     <option value="round-rectangle">Round Square</option>
                                     <option value="rectangle">Sharp Square</option>
                                     <option value="__follow__">Follow Global</option>
@@ -6418,7 +6422,23 @@ class VisualizePath:
                                 <span>Alpha&nbsp;%</span>
                                 <input type="number" id="edgeLineAlpha" min="0" max="100" step="5" value="100" oninput="applyEdgeLineStyle({{ alpha: parseFloat(this.value) / 100 }})" title="Line opacity in % (applies immediately; the weight label keeps full opacity)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
                             </div>
-                            <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Edges are anchored to their endpoints — no free position.</div>
+                            <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Edges are anchored to their endpoints — waypoints bend the connector between them.</div>
+                            <label style="margin-top: 6px;">Waypoints:</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 2px;">
+                                <button class="btn" onclick="addEdgeWaypoint()" title="Add a waypoint at the middle of the longest segment (offset sideways so the bend is visible)" style="font-size: 10px; padding: 5px; background: #00897b;">＋ Waypoint</button>
+                                <button class="btn" onclick="clearEdgeWaypoints()" title="Remove all waypoints from the selected edges — back to a straight/bezier line" style="font-size: 10px; padding: 5px; background: #607d8b;">✕ Clear</button>
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Shift&nbsp;X</span>
+                                <input type="number" id="wpShiftX" step="1" value="0" oninput="shiftSelectedEdgeWaypoints('x', this.value)" title="Move the waypoints of all selected edges horizontally by this delta (relative to 0)">
+                                <span>Shift&nbsp;Y</span>
+                                <input type="number" id="wpShiftY" step="1" value="0" oninput="shiftSelectedEdgeWaypoints('y', this.value)" title="Move the waypoints of all selected edges vertically by this delta (relative to 0)">
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px;">
+                                <button class="btn" onclick="alignEdgeWaypoints('h')" title="Align all waypoints of the selected edges on one horizontal line (their mean Y)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Align H</button>
+                                <button class="btn" onclick="alignEdgeWaypoints('v')" title="Align all waypoints of the selected edges on one vertical line (their mean X)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇕ Align V</button>
+                            </div>
+                            <div id="waypointList" style="margin-top: 4px;"></div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
                             <button class="btn" id="alignHBtn" onclick="alignSelectedNodes('h')" title="Align selected nodes horizontally (same Y)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Align H</button>
@@ -6648,6 +6668,24 @@ class VisualizePath:
                         'border-width': '0px',  // No border
                         'text-wrap': 'wrap',
                         'text-max-width': '80px'
+                    }}
+                }},
+                {{
+                    // Selection ring for a user-selected edge waypoint —
+                    // visually distinct from edge/node selection
+                    selector: 'node.wp-highlight',
+                    style: {{
+                        'width': 10,
+                        'height': 10,
+                        'shape': 'ellipse',
+                        'background-color': '#f59e0b',
+                        'background-opacity': 0.45,
+                        'border-width': 1.5,
+                        'border-color': '#d97706',
+                        'border-opacity': 0.95,
+                        'label': '',
+                        'z-index-compare': 'manual',
+                        'z-index': 9999
                     }}
                 }},
                 {{
@@ -8709,6 +8747,10 @@ class VisualizePath:
                 const item = {{ id: e.id() }};
                 if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));
                 if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');
+                // user waypoints: persisted from the data marker
+                if (e.data('hasWaypoints')) {{
+                    item.waypoints = edgeWaypointPts(e);
+                }}
                 return item;
             }}).filter(item => Object.keys(item).length > 1);
             return {{
@@ -9080,6 +9122,19 @@ class VisualizePath:
                             e.style('line-style', item.lineStyle);
                         }} else {{
                             e.removeStyle('line-style');
+                        }}
+                        // user waypoints: data + derived segment rendering;
+                        // absence clears back to the straight/bezier line
+                        if (item && item.waypoints !== undefined && item.waypoints.length) {{
+                            e.data('waypoints', item.waypoints);
+                            e.data('hasWaypoints', true);
+                            renderEdgeWaypoints(e);
+                        }} else {{
+                            e.removeData('waypoints');
+                            e.removeData('hasWaypoints');
+                            e.removeStyle('segment-distances');
+                            e.removeStyle('segment-weights');
+                            e.removeStyle('curve-style');
                         }}
                     }});
                 }}
@@ -9624,6 +9679,15 @@ class VisualizePath:
                     return;
                 }}
 
+                // Edges with user waypoints keep their segmented rendering —
+                // the straight/curved re-styling below would wipe it.  The
+                // distances/weights are re-derived from the model-coord
+                // waypoints so bends stay fixed while nodes move.
+                if (edge.data('hasWaypoints')) {{
+                    renderEdgeWaypoints(edge);
+                    return;
+                }}
+
                 if (!hasVisibleParallel) {{
                     clearEdgeEndpointOverrides(edge);
                     applyStraightEdgeStyle(edge);
@@ -10009,7 +10073,9 @@ class VisualizePath:
         // 'circle' restores the Cytoscape default (ellipse).
         function updateNodeShape(shape) {{
             const shapeName = shape === 'round-square' ? 'round-rectangle'
-                : shape === 'sharp-square' ? 'rectangle' : 'ellipse';
+                : shape === 'sharp-square' ? 'rectangle'
+                : shape === 'circle' ? 'ellipse'
+                : shape === 'diamond' ? 'diamond' : 'ellipse';
             if (!restoringHistoryState && shape !== globalNodeShape) pushHistory('Adjust node shape');
             globalNodeShape = shape;
             // keep the dropdown honest (undo/redo + applyNetworkState route
@@ -10020,6 +10086,17 @@ class VisualizePath:
                 .selector('node')
                 .style('shape', shapeName)
                 .update();
+            // Circle: a perfect circle has width == height — equalize every
+            // node whose dimensions are unequal (max wins, larger stays)
+            if (shape === 'circle') {{
+                cy.nodes().forEach(n => {{
+                    const w = n.numericStyle('width'), h = n.numericStyle('height');
+                    if (w > 0 && h > 0 && Math.abs(w - h) > 0.5) {{
+                        const d = Math.max(w, h);
+                        n.style({{ 'width': d + 'px', 'height': d + 'px' }});
+                    }}
+                }});
+            }}
         }}
 
         function updateEdgeWidth(width) {{
@@ -11299,6 +11376,13 @@ class VisualizePath:
                         : (parseFloat(primary.style('line-opacity')) || 1);
                     lineAlpha.value = Math.round(op * 100);
                 }}
+                // Waypoint shift inputs reset on selection change; the
+                // per-waypoint list renders for a single selected edge
+                const sx = document.getElementById('wpShiftX');
+                const sy = document.getElementById('wpShiftY');
+                if (sx) sx.value = '0';
+                if (sy) sy.value = '0';
+                renderWaypointList();
             }}
             updateAlignButtons();
         }}
@@ -11404,8 +11488,16 @@ class VisualizePath:
                 if (wantResize) {{
                     cy.batch(() => {{
                         nodes.forEach(n => {{
-                            const w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : n.numericStyle('width');
-                            const h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : n.numericStyle('height');
+                            const ownW = n.numericStyle('width'), ownH = n.numericStyle('height');
+                            let w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : ownW;
+                            let h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : ownH;
+                            // circle coupling: a currently-circular node
+                            // stays circular when only one dimension is
+                            // edited (both fields edited = user override)
+                            if (Math.abs(ownW - ownH) < 0.5) {{
+                                if (w !== ownW && h === ownH) h = w;
+                                else if (h !== ownH && w === ownW) w = h;
+                            }}
                             n.style({{ 'width': w + 'px', 'height': h + 'px' }});
                         }});
                     }});
@@ -11631,6 +11723,312 @@ class VisualizePath:
             }});
         }}
 
+        // ===== EDGE WAYPOINTS =====
+        // Per-edge bends stored in e.data('waypoints') as model-coordinate
+        // points; rendered as curve-style 'segments' with segment
+        // distances/weights projected onto the source→target axis (this
+        // cytoscape build has NO segment-points style property — the
+        // naive style write throws and removeStyle crashes).  The panel
+        // offers add/clear, universal shift and align across ALL selected
+        // edges, and a per-waypoint X/Y list for a single edge.
+        function edgeWaypointPts(e) {{
+            return (e.data('waypoints') || []).map(p => ({{ x: p.x, y: p.y }}));
+        }}
+
+        function renderEdgeWaypoints(e) {{
+            const wps = e.data('waypoints') || [];
+            if (wps.length === 0) return;
+            const s = e.source().position(), t = e.target().position();
+            const dx = t.x - s.x, dy = t.y - s.y;
+            const len = Math.sqrt(dx * dx + dy * dy) || 1;
+            const dists = [], weights = [];
+            wps.forEach(p => {{
+                // NO clamping: the weight may extrapolate beyond the
+                // endpoints (weight < 0 or > 1) so a waypoint can sit
+                // anywhere in the canvas, not just between them.
+                const t01 = ((p.x - s.x) * dx + (p.y - s.y) * dy) / (len * len);
+                // signed perpendicular distance from the source→target line
+                const dist = (dx * (p.y - s.y) - dy * (p.x - s.x)) / len;
+                weights.push(t01);
+                dists.push(dist);
+            }});
+            try {{
+                // THIS cytoscape build throws a benign circular-JSON error
+                // from the bypass bookkeeping when segment values are set as
+                // a bypass — the value itself applies (verified by read-back
+                // and render), so the error is swallowed.
+                e.style('curve-style', 'segments');
+                e.style('segment-distances', dists);
+                e.style('segment-weights', weights);
+            }} catch (err) {{ /* value applied despite the bookkeeping error */ }}
+        }}
+
+        function addEdgeWaypoint() {{
+            const edges = cy.$('edge:selected');
+            if (edges.length === 0) return;
+            queueStyleHistory('Add waypoint');
+            cy.batch(() => {{
+                edges.forEach(e => {{
+                    const s = e.source().position(), t = e.target().position();
+                    // polyline vertices incl. implicit endpoints + existing wps
+                    const pts = [s, ...edgeWaypointPts(e), t];
+                    let longest = 0, li = 0;
+                    for (let i = 1; i < pts.length; i++) {{
+                        const d = Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y);
+                        if (d > longest) {{ longest = d; li = i; }}
+                    }}
+                    const a = pts[li-1], b = pts[li] || t;
+                    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+                    // perpendicular offset so the bend is visible even on a
+                    // straight run; alternate the side per waypoint index
+                    const seglen = Math.max(Math.hypot(b.x - a.x, b.y - a.y), 1);
+                    const px = -(b.y - a.y) / seglen, py = (b.x - a.x) / seglen;
+                    const side = (edgeWaypointPts(e).length % 2 === 0) ? 1 : -1;
+                    const wp = {{ x: mx + px * 40 * side, y: my + py * 40 * side }};
+                    const wps = edgeWaypointPts(e);
+                    wps.splice(li - 1, 0, wp);
+                    e.data('waypoints', wps);
+                    e.data('hasWaypoints', true);
+                    renderEdgeWaypoints(e);
+                }});
+            }});
+            renderWaypointList();
+            updateHoverInfo('✓ Waypoint added (adjust via Shift/Align or the per-waypoint list)');
+        }}
+
+        function clearEdgeWaypoints() {{
+            const edges = cy.$('edge:selected').filter(e => e.data('hasWaypoints'));
+            if (edges.length === 0) return;
+            queueStyleHistory('Clear waypoints');
+            cy.batch(() => edges.forEach(e => {{
+                e.removeStyle('segment-distances');
+                e.removeStyle('segment-weights');
+                e.removeStyle('curve-style');
+                e.removeData('waypoints');
+                e.removeData('hasWaypoints');
+            }}));
+            refreshEdgeStyles(false);
+            renderWaypointList();
+            updateHoverInfo('✓ Waypoints cleared');
+        }}
+
+        function shiftSelectedEdgeWaypoints(axis, value) {{
+            const delta = parseFloat(value) || 0;
+            const edges = cy.$('edge:selected').filter(e => e.data('hasWaypoints'));
+            if (edges.length === 0 || delta === 0) return;
+            queueStyleHistory('Move waypoints');
+            cy.batch(() => edges.forEach(e => {{
+                const pts = edgeWaypointPts(e).map(p =>
+                    ({{ x: p.x + (axis === 'x' ? delta : 0), y: p.y + (axis === 'y' ? delta : 0) }}));
+                e.data('waypoints', pts);
+                renderEdgeWaypoints(e);
+            }}));
+            renderWaypointList();
+        }}
+
+        function alignEdgeWaypoints(axis) {{
+            // 'h': all waypoints of all selected edges share one Y (mean);
+            // 'v': share one X.  Works across edges — the universal alignment.
+            const edges = cy.$('edge:selected').filter(e => e.data('hasWaypoints'));
+            if (edges.length === 0) return;
+            const all = [];
+            edges.forEach(e => all.push(...edgeWaypointPts(e)));
+            if (all.length === 0) return;
+            const axisKey = (axis === 'h') ? 'y' : 'x';
+            const mean = all.reduce((s, p) => s + p[axisKey], 0) / all.length;
+            queueStyleHistory('Align waypoints');
+            cy.batch(() => edges.forEach(e => {{
+                e.data('waypoints', edgeWaypointPts(e).map(p =>
+                    ({{ x: axis === 'h' ? p.x : mean, y: axis === 'h' ? mean : p.y }})));
+                renderEdgeWaypoints(e);
+            }}));
+            updateHoverInfo('✓ Waypoints aligned ' + (axis === 'h' ? 'horizontally' : 'vertically'));
+        }}
+
+        // Per-waypoint X/Y rows.  Rendered when a single waypoint-capable
+        // edge is selected, OR when a waypoint was clicked directly on the
+        // canvas (selectedWaypoint — selectable independent of the edge).
+        // The selected waypoint's row is highlighted.
+        function renderWaypointList() {{
+            const box = document.getElementById('waypointList');
+            if (!box) return;
+            let e = null;
+            if (selectedWaypoint) {{
+                e = cy.getElementById(selectedWaypoint.edgeId);
+            }} else if (cy.$('edge:selected').length === 1 &&
+                        cy.$('edge:selected')[0].data('hasWaypoints')) {{
+                e = cy.$('edge:selected')[0];
+            }}
+            if (!e || e.length === 0 || !e.data('hasWaypoints')) {{
+                box.innerHTML = '';
+                return;
+            }}
+            const pts = edgeWaypointPts(e);
+            box.innerHTML = pts.map((p, i) => {{
+                const isSel = selectedWaypoint &&
+                    selectedWaypoint.edgeId === e.id() && selectedWaypoint.index === i;
+                const bg = isSel ? 'background:#e0f2f1;' : '';
+                return '<div style="display:grid; grid-template-columns:auto 1fr auto 1fr; gap:4px; align-items:center; font-size:10px; color:#555; margin-top:2px; ' + bg + '">' +
+                    '<span>WP' + (i + 1) + '</span>' +
+                    '<input type="number" step="1" value="' + Math.round(p.x) + '" data-idx="' + i + '" data-axis="x" class="wp-xy" style="width:100%; padding:3px; border-radius:3px; font-size:11px;">' +
+                    '<span>Y</span>' +
+                    '<input type="number" step="1" value="' + Math.round(p.y) + '" data-idx="' + i + '" data-axis="y" class="wp-xy" style="width:100%; padding:3px; border-radius:3px; font-size:11px;">' +
+                    '</div>';
+            }}).join('');
+            box.querySelectorAll('.wp-xy').forEach(inp => {{
+                inp.addEventListener('input', function() {{
+                    const idx = parseInt(this.dataset.idx);
+                    const v = parseFloat(this.value);
+                    if (isNaN(v)) return;
+                    if (!selectedWaypoint) return;
+                    const e = cy.getElementById(selectedWaypoint.edgeId);
+                    if (!e) return;
+                    const pts = edgeWaypointPts(e);
+                    if (!pts[idx]) return;
+                    pts[idx][this.dataset.axis] = v;
+                    queueStyleHistory('Move waypoint');
+                    e.data('waypoints', pts);
+                    renderEdgeWaypoints(e);
+                }});
+            }});
+        }}
+
+        // ===== Waypoint canvas interaction =====
+        // Waypoints are selectable independent of their edge: a click/tap
+        // within the grab radius toggles the waypoint in a SELECTION SET
+        // (a bundle — from the same or different edges), each selected
+        // waypoint marked by a standalone highlight ring on the canvas.
+        // Dragging a ring relocates that waypoint.  The handler runs in
+        // the CAPTURE phase on the #cy container so a waypoint hit can
+        // preempt Cytoscape's own node/edge gestures.
+        let selectedWaypoint = null;     // focused waypoint {{ edgeId, index }} or null
+        let selectedWaypointKeys = [];   // [{{ edgeId, index }}]
+        let wpSelInternal = false;       // suppress selection-clear during toggles
+        let wpDrag = null;               // {{ edge, index, startClient, startPt, moved, queued }}
+
+        function wpKey(edgeId, index) {{ return edgeId + '::' + index; }}
+
+        function addWaypointHighlight(edge, index) {{
+            const p = (edge.data('waypoints') || [])[index];
+            if (!p) return;
+            cy.add({{ group: 'nodes', classes: 'wp-highlight',
+                data: {{ wpFor: edge.id(), wpIndex: index }},
+                position: {{ x: p.x, y: p.y }} }});
+        }}
+
+        function removeWaypointHighlight(edgeId, index) {{
+            const n = cy.getElementById('wp-hl-' + edgeId + '::' + index);
+            if (n && n.inside()) n.remove();
+        }}
+
+        function moveWaypointHighlight(edgeId, index, x, y) {{
+            const n = cy.getElementById('wp-hl-' + edgeId + '::' + index);
+            if (n && n.inside()) n.position({{ x: x, y: y }});
+        }}
+
+        function clearWaypointSelection() {{
+            selectedWaypointKeys.forEach(k => removeWaypointHighlight(k.edgeId, k.index));
+            selectedWaypointKeys = [];
+            renderWaypointList();
+        }}
+
+        // Keep the highlight rings on their waypoints when the underlying
+        // data changes (shift/align/list edits).
+        function syncWaypointHighlights() {{
+            selectedWaypointKeys.forEach(k => {{
+                const e = cy.getElementById(k.edgeId);
+                if (!e || e.length === 0 || !e.inside()) return;
+                const p = (e.data('waypoints') || [])[k.index];
+                if (p) moveWaypointHighlight(k.edgeId, k.index, p.x, p.y);
+            }});
+        }}
+
+        function hitTestWaypointModel(mx, my, radius) {{
+            let best = null;
+            cy.edges('[hasWaypoints]').forEach(e => {{
+                (e.data('waypoints') || []).forEach((p, i) => {{
+                    const d = Math.hypot(p.x - mx, p.y - my);
+                    if (d <= radius && (!best || d < best.d)) {{
+                        best = {{ d: d, edge: e, index: i }};
+                    }}
+                }});
+            }});
+            return best;
+        }}
+
+        function clearSelectedWaypoint() {{
+            selectedWaypoint = null;
+            renderWaypointList();
+        }}
+
+        // cursor feedback while hovering a waypoint
+        document.getElementById('cy').addEventListener('pointermove', function(e) {{
+            if (wpDrag) return;
+            const rect = this.getBoundingClientRect();
+            const pan = cy.pan(), zoom = cy.zoom();
+            const mx = (e.clientX - rect.left - pan.x) / zoom;
+            const my = (e.clientY - rect.top - pan.y) / zoom;
+            const hit = hitTestWaypointModel(mx, my, 10 / zoom);
+            this.style.cursor = hit ? 'grab' : '';
+        }});
+
+        document.getElementById('cy').addEventListener('pointerdown', function(e) {{
+            if (e.button !== 0 || dialogCtl.isActive()) return;
+            const rect = this.getBoundingClientRect();
+            const pan = cy.pan(), zoom = cy.zoom();
+            const mx = (e.clientX - rect.left - pan.x) / zoom;
+            const my = (e.clientY - rect.top - pan.y) / zoom;
+            const hit = hitTestWaypointModel(mx, my, 12 / zoom);
+            if (!hit) return;
+            // preempt Cytoscape: the pointer acts on the WAYPOINT, not the
+            // node/edge underneath
+            e.stopPropagation();
+            e.preventDefault();
+
+            const edge = hit.edge;
+            const startPt = {{ x: hit.edge.data('waypoints')[hit.index].x,
+                               y: hit.edge.data('waypoints')[hit.index].y }};
+            const startClient = {{ x: e.clientX, y: e.clientY }};
+            wpDrag = {{ edge: edge, index: hit.index, startPt: startPt,
+                        startClient: startClient, moved: false, queued: false }};
+
+            // select the waypoint (and its edge for panel context)
+            cy.elements().unselect();
+            edge.select();
+            selectedElement = edge;
+            selectedWaypoint = {{ edgeId: edge.id(), index: hit.index }};
+            syncSelectedGeometryInputs(edge);
+            renderWaypointList();
+
+            const onMove = function(ev) {{
+                const dx = (ev.clientX - startClient.x) / zoom;
+                const dy = (ev.clientY - startClient.y) / zoom;
+                if (!wpDrag.moved && Math.hypot(ev.clientX - startClient.x,
+                        ev.clientY - startClient.y) < 3) return;
+                wpDrag.moved = true;
+                if (!wpDrag.queued) {{ queueStyleHistory('Move waypoint'); wpDrag.queued = true; }}
+                const pts = edgeWaypointPts(edge);
+                if (!pts[wpDrag.index]) return;
+                pts[wpDrag.index].x = wpDrag.startPt.x + dx;
+                pts[wpDrag.index].y = wpDrag.startPt.y + dy;
+                edge.data('waypoints', pts);
+                renderEdgeWaypoints(edge);
+                // live-update the list row inputs without a rebuild
+                const row = document.querySelectorAll('#waypointList .wp-xy');
+                const base = wpDrag.index * 2;
+                if (row[base]) row[base].value = Math.round(pts[wpDrag.index].x);
+                if (row[base + 1]) row[base + 1].value = Math.round(pts[wpDrag.index].y);
+            }};
+            const onUp = function() {{
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                if (wpDrag && wpDrag.moved) flushPendingStyle();
+                wpDrag = null;
+            }};
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+        }}, {{ capture: true }});
+
         // NODE OUTLINE group: border pattern/color/opacity/width for the
         // selected nodes, applied immediately on change (each control sends
         // a partial patch).  Nodes are borderless by default — a width > 0
@@ -11722,6 +12120,12 @@ class VisualizePath:
                 nodes.forEach(n => {{
                     if (shapeValue === '__follow__') {{
                         n.removeStyle('shape');
+                    }} else if (shapeValue === '__circle__') {{
+                        // perfect circle: ellipse + width locked equal to
+                        // height (the larger dimension wins)
+                        const d = Math.max(n.numericStyle('width'), n.numericStyle('height'));
+                        n.style('shape', 'ellipse');
+                        n.style({{ 'width': d + 'px', 'height': d + 'px' }});
                     }} else {{
                         n.style('shape', shapeValue);
                     }}
