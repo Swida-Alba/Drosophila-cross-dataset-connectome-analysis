@@ -161,6 +161,13 @@ FILL_KEEP_TOP = 100
 class MappingValidationConfig:
     source_dataset: str
     target_dataset: str
+    # §full-map boundary guard (user 2026-09-28): the validation pipeline
+    # consumes the mapper's CLAIM tier exclusively — a full-map (transitive
+    # composition) scope exists only in the Type Mapping panel's display
+    # layer and must NEVER reach validation.  Hard-refuse anything but the
+    # curated scope so a future wiring mistake cannot silently validate
+    # panel-composed pairs (plan-full-map-route-scope.md §6).
+    route_scope: str = 'curated'
     query_types: List[str] = field(default_factory=list)
     # profile construction (benchmark-frozen: homolog_param_benchmark)
     top_k: int = 25
@@ -2211,6 +2218,16 @@ class MappingValidator:
 
     def __init__(self, cfg: MappingValidationConfig):
         self.cfg = cfg
+        if str(getattr(cfg, 'route_scope', 'curated')) != 'curated':
+            # §full-map boundary (plan-full-map-route-scope.md §6): the
+            # validation pipeline grades the mapper's CLAIM tier only.  A
+            # full-map scope exists only in the Type Mapping panel's
+            # display layer; hard-refuse it here so a wiring mistake can
+            # never validate panel-composed pairs.
+            raise ValueError(
+                "route_scope must be 'curated' — full-map (transitive "
+                "composition) results are panel-display-only and are not "
+                "accepted by the validation pipeline")
         # fail before any stage runs, not after 30 minutes of scanning: a
         # pooling run without morphology cannot qualify its own tiers (the
         # CLI refuses it too; this is the backend/UI-payload path)

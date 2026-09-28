@@ -2204,3 +2204,65 @@ def test_disclosure_targets_decision_key(mapper):
     # an unambiguous clean pair carries no disclosure
     d3 = mapper.get_mapping_decision('Mi1', FW, BANC)
     assert d3['disclosure_targets'] == []
+
+
+def test_full_map_yield_pin_structural_properties(mapper):
+    """§full-map (plan-full-map-route-scope.md §7, corrected 2026-09-28):
+    the transitive yield through BANC is NONZERO and material — 1,273
+    HEMI types gain 3,105 FAFB ends the MCNS corridor misses (the plan's
+    original zero-yield premise came from a probe restricted to BANC
+    label-column edges; the full per-leg reach proves otherwise).  The
+    pin asserts the STRUCTURAL properties instead of a count: every
+    transitive-only end is reached by a licensed composition (each leg's
+    chains come from get_type_bridges), direct ends are always included,
+    and every route records its mid."""
+    from ui.components.type_mapping_panel import compose_full_map_reach
+    srcs = sorted(mapper._dataset_types.get('hemibrain:v1.2.1', set()))[:300]
+    with_yield = 0
+    for src_type in srcs:
+        comp = compose_full_map_reach(
+            mapper, 'hemibrain:v1.2.1', FW, [src_type])
+        direct = {str(c[-1].get('value') or '')
+                  for c in mapper.get_type_bridges(
+                      src_type, 'hemibrain:v1.2.1', FW, max_bridges=0)}
+        # direct ends are always part of the composed union
+        assert direct <= set(comp['ends']), (src_type, direct)
+        for end in comp['transitive_only_ends']:
+            routes = (comp['routes'].get(end) or {}).get('transitive') or []
+            assert routes, (src_type, end)
+            # every route names a mid and carries both legs
+            for r in routes:
+                assert r.get('mid'), (src_type, end, r)
+                assert r.get('leg_a') and r.get('leg_b'), (src_type, end)
+            with_yield += 1
+    # the yield is material on the current tables (2026-09-28 census:
+    # 1,273 types / 3,105 ends over the full vocabulary; a 300-type
+    # sample carries ~140 transitive-only ends)
+    assert with_yield >= 100, with_yield
+
+
+def test_mapping_decision_signature_has_no_route_scope(mapper):
+    """Guard 2 (plan §6): the mapper's decision/derivation surfaces gain
+    NO route_scope parameter — the full-map composition lives in the
+    panel layer only, so the mapper->TM VEV interface cannot receive it."""
+    import inspect
+    assert 'route_scope' not in inspect.signature(
+        mapper.get_mapping_decision).parameters
+    assert 'route_scope' not in inspect.signature(
+        mapper.get_type_bridges).parameters
+    assert 'route_scope' not in inspect.signature(
+        mapper.resolve_type_across_datasets).parameters
+
+
+def test_validator_config_refuses_noncurated_route_scope(tmp_path):
+    """Guard 1 (plan §6): MappingValidator hard-refuses any route_scope
+    other than 'curated' — a wiring mistake cannot validate full-map
+    pairs."""
+    import pytest
+    from comparison.mapping_validation import (
+        MappingValidationConfig, MappingValidator)
+    cfg = MappingValidationConfig(
+        source_dataset=FW, target_dataset=BANC888,
+        query_types=['circadian_clock'], route_scope='full')
+    with pytest.raises(ValueError, match='curated'):
+        MappingValidator(cfg)

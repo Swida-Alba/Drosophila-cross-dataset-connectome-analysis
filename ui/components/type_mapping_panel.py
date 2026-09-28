@@ -34,6 +34,7 @@ chip provenance (user 2026-09-14).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Callable, Dict, List, Tuple
@@ -90,6 +91,173 @@ def _format_mapped_neurons(neurons: int, types: int) -> str:
     if types >= 2:
         return f"{neurons}({types} types)"
     return str(neurons)
+
+
+# ---------------------------------------------------------------------------
+# §full-map route scope (plan-full-map-route-scope.md, user 2026-09-28)
+# ---------------------------------------------------------------------------
+# The FULL-MAP view composes the union of ALL licensed routes — including
+# through an intermediate dataset — ENTIRELY in this panel layer, from the
+# licensed per-leg bridge ends.  The mapper's derivation surface
+# (get_type_bridges / get_mapping_decision) is never asked for transitive
+# routes, so the mapper->TM VEV interface cannot see the composition (the
+# validator reads those surfaces exclusively).  Claim-tier figures are
+# route-scope-INDEPENDENT; only the reach tier composes.
+
+
+def _candidate_mids(mapper, src_ds: str, tgt_ds: str) -> List[str]:
+    """Datasets licensed to bridge the queried pair from BOTH sides.
+
+    A mid must carry at least one registry column toward each endpoint
+    (a one-sided mid cannot complete a composition).  The endpoints
+    themselves are never mids, and BANC releases never mid for each
+    other (the release crosswalk is not a transitive lane)."""
+    from comparison.cross_dataset_type_mapper import BRIDGE_STANDARD
+    mids = []
+    for ds in sorted(set(mapper._dataset_types) | set(mapper._flywire_primaries)):
+        if ds in (src_ds, tgt_ds):
+            continue
+        if ds.startswith('banc') and (src_ds.startswith('banc')
+                                      or tgt_ds.startswith('banc')):
+            continue
+        # a release SIBLING of an endpoint is not a mid (same family — the
+        # release_alias lane is a direct edge, not a transitive route)
+        if (ds.split(':')[0].split('_v')[0]
+                in (src_ds.split(':')[0].split('_v')[0],
+                    tgt_ds.split(':')[0].split('_v')[0])):
+            continue
+        reg_a = (BRIDGE_STANDARD.get((ds, src_ds))
+                 or BRIDGE_STANDARD.get((src_ds, ds)))
+        reg_b = (BRIDGE_STANDARD.get((ds, tgt_ds))
+                 or BRIDGE_STANDARD.get((tgt_ds, ds)))
+        if reg_a and reg_b:
+            mids.append(ds)
+    return mids
+
+
+def compose_full_map_reach(mapper, src_ds: str, tgt_ds: str,
+                           source_types: List[str]) -> Dict[str, Any]:
+    """Compose the FULL-MAP reach for one queried pair (plan-full-map-
+    route-scope.md): the union of the direct reach and the transitive
+    reach through every candidate mid, built ENTIRELY from the licensed
+    per-leg bridge ends.
+
+    Panel-layer composition — the mapper's derivation/decision surfaces
+    are never asked for transitive routes, so the mapper->TM VEV
+    interface cannot see this view (§6 boundary, plan §6).  Returns:
+
+    * ``ends`` / ``routes`` — every composed target end and the routes
+      reaching it (``('direct', chain-tuple)`` or
+      ``('transitive', route-record)``);
+    * ``direct_ends`` / ``transitive_only_ends`` / ``corroborated``;
+    * ``route_conflicts`` — one entry per (source type, mid pair) whose
+      transitive routes license DIFFERENT ends (the union shows both;
+      the marker makes the disagreement visible);
+    * ``mids`` — the candidate intermediates consulted.
+    """
+    def _reach(leg_src: str, leg_dst: str, types: List[str]) -> Dict[str, set]:
+        reach: Dict[str, set] = {}
+        for otype in types:
+            try:
+                chains = mapper.get_type_bridges(
+                    otype, leg_src, leg_dst, max_bridges=0)
+            except Exception:
+                continue
+            for c in chains:
+                end = str(c[-1].get('value') or '')
+                if end:
+                    reach.setdefault(end, set()).add(
+                        tuple((h.get('dataset'), h.get('column'),
+                               h.get('value')) for h in c))
+        return reach
+
+    mids = _candidate_mids(mapper, src_ds, tgt_ds)
+    _all_mid_end_sets: Dict[str, Dict[str, set]] = {}
+    direct = _reach(src_ds, tgt_ds, source_types)
+
+    # composed[end] = {'direct': chain-tuples, 'transitive': route records}
+    composed: Dict[str, Dict[str, list]] = {}
+    for end, rts in direct.items():
+        composed[end] = {'direct': [tuple(sorted(rts, key=str))],
+                         'transitive': []}
+    transitive_only: Dict[str, list] = []
+    conflicts: List[Dict[str, Any]] = []
+    for mid in mids:
+        leg_a = _reach(src_ds, mid, source_types)
+        if not leg_a:
+            continue
+        mid_ends_by_src: Dict[str, Dict[str, list]] = {}
+        for mid_type, a_routes in leg_a.items():
+            # compose per mid type: leg B is re-walked from THIS mid type
+            # so every composed route records its own full provenance
+            leg_b = _reach(mid, tgt_ds, [mid_type])
+            for brt_src, brt_routes in leg_b.items():
+                for brt in brt_routes:
+                    end = str(brt[-1][2]) if brt and len(brt[-1]) > 2 \
+                        else str(brt[-1][1]) if brt else ''
+                    if not end:
+                        continue
+                    route = {
+                        'mid': mid,
+                        'via_type': mid_type,
+                        'leg_a': [list(h) for h in a_routes
+                                  ][0] if a_routes else [],
+                        'leg_b': [list(h) for h in brt],
+                    }
+                    bucket = composed.setdefault(
+                        end, {'direct': [], 'transitive': []})
+                    bucket['transitive'].append(route)
+                    mid_ends_by_src.setdefault(mid_type, {}).setdefault(
+                        end, []).append(route)
+                    if end not in direct:
+                        transitive_only.append(route)
+        # route conflicts (§5 class 3, refined): two different mids
+        # licensing DIFFERENT end sets for the same source type.  A single
+        # mid's transitive-only ends are class 2 (transitive-only), not a
+        # conflict.  The union shows both sets; the marker shows the
+        # disagreement.
+        _all_mid_end_sets[mid] = {mt: set(eb) for mt, eb
+                                  in mid_ends_by_src.items()}
+    # cross-mid comparison after all mids are composed
+    _by_src: Dict[str, Dict[str, set]] = {}
+    for mid_key, esets in getattr(compose_full_map_reach,
+                                  '_last_mid_end_sets', {}).items():
+        pass
+    conflicts_out: List[Dict[str, Any]] = []
+    for src_type in sorted({mt for esets in _all_mid_end_sets.values()
+                            for mt in esets}):
+        end_sets = {mid: esets.get(src_type, set())
+                    for mid, esets in _all_mid_end_sets.items()
+                    if src_type in esets}
+        if len(end_sets) < 2:
+            continue
+        mids_sorted = sorted(end_sets)
+        ref_mid = mids_sorted[0]
+        ref_set = end_sets[ref_mid]
+        for other_mid in mids_sorted[1:]:
+            oset = end_sets[other_mid]
+            if oset != ref_set:
+                conflicts_out.append({
+                    'source_type': src_type,
+                    'mid_a': ref_mid, 'ends_a': sorted(ref_set),
+                    'mid_b': other_mid, 'ends_b': sorted(oset),
+                })
+    conflicts.extend(conflicts_out)
+    return {
+        'ends': sorted(composed),
+        'direct_ends': sorted(direct),
+        'routes': {end: {k: v for k, v in rts.items() if v}
+                   for end, rts in composed.items()},
+        'transitive_only': transitive_only,
+        'transitive_only_ends': sorted(
+            {end for end, rts in composed.items()
+             if rts.get('transitive') and not rts.get('direct')}),
+        'corroborated': sorted(end for end, rts in composed.items()
+                               if rts.get('direct')
+                               and rts.get('transitive')),
+        'route_conflicts': conflicts,
+        'mids': mids,
+    }
 
 
 def _pair_card_label(src: str, tgt: str, flows) -> str:
@@ -276,13 +444,24 @@ def _describe_orphan(entry: Dict[str, Any], target: str) -> str:
     return text
 
 
-def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
+def _compute_type_mapping(queries, datasets, mode,
+                          route_scope: str = 'curated') -> Dict[str, Any]:
     """Compute the global type mapping without touching NiceGUI state.
 
     This is deliberately a module-level, pickle-safe callback.  A cold
     mapper load uses it in a dedicated spawned process so pandas parsing and
     the Python graph build cannot starve the websocket event loop.
+
+    ``route_scope`` (§full-map, user 2026-09-28): ``'curated'`` (default —
+    today's behavior, unchanged) or ``'full'`` — the panel-layer
+    composition of the transitive reach through candidate intermediate
+    datasets (:func:`compose_full_map_reach`).  The composition NEVER
+    touches the mapper's derivation/decision surfaces: claim-tier figures
+    are identical in both scopes, and the mapper->TM VEV interface cannot
+    see the full-map view by construction.
     """
+    if route_scope not in ('curated', 'full'):
+        raise ValueError(f"unknown route_scope: {route_scope!r}")
     from ..neuron_index import (
         collect_native_type_matches,
         count_types_in_index,
@@ -756,12 +935,46 @@ def _compute_type_mapping(queries, datasets, mode) -> Dict[str, Any]:
         dataset_order=datasets)
     meta = dict(meta or {})
     meta["notes"] = notes + list(meta.get("notes", []))
+
+    # §full-map route scope (user 2026-09-28): compose the transitive
+    # reach per queried pair — PANEL-LAYER ONLY (the mapper's derivation
+    # and decision surfaces are never asked for transitive routes, so the
+    # mapper->TM VEV interface cannot see this view; plan §6).  Claim-tier
+    # figures above are identical in both scopes by construction.
+    full_map: Dict[tuple, Dict[str, Any]] = {}
+    if route_scope == 'full' and mapper is not None \
+            and getattr(mapper, "_loaded", False):
+        for (src, tgt), flows in pair_flows.items():
+            source_types = sorted({f.get('source_type') for f in flows
+                                   if f.get('source_type')})
+            if not source_types:
+                continue
+            try:
+                full_map[(src, tgt)] = compose_full_map_reach(
+                    mapper, src, tgt, source_types)
+            except Exception as exc:  # noqa: BLE001 — advisory view
+                logger.warning(
+                    "full-map composition failed for %s -> %s: %s",
+                    src, tgt, exc)
+            else:
+                info = full_map[(src, tgt)]
+                _to = len(info.get('transitive_only_ends', []))
+                meta["notes"].append(
+                    f"[full map] {src} -> {tgt}: composed reach "
+                    f"{len(info.get('ends', []))} ends "
+                    f"(+{_to} transitive-only via "
+                    f"{', '.join(info.get('mids') or [])}) — advisory "
+                    "view; the claim tier and the validation pipeline "
+                    "grade the curated routes only.")
+
     return {"pair_flows": pair_flows, "pools": pools, "meta": meta,
             "composed": html, "datasets": datasets,
             "summary": summary, "summary_per_type": summary_per_type,
             "queries": [str(q) for q in (queries or [])],
             "orphans": orphans,
-            "reverse_contexts": reverse_contexts}
+            "reverse_contexts": reverse_contexts,
+            "route_scope": route_scope,
+            "full_map": full_map}
 
 
 def create_type_mapping_entry(get_datasets: Callable[[], list]):
@@ -858,6 +1071,25 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                      "its own query history, separate from the tabs.",
             ).classes("w-full")
             search_btn = search_action["button"]
+            # §full-map route scope (user 2026-09-28): Curated (default) =
+            # today's behavior; Full map composes the transitive reach
+            # through candidate intermediate datasets — PANEL-LAYER ONLY
+            # (claim tier and the mapper->TM VEV interface are untouched).
+            route_scope_state: Dict[str, str] = {"value": "curated"}
+            ui.select(
+                ["curated", "full"],
+                value="curated",
+                label="Route scope",
+                on_change=lambda e: route_scope_state.__setitem__(
+                    "value", str(e.value or "curated")),
+            ).props("outlined dense").classes(
+                "drocat-select min-w-[130px]"
+            ).tooltip(
+                "Curated: the licensed derivation routes (default). "
+                "Full map: additionally compose transitive reach through "
+                "candidate intermediate datasets — evidence/display only, "
+                "the claim tier and the validation pipeline are never "
+                "extended by it.")
             # Loading notice: painted BEFORE the heavy search leaves the
             # event loop (the first search warms a large index and can take
             # a minute or two — silent freezing looked like a hang).
@@ -1867,7 +2099,8 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             )
             if not is_type_mapper_loaded():
                 outcome = await run_cross_dataset_scan_in_process(
-                    _compute_type_mapping, queries, datasets, mode)
+                    _compute_type_mapping, queries, datasets, mode,
+                    route_scope=route_scope_state.get("value", "curated"))
             else:
                 loop = asyncio.get_running_loop()
                 outcome = await loop.run_in_executor(
@@ -1917,7 +2150,9 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
 
     def _compute(queries, datasets, mode) -> Dict[str, Any]:
         """Compatibility wrapper for the shared process-safe computation."""
-        return _compute_type_mapping(queries, datasets, mode)
+        return _compute_type_mapping(
+            queries, datasets, mode,
+            route_scope=route_scope_state.get("value", "curated"))
 
     def _apply(outcome: Dict[str, Any]) -> None:
         """Apply the search outcome and render results (event loop)."""
