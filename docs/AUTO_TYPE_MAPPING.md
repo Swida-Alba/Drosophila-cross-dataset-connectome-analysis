@@ -520,6 +520,29 @@ deduplicated union of bodyIds from every independently supported candidate
 bridge (completeness of supported evidence; branches are not mutually
 exclusive). Neither column is a bodyId-to-bodyId correspondence.
 
+#### A reverse lookup is not the inverse of a forward claim
+
+The panel invites "map it back and see if it returns" — but the two
+directions do not walk the same lanes, and a forward claim is **not
+required to survive reversal**. Forward reaches its target through adopted
+same-name pairs and annotation bridges whose vocabulary column exists on
+one side only (a FlyWire `type` name the reverse lane does not re-read, or
+an `additional Type(S)` hop with no reverse spelling). Measured on
+`circadian_clock` ↔ `banc_v888`: the forward side carries the adopted
+same-name pair `l-LNv → l-LNv`, yet querying BANC `l-LNv` alone returns
+**zero** flows back (FAFB holds 8 rows named `l-LNv` in `type` and none in
+the column the reverse direction resolves); forward reaches `CB3767` as an
+annotation bridge that has no reverse form at all. Where the reverse
+direction does speak it agrees with the target's own curation
+(`LMTe01 → APDN3`, `LTe71 → APDN3`, `CB3508 → s-CPDN3D`), so reverse
+silence means "this lane does not re-walk", never "the claim is wrong".
+
+The independent check for a claim set is therefore not the mapper's
+reverse query but the TM VEV validation pipeline's backward panels
+(per-bodyId reverse connectivity scans — `expansion/target_matches.csv`,
+the Homolog · backward tab), which score against the whole source dataset
+instead of re-walking name lanes.
+
 #### Reading the per-dataset summary table (the preview)
 
 The preview's summary strip has one row per selected dataset (hover any
