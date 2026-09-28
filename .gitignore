@@ -114,3 +114,7 @@ background_research/
 
 # Local agent session notes (same class of tool state as .zcode/, .mimosa/).
 .workbuddy/
+
+# ZCode's ignore config (tool state, like .zcode/): synced from this
+# .gitignore + ZCode defaults; kept local, never committed.
+.zcodeignore
