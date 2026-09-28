@@ -174,6 +174,7 @@ Advanced technical documentation:
 - **[Quick Start](./QUICK_START.md)**: Get running in 5 minutes
 - **[Troubleshooting](./TROUBLESHOOTING.md)**: Common issues and solutions
 - **[Output Files Reference](./OUTPUT_FILES.md)**: Detailed explanation of all generated files
+- **[Artifact Citation Index](./ARTIFACT_INDEX.md)**: Cite a produced file → its topic, the `file:line` that writes it, the code that reads it, and the skill that covers it
 - **[FlyWire-FAFB Integration](./FAFB_INTEGRATION.md)**: Setup guide for FAFB dataset
 - **[BANC Integration](./BANC_INTEGRATION.md)**: Setup guide for the standalone BANC public release
 
