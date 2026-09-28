@@ -291,6 +291,38 @@ def bucket_root_label(key: str, types_by_bid: Dict[int, str]) -> str:
     return f'{prefix} · {len(types)} types'
 
 
+def cap_bucket_per_type(rec: Dict, cap: int) -> Tuple[int, Dict[str, Tuple[int, int]]]:
+    """Scene-only render cap (user 2026-09-29): keep at most ``cap``
+    members per target type, in the bucket's own deterministic leaf order
+    ((sort_key, bodyId) — the order the leaves would have rendered in
+    anyway), and prune the record's fields to the kept set.  Returns
+    ``(kept_total, {type: (kept, total)})``; an empty stats dict means the
+    bucket was at or under ``cap`` (or ``cap <= 0``) and is untouched.
+    Rendering-only: the CSVs keep every row."""
+    if cap <= 0 or len(rec['ids']) <= cap:
+        return len(rec['ids']), {}
+    by_type: Dict[str, List[int]] = {}
+    for bid in rec['ids']:
+        by_type.setdefault(str(rec['types'].get(bid) or '?'), []).append(bid)
+    keep: set = set()
+    stats: Dict[str, Tuple[int, int]] = {}
+    for tpe, bids in sorted(by_type.items()):
+        ordered = sorted(bids, key=lambda b: (rec['sort_key'].get(b, ''), b))
+        keep.update(ordered[:cap])
+        stats[tpe] = (min(len(ordered), cap), len(ordered))
+    if len(keep) < len(rec['ids']):
+        rec['ids'] = keep
+        for field in ('types', 'leaf_token', 'tags', 'sort_key'):
+            rec[field] = {b: v for b, v in rec[field].items() if b in keep}
+    return len(keep), stats
+
+
+def relative_cap_note(kept: int, total: int, cap: int) -> str:
+    """The legend-visible disclosure a capped relative bucket carries on
+    its root label."""
+    return f'rendered {kept:,} of {total:,} · {cap}/type'
+
+
 def ensure_bucket(buckets: Dict[str, Dict], bucket_order: List[str],
                   key: str) -> Dict:
     """Get-or-create a bucket record.
@@ -1023,11 +1055,41 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                             if not suffix:
                                 continue
                             tag = f"{rec['tags'].get(bid) or ''} " \
-                                  f"{suffix}".strip()
+                                  f" {suffix}".strip()
                             rec['tags'][bid] = tag
                             rec['sort_key'][bid] = (
                                 f"{rec['leaf_token'].get(bid, '')} "
                                 f"{tag}").strip()
+
+                # Scene-only render cap (user 2026-09-29): a wide mode can
+                # enumerate thousands of relatives for one branch (BANC
+                # family s-CPDN3B->CB3252: 2,730 rows, KCg-m 1,455) and
+                # every one became a 3D leaf + legend entry — the
+                # 0.4-0.8 GB/run scenes.  Render at most
+                # `scene_relative_cap_per_type` leaves per target type, in
+                # the bucket's own leaf order; relatives.csv keeps every
+                # row and the drop is disclosed on the root label + here.
+                cap = max(0, int(getattr(
+                    cfg, 'scene_relative_cap_per_type', 50) or 0))
+                for key in bucket_order:
+                    if _cat_of_key(key) != 'relative':
+                        continue
+                    rec = buckets[key]
+                    total = len(rec['ids'])
+                    kept, stats = cap_bucket_per_type(rec, cap)
+                    if kept < total:
+                        rec['cap_note'] = relative_cap_note(
+                            kept, total, cap)
+                        over = [f'{t} {k}/{n}'
+                                for t, (k, n) in sorted(
+                                    stats.items(),
+                                    key=lambda kv: -(kv[1][1] - kv[1][0]))
+                                if k < n]
+                        top = ', '.join(over[:4])
+                        validator.log(
+                            f'    · relative leaves capped at {cap}/type: '
+                            f'rendered {kept:,} of {total:,}'
+                            + (f' ({top})' if top else ''))
 
                 def add_invader_layers():
                     for key in sorted(bucket_order, key=lambda k: (
@@ -1041,6 +1103,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         color = colors.get(
                             prefix, colors['examinees'])
                         root = bucket_root_label(key, rec['types'])
+                        if rec.get('cap_note'):
+                            root = f"{root} · {rec['cap_note']}"
                         raw, dropped = load_target_neurons(ids)
                         for bid, why in dropped:
                             validator.log(f'    ! {root}: {bid} '

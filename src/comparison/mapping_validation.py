@@ -254,6 +254,15 @@ class MappingValidationConfig:
     #: deep window (`candidate_window`) each draw on a budget of this size, so
     #: widening the mode only ever adds rows (see `_scan_pair`'s window block).
     deep_cap: int = 10
+    #: Scene-only render cap (user 2026-09-29): a branch scene's relative
+    #: bucket renders at most this many leaves PER TARGET TYPE, in the
+    #: bucket's own deterministic leaf order; ``relatives.csv`` keeps every
+    #: row and the drop is disclosed on the scene's root label and in the
+    #: log.  Binds in family / aggressive / pooling — the modes that
+    #: enumerate the relative bin (restrictive's is structurally empty).
+    #: Measured on BANC family: 3,060 relative rows (KCg-m 1,455) made the
+    #: 0.4-0.8 GB/run scenes.  0 disables.
+    scene_relative_cap_per_type: int = 50
     # ------------------------------------------------------------------
     # `pooling` mode (plan-tmvev-pooling-mode.md + plan-tmvev-pooling-tiers.md):
     # the UNSUPERVISED candidate engine, whose unit is the queried source.

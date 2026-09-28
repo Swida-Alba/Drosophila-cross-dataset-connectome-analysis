@@ -51,7 +51,9 @@ from comparison.mapping_validation import (  # noqa: E402
 )
 from comparison.mapping_validation_visualize import (  # noqa: E402
     bucket_root_label,
+    cap_bucket_per_type,
     check_scene_identities,
+    relative_cap_note,
 )
 
 SRC_UP = {'A': 10, 'B': 8, 'C': 4, 'D': 2}
@@ -3018,3 +3020,57 @@ def test_dedup_precedence_candidates_outrank_family():
            'target_type': 'Y'}, 555, 'X')],
         [], [family_row(555, 'family')], [])
     assert both[0]['dedup_category'] == 'candidates'
+
+
+# ---------------------------------------------------------------------------
+# Scene-only relative render cap (user 2026-09-29): a branch scene renders
+# at most `scene_relative_cap_per_type` leaves per target type, in the
+# bucket's own deterministic leaf order.  BANC family measured 3,060
+# relative rows (KCg-m 1,455; one branch 2,730) — the 0.4-0.8 GB/run
+# scenes.  Rendering-only: relatives.csv keeps every row.
+# ---------------------------------------------------------------------------
+
+def _cap_bucket(members):
+    rec = {'ids': set(), 'types': {}, 'leaf_token': {}, 'tags': {},
+           'sort_key': {}}
+    for bid, tpe, key in members:
+        rec['ids'].add(bid)
+        rec['types'][bid] = tpe
+        rec['leaf_token'][bid] = tpe
+        rec['tags'][bid] = ''
+        rec['sort_key'][bid] = key
+    return rec
+
+
+def test_relative_scene_cap_keeps_leaf_order_per_type():
+    members = ([(1000 + i, 'KCg-m', f'KCg-m {i:03d}') for i in range(60)]
+               + [(2000 + i, 'Tm20', f'Tm20 {i:03d}') for i in range(10)])
+    rec = _cap_bucket(members)
+    kept, stats = cap_bucket_per_type(rec, 50)
+    assert kept == 60
+    assert stats == {'KCg-m': (50, 60), 'Tm20': (10, 10)}
+    # the kept KCg-m leaves are the 50 first in leaf order (i 000-049);
+    # every field is pruned to the kept set consistently
+    assert rec['ids'] == set(range(1000, 1050)) | set(range(2000, 2010))
+    assert set(rec['types']) == rec['ids']
+    assert set(rec['sort_key']) == rec['ids']
+
+
+def test_relative_scene_cap_noop_cases():
+    members = [(1000 + i, 'A', f'A {i:03d}') for i in range(50)]
+    rec = _cap_bucket(members)
+    kept, stats = cap_bucket_per_type(rec, 50)
+    assert kept == 50 and stats == {}          # exact size: untouched
+    assert rec['ids'] == set(range(1000, 1050))
+    kept, stats = cap_bucket_per_type(rec, 0)
+    assert kept == 50 and stats == {}          # 0 disables
+    members = [(1000 + i, 'A', f'A {i:03d}') for i in range(55)]
+    rec = _cap_bucket(members)
+    kept, stats = cap_bucket_per_type(rec, 0)
+    assert kept == 55 and len(rec['ids']) == 55
+
+
+def test_relative_cap_note_format():
+    from comparison.mapping_validation_visualize import relative_cap_note
+    assert relative_cap_note(400, 2730, 50) == \
+        'rendered 400 of 2,730 · 50/type'
