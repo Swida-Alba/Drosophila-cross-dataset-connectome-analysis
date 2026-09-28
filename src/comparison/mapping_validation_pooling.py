@@ -33,7 +33,7 @@ names — see :func:`check_morphology_mandatory`.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
