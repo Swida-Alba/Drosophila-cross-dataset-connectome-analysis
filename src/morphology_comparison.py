@@ -278,6 +278,13 @@ class MorphologyProfileComparer:
             raise ValueError(
                 "Morphology comparison needs a query: enter one or more neuron "
                 "types, bodyIds, or a pattern.")
+        # Argument validation first: a missing preset must surface even when
+        # the dataset has no local neuron table (fresh clones, CI).
+        if (self.aggregation_level == "custom"
+                and not self.custom_mapping_file):
+            raise ValueError(
+                "The custom group level needs a grouping preset "
+                "(custom_mapping_file).")
 
         type_map, instance_map = _load_neuron_type_map(
             self.dataset, str(self.project_root))
