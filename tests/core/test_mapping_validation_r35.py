@@ -2953,3 +2953,68 @@ def test_an_empty_run_still_says_which_tree_it_ran_on(monkeypatch, tmp_path):
     assert fp['git_dirty_at_start'] is False
     assert any('worktree moved' in line for line in v.lines), \
         'a moving tree is a finding, not a silent overwrite'
+
+
+# ---------------------------------------------------------------------------
+# I-3 (2026-09-28): the window cut is chain-deterministic.  A perfect tie
+# block at the per-source budget cut resolves by the chain's bodyId term,
+# so two modes reading the SAME scans keep byte-identical tight bands and
+# a wider mode can only ADD rows.  The 09-28 "displaced rows" ladder FAIL
+# was scan-input drift between cells (the universe grew 102144 -> 102145
+# mid-matrix), not a positional cut — this test pins the cut itself.
+# ---------------------------------------------------------------------------
+
+def test_window_cut_resolves_tie_blocks_by_the_chain_not_frame_position():
+    # pool members rank ahead; then ONE 30-way tie block (identical
+    # zero-overlap profiles: jaccard 0.0, one shared rank_union score), so
+    # the deep_cap=10 budget cuts INSIDE the tie block
+    targets = {901: expanded_vector(
+                   make_profile(901, {'A': 9, 'B': 5}, {'P': 4}), None),
+               902: expanded_vector(
+                   make_profile(902, {'A': 7, 'B': 3}, {'Q': 4}), None)}
+    for bid in range(1001, 1031):
+        targets[bid] = expanded_vector(
+            make_profile(bid, {'Z': 5}, {'Y': 5, 'W': 5}), None)
+    src = make_profile(1, SRC_UP, SRC_DN)
+
+    _, _, fam = run_validator([1], [901, 902], targets, {1: src},
+                              validation_mode='family')
+    _, _, agg = run_validator([1], [901, 902], targets, {1: src},
+                              validation_mode='aggressive')
+
+    def band(res, name):
+        return {int(r['ahead_target_bodyId']) for r in res['deep']
+                if r['candidate_source'] == name}
+
+    fam_tight, agg_tight = band(fam, 'top_window'), band(agg, 'top_window')
+    # identical inputs -> the tight band is identical across modes, and a
+    # tie block resolves to the chain's bodyId term, never frame position
+    assert fam_tight == agg_tight
+    assert fam_tight == set(range(1001, 1011))
+    # the deep band never re-reads the borderline ranks (rank <= top_k),
+    # so it cannot displace what the tight band kept
+    assert band(agg, 'deep_window') == set()
+
+
+def test_dedup_precedence_candidates_outrank_family():
+    # I-2 (2026-09-28): the Fill tab's column header and code comment once
+    # claimed "family claims outrank candidates" — DEDUP_RANK says the
+    # opposite (candidates 4 > family 3) and the measured artifacts agree
+    # (family-material ids with candidates rows read `candidates`).  Pin
+    # the rollup so the wording can never drift back.
+    v = MappingValidator.__new__(MappingValidator)
+
+    def family_row(bid, cat):
+        return {'ahead_target_bodyId': bid, 'category': cat,
+                'ahead_target_type': 'X', 'source_type': 'A',
+                'target_type': 'X'}
+
+    only_family = v._build_dedup_rows(
+        [], [], [family_row(555, 'family')], [])
+    assert only_family[0]['dedup_category'] == 'family'
+
+    both = v._build_dedup_rows(
+        [({'category': 'candidates', 'source_type': 'A',
+           'target_type': 'Y'}, 555, 'X')],
+        [], [family_row(555, 'family')], [])
+    assert both[0]['dedup_category'] == 'candidates'

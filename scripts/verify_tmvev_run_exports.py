@@ -717,14 +717,51 @@ def check_ladder(runs, label):
         f'{label}: sibling bin nests R<=F<=A',
         f'{[len(sib[m]) for m in LADDER]}')
 
+    # I-3 correction (2026-09-28): the window cut is chain-ordered
+    # (order_by_chain + per-band budget), so a displaced-row difference on
+    # same-code runs is a SCAN-INPUT drift signal, not a cut bug — measured
+    # on the 09-28 matrix: the mapper snapshot grew and one target neuron
+    # joined the universe between two same-day cells (102144 -> 102145),
+    # which moved four tie-block members and one APDN3 row.  Read each
+    # run's input_fingerprint first and downgrade the window-identity
+    # checks to advisory when the store moved under the runs.
+    def _fingerprint(run):
+        p = path_of(run, 'parameters.json')
+        try:
+            return json.loads(p.read_text('utf-8')).get(
+                'input_fingerprint') or {}
+        except Exception:
+            return {}
+
+    fps = {m: _fingerprint(runs[m]) for m in LADDER}
+    store_keys = ('scanned_target_universe', 'target_vectors_built',
+                  'profile_cache_source', 'profile_cache_target',
+                  'mapper_snapshot')
+    drift = [f'{LADDER[0]}->{m}: {k}'
+             for m in LADDER[1:]
+             for k in store_keys
+             if (k in fps[m] or k in fps[LADDER[0]])
+             and fps[m].get(k) != fps[LADDER[0]].get(k)]
+    store_drift = bool(drift)
+    if store_drift:
+        uni = {m: fps[m].get('scanned_target_universe') for m in LADDER}
+        info(f'{label}: scan-input drift across the ladder',
+             ' ; '.join(drift)
+             + f' (target universes {uni}) — the store moved under the '
+             'runs, so the window-identity check below is advisory')
+
     # the narrow mode's window rows must survive the wider mode: the two bands
     # used to share one per-source budget, so aggressive spent it on its deep
     # band and never read the second metric
     for narrow, wide in zip(LADDER, LADDER[1:]):
         lost = _tight(runs[narrow]) - _tight(runs[wide])
-        chk(not lost, f'{label}: {wide} keeps {narrow}\'s window rows',
-            f'{len(_tight(runs[narrow]))} vs {len(_tight(runs[wide]))}, '
-            f'{len(lost)} displaced (e.g. {sorted(lost)[:2]})')
+        msg = (f"{label}: {wide} keeps {narrow}'s window rows",
+               f'{len(_tight(runs[narrow]))} vs {len(_tight(runs[wide]))}, '
+               f'{len(lost)} displaced (e.g. {sorted(lost)[:2]})')
+        if store_drift:
+            info(msg[0] + ' (advisory: scan-input drift)', msg[1])
+        else:
+            chk(not lost, *msg)
     for nm, fname in (('family', 'family_candidates.csv'),
                       ('relative', 'relatives.csv')):
         tg = {m: {r.ahead_target_bodyId for r in _rows(runs[m], fname)}
