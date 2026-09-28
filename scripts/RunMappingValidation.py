@@ -246,6 +246,12 @@ def parse_args(argv=None):
                    help='cap on rendered parent scenes, largest pool first '
                         '(default 0 = one scene per parent type; a positive '
                         'value names every dropped parent in the run log)')
+    p.add_argument('--scene-relative-cap', type=int, default=50,
+                   help='scene-only render cap: at most this many relative '
+                        'leaves per target type (deterministic leaf order; '
+                        'relatives.csv keeps every row; the drop is '
+                        'disclosed on the scene root + in the log). '
+                        'Default 50; 0 disables')
     p.add_argument('--neuron-alpha', type=float, default=0.2,
                    help='global neuron opacity in scenes (default: 0.2)')
     p.add_argument('--scene-viz-json', default=None, metavar='JSON',
@@ -347,6 +353,7 @@ def main(argv=None):
         skeleton_fetch_timeout_s=args.skeleton_fetch_timeout,
         visualize=not args.no_visualize,
         max_scenes=args.max_scenes,
+        scene_relative_cap_per_type=args.scene_relative_cap,
         neuron_alpha=args.neuron_alpha,
         scene_viz=_json_object(args.scene_viz_json, '--scene-viz-json'),
         scene_category_colors=_json_object(
