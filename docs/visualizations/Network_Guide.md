@@ -252,6 +252,31 @@ The Layout Algorithm selector also pre-selects the layout the document was
 actually rendered with — including the programmatic `mapping` preset the
 type-mapping views use — so the dropdown matches the canvas on open.
 
+#### Edge Waypoints (bends)
+
+Bend an edge anywhere on the canvas. With one or more edges selected, the
+selection panel's **Waypoints** group offers:
+
+- **＋ Waypoint**: drops a waypoint at the middle of the longest segment,
+  offset sideways so the bend is visible
+- **✕ Clear**: removes all waypoints from the selected edges
+- **Shift X / Shift Y**: moves every selected edge's waypoints by one delta
+- **⇔ Align H / ⇕ Align V**: aligns all selected edges' waypoints on one
+  line (their mean)
+
+On the canvas, a waypoint is clickable independent of its edge:
+
+- **Click** a waypoint to select it — a ring marks it. **Click again** to
+  release it. Clicking across edges builds a **bundle** of waypoints; the
+  last clicked one is the focus (highlighted ring, and the panel lists its
+  edge's waypoints with per-waypoint X/Y inputs).
+- **Drag** a waypoint (selected or not) to move it; the bend follows and
+  the X/Y inputs update live.
+- **Esc** or a click on the blank canvas releases the whole bundle; a
+  node/edge click keeps it.
+- Waypoints are saved in layout saves/loads and undo/redo. Adding a
+  waypoint renumbers later waypoints of that edge automatically.
+
 ### 4. Edge Filtering
 
 Hide edges based on weight values:

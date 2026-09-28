@@ -5980,6 +5980,31 @@ class VisualizePath:
             border: 2px dashed var(--vp-accent-arrange);
         }}
 
+        /* Waypoint selection rings: DOM overlays inside #cy, the same layer
+           pattern as #boxOverlay — deliberately NOT cytoscape nodes, which
+           would leak into layout captures, orphan/dead-end re-derivation
+           and every global style applier.  pointer-events:none keeps the
+           gesture on the canvas; the capture-phase waypoint hit-test does
+           the targeting.  display:none until first positioned (no flash at
+           0,0); .focused marks the bundle's focus ring. */
+        .wp-ring {{
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid #d97706;
+            background: rgba(245, 158, 11, 0.35);
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 40;
+            display: none;
+        }}
+        .wp-ring.focused {{
+            background: rgba(245, 158, 11, 0.55);
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+        }}
+
         /* Collapsed states: hide the top control bar and reclaim the right
            palette column so the canvas grows into the freed space. */
         .controls.collapsed {{
@@ -6438,6 +6463,7 @@ class VisualizePath:
                                 <button class="btn" onclick="alignEdgeWaypoints('h')" title="Align all waypoints of the selected edges on one horizontal line (their mean Y)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Align H</button>
                                 <button class="btn" onclick="alignEdgeWaypoints('v')" title="Align all waypoints of the selected edges on one vertical line (their mean X)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇕ Align V</button>
                             </div>
+                            <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Click a bend on the canvas to select it (click again to release) — a bundle across edges works; drag moves it; Esc or a blank-canvas click clears.</div>
                             <div id="waypointList" style="margin-top: 4px;"></div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
@@ -6668,24 +6694,6 @@ class VisualizePath:
                         'border-width': '0px',  // No border
                         'text-wrap': 'wrap',
                         'text-max-width': '80px'
-                    }}
-                }},
-                {{
-                    // Selection ring for a user-selected edge waypoint —
-                    // visually distinct from edge/node selection
-                    selector: 'node.wp-highlight',
-                    style: {{
-                        'width': 10,
-                        'height': 10,
-                        'shape': 'ellipse',
-                        'background-color': '#f59e0b',
-                        'background-opacity': 0.45,
-                        'border-width': 1.5,
-                        'border-color': '#d97706',
-                        'border-opacity': 0.95,
-                        'label': '',
-                        'z-index-compare': 'manual',
-                        'z-index': 9999
                     }}
                 }},
                 {{
@@ -8600,6 +8608,14 @@ class VisualizePath:
             }}
             const tag = e.target && e.target.tagName;
             const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
+            // Esc releases the waypoint selection bundle (after dialogs and
+            // help have had their claim on the key).
+            if (!typing && e.key === 'Escape' &&
+                    (selectedWaypointKeys.length || selectedWaypoint)) {{
+                e.preventDefault();
+                clearWaypointSelection();
+                return;
+            }}
             if (!typing && (e.key === '?' || (e.shiftKey && e.key === '/'))) {{
                 e.preventDefault();
                 toggleHelp();
@@ -8832,6 +8848,9 @@ class VisualizePath:
 
         function applyNetworkState(state) {{
             if (!state || typeof state !== 'object') return false;
+            // the bundle is index-keyed against the OLD element state; keys
+            // that survived a load/undo/redo would point at guesses
+            clearWaypointSelection();
             restoringHistoryState = true;
             try {{
                 const gs = state.globalStyles || {{}};
@@ -11790,8 +11809,20 @@ class VisualizePath:
                     e.data('waypoints', wps);
                     e.data('hasWaypoints', true);
                     renderEdgeWaypoints(e);
+                    // bundle keys are INDEX-keyed: every selected waypoint of
+                    // this edge at or after the splice point moves one slot
+                    const at = li - 1;
+                    selectedWaypointKeys = selectedWaypointKeys.map(x =>
+                        (x.edgeId === e.id() && x.index >= at)
+                            ? {{ edgeId: x.edgeId, index: x.index + 1 }} : x);
+                    if (selectedWaypoint && selectedWaypoint.edgeId === e.id() &&
+                            selectedWaypoint.index >= at) {{
+                        selectedWaypoint = {{ edgeId: selectedWaypoint.edgeId,
+                                              index: selectedWaypoint.index + 1 }};
+                    }}
                 }});
             }});
+            syncWaypointHighlights();
             renderWaypointList();
             updateHoverInfo('✓ Waypoint added (adjust via Shift/Align or the per-waypoint list)');
         }}
@@ -11808,6 +11839,7 @@ class VisualizePath:
                 e.removeData('hasWaypoints');
             }}));
             refreshEdgeStyles(false);
+            syncWaypointHighlights();
             renderWaypointList();
             updateHoverInfo('✓ Waypoints cleared');
         }}
@@ -11823,6 +11855,7 @@ class VisualizePath:
                 e.data('waypoints', pts);
                 renderEdgeWaypoints(e);
             }}));
+            syncWaypointHighlights();
             renderWaypointList();
         }}
 
@@ -11842,13 +11875,17 @@ class VisualizePath:
                     ({{ x: axis === 'h' ? p.x : mean, y: axis === 'h' ? mean : p.y }})));
                 renderEdgeWaypoints(e);
             }}));
+            syncWaypointHighlights();
             updateHoverInfo('✓ Waypoints aligned ' + (axis === 'h' ? 'horizontally' : 'vertically'));
         }}
 
         // Per-waypoint X/Y rows.  Rendered when a single waypoint-capable
         // edge is selected, OR when a waypoint was clicked directly on the
-        // canvas (selectedWaypoint — selectable independent of the edge).
-        // The selected waypoint's row is highlighted.
+        // canvas (selectedWaypoint — selectable independent of the edge) —
+        // in that case the focused waypoint's edge is shown.  The focused
+        // row is highlighted; rows in the selection bundle wear the amber
+        // dot.  Edits apply to the RENDERED edge (the list is the panel for
+        // that edge's waypoints), not only when a canvas click set a focus.
         function renderWaypointList() {{
             const box = document.getElementById('waypointList');
             if (!box) return;
@@ -11867,9 +11904,14 @@ class VisualizePath:
             box.innerHTML = pts.map((p, i) => {{
                 const isSel = selectedWaypoint &&
                     selectedWaypoint.edgeId === e.id() && selectedWaypoint.index === i;
+                const inBundle = !isSel && selectedWaypointKeys.some(
+                    x => x.edgeId === e.id() && x.index === i);
                 const bg = isSel ? 'background:#e0f2f1;' : '';
+                const tag = inBundle
+                    ? '<span style="color:#d97706; font-weight:bold;">●WP' + (i + 1) + '</span>'
+                    : '<span>WP' + (i + 1) + '</span>';
                 return '<div style="display:grid; grid-template-columns:auto 1fr auto 1fr; gap:4px; align-items:center; font-size:10px; color:#555; margin-top:2px; ' + bg + '">' +
-                    '<span>WP' + (i + 1) + '</span>' +
+                    tag +
                     '<input type="number" step="1" value="' + Math.round(p.x) + '" data-idx="' + i + '" data-axis="x" class="wp-xy" style="width:100%; padding:3px; border-radius:3px; font-size:11px;">' +
                     '<span>Y</span>' +
                     '<input type="number" step="1" value="' + Math.round(p.y) + '" data-idx="' + i + '" data-axis="y" class="wp-xy" style="width:100%; padding:3px; border-radius:3px; font-size:11px;">' +
@@ -11880,68 +11922,125 @@ class VisualizePath:
                     const idx = parseInt(this.dataset.idx);
                     const v = parseFloat(this.value);
                     if (isNaN(v)) return;
-                    if (!selectedWaypoint) return;
-                    const e = cy.getElementById(selectedWaypoint.edgeId);
-                    if (!e) return;
                     const pts = edgeWaypointPts(e);
                     if (!pts[idx]) return;
                     pts[idx][this.dataset.axis] = v;
                     queueStyleHistory('Move waypoint');
                     e.data('waypoints', pts);
                     renderEdgeWaypoints(e);
+                    positionWaypointRing(e.id(), idx);
                 }});
             }});
         }}
 
         // ===== Waypoint canvas interaction =====
-        // Waypoints are selectable independent of their edge: a click/tap
-        // within the grab radius toggles the waypoint in a SELECTION SET
-        // (a bundle — from the same or different edges), each selected
-        // waypoint marked by a standalone highlight ring on the canvas.
-        // Dragging a ring relocates that waypoint.  The handler runs in
-        // the CAPTURE phase on the #cy container so a waypoint hit can
-        // preempt Cytoscape's own node/edge gestures.
+        // Waypoints are selectable independent of their edge: a click
+        // within the grab radius TOGGLES the waypoint in a SELECTION SET
+        // (a bundle — from the same or different edges); each selected
+        // waypoint wears an overlay ring, and the LAST clicked one is the
+        // FOCUS — its edge feeds the geometry panel, its row the
+        // per-waypoint list.  Dragging relocates that waypoint whether it
+        // was selected or not.  Rings are DOM overlays inside #cy (the
+        // #boxOverlay pattern), NOT cytoscape nodes: a node would leak into
+        // layout captures, orphan/dead-end re-derivation and every global
+        // style applier.  The handler runs in the CAPTURE phase on #cy so a
+        // waypoint hit can preempt Cytoscape's own node/edge gestures.
         let selectedWaypoint = null;     // focused waypoint {{ edgeId, index }} or null
-        let selectedWaypointKeys = [];   // [{{ edgeId, index }}]
-        let wpSelInternal = false;       // suppress selection-clear during toggles
+        let selectedWaypointKeys = [];   // the bundle: [{{ edgeId, index }}]
+        let wpSelInternal = false;       // suppress the background-tap clear during our own unselect
         let wpDrag = null;               // {{ edge, index, startClient, startPt, moved, queued }}
 
         function wpKey(edgeId, index) {{ return edgeId + '::' + index; }}
 
-        function addWaypointHighlight(edge, index) {{
-            const p = (edge.data('waypoints') || [])[index];
+        function wpRingEl(edgeId, index) {{
+            return document.getElementById('wp-ring-' + wpKey(edgeId, index));
+        }}
+
+        // Rings are positioned in #cy-local screen coords: cytoscape renders
+        // model*zoom + pan into the container, so the projection is direct.
+        function addWaypointHighlight(edgeId, index) {{
+            const e = cy.getElementById(edgeId);
+            if (!e || e.length === 0 || !e.inside()) return;
+            if (!(e.data('waypoints') || [])[index]) return;
+            if (wpRingEl(edgeId, index)) return;
+            const ring = document.createElement('div');
+            ring.id = 'wp-ring-' + wpKey(edgeId, index);
+            ring.className = 'wp-ring';
+            document.getElementById('cy').appendChild(ring);
+            positionWaypointRing(edgeId, index);
+            ring.style.display = 'block';
+        }}
+
+        function positionWaypointRing(edgeId, index) {{
+            const ring = wpRingEl(edgeId, index);
+            if (!ring) return;
+            const e = cy.getElementById(edgeId);
+            if (!e || e.length === 0 || !e.inside()) return;
+            const p = (e.data('waypoints') || [])[index];
             if (!p) return;
-            cy.add({{ group: 'nodes', classes: 'wp-highlight',
-                data: {{ wpFor: edge.id(), wpIndex: index }},
-                position: {{ x: p.x, y: p.y }} }});
+            const pan = cy.pan(), z = cy.zoom();
+            ring.style.left = (p.x * z + pan.x) + 'px';
+            ring.style.top = (p.y * z + pan.y) + 'px';
         }}
 
         function removeWaypointHighlight(edgeId, index) {{
-            const n = cy.getElementById('wp-hl-' + edgeId + '::' + index);
-            if (n && n.inside()) n.remove();
+            const ring = wpRingEl(edgeId, index);
+            if (ring) ring.remove();
         }}
 
-        function moveWaypointHighlight(edgeId, index, x, y) {{
-            const n = cy.getElementById('wp-hl-' + edgeId + '::' + index);
-            if (n && n.inside()) n.position({{ x: x, y: y }});
-        }}
-
+        // Drop the whole bundle: rings removed, focus cleared.  Reached via
+        // a tap on the canvas background, Esc, and any state restore (the
+        // bundle is index-keyed, so keys that survive a restore would be
+        // guesses, not selections).
         function clearWaypointSelection() {{
+            if (selectedWaypointKeys.length === 0 && !selectedWaypoint) return;
             selectedWaypointKeys.forEach(k => removeWaypointHighlight(k.edgeId, k.index));
             selectedWaypointKeys = [];
+            selectedWaypoint = null;
             renderWaypointList();
         }}
 
-        // Keep the highlight rings on their waypoints when the underlying
-        // data changes (shift/align/list edits).
+        // Keep rings truthful: drop bundle entries whose waypoint no longer
+        // exists (cleared, spliced, stale after undo), reposition the rest,
+        // and forget a focus that points at nothing.  Also re-marks which
+        // ring is the focus.
         function syncWaypointHighlights() {{
-            selectedWaypointKeys.forEach(k => {{
+            selectedWaypointKeys = selectedWaypointKeys.filter(k => {{
                 const e = cy.getElementById(k.edgeId);
-                if (!e || e.length === 0 || !e.inside()) return;
-                const p = (e.data('waypoints') || [])[k.index];
-                if (p) moveWaypointHighlight(k.edgeId, k.index, p.x, p.y);
+                if (!e || e.length === 0 || !e.inside() ||
+                        !(e.data('waypoints') || [])[k.index]) {{
+                    removeWaypointHighlight(k.edgeId, k.index);
+                    return false;
+                }}
+                positionWaypointRing(k.edgeId, k.index);
+                return true;
+            }});
+            if (selectedWaypoint) {{
+                const e = cy.getElementById(selectedWaypoint.edgeId);
+                const gone = !e || e.length === 0 || !e.inside() ||
+                    !(e.data('waypoints') || [])[selectedWaypoint.index];
+                if (gone) {{
+                    selectedWaypoint = null;
+                    renderWaypointList();
+                }}
+            }}
+            selectedWaypointKeys.forEach(k => {{
+                const ring = wpRingEl(k.edgeId, k.index);
+                if (ring) ring.classList.toggle('focused',
+                    !!selectedWaypoint && selectedWaypoint.edgeId === k.edgeId &&
+                    selectedWaypoint.index === k.index);
             }});
         }}
+
+        // Panning/zooming moves every waypoint on screen — rings follow.
+        cy.on('viewport', syncWaypointHighlights);
+
+        // A tap on the blank canvas clears the bundle; node/edge taps keep
+        // it, so another edge can be waypoint-edited while a bundle lives.
+        cy.on('tap', function(evt) {{
+            if (wpSelInternal) return;
+            if (evt.target === cy) clearWaypointSelection();
+        }});
 
         function hitTestWaypointModel(mx, my, radius) {{
             let best = null;
@@ -11954,11 +12053,6 @@ class VisualizePath:
                 }});
             }});
             return best;
-        }}
-
-        function clearSelectedWaypoint() {{
-            selectedWaypoint = null;
-            renderWaypointList();
         }}
 
         // cursor feedback while hovering a waypoint
@@ -11986,18 +12080,37 @@ class VisualizePath:
             e.preventDefault();
 
             const edge = hit.edge;
-            const startPt = {{ x: hit.edge.data('waypoints')[hit.index].x,
-                               y: hit.edge.data('waypoints')[hit.index].y }};
+            const k = wpKey(edge.id(), hit.index);
+            const startPt = {{ x: edge.data('waypoints')[hit.index].x,
+                               y: edge.data('waypoints')[hit.index].y }};
             const startClient = {{ x: e.clientX, y: e.clientY }};
             wpDrag = {{ edge: edge, index: hit.index, startPt: startPt,
                         startClient: startClient, moved: false, queued: false }};
 
-            // select the waypoint (and its edge for panel context)
+            // TOGGLE the hit waypoint in the bundle; the clicked one becomes
+            // (or hands off) the focus, and the hit edge is selected so the
+            // panel keeps its context.  A NEW waypoint joins immediately
+            // (visible feedback); the toggle-OFF of an already-selected one
+            // is DEFERRED to pointerup — dragging a selected waypoint must
+            // move it, not release it.
+            const already = selectedWaypointKeys.some(
+                x => wpKey(x.edgeId, x.index) === k);
+            wpSelInternal = true;
             cy.elements().unselect();
             edge.select();
             selectedElement = edge;
-            selectedWaypoint = {{ edgeId: edge.id(), index: hit.index }};
-            syncSelectedGeometryInputs(edge);
+            wpSelInternal = false;
+            if (already) {{
+                wpDrag.toggleOff = true;
+                selectedWaypoint = {{ edgeId: edge.id(), index: hit.index }};
+                syncSelectedGeometryInputs(edge);
+            }} else {{
+                selectedWaypointKeys.push({{ edgeId: edge.id(), index: hit.index }});
+                selectedWaypoint = {{ edgeId: edge.id(), index: hit.index }};
+                addWaypointHighlight(edge.id(), hit.index);
+                syncSelectedGeometryInputs(edge);
+            }}
+            syncWaypointHighlights();
             renderWaypointList();
 
             const onMove = function(ev) {{
@@ -12013,6 +12126,7 @@ class VisualizePath:
                 pts[wpDrag.index].y = wpDrag.startPt.y + dy;
                 edge.data('waypoints', pts);
                 renderEdgeWaypoints(edge);
+                positionWaypointRing(edge.id(), wpDrag.index);
                 // live-update the list row inputs without a rebuild
                 const row = document.querySelectorAll('#waypointList .wp-xy');
                 const base = wpDrag.index * 2;
@@ -12022,7 +12136,29 @@ class VisualizePath:
             const onUp = function() {{
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
-                if (wpDrag && wpDrag.moved) flushPendingStyle();
+                if (wpDrag && wpDrag.moved) {{
+                    flushPendingStyle();
+                }} else if (wpDrag && wpDrag.toggleOff) {{
+                    // a plain click on an already-selected waypoint releases
+                    // it; the focus falls to the newest survivor, or none
+                    removeWaypointHighlight(wpDrag.edge.id(), wpDrag.index);
+                    selectedWaypointKeys = selectedWaypointKeys.filter(
+                        x => wpKey(x.edgeId, x.index) !== k);
+                    selectedWaypoint = selectedWaypointKeys.length
+                        ? selectedWaypointKeys[selectedWaypointKeys.length - 1]
+                        : null;
+                    if (selectedWaypoint) {{
+                        const fe = cy.getElementById(selectedWaypoint.edgeId);
+                        wpSelInternal = true;
+                        cy.elements().unselect();
+                        fe.select();
+                        selectedElement = fe;
+                        wpSelInternal = false;
+                        syncSelectedGeometryInputs(fe);
+                    }}
+                    syncWaypointHighlights();
+                    renderWaypointList();
+                }}
                 wpDrag = null;
             }};
             window.addEventListener('pointermove', onMove);

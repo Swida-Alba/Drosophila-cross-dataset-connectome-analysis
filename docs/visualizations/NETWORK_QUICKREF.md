@@ -72,6 +72,8 @@
 - **Edit properties:** Double-click node/edge
 - **Delete:** Right-click or 🗑️ Delete button
 - **Select:** Click to select, Shift+Click for multi-select
+- **Edge waypoints:** Select edge → ＋ Waypoint; click a bend to select
+  (bundle across edges), drag to move, Esc clears
 
 **Save:** Use 📊 Graph export to save changes
 

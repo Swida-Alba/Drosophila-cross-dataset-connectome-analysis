@@ -32,6 +32,9 @@ function extractFunction(name, source) {
 const FUNCTIONS = [
     // persistence pair + buttons
     'captureNetworkState', 'applyNetworkState', 'saveLayout', 'loadLayout',
+    // waypoint bundle clear (called at the top of applyNetworkState; the
+    // empty-bundle early return means its own helpers never run here)
+    'clearWaypointSelection',
     // capture/undo plumbing (pushHistory guard + style bypass reads)
     'captureStyleBypass', 'captureState', 'pushHistory', 'syncToggleButtons',
     // global style update fns
@@ -109,6 +112,10 @@ function buildScope(cy) {
         function flushPendingStyle() {}
         let straightReciprocalEdgesEnabled = false;
         let reciprocalOffset = 5;
+        // waypoint bundle state (applyNetworkState clears it on restore;
+        // the empty-bundle early return keeps the ring helpers uncalled)
+        let selectedWaypoint = null;
+        let selectedWaypointKeys = [];
         const edgeWeightLabelForTooltip = 'synapses';
 
         let restoringHistoryState = false;
