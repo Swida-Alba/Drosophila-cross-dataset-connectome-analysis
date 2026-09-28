@@ -6149,3 +6149,16 @@ class TestVideoGifBranches:
         assert len(calls) == 2
         for video, gif in calls:
             assert os.path.exists(gif)
+
+
+def test_export_png_webdriver_waits_on_a_class_toolkit_pages_carry():
+    # I-4 (2026-09-28): the wait used a bare `plotly` class, which no
+    # page this toolkit writes carries (`js-plotly-plot` is the real
+    # marker, as the working session wait already used) — every call
+    # burned its whole timeout and returned None.  Pin the selector and
+    # that the function waits through it.
+    assert 'js-plotly-plot' in vs_module._PLOTLY_READY_CLASSES
+    import inspect
+    src = inspect.getsource(vs_module.export_png_webdriver)
+    assert '_PLOTLY_READY_CLASSES' in src
+    assert 'By.CLASS_NAME, "plotly")' not in src

@@ -22650,6 +22650,13 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
     return 0
 
 
+# Toolkit plotly pages carry `js-plotly-plot` on every graph div; a bare
+# `plotly` class is never emitted by this toolkit (I-4, 2026-09-28: the
+# old wait burned its whole timeout on every toolkit page) — foreign
+# plotly pages may carry it, so the wait accepts either.
+_PLOTLY_READY_CLASSES = ('js-plotly-plot', 'plotly')
+
+
 def export_png_webdriver(
     html_file: str,
     output_path: str = None,
@@ -22767,7 +22774,9 @@ def export_png_webdriver(
         # Wait for Plotly to render
         print(f'   Waiting for Plotly to render...')
         wait = WebDriverWait(driver, timeout)
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "plotly")))
+        wait.until(EC.any_of(
+            *[EC.presence_of_element_located((By.CLASS_NAME, cls))
+              for cls in _PLOTLY_READY_CLASSES]))
         
         # Additional wait for WebGL rendering
         time.sleep(3)
