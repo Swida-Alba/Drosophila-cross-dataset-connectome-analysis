@@ -13,7 +13,8 @@ Pairs with, and does not replace:
 *   The **run guide inside every run folder** (`_UserGuide_please_read_me.html`) — the
     authoritative per-file, per-column description *for that run*, generated from the same
     registry (§8). If you have a run folder, open its guide before consulting this table.
-*   `_clock_production/AGENTS.md` — the rules for the article repo's own artifacts (§7).
+*   `_clock_production/ARTIFACT_INDEX.md` + `_clock_production/AGENTS.md` — the article repo's
+    own artifacts and rules (§7 points there; that repo is DROCAT-ignored).
 
 Paths are relative to the DROCAT repo root unless prefixed `_clock_production/`.
 Line numbers were verified against the tree as of 2026-09-28; re-run the check in §10
@@ -54,14 +55,20 @@ Downloads folder, never on disk in a run folder, and nothing in-repo verifies th
 
 | Pattern | Answers | Producer (writer → naming) | Reader |
 | --- | --- | --- | --- |
-| `mapping_<src>_<tgt>_<ts>.csv` | the per-pair flow table: adopted target, bridge, bodyId pools, `mapping_status`, `relationship`, `mapping_origin` | `src/comparison/mapping_visualization.py:3136 build_bridges_csv` → `ui/components/type_mapping_panel.py:932 _deliver_pair_csv` | `_clock_production/analysis/02,03,08` |
-| `mapping_branch_bodyids_<src>_<tgt>_<ts>.csv` | per-branch pools incl. `target_out_map` bodyIds | panel `:938 _deliver_branch_bodyids` (keys via `mapping_visualization.py:59 mapping_pool_key`, `:86 get_mapping_pool`) | panel `:430` comment only |
-| `mapping_all_pairs_<ts>.csv` | all pairs, unfiltered | panel `:1829` (builder `:1810`) | — |
-| `mapping_{sankey,network}_<variant>_<foreign>_<ts>.html` | network / bridge-linker / Sankey view of the flows | `mapping_visualization.py:898`, `:1558`, `:2402` → panel `:907 _deliver_flows` | — |
-| `mapping_sankey_<ts>.html` / `mapping_graph_<ts>.html` | composed multi-pair view | `mapping_visualization.py:2545`, `:3071` → panel `:897`, `:1574` | — |
-| `outputs/type_mapping/source_map_network.html` | which bridge sources are licensed | `scripts/render_source_map_network.py:22` ← `mapping_visualization.py:2669` | git-ignored (`outputs/`) |
-| `auto_type_mapping.csv`, `_suspects.csv`, `_conflicts.csv`, `auto_type_mapping.json`, `type_resolution_topology.json` | the mapping a profiling run carried with it | `src/comparison/cross_dataset_type_mapper.py:5044`, `:5236`, `:5444`, `:5713`; run-folder names at `src/comparison/comparison_analyzer.py:5985, 6028, 6045, 6084` | `src/comparison/report_tabbed.py:287` |
-| `neuron_indexes/<dataset>/type_mapper_snapshot_v2.pkl` | the mapper's cold-build cache — **not evidence, never cite it** | `src/comparison/cross_dataset_type_mapper.py:1923` (path `:1876`), read `:1955` | — |
+| `mapping_<src>_<tgt>_<ts>.csv` | the per-pair flow table: adopted target, bridge, bodyId pools, `mapping_status`, `relationship`, `mapping_origin` | `mapping_visualization.build_bridges_csv` → panel `_deliver_pair_csv` | `_clock_production/analysis/02,03,08` |
+| `mapping_branch_bodyids_<src>_<tgt>_<ts>.csv` | per-branch pools incl. `target_out_map` bodyIds | panel `_deliver_branch_bodyids` (keys via `mapping_visualization.mapping_pool_key` / `get_mapping_pool`) | panel's `219 − 204` comment block |
+| `mapping_all_pairs_<ts>.csv` | all pairs, unfiltered | panel, name literal `mapping_all_pairs_{stamp}.csv` (same builder) | — |
+| `mapping_{sankey,network}_<variant>_<foreign>_<ts>.html` | network / bridge-linker / Sankey view of the flows | `render_mapping_network_html`, `render_bridge_linker_html`, `render_mapping_sankey_html` (`src/comparison/mapping_visualization.py:898`, `:1558`, `:2402`) → panel `_deliver_flows` | — |
+| `mapping_sankey_<ts>.html` / `mapping_graph_<ts>.html` | composed multi-pair view | `render_composed_sankey_html`, `render_composed_mapping_html` (`:2545`, `:3071`) → panel literals `mapping_sankey_{stamp}.html`, `mapping_graph_{stamp}.html` | the clock query's `mapping_graph` export is versioned in `_clock_production/figures/`; that repo's own index carries its node/edge counts and the **reach-basis** reading (`docs/AUTO_TYPE_MAPPING.md`, "Evidence reach (all flows)"), so never caption its type counts as claim counts |
+| `outputs/type_mapping/source_map_network.html` | which bridge sources are licensed | `scripts/render_source_map_network.py:22` ← `render_source_map_network_html` | git-ignored (`outputs/`) |
+| `auto_type_mapping.csv`, `_suspects.csv`, `_conflicts.csv`, `auto_type_mapping.json`, `type_resolution_topology.json` | the mapping a profiling run carried with it | `src/comparison/cross_dataset_type_mapper.py` writers (grep the literal filename — this file is being refactored actively); run-folder naming in `src/comparison/comparison_analyzer.py` | `src/comparison/report_tabbed.py` |
+| `neuron_indexes/<dataset>/type_mapper_snapshot_v2.pkl` | the mapper's cold-build cache — **not evidence, never cite it** | `src/comparison/cross_dataset_type_mapper.py` snapshot writer/reader (grep `snapshot_v2`) | — |
+
+**Why some rows above name symbols instead of quoting `file:line`:** the three files with the
+busiest churn this week (`ui/components/type_mapping_panel.py`,
+`src/comparison/mapping_validation.py`, `src/comparison/cross_dataset_type_mapper.py`) moved
+under this document while it was being written — see §10 for the measurement. A symbol
+resolves with `grep`; a stale line number sends you to unrelated code.
 
 The claim/disclosure boundary, which every count on these files depends on:
 `src/comparison/mapping_visualization.py:73 flow_is_claimed()` — a flow is a **claim** only
@@ -71,10 +78,10 @@ disclosure. `docs/AUTO_TYPE_MAPPING.md` and
 
 ## 3. TM VEV — bodyId-level validation of a mapping (`type-map-validation_*`)
 
-Run folder `type-map-validation_<SRC>_to_<TGT>_<ts>/`, assembled at
-`src/comparison/mapping_validation.py:6194-6196`; layout registry `:1053
-RUN_FILE_LAYOUT`, schemas `:1122 _RUN_CSV_SCHEMAS`, every CSV through
-`:1364 _write_run_csv` (call sites `:6754-6832`). Produced by
+Run folder `type-map-validation_<SRC>_to_<TGT>_<ts>/`, assembled where
+`src/comparison/mapping_validation.py` sets `self.run_dir` (grep `run_dir = base`); layout
+registry `RUN_FILE_LAYOUT`, schemas `_RUN_CSV_SCHEMAS`, every CSV through
+`_write_run_csv`. Produced by
 `scripts/RunMappingValidation.py`, or queued by
 `scripts/maintenance/run_tmvev_matrix.sh:42-45, 74` (queue dir holds `manifest.tsv`,
 `queue.log`, `<label>.log`).
@@ -86,8 +93,8 @@ RUN_FILE_LAYOUT`, schemas `:1122 _RUN_CSV_SCHEMAS`, every CSV through
 | `gap_fill/` | `gap_fill_dedup.csv` `gap_fill_levels.csv` `gap_fill_proposals.csv` | which holes got filled at which bar (`level` high/medium/low/type_gated/advice) |
 | `pooling/` | `pooling_candidates.csv` `pooling_pool.csv` `pooling_sources.csv` `pooling_cross_validation.json` | the unsupervised parallel mode's ledgers |
 | `mapping/` | `mapping_export.csv` (+`tier`) `same_name_excluded.csv` `disclosure_evidence.csv` `suspects_verification.csv` | what was claimed vs declined, and on what evidence |
-| root | `report.html` (`src/comparison/mapping_validation_report.py:4712`); `parameters.json`, `set_coverage.json`, `morphology_calibration.json`, `pipeline_progress.jsonl`, `README.txt` are all written by `src/comparison/mapping_validation.py` at `:6833`, `:6916`, `:6911`, `:2162`, `:7054` respectively; plus `user_warning_notes.txt` | the readable summary, the provenance, and per-stage telemetry |
-| `visualization/` | `plot-3d_<ABBREV>_branches_<TYPE>_<ts>/branches_<TYPE>.html` (`src/comparison/mapping_validation_visualize.py:605, 1203`; glob documented `src/visualize_skeleton.py:2888`) | 21 scenes, **0.4-0.8 GB per run** — the one part never copied to an article repo |
+| root | `report.html` (writer: `src/comparison/mapping_validation_report.py`, grep `report.html`); `parameters.json`, `set_coverage.json`, `morphology_calibration.json`, `pipeline_progress.jsonl`, `README.txt` are all written by `src/comparison/mapping_validation.py` — grep each filename literal in its run-writing section; plus `user_warning_notes.txt` | the readable summary, the provenance, and per-stage telemetry |
+| `visualization/` | `plot-3d_<ABBREV>_branches_<TYPE>_<ts>/branches_<TYPE>.html` (`src/comparison/mapping_validation_visualize.py:605, 1203`; glob documented `src/visualize_skeleton.py:2888`) | 21 scenes, **0.4-1.2 GB per run**. `report.html` links them **relatively**, so anything that copies the report without this folder silently breaks every scene link — `_clock_production/analysis/11_relocate_tmvev_scenes.py` relocates the whole directory into that repo (git-ignored) and leaves a symlink here so this path still resolves |
 
 **Readers/verifiers:** `scripts/verify_tmvev_run_exports.py:54` imports the layout and
 schemas (`:92 path_of`, `:140` discovery, `:161 check_layout`, `:170` schema equality,
@@ -97,18 +104,18 @@ schemas (`:92 path_of`, `:140` discovery, `:161 check_layout`, `:170` schema equ
 `python -m comparison.mapping_validation_report <run_dir>` (`:4732`).
 
 **Provenance fields to quote** (not the folder name): `parameters.json →
-input_fingerprint.{git_rev, git_dirty, git_rev_at_start, git_dirty_at_start}`
-(`src/comparison/mapping_validation.py:6071-6095`, `target_vector_store:1005`), and `run_label`
-(field `:377`, written `:6840`) — the only place a `--label` survives. `set_coverage.json →
+input_fingerprint.{git_rev, git_dirty, git_rev_at_start, git_dirty_at_start}` (written where
+`src/comparison/mapping_validation.py` calls `self._fingerprint().update(...)`, and
+`target_vector_store` just above it), and `run_label` (field on the config dataclass, written
+with the other run files) — the only place a `--label` survives. `set_coverage.json →
 source.source_status`, `target.backward_evidence`, `mapper_gap.{types, untyped_rows}`
-(`src/comparison/mapping_validation.py:4739-4762`). `morphology_calibration.json →
-track_a_null_bar` / `_lo` / `track_a_null_n` `:4266-4268`, `branch_bars:4493`,
-`pool_ref_tiers:4451` — the qualification floors, which is what moves a bin count
-between two runs of the same query.
+(the `_set_coverage_payload` builder). `morphology_calibration.json →
+track_a_null_bar` / `_lo` / `track_a_null_n`, `branch_bars`, `pool_ref_tiers` — the
+qualification floors, which is what moves a bin count between two runs of the same query.
 
-**Two-generation layout:** `run_file_path:1095-1112` falls back to the flat pre-2026-09-19
-paths, and `examinees.csv` replaced `suspicious_candidates.csv` (older folders still read
-via `src/comparison/mapping_validation_report.py:630-632`). Skill:
+**Two-generation layout:** `run_file_path` falls back to the flat pre-2026-09-19
+paths, and `examinees.csv` replaced `suspicious_candidates.csv` (older folders are still read
+by `src/comparison/mapping_validation_report.py`). Skill:
 `skills/type-mapping-validation/SKILL.md`.
 
 ## 4. Visualization, profiles, decks
@@ -127,7 +134,7 @@ All of it is `src/visualize_skeleton.py` (there is no `src/visualization/` packa
 | `{view}_{safe_name}.png` + `{safe_name}.html` | **per-neuron profile images** — the exporter an article pipeline wants | `:837 export_individuals_from_html` (also `:2113-2114` webdriver route); live-tab route `:20414`/`:20339` | `tests/core/test_visualize_skeleton_neuron_export.py` |
 | `{stem}_profiles/`, `{stem}_reexport/` | default out-dirs | `:910-911`, `:783` | — |
 | `individual_profiles_summary{_by_view,_by_name}.pptx` | a deck of profiles, widescreen | `:20891` in `:20792 _create_individual_pptx` | — |
-| `aggregated_images.pptx` | generic image-stack deck | `src/utils/report_utils.py:258-260 img2pptx` (twin `src/visualize_skeleton.py:23047`) | `src/neuronbridge_finder.py:9625` |
+| `aggregated_images.pptx` | generic image-stack deck | `src/utils/report_utils.py:258-260 img2pptx` (its twin `img2pptx` call site in `src/visualize_skeleton.py`) | `src/neuronbridge_finder.py:9625` |
 | `<html_stem>_webdriver.png` | intended HTML→PNG route | `:22653 export_png_webdriver` (name assembled `:22727`) | **broken, §9** |
 
 Framing defaults that decide whether an image is usable: `skeleton_mode "tube"`
@@ -204,34 +211,30 @@ Sizes on this machine (why none of it is committable): `datasets/flywire_FAFB_v7
 (`references/util-support.md:48-83`, `modules/coana-connectivity.md`), `drocat-install`
 (`references/troubleshooting.md:64, 108`), `drocat-usage` (`references/datasets-and-auth.md:42`).
 
-## 7. `_clock_production/` — the article repo's own exports
+## 7. `_clock_production/` — the article repo (its artifacts are indexed there)
 
-Separate git repo (branch `clock-production`), DROCAT-ignored via `.git/info/exclude`;
-its rules are `_clock_production/AGENTS.md` (§7 commands, §3 data, §5 records, §8
-quotability). `<producer>` there is
-`_clock_production/drocat_backend.py:47 PRODUCER = "type_mapper"`, and record folders come
-from `:52 new_record()`.
+A separate git repo (branch `clock-production`, no remote), DROCAT-ignored through
+`.git/info/exclude`. Every per-artifact row, filename token, count basis and record folder
+that used to sit in this section lives in **`_clock_production/ARTIFACT_INDEX.md`** beside its
+own rules file `_clock_production/AGENTS.md`; the split landed 2026-09-29 so this shipped doc
+no longer points at files a DROCAT clone does not have.
 
-| Pattern | Script → DROCAT-side call | Answers |
-| --- | --- | --- |
-| `data/raw/type_mapping/FAFB-to-{BANC,MCNS}/type_mapper_results/mapping_*_<stamp>.{csv,html}` | `analysis/01_…:107-131` → `_compute_type_mapping` (`:77,:89`) + `build_bridges_csv` (`:112`) | the §0 clock population's type-level mapping, both volumes |
-| `data/raw/type_mapping/FAFB-to-{MCNS,BANC}/TM VEV/<target>_<mode>_<stamp>/…` | `analysis/06_tmvev_ingest.py:232-234` — **the mode label is inserted here, not by DROCAT** (`:122 labelled()`, `:116 stamp_of()`, `:99 mode_of_live()`) | ingested TM VEV results core, scenes excluded |
-| `data/processed/type_mapper-clock_profile_groups.json` | `analysis/03_…:218-220` → `flow_is_claimed`/`mapping_pool_key` (`:143`) | per-type claim groups feeding every figure |
-| `data/raw/skeleton_profiles/type_mapper-<stamp>/{FAFB,MCNS,BANC}/<TYPE>.png` | `analysis/04_…:123,143,188` → `export_individuals_from_html` (`:175`) | the 63 profile cells |
-| `figures/type_mapper-clock_profile_plate.pptx` + `_<n>.png` previews | `analysis/05_…:347,394-401,424,427`; geometry gate `:276 check_geometry` | the A4 plate (deck page 1) |
-| `…/type_mapper-population-<stamp>/<COL>/` + deck page 2 | `analysis/07_…:136,151,195,285-297` | all 21 types overlaid per volume |
-| `records/<date>_…-banc-clock-sets-<stamp>/banc_clock_set_membership.csv` (+summary, manifest) + deck page 3 | `analysis/08_…:219,227-234,254,274,348,354` | BANC's own `circadian_neuron` vs what FAFB's clock maps onto it |
-| `figures/type_mapper-flow_network-<stamp>.html` + `data/raw/type_mapping/bridges/type_mapper-flow_network-<stamp>/{_sankey,_heatmap,_xlsx,_guide}` | `analysis/09_bridge_flow_network.py:136-143` (view → figures, siblings + inputs beside it; layout-node gate `:113`, differing-bytes refusal `:68`) driving the Net-Viz `plot-network_` run of §4 | the mapper's bridge **vocabulary** as one graph (5 dataset codes + 9 bridge columns, 44 edges). Direction-agnostic, and every input `weight = 1`, so it is a schematic of the lanes — never a pair's mapping, never a flow quantity |
-| `user_data/*` (indexed in `user_data/README.md`) | hand-curated; scripts read-only | plate row order; curated double-claim assignments; **`type_mapper_bridges_edgelist.csv` + `type_mapper_bridges_layout.json`, tracked precisely because DROCAT cannot regenerate them** — `09` refuses the pair unless the layout's 14 node keys equal the edge list's node set |
+The cross-repo fact — which DROCAT entry point each producer there drives:
 
-Live records right now: claim sets `records/2026-09-28_type_mapper-baseline/`; plate
-`records/2026-09-27_type_mapper-clock-profile-plate-full4/`; population
-`records/2026-09-27_type_mapper-clock-population-pop1/`; BANC sets
-`records/2026-09-27_type_mapper-banc-clock-sets-sets2/`; matrix ingest
-`records/2026-09-28_tmvev-ingest-tmvev-clock-matrix-20260928/`; bridge flow network
-`records/2026-09-28_type_mapper-flow_network-20260928_113705/`.
-`data/` is ignored except force-added small evidence; `archive/**/data_raw/` stays off git;
-nothing over 100 MB is ever committed.
+| Producer there | DROCAT-side entry point (this index) |
+| --- | --- |
+| `analysis/01, 02, 03, 10` — type-level mapping, claim sets, per-neuron reads | §2: `_compute_type_mapping` (`ui/components/type_mapping_panel.py`, module-level, no UI state) + `mapping_visualization.build_bridges_csv`, `mapping_pool_key`, `flow_is_claimed` (`src/comparison/mapping_visualization.py:73`) |
+| `analysis/06, 11` — TM VEV ingest, then scene relocation | §3: `scripts/RunMappingValidation.py`, `scripts/maintenance/run_tmvev_matrix.sh`, audited by `scripts/verify_tmvev_run_exports.py` |
+| `analysis/04, 07` — profile renders feeding the plate | §4: `src/visualize_skeleton.py:837 export_individuals_from_html` |
+| `analysis/09` — graph views | §4 Net-Viz `plot-network_` runs; the panel's `mapping_graph_` export comes from `render_composed_mapping_html` |
+| adopted neighbours (`plot-3d_*`, `homologs_*`) | §5's `src/comparison/profile_comparator.py` `homologs_*` layout, and a §4 skeleton scene |
+| record folders and the `<producer>` prefix | `_clock_production/drocat_backend.py:47 PRODUCER`, `:52 new_record()` |
+
+Two facts in that section are DROCAT behaviour, so they stay here rather than travelling:
+**a validation mode is never in a DROCAT run folder name** (only
+`parameters.json → validation_mode`), and **`report.html` links its scenes relatively**, so
+copying the report without `visualization/` produces a structurally valid report whose every
+scene link is dead — see §9.
 
 ## 8. Per-file authority: the run-guide registry
 
@@ -250,7 +253,7 @@ Each file spec carries `pattern`, `description`, `columns`, `preview`, `preview_
 guide also renders applied thresholds (`:2823`, `:2864`, `:2925`), key params (`:3166`),
 `user_warning_notes.txt` (`:2765`) and the TM VEV term glossary (`:2614`). It is written by
 `write_run_guide:3873` from `ui/runner.py:540` on every successful tab run and from
-`scripts/RunMappingValidation.py:378`; format is `run_guide_format`
+`write_run_guide` in `scripts/RunMappingValidation.py`; format is `run_guide_format`
 (`ui/config.py:516`, `:844`, env `DROCAT_RUN_GUIDE_FORMAT`), basename
 `_UserGuide_please_read_me` (`ui/output_guide.py:28`). Preview flags feed
 `ui/components/result_previews.py:18, 75`.
@@ -303,7 +306,7 @@ guide also renders applied thresholds (`:2823`, `:2864`, `:2925`), key params (`
     `:9637`), simplification caps kaleido at 100 MB / webdriver at 200 MB (`:2965-2972`),
     and Plotly JS is embedded per page (`:6150`).
 *   **The validation mode is not in DROCAT's run folder name** — only in
-    `parameters.json → validation_mode`. An article repo may add it locally (07 of §7);
+    `parameters.json → validation_mode`. An article repo may add it locally (`_clock_production/ARTIFACT_INDEX.md` §1);
     never infer a mode from a stamp.
 
 ## 10. Coverage gaps, and how to check this index
@@ -320,22 +323,63 @@ Front door for docs is `docs/README.md:1` (structure `:100-141`, navigation `:14
 
 ### Audit gate this file was accepted at (2026-09-28)
 
-**192 `file:line` cites resolved and in range (0 out-of-range), 102 symbol assertions
-checked against the source line ±3 with 101 passing, and the registry count confirmed by
-parsing the module: `TOOL_GUIDE_SPECS` = 18 entries.** The one non-pass was a checker
-expectation, not a citation (`src/visualize_skeleton.py:19709` writes into `views_folder`;
-the `exported_views` name itself is `:19572`, cited separately).
-
-Recipe to re-run after a refactor — no script is checked in, so have an agent do it:
-(1) extract every `path:LINE` and bare `:LINE` from this file; a bare cite belongs to the
-nearest preceding **source** file on its line, never to a data filename (`parameters.json`
-etc. own no line numbers); (2) assert `1 ≤ line ≤ len(file)`, resolving abbreviated paths by
-suffix against the repo; (3) assert the symbol named next to each cite appears within ±3
-lines of it. Four cites failed that gate when this file was first written and were
-corrected: `_RUN_CSV_SCHEMAS` is `src/comparison/mapping_validation.py:1122` (not `:1236`,
-which is inside the dict), `export_png_webdriver` is defined at
-`src/visualize_skeleton.py:22653` (broken wait `:22770`, name site `:22727`), the
+**185 `file:line` cites resolve and sit inside their files (0 out of range), and every symbol
+assertion next to a cite matches the source line ±3.** The count fell from 213 because the
+three hottest files' cites were converted to symbols, below. Four cites failed when this file
+was first written and were
+corrected: `_RUN_CSV_SCHEMAS` was `:1122`-not-`:1236` (a git-hunk context line misread as a
+definition), `export_png_webdriver` is the `def export_png_webdriver` of `src/visualize_skeleton.py` (number dropped — the file has moved since), the
 cross-dataset result CSVs are written by `src/comparison/comparison_analyzer.py` (not
-`comparison_parameters.py`, which only names the folder), and `run_label` lives at
-`src/comparison/mapping_validation.py:377` / `:6840`. A cited-but-nonexistent
-`layer_{i}.csv` was dropped, with two other unverified bulk filenames.
+`comparison_parameters.py`, which only names the folder), and `run_label` is a config field,
+not a line in the writing block. A cited-but-nonexistent `layer_{i}.csv` was dropped with two
+other unverified bulk filenames.
+
+**Then the tree moved under this document.** Within the same hour, sibling commits shifted
+`ui/components/type_mapping_panel.py` by roughly +230 lines, `src/comparison/mapping_validation.py`
+by +7 to +17, and `src/comparison/cross_dataset_type_mapper.py` further still — re-resolving
+`_deliver_pair_csv` came out 932 → 1156, `RUN_FILE_LAYOUT` 1053 → 1060, `run_label` 377 → 384.
+Those three files are therefore **cited by symbol or by string literal, not by line number**
+throughout (§2, §3), because the index's job is to route a reader to code and a stale number
+routes them to unrelated code. Verified-still-exact numeric cites elsewhere:
+`src/visualize_skeleton.py` (13 — two of them had since moved, see the 2026-09-29 re-check
+below), `src/coana.py` (14), `ui/config.py` (7),
+`src/comparison/profile_comparator.py` (5), `src/utils/naming_utils.py` (4),
+`src/neuronbridge_finder.py` (4), `src/comparison/mapping_visualization.py` (2).
+
+### Re-check 2026-09-29 (this split, and the refactors since)
+
+The recipe below is checked in as `scripts/maintenance/verify_doc_cites.py`, so a refactor is
+re-checked with:
+
+```
+python scripts/maintenance/verify_doc_cites.py --docs docs                 # whole docs tree
+python scripts/maintenance/verify_doc_cites.py --docs _clock_production    # the article repo
+```
+
+**Read its report by class, not by count.** Over this file it flags 43 of 120 full-path cites,
+and the flag is not the finding: 12 are data filenames its regex accepts as paths
+(`parameters.json:12569` — the number is a *source* line, per rule (1) below), 25 are filenames
+or format tokens it accepts as the symbol a cite must sit next to (`report.html`,
+`aggregated_images.pptx`, `YYYYMMDD_HHMMSS`), and 6 name a column or env var that shares the
+line while the real symbol is still within ±3 (`ensure_flywire_data`,
+`resolve_flywire_dataset_dir`, `run_guide_format`, `_RUN_FOLDER_TIMESTAMP_RE` — each of those
+four re-resolved by hand). The "185" in the heading above counted bare `:NNNN` cites too, which
+no tool can see.
+
+Three cites **were** genuinely stale and are now symbol-cited rather than renumbered: two in
+`src/visualize_skeleton.py` (the `img2pptx` twin, off by 9; `export_png_webdriver`, +7) and one
+in `scripts/RunMappingValidation.py` (`write_run_guide`, +6) — all three moved under today's
+sibling commits, while `src/coana.py` did not move at all (19,905 lines both sides of them),
+which is why its rows are still cited by number.
+
+Its blind spot is **bare `:NNNN` cites** (60 lines above): `CITE_RE` needs a path before the
+colon, so nothing checks that a bare number still belongs to the nearest preceding source
+file. That is the recipe's real content, and it is still manual:
+
+(1) extract every `path:LINE` and bare `:LINE`; a bare cite belongs to the nearest preceding
+**source** file on its line, never to a data filename (`parameters.json` etc. own no line
+numbers); (2) assert `1 ≤ line ≤ len(file)`, resolving abbreviated paths by suffix against the
+repo; (3) assert the symbol named next to each cite appears within ±3 lines of it; (4) for any
+cite that moved, prefer re-anchoring it to a symbol or a grep-able string literal over
+patching the number — which is why the counts in this section are quoted as measurements, not
+as a permanent property of the tree.
