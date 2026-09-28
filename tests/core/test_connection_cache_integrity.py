@@ -283,3 +283,42 @@ def test_analysis_reloads_completion_state_sidecar_after_settings_pull(tmp_path)
         assert int(second.loc[0, "connection_count"]) == 7
     finally:
         coana._FNC_CACHE.pop("fake_state-reload", None)
+
+
+def test_namespace_audit_counts_foreign_bodyids(tmp_path):
+    """I-5 (2026-09-28): connection rows whose bodyId is not in the
+    dataset's own neuron index join to nothing — counted and disclosed
+    (never rewritten), instead of passing both integrity layers silently."""
+    from coana import FindNeuronConnection
+
+    idx_dir = tmp_path / "neuron_indexes" / "dsX"
+    idx_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "bodyId": [1, 2],
+        "downstream_complete": [True, False],
+        "connection_count": [2, 0],
+    }).write_parquet(idx_dir / "neuron_index.parquet")
+    cache_dir = tmp_path / "cache" / "dsX"
+    cache_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "bodyId_pre": [1, 1, 99],
+        "bodyId_post": [2, 88, 2],
+        "weight": [1, 1, 5],
+    }).write_parquet(cache_dir / "connections.parquet")
+
+    fc = object.__new__(FindNeuronConnection)
+    fc.dataset = "dsX"
+    fc._dataset_safe = "dsX"
+    fc.script_path = str(tmp_path)
+    prints = []
+    fc._vprint = lambda message, level="full", **kw: prints.append(message)
+
+    result = fc._compute_cache_integrity()
+    assert result["distinct_connections"] == 3
+    assert result["foreign_id_rows"] == 2  # (1, 88) and (99, 2)
+    assert result["foreign_id_rows_pre"] == 1
+    assert result["foreign_id_rows_post"] == 1
+
+    # the disclosure is surfaced, not just computed
+    fc._check_cache_coverage()
+    assert any("namespace check" in p for p in prints), prints

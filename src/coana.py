@@ -4130,10 +4130,34 @@ class FindNeuronConnection:
         ))
         mismatches, complete_flagged = cache_coverage_mismatches(
             rows, cached_row_counts)
+        # I-5 (2026-09-28): namespace audit — a connection row whose bodyId
+        # is not in this dataset's own index joins to nothing and silently
+        # inflates whole-table counts (field measurement: 20,583 of 7.37M
+        # hemibrain rows carried FlyWire-space ids on at least one side
+        # while both integrity layers passed).  Counted and disclosed,
+        # never rewritten here.
+        known_ids = pl.Series(
+            'known_ids',
+            sorted(str(b) for b in index_rows['bodyId'].to_list()),
+            dtype=pl.Utf8)
+        audit = lazy.select(
+            pl.col('bodyId_pre').cast(pl.Utf8).alias('_pre'),
+            pl.col('bodyId_post').cast(pl.Utf8).alias('_post'))
+        pre_unknown = ~pl.col('_pre').is_in(known_ids)
+        post_unknown = ~pl.col('_post').is_in(known_ids)
+        foreign_id_rows_pre = int(
+            audit.filter(pre_unknown).collect().height)
+        foreign_id_rows_post = int(
+            audit.filter(post_unknown).collect().height)
+        foreign_id_rows = int(
+            audit.filter(pre_unknown | post_unknown).collect().height)
         return {
             'mismatches': mismatches,
             'complete_flagged': complete_flagged,
             'distinct_connections': distinct_connections,
+            'foreign_id_rows': foreign_id_rows,
+            'foreign_id_rows_pre': foreign_id_rows_pre,
+            'foreign_id_rows_post': foreign_id_rows_post,
         }
 
     def _write_cache_manifest(self, source):
@@ -4143,6 +4167,12 @@ class FindNeuronConnection:
             'schema': CACHE_MANIFEST_SCHEMA,
             'dataset': self.dataset,
             'distinct_connections': integrity['distinct_connections'],
+            'foreign_id_rows': int(
+                integrity.get('foreign_id_rows') or 0),
+            'foreign_id_rows_pre': int(
+                integrity.get('foreign_id_rows_pre') or 0),
+            'foreign_id_rows_post': int(
+                integrity.get('foreign_id_rows_post') or 0),
             'built_at': datetime.now().isoformat(timespec='seconds'),
             'source': source,
         }
@@ -4272,6 +4302,18 @@ class FindNeuronConnection:
             raise RuntimeError(
                 f"Cache integrity check failed for dataset '{self.dataset}': {e}"
             ) from e
+        foreign = int(result.get('foreign_id_rows') or 0)
+        if foreign:
+            self._vprint(
+                f"  ⚠ Cache namespace check ('{self.dataset}'): {foreign:,} "
+                'distinct connections carry a bodyId that is not in this '
+                "dataset's neuron index "
+                f"({int(result.get('foreign_id_rows_pre') or 0):,} pre / "
+                f"{int(result.get('foreign_id_rows_post') or 0):,} post) — "
+                'foreign-namespace rows join to nothing and inflate '
+                'whole-table counts (disclosed in cache_manifest.json, '
+                'never rewritten here).',
+                level='full')
         result['manifest'] = self._load_cache_manifest()
         _CACHE_COVERAGE_CACHE[dataset_safe] = (signature, result)
         return result
