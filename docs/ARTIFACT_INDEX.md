@@ -113,8 +113,8 @@ via `src/comparison/mapping_validation_report.py:630-632`). Skill:
 
 ## 4. Visualization, profiles, decks
 
-All of it is `src/visualize_skeleton.py` (there is no `src/visualization/` package and no
-`src/volume_rendering.py`).
+All of it is `src/visualize_skeleton.py` (there is no `src/visualization/` package; a
+`src/volume_rendering.py` module was never shipped).
 
 | Pattern | Answers | Producer | Reader |
 | --- | --- | --- | --- |
