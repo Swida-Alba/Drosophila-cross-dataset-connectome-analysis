@@ -91,7 +91,6 @@ try:
         is_local_connectome_dataset,
         neuprint_dataset_name,
         normalize_flywire_body_id,
-        normalize_flywire_body_ids,
         normalize_flywire_id_columns,
     )
 except ImportError:
@@ -102,7 +101,6 @@ except ImportError:
         is_local_connectome_dataset,
         neuprint_dataset_name,
         normalize_flywire_body_id,
-        normalize_flywire_body_ids,
         normalize_flywire_id_columns,
     )
 
@@ -113,7 +111,6 @@ try:
         FLYWIRE_MESH_CACHE_SOMA_SIMPLIFICATION,
         FlyWireMeshCache,
         flywire_mesh_cache_key,
-        parse_soma_position,
     )
 except ImportError:
     from flywire_mesh_cache import (
@@ -122,7 +119,6 @@ except ImportError:
         FLYWIRE_MESH_CACHE_SOMA_SIMPLIFICATION,
         FlyWireMeshCache,
         flywire_mesh_cache_key,
-        parse_soma_position,
     )
 
 try:
@@ -345,61 +341,6 @@ def _api_dataset_body_id(dataset: str, body_id) -> int:
         return body_id_to_api_int(body_id)
     return int(body_id)
 
-
-def _load_flywire_soma_positions(
-        dataset: str, root: Path,
-        body_ids: Optional[List[Union[int, str]]] = None,
-        ) -> Dict[str, np.ndarray]:
-    """Load optional FAFB soma coordinates from the local neuron table."""
-    folder = _dataset_folder(dataset)
-    candidates = [
-        root / "datasets" / folder / f"{folder}_allneurons_neuron_df.parquet",
-        root / "datasets" / folder / f"{folder}_allneurons_neuron_df.csv",
-    ]
-    table = next((path for path in candidates if path.exists()), None)
-    if table is None:
-        return {}
-    try:
-        if table.suffix.lower() == ".parquet":
-            columns = pd.read_parquet(table).columns.tolist()
-            pos_col = next(
-                (name for name in (
-                    "position", "soma_position", "soma_pos", "somaLocation")
-                 if name in columns),
-                None,
-            )
-            if pos_col is None:
-                return {}
-            frame = pd.read_parquet(table, columns=["bodyId", pos_col])
-        else:
-            header = pd.read_csv(table, nrows=0).columns.tolist()
-            pos_col = next(
-                (name for name in (
-                    "position", "soma_position", "soma_pos", "somaLocation")
-                 if name in header),
-                None,
-            )
-            if pos_col is None:
-                return {}
-            frame = pd.read_csv(table, usecols=["bodyId", pos_col])
-    except Exception:
-        # The soma table is optional: an unreadable one degrades to no
-        # anchoring instead of failing the whole skeleton fetch.  Only the
-        # table IO lives here — filtering bugs below must surface.
-        return {}
-    requested = (
-        set(normalize_flywire_body_ids(body_ids))
-        if body_ids is not None else None
-    )
-    out = {}
-    for body_id, value in zip(frame["bodyId"], frame[pos_col]):
-        key = normalize_flywire_body_id(body_id)
-        if requested is not None and key not in requested:
-            continue
-        position = parse_soma_position(value)
-        if position is not None:
-            out[key] = position
-    return out
 
 
 def _has_local_dataset_presence(dataset: str, root: Path) -> bool:
@@ -1797,10 +1738,6 @@ def _resolve_fafb_skeleton_trees(dataset: str, body_ids,
     return out
 
 
-# Deprecated alias: the loader serves both local releases (FAFB and BANC),
-# so the historical FAFB-only name is retained only for older importers.
-load_flywire_skeletons_batch = load_local_release_skeletons
-
 
 def _import_visualizer():
     """Lazily import the VisualizeSkeleton class (heavy module; never loaded
@@ -3048,9 +2985,9 @@ class SkeletonVectorCache:
                 missing = [b for b in index if b not in have]
                 if is_fafb_dataset(self.dataset):
                     # FAFB skeletons come from the local loader (repair
-                    # caches / healed zip), never the mesh-returning batch
-                    # fetcher. Vectorize the in-memory trees here; nothing is
-                    # written into the raw store (zip-only pipeline).
+                    # caches / healed zip → line neurons). Vectorize the
+                    # in-memory trees here; nothing is written into the raw
+                    # store (zip-only pipeline).
                     fetched_trees = _resolve_fafb_skeleton_trees(
                         self.dataset, missing[:fetch_missing],
                         project_root=str(self.project_root),
@@ -4143,8 +4080,8 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
                            if self._canonical_body_id(b) not in existing_ids]
                 if missing and is_fafb_dataset(self.dataset):
                     # FAFB resolves through the local loader (repair caches /
-                    # healed zip); the batch fetcher returns meshes. Rows are
-                    # built in memory below — the zip is never mirrored.
+                    # healed zip → line neurons). Rows are built in memory
+                    # below — the zip is never mirrored.
                     fafb_fetch_rows = [
                         row for row in (
                             self._in_memory_vector_row(bid, neuron)
@@ -4819,8 +4756,8 @@ def fetch_skeleton_on_demand(dataset: str, body_id: int,
             dataset, [body_id], project_root=str(root))
         neuron = trees.get(body_id)
         if neuron is None:
-            # loader stages key by canonical or plain-int ids depending on
-            # where the entry resolved
+            # the loader keys its result by int(body_id); FAFB query ids
+            # arrive as canonical STRINGS
             try:
                 neuron = trees.get(int(body_id))
             except (TypeError, ValueError):
@@ -5343,8 +5280,8 @@ def fetch_skeletons_on_demand_batch(
         for bid in requested:
             neuron = trees.get(bid)
             if neuron is None:
-                # loader stages key by canonical or plain-int ids depending
-                # on where the entry resolved
+                # the loader keys its result by int(body_id); FAFB query
+                # ids arrive as canonical STRINGS
                 try:
                     neuron = trees.get(int(bid))
                 except (TypeError, ValueError):
@@ -6267,8 +6204,8 @@ class MorphologyComparer:
                     "query skeleton(s) online."
                 )
                 if is_fafb_dataset(self.dataset):
-                    # FAFB: the batch fetcher returns MESHES; resolve the
-                    # query through the local loader (repair caches / zip).
+                    # FAFB: resolve the query through the local loader
+                    # (repair caches / healed zip → line neurons).
                     fetched_query = _resolve_fafb_skeleton_trees(
                         self.dataset, missing_query,
                         project_root=str(self.project_root),
@@ -7390,12 +7327,11 @@ class MorphologyComparer:
         fetched_all: Dict[int, object] = {}
         if missing:
             if is_fafb_dataset(self.dataset):
-                # FAFB: the healed zip is LOCAL — fetch through the shared
-                # FlyWire loader instead of the generic batch fetcher, which
-                # is mesh-native on this dataset and would leave expansion
-                # members unscored. The zip and the repair caches are the
-                # durable sources (no ``raw_skeletons`` mirror); the vector
-                # rows are appended from the in-memory neurons below.
+                # FAFB: the healed zip is LOCAL — resolve the expansion
+                # members through the shared FlyWire loader instead of the
+                # generic batch fetcher. The zip and the repair caches are
+                # the durable sources (no ``raw_skeletons`` mirror); the
+                # vector rows are appended from the in-memory neurons below.
                 loaded = self._load_fafb_skeletons(missing)
                 fetched = {
                     int(b): n for b, n in (loaded or {}).items()

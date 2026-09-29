@@ -82,37 +82,6 @@ def test_dataset_folder_and_body_id_helpers():
 # flywire soma positions + local presence
 # ---------------------------------------------------------------------------
 
-def test_load_flywire_soma_positions_parquet_and_csv(tmp_path):
-    folder = M._dataset_folder("flywire")
-    ds_dir = tmp_path / "datasets" / folder
-    ds_dir.mkdir(parents=True)
-    fid = "720575940614131061"
-    frame = pd.DataFrame({
-        "bodyId": [fid, "111"],
-        "position": ["[1.0 2.0 3.0]", "not-a-position"],
-    })
-    frame.to_parquet(ds_dir / f"{folder}_allneurons_neuron_df.parquet",
-                     index=False)
-    # Filtered load returns only the requested id (the historical
-    # ``normalize_flywire_body_ids`` NameError bug is fixed).
-    filtered = M._load_flywire_soma_positions("flywire", tmp_path, [fid])
-    assert set(filtered) == {fid}
-    assert np.allclose(filtered[fid], [1.0, 2.0, 3.0])
-    # Unfiltered load parses valid rows and skips unparseable positions.
-    out = M._load_flywire_soma_positions("flywire", tmp_path)
-    assert fid in out and np.allclose(out[fid], [1.0, 2.0, 3.0])
-
-    # csv variant without a position column -> empty
-    (ds_dir / f"{folder}_allneurons_neuron_df.parquet").unlink()
-    pd.DataFrame({"bodyId": [fid], "other": [1]}).to_csv(
-        ds_dir / f"{folder}_allneurons_neuron_df.csv", index=False)
-    assert M._load_flywire_soma_positions("flywire", tmp_path) == {}
-
-
-def test_load_flywire_soma_positions_no_table(tmp_path):
-    assert M._load_flywire_soma_positions("flywire", tmp_path) == {}
-
-
 def test_has_local_dataset_presence(tmp_path):
     ds = "hemibrain:v1.2.1"
     folder = M._dataset_folder(ds)
@@ -2123,32 +2092,6 @@ def test_enrich_homolog_results_paths(tmp_path, monkeypatch):
                                    "male-cns:v1.0",
                                    project_root=str(tmp_path))
     assert np.isnan(out["morph_v2_similarity"]).all() and len(out) == 2
-
-
-def test_soma_positions_table_variants(tmp_path):
-    root = Path(tmp_path)
-    folder = M._dataset_folder("flywire")
-    ds_dir = root / "datasets" / folder
-    ds_dir.mkdir(parents=True)
-    # parquet table without any soma position column -> {}
-    pd.DataFrame({"bodyId": ["720575940614131061"]}).to_parquet(
-        ds_dir / f"{folder}_allneurons_neuron_df.parquet", index=False)
-    assert M._load_flywire_soma_positions("flywire", root) == {}
-    # CSV table with a position column exercises the CSV branch for both
-    # the unfiltered and the filtered (explicit body_ids) load.
-    (ds_dir / f"{folder}_allneurons_neuron_df.parquet").unlink()
-    pd.DataFrame({
-        "bodyId": ["720575940614131061"],
-        "position": ["[1.0, 2.0, 3.0]"],
-    }).to_csv(ds_dir / f"{folder}_allneurons_neuron_df.csv", index=False)
-    # Unfiltered load parses the CSV row successfully.
-    positions = M._load_flywire_soma_positions("flywire", root)
-    assert set(positions) == {"720575940614131061"}
-    # Filtered load honors the requested ids (NameError bug fixed).
-    filtered = M._load_flywire_soma_positions(
-        "flywire", root, body_ids=["720575940614131061"])
-    assert set(filtered) == {"720575940614131061"}
-    assert np.allclose(filtered["720575940614131061"], [1.0, 2.0, 3.0])
 
 
 def test_local_dataset_presence_variants(tmp_path):
