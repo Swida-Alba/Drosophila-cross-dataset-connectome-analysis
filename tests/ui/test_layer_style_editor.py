@@ -310,6 +310,143 @@ class TestEditorHandle:
         assert handle.rows[1]["neurons"] == ["aMe13x"]
         assert table_updates == []
 
+    def test_layer_edit_refreshes_only_when_layer_numbers_change(
+        self, store_patch_for_component
+    ):
+        """A layer re-select must not remount the table unless the options change.
+
+        A refresh_table remounts every cell (dropping focus and half-typed text
+        elsewhere), so re-assigning between layer numbers that are already on
+        offer stays a pure model update; only a change in the offered numbers
+        refreshes the table.
+        """
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows([
+            {"layer": "1", "neuron": "a"},
+            {"layer": "1", "neuron": "b"},
+            {"layer": "2", "neuron": "c"},
+        ])
+        refreshes = []
+        handle.refresh_table = lambda *a, **k: refreshes.append(k)
+        # 1 -> 2 keeps the offered numbers at [1, 2, 3]: no refresh.
+        handle.on_inline_edit(
+            SimpleNamespace(args={"id": 0, "field": "layer", "value": "2"})
+        )
+        assert handle.rows[0]["layer"] == "2"
+        assert refreshes == []
+        # 2 -> 3 grows the offered numbers to [1, 2, 3, 4]: refresh.
+        handle.on_inline_edit(
+            SimpleNamespace(args={"id": 0, "field": "layer", "value": "3"})
+        )
+        assert handle.rows[0]["layer"] == "3"
+        assert len(refreshes) == 1
+        assert refreshes[0].get("preserve_selection") is True
+
+    def test_on_select_records_ids_without_rebuilding_rows(
+        self, store_patch_for_component
+    ):
+        """The selection handler must not push fresh row dicts to the table.
+
+        Re-assigning table.selected on every checkbox click remounts all cells;
+        the client click already applied the state, so only the ids are recorded
+        (the next refresh_table re-syncs from them).
+        """
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows(ROWS)
+        table = handle.table
+        rows_before, selected_before = table.rows, table.selected
+        handle.on_select(SimpleNamespace(selection=[{"id": 1}]))
+        assert handle._selected_ids == [1]
+        assert table.rows is rows_before
+        assert table.selected is selected_before
+
+    def test_schedule_autosave_debounce_polls_to_a_single_flush(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The debounce is a Python deadline polled by one persistent timer.
+
+        Creating a one-shot ui.timer per commit (and deleting it at flush)
+        mounts/unmounts elements in a live slot, which remounts the table's
+        cells under the user's cursor; the deadline now just ages out through
+        ``_autosave_poll``, so rescheduling never touches the element tree.
+        """
+        from ui.components import layer_style_editor as editor_module
+
+        client, handle = build_editor(store_patch_for_component)
+        handle.name_input.value = "draft"
+        handle.set_rows([
+            {"layer": str(i + 1), "neurons": [f"n{i}"]} for i in range(5)
+        ])
+
+        flushed = []
+        monkeypatch.setattr(handle, "flush_autosave", lambda: flushed.append(1))
+
+        handle.schedule_autosave()
+        assert handle._autosave_due is not None
+        # The deadline has not passed: the poll must not flush yet.
+        handle._autosave_poll()
+        assert flushed == []
+        # Once it passes, exactly one poll flushes and disarms the deadline.
+        monkeypatch.setattr(
+            editor_module.time, "time", lambda: handle._autosave_due + 1
+        )
+        handle._autosave_poll()
+        assert flushed == [1]
+        assert handle._autosave_due is None
+        # Further polls are no-ops until the next commit re-arms.
+        handle._autosave_poll()
+        assert flushed == [1]
+
+    def test_refocus_js_never_yanks_focus_from_another_input(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The pick's programmatic refocus is guarded inside the JS.
+
+        The Python side always sends the focus snippet (so the pick keeps the
+        overlay anchored), but the snippet itself must stand down when the user
+        is already typing into some other input.
+        """
+        client, handle = build_editor(store_patch_for_component)
+        sent = []
+        monkeypatch.setattr(
+            handle.table.client, "run_javascript", lambda js: sent.append(js)
+        )
+        handle._refocus_neuron_cell(0)
+        js = sent[-1]
+        assert ".focus()" in js  # still refocuses when nothing else holds focus
+        assert "document.activeElement" in js
+        assert "c.contains(ae))return" in js
+        # The refocus retries until the input RETAINS focus: the refresh's
+        # re-render lands asynchronously, so a single focus() can land on the
+        # input that is about to be replaced.
+        assert "setTimeout(step" in js
+        # The typed prefix is cleared here (a keyed refresh no longer remounts
+        # the cell, so nothing else wipes it before the next blur commit).
+        assert "inp.value=''" in js
+
+    def test_body_slot_rows_are_keyed(self, store_patch_for_component):
+        """The body slot keys each row so a refresh patches cells in place.
+
+        Without a per-row key, pushing fresh row dicts remounts every cell input
+        and drops focus plus uncommitted text (the reported auto-save
+        interruption); the stable row id turns the refresh into a keyed patch.
+        """
+        from ui.components.layer_style_editor import _BODY_SLOT
+        assert ':key="props.row.id"' in _BODY_SLOT
+
+    def test_focus_continuity_guard_is_installed(self, store_patch_for_component):
+        """The page installs the client-side focus-continuity guard.
+
+        In this NiceGUI/Quasar stack every table re-render rebuilds all body
+        rows, dropping focus mid-edit; the guard restores the caret (and the
+        field content when the rebuild wiped it) whenever the focus fell to
+        <body> right after row removals — covering the remounts no server-side
+        refresh reduction can eliminate (e.g. a selection toggle).
+        """
+        from ui.components.layer_style_editor import _SUGGESTION_JS
+        assert "__drocatCellFocusGuard" in _SUGGESTION_JS
+        assert "drocatRowsRebuiltAt" in _SUGGESTION_JS
+
     def test_available_neurons_append_one_row_per_entry_to_one_batch_layer(
         self, store_patch_for_component
     ):
@@ -418,15 +555,18 @@ class TestEditorHandle:
 
         monkeypatch.setattr(handle, "_suggest_neurons", provider)
         monkeypatch.setattr(handle, "_refocus_neuron_cell", lambda row_id: None)
-        renders = []
+        sent = []
         monkeypatch.setattr(
-            handle.table.client, "run_javascript",
-            lambda js: renders.append(js),
+            handle.table.client, "run_javascript", lambda js: sent.append(js),
         )
+
+        def renders():
+            """Overlay re-renders in order (add picks also send chip-entry JS)."""
+            return [s for s in sent if "drocatSuggest.render(" in s]
 
         def marks():
             """Values the newest render offered, with their tick flags."""
-            _, items, _ = render_call(renders[-1])
+            _, items, _ = render_call(renders()[-1])
             return {item[0]: item[2] for item in items}
 
         def added():
@@ -434,7 +574,7 @@ class TestEditorHandle:
 
         # Focusing an empty cell offers the history list, and nothing is held.
         handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
-        assert render_call(renders[-1])[2] is True
+        assert render_call(renders()[-1])[2] is True
         assert handle._suggest_query is None
         assert handle._suggest_visible is True
 
@@ -443,7 +583,7 @@ class TestEditorHandle:
         # exactly like a type-ahead row does.
         handle._commit_neuron_suggestion(0, "l-LNv")
         assert handle.rows[0]["neurons"] == ["l-LNv"]
-        assert render_call(renders[-1])[2] is True
+        assert render_call(renders()[-1])[2] is True
         assert handle._suggest_query is None
         assert added() == ["l-LNv"]
 
@@ -451,18 +591,20 @@ class TestEditorHandle:
         # goes away and the list keeps its place, unmarked.
         handle._commit_neuron_suggestion(0, "l-LNv")
         assert handle.rows[0]["neurons"] == []
-        assert render_call(renders[-1])[2] is True
+        assert render_call(renders()[-1])[2] is True
         assert added() == []
         handle._commit_neuron_suggestion(0, "l-LNv")
         assert handle.rows[0]["neurons"] == ["l-LNv"]
 
+        # Past the chip-entry window, field events are the user's again.
+        handle._simulate_until = 0.0
         # A typed query holds: the pick keeps its rows and ticks the new chip.
         handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
         assert calls == ["PPL1"]
         assert added() == []  # the held chip is not in this pool
         handle._commit_neuron_suggestion(0, "PPL101")
         assert handle.rows[0]["neurons"] == ["l-LNv", "PPL101"]
-        assert render_call(renders[-1])[2] is False
+        assert render_call(renders()[-1])[2] is False
         assert added() == ["PPL101"]
         assert marks()["PPL102"] is False
         # The held rows come from the cached pool, so the provider is not asked
@@ -473,10 +615,9 @@ class TestEditorHandle:
         handle._commit_neuron_suggestion(0, "PPL102")
         assert added() == ["PPL101", "PPL102"]
 
-        # And a third click on a ticked row takes that one back out. The
-        # deselect is a model change like any other, so it goes through the same
-        # refresh -- the remount that drops the cell's typed text, which is what
-        # stops it committing a second chip on blur.
+        # And a third click on a ticked row takes that one back out. A removal
+        # cannot go through the cell's own entry path, so it is the one pick
+        # that still refreshes the table (its refocus is stubbed away here).
         handle._commit_neuron_suggestion(0, "PPL101")
         assert handle.rows[0]["neurons"] == ["l-LNv", "PPL102"]
         assert added() == ["PPL102"]
@@ -499,25 +640,24 @@ class TestEditorHandle:
         }))
         assert handle._suggest_visible is False
         assert handle._suggest_query is None
-        renders.clear()
+        sent.clear()
         # Past the short window that swallows the refresh's synthetic refocus, a
         # genuine refocus of the cell offers the history list again.
         handle._suggest_suppress_until = 0.0
         handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
-        assert render_call(renders[-1])[2] is True
+        assert render_call(renders()[-1])[2] is True
 
-    def test_suggestion_hold_survives_the_refocus_a_pick_triggers(
+    def test_suggestion_pick_never_touches_the_table_and_holds_the_list(
         self, store_patch_for_component, monkeypatch
     ):
-        """The refocus a pick performs must not swap the held rows for history.
+        """An add pick enters the chip through the cell, not a table refresh.
 
-        Committing a suggestion refreshes the table, which remounts the cell and
-        drops its focus, so ``_commit_neuron_suggestion`` refocuses it — and in a
-        real browser that ``focus()`` comes back as another ``on_neuron_focus``.
-        Handled naively it re-opens the history list and ends the hold, killing
-        the one behaviour the sticky list exists to provide. The test above
-        stubs the refocus away and cannot see this, so this one replays the
-        event the refocus actually produces.
+        The refresh the old flow ran remounted every cell of the table: focus
+        dropped, typing elsewhere was wiped, and a one-shot refocus had to race
+        the async re-render (and lost whenever the socket lagged). The add now
+        goes through the cell's own entry path (simulated type + Enter), so the
+        table is untouched -- and the held list survives both the pick and a
+        genuine refocus replay.
         """
         import ui.config as _config
 
@@ -534,44 +674,51 @@ class TestEditorHandle:
         monkeypatch.setattr(
             handle.table.client, "run_javascript", lambda js: sent.append(js),
         )
-        # The overlay renderer and the cell refocus both go out as JS; tell them
-        # apart so the test can see the refocus happen at all.
 
         def renders():
             return [s for s in sent if "drocatSuggest.render(" in s]
 
-        def refocuses():
-            return [s for s in sent if ".focus()" in s]
-
         handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
         handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL1"}))
-        assert render_call(renders()[-1])[2] is False
-
+        render_count = len(renders())
         handle._commit_neuron_suggestion(0, "PPL101")
-        assert refocuses(), "the pick must refocus the cell it added a chip to"
 
-        # What that refocus reports back, one round trip later.
-        handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
+        sims = [s for s in sent if "__drocatSuggestSim" in s]
+        assert sims, "the add pick must enter the chip through the cell's own q-select"
+        assert handle.rows[0]["neurons"] == ["PPL101"]
+        assert not any("setTimeout(step" in s for s in sent), (
+            "an add pick must not need the settle-refocus: nothing remounts"
+        )
+        assert len(renders()) == render_count + 1
         _, items, is_history = render_call(renders()[-1])
         assert is_history is False
         assert handle._suggest_query == "PPL1"
         assert {item[0]: item[2] for item in items} == {
             "PPL101": True, "PPL102": False}
 
-        # Past the window, a genuine refocus is a genuine refocus again.
-        handle._suggest_keep_open_until = 0.0
+        # A genuine refocus replay one round trip later keeps the held rows
+        # (the keep-open window logic still guards real refocuses).
         handle.on_neuron_focus(SimpleNamespace(args={"id": 0}))
-        assert render_call(renders()[-1])[2] is True
-        assert handle._suggest_query is None
+        assert len(renders()) == render_count + 1
+        assert handle._suggest_query == "PPL1"
+
+        # A removal pick is the one path that still refreshes the table, and
+        # its refocus uses the settle-retry JS (the remount drops the focus).
+        handle._commit_neuron_suggestion(0, "PPL101")
+        assert handle.rows[0]["neurons"] == []
+        assert any("setTimeout(step" in s for s in sent), (
+            "the removal's refocus must retry until the re-render settles"
+        )
 
     def test_suggestion_overlay_ignores_the_refresh_empty_reset(
         self, store_patch_for_component, monkeypatch
     ):
-        """The remount after a pick must not swap the held query for history.
+        """A pick's synthetic field reset must not swap the held query for history.
 
-        A table refresh remounts the cell, and the remounted q-select reports an
-        empty field. Read as typing, that would clear the held query, so the
-        reset is ignored while a query is held.
+        An add pick clears the cell's field (the chip entry's own behavior), and
+        a removal pick's refresh remounts the cell — either way a synthetic
+        empty ``input-value`` arrives. Read as typing, that would clear the
+        held query, so the reset is ignored while a query is held.
         """
         import ui.config as _config
 
@@ -590,13 +737,28 @@ class TestEditorHandle:
         assert handle._suggest_query == "PPL1"
         handle._commit_neuron_suggestion(0, "PPL101")
         renders.clear()
-        # The reset the remount reports, arriving after the re-render.
+        # The reset the chip entry's field-clear reports, one round trip later.
         handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
         assert renders == []
         assert handle._suggest_query == "PPL1"
 
+        # On a slow socket the chip entry's synthetic value event lands after
+        # the coarse window has lapsed; the exact-match map still swallows it
+        # (and arms the window for the trailing field clear), so the held query
+        # is not swapped for a fresh search of the picked name.
+        handle._simulate_until = 0.0
+        handle._suggest_ignore_reset_until = 0.0
+        handle._simulated_values["PPL101"] = time.time() + 4.0
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": "PPL101"}))
+        assert handle._suggest_query == "PPL1"
+        handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
+        assert renders == []
+        assert handle._suggest_query == "PPL1"
+        assert handle._suggest_ignore_reset_until > time.time()
+
         # Once the window passes, clearing the field really is a user action.
         handle._suggest_ignore_reset_until = 0.0
+        handle._simulate_until = 0.0
         handle._recent_neuron_history = lambda: [("l-LNv", "type")]
         handle.on_neuron_suggest(SimpleNamespace(args={"id": 0, "text": ""}))
         assert render_call(renders[-1])[2] is True
@@ -823,18 +985,21 @@ class TestEditorHandle:
 
         handle.name_input.value = "draft"
         handle.schedule_autosave()
-        # Below threshold: no debounce timer is armed and the gate status is shown.
+        # Below threshold: no debounce is armed and the gate status is shown.
         assert armed == []
+        assert handle._autosave_due is None
         assert "filled rows" in (handle.status_label.text or "")
 
-        # At exactly the threshold, auto-save arms the debounce timer.
+        # At exactly the threshold, auto-save sets the debounce deadline.
         handle.rows[AUTOSAVE_MIN_NON_EMPTY_ROWS - 1] = {
             "layer": str(AUTOSAVE_MIN_NON_EMPTY_ROWS), "neurons": ["n5"], **fill,
         }
         assert handle._non_empty_row_count() == AUTOSAVE_MIN_NON_EMPTY_ROWS
         armed.clear()
         handle.schedule_autosave()
-        assert len(armed) == 1
+        assert handle._autosave_due is not None
+        # The tick timer is the only ui.timer the editor ever creates.
+        assert armed == []
 
     def test_suggestion_settings_gate_typing_overlay(
         self, store_patch_for_component, monkeypatch
@@ -844,7 +1009,6 @@ class TestEditorHandle:
         A non-empty query must close the overlay instead of rendering the
         dataset suggestion list, but the empty-field history list is unaffected.
         """
-        from ui.components import layer_style_editor as editor_module
         import ui.config as _config
 
         client, handle = build_editor(store_patch_for_component)
@@ -880,7 +1044,6 @@ class TestEditorHandle:
         An empty field must close the overlay instead of rendering a Recent/
         Frequent list, but live self._suggest_neurons typing is unaffected.
         """
-        from ui.components import layer_style_editor as editor_module
         import ui.config as _config
 
         client, handle = build_editor(store_patch_for_component)
@@ -908,7 +1071,6 @@ class TestEditorHandle:
     ):
         """Enabled history renders the Recent payload (isHistory=true), while a
         typed query renders the dataset suggestion payload (isHistory=false)."""
-        from ui.components import layer_style_editor as editor_module
         import ui.config as _config
 
         client, handle = build_editor(store_patch_for_component)

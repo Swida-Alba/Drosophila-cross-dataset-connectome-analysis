@@ -10,6 +10,7 @@ so an accidental UI/port shutdown never loses edits. A draft stays "dirty"
 """
 from datetime import datetime
 import tempfile
+import time
 from typing import Callable, List, Optional
 
 from nicegui import ui
@@ -169,12 +170,82 @@ if (!window.drocatResizeDelegated) {
     window.drocatStartColResize(ev, col);
   }, true);
 }
+// Focus continuity for the editor table: in this NiceGUI/Quasar stack EVERY
+// table re-render rebuilds all body rows (rows prop, a selection toggle, any
+// element update landing in the same render cycle), which drops the focus and
+// the caret mid-edit. When a blur inside the table is immediately followed by
+// row removals AND the focus fell to <body> (i.e. the user did not go
+// somewhere else), put the caret back into the same cell of the rebuilt row
+// and restore the field content the rebuild wiped. Shared with the layer
+// editor's table via the __drocatCellFocusGuard flag — whichever page loads
+// first installs it, and it covers both tables.
+if (!window.__drocatCellFocusGuard) {
+  window.__drocatCellFocusGuard = true;
+  var drocatLastCellFocus = null;
+  var drocatRowsRebuiltAt = 0;
+  document.addEventListener('focusout', function (ev) {
+    var inp = ev.target;
+    if (!inp || (inp.tagName !== 'INPUT' && inp.tagName !== 'TEXTAREA' && inp.tagName !== 'BUTTON')) return;
+    var td = inp.closest ? inp.closest('.drocat-edge-table td') : null;
+    if (!td) { drocatLastCellFocus = null; return; }
+    var tr = td.closest('tr');
+    var tbody = tr ? tr.parentElement : null;
+    var rec = {
+      at: Date.now(),
+      rowIndex: tbody ? Array.prototype.indexOf.call(tbody.children, tr) : -1,
+      cellIndex: Array.prototype.indexOf.call(tr.children, td),
+      tag: inp.tagName,
+      caret: null, value: '',
+    };
+    try { rec.caret = inp.selectionStart; rec.value = inp.value; } catch (e) {}
+    drocatLastCellFocus = rec;
+    setTimeout(function () {
+      var rec2 = drocatLastCellFocus;
+      drocatLastCellFocus = null;
+      if (!rec2) return;
+      var ae = document.activeElement;
+      if (ae && ae !== document.body) return;              // user went elsewhere
+      if (Date.now() - rec2.at > 300) return;              // not this blur
+      if (Date.now() - drocatRowsRebuiltAt > 300) return;  // no rebuild happened
+      var tb = document.querySelector('.drocat-edge-table tbody');
+      if (!tb) return;
+      var tr2 = tb.children[rec2.rowIndex];
+      if (!tr2) return;
+      var td2 = tr2.children[rec2.cellIndex];
+      var inp2 = td2 && td2.querySelector(rec2.tag.toLowerCase());
+      if (!inp2) return;
+      inp2.focus();
+      if (inp2.tagName === 'BUTTON') return;
+      if (!inp2.value && rec2.value) {
+        inp2.value = rec2.value;
+        inp2.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (rec2.caret != null && inp2.setSelectionRange) {
+        try {
+          var len = (inp2.value || '').length;
+          var pos = Math.min(rec2.caret, len);
+          inp2.setSelectionRange(pos, pos);
+        } catch (e) {}
+      }
+    }, 0);
+  }, true);
+  var drocatRowMo = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var removed = muts[i].removedNodes;
+      for (var j = 0; j < removed.length; j++) {
+        if (removed[j].nodeName === 'TR') { drocatRowsRebuiltAt = Date.now(); return; }
+      }
+    }
+  });
+  drocatRowMo.observe(document.documentElement, { childList: true, subtree: true });
+}
 """
 
 
 _EDGE_BODY_SLOT = r"""
 <q-tr
   :props="props"
+  :key="props.row.id"
   :class="props.rowIndex % 2 === 0 ? 'drocat-edge-row-even' : 'drocat-edge-row-odd'"
 >
   <q-td class="drocat-edge-select-cell">
@@ -232,7 +303,10 @@ class EdgeListEditorHandle:
         self.validation_panel: Optional[ui.card] = None
         self.validation_label: Optional[ui.label] = None
         self._selected_ids: List[int] = []
-        self._timer = None
+        # Auto-save debounce deadline (polled by the one tick timer from render)
+        # and that tick timer itself, created once during the card build.
+        self._autosave_due: Optional[float] = None
+        self._autosave_tick = None
         self.expansion: Optional[ui.expansion] = None
         self._transient_csv_path: Optional[str] = None
         self._pending_pick: Optional[dict] = None
@@ -330,6 +404,11 @@ class EdgeListEditorHandle:
             self.table.on("edge-cell-change", self.on_inline_edit)
             self.table.on("edge-cell-commit", self.on_inline_commit)
             self.table.on("edge-color-pick", self.on_color_pick)
+            if self._autosave_tick is None:
+                # One persistent poll timer for the debounced auto-save; creating
+                # timers per commit would mount/unmount elements in a live slot
+                # and remount the table's cells under the user's cursor.
+                self._autosave_tick = ui.timer(0.25, self._autosave_poll)
         self.refresh_table()
 
     def _update_validation(self) -> list:
@@ -360,12 +439,10 @@ class EdgeListEditorHandle:
 
     # ------------------------------------------------------------- selection
     def on_select(self, event) -> None:
+        # The client click already updated the checkbox state; only record the
+        # ids. Re-assigning ``table.selected`` here would push fresh row dicts
+        # and remount every cell under the cursor (a refresh_table does that).
         self._selected_ids = [row.get("id") for row in getattr(event, "selection", []) or []]
-        if self.table is not None:
-            row_dicts = self._row_dicts()
-            self.table.selected = [
-                row for row in row_dicts if row["id"] in self._selected_ids
-            ]
 
     def on_inline_edit(self, event) -> None:
         """Update the in-memory row from a table-cell change.
@@ -468,8 +545,13 @@ class EdgeListEditorHandle:
         )
 
     def schedule_autosave(self) -> None:
-        """Debounce edits, then flush to disk. Outside a live NiceGUI slot
-        (e.g. unit tests) the flush happens immediately.
+        """Debounce edits, then flush to disk.
+
+        The deadline is kept in Python and polled by the editor's one tick
+        timer (created once in ``render``): creating a one-shot ``ui.timer``
+        per commit mounts a new element in a live slot and deleting it at
+        flush time unmounts it again, and either patch can remount the table's
+        cells — which is exactly the input interruption under editing.
 
         Auto-save is gated on a minimum number of filled rows so partial
         tables do not create throwaway drafts. A manual export still flushes
@@ -481,16 +563,18 @@ class EdgeListEditorHandle:
             )
             return
         self._update_status("Editing… (auto-save pending)")
-        try:
-            if self._timer is not None:
-                self._timer.cancel()
-            self._timer = ui.timer(AUTOSAVE_DELAY, self.flush_autosave, once=True)
-        except Exception:
-            self.flush_autosave()
+        self._autosave_due = time.time() + AUTOSAVE_DELAY
+
+    def _autosave_poll(self) -> None:
+        """Fire the debounced flush once the deadline passes (tick timer)."""
+        if self._autosave_due is None or time.time() < self._autosave_due:
+            return
+        self._autosave_due = None
+        self.flush_autosave()
 
     def flush_autosave(self) -> Optional[str]:
         """Write the current rows to the draft store; returns the CSV path."""
-        self._timer = None
+        self._autosave_due = None
         name = str(self.name_input.value or "").strip() if self.name_input else self.current_name
         if not name:
             self._update_status("Enter a draft name to enable auto-save")

@@ -455,13 +455,17 @@ class TestEditorHandle:
     def test_refresh_keeps_python_and_table_selection_aligned(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows(ROWS)
+        # The click handler records ids only (re-assigning table.selected would
+        # remount every cell); the client's own state is already correct.
         handle.on_select(SimpleNamespace(selection=[{**ROWS[1], "id": 1}]))
+        assert handle._selected_ids == [1]
         handle.on_inline_edit(
             SimpleNamespace(args={"id": 1, "field": "weight", "value": "99"})
         )
-        assert handle._selected_ids == [1]
-        assert [row["id"] for row in handle.table.selected] == [1]
         assert handle.rows[1]["weight"] == "99"
+        # The next data refresh re-aligns the table's selection with the ids.
+        handle.refresh_table(preserve_selection=True)
+        assert [row["id"] for row in handle.table.selected] == [1]
 
         # Loading/replacing rows clears both representations of selection.
         handle.set_rows(ROWS[:1])
@@ -533,18 +537,102 @@ class TestEditorHandle:
 
         handle.name_input.value = "draft"
         handle.schedule_autosave()
-        # Below threshold: no debounce timer is armed and the gate status is shown.
+        # Below threshold: no debounce is armed and the gate status is shown.
         assert armed == []
+        assert handle._autosave_due is None
         assert "filled rows" in (handle.status_label.text or "")
 
-        # At exactly the threshold, auto-save arms the debounce timer.
+        # At exactly the threshold, auto-save sets the debounce deadline.
         handle.rows[AUTOSAVE_MIN_NON_EMPTY_ROWS - 1] = _filled(
             AUTOSAVE_MIN_NON_EMPTY_ROWS
         )
         assert handle._non_empty_row_count() == AUTOSAVE_MIN_NON_EMPTY_ROWS
         armed.clear()
         handle.schedule_autosave()
-        assert len(armed) == 1
+        assert handle._autosave_due is not None
+        # The tick timer is the only ui.timer the editor ever creates.
+        assert armed == []
+
+    def test_schedule_autosave_debounce_polls_to_a_single_flush(
+        self, store_patch_for_component, monkeypatch
+    ):
+        """The debounce is a Python deadline polled by one persistent timer.
+
+        Creating a one-shot ui.timer per commit (and deleting it at flush)
+        mounts/unmounts elements in a live slot, which remounts the table's
+        cells under the user's cursor; the deadline now just ages out through
+        ``_autosave_poll``, so rescheduling never touches the element tree.
+        """
+        from ui.components import edge_list_editor as editor_module
+
+        client, handle = build_editor(store_patch_for_component)
+        handle.name_input.value = "draft"
+        handle.set_rows([
+            {"source": f"N{i}", "target": f"M{i}", "weight": str(i + 1)}
+            for i in range(5)
+        ])
+
+        flushed = []
+        monkeypatch.setattr(handle, "flush_autosave", lambda: flushed.append(1))
+
+        handle.schedule_autosave()
+        assert handle._autosave_due is not None
+        # The deadline has not passed: the poll must not flush yet.
+        handle._autosave_poll()
+        assert flushed == []
+        # Once it passes, exactly one poll flushes and disarms the deadline.
+        monkeypatch.setattr(
+            editor_module.time, "time", lambda: handle._autosave_due + 1
+        )
+        handle._autosave_poll()
+        assert flushed == [1]
+        assert handle._autosave_due is None
+        # Further polls are no-ops until the next commit re-arms.
+        handle._autosave_poll()
+        assert flushed == [1]
+
+    def test_on_select_records_ids_without_rebuilding_rows(
+        self, store_patch_for_component
+    ):
+        """The selection handler must not push fresh row dicts to the table.
+
+        Re-assigning table.selected on every checkbox click remounts all cells;
+        the client click already applied the state, so only the ids are recorded
+        (the next refresh_table re-syncs from them).
+        """
+        client, handle = build_editor(store_patch_for_component)
+        handle.set_rows([
+            {"source": "A", "target": "B", "weight": "1"},
+            {"source": "C", "target": "D", "weight": "2"},
+        ])
+        table = handle.table
+        rows_before, selected_before = table.rows, table.selected
+        handle.on_select(SimpleNamespace(selection=[{"id": 1}]))
+        assert handle._selected_ids == [1]
+        assert table.rows is rows_before
+        assert table.selected is selected_before
+
+    def test_body_slot_rows_are_keyed(self, store_patch_for_component):
+        """The body slot keys each row so a refresh patches cells in place.
+
+        Without a per-row key, pushing fresh row dicts remounts every cell input
+        and drops focus plus uncommitted text mid-edit; the stable row id turns
+        the refresh into a keyed patch.
+        """
+        from ui.components.edge_list_editor import _EDGE_BODY_SLOT
+        assert ':key="props.row.id"' in _EDGE_BODY_SLOT
+
+    def test_focus_continuity_guard_is_installed(self, store_patch_for_component):
+        """The page installs the client-side focus-continuity guard.
+
+        In this NiceGUI/Quasar stack every table re-render rebuilds all body
+        rows, dropping focus mid-edit; the guard restores the caret (and the
+        field content when the rebuild wiped it) whenever the focus fell to
+        <body> right after row removals.
+        """
+        from ui.components.edge_list_editor import _COL_RESIZE_JS
+        assert "__drocatCellFocusGuard" in _COL_RESIZE_JS
+        assert "drocatRowsRebuiltAt" in _COL_RESIZE_JS
 
     def test_column_mode_swap_adds_group_and_info_columns(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)

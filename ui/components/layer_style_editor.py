@@ -425,6 +425,9 @@ if (!window.drocatSuggestDelegated) {
 if (!window.drocatSuggestNav) {
   window.drocatSuggestNav = true;
   document.addEventListener('keydown', function (event) {
+    // The pick's simulated chip entry presses Enter programmatically; that
+    // keypress must not come back around as another pick.
+    if (window.__drocatSuggestSim) return;
     if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) return;
     var o = document.getElementById('drocat-suggest-overlay');
     if (!o || o.style.display === 'none') return;
@@ -545,6 +548,73 @@ if (!window.drocatSuggestToggle) {
     }
   }, true);
 }
+// Focus continuity for the editor table: in this NiceGUI/Quasar stack EVERY
+// table re-render rebuilds all body rows (rows prop, a selection toggle, any
+// element update landing in the same render cycle), which drops the focus and
+// the caret mid-edit. When a blur inside the table is immediately followed by
+// row removals AND the focus fell to <body> (i.e. the user did not go
+// somewhere else), put the caret back into the same cell of the rebuilt row
+// and restore the field content the rebuild wiped.
+if (!window.__drocatCellFocusGuard) {
+  window.__drocatCellFocusGuard = true;
+  var drocatLastCellFocus = null;
+  var drocatRowsRebuiltAt = 0;
+  document.addEventListener('focusout', function (ev) {
+    var inp = ev.target;
+    if (!inp || (inp.tagName !== 'INPUT' && inp.tagName !== 'TEXTAREA' && inp.tagName !== 'BUTTON')) return;
+    var td = inp.closest ? inp.closest('.drocat-edge-table td') : null;
+    if (!td) { drocatLastCellFocus = null; return; }
+    var tr = td.closest('tr');
+    var tbody = tr ? tr.parentElement : null;
+    var rec = {
+      at: Date.now(),
+      rowIndex: tbody ? Array.prototype.indexOf.call(tbody.children, tr) : -1,
+      cellIndex: Array.prototype.indexOf.call(tr.children, td),
+      tag: inp.tagName,
+      caret: null, value: '',
+    };
+    try { rec.caret = inp.selectionStart; rec.value = inp.value; } catch (e) {}
+    drocatLastCellFocus = rec;
+    setTimeout(function () {
+      var rec2 = drocatLastCellFocus;
+      drocatLastCellFocus = null;
+      if (!rec2) return;
+      var ae = document.activeElement;
+      if (ae && ae !== document.body) return;              // user went elsewhere
+      if (Date.now() - rec2.at > 300) return;              // not this blur
+      if (Date.now() - drocatRowsRebuiltAt > 300) return;  // no rebuild happened
+      var tb = document.querySelector('.drocat-edge-table tbody');
+      if (!tb) return;
+      var tr2 = tb.children[rec2.rowIndex];
+      if (!tr2) return;
+      var td2 = tr2.children[rec2.cellIndex];
+      var inp2 = td2 && td2.querySelector(rec2.tag.toLowerCase());
+      if (!inp2) return;
+      inp2.focus();
+      if (inp2.tagName === 'BUTTON') return;
+      if (!inp2.value && rec2.value) {
+        inp2.value = rec2.value;
+        inp2.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (rec2.caret != null && inp2.setSelectionRange) {
+        try {
+          var len = (inp2.value || '').length;
+          var pos = Math.min(rec2.caret, len);
+          inp2.setSelectionRange(pos, pos);
+        } catch (e) {}
+      }
+    }, 0);
+  }, true);
+  var drocatRowMo = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var removed = muts[i].removedNodes;
+      for (var j = 0; j < removed.length; j++) {
+        if (removed[j].nodeName === 'TR') { drocatRowsRebuiltAt = Date.now(); return; }
+      }
+    }
+  });
+  drocatRowMo.observe(document.documentElement, { childList: true, subtree: true });
+}
 """
 
 
@@ -555,8 +625,9 @@ if (!window.drocatSuggestToggle) {
 _BODY_SLOT = r"""
 <q-tr
   :props="props"
-  :class="props.rowIndex % 2 === 0 ? 'drocat-edge-row-even' : 'drocat-edge-row-odd'"
->
+  :key="props.row.id"
+  :class="props.rowIndex % 2 === 0 ? 'drocat-edge-row-even' : 'drocat-edge-row-odd'
+">
   <q-td class="drocat-edge-select-cell">
     <q-checkbox v-model="props.selected" dense />
   </q-td>
@@ -629,7 +700,10 @@ class LayerStyleEditorHandle:
         self.validation_label: Optional[ui.label] = None
         self.available_neurons_link: Optional[ui.element] = None
         self._selected_ids: List[int] = []
-        self._timer = None
+        # Auto-save debounce deadline (polled by the one tick timer from render)
+        # and that tick timer itself, created once during the card build.
+        self._autosave_due: Optional[float] = None
+        self._autosave_tick = None
         self.expansion: Optional[ui.expansion] = None
         self._transient_csv_path: Optional[str] = None
         self.synapse_mode: str = "synapse"
@@ -681,6 +755,17 @@ class LayerStyleEditorHandle:
         # ``@update:model-value`` with a possibly-stale chip list; ignore those
         # for a short window so they cannot overwrite the authoritative rows.
         self._suppress_neuron_value_until: float = 0.0
+        # While the pick's simulated chip entry is in flight, the cell field's
+        # value changes are ours (the picked name, then the entry clearing the
+        # field), not the user's typing: ``on_neuron_suggest`` ignores them so
+        # the held list is not swapped for a fresh query mid-pick.
+        self._simulate_until: float = 0.0
+        # Exact signatures of the values the chip entry typed into the field.
+        # On a slow socket the synthetic events land seconds after the pick,
+        # when the coarse window has lapsed; an event whose text exactly equals
+        # a simulated value is still ours (a user typing produces incremental
+        # prefixes, never the full name in one event).
+        self._simulated_values: dict = {}
 
     def _empty_logical_row(self) -> dict:
         """One empty scaffolding row (no layer / neuron / colour)."""
@@ -831,6 +916,11 @@ class LayerStyleEditorHandle:
             self.table.on("layer-color-pick", self.on_color_pick)
             self.table.on("layer-cell-focus", self.on_neuron_focus)
             self.table.on("layer-cell-suggest", self.on_neuron_suggest)
+            if self._autosave_tick is None:
+                # One persistent poll timer for the debounced auto-save; creating
+                # timers per commit would mount/unmount elements in a live slot
+                # and remount the table's cells under the user's cursor.
+                self._autosave_tick = ui.timer(0.25, self._autosave_poll)
         self.refresh_table()
 
     def _update_validation(self) -> list:
@@ -957,12 +1047,10 @@ class LayerStyleEditorHandle:
 
     # ------------------------------------------------------------- selection
     def on_select(self, event) -> None:
+        # The client click already updated the checkbox state; only record the
+        # ids. Re-assigning ``table.selected`` here would push fresh row dicts
+        # and remount every cell under the cursor (a refresh_table does that).
         self._selected_ids = [row.get("id") for row in getattr(event, "selection", []) or []]
-        if self.table is not None:
-            row_dicts = self._row_dicts()
-            self.table.selected = [
-                row for row in row_dicts if row["id"] in self._selected_ids
-            ]
 
     def on_inline_edit(self, event) -> None:
         """Update the in-memory logical row from a table-cell change.
@@ -1012,12 +1100,18 @@ class LayerStyleEditorHandle:
             return
 
         scalar = str(value or "").strip()
+        if field == "layer":
+            layers_before = layer_style_store.available_layers(self.rows)
         self.rows[row_id][field] = scalar
         if field == "layer":
-            # A layer select has no text cursor, so refreshing its options after a
-            # discrete selection change is safe. Validation is intentionally NOT
-            # run here: incomplete fields only surface when the user runs/exports.
-            self.refresh_table(preserve_selection=True)
+            # Refresh only when the offered layer numbers actually changed: a
+            # refresh remounts every cell of the table and would drop focus and
+            # any half-typed text elsewhere, so re-assigning between numbers
+            # that are already on offer must stay a pure model update.
+            # Validation is intentionally NOT run here: incomplete fields only
+            # surface when the user runs/exports.
+            if layer_style_store.available_layers(self.rows) != layers_before:
+                self.refresh_table(preserve_selection=True)
             self.schedule_autosave()
 
     def on_inline_commit(self, event) -> None:
@@ -1051,6 +1145,21 @@ class LayerStyleEditorHandle:
             return
         text = str(args.get("text") or "").strip()
         if not 0 <= row_id < len(self.rows):
+            return
+        # The pick's simulated chip entry moves the field through the picked
+        # name and then clears it; neither is the user typing. The coarse
+        # window covers fast sockets; the exact-match map covers slow ones,
+        # where the synthetic events land after it has lapsed. The trailing
+        # field clear follows within one round trip of the value event, so
+        # swallowing the value arms the empty-reset window.
+        now = time.time()
+        self._simulated_values = {
+            v: until for v, until in self._simulated_values.items() if until > now
+        }
+        if text and self._simulated_values.pop(text, None) is not None:
+            self._suggest_ignore_reset_until = now + 3.0
+            return
+        if now < self._simulate_until:
             return
         # A commit/blur closes the overlay. Ignore the re-render's empty reset
         # ``input-value`` only while it arrives inside the suppression window; a
@@ -1265,15 +1374,18 @@ class LayerStyleEditorHandle:
     def _commit_neuron_suggestion(self, row_id: int, value: str) -> None:
         """Add a clicked row's chip to the cell, or take it back out when marked.
 
-        Mirrors the standard query box: the row model changes first and the
-        table refresh that follows is what clears the cell's typed text (a
-        remounted q-select starts empty), so a leftover prefix can never be
-        committed as a second chip on blur. The list then stays on the same
-        query (its rows re-render with the new value ticked), so entries can be
-        handled one after another without retyping, and clicking a ticked row
-        removes that chip again -- the tick is a checkbox, not a receipt. The
-        cell is re-focused explicitly in case the refresh remounts the q-select
-        and drops focus.
+        Mirrors the standard query box: the row model changes first, the list
+        stays on the same query (its rows re-render with the new value ticked),
+        so entries can be handled one after another without retyping, and
+        clicking a ticked row removes that chip again -- the tick is a checkbox,
+        not a receipt.
+
+        An ADD never touches the table rows: the chip is entered through the
+        cell's own q-select (a simulated type + Enter, the same public path a
+        user's keypress takes), so no cell remounts, the caret and any
+        in-flight typing elsewhere survive, and the field clears itself after
+        the chip lands. Only a REMOVAL needs a table refresh to sync the
+        shorter chip list, and its refocus uses the settle-retry JS.
         """
         if row_id is None or not 0 <= row_id < len(self.rows):
             return
@@ -1283,20 +1395,63 @@ class LayerStyleEditorHandle:
         neurons = list(self.rows[row_id]["neurons"])
         if chip_is_marked(neurons, value):
             neurons = without_chip(neurons, value)
+            removing = True
         else:
             neurons.append(value)
+            removing = False
         self.rows[row_id]["neurons"] = neurons
-        # Ignore the re-render's stale re-emit for a moment so the q-select
-        # cannot clobber the chips we just committed -- in either direction,
-        # since a stale list would put a removed chip straight back.
+        # Ignore the cell's re-emit for a moment so neither the simulated chip
+        # entry nor a remount's stale echo can clobber the authoritative rows --
+        # in either direction, since a stale list would put a removed chip
+        # straight back.
         self._suppress_neuron_value_until = time.time() + 0.6
+        # The chip entry (or, on removal, the refresh) produces a synthetic
+        # field change; it must not be read as the user clearing their query.
+        self._suggest_ignore_reset_until = time.time() + 0.6
+        if not removing:
+            self._simulate_until = time.time() + 0.6
         self.schedule_autosave()
-        # Both paths refresh: it is the remount that drops the typed text, and the
-        # hold that keeps the refresh's synthetic blur from closing the list.
+        # The hold keeps a synthetic blur from closing the list mid-pick.
         self._suggest_keep_open_until = time.time() + 0.6
-        self.refresh_table(preserve_selection=True)
-        self._rehold_suggestions(row_id)
-        self._refocus_neuron_cell(row_id)
+        if removing:
+            self.refresh_table(preserve_selection=True)
+            self._rehold_suggestions(row_id)
+            self._refocus_neuron_cell(row_id)
+        else:
+            self._rehold_suggestions(row_id)
+            self._simulate_chip_entry(row_id, value)
+
+    def _simulate_chip_entry(self, row_id: int, value: str) -> None:
+        """Type a picked name into the cell's own q-select and press Enter.
+
+        The simulated keypress goes through Quasar's public entry path
+        (``new-value-mode="add-unique"``): the chip renders, the field clears
+        itself, and ``@update:model-value`` syncs the client copy -- all
+        without replacing ``table.rows``, so no cell remounts and the focus
+        stays where the user has it. ``__drocatSuggestSim`` keeps the overlay's
+        own Enter navigation from treating the simulated keypress as a pick.
+        """
+        self._simulated_values[str(value)] = time.time() + 4.0
+        try:
+            self.table.client.run_javascript(
+                "(function(){"
+                f"var c=document.getElementById('neuron-cell-{int(row_id)}');"
+                "if(!c)return;"
+                "var inp=c.querySelector('.q-field__input')||c.querySelector('input');"
+                "if(!inp)return;"
+                "var ae=document.activeElement;"
+                "if(!ae||ae===document.body||c.contains(ae)){inp.focus();}"
+                "window.__drocatSuggestSim=true;"
+                "try{"
+                f"inp.value={json.dumps(str(value))};"
+                "inp.dispatchEvent(new Event('input',{bubbles:true}));"
+                "inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',"
+                "keyCode:13,which:13,bubbles:true}));"
+                "}finally{window.__drocatSuggestSim=false;}"
+                "})()"
+            )
+        except Exception:
+            pass
 
     def _on_suggest_toggle(self, _event) -> None:
         """A press on the focused cell, or Escape: close the list, or bring it back.
@@ -1318,14 +1473,50 @@ class LayerStyleEditorHandle:
         self._show_neuron_suggestions(row_id, "")
 
     def _refocus_neuron_cell(self, row_id: int) -> None:
-        """Refocus a neuron cell's input so the overlay stays put after a pick."""
+        """Refocus a neuron cell's input after a pick, clearing the typed prefix.
+
+        A removal pick's table refresh remounts the cells (every re-render does
+        in this stack), which drops the focus and wipes the typed query — the
+        refocus puts the caret back, and the clear here keeps a leftover prefix
+        from committing as a second chip on blur. The
+        whole routine is guarded inside the JS (where the live focus state is):
+        if the user is already typing into some other input, the pick's
+        round-trip must not yank the caret back to the picked cell. The refocus
+        also retries for a short while: the refresh's re-render lands
+        asynchronously, so a single focus() can land on the input that is about
+        to be replaced, and the remount would drop the focus to <body>.
+        """
         try:
+            cell_id = int(row_id)
             self.table.client.run_javascript(
                 "(function(){"
-                f"var c=document.getElementById('neuron-cell-{int(row_id)}');"
+                f"var cell='neuron-cell-{cell_id}';"
+                "var c=document.getElementById(cell);"
                 "if(!c)return;"
-                "var inp=c.querySelector('.q-field__input')||c.querySelector('input');"
-                "if(inp){inp.focus();}"
+                "var ae=document.activeElement;"
+                "if(ae&&ae!==document.body&&!c.contains(ae))return;"
+                "var deadline=Date.now()+1500;var cleared=false;"
+                "function step(){"
+                "var cc=document.getElementById(cell);"
+                "if(!cc)return;"
+                "var ae2=document.activeElement;"
+                "if(ae2&&ae2!==document.body&&!cc.contains(ae2))return;"
+                "var inp=cc.querySelector('.q-field__input')||cc.querySelector('input');"
+                "if(!inp)return;"
+                "if(!cleared){cleared=true;"
+                "if(inp.value){inp.value='';"
+                "inp.dispatchEvent(new Event('input',{bubbles:true}));}}"
+                "inp.focus();"
+                # Focus can land on the input that the refresh's async re-render
+                # is about to replace, so settling is confirmed only after a
+                # grace period: if the same input still holds focus, we are past
+                # the remount; if it dropped, retry until the deadline.
+                "setTimeout(function(){"
+                "if(document.activeElement===inp)return;"
+                "if(Date.now()<deadline){step();}"
+                "},100);"
+                "}"
+                "setTimeout(step,150);"
                 "})()"
             )
         except Exception:
@@ -1399,8 +1590,13 @@ class LayerStyleEditorHandle:
         )
 
     def schedule_autosave(self) -> None:
-        """Debounce edits, then flush to disk. Outside a live NiceGUI slot
-        (e.g. unit tests) the flush happens immediately.
+        """Debounce edits, then flush to disk.
+
+        The deadline is kept in Python and polled by the editor's one tick
+        timer (created once in ``render``): creating a one-shot ``ui.timer``
+        per commit mounts a new element in a live slot and deleting it at
+        flush time unmounts it again, and either patch can remount the table's
+        cells — which is exactly the input interruption under editing.
 
         Auto-save is gated on a minimum number of filled rows so partial tables
         do not create throwaway drafts. A manual export still flushes explicitly
@@ -1412,16 +1608,18 @@ class LayerStyleEditorHandle:
             )
             return
         self._update_status("Editing… (auto-save pending)")
-        try:
-            if self._timer is not None:
-                self._timer.cancel()
-            self._timer = ui.timer(AUTOSAVE_DELAY, self.flush_autosave, once=True)
-        except Exception:
-            self.flush_autosave()
+        self._autosave_due = time.time() + AUTOSAVE_DELAY
+
+    def _autosave_poll(self) -> None:
+        """Fire the debounced flush once the deadline passes (tick timer)."""
+        if self._autosave_due is None or time.time() < self._autosave_due:
+            return
+        self._autosave_due = None
+        self.flush_autosave()
 
     def flush_autosave(self) -> Optional[str]:
         """Write the current rows to the draft store; returns the CSV path."""
-        self._timer = None
+        self._autosave_due = None
         name = str(self.name_input.value or "").strip() if self.name_input else self.current_name
         if not name:
             self._update_status("Enter a draft name to enable auto-save")
