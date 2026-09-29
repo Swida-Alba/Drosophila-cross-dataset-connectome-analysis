@@ -174,6 +174,25 @@ def _connection_version(dataset) -> str:
     return DEFAULT_CONNECTION_VERSION
 
 
+def reject_unknown_banc_release(dataset) -> None:
+    """Refuse an explicit-but-unsupported BANC release (round-7 R7-1a).
+
+    ``banc`` / ``flywire_BANC`` legitimately resolve to a pinned default
+    release, and ``banc_v626`` / ``banc_v888`` are served directly — but an
+    identifier carrying an explicit version the bucket does not publish
+    (e.g. ``banc_v999``) used to fall through to the default release and
+    download it under the requested name: v888 data labelled v999. Raise
+    instead; the caller's refusal path takes over.
+    """
+    version = (dataset_version(str(dataset or "").strip()) or "").lower()
+    if version and version not in CONNECTION_PRODUCTS:
+        raise ValueError(
+            f"BANC release {version!r} (from {dataset!r}) is not published "
+            f"by the public bucket — supported releases: "
+            f"{sorted(CONNECTION_PRODUCTS)}. Refusing to download a "
+            "different release and label it with this dataset name.")
+
+
 def _is_v626_release(dataset) -> bool:
     """Return whether *dataset* addresses the v626 BANC id namespace."""
     return _connection_version(dataset) == "v626"
@@ -967,6 +986,7 @@ def prepare_dataset_tables(dataset_name, dataset_dir,
     # use the same safe canonical namespace.  This preserves legacy callers
     # that pass ``flywire_BANC_*`` or ``banc:v888`` while avoiding split table
     # names inside the canonical dataset directory.
+    reject_unknown_banc_release(dataset_name)
     dataset_name = _dataset_folder(dataset_name)
     version = _connection_version(dataset_name)
     dataset_dir = str(dataset_dir)

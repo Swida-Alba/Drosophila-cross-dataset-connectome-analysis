@@ -4589,9 +4589,18 @@ class ConnectivityProfiler:
                                     result_map[bid] = None
                             return result_map
                     except Exception as e:
-                        pass
-            
+                        # Round-7 K4a: a read that RAISES (lock, truncated
+                        # file, dtype surprise) used to vanish here, so a
+                        # present-but-unreadable table looked identical to
+                        # "no table" and every caller saw an all-None
+                        # lookup with no trace of why.
+                        self._log(f"Warning: could not read neuron table "
+                                  f"{neurons_file} for type lookup: {e}")
+
             # File not found - return all None
+            self._log(f"type lookup: no readable local neuron table for "
+                      f"{dataset} under {dataset_path} — returning None "
+                      f"for {len(bodyids)} bodyIds")
             for bid in bodyids:
                 result_map[bid] = None
             return result_map

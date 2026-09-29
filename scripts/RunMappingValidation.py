@@ -207,6 +207,12 @@ def parse_args(argv=None):
                    action='store_false',
                    help='stage 5d opt-out: skip the reciprocal pass (the '
                         'Reciprocal tab then renders its not-run note)')
+    p.add_argument('--allow-empty-pairs', action='store_true',
+                   help='write the usual report even when stage 1 resolved '
+                        'ZERO type pairs (the run then validates nothing). '
+                        'Without this flag an empty resolution exits 2 — '
+                        'the round-7 R7-1 finding was a silent empty report '
+                        'looking like success.')
     p.add_argument('--skip-backward-pass', action='store_true',
                    help='stage 5d: force-skip the backward pass even when '
                         'enabled')
@@ -376,6 +382,15 @@ def main(argv=None):
 
     validator = MappingValidator(cfg)
     run_dir = validator.run()
+    if not validator.pairs and not args.allow_empty_pairs:
+        # Round-7 R7-1: an empty resolution used to exit 0 with a full
+        # report — a silent nothing looking like success. The diagnosis is
+        # in the run log (`! [resolution]` lines); refuse here.
+        print('! [TMVEV] refusing: ZERO type pairs resolved — see the '
+              f'`! [resolution]` lines in {run_dir}')
+        print('         re-run with --allow-empty-pairs to write the '
+              'empty report anyway')
+        return 2
     print(f'\nResults: {run_dir}')
     # per-run _UserGuide (same content model the UI runner uses; never
     # fails the run). report.html itself is written by the pipeline's

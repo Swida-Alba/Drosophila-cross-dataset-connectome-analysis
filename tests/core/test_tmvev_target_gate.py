@@ -6,6 +6,7 @@ instead of quietly labelling typed neurons "(untyped)".
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,7 +47,24 @@ def test_gate_prepares_banc_target(monkeypatch, tmp_path):
     monkeypatch.setattr(BANC_file_converter, 'ensure_banc_data', spy)
     assert mv.ensure_local_release_data('banc_v888',
                                         project_root=str(tmp_path)) is True
-    assert calls == [('banc_v888', tmp_path / 'datasets')]
+    # R7-1b: dataset_dir is the DATASET FOLDER - the converter writes
+    # {dataset_dir}/{name}_*, and the root scattered them loose where the
+    # catalog could not see them.
+    assert calls == [('banc_v888', tmp_path / 'datasets' / 'banc_v888')]
+
+
+def test_release_guard_refuses_unknown_version():
+    # R7-1a: an explicit-but-unknown BANC release must be refused BEFORE
+    # any download (round 7 saw banc_v999 silently serve v888 data).
+    import banc_public_data
+    with pytest.raises(ValueError, match='not published'):
+        banc_public_data.reject_unknown_banc_release('banc_v999')
+
+
+def test_release_guard_accepts_known_and_default():
+    import banc_public_data
+    for name in ('banc', 'flywire_BANC', 'banc_v888', 'banc_v626'):
+        banc_public_data.reject_unknown_banc_release(name)  # must not raise
 
 
 def test_gate_refuses_when_preparation_fails(monkeypatch, capsys):
@@ -59,6 +77,19 @@ def test_gate_refuses_when_preparation_fails(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert 'refusing' not in out  # that wording lives in the CLI wrapper
     assert 'target preparation for banc_v888 failed' in out
+
+
+def test_gate_refuses_on_release_valueerror(monkeypatch, capsys):
+    import BANC_file_converter
+
+    def unknown_release(dataset, dataset_dir):
+        raise ValueError('BANC release v999 is not published')
+
+    monkeypatch.setattr(BANC_file_converter, 'ensure_banc_data',
+                        unknown_release)
+    assert mv.ensure_local_release_data('banc_v999') is False
+    out = capsys.readouterr().out
+    assert 'refused' in out and 'not published' in out
 
 
 def test_gate_refuses_when_preparation_declines(monkeypatch):
@@ -98,15 +129,23 @@ def _validator_for(profiler, logs):
     return v
 
 
+class _TableProbeProfiler(_EmptyLookupProfiler):
+    has_table = True
+
+    def _has_local_table(self, dataset):
+        return self.has_table
+
+
 def test_empty_type_lookup_announces_the_lookup_gap():
     logs = []
-    v = _validator_for(_EmptyLookupProfiler, logs)
+    v = _validator_for(_TableProbeProfiler, logs)
     v._pairs_for_type = lambda src_type, pool, query: []
     v._current_query = ''
     v._same_name_excluded = []
     v.pairs = v.resolve_type_pairs()
     joined = '\n'.join(logs)
-    assert '! [resolution] type lookup returned nothing for 2 bodyIds' in joined
+    assert '! [resolution] type lookup matched 0 of 2 bodyIds' in joined
+    assert 'local neuron table: True' in joined
     assert 'names the LOOKUP GAP, not the data' in joined
 
 
@@ -118,7 +157,27 @@ def test_typed_pool_never_triggers_the_anomaly():
     v._same_name_excluded = []
     v.pairs = v.resolve_type_pairs()
     joined = '\n'.join(logs)
-    assert 'type lookup returned nothing' not in joined
+    assert 'type lookup matched 0 of' not in joined
+
+
+def test_no_pairs_diagnosis_names_mapper_state():
+    # R7-1: the diagnosis must carry the mapper's load error (the K4b
+    # root cause: the crosswalk needs a dataset the host never
+    # initialized) instead of blaming local data that is present.
+    logs = []
+    v = _validator_for(_TypedLookupProfiler, logs)
+    v._pairs_for_type = lambda src_type, pool, query: []
+    v._current_query = ''
+    v._same_name_excluded = []
+    v.mapper = SimpleNamespace(
+        last_load_error='neuron_df not found: male-cns table',
+        _mapper_snapshot_path=lambda: None)
+    diag = v._no_pairs_diagnosis()
+    joined = '\n'.join(diag)
+    assert 'neuron_df not found: male-cns table' in joined
+    assert 'initialize the datasets the mapper needs' in joined
+    assert "source dataset 'flywire_FAFB_v783'" in joined
+    assert "target dataset 'banc_v888'" in joined
 
 
 def test_no_pairs_line_is_loud_and_readme_greppable():

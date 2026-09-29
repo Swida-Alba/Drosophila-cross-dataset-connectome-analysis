@@ -622,6 +622,15 @@ def ensure_banc_data(dataset_name, dataset_dir):
     # Legacy ``flywire_BANC_*`` and hidden ``banc:v888`` spellings must share
     # the same safe file namespace as their canonical dataset directories.
     dataset_name = dataset_folder(dataset_name)
+    # Round-7 R7-1a: an explicit-but-unknown release (banc_v999) must refuse
+    # BEFORE any download, not serve the default release under that name.
+    try:
+        import banc_public_data
+        banc_public_data.reject_unknown_banc_release(dataset_name)
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 — the bucket module may be unavailable
+        pass
     print(f"\nChecking BANC data for {dataset_name}...")
     print("  ℹ️  One-time preparation: raw downloads in downloads/ are converted "
           "into the local parquet tables used by every DROCAT workflow. "

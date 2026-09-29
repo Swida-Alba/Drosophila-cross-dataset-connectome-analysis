@@ -2214,9 +2214,18 @@ def ensure_local_release_data(dataset: str, project_root=None) -> bool:
         from .BANC_file_converter import ensure_banc_data  # type: ignore
     root = Path(project_root) if project_root else \
         Path(__file__).resolve().parents[2]
-    dataset_dir = root / 'datasets'
+    # The converter writes ``{dataset_dir}/{name}_*``: dataset_dir is the
+    # DATASET FOLDER (coana passes datasets/<safe>/), not the datasets root
+    # — passing the root scattered the tables loose where the dataset
+    # catalog could not see them (round-7 R7-1b).
+    safe = dataset.replace(':', '_').replace('.', '_')
+    dataset_dir = root / 'datasets' / safe
     try:
         return bool(ensure_banc_data(dataset, dataset_dir))
+    except ValueError as exc:
+        # an explicit-but-unknown release (R7-1a) — a refusal, not a crash
+        print(f'! [TMVEV] target preparation for {dataset} refused: {exc}')
+        return False
     except Exception as exc:  # noqa: BLE001 — refusal, not a crash
         print(f'! [TMVEV] target preparation for {dataset} failed: {exc!r}')
         return False
@@ -2325,14 +2334,19 @@ class MappingValidator:
                     body_ids, cfg.source_dataset) or {}
                 if body_ids and not any(id2type.values()):
                     # F-P2: an empty lookup is a TABLE/read failure, not a
-                    # data-quality fact — say so before the '(untyped)'
-                    # bucket reads like an accusation against the neurons.
+                    # data-quality fact — report the facts (local table
+                    # present? rows read?) so the reader can tell a read
+                    # failure from a mapper-side gap.
+                    table_present = self.profiler._has_local_table(
+                        cfg.source_dataset) \
+                        if hasattr(self.profiler, '_has_local_table') \
+                        else 'unknown'
                     self.log(
-                        '! [resolution] type lookup returned nothing for '
+                        '! [resolution] type lookup matched 0 of '
                         f'{len(body_ids)} bodyIds of {query!r} in '
-                        f'{cfg.source_dataset} (local neuron table '
-                        'unreadable or absent?) — the "(untyped)" bucket '
-                        'below names the LOOKUP GAP, not the data')
+                        f'{cfg.source_dataset} (local neuron table: '
+                        f'{table_present}) — the "(untyped)" bucket below '
+                        'names the LOOKUP GAP, not the data')
                 by_type: Dict[str, List[int]] = {}
                 for bid in body_ids:
                     tname = id2type.get(bid)
@@ -2524,6 +2538,37 @@ class MappingValidator:
             'rivals': ';'.join(snf.get('rivals') or []),
             'reason': reason,
         })
+
+    def _no_pairs_diagnosis(self) -> List[str]:
+        """Why did every query fail to resolve? Name the ACTUAL blocker.
+
+        Round-7 R7-1: the old line blamed the target's local data and the
+        source neuron table while the real cause was the type mapper's
+        crosswalk being unloadable (its ``last_load_error`` already knew —
+        typically the male-cns neuron table the FAFB↔BANC bridges are
+        built from was never initialized on the host).
+        """
+        lines: List[str] = []
+        mapper = getattr(self, 'mapper', None)
+        load_error = getattr(mapper, 'last_load_error', None)
+        if load_error:
+            lines.append(f'type mapper could not load its crosswalk: '
+                         f'{load_error} — initialize the datasets the '
+                         'mapper needs (male-cns neuron table) and re-run')
+        snapshot = getattr(mapper, '_mapper_snapshot_path', None)
+        try:
+            snap_path = snapshot() if callable(snapshot) else None
+        except Exception:  # noqa: BLE001 — diagnostic only
+            snap_path = None
+        if snap_path is not None:
+            lines.append(f'mapper snapshot {"present" if Path(snap_path).exists() else "absent"}: {snap_path}')
+        for label, dataset in (('source', self.cfg.source_dataset),
+                               ('target', self.cfg.target_dataset)):
+            table = self.profiler._has_local_table(dataset) \
+                if hasattr(self.profiler, '_has_local_table') else None
+            lines.append(f'{label} dataset {dataset!r}: local neuron table '
+                         f'{"present" if table else "ABSENT"}')
+        return lines
 
     def _pairs_for_type(self, src_type: str, pool: List[int],
                         query: str) -> List[TypePair]:
@@ -6237,9 +6282,12 @@ class MappingValidator:
         self.pairs = self.resolve_type_pairs()
         if not self.pairs:
             self.log('! [resolution] no valid type pairs resolved; '
-                     'nothing to validate — check that the TARGET '
-                     f'dataset ({cfg.target_dataset}) has local data and '
-                     'that the queried types exist on both sides')
+                     'nothing to validate — diagnosis follows')
+            try:
+                for line in self._no_pairs_diagnosis():
+                    self.log('! [resolution]   ' + line)
+            except Exception as exc:  # noqa: BLE001 — diagnostic only
+                self.log(f'! [resolution]   (diagnosis unavailable: {exc!r})')
             # P3: a no-pair run (e.g. a lone held fan-out) still verifies
             # its rivals when the pass is opted in.
             if cfg.verify_suspects:
