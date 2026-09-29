@@ -2573,8 +2573,11 @@ class MappingValidator:
                                ('target', self.cfg.target_dataset)):
             table = self.profiler._has_local_table(dataset) \
                 if hasattr(self.profiler, '_has_local_table') else None
+            # R7-1c's own rule: never assert a cause the diagnostic cannot
+            # answer — an unprobeable table state is 'unknown', not ABSENT.
+            state = {True: 'present', False: 'ABSENT'}.get(table, 'unknown')
             lines.append(f'{label} dataset {dataset!r}: local neuron table '
-                         f'{"present" if table else "ABSENT"}')
+                         f'{state}')
         return lines
 
     def _pairs_for_type(self, src_type: str, pool: List[int],

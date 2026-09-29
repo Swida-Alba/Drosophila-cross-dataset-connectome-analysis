@@ -217,6 +217,20 @@ def test_no_pairs_diagnosis_names_mapper_state():
     assert "target dataset 'banc_v888'" in joined
 
 
+def test_no_pairs_diagnosis_says_unknown_when_it_cannot_probe():
+    # R7-1c's own rule: a table state the diagnostic cannot answer must be
+    # reported as 'unknown', never asserted as ABSENT (a profiler without
+    # _has_local_table used to print ABSENT without ever probing).
+    logs = []
+    v = _validator_for(_TypedLookupProfiler, logs)
+    v._current_query = ''
+    v.mapper = SimpleNamespace(last_load_error=None,
+                               _mapper_snapshot_path=lambda: None)
+    joined = '\n'.join(v._no_pairs_diagnosis())
+    assert 'local neuron table unknown' in joined
+    assert 'ABSENT' not in joined
+
+
 def test_no_pairs_line_is_loud_and_readme_greppable():
     source = Path(mv.__file__).read_text()
     assert ("'! [resolution] no valid type pairs resolved; '" in source), (

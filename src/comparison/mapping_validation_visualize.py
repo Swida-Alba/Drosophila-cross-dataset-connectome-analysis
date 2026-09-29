@@ -832,6 +832,41 @@ def plan_scene_parents(parents: Dict[Tuple[str, str], List],
     return scenes, []
 
 
+def _scene_failure_folder(viz_dir, src_type) -> Path:
+    """Synthetic marker-only scene folder, unique per failure.
+
+    Scenes are keyed ``(query, src_type)``; two queries sharing one parent
+    type whose scenes both fail within the same clock second would collide
+    on the timestamped name and the second marker would overwrite the
+    first — append a counter until the name is free.
+    """
+    base = Path(viz_dir) / ('plot-3d_branches_'
+                            + _scene_folder_slug(src_type)
+                            + '_' + time.strftime('%Y%m%d_%H%M%S'))
+    folder = base
+    n = 1
+    while folder.exists():
+        folder = Path(f'{base}_{n}')
+        n += 1
+    return folder
+
+
+def _scene_failure_target_folder(viz, viz_dir, src_type):
+    """Folder a failed scene's marker belongs in.
+
+    ``viz`` is reset to ``None`` at the top of every scene iteration; a
+    failure after the constructor marks that scene's own folder, a failure
+    before it (the constructor is what creates the folder) gets a fresh
+    synthetic one — never the PREVIOUS iteration's folder, which would
+    mislabel a successfully rendered scene as failed while the actually
+    failing scene leaves no marker at all.
+    """
+    folder = getattr(viz, 'save_folder', None)
+    if folder is None:
+        folder = _scene_failure_folder(viz_dir, src_type)
+    return folder
+
+
 def _write_scene_failure_marker(folder, src_type, exc, tb) -> bool:
     """Say so IN the folder when a scene dies part-way through.
 
@@ -1006,6 +1041,11 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
     for si, ((query, src_type), branch_list) in enumerate(scenes, 1):
         validator.log(f'[stage 4] scene {si}/{len(scenes)}: {src_type} '
                       f'({len(branch_list)} branches) [{query}]')
+        # Reset per scene: without this, an exception in scene N+1 raised
+        # BEFORE the constructor would leave `viz` bound to scene N and the
+        # except-handler below would mislabel the PREVIOUS, successful
+        # scene's folder with a SCENE_FAILED marker.
+        viz = None
         try:
             entries: List[Tuple[str, object, str]] = []  # (group, neurons, color)
             group_names: List[str] = []
@@ -1503,11 +1543,9 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                        'neuron(s) resolved to no skeleton — the query '
                        'layer is empty')
                 validator.log(f'    ! scene {src_type} failed: {why}')
-                folder = Path(viz_dir) / (
-                    'plot-3d_branches_' + _scene_folder_slug(src_type)
-                    + '_' + time.strftime('%Y%m%d_%H%M%S'))
-                _write_scene_failure_marker(folder, src_type,
-                                            EmptyQueryLayerError(why), '')
+                _write_scene_failure_marker(
+                    _scene_failure_folder(viz_dir, src_type), src_type,
+                    EmptyQueryLayerError(why), '')
                 continue
 
             if not entries:
@@ -1600,9 +1638,6 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             validator.log(f'    ! scene {src_type} failed: {exc}')
             tb = traceback.format_exc()
             validator.log(tb)
-            # `viz` is bound inside the guarded block, so a constructor failure
-            # leaves it unbound — and no folder to mark, since the constructor
-            # is what makes it.
-            failed_viz = locals().get('viz')
-            _write_scene_failure_marker(getattr(failed_viz, 'save_folder', None),
-                                        src_type, exc, tb)
+            _write_scene_failure_marker(
+                _scene_failure_target_folder(viz, viz_dir, src_type),
+                src_type, exc, tb)

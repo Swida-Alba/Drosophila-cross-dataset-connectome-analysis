@@ -3333,3 +3333,45 @@ def test_scene_folder_slug_is_glob_safe():
     assert _scene_folder_slug('LNd_CRY-') == 'LNd_CRY-'
     assert _scene_folder_slug('a/b:c') == 'a_b_c'
     assert _scene_folder_slug('///') == 'scene'
+
+
+def test_scene_failure_marker_never_lands_in_the_previous_scene_folder(
+        tmp_path):
+    """A pre-constructor failure must mark ITS OWN synthetic folder.
+
+    The stale-`viz` bug: `viz` stayed bound across loop iterations, so an
+    exception in scene N+1 raised before the constructor wrote
+    SCENE_FAILED.txt into the PREVIOUS, successful scene's folder —
+    mislabeling a good scene while the actually failing scene left no
+    marker at all."""
+    from types import SimpleNamespace
+    from comparison.mapping_validation_visualize import (
+        _scene_failure_target_folder)
+    prev = tmp_path / 'plot-3d_branches_s-LNv_20260930_120000'
+    prev.mkdir()
+    prior_viz = SimpleNamespace(save_folder=prev)
+    # a failure AFTER the constructor marks that scene's own folder
+    assert _scene_failure_target_folder(prior_viz, tmp_path, 's-LNv') == prev
+    # a failure BEFORE the constructor (viz reset to None per iteration)
+    # gets a fresh synthetic folder — never the previous scene's
+    fresh = _scene_failure_target_folder(None, tmp_path, 's-LNv')
+    assert fresh != prev
+    assert fresh.parent == tmp_path
+    assert fresh.name.startswith('plot-3d_branches_s-LNv_')
+
+
+def test_scene_failure_folders_do_not_collide_within_one_second(tmp_path):
+    """Two failures sharing a parent type in the same clock second must
+    each keep their own marker (the second used to overwrite the first,
+    losing its distinct error text)."""
+    from comparison.mapping_validation_visualize import (
+        _scene_failure_folder, _write_scene_failure_marker)
+    first = _scene_failure_folder(tmp_path, 'DN1p')
+    _write_scene_failure_marker(first, 'DN1p', RuntimeError('boom one'), '')
+    second = _scene_failure_folder(tmp_path, 'DN1p')
+    assert second != first
+    _write_scene_failure_marker(second, 'DN1p', RuntimeError('boom two'), '')
+    first_text = (first / 'SCENE_FAILED.txt').read_text(encoding='utf-8')
+    assert 'boom one' in first_text and 'boom two' not in first_text
+    assert 'boom two' in (second / 'SCENE_FAILED.txt').read_text(
+        encoding='utf-8')
