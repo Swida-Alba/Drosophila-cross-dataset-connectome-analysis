@@ -613,10 +613,15 @@ class MorphologyProfileComparer:
             self._log(note)
         # NBLAST scores every neuron pair twice, so large populations are
         # SLOW — disclosed, not refused (user 2026-09-29). The bound is the
-        # population that would actually be scored — min(total,
-        # max_total_neurons) — not the raw query size, so the warning names
-        # the capped size a small max_total_neurons produces.
-        effective = min(total, self.max_total_neurons)
+        # population that would actually be scored: min(total,
+        # max_total_neurons), floored by the pinned reservation — the cap
+        # never drops a queried neuron (_apply_total_cap keeps every named
+        # one even beyond it), so a 40-neuron query at cap 25 still scores
+        # 40 and must be warned as 40, not as the 25 that never runs.
+        reserved = sum(
+            1 for ids in members.values() for bid in ids
+            if self._body_id(bid) in self._pinned)
+        effective = min(total, max(self.max_total_neurons, reserved))
         if self.method == "nblast" and effective > NBLAST_WARN_NEURONS:
             self._note(
                 f"NBLAST comparison scores every neuron pair twice: "

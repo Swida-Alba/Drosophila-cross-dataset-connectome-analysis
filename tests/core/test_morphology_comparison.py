@@ -1151,6 +1151,25 @@ def test_nblast_warning_names_the_effective_population(monkeypatch, tmp_path):
     assert "50 neurons is past the 30-neuron comfort bound" in notes
 
 
+def test_nblast_warning_names_pinned_overflow_beyond_the_cap(
+        monkeypatch, tmp_path):
+    """40 QUERIED bodyIds with max_total_neurons=25 still score 40 (the cap
+    never drops a named neuron); the cost warning must name the population
+    that will actually be scored, not the min(total, cap) that never runs."""
+    type_map = {i: "T1" for i in range(1, 41)}
+    _install_nblast(monkeypatch, type_map)
+    run = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=list(range(1, 41)), method="nblast",
+        max_total_neurons=25, output_dir=str(tmp_path),
+        generate_heatmaps=False, verbose=False).run()
+    assert _read_matrix(
+        Path(run["output_folder"]) / "bodyid_level"
+        / "bodyid_similarity_nblast.csv").shape == (40, 40)
+    notes = (Path(run["output_folder"]) / "user_warning_notes.txt"
+             ).read_text(encoding="utf-8")
+    assert "40 neurons is past the 30-neuron comfort bound" in notes
+
+
 # ------------------------------------------- taxonomy + instance query lanes
 @pytest.fixture(autouse=True)
 def _hermetic_taxonomy_resolver(monkeypatch):
