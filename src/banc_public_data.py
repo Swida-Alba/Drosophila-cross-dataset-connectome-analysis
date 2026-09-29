@@ -18,7 +18,21 @@ All fetched skeletons are cached in the shared raw skeleton store
 (simplification 0), identical to the FAFB raw-cache representation.
 """
 
+
 from __future__ import annotations
+
+# Round-7 report: this module prints non-ASCII status glyphs on paths that
+# never import coana (its own __main__, converter CLIs), so install the
+# UTF-8 stdio guard at the source — idempotent, never raises.
+try:
+    from utils.console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from .utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
 
 import io
 import os

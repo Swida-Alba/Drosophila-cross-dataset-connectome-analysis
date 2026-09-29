@@ -1754,10 +1754,16 @@ class WebDriverExportSession:
             if auto_crop:
                 img.save(output_path, 'PNG')
             else:
-                # No processing needed, just rename
+                # No processing needed, just rename — with a lock-retry:
+                # the previous screenshot's viewer or AV can still hold
+                # the destination open ([WinError 32], round-7 report).
                 os.makedirs(os.path.dirname(os.path.abspath(output_path)),
                             exist_ok=True)
-                os.replace(temp_png, output_path)
+                try:
+                    from .utils.parquet_utils import replace_with_retry
+                except ImportError:
+                    from utils.parquet_utils import replace_with_retry
+                replace_with_retry(temp_png, output_path)
                 return
         
         # Clean up temp file if it still exists

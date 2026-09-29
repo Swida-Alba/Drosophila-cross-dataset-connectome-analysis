@@ -3,6 +3,19 @@ import os
 from datetime import datetime, timezone
 import pandas as pd
 
+# Round-7 report: this module prints non-ASCII status glyphs on paths that
+# never import coana (its own __main__, converter CLIs), so install the
+# UTF-8 stdio guard at the source — idempotent, never raises.
+try:
+    from utils.console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from .utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
+
 try:
     from .utils.parquet_utils import (
         parquet_is_reusable, write_file_atomic, write_parquet_atomic)

@@ -1580,8 +1580,12 @@ class ConnectivityProfiler:
         row_data = self._profile_to_row(profile)
         df = pd.DataFrame([row_data])
         
-        # Atomic write with temp file
-        temp_file = batch_file.with_suffix('.parquet.tmp')
+        # Atomic write with a reclaimable temp-sibling name (R7-2)
+        try:
+            from utils.parquet_utils import temp_sibling
+        except ImportError:
+            from .utils.parquet_utils import temp_sibling
+        temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
             temp_file.rename(batch_file)
@@ -1618,6 +1622,12 @@ class ConnectivityProfiler:
             return 0
         
         self._log(f"Consolidating {len(batch_files)} profile batch files for {dataset}...")
+        # Shared by both engine paths below (R7-2 temp-sibling naming);
+        # hoisted so the pandas fallback sees the binding too.
+        try:
+            from utils.parquet_utils import temp_sibling
+        except ImportError:
+            from .utils.parquet_utils import temp_sibling
         
         try:
             import polars as pl
@@ -1677,9 +1687,13 @@ class ConnectivityProfiler:
             # Keep only the last occurrence of each neuron_id (latest profile)
             combined = combined.unique(subset=['neuron_id'], keep='last')
             
-            # Save consolidated cache
+            # Save consolidated cache atomically through the shared
+            # temp-sibling scheme (round-7 R7-2: the naked
+            # '.parquet.tmp' name leaked a non-reclaimable orphan and its
+            # os.replace raced an existing temp into WinError 183).
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = main_cache_path.with_suffix('.parquet.tmp')
+            temp_path = Path(temp_sibling(str(main_cache_path),
+                                          'profile-consolidation'))
             combined.write_parquet(str(temp_path))
             temp_path.rename(main_cache_path)
             
@@ -1732,7 +1746,8 @@ class ConnectivityProfiler:
             combined = combined.drop_duplicates(subset=['neuron_id'], keep='last')
 
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = main_cache_path.with_suffix('.parquet.tmp')
+            temp_path = Path(temp_sibling(str(main_cache_path),
+                                          'profile-consolidation'))
             combined.to_parquet(temp_path, index=False)
             temp_path.rename(main_cache_path)
             
@@ -1776,7 +1791,14 @@ class ConnectivityProfiler:
         # Load from disk
         cache_path = self._get_cache_parquet_path(dataset)
         
-        # Clean up any leftover temp files from interrupted runs
+        # Clean up any leftover temp files from interrupted runs: the
+        # current temp-sibling scheme, plus the legacy naked name written
+        # before the R7-2 migration.
+        try:
+            from utils.parquet_utils import remove_stale_temp_files
+        except ImportError:
+            from .utils.parquet_utils import remove_stale_temp_files
+        remove_stale_temp_files(cache_path, 'profile-cache')
         temp_path = cache_path.with_suffix('.parquet.tmp')
         if temp_path.exists():
             try:
@@ -1861,7 +1883,16 @@ class ConnectivityProfiler:
         
         # Use atomic write: write to temp file, fsync, then rename
         # This ensures the cache is never corrupted by interrupts or power loss
-        temp_path = cache_path.with_suffix('.parquet.tmp')
+        # R7-2: temp-sibling naming so an interrupted write is reclaimable
+        # by remove_stale_temp_files, not a permanent naked .tmp orphan.
+        try:
+            from utils.parquet_utils import (
+                remove_stale_temp_files, temp_sibling)
+        except ImportError:
+            from .utils.parquet_utils import (
+                remove_stale_temp_files, temp_sibling)
+        remove_stale_temp_files(cache_path, 'profile-cache')
+        temp_path = Path(temp_sibling(str(cache_path), 'profile-cache'))
         try:
             # Try Polars for faster parquet writing (especially for large caches)
             use_polars = False
@@ -2205,8 +2236,12 @@ class ConnectivityProfiler:
         rows = [self._profile_to_row(p) for p in profiles.values()]
         df = pd.DataFrame(rows)
         
-        # Atomic write with temp file
-        temp_file = batch_file.with_suffix('.parquet.tmp')
+        # Atomic write with a reclaimable temp-sibling name (R7-2)
+        try:
+            from utils.parquet_utils import temp_sibling
+        except ImportError:
+            from .utils.parquet_utils import temp_sibling
+        temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
             temp_file.rename(batch_file)

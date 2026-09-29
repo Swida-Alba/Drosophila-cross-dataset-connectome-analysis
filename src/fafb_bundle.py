@@ -664,7 +664,15 @@ def pack(zip_path, out_path, level: int = DEFAULT_LEVEL,
         for start in range(0, n_entries, shard)
     ]
 
-    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    # R7-2: temp-sibling naming so an interrupted pack is reclaimable by
+    # remove_stale_temp_files instead of a permanent naked .tmp orphan.
+    try:
+        from .utils.parquet_utils import (
+            remove_stale_temp_files, temp_sibling)
+    except ImportError:
+        from utils.parquet_utils import remove_stale_temp_files, temp_sibling
+    remove_stale_temp_files(out_path, 'bundle-pack')
+    tmp_path = temp_sibling(out_path, 'bundle-pack')
     max_error = 0.0
     block_table: List[Tuple[int, int, int, int]] = []
     neuron_entries: List[Tuple[int, int, int]] = []

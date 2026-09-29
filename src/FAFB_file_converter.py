@@ -1,3 +1,16 @@
+
+# Round-7 report: this module prints non-ASCII status glyphs on paths that
+# never import coana (its own __main__, converter CLIs), so install the
+# UTF-8 stdio guard at the source — idempotent, never raises.
+try:
+    from utils.console_encoding import ensure_utf8_stdio
+except ImportError:
+    try:
+        from .utils.console_encoding import ensure_utf8_stdio
+    except ImportError:
+        ensure_utf8_stdio = None
+if ensure_utf8_stdio is not None:
+    ensure_utf8_stdio()
 import os
 import shutil
 from pathlib import Path
@@ -47,11 +60,11 @@ FAFB_SYNAPSE_PROFILE = {
 try:
     from utils.parquet_utils import (
         parquet_is_reusable, parquet_readable, reencode_parquet_lossless,
-        write_file_atomic, write_parquet_atomic)
+        temp_sibling, write_file_atomic, write_parquet_atomic)
 except ImportError:  # pragma: no cover - src laid bare on sys.path
     from utils.parquet_utils import (
         parquet_is_reusable, parquet_readable, reencode_parquet_lossless,
-        write_file_atomic, write_parquet_atomic)
+        temp_sibling, write_file_atomic, write_parquet_atomic)
 
 
 def compact_synapse_table(syn_pq, progress_callback=None) -> bool:
@@ -493,8 +506,11 @@ def process_skeletons_to_parquet(zip_path, save_path, batch_size=500):
         print(f"  ⚠️ Error: Input file not found: {zip_path}")
         return False
 
-    # Use a temporary file to avoid corrupting the destination if interrupted
-    temp_path = save_path + '.tmp'
+    # Use a temporary file to avoid corrupting the destination if
+    # interrupted — through the shared temp-sibling scheme so an
+    # interrupted write is reclaimable (round-7 R7-2), not a naked .tmp.
+    write_file_atomic  # noqa: F821 — resolved below via the module import
+    temp_path = temp_sibling(save_path, 'fafb-table')
     writer = None
     
     try:
@@ -569,10 +585,10 @@ def process_skeletons_to_parquet(zip_path, save_path, batch_size=500):
                     
         if writer:
             writer.close()
-            # Rename temp file to final path
-            if os.path.exists(save_path):
-                os.remove(save_path)
-            os.rename(temp_path, save_path)
+            # Atomic replace: no remove-first window (an interruption after
+            # the old os.remove lost the original table), and it works
+            # where the rename needed the removal first.
+            os.replace(temp_path, save_path)
             
             file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
             print(f"  ✓ Conversion complete. Output size: {file_size_mb:.2f} MB")

@@ -107,7 +107,7 @@ class NeuronBridgeParquetCache:
             manifest: dict[str, Any] = {}
             if self.manifest_path.exists():
                 try:
-                    manifest = json.loads(self.manifest_path.read_text())
+                    manifest = json.loads(self.manifest_path.read_text(encoding='utf-8'))
                 except Exception:
                     manifest = {}
             manifest.update(

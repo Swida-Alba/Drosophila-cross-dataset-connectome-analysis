@@ -177,7 +177,7 @@ class SynapseCache:
             }
             return self._manifest_cache
         try:
-            data = json.loads(self.manifest_path.read_text())
+            data = json.loads(self.manifest_path.read_text(encoding='utf-8'))
             if (
                 data.get("schema_version") != SYNAPSE_CACHE_SCHEMA_VERSION
                 or data.get("dataset") != self.dataset
@@ -238,7 +238,7 @@ class SynapseCache:
         if not path.exists() or not meta_path.exists():
             return None
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
             normalized = stable_query_spec(spec)
             if (
                 meta.get("schema_version") != SYNAPSE_QUERY_SCHEMA_VERSION

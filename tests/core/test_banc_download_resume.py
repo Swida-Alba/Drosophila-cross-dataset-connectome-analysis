@@ -105,3 +105,47 @@ def test_verifier_probe_decodes_utf8_and_survives_dead_reader():
     # the membership test is None-safe
     assert '"atomic-ok" in stdout_text' in source
     assert 'proc.stdout or ""' in source or "stdout_text = proc.stdout or" in source
+
+
+def test_consolidation_temps_use_the_reclaimable_naming():
+    """R7-2: the consolidation/profile writers must use the temp-sibling
+    scheme (.{name}.{kind}.{pid}.tmp) that remove_stale_temp_files can
+    reclaim — the naked 'path + .tmp' naming leaked a permanent orphan on
+    Windows and its os.replace raced an existing temp into WinError 183."""
+    import re
+    import utils.parquet_utils as pu
+    import comparison.connectivity_profiler as cp
+    import coana
+    import fafb_bundle
+    import FAFB_file_converter
+
+    src = Path(cp.__file__).read_text(encoding="utf-8")
+    # the two consolidation writes name their temps via temp_sibling
+    assert src.count("'profile-consolidation'") >= 2
+    # the naked consolidation naming is gone from the profiler
+    assert "with_suffix('.parquet.tmp')" not in src or (
+        "legacy" in src)  # only the legacy-orphan cleanup may keep one
+
+    for module in (coana, fafb_bundle, FAFB_file_converter):
+        # strip comments: the pattern lives in CODE, and the fix's own
+        # comments legitimately mention the naked form
+        code_lines = [l for l in Path(module.__file__)
+                      .read_text(encoding="utf-8").splitlines()
+                      if not l.strip().startswith('#')]
+        code = '\n'.join(code_lines)
+        for pattern in ("+ '.tmp'", '+ ".tmp"', 'name + ".tmp"'):
+            assert pattern not in code, (module.__name__, pattern)
+
+    # the reclaimable naming actually round-trips through the reclaimer
+    import os
+    import tempfile
+    work = Path(tempfile.mkdtemp())
+    probe = work / "_r7_probe_target.parquet"
+    temp = Path(pu.temp_sibling(str(probe), "probe"))
+    try:
+        temp.write_bytes(b"x")
+        assert pu._temp_pid(temp.name,
+                            "._r7_probe_target.parquet.probe.") is not None
+    finally:
+        temp.unlink(missing_ok=True)
+        work.rmdir()

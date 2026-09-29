@@ -327,6 +327,30 @@ def write_file_atomic(final_path, write_fn, kind="build",
 write_parquet_atomic = write_file_atomic
 
 
+def replace_with_retry(temp, final, attempts: int = 5,
+                       delay: float = 0.5):
+    """``atomic_replace`` with a Windows lock-retry loop.
+
+    Round-7 report: the visualization screenshot rename hit
+    ``PermissionError: [WinError 32]`` because the previous screenshot's
+    viewer/AV still held the destination open. ``os.replace`` fails
+    immediately on a locked destination; a short retry (the holder
+    typically closes within a second) succeeds without the caller caring.
+    The last attempt's error propagates.
+    """
+    import time as _time
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            atomic_replace(temp, final)
+            return final
+        except PermissionError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                _time.sleep(delay)
+    raise last_error
+
+
 def _column_bounds(parquet_file, column):
     """Global (min, max) of *column* from footer statistics, else None."""
     names = parquet_file.schema_arrow.names

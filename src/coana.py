@@ -5728,21 +5728,22 @@ class FindNeuronConnection:
                 if merge_cols:
                     combined = combined.unique(subset=merge_cols, keep='last')
             
-            # Write to temp file, then replace original
+            # Write atomically through the shared temp-sibling scheme
+            # (round-7 R7-2: a naked path + '.tmp' is invisible to
+            # remove_stale_temp_files, so an interrupted write leaked a
+            # permanent orphan onto Windows).
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
-            tmp_path = db_path + '.tmp'
             print(f"  Writing consolidated cache...")
-            combined.collect().write_parquet(tmp_path, compression='gzip')
-            
-            # Get count before deleting
-            total_count = pl.scan_parquet(tmp_path).select(pl.len()).collect().item()
-            
-            # Replace original with consolidated
-            # Replace atomically. Removing the live cache first leaves a
-            # window where an interrupted consolidation makes the cache
-            # unreadable; os.replace keeps the previous file until the new
-            # parquet is complete.
-            os.replace(tmp_path, db_path)
+            try:
+                from .utils.parquet_utils import write_file_atomic
+            except ImportError:
+                from utils.parquet_utils import write_file_atomic
+
+            def _write_consolidated(tmp_path):
+                combined.collect().write_parquet(tmp_path, compression='gzip')
+
+            write_file_atomic(db_path, _write_consolidated, kind='consolidation')
+            total_count = pl.scan_parquet(db_path).select(pl.len()).collect().item()
             
             # Clean up batch files
             import shutil
@@ -8639,14 +8640,23 @@ class FindNeuronConnection:
                 return
             rows_path, complete_path = self._incoming_cache_paths()
             os.makedirs(os.path.dirname(rows_path), exist_ok=True)
-            tmp_path = rows_path + '.tmp'
-            combined.write_parquet(tmp_path)
-            os.replace(tmp_path, rows_path)
-            payload = {'version': 1, 'complete': sorted(cache['complete'])}
-            tmp_json = complete_path + '.tmp'
-            with open(tmp_json, 'w', encoding='utf-8') as f:
-                json.dump(payload, f)
-            os.replace(tmp_json, complete_path)
+            try:
+                from .utils.parquet_utils import write_file_atomic
+            except ImportError:
+                from utils.parquet_utils import write_file_atomic
+            # R7-2: temp-sibling naming so an interrupted write is
+            # reclaimable instead of a permanent naked .tmp orphan.
+            def _write_rows(tmp_path):
+                combined.write_parquet(tmp_path)
+
+            write_file_atomic(rows_path, _write_rows, kind='incoming-rows')
+
+            def _write_complete(tmp_json):
+                payload = {'version': 1, 'complete': sorted(cache['complete'])}
+                with open(tmp_json, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f)
+
+            write_file_atomic(complete_path, _write_complete, kind='incoming-complete')
         except Exception as exc:
             self._vprint(
                 f'  ⚠️ Could not persist the incoming cache: {exc}',

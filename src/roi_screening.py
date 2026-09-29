@@ -119,7 +119,7 @@ def load_primary_rois(dataset: str, project_root: Optional[str] = None,
     if not path.exists():
         return None
     try:
-        meta = json.loads(path.read_text())
+        meta = json.loads(path.read_text(encoding='utf-8'))
     except Exception as exc:
         if log:
             log(f"ROI screening: metadata sidecar unreadable ({exc}).")

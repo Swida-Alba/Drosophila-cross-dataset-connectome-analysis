@@ -1959,7 +1959,7 @@ def _skeleton_folder_level(dataset: str,
     root = Path(project_root) if project_root else Path(__file__).parent.parent
     marker = root / "cache" / _dataset_folder(dataset) / "skeletons" / ".level"
     try:
-        v = marker.read_text().strip()
+        v = marker.read_text(encoding='utf-8').strip()
         if v in (VECTOR_BASIS_RAW, VECTOR_BASIS_SIMP90):
             return v
     except Exception:
@@ -2421,7 +2421,7 @@ class SkeletonVectorCache:
                 "files": {},
             }
         try:
-            manifest = json.loads(self.skeleton_manifest_path.read_text())
+            manifest = json.loads(self.skeleton_manifest_path.read_text(encoding='utf-8'))
             if (
                 manifest.get("cache_schema_version")
                 != RAW_SKELETON_CACHE_VERSION
@@ -2909,7 +2909,7 @@ class SkeletonVectorCache:
         if not self.meta_path.exists():
             return None
         try:
-            return json.loads(self.meta_path.read_text())
+            return json.loads(self.meta_path.read_text(encoding='utf-8'))
         except Exception:
             return None
 
@@ -4511,7 +4511,7 @@ def population_stats(dataset: str, project_root: Optional[str] = None,
     stats_file = vc.morph_dir / "population_stats.json"
     if stats_file.exists():
         try:
-            data = json.loads(stats_file.read_text())
+            data = json.loads(stats_file.read_text(encoding='utf-8'))
             if (data.get("dataset") == dataset and data.get("dim") == VECTOR_DIM
                     and data.get("sample_cap") == max_sample
                     and int(data.get("n", 0)) >= MIN_POPULATION_STATS_SKELETONS):
@@ -9110,7 +9110,7 @@ def render_v2_artifacts(dataset: str, project_root: Optional[str] = None,
         if not meta_path.exists():
             return None
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
         except Exception:
             return None
         if meta.get("render_space") != render_space:
