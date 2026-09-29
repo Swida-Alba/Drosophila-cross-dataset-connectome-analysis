@@ -5,7 +5,7 @@ Covers:
   parsing (including unquoted CSS color functions).
 - ui/components/layer_style_editor.py: editor state, add/delete/inline edit,
   auto-save flush, CSV export/upload.
-- ui/tabs/visualization.py: Skeleton Layer Editor dropdown wiring.
+- ui/tabs/visualization.py: Skeleton Layer Editor wiring.
 """
 import json
 import re
@@ -72,14 +72,20 @@ class TestStoreValidation:
     def test_empty_rows_ignored(self):
         assert store.validate_rows([{}, {"layer": "", "neuron": ""}]) == []
 
-    def test_layers_must_be_continuous(self):
-        errors = store.validate_rows([
-            {"layer": "1", "neuron": "a"},
-            {"layer": "3", "neuron": "b"},
-        ])
-        assert any("missing layer(s) 2" in error for error in errors)
+    def test_layers_may_be_discrete(self):
+        # Layer numbers are free whole numbers: gaps and any starting number
+        # are legitimate (a numbering jump breaks the inter-layer synapse pair
+        # at render time, it is not a table error).
         assert store.validate_rows([
             {"layer": "1", "neuron": "a"},
+            {"layer": "3", "neuron": "b"},
+        ]) == []
+        assert store.validate_rows([
+            {"layer": "5", "neuron": "a"},
+            {"layer": "7", "neuron": "b"},
+        ]) == []
+        assert store.validate_rows([
+            {"layer": "0", "neuron": "a"},
             {"layer": "2", "neuron": "b"},
         ]) == []
 
@@ -118,13 +124,6 @@ class TestStoreSaveLoad:
 
 
 class TestModeColumnsAndLayers:
-    def test_available_layers_contiguous_from_1(self):
-        assert store.available_layers([]) == [1]
-        assert store.available_layers([{"layer": "1"}]) == [1, 2]
-        assert store.available_layers([{"layer": "1"}, {"layer": "2"}]) == [1, 2, 3]
-        # If no row uses layer 1, only 1 is offered (never a higher number).
-        assert store.available_layers([{"layer": "2"}]) == [1]
-
     def test_next_layer_number_starts_at_one_then_uses_maximum(self):
         assert store.next_layer_number([]) == 1
         assert store.next_layer_number([{"layer": "1", "neuron": "a"}]) == 2
@@ -310,15 +309,13 @@ class TestEditorHandle:
         assert handle.rows[1]["neurons"] == ["aMe13x"]
         assert table_updates == []
 
-    def test_layer_edit_refreshes_only_when_layer_numbers_change(
-        self, store_patch_for_component
-    ):
-        """A layer re-select must not remount the table unless the options change.
+    def test_layer_edit_is_a_pure_model_update(self, store_patch_for_component):
+        """A layer edit never refreshes the table.
 
-        A refresh_table remounts every cell (dropping focus and half-typed text
-        elsewhere), so re-assigning between layer numbers that are already on
-        offer stays a pure model update; only a change in the offered numbers
-        refreshes the table.
+        The layer cell is a bare numeric input (no option list to re-render) and
+        discrete numbers are legitimate, so any layer edit is a model update
+        plus the autosave schedule — a refresh would remount every cell and
+        drop focus and half-typed text elsewhere.
         """
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows([
@@ -328,19 +325,17 @@ class TestEditorHandle:
         ])
         refreshes = []
         handle.refresh_table = lambda *a, **k: refreshes.append(k)
-        # 1 -> 2 keeps the offered numbers at [1, 2, 3]: no refresh.
         handle.on_inline_edit(
             SimpleNamespace(args={"id": 0, "field": "layer", "value": "2"})
         )
         assert handle.rows[0]["layer"] == "2"
         assert refreshes == []
-        # 2 -> 3 grows the offered numbers to [1, 2, 3, 4]: refresh.
+        # Discrete jumps are ordinary values too.
         handle.on_inline_edit(
-            SimpleNamespace(args={"id": 0, "field": "layer", "value": "3"})
+            SimpleNamespace(args={"id": 0, "field": "layer", "value": "10"})
         )
-        assert handle.rows[0]["layer"] == "3"
-        assert len(refreshes) == 1
-        assert refreshes[0].get("preserve_selection") is True
+        assert handle.rows[0]["layer"] == "10"
+        assert refreshes == []
 
     def test_on_select_records_ids_without_rebuilding_rows(
         self, store_patch_for_component
@@ -447,7 +442,7 @@ class TestEditorHandle:
         assert "__drocatCellFocusGuard" in _SUGGESTION_JS
         assert "drocatRowsRebuiltAt" in _SUGGESTION_JS
 
-    def test_available_neurons_append_one_row_per_entry_to_one_batch_layer(
+    def test_available_neurons_append_one_row_per_entry_on_its_own_layer(
         self, store_patch_for_component
     ):
         client, handle = build_editor(store_patch_for_component)
@@ -455,42 +450,46 @@ class TestEditorHandle:
         handle.begin_available_batch()
         assert handle.apply_available_neurons(["n1", "n2"]) == 2
         assert handle.available_query_values() == ["n1", "n2"]
+        # Each entry gets its OWN layer: consecutive numbers from the table's
+        # next free layer, so n1 lands on 2 and n2 on 3.
         assert [(row["layer"], row["neurons"]) for row in handle.rows] == [
-            ("1", ["existing"]), ("2", ["n1"]), ("2", ["n2"])
+            ("1", ["existing"]), ("2", ["n1"]), ("3", ["n2"])
         ]
         # The viewer reports its complete selection after every toggle; only
-        # the new entry is appended, and it stays on the same batch layer.
+        # the new entry is appended, on the next consecutive layer.
         assert handle.apply_available_neurons(["n1", "n2", "n3"]) == 1
-        assert handle.rows[-1]["layer"] == "2"
+        assert handle.rows[-1]["layer"] == "4"
         handle.begin_available_batch()
         assert handle.available_query_values() == []
         assert handle.apply_available_neurons(["n4"]) == 1
-        assert handle.rows[-1]["layer"] == "3"
+        assert handle.rows[-1]["layer"] == "5"
 
-    def test_empty_available_neuron_table_starts_batch_at_layer_one(
+    def test_empty_available_neuron_table_starts_entries_at_layer_one(
         self, store_patch_for_component
     ):
         client, handle = build_editor(store_patch_for_component)
         assert handle.apply_available_neurons(["n1", "n2"]) == 2
-        # The pristine 3 scaffolding rows are replaced by the batch on layer 1.
-        assert {row["layer"] for row in handle.rows if row["neurons"]} == {"1"}
+        # The pristine 3 scaffolding rows are replaced by the batch: one entry
+        # per row, each on its own consecutive layer.
+        assert {row["layer"] for row in handle.rows if row["neurons"]} == {"1", "2"}
 
-    def test_validation_panel_reports_and_clears_layer_gap(self, store_patch_for_component):
+    def test_validation_panel_reports_and_clears_bad_layer(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows([
             {"layer": "1", "neuron": "a"},
-            {"layer": "3", "neuron": "b"},
+            {"layer": "abc", "neuron": "b"},
         ])
         # Editing must NOT surface validation live (only run/export does).
         assert handle.validation_panel.visible is False
         errors = handle._update_validation()  # what run/export triggers
         assert errors
         assert handle.validation_panel.visible is True
-        assert "missing layer(s) 2" in handle.validation_label.text
+        assert "not a number" in handle.validation_label.text
         handle.on_inline_edit(
-            SimpleNamespace(args={"id": 1, "field": "layer", "value": "2"})
+            SimpleNamespace(args={"id": 1, "field": "layer", "value": "3"})
         )
-        # A valid table clears the panel on the next run/export check.
+        # A valid table (discrete layers included) clears the panel on the next
+        # run/export check.
         assert handle._update_validation() == []
         assert handle.validation_panel.visible is False
 
@@ -1136,14 +1135,44 @@ class TestEditorHandle:
             "layer", "neuron", "color", "synapse_color"
         ]
 
-    def test_table_row_dicts_carry_layer_opts(self, store_patch_for_component):
+    def test_table_row_dicts_carry_neuron_options_only(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         handle.set_rows(
             [{"layer": "1", "neuron": "a"}, {"layer": "2", "neuron": "b"}], name="x"
         )
         row_dicts = handle._row_dicts()
-        assert row_dicts[0]["layer_opts"] == ["1", "2", "3"]
-        assert row_dicts[1]["layer_opts"] == ["1", "2", "3"]
+        # The layer cell is a bare numeric input now: no option list is attached.
+        assert "layer_opts" not in row_dicts[0]
+        assert row_dicts[0]["neuron_options"] == ["a"]
+        assert row_dicts[1]["neuron_options"] == ["b"]
+
+    def test_body_slot_layer_cell_is_numeric_with_enter_move(
+        self, store_patch_for_component
+    ):
+        """The layer cell is a bare number input and Enter walks down a column.
+
+        The old dropdown only offered contiguous layers; discrete numbers are
+        legitimate now. Enter on a single-value cell commits and moves to the
+        same column of the next row; the neuron cell moves only when its field
+        is empty (Enter with text adds a chip instead). The move is requested
+        by dispatching a ``drocat-enter-move`` DOM event — Vue's production
+        render proxy hides ``window`` from template expressions, so the
+        templates cannot call the helper directly.
+        """
+        from ui.components.layer_style_editor import _BODY_SLOT
+        assert 'col.name === \'layer\'' in _BODY_SLOT
+        assert '<q-input v-model="props.row.layer"' in _BODY_SLOT
+        assert "type=\"number\"" in _BODY_SLOT
+        assert _BODY_SLOT.count("drocat-enter-move") == 2  # layer + color cells
+        # The neuron cell's Enter-move lives in the JS block (capture phase):
+        # QSelect consumes the Enter keydown at its input before any template
+        # bubble handler, and a capture binding on the QSelect itself raced
+        # Quasar's own Enter handling (chip add). The JS rule moves only when
+        # the field is empty and no suggestion row is highlighted.
+        from ui.components.layer_style_editor import _SUGGESTION_JS
+        assert "addEventListener('drocat-enter-move'" in _SUGGESTION_JS
+        assert "drocatNeuronEnterNav" in _SUGGESTION_JS
+        assert "drocat-suggest-active" in _SUGGESTION_JS
 
     def test_load_csv_text_into_table(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)

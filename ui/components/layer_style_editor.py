@@ -615,13 +615,74 @@ if (!window.__drocatCellFocusGuard) {
   });
   drocatRowMo.observe(document.documentElement, { childList: true, subtree: true });
 }
+// Enter-to-next-row navigation for the editor tables: from the pressed input,
+// focus the same column of the row below (no server round trip, so no remount
+// risk; on the last row it is a no-op). The cell templates call this AFTER
+// emitting their commit event. Shared with the Net-Viz edge editor via the
+// window.drocatTableMove name.
+document.addEventListener('drocat-enter-move', function (ev) {
+  // Vue's production render proxy hides `window` from template expressions, so
+  // the cell templates dispatch this DOM event instead of calling the helper.
+  if (window.drocatTableMove) window.drocatTableMove(ev);
+});
+// Neuron chip cell: Enter with an EMPTY field moves to the next row's same
+// column; Enter with text keeps adding chips (Quasar add-unique). Bound in the
+// capture phase because QSelect consumes the Enter keydown at its input before
+// a template (bubble) handler would see it — and deferred to a timeout so
+// Quasar's own handling of the key is never disturbed.
+if (!window.drocatNeuronEnterNav) {
+  window.drocatNeuronEnterNav = true;
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') return;
+    var inp = ev.target;
+    if (!inp || !inp.closest || !inp.closest('.drocat-neuron-cell')) return;
+    if (String(inp.value || '') !== '') return;
+    var o = document.getElementById('drocat-suggest-overlay');
+    if (o && o.style.display !== 'none') {
+      var rows = o.querySelectorAll('.drocat-suggest-item');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].classList.contains('drocat-suggest-active')) return; // pick
+      }
+    }
+    setTimeout(function () {
+      var live = document.activeElement;
+      if (live && live !== document.body && live.closest && live.closest('.drocat-neuron-cell')) {
+        // only move when the field is still empty and focus stayed put
+        if (String(live.value || '') === '') window.drocatTableMove({ target: live });
+      }
+    }, 0);
+  }, true);
+}
+if (!window.drocatTableMove) {
+  window.drocatTableMove = function (ev) {
+    var inp = ev && ev.target;
+    if (!inp || !inp.closest) return;
+    var td = inp.closest('td');
+    var tr = td ? td.closest('tr') : null;
+    if (!td || !tr || !tr.parentElement) return;
+    var ci = Array.prototype.indexOf.call(tr.children, td);
+    var next = tr.nextElementSibling;
+    if (!next) return;
+    var td2 = next.children[ci];
+    var inp2 = td2 && td2.querySelector('input, textarea');
+    if (!inp2) return;
+    inp2.focus();
+    if (inp2.setSelectionRange) {
+      try {
+        var len = (inp2.value || '').length;
+        inp2.setSelectionRange(len, len);
+      } catch (e) {}
+    }
+  };
+}
 """
 
 
 # Generic body slot: it iterates over the active columns (``props.cols``) so the
-# cells follow the table's column set. The layer cell is a selection box backed
-# by ``props.row.layer_opts``; every other colour column renders a picker button
-# that opens the single-color picker.
+# cells follow the table's column set. The layer cell is a bare numeric input
+# (free integer layer numbers — gaps are legitimate; a numbering jump breaks
+# the inter-layer synapse pair); every other colour column renders a picker
+# button that opens the single-color picker.
 _BODY_SLOT = r"""
 <q-tr
   :props="props"
@@ -634,9 +695,12 @@ _BODY_SLOT = r"""
   <q-td v-for="col in props.cols" :key="col.name" :props="props"
     :class="['drocat-edge-cell', col.classes || '', col.name !== 'color' ? 'drocat-edge-divider' : '']">
     <template v-if="col.name === 'layer'">
-      <q-select v-model="props.row.layer" :options="props.row.layer_opts"
-        dense borderless hide-bottom-space
-        @update:model-value="$parent.$emit('layer-cell-change', { id: props.row.id, field: 'layer', value: $event })" />
+      <q-input v-model="props.row.layer" dense borderless hide-bottom-space
+        type="number" step="1" placeholder="Layer"
+        @update:model-value="$parent.$emit('layer-cell-change', { id: props.row.id, field: 'layer', value: $event })"
+        @blur="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'layer', value: props.row.layer })"
+        @keydown.enter="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'layer', value: props.row.layer }); (function(i){var d=i.ownerDocument,e=d.createEvent('Event');e.initEvent('drocat-enter-move',true,false);i.dispatchEvent(e);})($event.target)"
+        @keydown.tab="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'layer', value: props.row.layer })" />
     </template>
     <template v-else-if="col.name === 'neuron'">
       <div class="drocat-neuron-cell" :id="'neuron-cell-' + props.row.id">
@@ -649,7 +713,6 @@ _BODY_SLOT = r"""
           @focus="$parent.$emit('layer-cell-focus', { id: props.row.id })"
           @input-value="(v) => $parent.$emit('layer-cell-suggest', { id: props.row.id, text: v })"
           @blur="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'neuron', value: props.row.neurons })"
-          @keydown.enter="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'neuron', value: props.row.neurons })"
           @keydown.tab="$parent.$emit('layer-cell-commit', { id: props.row.id, field: 'neuron', value: props.row.neurons })" />
       </div>
     </template>
@@ -668,7 +731,7 @@ _BODY_SLOT = r"""
           placeholder="(auto)"
           @update:model-value="$parent.$emit('layer-cell-change', { id: props.row.id, field: col.name, value: $event })"
           @blur="$parent.$emit('layer-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })"
-          @keydown.enter="$parent.$emit('layer-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })"
+          @keydown.enter="$parent.$emit('layer-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] }); (function(i){var d=i.ownerDocument,e=d.createEvent('Event');e.initEvent('drocat-enter-move',true,false);i.dispatchEvent(e);})($event.target)"
           @keydown.tab="$parent.$emit('layer-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })" />
       </div>
     </template>
@@ -709,7 +772,7 @@ class LayerStyleEditorHandle:
         self.synapse_mode: str = "synapse"
         self._pick_popup: Optional[object] = None
         self._pending_pick: Optional[dict] = None
-        self._available_batch_layer: Optional[int] = None
+        self._available_next_layer: Optional[int] = None
         self._available_query_values: List[str] = []
         # In-table neuron-cell auto-suggestion is shown in a plain positioned overlay
         # div (not a Quasar menu, so it never blurs the cell or clears typed text).
@@ -825,17 +888,14 @@ class LayerStyleEditorHandle:
 
     # ------------------------------------------------------------------ rows
     def _row_dicts(self) -> List[dict]:
-        # Attach the available layer numbers so each row's layer cell can render
-        # a selection box (options computed from the whole table). Each cell keeps
-        # its ``neurons`` chip list and a stable id used as the table row_key.
-        layer_opts = [str(x) for x in layer_style_store.available_layers(self.rows)]
+        # Each cell keeps its ``neurons`` chip list and a stable id used as the
+        # table row_key. The layer cell is a bare numeric input (no option list
+        # to carry); suggestions are shown in the separate overlay instead of
+        # the native dropdown, so typing never interrupts the q-select.
         row_dicts = []
         for i, row in enumerate(self.rows):
-            # The neuron cell's q-select options are its own chips (so they render);
-            # suggestions are shown in the separate overlay instead of the native
-            # dropdown, so typing never interrupts the q-select.
             row_dicts.append({
-                **row, "id": i, "layer_opts": layer_opts,
+                **row, "id": i,
                 "neuron_options": list(dict.fromkeys(list(row.get("neurons") or []))),
             })
         return row_dicts
@@ -871,7 +931,7 @@ class LayerStyleEditorHandle:
         # CSV round-trips to exactly its rows; the fresh-editor 3 empty rows are
         # seeded only in ``__init__`` (and restored by ``delete_selected``).
         self.rows = layer_style_store.logical_normalize(rows)
-        self._available_batch_layer = None
+        self._available_next_layer = None
         if name is not None:
             self.current_name = name
             if self.name_input is not None:
@@ -961,7 +1021,7 @@ class LayerStyleEditorHandle:
     # ------------------------------------------------------ available neurons
     def begin_available_batch(self) -> None:
         """Start a fresh viewer-selection batch."""
-        self._available_batch_layer = None
+        self._available_next_layer = None
         self._available_query_values = []
 
     def available_query_values(self) -> List[str]:
@@ -976,8 +1036,11 @@ class LayerStyleEditorHandle:
         touched while the panel is open, deselecting a matched value simply means
         it never gets committed; existing rows are preserved and only genuinely
         new entries are appended (filling empty scaffolding rows first, then
-        growing the table). The batch layer is allocated once and reused for all
-        new entries in the same viewer session.
+        growing the table). Each new entry gets its OWN layer: the session
+        starts at the table's next free number and every added entry takes the
+        following one (entries skipped because they already exist in the table
+        consume no number), so a five-entry selection lands on consecutive
+        layers like 2, 3, 4, 5, 6.
         """
         cleaned = []
         seen = set()
@@ -996,8 +1059,8 @@ class LayerStyleEditorHandle:
         # entries.
         self._available_query_values = list(cleaned)
 
-        if self._available_batch_layer is None:
-            self._available_batch_layer = layer_style_store.next_layer_number(self.rows)
+        if self._available_next_layer is None:
+            self._available_next_layer = layer_style_store.next_layer_number(self.rows)
 
         existing = {
             neuron
@@ -1012,14 +1075,16 @@ class LayerStyleEditorHandle:
             i for i, row in enumerate(self.rows)
             if layer_style_store._logical_is_empty(row)
         ]
-        batch_layer = str(self._available_batch_layer)
         added_ids = []
+        added_layers = []
         fill_pos = 0
         for value in cleaned:
             if value in existing:
                 continue
+            layer_number = self._available_next_layer
+            self._available_next_layer += 1
             new_row = layer_style_store.logical_normalize([{
-                "layer": batch_layer,
+                "layer": str(layer_number),
                 "neurons": [value],
             }])[0]
             if fill_pos < len(empty_indices):
@@ -1031,6 +1096,7 @@ class LayerStyleEditorHandle:
                 self.rows.append(new_row)
                 added_ids.append(len(self.rows) - 1)
             existing.add(value)
+            added_layers.append(layer_number)
 
         if not added_ids:
             return 0
@@ -1038,10 +1104,13 @@ class LayerStyleEditorHandle:
         self._ensure_scaffolding()
         self._selected_ids = added_ids
         self.refresh_table(preserve_selection=True)
-        self._update_status(
-            f"Added {len(added_ids)} neuron{'s' if len(added_ids) != 1 else ''} "
-            f"to layer {self._available_batch_layer}"
-        )
+        if len(added_layers) == 1:
+            self._update_status(f"Added 1 neuron to layer {added_layers[0]}")
+        else:
+            self._update_status(
+                f"Added {len(added_layers)} neurons to layers "
+                f"{added_layers[0]}–{added_layers[-1]}"
+            )
         self.schedule_autosave()
         return len(added_ids)
 
@@ -1059,8 +1128,8 @@ class LayerStyleEditorHandle:
         only this small payload to Python. On every keystroke we mutate just the
         row model — never the table rows, validation panel or autosave timer — so
         the active input keeps its cursor and focus. Validation and auto-save are
-        deferred to ``on_inline_commit`` (blur / Enter / Tab) and to the discrete
-        layer-select change.
+        deferred to ``on_inline_commit`` (blur / Enter / Tab; Enter also moves
+        the focus to the next row's same column) and to any layer edit.
         """
         args = getattr(event, "args", event)
         if not isinstance(args, dict):
@@ -1100,22 +1169,20 @@ class LayerStyleEditorHandle:
             return
 
         scalar = str(value or "").strip()
-        if field == "layer":
-            layers_before = layer_style_store.available_layers(self.rows)
         self.rows[row_id][field] = scalar
         if field == "layer":
-            # Refresh only when the offered layer numbers actually changed: a
-            # refresh remounts every cell of the table and would drop focus and
-            # any half-typed text elsewhere, so re-assigning between numbers
-            # that are already on offer must stay a pure model update.
-            # Validation is intentionally NOT run here: incomplete fields only
-            # surface when the user runs/exports.
-            if layer_style_store.available_layers(self.rows) != layers_before:
-                self.refresh_table(preserve_selection=True)
+            # A pure model update: the layer cell has no option list to re-render
+            # (discrete layer numbers are legitimate), and validation is
+            # intentionally NOT run here — incomplete fields only surface when
+            # the user runs/exports.
             self.schedule_autosave()
 
     def on_inline_commit(self, event) -> None:
         """Auto-save once focus leaves a cell (blur / Enter / Tab).
+
+        Enter additionally moves the focus to the same column of the next row
+        (client-side; the neuron chip cell moves only when its field is empty,
+        so Enter with text keeps adding chips).
 
         Validation is deliberately left to run/export, so a half-typed row never
         flashes a red error while the user is still editing. Leaving the cell also
@@ -1807,8 +1874,10 @@ def layer_style_editor(
             "Edit the Skeleton layers and per-neuron colors directly (the in-page "
             "equivalent of the custom-layer CSV). One row is one layer/color group; "
             "add several neurons as chips in a cell and they are written as separate "
-            "rows on that layer at export. Layer numbers may start at 0 or 1 but must "
-            "remain continuous. Changes are auto-saved, so edits survive a shutdown."
+            "rows on that layer at export. Layer numbers are free integers — gaps "
+            "are legitimate, and a numbering jump breaks the inter-layer synapse "
+            "pair (e.g. 1, 2, 4, 5 renders pairs 1→2 and 4→5). Changes are "
+            "auto-saved, so edits survive a shutdown."
         ).classes("text-caption drocat-muted")
 
         with ui.row().classes("w-full items-end gap-2 flex-wrap"):
@@ -1817,8 +1886,7 @@ def layer_style_editor(
             ).props('outlined dense').classes("grow min-w-[240px]")
 
         # The table is rebuilt per synapse mode (columns + body slot) inside this
-        # container, and the layer cell is a selection box backed by the row's
-        # ``layer_opts``.
+        # container; the layer cell is a bare numeric input.
         handle.table_container = ui.column().classes("w-full")
         handle.render()
 

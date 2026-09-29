@@ -791,6 +791,80 @@ class TestDataFrameHelpers:
         vis._parse_layer_map_csv()
         assert len(vis.neuron_layers) == 1
 
+    def test_parse_layer_map_csv_discrete_layers_break_pairs(self, tmp_path):
+        csv = tmp_path / 'gapped.csv'
+        csv.write_text(
+            'layer,id_type_instance\n'
+            '1,101\n'
+            '2,102\n'
+            '4,103\n'
+            '5,104\n'
+        )
+        vis = make_vis(layer_map_csv=str(csv), neuron_alpha=1.0)
+        vis._parse_layer_map_csv()
+        # Gaps survive positionally: four layers in numeric order (one neuron
+        # per layer flattens to the bare id, as with label layers).
+        assert vis.neuron_layers == [101, 102, 103, 104]
+        # 1->2 and 4->5 stay connected; the 2->4 jump breaks the middle pair.
+        assert vis._layer_map_connected_left == {0, 2}
+        assert vis._layers_adjacent(0) is True
+        assert vis._layers_adjacent(1) is False
+        assert vis._layers_adjacent(2) is True
+        assert vis._layers_adjacent(3) is False
+        # A starting number other than 0/1 offsets by the minimum as usual.
+        csv2 = tmp_path / 'offset.csv'
+        csv2.write_text(
+            'layer,id_type_instance\n'
+            '5,201\n'
+            '7,202\n'
+        )
+        vis2 = make_vis(layer_map_csv=str(csv2), neuron_alpha=1.0)
+        vis2._parse_layer_map_csv()
+        assert vis2.neuron_layers == [201, 202]
+        assert vis2._layer_map_connected_left == set()  # 5->7 is a jump
+
+    def test_layer_adjacency_defaults_to_connected_without_numeric_map(self, tmp_path):
+        # Label mode keeps the historical single-chain behavior: every
+        # adjacent pair connected, slots identical to indices.
+        csv = tmp_path / 'labels.csv'
+        csv.write_text('layer,id_type_instance\nA,101\nB,102\n')
+        vis = make_vis(layer_map_csv=str(csv), neuron_alpha=1.0)
+        vis._parse_layer_map_csv()
+        assert vis._layer_map_connected_left is None
+        assert vis._layers_adjacent(0) is True
+        assert vis._synapse_color_slot(0) == 0
+
+    def test_synapse_color_slots_follow_surviving_bands(self, tmp_path):
+        csv = tmp_path / 'gapped.csv'
+        csv.write_text(
+            'layer,id_type_instance\n'
+            '1,101\n'
+            '2,102\n'
+            '4,103\n'
+            '5,104\n'
+        )
+        vis = make_vis(layer_map_csv=str(csv), neuron_alpha=1.0)
+        vis._parse_layer_map_csv()
+        # Broken pairs consume no band: the surviving bands take consecutive
+        # palette slots, so the user's first synapse color paints 1->2 and the
+        # second paints 4->5.
+        assert vis._synapse_color_slot(0) == 0
+        assert vis._synapse_color_slot(2) == 1
+        # A continuous map keeps slot == index (historical behavior).
+        csv2 = tmp_path / 'continuous.csv'
+        csv2.write_text(
+            'layer,id_type_instance\n'
+            '0,101\n'
+            '1,102\n'
+            '2,103\n'
+        )
+        vis2 = make_vis(layer_map_csv=str(csv2), neuron_alpha=1.0)
+        vis2._parse_layer_map_csv()
+        assert vis2._layer_map_connected_left == {0, 1}
+        assert [vis2._synapse_color_slot(i) for i in range(2)] == [0, 1]
+        assert vis2._layers_adjacent(0) and vis2._layers_adjacent(1)
+        assert not vis2._layers_adjacent(2)  # no band beyond the last layer
+
     def test_apply_soma_radius_cap(self):
         neuron = make_chain_neuron(n_nodes=6, radius=100.0)
         vis = make_vis(soma_radius_cap=50.0, smooth_skeleton=False)

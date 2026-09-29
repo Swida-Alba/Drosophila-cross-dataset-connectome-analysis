@@ -239,6 +239,38 @@ if (!window.__drocatCellFocusGuard) {
   });
   drocatRowMo.observe(document.documentElement, { childList: true, subtree: true });
 }
+// Enter-to-next-row navigation for the editor table: from the pressed input,
+// focus the same column of the row below (no server round trip, so no remount
+// risk; on the last row it is a no-op). The cell templates call this AFTER
+// emitting their commit event. Shared with the Skeleton layer editor via the
+// window.drocatTableMove name.
+document.addEventListener('drocat-enter-move', function (ev) {
+  // Vue's production render proxy hides `window` from template expressions, so
+  // the cell templates dispatch this DOM event instead of calling the helper.
+  if (window.drocatTableMove) window.drocatTableMove(ev);
+});
+if (!window.drocatTableMove) {
+  window.drocatTableMove = function (ev) {
+    var inp = ev && ev.target;
+    if (!inp || !inp.closest) return;
+    var td = inp.closest('td');
+    var tr = td ? td.closest('tr') : null;
+    if (!td || !tr || !tr.parentElement) return;
+    var ci = Array.prototype.indexOf.call(tr.children, td);
+    var next = tr.nextElementSibling;
+    if (!next) return;
+    var td2 = next.children[ci];
+    var inp2 = td2 && td2.querySelector('input, textarea');
+    if (!inp2) return;
+    inp2.focus();
+    if (inp2.setSelectionRange) {
+      try {
+        var len = (inp2.value || '').length;
+        inp2.setSelectionRange(len, len);
+      } catch (e) {}
+    }
+  };
+}
 """
 
 
@@ -268,7 +300,7 @@ _EDGE_BODY_SLOT = r"""
           placeholder="(auto)"
           @update:model-value="$parent.$emit('edge-cell-change', { id: props.row.id, field: 'color', value: $event })"
           @blur="$parent.$emit('edge-cell-commit', { id: props.row.id, field: 'color', value: props.row.color })"
-          @keydown.enter="$parent.$emit('edge-cell-commit', { id: props.row.id, field: 'color', value: props.row.color })"
+          @keydown.enter="$parent.$emit('edge-cell-commit', { id: props.row.id, field: 'color', value: props.row.color }); (function(i){var d=i.ownerDocument,e=d.createEvent('Event');e.initEvent('drocat-enter-move',true,false);i.dispatchEvent(e);})($event.target)"
           @keydown.tab="$parent.$emit('edge-cell-commit', { id: props.row.id, field: 'color', value: props.row.color })" />
       </div>
     </template>
@@ -279,7 +311,7 @@ _EDGE_BODY_SLOT = r"""
         :input-class="col.name === 'weight' ? 'text-right' : undefined"
         @update:model-value="$parent.$emit('edge-cell-change', { id: props.row.id, field: col.name, value: $event })"
         @blur="$parent.$emit('edge-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })"
-        @keydown.enter="$parent.$emit('edge-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })"
+        @keydown.enter="$parent.$emit('edge-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] }); (function(i){var d=i.ownerDocument,e=d.createEvent('Event');e.initEvent('drocat-enter-move',true,false);i.dispatchEvent(e);})($event.target)"
         @keydown.tab="$parent.$emit('edge-cell-commit', { id: props.row.id, field: col.name, value: props.row[col.name] })" />
     </template>
   </q-td>
@@ -451,7 +483,8 @@ class EdgeListEditorHandle:
         this small payload to Python. On every keystroke we mutate just the
         row model — never the table rows, validation panel or autosave timer —
         so the active input keeps its cursor and focus. Auto-save is deferred
-        to ``on_inline_commit`` (blur / Enter / Tab).
+        to ``on_inline_commit`` (blur / Enter / Tab; Enter also moves the
+        focus to the next row's same column).
         """
         args = getattr(event, "args", event)
         if not isinstance(args, dict):
@@ -471,6 +504,9 @@ class EdgeListEditorHandle:
 
     def on_inline_commit(self, event) -> None:
         """Auto-save once focus leaves a cell (blur / Enter / Tab).
+
+        Enter additionally moves the focus to the same column of the next row
+        (client-side, no server round trip).
 
         Validation is deliberately left to run/export, so a half-typed row
         never flashes a red error while the user is still editing.

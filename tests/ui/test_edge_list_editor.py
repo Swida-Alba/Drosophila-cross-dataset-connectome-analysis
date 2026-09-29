@@ -634,6 +634,20 @@ class TestEditorHandle:
         assert "__drocatCellFocusGuard" in _COL_RESIZE_JS
         assert "drocatRowsRebuiltAt" in _COL_RESIZE_JS
 
+    def test_enter_moves_to_the_next_row_same_column(self, store_patch_for_component):
+        """Every edge cell's Enter commits and then walks down a column.
+
+        The cell templates emit their commit event first and then dispatch the
+        ``drocat-enter-move`` DOM event (Vue's production render proxy hides
+        ``window`` from template expressions, so the helper is reached via a
+        document-level listener, not a template call).
+        """
+        from ui.components.edge_list_editor import _EDGE_BODY_SLOT
+        # color + generic cells
+        assert _EDGE_BODY_SLOT.count("drocat-enter-move") == 2
+        from ui.components.edge_list_editor import _COL_RESIZE_JS
+        assert "addEventListener('drocat-enter-move'" in _COL_RESIZE_JS
+
     def test_column_mode_swap_adds_group_and_info_columns(self, store_patch_for_component):
         client, handle = build_editor(store_patch_for_component)
         assert [c["name"] for c in handle.table.columns] == [

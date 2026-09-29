@@ -73,11 +73,14 @@
       (<code>layer,neuron</code>). The Neuron Colors / Synapse Colors palette
       editors are shown here.</li>
     <li><b>Advanced</b> — selecting it shows the editable layer editor table
-      directly (it is not collapsed). Each row's <b>Layer</b> cell is a
-      selection box that starts at 1 for a new table and only offers the
-      currently available layers (so layer 2 is never offered unless layer 1
-      is in use). Existing 0-based CSVs remain supported, but every used layer
-      number must be continuous. The
+      directly (it is not collapsed). Each row's <b>Layer</b> cell is a bare
+      numeric input with up/down arrows; layer numbers are free integers
+      &mdash; gaps are legitimate (a table of 1, 3, 4 is valid), and the
+      renderer offsets by the lowest number. A numbering <i>jump</i> breaks the
+      inter-layer synapse pair (see the CSV format below). Pressing
+      <b>Enter</b> in a single-value cell commits it and moves to the same
+      column of the next row; in the Neuron cell, Enter with text adds a chip
+      and Enter on an empty field moves down. The
       colour columns follow the synapse mode: <b>Synapse color</b> for
       <code>synapse</code>, or <b>Pre-synaptic</b> + <b>Post-synaptic</b>
       colors for <code>pre-post sites</code> (and the exported/uploaded CSV
@@ -85,8 +88,9 @@
       palette) is opened from a color cell's picker button or the palette button
       beside each colour input in the Add Row form. Empty color cells display
       <code>(auto)</code>. The <b>See available neurons</b> viewer appends one
-      row per selected entry and assigns the whole viewer-selection batch to
-      the next layer; the Add Row neuron field also provides dataset-aware
+      row per selected entry and assigns each entry its own next layer
+      (consecutive numbers, e.g. a five-entry selection lands on layers
+      2&ndash;6); the Add Row neuron field also provides dataset-aware
       suggestions and, with an empty field, your Recent queries. Picking an
       entry adds the chip and keeps that query's rows on screen &mdash; in either
       list, a name you already added stays listed, tinted and ticked &mdash; so
@@ -107,8 +111,9 @@
       Colors palette editors are hidden, ROI Colors stay available).</li>
   </ul>
   <p>The same custom-layer CSV can also be produced/edited by hand. It has a
-    <code>layer</code> column (numbers may start at <b>0 or 1</b>; the lowest
-    value is treated as the first layer) and a <code>neuron</code> column (any
+    <code>layer</code> column (any whole numbers; they need not start at 0 or 1
+    and need not be continuous &mdash; the lowest value is treated as the first
+    layer) and a <code>neuron</code> column (any
     legal query name, the legacy <code>id_type_instance</code> name also
     works). Optional color columns:</p>
   <table>
@@ -116,7 +121,10 @@
     <tr><td><code>color</code></td><td>Per-neuron display color. <code>rgba(...)</code>
       overrides the global <b>Neuron Opacity</b>; <code>rgb(...)</code> inherits it.</td></tr>
     <tr><td><code>synapse_color</code></td><td>Color of the inter-layer (connector)
-      synapses whose pre-synaptic site is this neuron.</td></tr>
+      synapses whose pre-synaptic site is this neuron. Connector synapses are
+      drawn only between <i>consecutively numbered</i> layers: a numbering jump
+      breaks the pair (e.g. layers 1, 2, 4, 5 render as separate pairs
+      1&rarr;2 and 4&rarr;5 with no connector between 2 and 4).</td></tr>
     <tr><td><code>pre_synaptic_color</code></td><td>Color of this neuron's pre-synaptic
       <i>sites</i> (only used by the pre/post mode).</td></tr>
     <tr><td><code>post_synaptic_color</code></td><td>Color of this neuron's post-synaptic
@@ -326,7 +334,8 @@
       <h3>Synapse Colors</h3>
       <ul>
         <li><b>Synapse Mode</b>: an outlined dropdown — <code>synapse</code>
-          (paired markers between consecutive layers), <code>pre-post
+          (paired markers between consecutively numbered layers; a numbering
+          jump breaks the pair), <code>pre-post
           sites</code> (the input/output <i>sites</i> of the queried neurons),
           or <code>skip</code> (hide markers; the BANC default — the first
           pre/post render there triggers a one-time ~3.9&nbsp;GB synapse
@@ -352,7 +361,8 @@
           <b>Uniform Synapse Size</b> applies to paired markers, and
           <b>Opacity</b> remains global.</li>
         <li><b>pre-post (Pre/post-synaptic site mode)</b>: instead of the paired
-          synapses between adjacent layers, this renders the pre- and
+          synapses between adjacent layers (consecutively numbered layers only),
+          this renders the pre- and
           post-synaptic <i>sites</i> of every queried neuron. Post-synaptic
           (input) sites draw as spheres, pre-synaptic (output) sites as cones
           (or circle/diamond scatter markers, see Pre/post shape), both colored

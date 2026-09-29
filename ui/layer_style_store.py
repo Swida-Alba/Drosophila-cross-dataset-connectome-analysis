@@ -130,32 +130,12 @@ def flatten_rows(rows: List[dict]) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Layer options (selection box) & mode-aware column helpers
+# Mode-aware column helpers
 # ---------------------------------------------------------------------------
 
 def mode_columns(mode: str) -> tuple:
     """Ordered columns for a synapse mode (fall back to all columns)."""
     return MODE_COLUMNS.get(mode, MODE_COLUMNS["synapse"])
-
-
-def available_layers(rows: List[dict]) -> List[int]:
-    """Contiguous layer numbers offered by the layer selection box.
-
-    Layers always start at 1 and grow one at a time: the returned options are
-    ``1 .. k+1`` where ``k`` is the length of the contiguous run of used layers
-    starting at 1. If no row uses layer 1, only ``[1]`` is returned (never a
-    higher number like 2), so layer assignment stays gapless.
-    """
-    used = set()
-    for row in rows or []:
-        try:
-            used.add(int(float(str(row.get("layer", "") or "").strip())))
-        except (TypeError, ValueError):
-            continue
-    run = 0
-    while (run + 1) in used:
-        run += 1
-    return list(range(1, run + 2))
 
 
 _store_dir = PROJECT_ROOT / "local_data" / "layer_style_drafts"
@@ -218,12 +198,12 @@ def validate_rows(rows: List[dict]) -> List[str]:
     Rows are validated at the *logical* level (one row per cell). A row that is
     completely empty (no layer, no neuron, no colour) is ignored as scaffolding;
     any row with at least one field filled is validated, so a partial row raises
-    the missing-layer / missing-neuron error. Layer continuity is checked on the
-    flattened layer set so a cell with several neurons on the same layer never
-    looks like a gap.
+    the missing-layer / missing-neuron error. Layer numbers are free whole
+    numbers — gaps and any starting number are legitimate (the renderer offsets
+    by the minimum, and a numbering jump breaks the inter-layer synapse pair),
+    so only "is a whole number" is checked.
     """
     errors = []
-    numeric_layers = []
     for i, row in enumerate(logical_normalize(rows), start=1):
         layer = row["layer"]
         neurons = row["neurons"]
@@ -236,29 +216,10 @@ def validate_rows(rows: List[dict]) -> List[str]:
                 parsed = float(layer)
                 if not math.isfinite(parsed) or not parsed.is_integer():
                     raise ValueError
-                # Each chip expands to a row, but the layer appears once; the
-                # set keeps continuity checks correct when a cell has many chips.
-                numeric_layers.append(int(parsed))
             except (TypeError, ValueError, OverflowError):
                 errors.append(f"Row {i}: layer '{layer}' is not a number")
         if not neurons:
             errors.append(f"Row {i}: missing neuron")
-
-    if numeric_layers:
-        used = set(numeric_layers)
-        minimum = min(used)
-        maximum = max(used)
-        if minimum not in (0, 1):
-            errors.append(
-                "Layers must start at 0 or 1 and remain continuous "
-                f"(found {minimum})"
-            )
-        missing = [layer for layer in range(minimum, maximum + 1) if layer not in used]
-        if missing:
-            shown = ", ".join(str(layer) for layer in missing[:8])
-            if len(missing) > 8:
-                shown += ", …"
-            errors.append(f"Layers are not continuous: missing layer(s) {shown}")
     return errors
 
 
@@ -277,11 +238,13 @@ def complete_rows(rows: List[dict]) -> List[dict]:
 
 
 def next_layer_number(rows: List[dict]) -> int:
-    """Return the next layer number for a newly applied selection batch.
+    """Return the next free layer number (current maximum + 1).
 
     An empty table starts at layer 1. Existing 0-based CSVs remain supported;
-    their next layer is still the current maximum plus one. Callers that need
-    to accept the result as runnable input should validate the table first.
+    their next layer is still the current maximum plus one. Discrete (gapped)
+    layer numbers are legitimate, so the maximum — not a contiguous run — is
+    what matters. Callers that need to accept the result as runnable input
+    should validate the table first.
     """
     layers = []
     for row in complete_rows(rows):

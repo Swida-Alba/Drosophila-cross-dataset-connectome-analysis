@@ -7122,6 +7122,21 @@ class VisualizeSkeleton:
         self._layer_map_layer_indices = {
             layer_key: index for index, layer_key in enumerate(layer_groups)
         }
+        # Discrete layer numbers: a numbering JUMP breaks the inter-layer
+        # synapse pair, so connector synapses render/fetch only between
+        # consecutively numbered layers (e.g. 1,2,4,5 forms the separate pairs
+        # 1->2 and 4->5 with nothing across the jump). Record which positional
+        # left indices stay connected; ``None`` (label mode / non-CSV layer
+        # lists) keeps every adjacent pair connected, the historical behavior.
+        if self._layer_map_numeric_layers:
+            sorted_keys = sorted(layer_groups)
+            self._layer_map_connected_left = {
+                self._layer_map_layer_indices[lower]
+                for lower, higher in zip(sorted_keys, sorted_keys[1:])
+                if higher == lower + 1
+            }
+        else:
+            self._layer_map_connected_left = None
 
         # Optional color columns.
         color_col = 'color' if 'color' in df.columns else None
@@ -14646,6 +14661,11 @@ class VisualizeSkeleton:
                 self.synapse_mode = 'scatter'
 
         for i in range(len(self.neuron_layers) - 1):
+            if not self._layers_adjacent(i):
+                # A numbering jump breaks the pair: no connector synapses are
+                # rendered, and neither the FAFB table read nor the NeuPrint
+                # fetch below ever runs for this band.
+                continue
             source_criteria = self.layer_criteria[i]
             target_criteria = self.layer_criteria[i + 1]
             # Collect all inter-layer frames for one merged export alongside
@@ -14767,7 +14787,7 @@ class VisualizeSkeleton:
                 # point takes the set color of its pre neuron; otherwise the layer's
                 # connection color is used (possibly as a per-point array when the
                 # palette already varies per connection).
-                c_val = self.synapse_colors[i]
+                c_val = self.synapse_colors[self._synapse_color_slot(i)]
                 is_color_array = False
                 per_neuron_synapse_colors = getattr(self, '_neuron_synapse_color_overrides', None)
                 if per_neuron_synapse_colors and 'bodyId_pre' in conn_df.columns:
@@ -14798,7 +14818,7 @@ class VisualizeSkeleton:
                 if is_color_array and '__color' in xyz_df.columns:
                     plot_colors = xyz_df['__color'].tolist()
                 else:
-                    plot_colors = self.synapse_colors[i]
+                    plot_colors = self.synapse_colors[self._synapse_color_slot(i)]
 
                 # Plotly applies marker opacity in addition to any alpha in
                 # an rgba() color. Strip the embedded alpha here so the
@@ -14817,7 +14837,7 @@ class VisualizeSkeleton:
                     # traces (inflating the HTML) while also producing a
                     # non-uniform center/edge alpha. A plain marker keeps the
                     # HTML small and applies the alpha once.
-                    base_alpha = self._extract_alpha_from_color(self.synapse_colors[i])
+                    base_alpha = self._extract_alpha_from_color(self.synapse_colors[self._synapse_color_slot(i)])
                     current_size = self._scatter_synapse_marker_size()
 
                     sp = go.Scatter3d(
@@ -14892,7 +14912,7 @@ class VisualizeSkeleton:
                         # Standardized colors carry either their explicit
                         # alpha or the global synapse_alpha fallback.
                         k3d_synapse_opacity = self._extract_alpha_from_color(
-                            self.synapse_colors[i]
+                            self.synapse_colors[self._synapse_color_slot(i)]
                         )
 
                         pts = k3d.points(
@@ -14970,7 +14990,7 @@ class VisualizeSkeleton:
                 ] if (
                     'bodyId_pre' in conn_df.columns
                     and getattr(self, '_neuron_synapse_color_overrides', None)
-                ) else [self.synapse_colors[i]] * len(conn_df)
+                ) else [self.synapse_colors[self._synapse_color_slot(i)]] * len(conn_df)
                 color_groups = {}
                 for position, color in enumerate(resolved_synapse_colors):
                     color_groups.setdefault(str(color), []).append(position)
@@ -15501,6 +15521,10 @@ class VisualizeSkeleton:
         if self.client_type in ('flywire', 'banc'):
             if layer_count > 1:
                 for index in range(layer_count - 1):
+                    if not self._layers_adjacent(index):
+                        # A numbering jump breaks the pair: no connector across
+                        # the gap, so it feeds no distance sample either.
+                        continue
                     source_ids = {
                         str(value) for value in self.neuron_dfs[index]['bodyId'].tolist()
                     }
@@ -15532,6 +15556,9 @@ class VisualizeSkeleton:
         else:
             if layer_count > 1:
                 for index in range(layer_count - 1):
+                    if not self._layers_adjacent(index):
+                        # Same pair-break rule as the rendering path.
+                        continue
                     source_criteria = self._pre_post_size_criteria(index)
                     target_criteria = self._pre_post_size_criteria(index + 1)
                     source_frame = (
@@ -16878,14 +16905,42 @@ class VisualizeSkeleton:
 
         return neuron_color
 
+    def _layers_adjacent(self, left_index):
+        """True when positional layer ``left_index`` connects to ``left_index+1``.
+
+        Discrete layer maps: inter-layer synapses exist only between
+        consecutively NUMBERED layers, so a numbering jump breaks the pair.
+        ``None`` (label mode, or layer lists built without a CSV) keeps every
+        adjacent pair connected — the historical single-chain behavior.
+        """
+        connected = getattr(self, '_layer_map_connected_left', None)
+        if connected is None:
+            return True
+        return left_index in connected
+
+    def _synapse_color_slot(self, left_index):
+        """Palette slot for the inter-layer band leaving positional layer ``left_index``.
+
+        Broken pairs consume no band, so the surviving bands are numbered by
+        their ordinal among CONNECTED pairs — the user's first synapse color
+        paints the first surviving band regardless of numbering gaps.
+        """
+        if self._layers_adjacent(left_index):
+            return sum(
+                1 for i in range(left_index) if self._layers_adjacent(i)
+            )
+        return 0
+
     def _resolve_synapse_color(self, neuron_id, layer_index):
         """Resolve the inter-layer (connector) synapse color for a pre neuron.
 
-        Falls back to the layer's connection color (``synapse_colors[layer_index]``)
-        when no per-neuron override exists.
+        Falls back to the layer's connection color (``synapse_colors[slot]``,
+        where the slot counts only surviving bands) when no per-neuron override
+        exists.
         """
-        if self.synapse_colors and layer_index < len(self.synapse_colors):
-            color = self.synapse_colors[layer_index]
+        slot = self._synapse_color_slot(layer_index)
+        if self.synapse_colors and slot < len(self.synapse_colors):
+            color = self.synapse_colors[slot]
         elif self.synapse_colors:
             color = self.synapse_colors[0]
         else:
