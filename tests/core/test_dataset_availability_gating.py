@@ -379,11 +379,15 @@ def test_collection_gate_skips_only_what_it_must(monkeypatch, tmp_path):
     assert "requires_token" in token_only.added[0].kwargs["reason"]
     assert bare.added, "bare requires_data gates on the default dataset"
 
-    # With a token configured nothing is gated: the pull can fetch the tables.
+    # Round-7 R7-3: a token no longer satisfies requires_data — with local
+    # tables absent the marker still skips (the old contract PULLED real
+    # datasets mid-suite, ~94 MB on the round-7 Windows host).  A test
+    # that genuinely needs the server declares requires_token instead.
     monkeypatch.setattr(core_conftest, "token_configured", lambda: True)
     again = _FakeItem({"requires_data": pytest.mark.requires_data("nope:v1")})
     core_conftest.pytest_collection_modifyitems(config=None, items=[again])
-    assert again.added == []
+    assert [m.name for m in again.added] == ["skip"]
+    assert "no longer satisfies" in again.added[0].kwargs["reason"]
 
 
 def test_collection_gate_passes_when_tables_are_local(monkeypatch, tmp_path):

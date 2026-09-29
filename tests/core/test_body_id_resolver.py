@@ -400,14 +400,23 @@ def test_side_maps_not_loaded_when_off(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.requires_data("male-cns:v1.0")
 def test_same_name_asymmetry_flag_and_population_accessor():
     """User directive 2026-09-14: same-name = EXACT name; extreme
     population asymmetry (>=10x) is carried as a suggested-check flag —
-    evidence for the user, never a gate."""
+    evidence for the user, never a gate.
+
+    Data-gated on the male-cns table the mapper loads (round-7 report:
+    without it `get_mapping_support` returns None and the direct keyed
+    access raised `KeyError: 'population_asymmetry'` on the Windows
+    host)."""
     from comparison.cross_dataset_type_mapper import get_type_mapper
     m = get_type_mapper()
     flagged = m.get_mapping_support('TmY18', 'male-cns:v1.0', 'TmY18',
                                     'flywire_FAFB_v783')
+    if flagged is None:
+        pytest.skip('type-mapper crosswalk unavailable on this host '
+                    '(male-cns tables not initialized)')
     asym = flagged['population_asymmetry']
     assert asym['n_source'] == 1367 and asym['n_target'] == 1
     assert asym['flag'] == 'extreme population asymmetry'

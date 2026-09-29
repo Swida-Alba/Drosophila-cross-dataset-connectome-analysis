@@ -381,7 +381,11 @@ class TestF4NoIncompleteCacheBypass:
             for path in (repo / folder).rglob('*'):
                 if not path.is_file() or path.suffix not in {'.py', '.md'}:
                     continue
-                if str(path.relative_to(repo)) in self.NEGATIVE_PROBES:
+                rel = str(path.relative_to(repo)).replace('\\', '/')
+                # separator-normalized: on Windows rel uses backslashes and
+                # never matched the forward-slash whitelist (round-7 report,
+                # list-hygiene failure class)
+                if rel in self.NEGATIVE_PROBES:
                     continue
                 text = path.read_text(errors='ignore')
                 if 'allow_incomplete_cache' in text or 'INCOMPLETE_CACHE' in text:

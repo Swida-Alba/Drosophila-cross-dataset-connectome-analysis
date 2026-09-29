@@ -245,11 +245,19 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         data_marker = item.get_closest_marker("requires_data")
         if data_marker is not None:
+            # Round-7 R7-3: local data presence is the gate.  A token alone
+            # no longer satisfies ``requires_data`` — with a token but no
+            # local tables the marked tests PULLED real datasets mid-suite
+            # (~94 MB on the round-7 Windows host), breaking the "run §H on
+            # a tree nothing has touched" rule from the inside.  A test
+            # that genuinely needs the server declares ``requires_token``.
             for dataset in _datasets_from_marker(data_marker):
-                if not (has_token or dataset_files_present(dataset)):
+                if not dataset_files_present(dataset):
                     item.add_marker(pytest.mark.skip(
-                        reason=("marker 'requires_data': "
-                                f"{DatasetAvailability(has_token).explain(dataset)}")))
+                        reason=("marker 'requires_data': local dataset "
+                                f"tables for {dataset} not present "
+                                "(token alone no longer satisfies this "
+                                "marker — round-7 R7-3)")))
                     break
         if (item.get_closest_marker("requires_token") is not None
                 and not has_token):
