@@ -568,6 +568,7 @@ if (!window.__drocatCellFocusGuard) {
     var tbody = tr ? tr.parentElement : null;
     var rec = {
       at: Date.now(),
+      rowId: tr ? tr.getAttribute('data-row-id') : null,
       rowIndex: tbody ? Array.prototype.indexOf.call(tbody.children, tr) : -1,
       cellIndex: Array.prototype.indexOf.call(tr.children, td),
       tag: inp.tagName,
@@ -585,7 +586,9 @@ if (!window.__drocatCellFocusGuard) {
       if (Date.now() - drocatRowsRebuiltAt > 300) return;  // no rebuild happened
       var tb = document.querySelector('.drocat-edge-table tbody');
       if (!tb) return;
-      var tr2 = tb.children[rec2.rowIndex];
+      var tr2 = rec2.rowId != null
+        ? tb.querySelector('tr[data-row-id="' + rec2.rowId + '"]')
+        : tb.children[rec2.rowIndex];
       if (!tr2) return;
       var td2 = tr2.children[rec2.cellIndex];
       var inp2 = td2 && td2.querySelector(rec2.tag.toLowerCase());
@@ -593,8 +596,16 @@ if (!window.__drocatCellFocusGuard) {
       inp2.focus();
       if (inp2.tagName === 'BUTTON') return;
       if (!inp2.value && rec2.value) {
-        inp2.value = rec2.value;
-        inp2.dispatchEvent(new Event('input', { bubbles: true }));
+        // Replay the wiped text only into the SAME logical row (the body
+        // slots stamp data-row-id): a purely positional restore after a
+        // row shift would commit it into whatever row now occupies the
+        // recorded index, and a deleted row restores nothing at all.
+        var sameRow = rec2.rowId != null ||
+          (Array.prototype.indexOf.call(tb.children, tr2) === rec2.rowIndex);
+        if (sameRow) {
+          inp2.value = rec2.value;
+          inp2.dispatchEvent(new Event('input', { bubbles: true }));
+        }
       }
       if (rec2.caret != null && inp2.setSelectionRange) {
         try {
@@ -687,6 +698,7 @@ _BODY_SLOT = r"""
 <q-tr
   :props="props"
   :key="props.row.id"
+  :data-row-id="props.row.id"
   :class="props.rowIndex % 2 === 0 ? 'drocat-edge-row-even' : 'drocat-edge-row-odd'
 ">
   <q-td class="drocat-edge-select-cell">
@@ -976,11 +988,12 @@ class LayerStyleEditorHandle:
             self.table.on("layer-color-pick", self.on_color_pick)
             self.table.on("layer-cell-focus", self.on_neuron_focus)
             self.table.on("layer-cell-suggest", self.on_neuron_suggest)
-            if self._autosave_tick is None:
-                # One persistent poll timer for the debounced auto-save; creating
-                # timers per commit would mount/unmount elements in a live slot
-                # and remount the table's cells under the user's cursor.
-                self._autosave_tick = ui.timer(0.25, self._autosave_poll)
+            # The `table_container.clear()` above deleted the previous
+            # timer element (NiceGUI cancels timers on element deletion),
+            # so recreate it unconditionally — an `is None` guard would
+            # keep the stale, cancelled Timer object and leave a re-rendered
+            # editor with a dead debounce poller.
+            self._autosave_tick = ui.timer(0.25, self._autosave_poll)
         self.refresh_table()
 
     def _update_validation(self) -> list:
@@ -1161,11 +1174,19 @@ class LayerStyleEditorHandle:
                     for v in (value or [])
                     if str(v).strip()
                 ]
+            changed = self.rows[row_id]["neurons"] != neurons
             self.rows[row_id]["neurons"] = neurons
             # Marks follow the chips: dropping one clears its tick while the
             # list is held, as it does in the query box.
             if self._suggest_visible and row_id == self._suggest_row:
                 self._rehold_suggestions(row_id)
+            if changed:
+                # A chip added by typing + Enter lands here through the
+                # model update, never through a commit event; without
+                # arming the debounced save, closing the tab before a
+                # blur/Tab loses the chip — the module's never-lose-edits
+                # guarantee.
+                self.schedule_autosave()
             return
 
         scalar = str(value or "").strip()
@@ -1892,9 +1913,10 @@ def layer_style_editor(
 
         # The header resizers call this client-side helper (injected once per page).
         try:
-            if not getattr(handle.table.client, "_drocat_col_resize_added", False):
+            if not getattr(handle.table.client,
+                          "_drocat_layer_editor_js_added", False):
                 ui.add_head_html(f"<script>{_COL_RESIZE_JS}</script>")
-                handle.table.client._drocat_col_resize_added = True
+                handle.table.client._drocat_layer_editor_js_added = True
         except Exception:
             pass
 

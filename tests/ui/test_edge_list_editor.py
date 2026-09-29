@@ -911,3 +911,25 @@ class TestNetworkTabIntegration:
         assert empty_panel.visible is False
         assert path_panel.visible is False
         assert editor_card.value is True
+
+
+def test_edge_editor_script_injects_under_its_own_flag(store_patch_for_component):
+    """This editor's script carries the focus guard and the Enter-move
+    machinery; it used to share the layer editor's per-client injection
+    flag, so whichever editor rendered first silently skipped the other's
+    copy (it worked only because the layer editor's suggestion script
+    happened to define the same globals)."""
+    client, handle = build_editor(store_patch_for_component)
+    table_client = handle.table.client
+    assert getattr(table_client, "_drocat_edge_editor_js_added",
+                   False) is True
+    assert not hasattr(table_client, "_drocat_col_resize_added")
+
+
+def test_edge_editor_focus_guard_restore_is_keyed_to_the_row_id():
+    """The wiped-text replay must target the SAME logical row (the body
+    slot stamps data-row-id; the guard resolves the restore row by it)."""
+    from ui.components.edge_list_editor import _COL_RESIZE_JS, _EDGE_BODY_SLOT
+    assert ':data-row-id="props.row.id"' in _EDGE_BODY_SLOT
+    assert "tr.getAttribute('data-row-id')" in _COL_RESIZE_JS
+    assert 'tr[data-row-id="' in _COL_RESIZE_JS

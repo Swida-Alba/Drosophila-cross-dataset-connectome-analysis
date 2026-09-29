@@ -192,6 +192,7 @@ if (!window.__drocatCellFocusGuard) {
     var tbody = tr ? tr.parentElement : null;
     var rec = {
       at: Date.now(),
+      rowId: tr ? tr.getAttribute('data-row-id') : null,
       rowIndex: tbody ? Array.prototype.indexOf.call(tbody.children, tr) : -1,
       cellIndex: Array.prototype.indexOf.call(tr.children, td),
       tag: inp.tagName,
@@ -209,7 +210,9 @@ if (!window.__drocatCellFocusGuard) {
       if (Date.now() - drocatRowsRebuiltAt > 300) return;  // no rebuild happened
       var tb = document.querySelector('.drocat-edge-table tbody');
       if (!tb) return;
-      var tr2 = tb.children[rec2.rowIndex];
+      var tr2 = rec2.rowId != null
+        ? tb.querySelector('tr[data-row-id="' + rec2.rowId + '"]')
+        : tb.children[rec2.rowIndex];
       if (!tr2) return;
       var td2 = tr2.children[rec2.cellIndex];
       var inp2 = td2 && td2.querySelector(rec2.tag.toLowerCase());
@@ -217,8 +220,16 @@ if (!window.__drocatCellFocusGuard) {
       inp2.focus();
       if (inp2.tagName === 'BUTTON') return;
       if (!inp2.value && rec2.value) {
-        inp2.value = rec2.value;
-        inp2.dispatchEvent(new Event('input', { bubbles: true }));
+        // Replay the wiped text only into the SAME logical row (the body
+        // slots stamp data-row-id): a purely positional restore after a
+        // row shift would commit it into whatever row now occupies the
+        // recorded index, and a deleted row restores nothing at all.
+        var sameRow = rec2.rowId != null ||
+          (Array.prototype.indexOf.call(tb.children, tr2) === rec2.rowIndex);
+        if (sameRow) {
+          inp2.value = rec2.value;
+          inp2.dispatchEvent(new Event('input', { bubbles: true }));
+        }
       }
       if (rec2.caret != null && inp2.setSelectionRange) {
         try {
@@ -278,6 +289,7 @@ _EDGE_BODY_SLOT = r"""
 <q-tr
   :props="props"
   :key="props.row.id"
+  :data-row-id="props.row.id"
   :class="props.rowIndex % 2 === 0 ? 'drocat-edge-row-even' : 'drocat-edge-row-odd'"
 >
   <q-td class="drocat-edge-select-cell">
@@ -436,11 +448,12 @@ class EdgeListEditorHandle:
             self.table.on("edge-cell-change", self.on_inline_edit)
             self.table.on("edge-cell-commit", self.on_inline_commit)
             self.table.on("edge-color-pick", self.on_color_pick)
-            if self._autosave_tick is None:
-                # One persistent poll timer for the debounced auto-save; creating
-                # timers per commit would mount/unmount elements in a live slot
-                # and remount the table's cells under the user's cursor.
-                self._autosave_tick = ui.timer(0.25, self._autosave_poll)
+            # The `table_container.clear()` above deleted the previous
+            # timer element (NiceGUI cancels timers on element deletion),
+            # so recreate it unconditionally — an `is None` guard would
+            # keep the stale, cancelled Timer object and leave a re-rendered
+            # editor with a dead debounce poller.
+            self._autosave_tick = ui.timer(0.25, self._autosave_poll)
         self.refresh_table()
 
     def _update_validation(self) -> list:
@@ -802,11 +815,16 @@ def edge_list_editor(
         handle.render()
 
         # The header resizers call this client-side helper (injected once per
-        # page; shared with the Advanced Layer Editor).
+        # page). This editor's copy also carries the focus guard and the
+        # Enter-move machinery, so it must have its OWN per-client flag:
+        # sharing one with the layer editor let whichever editor rendered
+        # first silently skip the other's script (the inner window guards
+        # dedupe the bindings, so double injection is safe).
         try:
-            if not getattr(handle.table.client, "_drocat_col_resize_added", False):
+            if not getattr(handle.table.client,
+                           "_drocat_edge_editor_js_added", False):
                 ui.add_head_html(f"<script>{_COL_RESIZE_JS}</script>")
-                handle.table.client._drocat_col_resize_added = True
+                handle.table.client._drocat_edge_editor_js_added = True
         except Exception:
             pass
 

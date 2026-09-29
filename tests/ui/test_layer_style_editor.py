@@ -1368,3 +1368,50 @@ class TestSkeletonTabIntegration:
         assert shape.visible is False
         assert pre_post_shape.visible is False
         assert warning.visible is False
+
+
+def test_chip_added_by_model_update_arms_autosave(store_patch_for_component):
+    """A chip added by typing + Enter lands through the MODEL update, never
+    through a commit event: it must arm the debounced save itself, or
+    closing the tab before a blur/Tab loses the chip — the module's
+    never-lose-edits guarantee."""
+    client, handle = build_editor(store_patch_for_component)
+    handle.name_input.value = "chip autosave"
+    handle.set_rows([{"layer": str(i), "neuron": f"n{i}",
+                      "color": "#112233"} for i in range(5)])
+    handle.on_inline_commit(SimpleNamespace(args={
+        "id": 0, "field": "layer", "value": "0"}))
+    assert handle._autosave_due is not None
+    handle._autosave_due = None          # disarm: isolate the neuron arm
+    handle.on_inline_edit(SimpleNamespace(args={
+        "id": 0, "field": "neuron", "value": ["n0", "extra-chip"]}))
+    assert handle._autosave_due is not None, (
+        "model-update chip add must schedule the debounced autosave")
+    csv_path = handle.flush_autosave()
+    assert csv_path and Path(csv_path).exists()
+    assert "extra-chip" in Path(csv_path).read_text(encoding="utf-8")
+
+
+def test_second_render_recreates_the_autosave_timer(store_patch_for_component):
+    """render() clears the table container, which DELETES the tick timer
+    (NiceGUI cancels timers on element deletion); the old `is None` guard
+    kept the stale cancelled object and left a re-rendered editor with a
+    dead debounce poller."""
+    client, handle = build_editor(store_patch_for_component)
+    first = handle._autosave_tick
+    assert first is not None
+    handle.render()
+    assert handle._autosave_tick is not first
+    assert handle._autosave_tick in client.elements.values()
+    assert first not in client.elements.values()
+
+
+def test_focus_guard_restore_is_keyed_to_the_row_id():
+    """The wiped-text replay must target the SAME logical row: the body
+    slot stamps data-row-id and the guard resolves the restore row by it,
+    so a rebuild that shifts rows can never commit the text into the row
+    that now occupies the recorded index."""
+    from ui.components.layer_style_editor import _BODY_SLOT, _SUGGESTION_JS
+    assert ':data-row-id="props.row.id"' in _BODY_SLOT
+    assert "tr.getAttribute('data-row-id')" in _SUGGESTION_JS
+    assert 'tr[data-row-id="' in _SUGGESTION_JS
