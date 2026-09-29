@@ -154,7 +154,7 @@
     column is the morphology score only.</p>
   <table>
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>similarity</code></td><td><b>vector_v2</b>: per-block cosine (shape/spatial, 0.30/0.70) on standardized + ZCA-whitened vectors (a whitened cosine — it can be negative, though real pairs are typically positive); <b>NBLAST</b>: normalized pair score</td><td>−1–1 (vector_v2) / 0–1 (NBLAST)</td></tr>
+    <tr><td><code>similarity</code></td><td><b>vector_v2</b>: per-block cosine (shape/spatial, 0.30/0.70) on standardized + ZCA-whitened vectors (a whitened cosine — it can be negative, though real pairs are typically positive); <b>NBLAST</b>: normalized pair score</td><td>−1–1 for both (a whitened cosine and normalized NBLAST can both score below zero — less similar than chance)</td></tr>
     <tr><td><code>roi_similarity</code></td><td>ROI-distribution <b>screen</b> score (candidate selection only, never in the morphology score): cosine of input/output synapse-distribution vectors over the primary ROIs, mirrored across the midline</td><td>0–1</td></tr>
     <tr><td><code>profile_similarity</code></td><td>shared-count / max-shared-count (normalized shared-partner count)</td><td>0–1</td></tr>
     <tr><td><code>intra_type_similarity</code></td><td>mean pairwise similarity of the type's members (the intra-type reference)</td><td>0–1</td></tr>

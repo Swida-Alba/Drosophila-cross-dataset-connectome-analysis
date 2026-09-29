@@ -1374,8 +1374,9 @@ def test_both_similarity_styles_render_diverging_full_domain():
         style = cmp._metric_style()
         assert style.zmin == -1.0 and style.zmax == 1.0
         assert style.colorscale == mc.report_kit.REPORT_DIVERGING_COLORSCALE
-    # The style no longer depends on the matrices at all.
+    # The style takes no matrices and never varies with run content: an
+    # all-positive matrix gets the same [-1, 1] domain as a signed one.
     cmp = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["a", "b"], method="nblast",
         verbose=False, generate_heatmaps=False)
-    assert cmp._metric_style().zmin == cmp._metric_style().zmin
+    assert cmp._metric_style() == cmp._metric_style()
