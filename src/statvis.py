@@ -2935,35 +2935,36 @@ def VisConnMat(cmat,filename,title='',color_scale=None,showfig=True,fontsize=12,
 # to vispath_pkg if available.
 # ============================================================================
 
-def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None):
+def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False):
     if color_scale is None:
         color_scale = [[0, 'rgb(255,255,255)'], [1, 'rgb(104,55,164)']]
     '''Create interactive heatmap with comprehensive controls.
-    
+
     DEPRECATED: This function is now maintained in vispath_pkg.
     Please use: from vispath_pkg import VisConnMatInteractive
-    
+
     This wrapper will redirect to vispath_pkg if available.
     '''
     # Try to use vispath_pkg version first (more up-to-date)
     try:
         from vispath_pkg import VisConnMatInteractive as VisPkgVisConnMatInteractive
         return VisPkgVisConnMatInteractive(
-            cmat=cmat, 
-            filename=filename, 
-            title=title, 
-            color_scale=color_scale, 
-            showfig=showfig, 
-            fontsize=fontsize, 
-            conn_df=conn_df, 
-            matrices_dict=matrices_dict, 
+            cmat=cmat,
+            filename=filename,
+            title=title,
+            color_scale=color_scale,
+            showfig=showfig,
+            fontsize=fontsize,
+            conn_df=conn_df,
+            matrices_dict=matrices_dict,
             verbose=verbose,
             zmin=zmin,
             zmax=zmax,
             init_width=init_width,
             init_height=init_height,
             init_clustered=init_clustered,
-            metric_name=metric_name
+            metric_name=metric_name,
+            square_cells=square_cells
         )
     except ImportError:
         # Fall through to the local implementation
@@ -2973,7 +2974,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             "vispath_pkg is not importable; using the deprecated local heatmap "
             "fallback from statvis.py. That copy lacks the newer interactive "
             "heatmap features (dendrograms, square-cells lock), and "
-            "init_clustered/square_cells/metric_name are ignored here.",
+            "init_clustered/init_width/init_height/square_cells/metric_name "
+            "are accepted but ignored here.",
             stacklevel=2,
         )
         _VisConnMatInteractive_local(cmat, filename, title, color_scale, showfig, fontsize, conn_df, matrices_dict, verbose, zmin, zmax)

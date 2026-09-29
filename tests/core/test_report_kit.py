@@ -231,6 +231,92 @@ def test_square_cells_anchors_cells_and_caps_natural_width():
     assert 'heatmap-square-fit' in fragment
 
 
+def test_dendrogram_band_alignment_tracks_constrained_domain(monkeypatch):
+    """The band snap must map the cell edge through the LIVE _fullLayout
+    domain, not the user layout domain.
+
+    With square_cells the y axis uses constrain:'domain', so plotly
+    satisfies the aspect ratio by shrinking the y DOMAIN (ranges stay
+    exact): the pre-fix JS only compensated range padding and read the
+    stale user domain, leaving the top tree band floating as much as a
+    quarter of the plot height above the cells. Rendered here through the
+    real production fragment (kaleido resolves the constraint), the ported
+    VisPath math lands on the true cell edge while the retired formula
+    leaves a visible gap.
+    """
+    pytest.importorskip("plotly")
+    pytest.importorskip("scipy")
+    pytest.importorskip("kaleido")
+    import plotly.graph_objects as go
+
+    rng = np.random.default_rng(1)
+    n = 21
+    matrix = pd.DataFrame(
+        rng.random((n, n)), index=[f"r{i}" for i in range(n)],
+        columns=[f"c{i}" for i in range(n)])
+    style = report_kit.metric_style('jaccard')
+
+    captured = {}
+    original_to_html = go.Figure.to_html
+
+    def spy(self, *args, **kwargs):
+        captured['fig'] = self
+        return original_to_html(self, *args, **kwargs)
+
+    monkeypatch.setattr(go.Figure, 'to_html', spy)
+    fragment, clustered = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', square_cells=True)
+    assert fragment is not None and clustered
+    user_fig = captured['fig']
+    assert user_fig.layout.yaxis2 is not None  # a top tree band exists
+
+    width = 530  # two-per-row metric card
+    user_fig.layout.width = width
+    full = user_fig.full_figure_for_development()
+    full_ya = full.layout.yaxis
+    user_yd = user_fig.layout.yaxis.domain
+    assert full_ya.domain[1] < user_yd[1] - 0.02, (
+        "expected the constrained regime: plotly shrinks the y domain")
+
+    def data_to_paper(value, axis):
+        d0, d1 = axis.domain
+        r0, r1 = axis.range
+        return d0 + (value - r0) / (r1 - r0) * (d1 - d0)
+
+    true_edge = data_to_paper(-0.5, full_ya)  # top row's top edge (reversed)
+
+    # The ported VisPath math (report_script's alignDendrogramBands): frac
+    # from the live range, mapped through the live domain.
+    frac = ((-0.5) - full_ya.range[0]) / (full_ya.range[1] - full_ya.range[0])
+    new_edge = full_ya.domain[0] + frac * (full_ya.domain[1] - full_ya.domain[0])
+    assert new_edge == pytest.approx(true_edge, abs=1e-9)
+
+    # The retired formula (range-padding only, user domain): in this regime
+    # it either under-fires (padY == 0 when the range is exact) or maps
+    # through the stale user domain — both leave a material gap.
+    y_hi, y_lo = max(full_ya.range), min(full_ya.range)
+    pad_y = (y_hi - (n - 0.5)) / (y_hi - y_lo)
+    old_edge = user_yd[1] - max(pad_y, 0.0) * (user_yd[1] - user_yd[0])
+    assert old_edge - true_edge > 0.05, (
+        "the retired formula must fail visibly in the constrained regime")
+
+
+def test_report_script_aligns_from_live_domains():
+    """Source-level pins for the snap wiring: live-domain reads inside the
+    update math, the retired user-layout read gone, a relayout re-align
+    hook, and resize alignment chained onto the resize promise."""
+    pytest.importorskip("plotly")
+    script = report_kit.report_script()
+    assert 'var yd = ya.domain;' in script
+    assert 'var xd = xa.domain;' in script
+    assert '((-0.5) - ya.range[0])' in script
+    assert '((nX - 0.5) - xa.range[0])' in script
+    assert 'var layout = plot.layout' not in script
+    assert "plot.on('plotly_relayout'" in script
+    assert '.then(done, done)' in script
+    assert '__lastDendroAlign' in script
+
+
 def test_square_cells_large_matrix_anchors_without_wrapper():
     pytest.importorskip("plotly")
     n = 35

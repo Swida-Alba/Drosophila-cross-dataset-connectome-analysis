@@ -364,6 +364,12 @@ def plotly_heatmap_fragment(
     # must be part of the update_layout call below — mutating these dicts
     # afterwards would not reach the figure.
     top_frac = (top_band_px / height) if top_band_px else 0.0
+    # The right band's reserved fraction is nominal at a 1100px figure:
+    # only the small-matrix square path pins an explicit width, so wider
+    # matrices render at the card's fluid width and the band draws thinner
+    # than the 44px constant there. Placement is corrected client-side by
+    # report_script's alignDendrogramBands, which snaps the band's inner
+    # edge onto the true cell edge whatever fraction was reserved.
     right_frac = right_band_px / float(fig_width_px or 1100)
     if top_frac:
         yaxis['domain'] = [0.0, 1.0 - top_frac]
@@ -576,26 +582,40 @@ def report_script() -> str:
     """Return the small tab/resize controller used by report.html.
 
     Also re-aligns the dendrogram bands of clustered heatmap cards onto the
-    heatmap's true cell edges after each render/resize (the square-cell
-    scaleanchor pads the autoranged axis, which would otherwise leave the
-    bands floating one padding-width from the cells).
+    heatmap's true cell edges after each render/resize/relayout. The
+    square-cell constraint is allowed to shrink the y DOMAIN (constrain:
+    'domain') or pad the ranges, so the band edge is mapped from the live
+    ``_fullLayout`` domain — the same math the VisPath page uses, where it
+    was verified against plotly directly.
     """
     return """<script>
 (function () {
   function resizePlots(panel) {
     if (!panel || !window.Plotly) return;
     panel.querySelectorAll('.js-plotly-plot').forEach(function (plot) {
-      try { window.Plotly.Plots.resize(plot); } catch (error) { /* no-op */ }
-      alignDendrogramBands(plot);
+      // resize resolves its re-constraint asynchronously; aligning before
+      // it settles would read the pre-resize ranges and stay stale until
+      // the next event.
+      var done = function () { alignDendrogramBands(plot); hookPlot(plot); };
+      try {
+        var settled = window.Plotly.Plots.resize(plot);
+        if (settled && typeof settled.then === 'function') {
+          settled.then(done, done);
+        } else {
+          done();
+        }
+      } catch (error) { done(); }
     });
   }
 
-  // Dendrogram bands must hug the heatmap's cell edges. Plotly's square-cell
-  // scaleanchor pads the heatmap's autoranged axis to satisfy the aspect
-  // ratio, so the plot-domain edge (where the band starts) can sit one
-  // padding-width away from the actual cell edge; after each render, move the
-  // band's inner edge onto the padding while keeping the outer edge at the
-  // plot edge, so the tree keeps its full depth.
+  // Dendrogram bands must hug the heatmap's cell edges. The square-cell
+  // scaleanchor reconciles the aspect ratio by padding the autoranged
+  // ranges OR by shrinking the constrained axis's domain, so the band
+  // edge is computed from the LIVE _fullLayout domain: map the
+  // band-adjacent cell edge's data coordinate (-0.5 for the reversed y
+  // top row, nX-0.5 for the right column) through the live domain. The
+  // tree traces share the heatmap axes, so leaf positions stay put; only
+  // the band domains move, and the outer edge keeps its full depth.
   function alignDendrogramBands(plot) {
     if (!window.Plotly || !plot || !plot._fullLayout) return;
     try {
@@ -603,37 +623,61 @@ def report_script() -> str:
       if (!full.xaxis2 && !full.yaxis2) return;
       var heat = plot.data && plot.data[0];
       if (!heat || heat.type !== 'heatmap') return;
-      var layout = plot.layout || {};
       var update = {};
-      if (full.xaxis2) {
-        var xa = full.xaxis;
-        var nX = (heat.x || []).length;
-        var xSpan = xa.range[1] - xa.range[0];
-        if (nX > 0 && xSpan > 0) {
-          var padX = (xa.range[1] - (nX - 0.5)) / xSpan;
-          if (padX > 0.002) {
-            var xd = (layout.xaxis && layout.xaxis.domain) || xa.domain;
-            update['xaxis2.domain'] = [xd[1] - padX * (xd[1] - xd[0]), 1];
-          }
-        }
-      }
-      if (full.yaxis2) {
-        var ya = full.yaxis;
+      if (full.yaxis2 && full.yaxis && full.yaxis.range &&
+          full.yaxis.range[0] !== full.yaxis.range[1]) {
         var nY = (heat.y || []).length;
-        var yHi = Math.max(ya.range[0], ya.range[1]);
-        var yLo = Math.min(ya.range[0], ya.range[1]);
-        var ySpan = yHi - yLo;
-        if (nY > 0 && ySpan > 0) {
-          var padY = (yHi - (nY - 0.5)) / ySpan;
-          if (padY > 0.002) {
-            var yd = (layout.yaxis && layout.yaxis.domain) || ya.domain;
-            update['yaxis2.domain'] = [yd[1] - padY * (yd[1] - yd[0]), 1];
+        if (nY > 1) {
+          var ya = full.yaxis;
+          var fracY = ((-0.5) - ya.range[0]) / (ya.range[1] - ya.range[0]);
+          // frac == 1 is the common constrained case: the range stays
+          // exact and plotly shrinks the domain instead.
+          if (isFinite(fracY) && fracY > 0 && fracY <= 1) {
+            var yd = ya.domain;
+            var edgeY = yd[0] + fracY * (yd[1] - yd[0]);
+            var curY = full.yaxis2.domain;
+            if (Math.abs(curY[0] - edgeY) > 0.001) {
+              update['yaxis2.domain'] = [edgeY, curY[1]];
+            }
           }
         }
       }
-      if (update['xaxis2.domain'] || update['yaxis2.domain']) {
+      if (full.xaxis2 && full.xaxis && full.xaxis.range &&
+          full.xaxis.range[0] !== full.xaxis.range[1]) {
+        var nX = (heat.x || []).length;
+        if (nX > 1) {
+          var xa = full.xaxis;
+          var fracX = ((nX - 0.5) - xa.range[0]) / (xa.range[1] - xa.range[0]);
+          if (isFinite(fracX) && fracX > 0 && fracX <= 1) {
+            var xd = xa.domain;
+            var edgeX = xd[0] + fracX * (xd[1] - xd[0]);
+            var curX = full.xaxis2.domain;
+            if (Math.abs(curX[0] - edgeX) > 0.001) {
+              update['xaxis2.domain'] = [edgeX, curX[1]];
+            }
+          }
+        }
+      }
+      // A relayout with unchanged values would re-fire the relayout hook;
+      // remember the last update and skip identical ones.
+      var key = JSON.stringify(update);
+      if ((update['yaxis2.domain'] || update['xaxis2.domain']) &&
+          plot.__lastDendroAlign !== key) {
+        plot.__lastDendroAlign = key;
         window.Plotly.relayout(plot, update);
       }
+    } catch (error) { /* no-op */ }
+  }
+
+  // Re-run the alignment whenever a zoom/pan (or our own snap) relayouts
+  // the plot; registered once per plot element.
+  function hookPlot(plot) {
+    if (plot.__dendroAlignHooked) return;
+    plot.__dendroAlignHooked = true;
+    try {
+      plot.on('plotly_relayout', function () {
+        setTimeout(function () { alignDendrogramBands(plot); }, 0);
+      });
     } catch (error) { /* no-op */ }
   }
 
@@ -657,7 +701,10 @@ def report_script() -> str:
 
   window.addEventListener('load', function () {
     document.querySelectorAll('.js-plotly-plot').forEach(function (plot) {
-      setTimeout(function () { alignDendrogramBands(plot); }, 0);
+      setTimeout(function () {
+        alignDendrogramBands(plot);
+        hookPlot(plot);
+      }, 0);
     });
     document.querySelectorAll('.tab-panel.active').forEach(resizePlots);
   });
