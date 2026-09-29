@@ -3113,6 +3113,11 @@ class ComparisonAnalyzer:
                     if applied not in thresholds:
                         aliased_folders.append(applied)
                 tau = row.get('tau_canonical') or row.get('tau')
+                # Edge mode applies no tau (F-XD-004/R7-1 F-P3 nuance): the
+                # block-level tau must not resurrect the side path runs'
+                # value the run rows just nulled.
+                if getattr(meta, 'get', lambda k: None)('edge_mode'):
+                    tau = None
                 if tau is not None and not meta.get('skipped'):
                     tau_seen = tau if tau_seen is None else max(tau_seen, tau)
                 if not meta.get('skipped'):
@@ -3989,7 +3994,8 @@ class ComparisonAnalyzer:
         label-mapper fold-in as ``_load_fnc_results`` so mapper runs match
         the legacy per-threshold flow.
         """
-        df = self._try_load_cached(dataset_name, threshold)
+        df = self._try_load_cached(dataset_name, threshold,
+                                   remove_stale=True)
         if df is None:
             df = pd.DataFrame()
         return self._finalize_loaded_result(dataset_name, threshold, df)
@@ -4774,8 +4780,17 @@ class ComparisonAnalyzer:
             return False
         return recorded == self._query_fingerprint()
 
-    def _try_load_cached(self, dataset_name: str, threshold: int) -> Optional[pd.DataFrame]:
-        """Try to load cached result from disk."""
+    def _try_load_cached(self, dataset_name: str, threshold: int,
+                         remove_stale: bool = False) -> Optional[pd.DataFrame]:
+        """Try to load cached result from disk.
+
+        ``remove_stale=True`` (the replay loader's shape): a fingerprint
+        mismatch DELETES the stale ``connections_edge.csv`` + sidecar pair
+        instead of leaving it to be re-rejected by every later reader of
+        this folder — round-7 J6 observed the stale pair surviving a
+        mismatched re-derivation, so the folder kept claiming the old
+        query (Windows report, 0 of 2 sidecars rewritten).
+        """
         if not self.parameters.output_folder:
             return None
         
@@ -4788,6 +4803,18 @@ class ComparisonAnalyzer:
                 self._log(
                     f"Cached {dataset_name} @ {threshold} was written for a "
                     "different query — ignoring it", 'always')
+                if remove_stale:
+                    try:
+                        os.unlink(filepath)
+                        os.unlink(os.path.join(
+                            output_dir,
+                            "connections_edge.fingerprint.json"))
+                        self._log(
+                            f"Removed the stale pair under {output_dir} "
+                            "(named a different query)", 'always')
+                    except OSError as exc:
+                        self._log(f"Could not remove the stale pair: {exc}",
+                                  'always')
             else:
                 try:
                     df = self._read_csv(filepath)

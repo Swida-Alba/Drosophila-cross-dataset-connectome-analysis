@@ -66,7 +66,7 @@ grep -n "flybrains.JRCFIB2018F" src/coana.py
 ✅ **Backward Compatible**: No API changes
 ✅ **All Features**: Skeleton, synapse, and mesh transformations all fixed
 
-Users can now successfully use `brain_mesh='whole'` without transformation errors.
+Users can now successfully use `brain_mesh='whole'` without transformation errors. (The 'whole' spelling was later RETIRED — visualize_skeleton now rejects it like any unknown value; the doc-cite checker flags this historical example on purpose.)
 
 ## Testing
 

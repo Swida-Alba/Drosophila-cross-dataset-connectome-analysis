@@ -2407,3 +2407,20 @@ def test_edge_mode_neutralization_runs_after_rederivation(analyzer):
     assert neutral > complete, (
         'edge-mode neutralization must follow the meta re-derivation '
         'or its values are clobbered (round-6 F-P3)')
+
+
+def test_edge_mode_banner_block_tau_is_null(analyzer):
+    """Round-7 report nuance: the DATASET BLOCK's tau field must not
+    resurrect the side path runs' value that the run rows just nulled
+    (a block-level reader would still see a tau in edge mode)."""
+    analyzer._path_run_meta[('dsA', 5)] = {
+        'strongest_first_tau': 9, 'tau': 9,
+        'strongest_first_budget_bitten': True,
+    }
+    analyzer.parameters.comparison_mode = 'edge'
+    analyzer._complete_path_run_meta()
+    analyzer._neutralize_edge_mode_path_meta()
+    row = analyzer._path_provenance_row('dsA', 5)
+    assert row.get('edge_mode') is True
+    # the neutralized meta must carry tau=None so the banner block reads None
+    assert analyzer._path_run_meta[('dsA', 5)]['tau'] is None

@@ -41,7 +41,20 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROJECT = HERE.parent / 'drocat'
+# Resolve the repo root from THIS file's location: committed at
+# scripts/harness/windows_round6/ the root is 3 up; when staged
+# beside a checkout (round-6/7 hosts) fall back to the sibling
+# 'drocat' folder that host layout used.
+PROJECT = HERE
+for _ in range(5):
+    if (PROJECT / 'src' / 'coana.py').exists():
+        break
+    PROJECT = PROJECT.parent
+else:
+    _sibling = HERE.parent / 'drocat'
+    if (_sibling / 'src' / 'coana.py').exists():
+        PROJECT = _sibling
+
 SCRATCH = HERE.parent / 'gate_scratch'
 DATASET = 'probe-gate:v1.0'
 NEURON_COUNT = 40

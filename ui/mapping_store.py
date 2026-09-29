@@ -1,6 +1,6 @@
 """Custom type-mapping store: persistent, named LabelMapper presets.
 
-Presets live in ``cache/user_mappings.json`` (gitignored) and use
+Presets live in ``cache/user_mappings/user_mappings.json`` (gitignored) and use
 LabelMapper's native JSON schema:
 
     {
