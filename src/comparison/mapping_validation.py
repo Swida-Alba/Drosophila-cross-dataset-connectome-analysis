@@ -2217,8 +2217,15 @@ def ensure_local_release_data(dataset: str, project_root=None) -> bool:
     # The converter writes ``{dataset_dir}/{name}_*``: dataset_dir is the
     # DATASET FOLDER (coana passes datasets/<safe>/), not the datasets root
     # — passing the root scattered the tables loose where the dataset
-    # catalog could not see them (round-7 R7-1b).
-    safe = dataset.replace(':', '_').replace('.', '_')
+    # catalog could not see them (round-7 R7-1b).  The folder must be the
+    # CANONICAL spelling: ``ensure_banc_data`` renames the files with the
+    # canonical prefix while every reader probes
+    # ``datasets/<canonical>/<canonical>_*``, so a raw alias ('banc',
+    # 'flywire_BANC') as the folder scattered v626 tables under a folder
+    # no lookup visits.
+    from comparison.connectivity_profiler import canonical_dataset_name
+    safe = (canonical_dataset_name(dataset)
+            .replace(':', '_').replace('.', '_'))
     dataset_dir = root / 'datasets' / safe
     try:
         return bool(ensure_banc_data(dataset, dataset_dir))

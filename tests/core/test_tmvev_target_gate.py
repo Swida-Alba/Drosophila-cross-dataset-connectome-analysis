@@ -53,6 +53,43 @@ def test_gate_prepares_banc_target(monkeypatch, tmp_path):
     assert calls == [('banc_v888', tmp_path / 'datasets' / 'banc_v888')]
 
 
+def test_gate_routes_banc_aliases_to_the_canonical_folder(
+        monkeypatch, tmp_path):
+    """Alias spellings must prepare into the CANONICAL folder.
+
+    ``ensure_banc_data`` renames the converted files with the canonical
+    dataset prefix (``dataset_folder``), while every reader probes
+    ``datasets/<canonical>/<canonical>_*`` — so a raw alias ('banc',
+    'flywire_BANC') as the FOLDER scattered v626-prefixed tables under a
+    directory no lookup ever visits (the run then resolves zero pairs).
+    """
+    calls = []
+
+    def spy(dataset, dataset_dir):
+        calls.append((dataset, Path(dataset_dir)))
+        return True
+
+    import BANC_file_converter
+    monkeypatch.setattr(BANC_file_converter, 'ensure_banc_data', spy)
+    from comparison.connectivity_profiler import canonical_dataset_name
+
+    aliases = ('banc', 'flywire_BANC', 'flywire_BANC_v888', 'banc:v888',
+               'banc_v626')
+    for alias in aliases:
+        assert mv.ensure_local_release_data(alias,
+                                            project_root=str(tmp_path)) is True
+    # The prepared folder must be exactly the folder the reader side
+    # probes (canonical_dataset_name + the same punctuation scrub).
+    expected = [tmp_path / 'datasets' /
+                canonical_dataset_name(a).replace(':', '_').replace('.', '_')
+                for a in aliases]
+    assert [folder for _, folder in calls] == expected
+    # Pin the two releases the aliases fold into — bare aliases pin to the
+    # historical v626 default, versioned ones keep their release.
+    assert [folder.name for _, folder in calls] == [
+        'banc_v626', 'banc_v626', 'banc_v888', 'banc_v888', 'banc_v626']
+
+
 def test_release_guard_refuses_unknown_version():
     # R7-1a: an explicit-but-unknown BANC release must be refused BEFORE
     # any download (round 7 saw banc_v999 silently serve v888 data).
