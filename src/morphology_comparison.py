@@ -776,8 +776,11 @@ class MorphologyProfileComparer:
         dps = helper._dotprops_for_ids(
             [self._body_id(b) for b in all_ids],
             desc="Building comparison dotprops")
+        # dps is keyed by dataset-canonical ids (string bodyIds on FlyWire) —
+        # the int() lookups this used before silently missed EVERY FlyWire
+        # entry, so NBLAST compared nothing there.
         kept = [bid for bid in all_ids
-                if dps.get(int(self._body_id(bid))) is not None]
+                if dps.get(self._body_id(bid)) is not None]
         dropped = len(all_ids) - len(kept)
         if dropped:
             self._log(f"NBLAST: {dropped} neuron(s) without dotprops dropped.")
@@ -790,7 +793,7 @@ class MorphologyProfileComparer:
         nb = NBlaster(use_alpha=False, normalized=True, progress=False)
         idx = {}
         for bid in kept:
-            dp = dps[int(self._body_id(bid))]
+            dp = dps[self._body_id(bid)]
             idx[bid] = nb.append(dp, self_hit=nb.calc_self_hit(dp))
 
         n = len(kept)

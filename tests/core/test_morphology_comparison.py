@@ -1315,3 +1315,41 @@ def test_taxonomy_resolves_for_datasets_outside_the_table_map(
         Path(result["output_folder"]) / "type_level"
         / "type_similarity_vector_v2.csv")
     assert sorted(type_df.index) == ["T1", "T2"]
+
+
+def test_nblast_dotprops_lookup_uses_canonical_ids(monkeypatch, tmp_path):
+    """Regression: the NBLAST path looked dotprops up by int(bodyId), but
+    _dotprops_for_ids keys its dict by dataset-canonical ids (strings on
+    FlyWire) — every lookup missed, so FAFB NBLAST compared nothing."""
+    from types import SimpleNamespace
+
+    class _StrKeyHelper:
+        def __init__(self, **kw):
+            pass
+
+        def _dotprops_for_ids(self, body_ids, neurons=None, desc=""):
+            # Inputs arrive already dataset-canonical; the contract keys the
+            # result by the SAME canonical values. The real NBlaster only
+            # touches .points for the self-hit, so a stub suffices — pair
+            # scores fall back to NaN through the comparer's guard.
+            return {
+                b: SimpleNamespace(points=np.zeros((10, 3)))
+                for b in body_ids
+            }
+
+    monkeypatch.setattr(mc, "MorphologyComparer", lambda **kw: _StrKeyHelper())
+    monkeypatch.setattr(
+        mc, "_canonical_dataset_body_id", lambda dataset, value: f"s{value}")
+    import navis.nbl.nblast_funcs as nblast_funcs
+    monkeypatch.setattr(nblast_funcs, "NBlaster", _FakeNBlaster)
+
+    def _nblast_matrix():
+        cmp = mc.MorphologyProfileComparer(
+            dataset="flywire_FAFB_v783", query=["1", "2"], method="nblast",
+            verbose=False, generate_heatmaps=False)
+        return cmp._nblast_matrix(["1", "2"])
+
+    matrix, kept = _nblast_matrix()
+    assert kept == ["1", "2"]
+    assert matrix.shape == (2, 2)
+    assert matrix[0, 0] == pytest.approx(1.0)
