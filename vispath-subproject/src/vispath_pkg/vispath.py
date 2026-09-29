@@ -14970,17 +14970,21 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     if color_scale is None:
         color_scale = [[0, 'rgb(255,255,255)'], [1, 'rgb(104,55,164)']]
     '''Create interactive heatmap with comprehensive controls similar to network visualization
-    
+
     Features:
     - Metric toggle: Switch between weight/ratio/probability (if provided)
     - Clustering toggle: Toggle between original and clustered ordering (hierarchical clustering)
+    - Dendrogram: ward/average/complete/single linkage trees drawn beside the
+      clustered heatmap (column tree above, row tree right) via the "🌳 Dendrogram"
+      toggle, with adjustable tree line width and band size; coexists with the
+      square-cells lock (band edges re-align onto the cell edges automatically)
     - Scale switcher: Linear / Log2 / Log10 / Sqrt
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
     - Font size slider
     - Export to SVG with adjustable resolution
     - Zoom/pan controls
     - Save/load layout state
-    
+
     Parameters
     ----------
     cmat : pd.DataFrame
@@ -15014,6 +15018,10 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         Whether to show clustered ordering by default. Default True.
         Set to True for similarity matrices (connectivity profiling).
         Set to False to show original ordering by default.
+    metric_name : str, optional
+        Display name for the metric axis/colorbar (overrides the metric-type heuristic).
+    square_cells : bool, optional
+        Open with cells locked square (auto-fitted canvas height). Default False.
     '''
     
     # Helper function for verbose printing
@@ -15283,8 +15291,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         SQUARE_CELLS_ONLOAD = (
             "window.addEventListener('load', function() {"
             " setTimeout(function() {"
-            " if (!window.__drocatHasSavedSettings && !squareCellsLocked"
-            "     && !showDendrogram)"
+            " if (!window.__drocatHasSavedSettings && !squareCellsLocked)"
             " { makeSquareCells(); }"
             " }, 250); });"
         )
@@ -15588,10 +15595,20 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
 
                     <!-- Dendrogram Toggle -->
                     <div id="dendrogramSection" style="margin-bottom: 8px; display: {'block' if init_clustered and clustering_successful else 'none'};">
-                        <label style="font-size: 10px; display: flex; align-items: center; gap: 4px; cursor: pointer;" title="Draw the clustering tree for rows (right) and columns (top)">
-                            <input type="checkbox" id="dendrogramToggle" onchange="toggleDendrogram()" {'checked' if init_clustered and clustering_successful else ''}>
-                            <span>Show Dendrogram</span>
-                        </label>
+                        <label style="font-size: 10px; display: block; margin-bottom: 2px;">Dendrogram:</label>
+                        <div class="button-group" style="margin-bottom: 6px;">
+                            <button id="dendrogramToggleBtn" class="{'active' if init_clustered and clustering_successful else ''}" onclick="toggleDendrogram()" title="Show or hide the clustering tree for rows (right) and columns (top)">🌳 Dendrogram</button>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span style="font-size: 10px; white-space: nowrap;" title="Line width of the dendrogram tree lines">Line Width:</span>
+                            <input type="range" id="dendroLineWidthSlider" min="0.5" max="4" step="0.5" value="1" oninput="updateDendroLineWidth(this.value)" style="flex: 1;" title="Line width of the dendrogram tree lines">
+                            <span class="slider-value" id="dendroLineWidthValue">1px</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                            <span style="font-size: 10px; white-space: nowrap;" title="Height of the column tree (and width of the row tree)">Tree Size:</span>
+                            <input type="range" id="dendroBandSizeSlider" min="30" max="180" step="10" value="90" oninput="updateDendroBandSize(this.value)" style="flex: 1;" title="Height of the column tree band (and width of the row tree band)">
+                            <span class="slider-value" id="dendroBandSizeValue">90px</span>
+                        </div>
                     </div>
                     
                     <!-- Scale Selection -->
@@ -15924,6 +15941,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let useClusteredOrder = {json.dumps(init_clustered and clustering_successful)};  // Track current ordering mode (use init_clustered parameter)
         let currentClusteringMethod = 'ward';  // Current clustering method (ward, average, complete, single)
         let showDendrogram = {json.dumps(init_clustered and clustering_successful)};  // Draw dendrogram bands when clustered ordering is active
+        let dendroLineWidth = 1;  // Dendrogram tree line width (px)
+        let dendroBandSize = 90;  // Dendrogram band size in px (column-tree height / row-tree width)
         
         // Dynamic margins based on label lengths
         const dynamicLeftMargin = {dynamic_left_margin};
@@ -16147,12 +16166,65 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     y: isTop ? seg.ys : seg.xs,
                     mode: 'lines',
                     type: 'scatter',
-                    line: {{color: '#7a7f87', width: 1}},
+                    line: {{color: '#7a7f87', width: dendroLineWidth}},
                     hoverinfo: 'skip',
                     showlegend: false
                 }},
                 maxDist: seg.maxDist
             }};
+        }}
+        
+        // Move the dendrogram band edges onto the heatmap's true cell edges.
+        // The square-cells scaleanchor can pad the heatmap's ranges to satisfy
+        // the aspect ratio, which would otherwise leave the bands floating one
+        // padding-width away from the cells. The trees share the heatmap axes,
+        // so leaf positions stay put; only the band domains move.
+        function alignDendrogramBands() {{
+            const gd = document.getElementById('heatmap');
+            const full = gd && gd._fullLayout;
+            const heat = gd && gd.data && gd.data[0];
+            if (!full || !heat) return;
+            const update = {{}};
+            if (full.yaxis2 && full.yaxis && full.yaxis.range && full.yaxis.range[0] !== full.yaxis.range[1]) {{
+                // Reversed y: the band-adjacent (top) cell edge is at data -0.5
+                const nY = (heat.y || []).length;
+                if (nY > 1) {{
+                    const ya = full.yaxis;
+                    const frac = ((-0.5) - ya.range[0]) / (ya.range[1] - ya.range[0]);
+                    // frac == 1 is the common constrained case: the range stays
+                    // exact and plotly shrinks the domain instead
+                    if (isFinite(frac) && frac > 0 && frac <= 1) {{
+                        const yd = full.yaxis.domain;
+                        const edgeY = yd[0] + frac * (yd[1] - yd[0]);
+                        const cur = full.yaxis2.domain;
+                        if (Math.abs(cur[0] - edgeY) > 0.001) {{
+                            update['yaxis2.domain'] = [edgeY, cur[1]];
+                        }}
+                    }}
+                }}
+            }}
+            if (full.xaxis3 && full.xaxis && full.xaxis.range && full.xaxis.range[0] !== full.xaxis.range[1]) {{
+                const nX = (heat.x || []).length;
+                if (nX > 1) {{
+                    const xa = full.xaxis;
+                    const frac = ((nX - 0.5) - xa.range[0]) / (xa.range[1] - xa.range[0]);
+                    if (isFinite(frac) && frac > 0 && frac <= 1) {{
+                        const xd = full.xaxis.domain;
+                        const edgeX = xd[0] + frac * (xd[1] - xd[0]);
+                        const cur = full.xaxis3.domain;
+                        if (Math.abs(cur[0] - edgeX) > 0.001) {{
+                            update['xaxis3.domain'] = [edgeX, cur[1]];
+                        }}
+                    }}
+                }}
+            }}
+            // A relayout with unchanged values would re-fire the relayout hook;
+            // remember the last update and skip identical ones
+            const key = JSON.stringify(update);
+            if ((update['yaxis2.domain'] || update['xaxis3.domain']) && gd.__lastDendroAlign !== key) {{
+                gd.__lastDendroAlign = key;
+                Plotly.relayout(gd, update);
+            }}
         }}
         
         function createHeatmap() {{
@@ -16614,7 +16686,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // aligned); only the band-depth axes are separate.
             const traces = [trace];
             if (dendroTop || dendroRight) {{
-                const dendroBandPx = 90;
+                // The heatmap axes' grid lines (plotly default: on) extend
+                // across every subplot sharing the axis — invisible under the
+                // opaque cells, but exposed in the transparent tree bands.
+                layout.xaxis.showgrid = false;
+                layout.yaxis.showgrid = false;
+                layout.xaxis.zeroline = false;
+                layout.yaxis.zeroline = false;
+                const dendroBandPx = dendroBandSize;
                 const topFrac = dendroTop ? Math.min(0.22, Math.max(0.05, dendroBandPx / currentHeight)) : 0;
                 const rightFrac = dendroRight ? Math.min(0.22, Math.max(0.05, dendroBandPx / currentWidth)) : 0;
                 if (topFrac > 0) layout.yaxis.domain = [0, 1 - topFrac];
@@ -16635,6 +16714,19 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             }}
 
             Plotly.newPlot('heatmap', traces, layout, config);
+
+            // After the constrained (square-cells) render resolves its ranges,
+            // re-hug the dendrogram band edges to the true cell edges. The
+            // hook re-runs the alignment when zoom/pan shifts the ranges.
+            if (dendroTop || dendroRight) {{
+                const gd = document.getElementById('heatmap');
+                gd.__lastDendroAlign = null;  // newPlot reset the band domains
+                if (!gd.__dendroAlignHooked) {{
+                    gd.__dendroAlignHooked = true;
+                    gd.on('plotly_relayout', function () {{ setTimeout(alignDendrogramBands, 0); }});
+                }}
+                setTimeout(alignDendrogramBands, 0);
+            }}
         }}
         
         function toggleClustering(mode) {{
@@ -16687,16 +16779,27 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         }}
 
         function toggleDendrogram() {{
-            showDendrogram = document.getElementById('dendrogramToggle').checked;
-            if (showDendrogram && squareCellsLocked) {{
-                // Mutually exclusive with the square-cells lock: last toggle wins
-                squareCellsLocked = false;
-                const lockBtn = document.getElementById('squareCellsBtn');
-                if (lockBtn) {{
-                    lockBtn.textContent = '⬜ Square Cells';
-                    lockBtn.style.backgroundColor = '';
-                }}
-            }}
+            setDendrogramShown(!showDendrogram);
+        }}
+
+        function setDendrogramShown(show) {{
+            showDendrogram = show;
+            const dendroBtn = document.getElementById('dendrogramToggleBtn');
+            if (dendroBtn) dendroBtn.classList.toggle('active', show);
+            createHeatmap();
+        }}
+
+        function updateDendroLineWidth(value) {{
+            dendroLineWidth = Math.min(4, Math.max(0.5, parseFloat(value) || 1));
+            const label = document.getElementById('dendroLineWidthValue');
+            if (label) label.textContent = dendroLineWidth + 'px';
+            createHeatmap();
+        }}
+
+        function updateDendroBandSize(value) {{
+            dendroBandSize = Math.min(180, Math.max(30, parseInt(value) || 90));
+            const label = document.getElementById('dendroBandSizeValue');
+            if (label) label.textContent = dendroBandSize + 'px';
             createHeatmap();
         }}
         
@@ -17863,15 +17966,10 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             squareCellsLocked = !squareCellsLocked;
 
             if (squareCellsLocked) {{
-                // Lock to square cells. The scaleanchor constraint fights the
-                // dendrogram bands (the constrained heatmap shrinks inside its
-                // domain, so the bands no longer hug its edges) — the two are
-                // mutually exclusive, last toggle wins.
-                if (showDendrogram) {{
-                    showDendrogram = false;
-                    const dendroToggle = document.getElementById('dendrogramToggle');
-                    if (dendroToggle) dendroToggle.checked = false;
-                }}
+                // Lock to square cells. The dendrogram bands stay visible: the
+                // trees share the heatmap axes (so they track the constrained
+                // ranges) and alignDendrogramBands re-hugs the band edges onto
+                // the cell edges after the constrained render.
                 const numRows = gd.data[0].y.length;
                 const numCols = gd.data[0].x.length;
 
@@ -18243,6 +18341,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     useClusteredOrder: useClusteredOrder,
                     clusteringMethod: currentClusteringMethod,
                     showDendrogram: showDendrogram,
+                    dendroLineWidth: dendroLineWidth,
+                    dendroBandSize: dendroBandSize,
                     isTransposed: isTransposed,
                     // Cell values
                     showCellValues: showCellValues,
@@ -18354,14 +18454,30 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
 
                 if (settings.showDendrogram !== undefined && clusteringAvailable) {{
                     showDendrogram = settings.showDendrogram;
-                    const dendroToggle = document.getElementById('dendrogramToggle');
-                    if (dendroToggle) {{
-                        dendroToggle.checked = showDendrogram;
+                    const dendroBtn = document.getElementById('dendrogramToggleBtn');
+                    if (dendroBtn) {{
+                        dendroBtn.classList.toggle('active', showDendrogram);
                     }}
                     const dendroSection = document.getElementById('dendrogramSection');
                     if (dendroSection) {{
                         dendroSection.style.display = useClusteredOrder ? 'block' : 'none';
                     }}
+                }}
+
+                if (settings.dendroLineWidth !== undefined) {{
+                    dendroLineWidth = Math.min(4, Math.max(0.5, parseFloat(settings.dendroLineWidth) || 1));
+                    const lineWidthSlider = document.getElementById('dendroLineWidthSlider');
+                    if (lineWidthSlider) lineWidthSlider.value = dendroLineWidth;
+                    const lineWidthLabel = document.getElementById('dendroLineWidthValue');
+                    if (lineWidthLabel) lineWidthLabel.textContent = dendroLineWidth + 'px';
+                }}
+
+                if (settings.dendroBandSize !== undefined) {{
+                    dendroBandSize = Math.min(180, Math.max(30, parseInt(settings.dendroBandSize) || 90));
+                    const bandSizeSlider = document.getElementById('dendroBandSizeSlider');
+                    if (bandSizeSlider) bandSizeSlider.value = dendroBandSize;
+                    const bandSizeLabel = document.getElementById('dendroBandSizeValue');
+                    if (bandSizeLabel) bandSizeLabel.textContent = dendroBandSize + 'px';
                 }}
                 
                 if (settings.isTransposed !== undefined) {{
@@ -18410,18 +18526,11 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 
                 if (settings.squareCellsLocked !== undefined) {{
                     squareCellsLocked = settings.squareCellsLocked;
-                    const lockBtn = document.getElementById('lockSquareCellsBtn');
+                    const lockBtn = document.getElementById('squareCellsBtn');
                     if (lockBtn) {{
-                        lockBtn.textContent = squareCellsLocked ? '🔓 Unlock Square Cells' : '🔒 Lock Square Cells';
+                        lockBtn.textContent = squareCellsLocked ? '🔓 Unlock Cells' : '⬜ Square Cells';
+                        lockBtn.style.backgroundColor = squareCellsLocked ? '#28a745' : '';
                     }}
-                }}
-
-                // Square-cells lock and the dendrogram are mutually exclusive;
-                // the lock is the more recent explicit request, so it wins here
-                if (squareCellsLocked && showDendrogram) {{
-                    showDendrogram = false;
-                    const dendroToggle = document.getElementById('dendrogramToggle');
-                    if (dendroToggle) dendroToggle.checked = false;
                 }}
                 
                 // Restore row/column order after custom reordering

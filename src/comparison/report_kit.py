@@ -573,7 +573,13 @@ a:hover { text-decoration: underline; }
 
 
 def report_script() -> str:
-    """Return the small tab/resize controller used by report.html."""
+    """Return the small tab/resize controller used by report.html.
+
+    Also re-aligns the dendrogram bands of clustered heatmap cards onto the
+    heatmap's true cell edges after each render/resize (the square-cell
+    scaleanchor pads the autoranged axis, which would otherwise leave the
+    bands floating one padding-width from the cells).
+    """
     return """<script>
 (function () {
   function resizePlots(panel) {
@@ -588,7 +594,8 @@ def report_script() -> str:
   // scaleanchor pads the heatmap's autoranged axis to satisfy the aspect
   // ratio, so the plot-domain edge (where the band starts) can sit one
   // padding-width away from the actual cell edge; after each render, move the
-  // band edges onto the padding.
+  // band's inner edge onto the padding while keeping the outer edge at the
+  // plot edge, so the tree keeps its full depth.
   function alignDendrogramBands(plot) {
     if (!window.Plotly || !plot || !plot._fullLayout) return;
     try {
@@ -606,7 +613,7 @@ def report_script() -> str:
           var padX = (xa.range[1] - (nX - 0.5)) / xSpan;
           if (padX > 0.002) {
             var xd = (layout.xaxis && layout.xaxis.domain) || xa.domain;
-            update['xaxis2.domain'] = [xd[1] - padX * (xd[1] - xd[0]), xd[1]];
+            update['xaxis2.domain'] = [xd[1] - padX * (xd[1] - xd[0]), 1];
           }
         }
       }
@@ -620,7 +627,7 @@ def report_script() -> str:
           var padY = (yHi - (nY - 0.5)) / ySpan;
           if (padY > 0.002) {
             var yd = (layout.yaxis && layout.yaxis.domain) || ya.domain;
-            update['yaxis2.domain'] = [yd[1] - padY * (yd[1] - yd[0]), yd[1]];
+            update['yaxis2.domain'] = [yd[1] - padY * (yd[1] - yd[0]), 1];
           }
         }
       }

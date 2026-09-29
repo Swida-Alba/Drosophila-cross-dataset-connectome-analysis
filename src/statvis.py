@@ -2966,15 +2966,27 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             metric_name=metric_name
         )
     except ImportError:
-        pass  # Fall through to local implementation
-    
-    # Local implementation (kept for backwards compatibility)
-    _VisConnMatInteractive_local(cmat, filename, title, color_scale, showfig, fontsize, conn_df, matrices_dict, verbose, zmin, zmax)
+        # Fall through to the local implementation
+        import warnings
+
+        warnings.warn(
+            "vispath_pkg is not importable; using the deprecated local heatmap "
+            "fallback from statvis.py. That copy lacks the newer interactive "
+            "heatmap features (dendrograms, square-cells lock), and "
+            "init_clustered/square_cells/metric_name are ignored here.",
+            stacklevel=2,
+        )
+        _VisConnMatInteractive_local(cmat, filename, title, color_scale, showfig, fontsize, conn_df, matrices_dict, verbose, zmin, zmax)
 
 
 def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb(255,255,255)'], [1, 'rgb(104,55,164)']], showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None):
     '''[DEPRECATED LOCAL VERSION] Create interactive heatmap with comprehensive controls similar to network visualization
-    
+
+    Fallback used only when vispath_pkg cannot be imported. It predates the
+    newer vispath_pkg page features and does NOT have them: dendrograms, the
+    square-cells lock, metric_name, init_clustered (clustering is always
+    applied when scipy manages it), init_width/init_height.
+
     Features:
     - Metric toggle: Switch between weight/ratio/probability (if provided)
     - Clustering toggle: Toggle between original and clustered ordering (hierarchical clustering)

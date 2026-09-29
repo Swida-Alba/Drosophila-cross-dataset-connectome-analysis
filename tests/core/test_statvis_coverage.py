@@ -979,8 +979,19 @@ class TestVisConnMatInteractiveDendrogram:
         text = self._render(tmp_path, self._cmat(5, 4, seed=12))
         assert "buildDendrogramSegments" in text
         assert "buildDendrogramTrace" in text
-        assert 'id="dendrogramToggle" onchange="toggleDendrogram()" checked' in text
+        assert "alignDendrogramBands" in text
+        # Toggle button (active by default when clustered) + line-width slider
+        assert 'id="dendrogramToggleBtn" class="active" onclick="toggleDendrogram()"' in text
+        assert 'id="dendroLineWidthSlider"' in text
+        assert "updateDendroLineWidth" in text
+        assert "dendroLineWidth = 1" in text
+        assert 'id="dendroBandSizeSlider"' in text
+        assert "updateDendroBandSize" in text
+        assert "dendroBandSize = 90" in text
         assert "showDendrogram = true" in text
+        # The square-cells lock must not touch dendrogram visibility: the
+        # suppression machinery must stay gone
+        assert "dendroSuppressedByLock" not in text
 
     def test_init_clustered_false_leaves_toggle_off(self, tmp_path):
         pytest.importorskip("vispath_pkg")
@@ -989,7 +1000,7 @@ class TestVisConnMatInteractiveDendrogram:
         # Linkage data still ships so switching to Clustered works client-side
         assert '"row_linkage"' in text
         assert "showDendrogram = false" in text
-        assert 'onchange="toggleDendrogram()" checked' not in text
+        assert 'id="dendrogramToggleBtn" class="active"' not in text
 
     def test_single_row_matrix_has_column_linkage_only(self, tmp_path):
         pytest.importorskip("vispath_pkg")

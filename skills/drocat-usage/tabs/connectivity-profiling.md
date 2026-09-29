@@ -50,7 +50,10 @@ python skills/drocat-usage/scripts/run_direct.py \
 One dataset writes a level folder **only for the levels that ran**:
 
 - `type_level/results/type_similarity_{metric}_{direction}.csv` +
-  `visualization/heatmap_type_*.html` — pooled type profiles (`type`). The
+  `visualization/heatmap_type_*.html` — pooled type profiles (`type`).
+  The generated heatmap pages carry interactive Ward dendrograms
+  (🌳 button; line-width/band-size sliders) for the clustered ordering.
+  The
   `custom` level writes the same matrix as
   `group_level/results/group_similarity_*.csv` + `heatmap_group_*.html`,
   because its axes are groups: the folder names what it holds.

@@ -691,7 +691,8 @@ _FIND_NETWORK = {
         {"pattern": "visualization/Network_*.html",
          "description": "Interactive network graph of the found connections."},
         {"pattern": "visualization/Heatmap_*.html",
-         "description": "Connection weight heatmap."},
+         "description": "Connection weight heatmap with interactive Ward "
+                        "dendrograms."},
         {"pattern": "visualization/visualization_data/*_data_connections.csv",
          "description": "Edge list backing the HTML visualizations.",
          "columns": ["source", "target", "weight", "ratio", "probability",
@@ -758,7 +759,8 @@ _PATHFINDING_FILES = [
                     "type-level visualization."},
     {"pattern": "bodyId_visualization/Heatmap_*.html",
      "description": "BodyId-level connection weight heatmap (Skip BodyId "
-                    "off). Same drawing cap as the type-level heatmap."},
+                    "off) with interactive Ward dendrograms. Same drawing cap "
+                    "as the type-level heatmap."},
     {"pattern": "bodyId_visualization/Sankey_*.html",
      "description": "BodyId-level Sankey flow diagram (Skip BodyId off). "
                     "Same drawing cap as the type-level Sankey."},
@@ -1347,9 +1349,9 @@ TOOL_GUIDE_SPECS = {
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "type_level/visualization/heatmap_type_*.html",
              "description": "ONE-DATASET type-level interactive heatmaps "
-                            "(same folder as its matrices); at the custom "
-                            "group level the twin is "
-                            "group_level/visualization/"
+                            "(same folder as its matrices) with interactive "
+                            "Ward dendrograms; at the custom group level the "
+                            "twin is group_level/visualization/"
                             "heatmap_group_*.html."},
             {"pattern": "bodyid_level/results/bodyid_similarity_*.csv",
              "description": "ONE-DATASET runs: member-to-member similarity. "
@@ -1371,7 +1373,8 @@ TOOL_GUIDE_SPECS = {
                        "similarity",
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "bodyid_level/visualization/heatmap_bodyid_*.html",
-             "description": "ONE-DATASET bodyId-level interactive heatmaps."},
+             "description": "ONE-DATASET bodyId-level interactive heatmaps "
+                            "with interactive Ward dendrograms."},
             {"pattern": "bodyid_level/visualization/heatmap_type_avg_*.html",
              "description": "ONE-DATASET type-average-of-bodyId heatmaps."},
             {"pattern": "profiles/individual/*_profile.json",
@@ -1406,7 +1409,8 @@ TOOL_GUIDE_SPECS = {
                        "similarity",
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "intra_dataset/*/visualization/heatmap_*.html",
-             "description": "Interactive intra-dataset heatmaps."},
+             "description": "Interactive intra-dataset heatmaps with Ward "
+                            "dendrograms beside the clustered matrices."},
             {"pattern": "cross_dataset/mapping_summary.csv",
              "description": "Resolved type names per dataset with same-name "
                             "flags.",
@@ -1420,7 +1424,8 @@ TOOL_GUIDE_SPECS = {
                        "other, values = similarity",
              "columns": _PROFILING_METRIC_COLUMNS},
             {"pattern": "cross_dataset/all_types/visualization/heatmap_*.html",
-             "description": "Interactive cross-dataset heatmaps."},
+             "description": "Interactive cross-dataset heatmaps with Ward "
+                            "dendrograms beside the clustered matrices."},
             {"pattern": "profiles/*/aggregated/*_profile.json",
              "description": "Type-aggregated connectivity profiles."},
             {"pattern": "profiles/*/individual/*_profile.json",
@@ -1479,7 +1484,8 @@ TOOL_GUIDE_SPECS = {
                             "dataset pair (p95/median/std/n per query)."},
             {"pattern": "*_to_*/visualization/heatmap_morph_*.html",
              "description": "Interactive VisPath heatmaps (type and "
-                            "bodyId level) for one dataset pair."},
+                            "bodyId level) for one dataset pair, with "
+                            "interactive Ward dendrograms."},
             {"pattern": "plot-3d_*/**",
              "description": "3D overlay scenes: each dataset's members "
                             "bridged into the reference template."},
@@ -1545,7 +1551,8 @@ TOOL_GUIDE_SPECS = {
                             "heatmap_type_* / heatmap_group_* / "
                             "heatmap_bodyid_*. Matrix cells render square "
                             "(1:1) in both the VisPath renderer and the "
-                            "offline fallback."},
+                            "offline fallback, and the clustered pages draw "
+                            "Ward dendrograms beside the matrix."},
             {"pattern": "plot-3d_*/",
              "description": "Optional 3D skeleton scene (3D Skeleton "
                             "Visualization checkbox): one layer per "

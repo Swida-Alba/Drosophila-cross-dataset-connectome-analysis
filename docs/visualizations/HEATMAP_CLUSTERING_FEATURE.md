@@ -439,7 +439,9 @@ Potential improvements:
 ### 3. Dendrogram Visualization — IMPLEMENTED 2026-09-29
 - ✅ Show dendrogram next to heatmap: the linkage matrices now ship with the
   page payload and are drawn as U-shaped trees (column tree above, row tree
-  right) aligned with the clustered heatmap; toggle via "Show Dendrogram".
+  right) aligned with the clustered heatmap; toggle via the "🌳 Dendrogram"
+  button (with tree line-width and band-size sliders) in the Ordering
+  section.
   The comparison report's Plotly heatmap cards draw the same mini-trees from
   the shared Ward linkages.
 - Interactive branch selection

@@ -34,6 +34,30 @@ vp = VisualizePath(
 | `visualize_network()` | Network only. |
 | `visualized_paths_for_export()` | Connection table for export. |
 
+## Interactive heatmap page (`VisConnMatInteractive`)
+
+The standalone heatmap HTML behind `plot_heatmap` is built by
+`VisConnMatInteractive(cmat, filename, ...)` (also called directly by the
+profiling and comparison pipelines). Since 2026-09-29 it ships the
+hierarchical-clustering linkage matrices (ward/average/complete/single) in the
+page payload and draws **dendrograms** beside the clustered heatmap: column
+tree above, row tree right, controlled by the "🌳 Dendrogram" button with tree
+line-width and band-size sliders (all persisted per page in localStorage).
+Key behaviors:
+
+- The trees re-render on clustering-method switch, transpose, and
+  Original/Clustered toggles; leaves are anchored to the displayed order.
+- The bands coexist with the square-cells lock; after each constrained render
+  the band edges re-align onto the heatmap's true cell edges
+  (`alignDendrogramBands`), so the trees stay flush.
+- Grid lines behind the trees are hidden while the bands are shown.
+- `init_clustered=False` ships the linkage data but opens in original order;
+  `square_cells=True` auto-locks cells at first render.
+- PNG/SVG export captures the whole figure including the dendrograms.
+- The deprecated `statvis._VisConnMatInteractive_local` fallback (used only
+  when vispath_pkg cannot be imported) does NOT have the dendrogram feature;
+  it emits an ImportWarning when used.
+
 ## Examples
 
 ```python

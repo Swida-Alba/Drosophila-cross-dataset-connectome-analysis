@@ -369,7 +369,8 @@ col_order_clustered = leaves_list(col_linkage)
 
 3. **Dendrogram visualization** — IMPLEMENTED 2026-09-29
    - ✅ Show dendrogram alongside heatmap (column tree above, row tree right;
-     "Show Dendrogram" checkbox in the Ordering section, on by default whenever
+     "🌳 Dendrogram" toggle button in the Ordering section (with tree
+     line-width and band-size sliders), on by default whenever
      clustered ordering is active)
    - Interactive cluster selection
    - Collapse/expand branches
@@ -418,8 +419,9 @@ col_order_clustered = leaves_list(col_linkage)
 2. **Distance metric**: Only Euclidean (not correlation, cosine, etc.)
 3. **Dendrogram**: Drawn from the stored linkage matrices when clustered
    ordering is active (VisPath pages and comparison report cards); no
-   interactive branch selection/collapse yet, and the tree bands are mutually
-   exclusive with the square-cells lock (last toggle wins)
+   interactive branch selection/collapse yet. The tree bands coexist with
+   the square-cells lock — band edges re-align onto the cell edges after
+   each constrained render
 4. **No manual reorder**: Can't drag-and-drop rows/columns
 5. **Single clustering**: Can't cluster rows and columns independently
 
