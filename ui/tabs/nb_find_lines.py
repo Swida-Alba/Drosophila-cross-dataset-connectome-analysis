@@ -32,17 +32,6 @@ _ALL_LABEL = "(all) — search everywhere"
 # server process; later tab builds reuse the persisted snapshot.
 _COVERAGE_REFRESH_STARTED = False
 
-# Seed default before the first coverage snapshot exists on disk (plan
-# `_plan/plan-nb-find-lines-dataset-aware-queries.md` §6.1): the four
-# releases NeuronBridge hosted as of the 2026-09-15 v3_10_0 probe. The
-# snapshot, not this list, drives disable/warning decisions.
-_KNOWN_COVERED_DEFAULT = [
-    "male-cns:v0.9",
-    "hemibrain:v1.2.1",
-    "manc:v1.2.1",
-    "flywire_FAFB_v783",
-]
-
 
 def _coverage_module():
     try:
@@ -89,9 +78,11 @@ def create_nb_find_lines_tab():
             # Full row on purpose: the release-upgrade notice is off here
             # because NeuronBridge hosts male-cns:v0.9 data, so a v1.0
             # recommendation would point at data the tab never searches.
+            # Default "(all)" mirrors the Co-Labeling tab: the tab searches
+            # every hosted dataset unless the user narrows the scope.
             datasets_select = dataset_multi_selector(
                 label="Datasets ('(all)' or empty searches everywhere)",
-                default=[ds for ds in _KNOWN_COVERED_DEFAULT if ds in DATASETS],
+                default=[_ALL_DATASETS],
                 datasets=[_ALL_DATASETS] + DATASETS,
                 hint=(
                     "Select one or more EM datasets to search. '(all)' or an "

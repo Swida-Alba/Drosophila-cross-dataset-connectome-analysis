@@ -213,6 +213,7 @@ def create_morphology_tab():
                 dataset = dataset_selector(
                     disable_banc=True,
                     hint="Dataset to search for similar neurons in.",
+                    group_recommended=True,
                 )
                 morph_output_dir = dir_input(scope="find_similar_morphology")
                 morph_dataset_warning = ui.label(
@@ -356,6 +357,7 @@ def create_morphology_tab():
                 comparison_datasets = dataset_multi_selector(
                     label="Datasets to compare",
                     default=["male-cns:v1.0"],
+                    group_recommended=True,
                     hint="One dataset runs the intra-dataset N×N comparison "
                          "(vector_v2 or NBLAST). Two or more run the "
                          "cross-dataset comparison of the queried neurons "

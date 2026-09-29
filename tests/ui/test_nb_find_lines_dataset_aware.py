@@ -33,7 +33,7 @@ import ui.history_store as hs  # noqa: E402
 import ui.type_suggestions as ts  # noqa: E402
 from ui.components.output_panel import OutputPanel  # noqa: E402
 from ui.config import DATASETS  # noqa: E402
-from ui.tabs.nb_find_lines import _KNOWN_COVERED_DEFAULT, _ALL_DATASETS  # noqa: E402
+from ui.tabs.nb_find_lines import _ALL_DATASETS  # noqa: E402
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def _build_tab(url):
 # ---------------------------------------------------------------------------
 
 class TestDatasetSelector:
-    def test_multi_select_with_all_indicator_and_covered_default(
+    def test_multi_select_with_all_indicator_and_all_default(
         self, isolated_history, coverage_isolated
     ):
         client = _build_tab("/nbfl-selector-default")
@@ -142,8 +142,7 @@ class TestDatasetSelector:
         assert selector._props.get("multiple") is True
         assert _ALL_DATASETS in selector.options
         assert "(all) — search everywhere" == selector.options.get(_ALL_DATASETS)
-        assert set(selector.value) == set(
-            ds for ds in _KNOWN_COVERED_DEFAULT if ds in DATASETS)
+        assert list(selector.value) == [_ALL_DATASETS]
 
     def test_release_upgrade_notice_never_renders_in_the_tab(
         self, isolated_history, coverage_isolated

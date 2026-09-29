@@ -243,13 +243,15 @@ def create_type_validation_tab():
             section_header("Datasets & Run", "storage")
             with param_grid(2):
                 source_dataset = dataset_selector(
-                    "Source Dataset", default=_setting("default_dataset", None))
+                    "Source Dataset", default=_setting("default_dataset", None),
+                    group_recommended=True)
                 # Target defaults to FAFB (user 2026-09-22) — deliberately NOT
                 # the Settings default_target_dataset key, which stays owned by
                 # Connectivity → Find Homolog. The hint makes the departure
                 # visible in the UI.
                 target_dataset = dataset_selector(
                     "Target Dataset", default="flywire_FAFB_v783",
+                    group_recommended=True,
                     hint="Defaults to flywire_FAFB_v783. Independent of the "
                          "Settings 'Default Similar-Search Target Dataset' "
                          "(that default belongs to Connectivity → Find "

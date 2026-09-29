@@ -249,7 +249,7 @@ def create_skeleton_tab():
 
         with ui.card().classes("w-full drocat-card").props('id="card-skeleton-dataset"'):
             section_header("Dataset", "storage")
-            dataset = dataset_selector()
+            dataset = dataset_selector(group_recommended=True)
             output_dir = dir_input(scope="visualization_skeleton")
             # BANC skeleton source selection removed: the chain is unified
             # (888 L2 -> 888 full -> v626 pcg), no per-run choice. The BANC

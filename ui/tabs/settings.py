@@ -825,6 +825,7 @@ def create_settings_tab():
                 mapping_dataset_select = dataset_multi_selector(
                     label="Target datasets",
                     default=[],
+                    group_recommended=True,
                     hint=(
                         "Select the datasets this reusable mapping should apply to. "
                         "The editor renders and saves every selected dataset column for "

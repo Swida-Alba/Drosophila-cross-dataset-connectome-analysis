@@ -47,6 +47,7 @@ def create_find_path_tab():
             dataset = dataset_selector(
                 hint="Select the connectome dataset.",
                 allow_custom=True,
+                group_recommended=True,
             )
             output_dir = dir_input(scope="find_path")
 

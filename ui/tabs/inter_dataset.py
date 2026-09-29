@@ -47,6 +47,7 @@ def create_inter_dataset_tab():
             section_header("Datasets", "storage")
             datasets_select = dataset_multi_selector(
                 label="Datasets to compare (one dataset with multiple thresholds is also supported)",
+                group_recommended=True,
             )
             # Round 2 entrance: the standalone type-mapping preview. The
             # button stays disabled until >= 2 selected datasets have

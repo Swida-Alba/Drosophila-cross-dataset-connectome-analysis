@@ -397,8 +397,24 @@ def refresh_dataset_selector_statuses(service=None) -> int:
         if not options:
             continue
         try:
+            # Synthetic entries (nb_find_lines' "(all)") are not service
+            # datasets; a refresh must carry their custom label through
+            # unchanged instead of tagging them like a dataset.  The static
+            # candidate universe is the test: get_all_datasets() shrinks to
+            # the server-available subset after a fetch, which would freeze
+            # real datasets' tags.
+            known = (
+                set(service.NEUPRINT_CANDIDATES)
+                | set(service.FLYWIRE_DATASETS)
+                | set(service.BANC_DATASETS)
+            )
+            previous = selector.options if isinstance(selector.options, dict) else {}
             labels = {
-                dataset: "  ".join(_dataset_label_parts(dataset, service))
+                dataset: (
+                    "  ".join(_dataset_label_parts(dataset, service))
+                    if dataset in known
+                    else str(previous.get(dataset, dataset))
+                )
                 for dataset in options
             }
             if getattr(selector, "options", None) == labels:
@@ -617,6 +633,7 @@ def dataset_selector(
     show_local_status: bool = True,
     disable_banc: bool = False,
     show_release_notice: bool = True,
+    group_recommended: bool = False,
 ) -> ui.select:
     """Create a dataset dropdown selector with local status labels.
 
@@ -624,11 +641,19 @@ def dataset_selector(
     BANC option as disabled in the Quasar popup.  The backend still validates
     the dataset because a value can be supplied programmatically or by a
     previously saved UI state.
+
+    ``group_recommended`` pins the recommended datasets to a "Recommended"
+    section at the top of the dropdown, followed by an "Available" section
+    grouped by source (NeuPrint, FAFB, BANC) and sorted by name within each
+    source (the recommended ones repeat in place).  The default flat list
+    keeps callers that build their own option lists unchanged.
     """
     from ..dataset_service import get_dataset_service
 
     service = get_dataset_service()
     options = datasets if datasets is not None else service.get_all_datasets()
+    if group_recommended:
+        options = _grouped_multi_dataset_order(options)
 
     if show_local_status:
         labeled_options = {
@@ -646,6 +671,8 @@ def dataset_selector(
         value=default_val,
         label=label,
     ).props("outlined").classes("w-full drocat-select").tooltip(hint)
+    if group_recommended:
+        _attach_grouped_dataset_options(sel)
     if show_local_status:
         _register_dataset_selector(sel, options, service)
     if show_release_notice:
@@ -676,6 +703,111 @@ def dataset_selector(
     return sel
 
 
+# Datasets pinned to the "Recommended" section at the top of the grouped
+# dataset dropdowns.  Everything else is listed under "Available", grouped
+# by source (NeuPrint, FAFB, BANC) and sorted by name within each source,
+# with the recommended ones repeated in place.
+RECOMMENDED_MULTI_DATASETS = (
+    "male-cns:v1.0",
+    "flywire_FAFB_v783",
+    "banc_v888",
+)
+
+
+def _dataset_source_rank(ds: str) -> int:
+    """Source bucket for the Available section: NeuPrint, then FAFB, then BANC."""
+    if is_banc_dataset(ds):
+        return 2
+    if is_fafb_dataset(ds):
+        return 1
+    return 0
+
+
+def _grouped_multi_dataset_order(options: List[str]) -> List[str]:
+    """Canonical display order for the grouped multi dataset selector.
+
+    The recommended datasets keep their fixed order (only those actually
+    present); the rest follow grouped by source (NeuPrint, FAFB, BANC) and
+    sorted by name within each source.  Reordering the option list itself
+    keeps NiceGUI's index-based value mapping and the live status refresh in
+    the same order the dropdown displays.
+    """
+    recommended = [ds for ds in RECOMMENDED_MULTI_DATASETS if ds in options]
+    rest = sorted(
+        (ds for ds in options if ds not in RECOMMENDED_MULTI_DATASETS),
+        key=lambda ds: (_dataset_source_rank(ds), ds),
+    )
+    return recommended + rest
+
+
+_GROUPED_OPTION_SLOT = """
+<q-item v-if="props.opt.first_of_group" disable :tabindex="-1" class="drocat-select-group-header">
+    <q-item-section>
+        <q-item-label overline>{{ props.opt.group }}</q-item-label>
+    </q-item-section>
+</q-item>
+<q-item clickable v-ripple v-bind="props.itemProps">
+    <q-item-section>
+        <q-item-label>{{ props.opt.label }}</q-item-label>
+    </q-item-section>
+</q-item>
+"""
+
+
+def _grouped_option_rows(values: List[str], labels: List[str]) -> List[dict]:
+    """Build the grouped client-side option rows for the grouped selector.
+
+    ``values`` holds the dataset ids in display order (recommended first),
+    ``labels`` the matching display labels.  Rows list the Recommended
+    section first, then the Available section with every dataset grouped by
+    source (NeuPrint, FAFB, BANC) and sorted by name within each source —
+    the recommended ones repeat there.  Every row's ``value`` is the
+    canonical option index: Quasar compares options against the selected
+    model via the extracted ``value`` field, so a repeated row highlights
+    and toggles the exact same selection as its Recommended copy.
+    """
+    canonical_index = {ds: index for index, ds in enumerate(values)}
+    available_order = sorted(values, key=lambda ds: (_dataset_source_rank(ds), ds))
+    rows: List[dict] = []
+    for section, order in (
+        ("Recommended", [ds for ds in RECOMMENDED_MULTI_DATASETS if ds in canonical_index]),
+        ("Available", available_order),
+    ):
+        for position, ds in enumerate(order):
+            index = canonical_index[ds]
+            rows.append({
+                "value": index,
+                "label": labels[index],
+                "group": section,
+                "first_of_group": position == 0,
+            })
+    return rows
+
+
+def _attach_grouped_dataset_options(select) -> None:
+    """Render a multi dataset dropdown as Recommended + Available sections.
+
+    NiceGUI rebuilds ``_props['options']`` (one ``{value: index, label}`` row
+    per option) on every update, so the grouping is re-applied inside an
+    update hook — the same technique as the palette picker strips.  The
+    ``option`` slot renders each group header before the first row of its
+    group; headers are not options, so keyboard navigation never lands on
+    them and they cannot be selected.
+    """
+    original_update = select.update
+
+    def update_with_groups() -> None:
+        original_update()
+        with select._props.suspend_updates():
+            select._props["options"] = _grouped_option_rows(
+                list(select._values), list(select._labels)
+            )
+
+    select.update = update_with_groups
+    select.add_slot("option", _GROUPED_OPTION_SLOT)
+    update_with_groups()
+
+
 def dataset_multi_selector(
     label: str = "Datasets",
     default: Optional[List[str]] = None,
@@ -688,12 +820,23 @@ def dataset_multi_selector(
     ),
     show_local_status: bool = True,
     show_release_notice: bool = True,
+    group_recommended: bool = False,
 ) -> ui.select:
-    """Create a multi-select dataset dropdown with local status labels."""
+    """Create a multi-select dataset dropdown with local status labels.
+
+    ``group_recommended`` pins the recommended datasets to a "Recommended"
+    section at the top of the dropdown, followed by an "Available" section
+    grouped by source (NeuPrint, FAFB, BANC) and sorted by name within each
+    source (the recommended ones repeat in place, and either copy selects
+    the same dataset).  The default flat list keeps the other callers
+    unchanged.
+    """
     from ..dataset_service import get_dataset_service
 
     service = get_dataset_service()
     options = datasets if datasets is not None else service.get_all_datasets()
+    if group_recommended:
+        options = _grouped_multi_dataset_order(options)
 
     if show_local_status:
         sel_options = {
@@ -723,6 +866,8 @@ def dataset_multi_selector(
         "use-chips use-input"
     ).tooltip(hint)
     _clear_native_select_editor_after_selection(sel)
+    if group_recommended:
+        _attach_grouped_dataset_options(sel)
     if show_local_status:
         _register_dataset_selector(sel, options, service)
     if show_release_notice:

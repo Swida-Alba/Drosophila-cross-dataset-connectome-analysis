@@ -99,6 +99,7 @@ def create_connectivity_tab():
                     source_dataset = dataset_selector(
                         label="Source Dataset",
                         hint="Dataset where the source neuron lives.",
+                        group_recommended=True,
                     )
                     target_dataset = dataset_selector(
                         label="Target Dataset",
@@ -106,6 +107,7 @@ def create_connectivity_tab():
                         hint="Dataset to search in. Set Target = Source for a "
                              "within-dataset (intra-dataset) similar-neuron "
                              "search.",
+                        group_recommended=True,
                     )
                 output_dir = dir_input(scope="find_homologs")
 
@@ -291,6 +293,7 @@ def create_connectivity_tab():
                 section_header("Datasets", "storage")
                 datasets_select = dataset_multi_selector(
                     label="Datasets to compare (select one or more)",
+                    group_recommended=True,
                     hint="Select one or more datasets. One dataset with multiple thresholds "
                          "is also supported. Two or more datasets profile the same query in "
                          "each dataset (names mapped per dataset) and add within-dataset "

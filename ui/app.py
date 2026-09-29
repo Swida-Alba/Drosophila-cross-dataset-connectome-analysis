@@ -1759,6 +1759,18 @@ html, body {
     border: 1px solid var(--drocat-line, #c8d4e4);
     border-top: none;
 }
+.drocat-select-group-header {
+    min-height: 0;
+    padding: 8px 12px 2px;
+    font-size: 11px;
+    color: var(--drocat-muted, #6b7a8f);
+    background: inherit;
+    cursor: default;
+    user-select: none;
+}
+.drocat-select-group-header .q-item__label--overline {
+    letter-spacing: 0.08em;
+}
 .drocat-suggest-label {
     font-size: 13px;
     color: var(--drocat-navy, #0b1f3a);
