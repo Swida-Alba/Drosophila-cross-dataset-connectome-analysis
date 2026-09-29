@@ -276,8 +276,11 @@ TERM_DEFS: Dict[str, str] = {
         '< 0.1 × branch pool best (primary), rank_union ≤ 0, jaccard '
         '< 0.5 × pool best, rank_union margin < 0.02 (tie).',
     'scene self-check':
-        'Debug check: every legend leaf\'s rendered geometry matches '
-        'its neuron — the CSV and the picture cannot disagree.',
+        'Debug checks: every legend leaf\'s rendered geometry matches '
+        'its neuron (identity), every expected neuron is plotted and '
+        'rendered (population), and under `line` mode every neuron leaf '
+        'carries a centerline (geometry census) — the CSV and the '
+        'picture cannot disagree.',
     'source-matched':
         'Backward status (advisory, D-B11): this in-branch source is the '
         'column-best source of its own row-best pool target, with pair '
@@ -1299,8 +1302,9 @@ def collect_warnings(d: Dict) -> List[str]:
     n_checks = sc['pass'] + sc['fail']
     if n_checks:
         lines.append(f"[self-check] {sc['pass']}/{n_checks} scene "
-                     'self-checks passed (all legend leaves match their '
-                     'neuron geometry)')
+                     'self-checks passed (leaf geometry matches, every '
+                     'expected neuron plotted, line mode serves '
+                     'centerlines)')
     elif d['scenes']:
         lines.append('[scenes] rendered without self-check '
                      '(scene_selfcheck off)')
@@ -4306,8 +4310,9 @@ def _scenes_tab(d: Dict) -> str:
     return _section_card(
         'Scenes',
         f'Self-check {sc["pass"]}/{sc["pass"] + sc["fail"]}: every '
-        "legend leaf's rendered geometry matches its neuron — the CSV "
-        'and the picture cannot disagree.',
+        "legend leaf's rendered geometry matches its neuron and every "
+        'expected neuron is plotted (population + geometry census) — '
+        'the CSV and the picture cannot disagree.',
         body, ['scene self-check', 'score frames'])
 
 

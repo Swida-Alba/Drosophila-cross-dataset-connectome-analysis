@@ -53,8 +53,13 @@ $PY scripts/RunMappingValidation.py \
 
 - `--types` accepts concrete types (`s-CPDN3C,s-CPDN3D`, `APDN3`) or a
   coarse `cell_type` (`circadian_clock`).
-- ALWAYS pass `--scene-selfcheck` (verifies legend-leaf geometry against
-  the neuron bbox; flags mislabeled renders).
+- ALWAYS pass `--scene-selfcheck` (three checks per scene: legend-leaf
+  geometry vs the neuron bbox — flags mislabeled renders; population —
+  every expected id per layer planted AND rendered; geometry census —
+  under `line` mode every neuron leaf carries a centerline). A parent
+  whose queried sources all fail to load skeletons is a FAILURE
+  (`SCENE_FAILED.txt`, nothing rendered), not a smaller picture; partial
+  drops render and are named by the self-check.
 - The reciprocal pass runs by default (user 2026-09-26); add
   `--no-backward-evidence` to skip it when the **fill** is not the
   question (§3): it
@@ -961,8 +966,10 @@ When presenting results to the user:
 0. `report.html` assembles items 1–6 of this checklist per run — open
    it first, then drill into the CSVs below when a number needs
    scrutiny.
-1. Run folder path + self-check status (must be "all legend leaves
-   match their neuron geometry" per scene).
+1. Run folder path + self-check status (per scene TWO pass lines:
+   "all legend leaves match their neuron geometry" AND "population
+   complete — N layer(s), M neuron(s) plotted"; any `! self-check` line
+   is a failure to explain).
 2. Branch table: pools, Mapped (verdict-carrying sources) beside the
    mutual-best pair count, gap, examinee/noise counts.
 3. Category distribution (`examinees.csv` → `category`
@@ -999,13 +1006,14 @@ When presenting results to the user:
 | symptom | cause | action |
 | --- | --- | --- |
 | `profile cache parquet not found` | cold dataset | build profiles first (`ConnectivityProfiling.py`) or pick another target |
-| scenes missing / `scene ... failed` in log | rendering error | check the traceback in the log; the CSVs are still valid |
+| scenes missing / `scene ... failed` in log | rendering error, or the empty-query-layer gate (message says the query layer is empty) | check the traceback in the log; the CSVs are still valid. For the empty-query case, all 40 folders of the 2026-09-29 reverse run had silently lost their query layer through a FAFB-only loader — fixed 2026-09-29 (record: `_plan/plan-tmvev-reverse-scene-loader-defects.md`) |
 | `! {root}: {bid} unavailable` | skeleton not cached and the dataset API is unreachable | the neuron stays in the CSVs but gets no scene leaf — expected offline; re-run when the API/cache is available. (A NeuPrint dataset's *folder* spelling used to cause this on every target: `hemibrain_v1_2_1` is a local namespace, the server only knows `hemibrain:v1.2.1`; remote fetches normalize that now, so both spellings run.) |
 | `[stage 5] ! morphology scored 0 of N requested pairs` | no target skeleton was loadable for that dataset | that run's bars all degrade to the `null` kind with `track_a_null_n: 0` and its verdicts are connectivity-only — never report it as a morphology-qualified baseline. Stage 5 now pre-flights the pair frame's own targets (`[stage 5] skeleton pre-flight (ds): X/Y cached, fetching Z`); a `failed` count or the `capped at 2000` line says which pairs stay unscored (network/cache limit, not a scoring bug) |
 | `Track-A null sample too thin (n=k)` | small run | expected; Track-A falls back to the pooled-average bar. `n=0` is NOT this — see the line above |
 | `track B (native pool reference) unavailable` | vector cache failure | Track B skipped; candidates fall back to the Track-A bar (thinner evidence — note it in the report) |
 | type lookups return 0 for a NeuPrint dataset | API unreachable | `get_bodyids_for_type` / `get_types_for_bodyids` are offline-first — ensure the dataset has a repo-local neuron table under `datasets/` |
-| self-check `!` lines | legend/render mismatch | treat as a bug: capture the lines verbatim and investigate before trusting the scene |
+| self-check `!` lines | legend/render mismatch, a missing population (expected ids that never loaded or never rendered — e.g. skeletons unavailable offline), or mesh-only leaves under `line` mode | treat as a bug unless the cause is named (offline skeleton gaps stay in the CSVs): capture the lines verbatim and investigate before trusting the scene |
+| a scene folder holds ONLY `SCENE_FAILED.txt` (no parameters.txt) | the empty-query-layer gate fired: every queried source of that parent failed to load a skeleton | the scene was refused, not rendered small — fix the source skeleton availability (offline cache or API) and re-run; the report's Scenes tab names the parent |
 | `[stage 5d] backward evidence failed (advisory, skipped)` / `source-universe vectors unavailable` | the reverse pass could not build or scan the source universe | advisory layer only — bins, fills and levels are unaffected; every row stays `not-checked`. Re-run with `--skip-backward-pass` if only the tier is needed |
 | null-kind branch bars drift between runs (e.g. 0.593→0.235) | the run null bar is the p95 of the scored jaccard-window null rows, and the scored subset grows as the skeleton cache fills | expected cache-dependence (the MODE-dependence was removed 2026-09-24 — one backdrop now serves every rung, so a bar that moves between two runs of the SAME mode means the cache moved). Prefer branches with native/backup floors for admission decisions, and pin the null sample per dataset (future work) |
 | expansion top hits are R1-R6 / orphan NaN-type neurons | unpaired sources in saturated types grab dense-profile fragments | the typed-only filter removes NaN types; R1-R6 fail the morph check (median ≈ −0.02), so `morph_qualified=False` keeps them out of the scene — treat them as noise evidence, never as candidates |

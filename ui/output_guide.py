@@ -1209,12 +1209,17 @@ TOOL_GUIDE_SPECS = {
                             "browser export. Re-export from the main page."},
             {"pattern": "SCENE_FAILED.txt",
              "description": "This scene did NOT render: the page, PNG and "
-                            "manifest are absent and everything else in the "
-                            "folder is a partial artifact. Names the parent "
-                            "type, the error and the traceback. Written "
-                            "because the folder is created before the figure, "
-                            "so a mid-render failure otherwise looks like a "
-                            "finished scene on disk."},
+                            "manifest are absent. Two causes. (1) A "
+                            "mid-render failure: the folder is created "
+                            "before the figure, so it would otherwise look "
+                            "like a finished scene on disk, and everything "
+                            "else inside is a partial artifact. (2) The TM "
+                            "VEV empty-query-layer gate: the parent's "
+                            "queried source neurons all failed to load "
+                            "skeletons, so the folder is synthetic and "
+                            "holds nothing but this marker. Names the "
+                            "parent type and the error (plus the traceback "
+                            "for render failures)."},
             {"pattern": "visualization_manifest.json",
              "description": "Machine-readable record of the run: dataset, "
                             "canonical viewer page, legend mode, freeze "

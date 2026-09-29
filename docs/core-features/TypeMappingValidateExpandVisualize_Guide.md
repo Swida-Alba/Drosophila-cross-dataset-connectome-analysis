@@ -172,6 +172,23 @@ The `untyped` suffix can appear on any bin, not only candidates. Every
 category root is collapsible; double-click a row to isolate it. Hover any
 skeleton line to see its **bodyId**.
 
+**Scene integrity (what the self-check covers).** Every scene neuron —
+query and target, every lane — loads through one dataset-general path:
+FAFB/BANC targets load as extrusion-checked CAVE centerlines (never the
+prepared mesh, which has no centerline), NeuPrint sources resolve from the
+dataset's own skeleton cache with on-demand fetch. With **Scene
+self-check** on (`--scene-selfcheck`), each rendered scene verifies three
+things, reported in the run log and the report's Scenes tab: **identity**
+(every legend leaf's geometry sits on its own labeled neuron),
+**population** (every expected id per layer — the branch's scanned
+sources, each bucket's kept set, the pool's targets — was loaded *and*
+rendered), and **geometry** (under `line` mode, every neuron leaf carries
+a centerline). A parent whose queried sources all fail to load skeletons
+is a failure, not a smaller picture: its folder holds
+`SCENE_FAILED.txt`, the parent is named in the report's Scenes tab, and
+nothing is rendered for it; partial drops still render but are named by
+the population check.
+
 **What the bins mean as a set.** The categories are a partition: every
 in-scope neuron falls into exactly one, decided in the order
 matched/verified/borderline/unmatched → sibling → candidates → family →

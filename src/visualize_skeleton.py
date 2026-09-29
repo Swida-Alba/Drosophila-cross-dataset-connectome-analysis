@@ -502,18 +502,34 @@ def _mesh_name_hit(trace_name, roi_names=()):
 
 
 def _identity_from_meta(trace):
-    """Legend identity stamped by the renderer (``drocatTrace`` wins)."""
+    """Legend identity stamped by the renderer (``drocatTrace`` wins).
+
+    A neuron leaf whose stamp carries no ``body_id`` falls back to the
+    leading bodyId of its ``item`` label (neuron items are bodyId-prefixed
+    by contract — Rev 3.5 Issue 6a renames every scene neuron to
+    ``str(bodyId)``).  The TM VEV overlay scenes never reach the render
+    loop that stamps ``drocatTrace``, so their ``drocatLegend`` alone
+    must still yield a real ``body_id`` for the manifest's traces table
+    (measured: ``body_id`` was ``None`` on every neuron trace of the
+    2026-09-29 reverse MCNS→FAFB scenes, and of the 09-28 control before
+    them)."""
     meta = _trace_meta(trace)
     for key in ('drocatTrace', 'drocatLegend'):
         stamped = meta.get(key)
         if isinstance(stamped, dict) and stamped.get('kind'):
             group = stamped.get('group')
+            body_id = stamped.get('body_id')
+            item = stamped.get('item')
+            if body_id is None and stamped['kind'] == 'neuron' and item:
+                m = re.match(r'^(\d+)', str(item))
+                if m:
+                    body_id = m.group(1)
             return {
                 'kind': stamped['kind'],
                 'group': group,
                 'type': stamped.get('type') or group,
-                'item': stamped.get('item'),
-                'body_id': stamped.get('body_id'),
+                'item': item,
+                'body_id': body_id,
                 'owner': stamped.get('owner') or stamped.get('owner_item') or group,
                 'owner_body_id': stamped.get('owner_body_id'),
                 'layer_index': stamped.get('layer_index'),

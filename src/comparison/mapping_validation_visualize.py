@@ -54,12 +54,28 @@ prefixes — so the legend and the CSVs cannot disagree.
   trace mapping can never drift from the figure.  Targets whose skeleton
   cannot be fetched are logged (``! {root}: {bid} unavailable``) and
   remain in the CSVs; unavailable neurons never silently vanish.
+- ONE skeleton loader for every lane and dataset kind
+  (``_load_scene_skeletons``): FAFB/BANC via
+  ``load_local_release_skeletons`` with the extrusion check ON (CAVE
+  centerlines — never the prepared mesh), NeuPrint via the dataset's own
+  raw-skeleton cache + on-demand fetch.  A centerline guard refuses any
+  non-TreeNeuron as a dropped id, so ``skeleton_mode='line'`` always
+  means line geometry (the 2026-09-29 reverse MCNS→FAFB run served
+  mesh-only FAFB targets and lost its whole query layer through the old
+  per-side loaders; record:
+  ``_plan/plan-tmvev-reverse-scene-loader-defects.md``).
+- A scene whose QUERY layer is empty while the branch scanned sources is
+  a FAILURE: ``EmptyQueryLayerError`` + ``SCENE_FAILED.txt`` in a
+  synthetic ``plot-3d_branches_*`` folder the report's Scenes tab reads,
+  and nothing rendered.  Partial query drops still render and are named.
 - Revision 3.5 Issue 6: loaded neurons are renamed to ``str(bodyId)`` so
   navis trace names match the backend trace-identity resolver exactly
   (no positional fallback slips); a neuron renders in exactly ONE
   expansion bucket per branch; an optional debug self-check
   (``cfg.scene_selfcheck``) verifies each legend leaf's geometry against
-  its neuron's loaded bbox.
+  its neuron's loaded bbox AND — ``check_scene_population`` — that every
+  expected id per layer was planted and rendered, with a geometry census
+  flagging mesh-only leaves under ``skeleton_mode='line'``.
 """
 
 import re
@@ -826,6 +842,13 @@ def _write_scene_failure_marker(folder, src_type, exc, tb) -> bool:
     male-cns family run: 5 of its 21 parent scenes were exactly such empty
     folders, and nothing downstream noticed.
 
+    Also used by the empty-query-layer gate for scenes that never reach the
+    constructor at all: there ``folder`` is a synthetic
+    ``plot-3d_branches_*`` directory created here, holding nothing but the
+    marker — the report's scene-failure reader only needs the folder name
+    to start with ``plot-3d_`` and the marker to carry ``parent type:`` /
+    ``error:`` lines.
+
     Returns whether a marker was written. An unwritable folder is not worth
     raising over: the run log already carries the error and its traceback.
     """
@@ -847,7 +870,16 @@ def _write_scene_failure_marker(folder, src_type, exc, tb) -> bool:
 
 
 def render_pair_scenes(validator, per_pair_res: Dict) -> None:
-    """Render one branch-structured scene per parent mapping group."""
+    """Render one branch-structured scene per parent mapping group.
+
+    Every layer loads its skeletons through ``_load_scene_skeletons``
+    (dataset-general, TreeNeuron-guaranteed, extrusion-checked on
+    FAFB/BANC).  A parent whose queried sources all fail to load is a
+    failure (``SCENE_FAILED.txt``, nothing rendered); with
+    ``cfg.scene_selfcheck`` on, each rendered scene also runs the
+    population check (expected-vs-planted-vs-rendered per layer, geometry
+    census) beside the leaf-identity check.
+    """
     import navis
 
     cfg = validator.cfg

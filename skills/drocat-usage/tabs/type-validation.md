@@ -105,6 +105,11 @@ print(run_dir)
 
 `report.html`, `README.txt`, `parameters.json`, `set_coverage.json`,
 `pipeline_progress.jsonl`, plus `validation/`, `expansion/`, `gap_fill/`,
-`mapping/` CSVs and `visualization/plot-3d_*/branches_*.html` scenes. See
+`mapping/` CSVs and `visualization/plot-3d_*/branches_*.html` scenes. Scenes
+load skeletons through one dataset-general loader (FAFB/BANC =
+extrusion-checked centerlines, NeuPrint = raw cache + on-demand fetch), and
+with the scene self-check on, every scene verifies its population; a parent
+whose query layer is empty writes `SCENE_FAILED.txt` instead of rendering a
+target-only picture. See
 [the user guide](../../../docs/core-features/TypeMappingValidateExpandVisualize_Guide.md)
 and [OUTPUT_FILES §9](../../../docs/OUTPUT_FILES.md).

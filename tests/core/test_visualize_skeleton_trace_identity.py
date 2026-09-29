@@ -243,3 +243,39 @@ class TestGranularityPlans:
             classify_traces(traces), 'body')
         assert background == [1]
         assert all(1 not in v for v in entries.values())
+
+
+def test_neuron_leaf_without_stamped_body_id_reads_it_off_the_item():
+    """TM VEV overlay scenes never reach the drocatTrace stamping loop —
+    their drocatLegend carries kind/group/type/item but no body_id, so
+    every neuron trace of a TM VEV manifest used to record body_id=None
+    (measured on the 2026-09-29 reverse MCNS→FAFB scenes AND the 09-28
+    forward control).  The item label is bodyId-prefixed by contract, so
+    the identity resolver recovers it; non-neuron kinds are left alone."""
+    import re as _re
+    from visualize_skeleton import _identity_from_meta
+
+    def legend_trace(kind, item, with_body_id=True):
+        trace = go.Scatter3d(x=[0, 1], y=[0, 1], z=[0, 1], mode='lines')
+        stamped = {'kind': kind, 'group': 'g', 'type': 't', 'item': item}
+        if with_body_id:
+            stamped['body_id'] = '256'
+        trace.meta = {'drocatLegend': stamped}
+        return trace
+
+    # neuron leaf, body_id absent -> recovered from the item prefix
+    got = _identity_from_meta(legend_trace('neuron', '16634_s-LNv_L',
+                                           with_body_id=False))
+    assert got['body_id'] == '16634'
+    # explicit stamp still wins
+    got = _identity_from_meta(legend_trace('neuron', '16634_s-LNv_L'))
+    assert got['body_id'] == '256'
+    # non-neuron kinds keep None (site/companion owners are not bodies)
+    got = _identity_from_meta(legend_trace('site', '16634_pre',
+                                           with_body_id=False))
+    assert got['body_id'] is None
+    # a non-numeric item prefix recovers nothing
+    got = _identity_from_meta(legend_trace('neuron', 'ROI-alpha',
+                                           with_body_id=False))
+    assert got['body_id'] is None
+    assert _re.match(r'^\d+$', got['body_id'] or '') is None

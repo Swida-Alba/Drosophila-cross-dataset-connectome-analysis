@@ -93,7 +93,13 @@ BodyId-level type-mapping **validate-expand-visualize** orchestrator (CLI
   `morphology_calibration.json`, `parameters.json`, `README.txt`,
   `visualization/*.html`.
 - Scene renderer: `comparison.mapping_validation_visualize`
-  (`build_category_buckets` reads the exported `category`).
+  (`build_category_buckets` reads the exported `category`;
+  `_load_scene_skeletons` is the ONE dataset-general skeleton loader for
+  every scene lane — FAFB/BANC via `load_local_release_skeletons` with
+  `check_extrusions=True`, NeuPrint via the raw-skeleton cache + on-demand
+  fetch, non-TreeNeuron objects refused; `check_scene_population` is the
+  expected-vs-planted-vs-rendered self-check, and an empty query layer
+  writes `SCENE_FAILED.txt` instead of rendering).
 
 ## neuronbridge_finder (`src/neuronbridge_finder.py`)
 
