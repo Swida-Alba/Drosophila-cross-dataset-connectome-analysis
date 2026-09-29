@@ -672,7 +672,9 @@ def pack(zip_path, out_path, level: int = DEFAULT_LEVEL,
     except ImportError:
         from utils.parquet_utils import remove_stale_temp_files, temp_sibling
     remove_stale_temp_files(out_path, 'bundle-pack')
-    tmp_path = temp_sibling(out_path, 'bundle-pack')
+    # temp_sibling returns str by contract; this function calls Path methods
+    # on it (unlink(missing_ok=True) on the reject path).
+    tmp_path = Path(temp_sibling(out_path, 'bundle-pack'))
     max_error = 0.0
     block_table: List[Tuple[int, int, int, int]] = []
     neuron_entries: List[Tuple[int, int, int]] = []

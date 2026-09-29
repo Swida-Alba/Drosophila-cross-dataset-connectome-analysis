@@ -280,7 +280,10 @@ def test_banc_update_post_counts_error(tmp_path):
 
 
 def test_banc_ensure_data_full_pipeline(tmp_path, capsys):
-    dataset_dir = tmp_path / "datasets" / "banc_v999"
+    # A PUBLISHED release name: round-7 R7-1a refuses explicit-but-unknown
+    # releases (banc_v999 used to serve v888 data under that name) before
+    # any pipeline mechanics run.
+    dataset_dir = tmp_path / "datasets" / "banc_v888"
     downloads = dataset_dir / "downloads"
     downloads.mkdir(parents=True)
     _write_gz(downloads / "neurons.csv.gz", _banc_neuron_rows())
@@ -295,12 +298,12 @@ def test_banc_ensure_data_full_pipeline(tmp_path, capsys):
         "720575940000000001,720575940000000002,C,2,GABA",
     ]))
 
-    assert banc.ensure_banc_data("banc_v999", str(dataset_dir)) is True
+    assert banc.ensure_banc_data("banc_v888", str(dataset_dir)) is True
 
-    neuron_pq = dataset_dir / "banc_v999_allneurons_neuron_df.parquet"
-    conn_pq = dataset_dir / "banc_v999_merged_connections.parquet"
+    neuron_pq = dataset_dir / "banc_v888_allneurons_neuron_df.parquet"
+    conn_pq = dataset_dir / "banc_v888_merged_connections.parquet"
     assert neuron_pq.exists() and conn_pq.exists()
-    assert (dataset_dir / "banc_v999_allneurons_neuron_df.csv").exists()
+    assert (dataset_dir / "banc_v888_allneurons_neuron_df.csv").exists()
 
     # Post counts were back-filled from the connection weights.
     df = pd.read_parquet(neuron_pq)
@@ -311,7 +314,7 @@ def test_banc_ensure_data_full_pipeline(tmp_path, capsys):
 
     # Second run: everything already present, post counts already populated.
     capsys.readouterr()
-    assert banc.ensure_banc_data("banc_v999", str(dataset_dir)) is True
+    assert banc.ensure_banc_data("banc_v888", str(dataset_dir)) is True
     output = capsys.readouterr().out
     assert "Found existing neurons" in output
     assert "Found existing connections" in output
@@ -345,8 +348,8 @@ def test_banc_ensure_data_missing_files(tmp_path, monkeypatch):
                         lambda *a, **k: None)
     monkeypatch.setattr(banc_public_data, "download_connections_product",
                         lambda *a, **k: None)
-    dataset_dir = tmp_path / "datasets" / "banc_v999"
-    assert banc.ensure_banc_data("banc_v999", str(dataset_dir)) is False
+    dataset_dir = tmp_path / "datasets" / "banc_v888"
+    assert banc.ensure_banc_data("banc_v888", str(dataset_dir)) is False
     assert (dataset_dir / "downloads").is_dir()
 
 
@@ -356,7 +359,7 @@ def test_banc_ensure_data_bucket_path_fills_post_counts(tmp_path, monkeypatch,
     must still back-fill the column from the merged connections."""
     import banc_public_data
 
-    dataset_dir = tmp_path / "datasets" / "banc_v999"
+    dataset_dir = tmp_path / "datasets" / "banc_v888"
     dataset_dir.mkdir(parents=True)
 
     def fake_prepare(dataset_name, dir_, project_root=None):
@@ -384,9 +387,9 @@ def test_banc_ensure_data_bucket_path_fills_post_counts(tmp_path, monkeypatch,
     monkeypatch.setattr(banc_public_data, "prepare_dataset_tables",
                         fake_prepare)
 
-    assert banc.ensure_banc_data("banc_v999", str(dataset_dir)) is True
+    assert banc.ensure_banc_data("banc_v888", str(dataset_dir)) is True
     df = pd.read_parquet(
-        dataset_dir / "banc_v999_allneurons_neuron_df.parquet")
+        dataset_dir / "banc_v888_allneurons_neuron_df.parquet")
     assert df.set_index("bodyId")["post"].to_dict() == {
         "720575940000000001": 7,
         "720575940000000002": 2,
