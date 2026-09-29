@@ -2376,12 +2376,21 @@ def _comparer(query, tmp_path=None, dataset=DS_A, **kwargs):
     return ConnectivityProfileComparer(query, dataset=dataset, **kwargs)
 
 
-def _install_fake_heatmap(monkeypatch, calls):
-    """Fake comparison.interactive_heatmap used by the vispath fallback."""
+def _install_fake_heatmap(monkeypatch, calls, kwargs_seen=None):
+    """Fake comparison.interactive_heatmap used by the vispath fallback.
+
+    Matches the real signature incl. the metric-scale passthrough
+    (color_scale/zmin/zmax) the fallback has forwarded since the
+    diverging-[-1, 1] round.
+    """
     fake_mod = ModuleType('comparison.interactive_heatmap')
 
-    def gen(matrices_dict, filename, title=None, showfig=False, verbose=False):
+    def gen(matrices_dict, filename, title=None, showfig=False, verbose=False,
+            color_scale=None, zmin=None, zmax=None):
         calls.append(filename)
+        if kwargs_seen is not None:
+            kwargs_seen.append(
+                {'color_scale': color_scale, 'zmin': zmin, 'zmax': zmax})
         Path(filename).write_text('<html></html>', encoding='utf-8')
 
     fake_mod.generate_interactive_heatmap = gen
@@ -2743,9 +2752,9 @@ def test_comparer_get_output_path_default(pc_fake_repo):
 
 
 def test_comparer_run_single_dataset(tmp_path, pc_fake_repo, monkeypatch):
-    calls = []
+    calls, heatmap_kwargs = [], []
     _block_vispath(monkeypatch)
-    _install_fake_heatmap(monkeypatch, calls)
+    _install_fake_heatmap(monkeypatch, calls, heatmap_kwargs)
 
     comp = _comparer(['T1', 'T2'], tmp_path,
                      skip_bodyId_level=False, generate_heatmaps=True)
@@ -2777,8 +2786,16 @@ def test_comparer_run_single_dataset(tmp_path, pc_fake_repo, monkeypatch):
         'type_avg_bodyid_similarity_*.csv'))) == 15
     assert len(list((out / 'profiles' / 'individual').glob('*.json'))) == 3
     assert len(list((out / 'profiles' / 'aggregated').glob('*.json'))) == 2
-    # heatmap fallback path (vispath blocked above)
+    # heatmap fallback path (vispath blocked above); every call carries the
+    # metric's colormap and fixed domain (jaccard et al. are [0, 1])
     assert calls and len(res['heatmaps_generated']) == 45
+    assert len(heatmap_kwargs) == len(calls)
+    assert all(kw['color_scale'] is not None and kw['zmin'] is not None
+               and kw['zmax'] is not None for kw in heatmap_kwargs)
+    # jaccard-family metrics are [0, 1]; rank_corr_union is diverging
+    # [-1, 1] — the passthrough preserves each metric's own domain.
+    zmins = {kw['zmin'] for kw in heatmap_kwargs}
+    assert zmins == {0.0, -1.0}
 
 
 def test_comparer_run_single_dataset_insufficient(tmp_path):
