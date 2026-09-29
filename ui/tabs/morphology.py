@@ -367,9 +367,10 @@ def create_morphology_tab():
                 )
                 comparison_output_dir = dir_input(scope="morphology_comparison")
                 comparison_banc_warning = ui.label(
-                    "⚠️ BANC morphological comparison is deferred: public "
-                    "L2/full skeletons still need vector-quality validation. "
-                    "3D skeleton visualization for BANC is available."
+                    "⚠️ BANC morphology comparison runs on the public "
+                    "L2/full skeleton products: vector quality is still "
+                    "unvalidated, so treat scores as provisional and "
+                    "spot-check surprising pairs in the 3D scene."
                 ).classes("text-caption text-amber-8").set_visibility(False)
                 cross_banc_warning = ui.label(
                     "⚠️ BANC morphology is experimental: public skeleton "
@@ -845,13 +846,14 @@ def create_morphology_tab():
                 )
                 return
         elif is_banc_dataset(selected[0]):
+            # User 2026-09-29: BANC comparison runs — the caveat is a
+            # persistent banner and a notification, not a refusal.
             comparison_banc_warning.set_visibility(True)
             ui.notify(
-                "BANC morphological comparison is unavailable; select a "
-                "non-BANC dataset.",
+                "BANC morphology comparison: scores are provisional "
+                "(public L2/full skeletons, vector quality unvalidated)",
                 type="warning",
             )
-            return
 
         # Custom-group rows need a mapping (preset or inline); resolve it
         # before the running state so an invalid board aborts cleanly.

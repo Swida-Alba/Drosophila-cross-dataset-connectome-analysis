@@ -590,11 +590,16 @@ def test_unknown_bodyid_raises(vector_setup):
         comparer.run()
 
 
-def test_banc_dataset_rejected(monkeypatch):
+def test_banc_dataset_warns_instead_of_refusing(monkeypatch):
+    """BANC comparison runs with the provisional-scores caveat disclosed
+    (user 2026-09-29) — the constructor no longer gates it."""
     monkeypatch.setattr(mc, "is_banc_dataset", lambda d: True)
-    with pytest.raises(ValueError, match="BANC"):
-        mc.MorphologyProfileComparer(
-            dataset="banc_v626", query=["a", "b"])
+    comparer = mc.MorphologyProfileComparer(
+        dataset="banc_v626", query=["a", "b"], verbose=False)
+    assert any("provisional" in note and "BANC" in note
+               for note in comparer._resolution_notes)
+    # The disclosure rides into the run's notes file with everything else.
+    assert comparer._resolution_notes[-1].startswith("BANC morphology")
 
 
 def test_invalid_method_rejected():

@@ -263,10 +263,14 @@ class MorphologyProfileComparer:
             raise ValueError(
                 f"Invalid method: {self.method} (vector_v2|nblast)")
         if is_banc_dataset(self.dataset):
-            raise ValueError(
-                "BANC morphological comparison is deferred: the public "
-                "L2/full skeletons still need vector-quality validation. "
-                "3D skeleton visualization for BANC is available.")
+            # User 2026-09-29: BANC comparison runs, with the caveat
+            # disclosed — never gated. Scores come from the public L2/full
+            # skeleton products whose vector quality is still unvalidated.
+            self._note(
+                "BANC morphology comparison runs on the public L2/full "
+                "skeleton products, whose vector quality is still "
+                "unvalidated: treat scores as provisional and spot-check "
+                "surprising pairs in the 3D scene.")
         if self.custom_mapping_file and self.aggregation_level != "custom":
             self._log("custom_mapping_file given: aggregation level "
                       "switched to 'custom'.")
