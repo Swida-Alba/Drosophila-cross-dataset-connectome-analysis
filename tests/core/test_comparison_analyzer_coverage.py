@@ -2424,3 +2424,47 @@ def test_edge_mode_banner_block_tau_is_null(analyzer):
     assert row.get('edge_mode') is True
     # the neutralized meta must carry tau=None so the banner block reads None
     assert analyzer._path_run_meta[('dsA', 5)]['tau'] is None
+
+
+def test_corrupt_sidecar_is_a_cache_miss_not_a_stale_pair(tmp_path):
+    """An UNREADABLE fingerprint sidecar must not send the replay loader
+    down its stale-pair deletion path: the verdict is 'unknown', so the
+    derived connections_edge.csv survives for re-derivation to rewrite —
+    a one-byte-corrupt sidecar must not destroy an expensive table."""
+    from types import SimpleNamespace
+
+    out_dir = tmp_path / 'ds1' / '3'
+    out_dir.mkdir(parents=True)
+    (out_dir / 'connections_edge.csv').write_text('bodyId_pre\n1\n')
+    (out_dir / 'connections_edge.fingerprint.json').write_text('{not json')
+
+    logs = []
+
+    class Shell:
+        _try_load_cached = ComparisonAnalyzer._try_load_cached
+        _query_fingerprint = ComparisonAnalyzer._query_fingerprint
+        _cached_result_matches_query = (
+            ComparisonAnalyzer._cached_result_matches_query)
+
+        def __init__(self):
+            self.parameters = SimpleNamespace(
+                source_neurons=['a'], target_neurons=['b'],
+                comparison_mode='edge', max_interlayer=2,
+                pathfinding='StrongestFirst',
+                output_folder=str(tmp_path),
+                get_dataset_output_path=lambda ds, th: str(out_dir))
+
+        def _log(self, msg, level='debug'):
+            logs.append(msg)
+
+        def _read_csv(self, path):
+            return pd.read_csv(path)
+
+    shell = Shell()
+    # tri-state: present-but-corrupt is None, never a definitive mismatch
+    assert shell._cached_result_matches_query(str(out_dir)) is None
+    assert shell._try_load_cached('ds1', 3, remove_stale=True) is None
+    assert (out_dir / 'connections_edge.csv').exists(), (
+        'an unreadable sidecar must not delete the derived table')
+    assert (out_dir / 'connections_edge.fingerprint.json').exists()
+    assert any('unreadable' in str(msg).lower() for msg in logs)

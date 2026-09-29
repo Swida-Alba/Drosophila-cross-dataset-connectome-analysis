@@ -4761,11 +4761,18 @@ class ComparisonAnalyzer:
             'pathfinding': str(getattr(p, 'pathfinding', '')),
         }
 
-    def _cached_result_matches_query(self, dirpath: str) -> bool:
+    def _cached_result_matches_query(self, dirpath: str):
         """Validate a dataset-threshold folder against the current query.
 
         Sidecar absent (legacy folder) -> accepted with a debug note; the
         fingerprint only starts protecting folders it was written to.
+
+        Returns ``None`` when the sidecar is PRESENT but unreadable
+        (corrupt/truncated JSON): that is a cache miss with an unknown
+        verdict, never a mismatch — a one-byte-corrupt sidecar must not be
+        read as "this table answers a different query", which would send
+        the caller down its stale-pair deletion path and destroy a
+        possibly expensive derived table for no reason.
         """
         import json as _json
         sidecar = os.path.join(dirpath, "connections_edge.fingerprint.json")
@@ -4776,8 +4783,11 @@ class ComparisonAnalyzer:
         try:
             with open(sidecar, "r", encoding="utf-8") as fh:
                 recorded = _json.load(fh)
-        except (OSError, ValueError):
-            return False
+        except (OSError, ValueError) as exc:
+            self._log(f"Query fingerprint sidecar is unreadable "
+                      f"({exc}) — treating as a cache miss without "
+                      "touching the cached table", 'always')
+            return None
         return recorded == self._query_fingerprint()
 
     def _try_load_cached(self, dataset_name: str, threshold: int,
@@ -4799,7 +4809,13 @@ class ComparisonAnalyzer:
         # First try our own cached connections_edge.csv (edge mode output)
         filepath = os.path.join(output_dir, "connections_edge.csv")
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-            if not self._cached_result_matches_query(output_dir):
+            verdict = self._cached_result_matches_query(output_dir)
+            if verdict is None:
+                # Unreadable sidecar: a cache miss with an unknown verdict.
+                # Never delete on it — re-derivation will rewrite both
+                # halves when it completes.
+                pass
+            elif not verdict:
                 self._log(
                     f"Cached {dataset_name} @ {threshold} was written for a "
                     "different query — ignoring it", 'always')
