@@ -1019,3 +1019,98 @@ def test_a_failed_scene_marks_its_own_folder(tmp_path):
     # No folder means nothing to mark (the constructor failed, so it never
     # existed) — and that must not raise.
     assert _write_scene_failure_marker(None, 's-LNv', exc, '') is False
+
+
+def test_track_b_render_fallback_fafb_loads_through_release_loader(monkeypatch):
+    """The Track-B render fallback must resolve FAFB targets through the
+    release loader (offline-first, extrusion-checked, TreeNeuron-guaranteed)
+    — never through fetch_skeleton_on_demand, which used to serve the CAVE
+    prepared MESH here and silently score it in render space whenever the
+    vector-cache path raised (2026-09-29 reverse-scene defects,
+    plan-tmvev-reverse-scene-loader-defects.md)."""
+    import types
+
+    import morphology
+
+    import comparison.mapping_validation as mv
+
+    calls = {}
+
+    def fake_loader(dataset, body_ids, project_root=None, log=None,
+                    check_extrusions=True, denoise_twigs=None):
+        calls["dataset"] = dataset
+        calls.setdefault("body_ids", []).append(list(body_ids))
+        calls["check_extrusions"] = check_extrusions
+        # respect the request: an empty bid list resolves nothing (the
+        # invader lane calls load([]) and must come back empty, or the
+        # scoring stage runs and its own internal check_extrusions=False
+        # loader call pollutes the recording)
+        return {int(b): object() for b in body_ids}
+
+    def must_not_fetch(*a, **k):
+        raise AssertionError("fetch_skeleton_on_demand used for a FAFB target")
+
+    monkeypatch.setattr(morphology, "load_local_release_skeletons",
+                        fake_loader)
+    monkeypatch.setattr(morphology, "fetch_skeleton_on_demand", must_not_fetch)
+
+    v = mv.MappingValidator.__new__(mv.MappingValidator)
+    v.cfg = mv.MappingValidationConfig(
+        source_dataset="male-cns:v1.0", target_dataset="flywire_FAFB_v783",
+        query_types=["T"], visualize=False, morph_enabled=True)
+    v.notes = []
+    v.progress = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    tiers = {"T → s-LNv": {"ref_bids": [11, 12], "tier": "verified"}}
+    scores = v._track_b_render_fallback(tiers, {}, {}, {}, {})
+    # no invaders: nothing scored, but the reference load went through the
+    # loader in ONE batched, extrusion-checked call (the second load call
+    # is the empty invader lane)
+    assert scores == {}
+    assert calls == {"dataset": "flywire_FAFB_v783",
+                     "body_ids": [[11, 12], []],
+                     "check_extrusions": True}
+
+
+def test_track_b_render_fallback_neuprint_keeps_cache_then_fetch(
+        monkeypatch, tmp_path):
+    """Non-FAFB targets keep the raw_skeletons probe + on-demand fetch
+    path — the FAFB gate must not change their behavior."""
+    import types
+
+    import morphology
+    import visualize_skeleton
+
+    import comparison.mapping_validation as mv
+
+    fetched = []
+
+    def fake_fetch(dataset, bid):
+        fetched.append((dataset, bid))
+
+        class _Tree:
+            id = bid
+            nodes = []
+
+        return _Tree()
+
+    monkeypatch.setattr(morphology, "fetch_skeleton_on_demand", fake_fetch)
+    # identity spaces: the render transform is skipped, so the fetched
+    # stubs never reach navis and the test stays focused on the load path
+    monkeypatch.setattr(visualize_skeleton, "dataset_native_space",
+                        lambda ds: "S")
+    monkeypatch.setattr(visualize_skeleton, "dataset_render_space",
+                        lambda ds: "S")
+
+    v = mv.MappingValidator.__new__(mv.MappingValidator)
+    v.cfg = mv.MappingValidationConfig(
+        source_dataset="flywire_FAFB_v783", target_dataset="male-cns:v1.0",
+        query_types=["T"], visualize=False, morph_enabled=True)
+    v.notes = []
+    v.progress = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    # an id the real male-cns raw_skeletons store does not have, so the
+    # probe misses and the on-demand fetch answers
+    tiers = {"T → LN": {"ref_bids": [987654321], "tier": "verified"}}
+    v._track_b_render_fallback(tiers, {}, {}, {}, {})
+    assert fetched == [("male-cns:v1.0", 987654321)]

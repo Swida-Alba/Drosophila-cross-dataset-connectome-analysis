@@ -972,3 +972,24 @@ def test_tag_scene_members_names_and_tags():
     out2 = mcd._tag_scene_members([(1, SimpleNamespace()), (2, SimpleNamespace())],
                                   't', 'BANC', 'banc_v888')
     assert [n.name for n in out2] == ['t_BANC_1', 't_BANC_2']
+
+
+def test_fetch_source_skeletons_fafb_loader_crash_never_returns_mesh(
+        tmp_path, monkeypatch):
+    """If the FAFB release loader itself raises, the fallback chain must
+    degrade to skipped ids — never to fetch_skeleton_on_demand's old
+    prepared-mesh answer (2026-09-29 reverse-scene defects)."""
+    import morphology
+
+    def boom(*a, **k):
+        raise RuntimeError("healed zip unreadable")
+
+    def must_not(*a, **k):
+        raise AssertionError("fetch_skeleton_on_demand used for FAFB")
+
+    monkeypatch.setattr(morphology, "load_local_release_skeletons", boom)
+    monkeypatch.setattr(morphology, "fetch_skeleton_on_demand", must_not)
+    out = mcd.fetch_source_skeletons("flywire_FAFB_v783", [7],
+                                     project_root=str(tmp_path), log=None,
+                                     allow_fetch=True)
+    assert out == {}

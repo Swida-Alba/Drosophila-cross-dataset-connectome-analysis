@@ -1399,15 +1399,17 @@ def test_fetch_skeleton_on_demand_paths(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         M.fetch_skeleton_on_demand("hemibrain:v1.2.1", 1,
                                    simplification=None)
-    # FlyWire mesh path: fetched mesh is vectorized then returned
+    # FAFB release-loader path: fetched tree is vectorized then returned
     calls = []
-    monkeypatch.setattr(M, "_fetch_cave_mesh",
-                        lambda *a, **k: make_mesh_stub())
+    monkeypatch.setattr(M, "load_local_release_skeletons",
+                        lambda *a, **k: {"720575940614131061":
+                                         make_tree()})
     monkeypatch.setattr(M, "cache_fetched_skeleton_vectors",
                         lambda *a, **k: calls.append((a, k)))
     fid = "720575940614131061"
-    assert M.fetch_skeleton_on_demand("flywire", fid,
-                                      project_root=str(tmp_path)) is not None
+    got = M.fetch_skeleton_on_demand("flywire", fid,
+                                     project_root=str(tmp_path))
+    assert got is not None
     assert calls  # vector cache transaction happened
     # persist=False skips the vector cache transaction
     calls.clear()
@@ -1415,6 +1417,10 @@ def test_fetch_skeleton_on_demand_paths(tmp_path, monkeypatch):
                                       project_root=str(tmp_path),
                                       persist=False) is not None
     assert not calls
+    # a FAFB miss comes back as None (never a mesh)
+    monkeypatch.setattr(M, "load_local_release_skeletons", lambda *a, **k: {})
+    assert M.fetch_skeleton_on_demand("flywire", fid,
+                                      project_root=str(tmp_path)) is None
     # NeuPrint raw-cache hit short-circuits the network
     cache = _raw_cache(tmp_path)
     cache.skeleton_dir.mkdir(parents=True)
@@ -1491,19 +1497,17 @@ def test_fetch_neuprint_batch_with_progress(monkeypatch):
 
 def test_normalize_fetched_neurons():
     tree = make_tree()
-    out = M._normalize_fetched_neurons("hemibrain:v1.2.1", {1: tree},
-                                       flywire=False)
+    out = M._normalize_fetched_neurons("hemibrain:v1.2.1", {1: tree})
     assert 1 in out and out[1].id == 1
     # DataFrame coercion + multi-soma clearing
-    coerced = M._normalize_fetched_neurons(
-        "hemibrain:v1.2.1", {2: tree.nodes}, flywire=False)
+    coerced = M._normalize_fetched_neurons("hemibrain:v1.2.1", {2: tree.nodes})
     assert isinstance(coerced[2], navis.TreeNeuron)
-    # FlyWire keeps only MeshNeurons
-    assert M._normalize_fetched_neurons("flywire", {1: tree},
-                                        flywire=True) == {}
+    # every fetch path is skeleton-native now, so a tree passes through
+    # (canonical FAFB ids are strings)
+    assert M._normalize_fetched_neurons("flywire", {1: tree})["1"] is tree
     # unbuildable objects are skipped
     assert M._normalize_fetched_neurons(
-        "hemibrain:v1.2.1", {3: "not-a-neuron"}, flywire=False) == {}
+        "hemibrain:v1.2.1", {3: "not-a-neuron"}) == {}
 
 
 def _tree_with_id(bid):
@@ -1619,32 +1623,25 @@ def test_fetch_batch_single_fetch_override(tmp_path, monkeypatch):
     assert result == {}
 
 
-def test_fetch_batch_flywire_meshes(tmp_path, monkeypatch):
-    import types
-    verts = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.],
-                      [0., 0., 1.]])
-    faces = np.array([[0, 1, 2], [0, 1, 3]])
-    mesh = navis.MeshNeuron((verts, faces))
-    mesh.id = int("720575940614131061")
-    anon = navis.MeshNeuron((verts, faces))  # no id -> skipped
-
-    fake = types.ModuleType("cave_data_fetcher")
-
-    class CAVEDataFetcher:
-        def __init__(self, dataset=None, project_root=None, verbose=False):
-            pass
-
-        def fetch_fafb_meshes(self, body_ids, use_cache=True,
-                              simplify_mesh=None, soma_simplification=None,
-                              soma_radius=None, soma_positions=None):
-            return [mesh, anon]
-
-    fake.CAVEDataFetcher = CAVEDataFetcher
-    monkeypatch.setitem(sys.modules, "cave_data_fetcher", fake)
+def test_fetch_batch_fafb_serves_trees_from_loader(tmp_path, monkeypatch):
+    """FAFB batches resolve through the release loader and return
+    TreeNeuron skeletons — the CAVE prepared-mesh batch is gone (it made
+    a mesh-where-skeleton possible; 2026-09-29 reverse-scene defects)."""
     fid = "720575940614131061"
+    tree = _tree_with_id(int(fid))
+    seen = {}
+
+    def fake_loader(dataset, body_ids, project_root=None, log=None,
+                    check_extrusions=True, denoise_twigs=None):
+        seen["call"] = (dataset, list(body_ids))
+        # canonical FAFB ids are strings; accept either key form
+        return {bid: tree for bid in body_ids} | {int(fid): tree}
+
+    monkeypatch.setattr(M, "load_local_release_skeletons", fake_loader)
     result = M.fetch_skeletons_on_demand_batch(
         "flywire", [fid], project_root=str(tmp_path), persist=True)
-    assert fid in result
+    assert seen["call"] == ("flywire", [fid])
+    assert result[fid] is tree
 
 
 # ---------------------------------------------------------------------------
@@ -1718,13 +1715,13 @@ def test_download_all_neuprint_batch_path(tmp_path, monkeypatch):
 
 
 def test_download_all_fafb_guard_and_mode_aliases(tmp_path, monkeypatch):
-    # BUG REPORTED / unreachable: the FAFB bulk-download guard at
-    # morphology.py:3696 raises for every dataset where is_flywire_dataset()
-    # is True, and FAFB's local-release predicate is separate from BANC, so the
-    # FAFB healed-bundle counting block (~3795-3833) and the per-neuron
-    # ``_fetch_one`` legacy worker loop (~3915-3991) can never execute in
-    # production. They are therefore not exercised here; only the reachable
-    # guard + compatibility-mode aliases are.
+    # The FAFB bulk-download guard raises for every dataset where
+    # is_fafb_dataset() is True. The dead FAFB machinery that used to sit
+    # downstream of it (the healed-bundle counting block, the mesh-cache
+    # selection and the per-neuron ``_fetch_one`` legacy worker loop) was
+    # excised 2026-09-29 — nothing below the guard can execute for FAFB,
+    # and nothing in this file exercised it even before the excision; only
+    # the reachable guard + compatibility-mode aliases are tested here.
     from utils.flywire_readiness import FlyWireSkeletonAccessError
     _downloader_guard(monkeypatch)
     for dataset in ("FAFB_v783", "fafb"):
@@ -2593,3 +2590,19 @@ def test_type_query_multi_member_intra_rows(tmp_path, monkeypatch):
                          query=[1, 2, 3], saveas="run_intra")
     results = comparer.find_similar()
     assert not results.empty
+
+
+def test_fetch_batch_fafb_honors_preset_cancel(tmp_path, monkeypatch):
+    """A pre-set cancel_event short-circuits the FAFB batch before the
+    release loader starts — the batch contract (no new fetch after
+    cancel) holds on the FAFB path too."""
+    import threading
+    monkeypatch.setattr(
+        M, "load_local_release_skeletons",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("loader started after cancel")))
+    cancel = threading.Event()
+    cancel.set()
+    assert M.fetch_skeletons_on_demand_batch(
+        "flywire", [5], project_root=str(tmp_path),
+        cancel_event=cancel) == {}

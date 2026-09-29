@@ -4670,7 +4670,9 @@ class MappingValidator:
         vector-cache path."""
         from morphology import (compute_morph_similarity_vs_queries,
                                 _load_cached_skeleton_file,
-                                fetch_skeleton_on_demand)
+                                fetch_skeleton_on_demand,
+                                load_local_release_skeletons)
+        from flywire_ids import is_fafb_dataset
         from visualize_skeleton import (dataset_native_space,
                                         dataset_render_space,
                                         transform_neurons_to_space)
@@ -4682,6 +4684,22 @@ class MappingValidator:
 
         def load(bids):
             out = {}
+            # FAFB targets have no raw_skeletons store; the release loader
+            # is the sanctioned path (offline-first, extrusion-checked,
+            # TreeNeuron-guaranteed).  History: this fallback used to call
+            # fetch_skeleton_on_demand here, which served the CAVE prepared
+            # MESH for FAFB — meshes were silently scored in render space
+            # whenever the vector-cache path raised (the 2026-09-29
+            # reverse-scene defect class,
+            # plan-tmvev-reverse-scene-loader-defects.md).
+            if is_fafb_dataset(cfg.target_dataset):
+                try:
+                    trees = load_local_release_skeletons(
+                        cfg.target_dataset, [int(b) for b in bids],
+                        check_extrusions=True) or {}
+                except Exception:  # noqa: BLE001
+                    trees = {}
+                return {int(b): n for b, n in trees.items()}
             skel_dir = (Path(__file__).resolve().parents[2] / 'cache' /
                         cfg.target_dataset.replace(':', '_')
                         .replace('.', '_') / 'skeletons' /

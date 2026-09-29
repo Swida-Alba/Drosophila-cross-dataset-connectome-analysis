@@ -368,36 +368,44 @@ class TestSkeletonVectorCache:
         assert cached_path is not None
         assert type(raw_cache.load_skeleton(102)).__name__ == "TreeNeuron"
 
-    def test_flywire_batch_uses_mesh_fetcher_and_caller_cache_root(
+    def test_fafb_batch_routes_through_release_loader_with_caller_root(
             self, tmp_path, monkeypatch):
-        """FlyWire batches stay mesh-native and honor the caller's root."""
-        import cave_data_fetcher as cave
+        """FAFB batches resolve through the release loader with the
+        caller's project root and come back as TreeNeuron skeletons.
 
+        History: this dispatch served CAVE prepared MeshNeurons while
+        every production caller was gated to the loader — the
+        mesh-where-skeleton trap behind the 2026-09-29 reverse-scene
+        defects."""
         calls = {}
 
-        class FakeCaveFetcher:
-            def __init__(self, *args, **kwargs):
-                calls["project_root"] = kwargs.get("project_root")
+        def fake_loader(dataset, body_ids, project_root=None, log=None,
+                        check_extrusions=True, denoise_twigs=None):
+            calls["dataset"] = dataset
+            calls["body_ids"] = list(body_ids)
+            calls["project_root"] = project_root
+            calls["check_extrusions"] = check_extrusions
+            # canonical FAFB ids are strings; accept either key form the
+            # way the robust lookup in the fetcher does
+            out = {}
+            for bid in body_ids:
+                out[bid] = out[int(bid)] = line_neuron()
+            return out
 
-            def fetch_fafb_meshes(self, body_ids, **kwargs):
-                calls["body_ids"] = body_ids
-                calls["use_cache"] = kwargs["use_cache"]
-                mesh = cube_mesh()
-                mesh.id = body_ids[0]
-                return [mesh]
-
-        monkeypatch.setattr(cave, "CAVEDataFetcher", FakeCaveFetcher)
+        monkeypatch.setattr(morph, "load_local_release_skeletons",
+                            fake_loader)
         result = morph.fetch_skeletons_on_demand_batch(
             "flywire_FAFB_v783", [42], project_root=str(tmp_path),
             persist=False,
         )
 
         import navis
-        assert isinstance(result["42"], navis.MeshNeuron)
+        assert isinstance(result["42"], navis.TreeNeuron)
         assert calls == {
+            "dataset": "flywire_FAFB_v783",
+            "body_ids": ["42"],
             "project_root": str(tmp_path),
-            "body_ids": [42],
-            "use_cache": False,
+            "check_extrusions": True,
         }
         assert not (tmp_path / "cache").exists()
 
@@ -777,24 +785,33 @@ class TestFetchOnDemand:
         assert neuron2 is not None
         assert (skel_dir / "raw_skeletons" / "43.swc.zst").exists()
 
-    def test_cave_fetch_used_for_flywire(self, monkeypatch, tmp_path):
+    def test_fafb_fetch_resolves_through_release_loader(
+            self, monkeypatch, tmp_path):
         used = {}
 
-        def fake_cave(dataset, bid, **kwargs):
+        def fake_loader(dataset, body_ids, project_root=None, log=None,
+                        check_extrusions=True, denoise_twigs=None):
             used["dataset"] = dataset
-            used["kwargs"] = kwargs
-            return cube_mesh()
+            used["body_ids"] = list(body_ids)
+            used["project_root"] = project_root
+            out = {}
+            for bid in body_ids:
+                out[bid] = out[int(bid)] = line_neuron()
+            return out
 
-        monkeypatch.setattr(morph, "_fetch_cave_mesh", fake_cave)
+        monkeypatch.setattr(morph, "load_local_release_skeletons", fake_loader)
+        monkeypatch.setattr(morph, "_fetch_cave_mesh",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("mesh path used")))
         monkeypatch.setattr(morph, "_fetch_neuprint_skeleton",
                             lambda d, b: (_ for _ in ()).throw(AssertionError("neuprint used")))
         nrn = morph.fetch_skeleton_on_demand(
             "flywire_FAFB_v783", 42, project_root=str(tmp_path)
         )
-        assert used["dataset"] == "flywire_FAFB_v783"
-        assert used["kwargs"]["use_cache"] is True
+        assert used == {"dataset": "flywire_FAFB_v783", "body_ids": ["42"],
+                        "project_root": str(tmp_path)}
         import navis
-        assert isinstance(nrn, navis.MeshNeuron)
+        assert isinstance(nrn, navis.TreeNeuron)
 
 
 # ---------------------------------------------------------------------------
@@ -1747,27 +1764,27 @@ class TestFlywireIsolation:
 
     def test_flywire_fetch_never_writes_raw_skeleton_files(
             self, tmp_path, monkeypatch):
-        """A FlyWire fetch returns a MeshNeuron and persists nothing into
-        the NeuPrint raw-skeleton namespace (.swc.zst / .swc.gz)."""
-        monkeypatch.setattr(morph, "_fetch_cave_mesh",
-                            lambda d, b, project_root=None, use_cache=True,
-                            soma_pos=None: cube_mesh())
+        """A FlyWire fetch returns a TreeNeuron via the release loader and
+        persists nothing into the NeuPrint raw-skeleton namespace
+        (.swc.zst / .swc.gz)."""
+        monkeypatch.setattr(morph, "load_local_release_skeletons",
+                            lambda *a, **k: {42: line_neuron()})
         nrn = morph.fetch_skeleton_on_demand(
             "flywire_FAFB_v783", 42, project_root=str(tmp_path),
             persist=True)
         import navis
-        assert isinstance(nrn, navis.MeshNeuron)
+        assert isinstance(nrn, navis.TreeNeuron)
         raw_dir = (tmp_path / "cache" / "flywire_FAFB_v783"
                    / "skeletons" / "raw_skeletons")
         if raw_dir.exists():
             assert not list(raw_dir.rglob("*.swc.zst"))
             assert not list(raw_dir.rglob("*.swc.gz"))
 
-    def test_flywire_batch_loads_mesh_with_simplification_zero(
+    def test_fafb_batch_ignores_mesh_cache_and_serves_trees(
             self, tmp_path, monkeypatch):
-        """The batch forces simplification=0 on FlyWire: cached meshes are
-        requested raw and never re-leveled."""
-        class FakeMeshCache:
+        """A FAFB caller must never be routed through a mesh cache: the
+        release loader owns FAFB resolution and its stores are durable."""
+        class UnusedMeshCache:
             mesh_only = True
 
             def __init__(self):
@@ -1775,21 +1792,20 @@ class TestFlywireIsolation:
 
             def load_skeleton(self, bid, simplification=None):
                 self.calls.append((bid, simplification))
-                mesh = cube_mesh()
-                mesh.id = int(bid)
-                return mesh
+                raise AssertionError("mesh cache consulted")
 
-        fake = FakeMeshCache()
-        monkeypatch.setattr(morph, "fetch_skeleton_on_demand",
-                            lambda *a, **k: (_ for _ in ()).throw(
-                                AssertionError("cache hit must not fetch")))
+        fake = UnusedMeshCache()
+        monkeypatch.setattr(
+            morph, "load_local_release_skeletons",
+            lambda *a, **k: {"101": line_neuron(), 101: line_neuron()})
         out = morph.fetch_skeletons_on_demand_batch(
             "flywire_FAFB_v783", [101], project_root=str(tmp_path),
             persist=True, raw_cache=fake, vector_cache=fake,
         )
-        # FlyWire canonical ids are strings; the load request is raw (0)
-        assert "101" in out
-        assert fake.calls == [("101", 0)]
+        import navis
+        # canonical FlyWire ids are strings
+        assert isinstance(out["101"], navis.TreeNeuron)
+        assert fake.calls == []
 
     def test_flywire_download_all_disabled_with_instruction(
             self, tmp_path, monkeypatch):
@@ -2880,7 +2896,7 @@ class TestBatchFetchDispatch:
 
         monkeypatch.setattr(morph, "_fetch_banc_skeleton_batch", fake_banc)
         monkeypatch.setattr(morph, "_fetch_neuprint_skeleton_batch", must_not)
-        monkeypatch.setattr(morph, "_fetch_fafb_mesh_batch", must_not)
+        monkeypatch.setattr(morph, "load_local_release_skeletons", must_not)
         # avoid touching the real raw cache
         monkeypatch.setattr(morph, "find_similar_raw_cache",
                             lambda *a, **k: None)
@@ -2890,23 +2906,27 @@ class TestBatchFetchDispatch:
         assert [str(b) for b in calls["banc"][1]] == ["1001", "1002"]
         assert {str(b) for b in out} == {"1001", "1002"}
 
-    def test_fafb_routes_to_mesh_fetcher(self, tmp_path, monkeypatch):
+    def test_fafb_routes_to_release_loader(self, tmp_path, monkeypatch):
         calls = {}
 
-        def fake_mesh(dataset, missing, root, persist, soma_positions,
-                      cancel_event):
-            calls["mesh"] = (dataset, list(missing))
-            return {}
+        def fake_loader(dataset, body_ids, project_root=None, log=None,
+                        check_extrusions=True, denoise_twigs=None):
+            calls["loader"] = (dataset, list(body_ids))
+            out = {}
+            for bid in body_ids:
+                out[bid] = out[int(bid)] = line_neuron()
+            return out
 
         def must_not(*a, **k):
             raise AssertionError("wrong source fetcher chosen")
 
-        monkeypatch.setattr(morph, "_fetch_fafb_mesh_batch", fake_mesh)
+        monkeypatch.setattr(morph, "load_local_release_skeletons", fake_loader)
         monkeypatch.setattr(morph, "_fetch_neuprint_skeleton_batch", must_not)
         monkeypatch.setattr(morph, "_fetch_banc_skeleton_batch", must_not)
-        morph.fetch_skeletons_on_demand_batch(
+        out = morph.fetch_skeletons_on_demand_batch(
             "flywire_FAFB_v783", [5], project_root=str(tmp_path))
-        assert calls["mesh"][0] == "flywire_FAFB_v783"
+        assert calls["loader"] == ("flywire_FAFB_v783", ["5"])
+        assert {str(b) for b in out} == {"5"}
 
     def test_neuprint_routes_to_neuprint_fetcher(self, tmp_path, monkeypatch):
         calls = {}
@@ -2923,7 +2943,7 @@ class TestBatchFetchDispatch:
 
         monkeypatch.setattr(morph, "_fetch_neuprint_skeleton_batch", fake_np)
         monkeypatch.setattr(morph, "_fetch_banc_skeleton_batch", must_not)
-        monkeypatch.setattr(morph, "_fetch_fafb_mesh_batch", must_not)
+        monkeypatch.setattr(morph, "load_local_release_skeletons", must_not)
         monkeypatch.setattr(morph, "find_similar_raw_cache",
                             lambda *a, **k: None)
         out = morph.fetch_skeletons_on_demand_batch(

@@ -21,6 +21,7 @@ All paths are relative to the repo root unless noted.
 - `MorphologyComparer(query, dataset, level, method, metric, candidate_cap, candidate_source, visualize_top_n, visualize_by, min_weight, min_shared_partners, roi_filter, ...)` → `find_similar()`
 - `SkeletonVectorCache(dataset, project_root=None, ...)` → `build(fetch_missing=0)`, `ensure(fetch_missing=0)`, `coverage()`, `vectors_for(body_ids, compute_missing=True)`
 - `find_similar_raw_cache(dataset, ...)`, `find_similar_dataset_cache(dataset, ...)`, `find_similar_flywire_mesh_cache(...)`
+- `fetch_skeleton_on_demand(dataset, body_id, ...)` / `fetch_skeletons_on_demand_batch(dataset, body_ids, ...)`: skeleton-native for EVERY dataset kind — FAFB delegates to `load_local_release_skeletons` (TreeNeuron, extrusion-checked), NeuPrint via `neuprint.fetch_skeleton`, BANC via the public SWC bucket. FAFB meshes are a different front-door: `_fetch_cave_mesh` / `CAVEDataFetcher.fetch_fafb_mesh` (the old mesh-returning FAFB branch, and the dead skeleton block behind it, were removed 2026-09-29 — record: `_plan/plan-tmvev-reverse-scene-loader-defects.md`).
 - Raw-basis design: the skeleton cache stores RAW (level-0) skeletons — fetch
   pipelines default `simplification=0`; vector caches (V1/V2) build from raw
   trees only (simplified files are skipped, never releveled). Simplification

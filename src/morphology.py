@@ -1768,11 +1768,13 @@ def _resolve_fafb_skeleton_trees(dataset: str, body_ids,
                                  ) -> Dict[int, object]:
     """Resolve FAFB skeletons through the shared local loader.
 
-    Comparison-layer callers must not fetch FAFB through
-    ``fetch_skeletons_on_demand_batch`` (its FAFB branch returns prepared
-    MESHES).  This wrapper routes them through
-    :func:`load_local_release_skeletons` (repair caches -> raw cache ->
-    healed zip -> CAVE) and returns a plain ``{int: TreeNeuron}`` map.
+    Thin wrapper for callers that want the loader's build-time posture in
+    one call: it routes through :func:`load_local_release_skeletons`
+    (repair caches -> raw cache -> healed zip -> CAVE) and returns a plain
+    ``{int: TreeNeuron}`` map.  (The on-demand fetchers delegate to the
+    same loader for FAFB now; historically they served prepared meshes
+    here, which is the defect class behind
+    ``plan-tmvev-reverse-scene-loader-defects.md``.)
 
     ``check_extrusions`` defaults to False so build-time vectorization stays
     offline; the status-driven repair-cache stage in the loader still applies
@@ -4748,22 +4750,28 @@ def fetch_skeleton_on_demand(dataset: str, body_id: int,
     ``TreeNeuron`` objects through the shared compress pipeline
     (``simplification`` percent removed, default 0 — the cache stores raw
     skeletons, and simplification is a visualization-time concern,
-    recorded in the ``.swc.zst`` header). FAFB uses the CAVE mesh path and
-    persists prepared ``MeshNeuron`` objects in the representation-specific
-    mesh cache; BANC uses public-release SWCs. The two local-release paths
-    never share a file.
+    recorded in the ``.swc.zst`` header). FAFB resolves through
+    :func:`load_local_release_skeletons` (repair caches -> raw cache ->
+    healed zip -> extrusion check/repair -> CAVE skeletonization) and BANC
+    fetches its public-release SWC directly — both ALWAYS come back as
+    ``TreeNeuron`` skeletons.
 
     Vectorization always runs on the RAW fetched neuron and is persisted to
     the standalone vector cache BEFORE the simplified on-disk file is
     written, so the on-disk simplification level never affects vectors.
 
-    ``persist=False`` is an online-only compatibility escape hatch for the
-    selected representation; it does not read or write local morphology data.
+    ``persist=False`` is a compatibility escape hatch: it skips the
+    write-back paths (the NeuPrint ``.swc.zst`` persist, the FAFB
+    vector-cache write, BANC's public-bucket caching) but never forces a
+    network round-trip when a local cache can serve.
 
     ``level`` is retained for compatibility with older callers, but is
-    deliberately ignored after validation for NeuPrint. FAFB's prepared mesh
-    cache has its fixed 95%/80% visualization preparation level; BANC keeps
-    the public SWC representation.
+    deliberately ignored after validation for NeuPrint; FAFB/BANC keep
+    their release representations (level-0 raw skeletons).
+
+    Callers that need a FAFB MESH (never a skeleton) must go through
+    :func:`_fetch_cave_mesh` / ``CAVEDataFetcher.fetch_fafb_mesh``
+    directly — this fetcher is skeleton-native for every dataset kind.
     """
     body_id = _canonical_dataset_body_id(dataset, body_id)
     level = str(level).lower()
@@ -4794,22 +4802,36 @@ def fetch_skeleton_on_demand(dataset: str, body_id: int,
         return neuron
 
     if is_flywire_dataset(dataset):
-        mesh = _fetch_cave_mesh(
-            dataset,
-            body_id,
-            project_root=str(root),
-            use_cache=bool(persist),
-            soma_pos=soma_pos,
-        )
-        if mesh is not None and persist:
+        # FAFB resolves through the same release loader every other
+        # comparison consumer uses (repair caches -> raw cache -> healed
+        # zip -> extrusion check/repair -> CAVE skeletonization), so this
+        # fetcher is skeleton-native for FAFB too.  History: this branch
+        # used to return the CAVE prepared MESH, and a now-dead block
+        # below it served skeletons behind an unconditional `return mesh`
+        # — unreachable dead code, and the reason a mesh-where-skeleton
+        # was possible at all (the 2026-09-29 reverse-scene defect class,
+        # plan-tmvev-reverse-scene-loader-defects.md).  The mesh cache is
+        # never consulted here; mesh consumers call _fetch_cave_mesh
+        # directly.  `persist` / `soma_pos` are accepted for caller
+        # compatibility: the loader owns FAFB caching and the extrusion
+        # default (True).
+        trees = load_local_release_skeletons(
+            dataset, [body_id], project_root=str(root))
+        neuron = trees.get(body_id)
+        if neuron is None:
+            # loader stages key by canonical or plain-int ids depending on
+            # where the entry resolved
+            try:
+                neuron = trees.get(int(body_id))
+            except (TypeError, ValueError):
+                neuron = None
+        if neuron is None:
+            return None
+        if persist:
             cache_fetched_skeleton_vectors(
-                dataset,
-                {body_id: mesh},
-                project_root=str(root),
-                vector_cache=vector_cache,
-                verbose=False,
-            )
-        return mesh
+                dataset, {body_id: neuron}, project_root=str(root),
+                vector_cache=vector_cache, verbose=False)
+        return neuron
 
     # Every fetch-level caller uses the same raw cache, regardless of the
     # legacy level value supplied by an older visualization caller.
@@ -4831,70 +4853,6 @@ def fetch_skeleton_on_demand(dataset: str, body_id: int,
                 vector_cache=vector_cache or raw_cache, verbose=False,
             )
             return cached
-
-    # FAFB: locally repaired trees and the healed zip come before any
-    # network round-trip. Repaired trees (cave_skeletons / extrusion_fixes)
-    # and zip reads are never re-persisted into the raw cache — the local
-    # replacement stores are already durable.
-    if is_fafb_dataset(dataset):
-        try:
-            from cave_data_fetcher import load_repaired_skeletons
-            repaired = load_repaired_skeletons(
-                dataset, [body_id], project_root=str(root))
-        except Exception:
-            repaired = {}
-        try:
-            neuron = repaired.get(int(body_id))
-        except (TypeError, ValueError):
-            neuron = None
-        if neuron is not None:
-            cache_fetched_skeleton_vectors(
-                dataset, {body_id: neuron}, project_root=str(root),
-                vector_cache=vector_cache or raw_cache, verbose=False,
-            )
-            return neuron
-        try:
-            bundle = _fafb_bundle(dataset, str(root))
-        except Exception:
-            bundle = None
-        if bundle is not None:
-            neuron = None
-            try:
-                neuron = _bundle_tree_neuron(bundle, body_id)
-            except Exception:
-                neuron = None
-            finally:
-                try:
-                    bundle.close()
-                except Exception:
-                    pass
-            if neuron is not None:
-                cache_fetched_skeleton_vectors(
-                    dataset, {body_id: neuron}, project_root=str(root),
-                    vector_cache=vector_cache or raw_cache, verbose=False,
-                )
-                return neuron
-        try:
-            neuron = _fetch_cave_skeleton(
-                dataset, body_id, project_root=str(root), use_cache=persist,
-            )
-        except TypeError as exc:
-            # Preserve older integrations that replaced the two-argument
-            # CAVE seam; production uses the project-root-aware raw path.
-            if not any(name in str(exc)
-                       for name in ("project_root", "use_cache")):
-                raise
-            neuron = _fetch_cave_skeleton(dataset, body_id)
-        if neuron is None:
-            return None
-        # Vectorize the RAW skeleton at fetch time and persist the vector
-        # before any simplification: the vector cache is standalone and
-        # always raw-basis.
-        cache_fetched_skeleton_vectors(
-            dataset, {body_id: neuron}, project_root=str(root),
-            vector_cache=vector_cache or raw_cache, verbose=False,
-        )
-        return neuron
 
     neuron = _fetch_neuprint_skeleton(
         dataset, _api_dataset_body_id(dataset, body_id)
@@ -4979,31 +4937,26 @@ def _fetch_neuprint_batch_with_progress(
     return neurons
 
 
-def _normalize_fetched_neurons(dataset: str, neurons: Dict[Union[int, str], object],
-                               flywire: bool) -> Dict[Union[int, str], object]:
+def _normalize_fetched_neurons(dataset: str, neurons: Dict[Union[int, str], object]
+                               ) -> Dict[Union[int, str], object]:
     """Normalize fetched neurons at the dataset boundary.
 
-    FAFB stays a MeshNeuron; BANC and NeuPrint use TreeNeuron skeletons.
-    Only the latter paths accept DataFrame -> TreeNeuron coercion. Multi-node
-    ``soma`` (navis' default soma detection
-    flags every radius >= 1 node, so a whole-neuron "soma" would freeze
-    downsampling) is cleared.  Returns the canonical-keyed mapping with the
-    surviving neurons.
+    Every fetch path is skeleton-native now (FAFB resolves through
+    :func:`load_local_release_skeletons`), so this coerces non-TreeNeuron
+    objects via ``navis.TreeNeuron`` and clears multi-node ``soma``
+    (navis' default soma detection flags every radius >= 1 node, so a
+    whole-neuron "soma" would freeze downsampling).  Returns the
+    canonical-keyed mapping with the surviving neurons.
     """
     out: Dict[Union[int, str], object] = {}
     for fallback_id, neuron in neurons.items():
         try:
-            if flywire:
-                if not isinstance(neuron, navis.MeshNeuron):
-                    continue
-                neuron.id = _canonical_dataset_body_id(dataset, fallback_id)
-            else:
-                if not isinstance(neuron, navis.TreeNeuron):
-                    neuron = navis.TreeNeuron(neuron)
-                neuron.id = _api_dataset_body_id(dataset, fallback_id)
-                soma = getattr(neuron, "soma", None)
-                if soma is not None and hasattr(soma, "__len__") and len(soma) > 1:
-                    neuron.soma = None
+            if not isinstance(neuron, navis.TreeNeuron):
+                neuron = navis.TreeNeuron(neuron)
+            neuron.id = _api_dataset_body_id(dataset, fallback_id)
+            soma = getattr(neuron, "soma", None)
+            if soma is not None and hasattr(soma, "__len__") and len(soma) > 1:
+                neuron.soma = None
             out[_canonical_dataset_body_id(dataset, fallback_id)] = neuron
         except Exception:
             continue
@@ -5038,41 +4991,6 @@ def _fetch_banc_skeleton_batch(dataset, missing, root, persist, requested,
             progress_callback(
                 done, len(requested),
                 f"Fetching BANC skeletons ({done}/{len(requested)})")
-    return out
-
-
-def _fetch_fafb_mesh_batch(dataset, missing, root, persist, soma_positions,
-                           cancel_event) -> Dict[int, object]:
-    """FAFB prepared meshes from the CAVE path (never SWCs).
-
-    Kept separate from NeuPrint's TreeNeuron/SWC batching: the FAFB
-    visualization representation is a MeshNeuron, and ``fetch_fafb_meshes``
-    is the only product on this path.
-    """
-    out: Dict[int, object] = {}
-    if cancel_event is not None and cancel_event.is_set():
-        return out
-    from cave_data_fetcher import CAVEDataFetcher
-    fetcher = CAVEDataFetcher(
-        dataset=_dataset_folder(dataset), project_root=str(root),
-        verbose=False,
-    )
-    neurons = fetcher.fetch_fafb_meshes(
-        [body_id_to_api_int(bid) for bid in missing],
-        use_cache=bool(persist),
-        simplify_mesh=FLYWIRE_MESH_CACHE_SIMPLIFICATION,
-        soma_simplification=FLYWIRE_MESH_CACHE_SOMA_SIMPLIFICATION,
-        soma_radius=FLYWIRE_MESH_CACHE_SOMA_RADIUS,
-        soma_positions=soma_positions,
-    )
-    for neuron in neurons or []:
-        neuron_id = getattr(neuron, "id", None)
-        if neuron_id is None:
-            continue
-        try:
-            out[_canonical_dataset_body_id(dataset, neuron_id)] = neuron
-        except (TypeError, ValueError):
-            continue
     return out
 
 
@@ -5298,7 +5216,7 @@ def _fetch_neuprint_skeleton_batch(
             # crash-resume, and hand the batch to the persist worker while
             # the fetch loop continues.
             normalized_batch = _normalize_fetched_neurons(
-                dataset, batch_map, flywire=False)
+                dataset, batch_map)
             fetched_by_id.update(normalized_batch)
             staging_queue.put(normalized_batch)
             if progress_callback:
@@ -5338,13 +5256,20 @@ def fetch_skeletons_on_demand_batch(
         cancel_event=None) -> Dict[int, object]:
     """Cache-aware online fetch for one dataset family.
 
-    This is a thin dispatcher over three independent per-source fetchers,
+    FAFB resolves in ONE call through :func:`load_local_release_skeletons`
+    (repair caches -> raw cache -> healed zip -> extrusion check/repair ->
+    CAVE skeletonization) and returns TreeNeuron skeletons — the same
+    guarantee as the singular fetcher, without a per-id loop.  BANC and
+    NeuPrint are thin dispatches over two independent per-source fetchers,
     which keep their own representations and storage:
     :func:`_fetch_neuprint_skeleton_batch` (batched TreeNeuron SWCs, staged
-    and persisted through the shared simplify+compress pipeline),
-    :func:`_fetch_banc_skeleton_batch` (public-bucket TreeNeuron SWCs),
-    and :func:`_fetch_fafb_mesh_batch` (CAVE prepared MeshNeurons). No path
-    converts another source's representation.
+    and persisted through the shared simplify+compress pipeline) and
+    :func:`_fetch_banc_skeleton_batch` (public-bucket TreeNeuron SWCs).
+    History: FAFB used to dispatch to a CAVE prepared-mesh batch
+    (``_fetch_fafb_mesh_batch``, MeshNeuron-only) while every production
+    caller was gated to the loader — the mesh path was what made a
+    mesh-where-skeleton possible at all (the 2026-09-29 reverse-scene
+    defect class, plan-tmvev-reverse-scene-loader-defects.md).
 
     The surrounding shared cache transaction (raw-cache membership scan,
     crash-resume staging discovery, and the non-pipelined normalize +
@@ -5358,12 +5283,14 @@ def fetch_skeletons_on_demand_batch(
 
     ``progress_callback(done, total, message)`` is optional and is called
     at batch boundaries and, during the online NeuPrint fetch, once per
-    completed skeleton (the per-neuron cadence of the terminal bar).
-    ``cancel_event`` (threading.Event) is optional: when
-    set, no new fetch batch is started and the already-fetched skeletons are
-    still vectorized/persisted (resume-safe).  The returned mapping is keyed
-    by integer body ID and contains only skeletons that were available or
-    successfully fetched.
+    completed skeleton (the per-neuron cadence of the terminal bar); the
+    FAFB loader path reports one boundary callback. ``cancel_event``
+    (threading.Event) is optional: when set, no new fetch batch is started
+    and the already-fetched skeletons are still vectorized/persisted
+    (resume-safe; the FAFB loader path is not interruptible mid-call).
+    The returned mapping is keyed by canonical body ID (string for
+    FlyWire, int otherwise) and contains only skeletons that were
+    available or successfully fetched.
     """
     requested = []
     seen = set()
@@ -5395,32 +5322,46 @@ def fetch_skeletons_on_demand_batch(
     if banc:
         # BANC SWCs cache raw (level 0) inside banc_public_data itself.
         simplification = 0
-    flywire_soma_positions = (
-        _load_flywire_soma_positions(dataset, root, requested)
-        if flywire and not banc else {}
-    )
+    if flywire:
+        # FAFB resolves through the same release loader every other
+        # comparison consumer uses — batch-native and skeleton-guaranteed.
+        # `persist` / `level` / `simplification` are accepted for caller
+        # compatibility: the loader owns FAFB caching, its stores are
+        # durable (cave_skeletons / extrusion_fixes are never re-persisted
+        # into a raw cache) and its extrusion default (True) applies.
+        # A pre-set cancel_event still short-circuits here (no fetch is
+        # started); the loader call itself is not interruptible mid-way.
+        if cancel_event is not None and cancel_event.is_set():
+            return {}
+        trees = load_local_release_skeletons(
+            dataset, requested, project_root=str(root))
+        if trees and persist:
+            cache_fetched_skeleton_vectors(
+                dataset, trees, project_root=str(root),
+                vector_cache=vector_cache, verbose=False)
+        out: Dict[Union[int, str], object] = {}
+        for bid in requested:
+            neuron = trees.get(bid)
+            if neuron is None:
+                # loader stages key by canonical or plain-int ids depending
+                # on where the entry resolved
+                try:
+                    neuron = trees.get(int(bid))
+                except (TypeError, ValueError):
+                    neuron = None
+            if neuron is not None:
+                out[bid] = neuron
+        if progress_callback:
+            progress_callback(len(out), len(requested),
+                              "Skeletons ready (FAFB release loader)")
+        return out
     loaded: Dict[int, object] = {}
     missing = []
     raw_lookup_cache = raw_cache
     # The pipelined NeuPrint path (fetch loop + standalone persist worker)
     # is enabled only for the batched NeuPrint branch below.
     pipeline = False
-    if flywire and not banc:
-        # A FAFB caller must never inherit a NeuPrint raw-SWC cache object
-        # supplied by an older integration.
-        if not getattr(raw_lookup_cache, "mesh_only", False):
-            raw_lookup_cache = None
-        if persist and raw_lookup_cache is None:
-            try:
-                raw_lookup_cache = find_similar_flywire_mesh_cache(
-                    dataset, project_root=str(root), verbose=False)
-            except Exception:
-                raw_lookup_cache = None
-        if not persist:
-            raw_lookup_cache = None
-        if raw_cache is None or not getattr(raw_cache, "mesh_only", False):
-            raw_cache = raw_lookup_cache
-    elif raw_lookup_cache is None:
+    if raw_lookup_cache is None:
         # Every NeuPrint caller gets the same first lookup into the shared
         # raw SWC cache. The same cache is also the raw-file write target.
         try:
@@ -5512,7 +5453,7 @@ def fetch_skeletons_on_demand_batch(
         temp_normalized: Dict[int, object] = {}
         if temp_pending:
             temp_normalized = _normalize_fetched_neurons(
-                dataset, temp_pending, flywire=False)
+                dataset, temp_pending)
             fetched_by_id.update(temp_normalized)
         if fetch_skeleton_on_demand is not _SINGLE_FETCH_IMPLEMENTATION:
             # Preserve an explicit singular-fetch override. This is useful
@@ -5526,8 +5467,7 @@ def fetch_skeletons_on_demand_batch(
                     neuron = fetch_skeleton_on_demand(
                         dataset, bid, project_root=str(root), persist=persist,
                         level=level, raw_cache=raw_cache,
-                        vector_cache=vector_cache,
-                        soma_pos=flywire_soma_positions.get(str(bid)))
+                        vector_cache=vector_cache)
                 except TypeError as exc:
                     # A few older integrations exposed the original helper
                     # without the newer cache/level keywords.  The batch
@@ -5540,8 +5480,7 @@ def fetch_skeletons_on_demand_batch(
                     try:
                         neuron = fetch_skeleton_on_demand(
                             dataset, bid, project_root=str(root),
-                            persist=persist,
-                            soma_pos=flywire_soma_positions.get(str(bid)))
+                            persist=persist)
                     except TypeError as older_exc:
                         if not any(k in str(older_exc)
                                    for k in ("persist", "soma_pos")):
@@ -5575,10 +5514,6 @@ def fetch_skeletons_on_demand_batch(
             fetched_by_id.update(_fetch_banc_skeleton_batch(
                 dataset, missing, root, persist, requested, loaded,
                 progress_callback, cancel_event))
-        elif flywire:
-            fetched_by_id.update(_fetch_fafb_mesh_batch(
-                dataset, missing, root, persist, flywire_soma_positions,
-                cancel_event))
         else:
             fetched_by_id.update(_fetch_neuprint_skeleton_batch(
                 dataset, missing, root, persist, requested, loaded,
@@ -5587,26 +5522,19 @@ def fetch_skeletons_on_demand_batch(
                 simplification))
             pipeline = True
         if not pipeline:
-            # Non-pipelined sources (BANC, FAFB meshes, or a singular-fetch
-            # override) normalize at the dataset boundary here — FAFB stays a
-            # MeshNeuron, BANC/NeuPrint become TreeNeuron skeletons — and take
-            # the shared vectorize+persist pass below. The pipelined NeuPrint
-            # path already did all of this inside
-            # ``_fetch_neuprint_skeleton_batch``.
+            # Non-pipelined sources (BANC or a singular-fetch override)
+            # normalize at the dataset boundary here — they become
+            # TreeNeuron skeletons — and take the shared vectorize+persist
+            # pass below. The pipelined NeuPrint path already did all of
+            # this inside ``_fetch_neuprint_skeleton_batch``.
             for fallback_id, neuron in fetched_by_id.items():
                 try:
-                    if flywire:
-                        if not isinstance(neuron, navis.MeshNeuron):
-                            continue
-                        neuron.id = _canonical_dataset_body_id(
-                            dataset, fallback_id)
-                    else:
-                        if not isinstance(neuron, navis.TreeNeuron):
-                            neuron = navis.TreeNeuron(neuron)
-                        neuron.id = _api_dataset_body_id(dataset, fallback_id)
-                        soma = getattr(neuron, "soma", None)
-                        if soma is not None and hasattr(soma, "__len__") and len(soma) > 1:
-                            neuron.soma = None
+                    if not isinstance(neuron, navis.TreeNeuron):
+                        neuron = navis.TreeNeuron(neuron)
+                    neuron.id = _api_dataset_body_id(dataset, fallback_id)
+                    soma = getattr(neuron, "soma", None)
+                    if soma is not None and hasattr(soma, "__len__") and len(soma) > 1:
+                        neuron.soma = None
                     fetched_by_id[
                         _canonical_dataset_body_id(dataset, fallback_id)
                     ] = neuron
@@ -5618,7 +5546,7 @@ def fetch_skeletons_on_demand_batch(
             # fetched skeleton set and exposes the previously invisible
             # post-fetch wait.
             vector_stats = {"cache_error": None}
-            if vector_cache is not None and (persist or not flywire):
+            if vector_cache is not None:
                 # vector_cache=None (V1 vector path retired): the caller
                 # vectorizes under the target schema locally, so the fetcher
                 # must not write legacy rows into a cache it was not given.
@@ -5686,8 +5614,8 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
     ``mode`` and ``raw`` remain compatibility parameters for older callers;
     any accepted mode is normalized to ``"raw"``. NeuPrint requests use
     bounded online batches.
-    ``raw_format`` and ``simplification`` are retained for NeuPrint
-    compatibility and do not alter FAFB mesh or BANC raw-SWC caches.
+    ``raw_format`` and ``simplification`` are retained for compatibility
+    and do not alter BANC raw-SWC caches.
     ``batch_size`` bounds the per-call NeuPrint request size: every call
     repeats a metadata query first, so larger batches amortize it (the
     default 64).  Progress is reported per completed skeleton, so the batch
@@ -5697,15 +5625,15 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
     download (tests / smoke runs). Returns a summary dict.
     """
     import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     _simplification_factor(simplification)  # validate 0..90 up front
 
     # Bulk skeleton downloads are disabled for FAFB: the healed zip is a
     # large one-time download that must be fetched manually from the FlyWire
     # Codex and placed by the converter. BANC pulls fetch per-neuron SWCs
-    # from the public release bucket instead. On-demand CAVE fetches for
-    # individual missing FAFB skeletons still work during visualization.
+    # from the public release bucket instead. On-demand fetches for
+    # individual missing FAFB skeletons still work (the fetchers and the
+    # release loader skeletonize through the CAVE path).
     if is_fafb_dataset(dataset):
         raise FlyWireSkeletonAccessError(
             flywire_manual_skeleton_instruction(dataset))
@@ -5728,22 +5656,10 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
     # Pulling is representation-only. ``fast`` and ``fine`` are visualization
     # simplification choices and must never select a different disk format.
     mode = "raw"
-    banc = is_banc_dataset(dataset)
-    flywire = is_fafb_dataset(dataset)
-    if flywire:
-        # The simplification pipeline is NeuPrint-only; FAFB/BANC pulls
-        # persist level-0 raw representations and must never be re-leveled.
-        simplification = 0
-    if flywire and not banc:
-        raw_cache = find_similar_flywire_mesh_cache(
-            dataset, project_root=str(root), n_workers=max_workers,
-            verbose=verbose,
-        )
-    else:
-        raw_cache = find_similar_raw_cache(
-            dataset, project_root=str(root), n_workers=max_workers,
-            verbose=verbose, raw_format=raw_format
-        )
+    raw_cache = find_similar_raw_cache(
+        dataset, project_root=str(root), n_workers=max_workers,
+        verbose=verbose, raw_format=raw_format
+    )
     skeleton_dir = raw_cache.skeleton_dir
     skeleton_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5788,11 +5704,6 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
             except Exception:
                 index = []
 
-    flywire_soma_positions = (
-        _load_flywire_soma_positions(dataset, root, index)
-        if flywire else {}
-    )
-
     # Only files from the representation-specific cache count as available.
     existing_paths = [Path(path) for path in raw_cache._discover_skeleton_files()]
     existing = set()
@@ -5804,58 +5715,23 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
         except (TypeError, ValueError):
             continue
 
-    # FAFB v783 only: the healed zip already provides most skeletons locally — count its entries as available
-    # instead of re-fetching them through the CAVE API. Only the genuinely
-    # missing ids are downloaded.
-    local_bundle_ids: set = set()
-    if is_fafb_dataset(dataset):
-        try:
-            bundle = _fafb_bundle(dataset, str(root))
-        except Exception:
-            bundle = None
-        if bundle is not None:
-            try:
-                local_bundle_ids = {
-                    _canonical_dataset_body_id(dataset, b)
-                    for b in bundle.ids()
-                }
-            except Exception:
-                local_bundle_ids = set()
-            finally:
-                bundle.close()
-        else:
-            zip_path = _fafb_skeleton_zip_path(dataset, str(root))
-            if zip_path is not None:
-                try:
-                    import zipfile
-                    with zipfile.ZipFile(zip_path, "r") as z:
-                        local_bundle_ids = {
-                            _canonical_dataset_body_id(dataset, n[:-4])
-                            for n in z.namelist() if n.endswith(".swc")
-                        }
-                except Exception:
-                    local_bundle_ids = set()
-
     missing = [
         _canonical_dataset_body_id(dataset, b)
         for b in index
         if _canonical_dataset_body_id(dataset, b) not in existing
-        and _canonical_dataset_body_id(dataset, b) not in local_bundle_ids
     ]
     if limit is not None:
         missing = missing[: int(limit)]
     total = len(missing)
-    skipped_existing = len(existing) + len(local_bundle_ids)
+    skipped_existing = len(existing)
     if total == 0:
         if verbose:
             print(f"[morphology] download_all_skeletons: "
                   f"{skipped_existing} skeletons already available locally "
-                  f"({len(existing)} cached, {len(local_bundle_ids)} from the "
-                  f"healed zip); nothing to fetch.")
+                  f"({len(existing)} cached); nothing to fetch.")
         return {"total": 0, "fetched": 0, "skipped_existing": skipped_existing,
                 "cancelled": False, "errors": 0, "mode": mode,
-                "representation": (
-                    "mesh" if flywire and not banc else "skeleton"),
+                "representation": "skeleton",
                 "simplification": int(simplification)}
 
     if verbose:
@@ -5868,127 +5744,41 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
     errors = 0
     cancelled = False
     cancel_event = cancel_event or threading.Event()
-    lock = threading.Lock()
 
-    # NeuPrint downloads use the same aggregated, bounded batch path as the
-    # visualization and similarity workflows. Keep FAFB's legacy worker
-    # path below because its local-bundle/API fallback has per-neuron
-    # cancellation semantics that are independent of NeuPrint's SWC API.
-    if not is_fafb_dataset(dataset) or banc:
-        if cancel_event.is_set():
-            cancelled = True
-        else:
-            def _batch_progress(done, batch_total, message):
-                if progress_callback:
-                    progress_callback(min(done, total), total, message)
-
-            try:
-                fetched_map = fetch_skeletons_on_demand_batch(
-                    dataset,
-                    missing,
-                    project_root=str(root),
-                    persist=True,
-                    level=VECTOR_BASIS_RAW,
-                    batch_size=int(batch_size),
-                    max_threads=max_workers,
-                    progress_callback=_batch_progress,
-                    raw_cache=raw_cache,
-                    vector_cache=raw_cache,
-                    simplification=simplification,
-                    cancel_event=cancel_event,
-                )
-                fetched = len(fetched_map)
-                errors = total - fetched
-                cancelled = cancel_event.is_set()
-            except Exception as exc:
-                errors = total
-                if verbose:
-                    print(f"[morphology] batched NeuPrint fetch failed: {exc}")
-            finally:
-                if progress_callback:
-                    progress_callback(
-                        fetched + errors, total,
-                        "Cancelled." if cancelled else "Finished.")
-
-        summary = {
-            "total": total,
-            "fetched": fetched,
-            "skipped_existing": skipped_existing,
-            "cancelled": cancelled,
-            "errors": errors,
-            "mode": mode,
-            "representation": "skeleton",
-            "simplification": int(simplification),
-        }
-        if verbose:
-            print(f"[morphology] download_all_skeletons: {fetched}/{total} "
-                  f"fetched, {errors} errors, cancelled={cancelled}, "
-                  f"simplification={simplification}")
-        return summary
-
-    def _fetch_one(bid: Union[int, str]) -> bool:
-        if cancel_event.is_set():
-            return False
-        try:
-            fetch_kwargs = {
-                "project_root": str(root),
-                "persist": True,
-                "level": VECTOR_BASIS_RAW,
-            }
-            if raw_cache is not None:
-                fetch_kwargs.update({"raw_cache": raw_cache,
-                                     "vector_cache": raw_cache})
-            if flywire:
-                fetch_kwargs["soma_pos"] = flywire_soma_positions.get(str(bid))
-            try:
-                nrn = fetch_skeleton_on_demand(dataset, bid, **fetch_kwargs)
-            except TypeError as exc:
-                # Keep Download All compatible with older integrations that
-                # still expose the pre-namespace singular fetcher.
-                if not any(k in str(exc) for k in (
-                        "level", "raw_cache", "vector_cache", "soma_pos")):
-                    raise
-                nrn = fetch_skeleton_on_demand(
-                    dataset, bid, project_root=str(root),
-                    persist=True,
-                )
-            if nrn is not None and raw_cache is not None:
-                try:
-                    raw_cache.persist_skeletons({
-                        _canonical_dataset_body_id(dataset, bid): nrn
-                    })
-                except Exception:
-                    pass
-            expected_rep = (
-                "mesh" if flywire and not banc else "skeleton")
-            ok = nrn is not None and _neuron_rep(nrn) == expected_rep
-        except Exception:
-            ok = False
-        with lock:
-            nonlocal fetched, errors
-            if ok:
-                fetched += 1
-            else:
-                errors += 1
+    if cancel_event.is_set():
+        cancelled = True
+    else:
+        def _batch_progress(done, batch_total, message):
             if progress_callback:
-                progress_callback(fetched + errors, total,
-                                  f"Fetching skeletons ({fetched + errors}/{total})")
-        return ok
+                progress_callback(min(done, total), total, message)
 
-    try:
-        with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as ex:
-            futures = [ex.submit(_fetch_one, bid) for bid in missing]
-            for fut in as_completed(futures):
-                if cancel_event.is_set():
-                    cancelled = True
-                    for f in futures:
-                        f.cancel()
-                    break
-                fut.result()
-    finally:
-        if progress_callback:
-            progress_callback(fetched + errors, total,
-                              "Cancelled." if cancelled else "Finished.")
+        try:
+            fetched_map = fetch_skeletons_on_demand_batch(
+                dataset,
+                missing,
+                project_root=str(root),
+                persist=True,
+                level=VECTOR_BASIS_RAW,
+                batch_size=int(batch_size),
+                max_threads=max_workers,
+                progress_callback=_batch_progress,
+                raw_cache=raw_cache,
+                vector_cache=raw_cache,
+                simplification=simplification,
+                cancel_event=cancel_event,
+            )
+            fetched = len(fetched_map)
+            errors = total - fetched
+            cancelled = cancel_event.is_set()
+        except Exception as exc:
+            errors = total
+            if verbose:
+                print(f"[morphology] batched NeuPrint fetch failed: {exc}")
+        finally:
+            if progress_callback:
+                progress_callback(
+                    fetched + errors, total,
+                    "Cancelled." if cancelled else "Finished.")
 
     summary = {
         "total": total,
@@ -5997,13 +5787,13 @@ def download_all_skeletons(dataset: str, project_root: Optional[str] = None,
         "cancelled": cancelled,
         "errors": errors,
         "mode": mode,
-        "representation": (
-            "mesh" if flywire and not banc else "skeleton"),
+        "representation": "skeleton",
         "simplification": int(simplification),
     }
     if verbose:
-        print(f"[morphology] download_all_skeletons: {fetched}/{total} fetched, "
-              f"{errors} errors, cancelled={cancelled}")
+        print(f"[morphology] download_all_skeletons: {fetched}/{total} "
+              f"fetched, {errors} errors, cancelled={cancelled}, "
+              f"simplification={simplification}")
     return summary
 
 

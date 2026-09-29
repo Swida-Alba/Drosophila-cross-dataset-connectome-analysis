@@ -31,13 +31,19 @@ formats differ. Sharing is limited to the representation-level layers that
 are genuinely common: the compressed-SWC provenance contract
 (`skeleton_provenance.py`: `# DROCAT simpl:` / `# DROCAT source:` headers,
 parsers, the raw-store path layout), the feature/vector computation, and the
-vector-cache machinery. The fetch entry point
-(`morphology.fetch_skeletons_on_demand_batch`) is a thin dispatcher that
-delegates to one per-source fetcher (`_fetch_neuprint_skeleton_batch`,
-`_fetch_banc_skeleton_batch`, `_fetch_fafb_mesh_batch`), and only owns the
-dataset-agnostic cache transaction around them. Do not merge the fetch
-layers into a single strategy: the differences (auth, batching, staging,
-representation) are real.
+vector-cache machinery. The fetch entry points (`morphology.fetch_skeleton_on_demand` /
+`morphology.fetch_skeletons_on_demand_batch`) are skeleton-native for
+every dataset kind: FAFB resolves in one call through
+`load_local_release_skeletons` (repair caches -> raw cache -> healed zip ->
+extrusion check/repair -> CAVE skeletonization), NeuPrint batches through
+`_fetch_neuprint_skeleton_batch`, BANC through `_fetch_banc_skeleton_batch`
+and the shared raw cache. The fetchers only own the dataset-agnostic cache
+transaction around them. (Until 2026-09-29 the FAFB branch served CAVE
+prepared MeshNeurons while a skeleton-serving block sat unreachable behind
+an unconditional mesh return — the mesh-where-skeleton trap behind the
+reverse-scene defect record; it was removed and FAFB now delegates to the
+loader.) Do not merge the fetch layers into a single strategy: the
+differences (auth, batching, staging, representation) are real.
 
 ### 1.1 FAFB / flywire (`flywire_FAFB_v783`)
 
@@ -156,8 +162,10 @@ NeuPrint/BANC fetch caching. FAFB CAVE replacements use the separate
 
 The former prepared FAFB mesh cache (`cache/{dataset}/meshes/…`, 95%-decimated
 `MeshNeuron` pickles) is no longer read or written by the visualization
-pipeline; non-visualization consumers (`download_all_skeletons`,
-mesh-representation workflows) still own it.
+pipeline or by the on-demand fetchers (which serve skeletons for every
+dataset kind); mesh-representation workflows that read it directly —
+`FlyWireMeshCache` / `find_similar_flywire_mesh_cache` and
+`_fetch_cave_mesh` / `CAVEDataFetcher.fetch_fafb_mesh` — still own it.
 
 ## 3. Rendering pipelines and simplification scale
 
