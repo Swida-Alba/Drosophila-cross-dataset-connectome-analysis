@@ -15,13 +15,13 @@ Module `src/morphology_comparison.py`. One class:
 from morphology_comparison import MorphologyProfileComparer
 
 comparer = MorphologyProfileComparer(
-    dataset="male-cns:v1.0",             # one dataset; BANC deferred (similarity validation pending)
+    dataset="male-cns:v1.0",             # any dataset; BANC runs with a provisional-scores warning
     query=["aMe12", "aMe10", "aMe.*"],   # types, bodyIds, or regex patterns
     method="vector_v2",                  # "vector_v2" | "nblast"
     aggregation_level="type",            # "type" | "bodyid" | "custom group"
     custom_mapping_file=None,            # LabelMapper preset; forces "custom"
     max_members_per_type=25,
-    max_total_neurons=200,               # truncation cap; nblast refuses > 30 neurons
+    max_total_neurons=200,               # truncation cap; nblast > 30 neurons warns and proceeds
     output_dir="/abs/output/morph_cmp",  # default local_data/morphology_comparison/
     saveas="",
     generate_heatmaps=True,
@@ -73,17 +73,19 @@ NeuPrint datasets missing a token).
   standardized + ZCA-whitened rows with
   `v2_pairwise_matrix` (shape/spatial 0.30/0.70) — the exact Find Similar
   space. Neurons without local skeletons carry NaN cells and are reported
-  in `members.csv` as `no vector`. The BANC branch of the loader chain is
-  unreachable from here: BANC morphological comparison is deferred
-  (vector-quality validation pending), so BANC datasets are rejected
-  before any skeleton is fetched.
+  in `members.csv` as `no vector`. BANC runs are ALLOWED (2026-09-29) with
+  an explicit provisional-scores warning in `user_warning_notes.txt`
+  (vector-quality validation on BANC is still pending), so the BANC branch
+  of the loader chain is reachable from here now; Find Similar still
+  defers BANC.
 - **nblast**: reuses `MorphologyComparer`'s dotprops pipeline
   (`_dotprops_for_ids`), scores both orientations per pair and averages
   (the forward NBLAST score is asymmetric). Aggregate means exclude
   contralateral pairs (`_dataset_soma_side_map`); the bodyId matrix keeps
-  every pair. Refuses populations over 30 **neurons**, judged on the capped
-  population (`min(total, max_total_neurons)`) — so a small `max_total_neurons`
-  is honoured rather than rejected — and the UI drops the bodyId level while
+  every pair. Populations over 30 **neurons** WARN and proceed (never
+  refused since 2026-09-29), judged on the population that will actually
+  be scored — `min(total, max(max_total_neurons, pinned))`, because the
+  cap never drops a queried neuron — and the UI drops the bodyId level while
   NBLAST is selected, because there each row is one neuron.
 - **Outputs**: `bodyid_level/bodyid_similarity_{method}.csv` always;
   `type_level/type_similarity_{method}.csv` at the type level and

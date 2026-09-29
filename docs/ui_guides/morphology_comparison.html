@@ -148,7 +148,8 @@
     <tr><td>Max Total Neurons</td><td>200</td><td>Safety cap on the compared
       population; truncation walks the rows in order and never drops a neuron
       you queried by bodyId. NBLAST scores every pair twice, so populations
-      past 30 neurons (this capped size included) <b>warn</b> that the run
+      past 30 neurons (the size that will actually be scored — the cap, or
+      more when your queried bodyIds alone exceed it) <b>warn</b> that the run
       may take very long — they are never refused</td></tr>
     <tr><td>Fetch Missing Skeletons Online<br><span class="small">(Advanced Settings)</span></td><td>on</td><td>Pull
       skeletons for cache misses through the API into the shared cache

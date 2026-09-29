@@ -461,8 +461,8 @@ def create_morphology_tab():
                                  "vectors — fast, whole-population "
                                  "whitening comes from the dataset cache. "
                                  "'NBLAST': canonical normalized NBLAST on "
-                                 "raw-skeleton dotprops; capped at 30 "
-                                 "total neurons.",
+                                 "raw-skeleton dotprops; populations past "
+                                 "30 neurons warn and proceed (slow).",
                         ).props('id=select-morph-comparison-method')
                     with ui.row().classes("w-full items-center gap-4"):
                         comparison_visualize = checkbox_input(
@@ -614,11 +614,11 @@ def create_morphology_tab():
         def _sync_aggregation_options(_e=None):
             """Drop the bodyId level while NBLAST is selected.
 
-            NBLAST scores every neuron pair and refuses populations over 30
-            neurons, and at the bodyId level each row is one neuron, so a
-            realistic query there cannot complete. The choice is removed
-            rather than offered — a disabled choice also resets, so it can
-            never reach the run record.
+            NBLAST scores every neuron pair TWICE and warns past 30 neurons
+            (it no longer refuses), and at the bodyId level each row is one
+            neuron, so a realistic query there cannot complete in useful
+            time. The choice is removed rather than offered — a disabled
+            choice also resets, so it can never reach the run record.
             """
             options = (["type", "custom group"]
                        if str(comparison_method.value or "") == "nblast"
