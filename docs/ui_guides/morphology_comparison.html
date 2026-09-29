@@ -117,10 +117,12 @@
         bundle → CAVE fallback — and persist into the shared skeleton +
         vector caches. Mirror twins are legitimate evidence (lateral
         normalization).</td></tr>
-    <tr><td><b>NBLAST</b></td><td>Slow — refuses populations over <b>30
-      neurons</b></td>
+    <tr><td><b>NBLAST</b></td><td>Slow — warns on populations over <b>30
+      neurons</b>, never refuses</td>
       <td>Canonical normalized NBLAST on raw-skeleton dotprops; both
-        orientations of every pair are scored and averaged. Aggregate means
+        orientations of every pair are scored and averaged. Large populations
+        are disclosed as slow in the run log and
+        <code>user_warning_notes.txt</code> rather than gated. Aggregate means
         exclude contralateral pairs (mirror arbors score at chance); the
         bodyId matrix keeps every pair. Because every neuron enters scoring,
         the Aggregation Level drops <b>bodyid</b> while NBLAST is selected —
@@ -145,8 +147,9 @@
       dropped by it</td></tr>
     <tr><td>Max Total Neurons</td><td>200</td><td>Safety cap on the compared
       population; truncation walks the rows in order and never drops a neuron
-      you queried by bodyId. NBLAST judges its 30-neuron limit against this
-      capped size, so a cap below 30 is honoured rather than refused</td></tr>
+      you queried by bodyId. NBLAST scores every pair twice, so populations
+      past 30 neurons (this capped size included) <b>warn</b> that the run
+      may take very long — they are never refused</td></tr>
     <tr><td>Fetch Missing Skeletons Online<br><span class="small">(Advanced Settings)</span></td><td>on</td><td>Pull
       skeletons for cache misses through the API into the shared cache
       (turn off for a strictly offline comparison)</td></tr>

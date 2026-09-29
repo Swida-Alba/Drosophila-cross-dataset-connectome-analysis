@@ -461,15 +461,23 @@ def test_nblast_matrix_symmetric_and_capped(monkeypatch, tmp_path):
     assert type_df.loc["aMe12", "aMe10"] == pytest.approx(0.8)
 
 
-def test_nblast_total_neuron_cap_enforced(monkeypatch, tmp_path):
+def test_nblast_warns_past_30_neurons_and_runs(monkeypatch, tmp_path):
+    """The NBLAST population bound is a disclosed warning, not a refusal
+    (user 2026-09-29): 40 single-member types run to completion with the
+    warning in user_warning_notes.txt."""
     type_map = {i: f"T{i}" for i in range(40)}
-    _install_type_map(monkeypatch, type_map)
-    comparer = mc.MorphologyProfileComparer(
+    _install_nblast(monkeypatch, type_map)
+    result = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=[f"T{i}" for i in range(40)],
         method="nblast", output_dir=str(tmp_path),
-        generate_heatmaps=False, verbose=False)
-    with pytest.raises(ValueError, match="30-neuron limit"):
-        comparer.run()
+        generate_heatmaps=False, verbose=False).run()
+    body_df = _read_matrix(
+        Path(result["output_folder"]) / "bodyid_level"
+        / "bodyid_similarity_nblast.csv")
+    assert body_df.shape == (40, 40)
+    notes = (Path(result["output_folder"])
+             / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "40 neurons is past the 30-neuron comfort bound" in notes
 
 
 def test_nblast_missing_dotprops_reported(monkeypatch, tmp_path):
@@ -1107,9 +1115,10 @@ def test_nblast_cap_below_30_is_honoured_not_refused(monkeypatch, tmp_path):
     assert body_df.shape == (10, 10)
 
 
-def test_nblast_refusal_names_the_effective_population(monkeypatch, tmp_path):
-    """50 neurons with max_total_neurons=20 scores 20 instead of refusing;
-    with the default cap the same query is refused, naming its own count."""
+def test_nblast_warning_names_the_effective_population(monkeypatch, tmp_path):
+    """50 neurons with max_total_neurons=20 scores 20 — under the comfort
+    bound, so no cost warning; with the default cap the same query warns
+    about the full 50 and runs instead of refusing."""
     type_map = {i: f"T{i}" for i in range(1, 51)}
     _install_nblast(monkeypatch, type_map)
     run = mc.MorphologyProfileComparer(
@@ -1119,13 +1128,21 @@ def test_nblast_refusal_names_the_effective_population(monkeypatch, tmp_path):
     assert _read_matrix(
         Path(run["output_folder"]) / "bodyid_level"
         / "bodyid_similarity_nblast.csv").shape == (20, 20)
+    capped_notes = (Path(run["output_folder"])
+                    / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "comfort bound" not in capped_notes
 
-    refused = mc.MorphologyProfileComparer(
+    uncapped = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=[f"T{i}" for i in range(1, 51)],
         method="nblast", output_dir=str(tmp_path),
         generate_heatmaps=False, verbose=False)
-    with pytest.raises(ValueError, match=r"50 neurons exceed the 30-neuron"):
-        refused.run()
+    result = uncapped.run()
+    assert _read_matrix(
+        Path(result["output_folder"]) / "bodyid_level"
+        / "bodyid_similarity_nblast.csv").shape == (50, 50)
+    notes = (Path(result["output_folder"])
+             / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "50 neurons is past the 30-neuron comfort bound" in notes
 
 
 # ------------------------------------------- taxonomy + instance query lanes

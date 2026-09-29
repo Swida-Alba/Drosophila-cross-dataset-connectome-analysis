@@ -133,8 +133,10 @@ except ImportError:  # pragma: no cover - direct src/ execution
 _PATTERN_CHARS = set("*?[](){}|^$.+\\")
 
 # NBLAST builds a dotprop per neuron and scores every pair twice: O(N²)
-# skeleton loads dominate quickly, so the method is hard-capped.
-NBLAST_MAX_NEURONS = 30
+# skeleton loads dominate quickly. Past this population the run WARNS
+# (user 2026-09-29: disclose the cost, never refuse it) — the bound is the
+# scored population, so a max_total_neurons cap below it is honored first.
+NBLAST_WARN_NEURONS = 30
 
 _METHOD_LABELS = {
     "vector_v2": "Vector (spatial, vector_v2)",
@@ -575,7 +577,8 @@ class MorphologyProfileComparer:
         return rows
 
     def _check_population(self, members: "Dict[str, List[object]]") -> None:
-        """Neuron-count and NBLAST-cost gates, before any scoring work starts.
+        """Neuron-count gate and NBLAST cost warning, before any scoring
+        work starts.
 
         The gate counts NEURONS, not rows: one type with several members is a
         legitimate comparison. Its aggregate cell is that type's cohesion and
@@ -604,20 +607,21 @@ class MorphologyProfileComparer:
                          " Aggregation Level to 'bodyid' to keep the neurons as"
                          " separate rows.")
             self._log(note)
-        # NBLAST scores every neuron pair and never truncates silently, so it
-        # is refused up front. The bound is the population that would actually
-        # be scored — min(total, max_total_neurons) — not the raw query size,
-        # or a cap below 30 would reject a population NBLAST can score while
-        # naming the 30 limit.
+        # NBLAST scores every neuron pair twice, so large populations are
+        # SLOW — disclosed, not refused (user 2026-09-29). The bound is the
+        # population that would actually be scored — min(total,
+        # max_total_neurons) — not the raw query size, so the warning names
+        # the capped size a small max_total_neurons produces.
         effective = min(total, self.max_total_neurons)
-        if self.method == "nblast" and effective > NBLAST_MAX_NEURONS:
-            raise ValueError(
-                f"NBLAST comparison scores every neuron pair: {effective} "
-                f"neurons exceed the {NBLAST_MAX_NEURONS}-neuron limit. "
-                "Reduce the query or the per-type member cap"
+        if self.method == "nblast" and effective > NBLAST_WARN_NEURONS:
+            self._note(
+                f"NBLAST comparison scores every neuron pair twice: "
+                f"{effective} neurons is past the {NBLAST_WARN_NEURONS}-"
+                "neuron comfort bound, so this run may take a very long "
+                "time. Reduce the query or the per-type member cap"
                 + (" (at the bodyId level each row is one neuron)"
                    if self.aggregation_level == "bodyid" else "")
-                + ", or use the vector method.")
+                + ", or use the vector method if it is too slow.")
 
     def _apply_total_cap(self, members: "Dict[str, List[object]]"):
         """Bound the population — but never by dropping a queried neuron.
@@ -765,11 +769,6 @@ class MorphologyProfileComparer:
     # ----------------------------------------------------------------- nblast
     def _nblast_matrix(self, all_ids: List[object]) -> Tuple[np.ndarray, List[object]]:
         """Symmetric normalized-NBLAST matrix (mean of both orientations)."""
-        total = len(all_ids)
-        if total > NBLAST_MAX_NEURONS:
-            raise ValueError(
-                f"NBLAST comparison is capped at {NBLAST_MAX_NEURONS} total "
-                f"neurons (got {total}).")
         helper = MorphologyComparer(
             dataset=self.dataset, method="nblast",
             verbose=self.verbose, n_workers=self.n_workers,

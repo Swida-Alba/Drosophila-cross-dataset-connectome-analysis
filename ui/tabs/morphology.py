@@ -582,10 +582,12 @@ def create_morphology_tab():
                             hint="Safety cap on the compared population: "
                                  "truncation walks the rows in order and "
                                  "never drops a neuron you queried by bodyId. "
-                                 "NBLAST scores every pair, so it refuses any "
-                                 "population over 30 neurons — capped size "
+                                 "NBLAST scores every pair twice, so "
+                                 "populations past 30 neurons (capped size "
                                  "included, which is why a cap below 30 is "
-                                 "honoured rather than refused.",
+                                 "honoured rather than refused) warn that the "
+                                 "run may take very long — they are not "
+                                 "refused.",
                         )
                         with ui.row().classes("gap-4"):
                             comparison_heatmaps = checkbox_input(
