@@ -32,6 +32,12 @@ else:
     _sibling = HERE.parent / 'drocat'
     if (_sibling / 'src' / 'coana.py').exists():
         PROJECT = _sibling
+    else:
+        # Fail loudly instead of walking on with a nonsense ancestor (a
+        # drive root) that only surfaces later as confusing path errors.
+        raise SystemExit(
+            f'project root not found above {HERE} (no src/coana.py within '
+            '5 ancestors, and no sibling drocat/ checkout)')
 
 for entry in (str(PROJECT / 'src'), str(PROJECT)):
     if entry not in sys.path:

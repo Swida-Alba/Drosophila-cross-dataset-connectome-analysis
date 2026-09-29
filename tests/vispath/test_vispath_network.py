@@ -2843,3 +2843,15 @@ class TestNodeOutline:
         assert "'border-opacity': (item.borderOpacity !== undefined ? item.borderOpacity : 1)," in js
         assert "n.removeStyle('border-color');" in js
         assert "n.removeStyle('border-opacity');" in js
+
+
+def test_square_lock_sizing_accounts_dendrogram_bands():
+    """The square-cells lock must size the HEATMAP's own area, not the
+    whole plot area: with the dendrogram on, the bands carve their
+    fractions out of the axis domains, and the naive whole-area math
+    under-sized the locked cells by up to ~20% (all three sizing paths:
+    the lock button, the width slider, and the width input box)."""
+    import vispath_pkg.vispath as vp
+    src = Path(vp.__file__).read_text(encoding="utf-8")
+    assert src.count("Math.max(0.05, ydom[1] - ydom[0])") == 3
+    assert "xdom[1] - xdom[0]" in src

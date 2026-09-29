@@ -17902,7 +17902,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 const marginHorizontal = margins.l + margins.r;
                 const marginVertical = margins.t + margins.b;
                 const plotAreaWidth = currentWidth - marginHorizontal;
-                const plotAreaHeight = plotAreaWidth * numRows / numCols;
+                // The dendrogram bands carve their fractions out of the
+                // plot area (xaxis/yaxis domains), so size the HEATMAP's
+                // own area, not the whole plot area: with the tree on, the
+                // naive math under-sizes the locked cells by the band
+                // fractions (the anchor still keeps them square).
+                const xdom = (gd.layout.xaxis && gd.layout.xaxis.domain) || [0, 1];
+                const ydom = (gd.layout.yaxis && gd.layout.yaxis.domain) || [0, 1];
+                const plotAreaHeight = plotAreaWidth
+                    * (xdom[1] - xdom[0]) * numRows / numCols
+                    / Math.max(0.05, ydom[1] - ydom[0]);
                 currentHeight = Math.round(plotAreaHeight + marginVertical);
             }} else {{
                 currentHeight = parseInt(document.getElementById('heightSlider').value);
@@ -17937,7 +17946,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 const marginHorizontal = margins.l + margins.r;
                 const marginVertical = margins.t + margins.b;
                 const plotAreaWidth = currentWidth - marginHorizontal;
-                const plotAreaHeight = plotAreaWidth * numRows / numCols;
+                // The dendrogram bands carve their fractions out of the
+                // plot area (xaxis/yaxis domains), so size the HEATMAP's
+                // own area, not the whole plot area: with the tree on, the
+                // naive math under-sizes the locked cells by the band
+                // fractions (the anchor still keeps them square).
+                const xdom = (gd.layout.xaxis && gd.layout.xaxis.domain) || [0, 1];
+                const ydom = (gd.layout.yaxis && gd.layout.yaxis.domain) || [0, 1];
+                const plotAreaHeight = plotAreaWidth
+                    * (xdom[1] - xdom[0]) * numRows / numCols
+                    / Math.max(0.05, ydom[1] - ydom[0]);
                 currentHeight = Math.round(plotAreaHeight + marginVertical);
             }} else {{
                 currentHeight = parseInt(document.getElementById('heightInput').value);
@@ -17980,7 +17998,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
 
                 // Calculate height for square cells based on current width
                 const plotAreaWidth = currentWidth - marginHorizontal;
-                const plotAreaHeight = plotAreaWidth * numRows / numCols;
+                // The dendrogram bands carve their fractions out of the
+                // plot area (xaxis/yaxis domains), so size the HEATMAP's
+                // own area, not the whole plot area: with the tree on, the
+                // naive math under-sizes the locked cells by the band
+                // fractions (the anchor still keeps them square).
+                const xdom = (gd.layout.xaxis && gd.layout.xaxis.domain) || [0, 1];
+                const ydom = (gd.layout.yaxis && gd.layout.yaxis.domain) || [0, 1];
+                const plotAreaHeight = plotAreaWidth
+                    * (xdom[1] - xdom[0]) * numRows / numCols
+                    / Math.max(0.05, ydom[1] - ydom[0]);
                 const targetHeight = Math.round(plotAreaHeight + marginVertical);
 
                 // Update height
