@@ -550,9 +550,15 @@ class DatasetTaxonomyResolver:
     # membership test; plan-untyped-labels-and-drop-hardening 4.1.
     _UNTYPED = UntypedLabelPolicy.SENTINELS | {''}
 
-    def __init__(self, mapper=None, workspace_path=None):
+    def __init__(self, mapper=None, workspace_path=None,
+                 include_cross_dataset_type_columns: bool = False):
         self._mapper = mapper
         self._workspace = workspace_path
+        # The cross-dataset flow keeps flywireType/hemibrainType/mancType out
+        # of the scan (those names are bridged by the mapper, not matched
+        # natively); an intra-dataset comparer wants them, matching the
+        # connectivity profiler's get_types_for_label column list.
+        self._include_cross = bool(include_cross_dataset_type_columns)
         self._tables: Dict[str, Any] = {}
         self._frames: Dict[str, Any] = {}
         self._cache: Dict[str, Dict[str, Optional[List[str]]]] = {}
@@ -564,6 +570,12 @@ class DatasetTaxonomyResolver:
             if self._mapper is not None else None
         return Path(root) if root else None
 
+    def _excluded(self) -> set:
+        if self._include_cross:
+            return self._EXCLUDED - {'flywiretype', 'hemibraintype',
+                                     'manctype'}
+        return self._EXCLUDED
+
     def _table(self, dataset):
         """(path, scan_columns) for one dataset, or None when unavailable."""
         if dataset in self._tables:
@@ -574,16 +586,51 @@ class DatasetTaxonomyResolver:
         if entry and root is not None:
             path = root / 'datasets' / entry[0] / entry[1]
             if path.exists():
-                try:
-                    from neuron_index_builder import viewer_search_columns
-                    header = list(pd.read_csv(path, nrows=0).columns)
-                    scan = [c for c in viewer_search_columns(header)
-                            if c.strip().lower() not in self._EXCLUDED]
-                    result = (path, scan)
-                except Exception:
-                    result = None
+                result = self._scan_table(path)
+        if result is None and root is not None:
+            # Generic fallback: the same allneurons table
+            # morphology._load_neuron_type_map reads, named by the dataset's
+            # canonical folder — so any local dataset resolves, not just the
+            # five the cross-dataset flow tabulates.
+            result = self._generic_table(str(dataset), root)
         self._tables[dataset] = result
         return result
+
+    def _generic_table(self, dataset: str, root: Path):
+        """(path, scan_columns) from the canonical allneurons table, or None."""
+        try:
+            from utils.naming_utils import canonical_dataset_name
+        except ImportError:  # pragma: no cover - src laid bare on sys.path
+            from naming_utils import canonical_dataset_name
+        folder = (canonical_dataset_name(dataset)
+                  .replace(':', '_').replace('.', '_'))
+        dataset_dir = root / 'datasets' / folder
+        for name in (f'{folder}_allneurons_neuron_df.parquet',
+                     f'{folder}_allneurons_neuron_df.csv'):
+            path = dataset_dir / name
+            if path.exists():
+                return self._scan_table(path)
+        return None
+
+    def _scan_table(self, path: Path):
+        """(path, scan_columns) for one existing table, or None."""
+        try:
+            from neuron_index_builder import viewer_search_columns
+            header = self._table_header(path)
+            if 'type' not in header:
+                return None
+            scan = [c for c in viewer_search_columns(header)
+                    if c.strip().lower() not in self._excluded()]
+            return (path, scan) if scan else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _table_header(path: Path) -> List[str]:
+        if path.suffix.lower() == '.parquet':
+            import pyarrow.parquet as pq
+            return list(pq.ParquetFile(path).schema_arrow.names)
+        return list(pd.read_csv(path, nrows=0).columns)
 
     def _frame(self, dataset):
         """(type column frame, scan columns) for one dataset, or None.
@@ -599,10 +646,13 @@ class DatasetTaxonomyResolver:
             path, scan = table
             if scan:
                 try:
-                    result = (pd.read_csv(
-                        path,
-                        usecols=lambda c: c in set(scan) | {'type'},
-                        low_memory=False), scan)
+                    keep = sorted(set(scan) | {'type'})
+                    if path.suffix.lower() == '.parquet':
+                        frame = pd.read_parquet(path, columns=keep)
+                    else:
+                        frame = pd.read_csv(path, usecols=keep,
+                                            low_memory=False)
+                    result = (frame, scan)
                 except Exception:
                     result = None
         self._frames[dataset] = result

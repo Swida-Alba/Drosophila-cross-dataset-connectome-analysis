@@ -1126,3 +1126,175 @@ def test_nblast_refusal_names_the_effective_population(monkeypatch, tmp_path):
         generate_heatmaps=False, verbose=False)
     with pytest.raises(ValueError, match=r"50 neurons exceed the 30-neuron"):
         refused.run()
+
+
+# ------------------------------------------- taxonomy + instance query lanes
+@pytest.fixture(autouse=True)
+def _hermetic_taxonomy_resolver(monkeypatch):
+    """No test reads the real allneurons tables: the taxonomy lane defaults
+    to a resolver that never matches (so pattern/exact-type tests stay fast
+    and hermetic); the taxonomy tests below install the real class against
+    a synthetic table."""
+    class _NullResolver:
+        def __init__(self, *a, **k):
+            pass
+
+        def resolve(self, token, dataset):
+            return None
+
+    monkeypatch.setattr(mc, "DatasetTaxonomyResolver", _NullResolver)
+
+
+def _install_taxonomy_table(tmp_path, rows, folder="male-cns_v1_0"):
+    """Synthetic allneurons table at the canonical dataset folder — the same
+    table _load_neuron_type_map reads, so the resolver's scan finds it."""
+    ddir = tmp_path / "datasets" / folder
+    ddir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(
+        ddir / f"{folder}_allneurons_neuron_df.csv", index=False)
+
+
+def _taxonomy_setup(tmp_path, monkeypatch):
+    """Two clock types under cell_type 'clock_cluster' plus one non-clock
+    type; five cached neurons with deterministic vectors."""
+    from comparison.query_resolver import DatasetTaxonomyResolver
+    monkeypatch.setattr(mc, "DatasetTaxonomyResolver", DatasetTaxonomyResolver)
+    ids = [1, 2, 3, 4, 5]
+    eye = np.eye(DIM)
+    X = np.zeros((5, DIM))
+    X[0] = X[1] = eye[0]            # aMe12 members identical
+    X[2] = X[3] = eye[1]            # aMe10 members identical
+    X[4] = eye[2]                   # PPL1* single member
+    _install_vector_cache(monkeypatch, ids, X)
+    _install_type_map(monkeypatch, {
+        1: "aMe12", 2: "aMe12", 3: "aMe10", 4: "aMe10", 5: "PPL1*",
+    })
+    _install_taxonomy_table(tmp_path, [
+        {"bodyId": 1, "type": "aMe12", "instance": "inst1",
+         "cell_type": "clock_cluster"},
+        {"bodyId": 2, "type": "aMe12", "instance": "inst2",
+         "cell_type": "clock_cluster"},
+        {"bodyId": 3, "type": "aMe10", "instance": "inst3",
+         "cell_type": "clock_cluster"},
+        {"bodyId": 4, "type": "aMe10", "instance": "inst4",
+         "cell_type": "clock_cluster"},
+        {"bodyId": 5, "type": "PPL1*", "instance": "inst5",
+         "cell_type": "other"},
+    ])
+    return tmp_path
+
+
+def test_taxonomy_label_expands_to_member_types(tmp_path, monkeypatch):
+    """A cell_type value expands into one row per member type — the
+    connectivity comparison's first string lane ('circadian_clock' case)."""
+    root = _taxonomy_setup(tmp_path, monkeypatch)
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["clock_cluster"],
+        output_dir=str(root / "out"), generate_heatmaps=False, verbose=False,
+        project_root=str(root)).run()
+    type_df = _read_matrix(
+        Path(result["output_folder"]) / "type_level"
+        / "type_similarity_vector_v2.csv")
+    assert sorted(type_df.index) == ["aMe10", "aMe12"]
+    notes = (Path(result["output_folder"])
+             / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "taxonomy label" in notes
+    assert "clock_cluster" in notes
+
+
+def test_taxonomy_label_at_bodyid_level_rows_are_neurons(
+        tmp_path, monkeypatch):
+    root = _taxonomy_setup(tmp_path, monkeypatch)
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["clock_cluster"],
+        aggregation_level="bodyid", output_dir=str(root / "out"),
+        generate_heatmaps=False, verbose=False,
+        project_root=str(root)).run()
+    # Rows follow the resolver's sorted type expansion (aMe10 first).
+    assert set(_body_labels(result)) == {
+        "1_inst1", "2_inst2", "3_inst3", "4_inst4"}
+
+
+def test_taxonomy_expansion_respects_member_cap(tmp_path, monkeypatch):
+    """Expanded rows go through the same per-type cap machinery (and the cap
+    is disclosed in the notes file)."""
+    root = _taxonomy_setup(tmp_path, monkeypatch)
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["clock_cluster"],
+        max_members_per_type=1, output_dir=str(root / "out"),
+        generate_heatmaps=False, verbose=False,
+        project_root=str(root)).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert set(members["bodyId"].astype(int)) == {1, 3}
+    notes = (Path(result["output_folder"])
+             / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "capping" in notes
+
+
+def test_instance_name_query_pinned_and_folded(vector_setup):
+    """An instance name names specific neurons: pinned like bodyId queries
+    and folded into their type at the type level."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["inst3", "aMe12"],
+        max_members_per_type=1, output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    type_df = _read_matrix(
+        Path(result["output_folder"]) / "type_level"
+        / "type_similarity_vector_v2.csv")
+    assert list(type_df.index) == ["aMe10", "aMe12"]
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    by_row = dict(zip(members["row"], members["bodyId"].astype(int)))
+    assert by_row == {"aMe10": 3, "aMe12": 1}
+
+
+def test_instance_names_at_bodyid_level(vector_setup):
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["inst3", "inst4"],
+        aggregation_level="bodyid", output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    assert _body_labels(result) == ["3_inst3", "4_inst4"]
+
+
+def test_unmatched_token_is_disclosed_not_fatal(vector_setup):
+    """A token nothing matched degrades to a disclosed note while the rest of
+    the query still runs."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12", "zzz-nope"],
+        output_dir=str(vector_setup), generate_heatmaps=False,
+        verbose=False).run()
+    assert result["rows_compared"] == 1
+    notes = (Path(result["output_folder"])
+             / "user_warning_notes.txt").read_text(encoding="utf-8")
+    assert "No dataset types matched: zzz-nope" in notes
+
+
+def test_no_notes_no_warning_file(vector_setup):
+    """A run whose query resolved exactly as typed writes no notes file."""
+    result = _comparer(vector_setup).run()
+    assert not (Path(result["output_folder"])
+                / "user_warning_notes.txt").exists()
+
+
+def test_taxonomy_resolves_for_datasets_outside_the_table_map(
+        tmp_path, monkeypatch):
+    """The resolver's generic folder fallback: any local dataset resolves,
+    not just the five the cross-dataset flow tabulates."""
+    from comparison.query_resolver import DatasetTaxonomyResolver
+    monkeypatch.setattr(mc, "DatasetTaxonomyResolver", DatasetTaxonomyResolver)
+    ids = [1, 2, 3, 4]
+    _install_vector_cache(monkeypatch, ids, np.eye(DIM)[:4])
+    _install_type_map(monkeypatch, {1: "T1", 2: "T1", 3: "T2", 4: "T2"})
+    _install_taxonomy_table(tmp_path, [
+        {"bodyId": 1, "type": "T1", "instance": "i1", "cell_type": "clx"},
+        {"bodyId": 2, "type": "T1", "instance": "i2", "cell_type": "clx"},
+        {"bodyId": 3, "type": "T2", "instance": "i3", "cell_type": "clx"},
+        {"bodyId": 4, "type": "T2", "instance": "i4", "cell_type": "clx"},
+    ], folder="hemibrain_v1_2_1")
+    result = mc.MorphologyProfileComparer(
+        dataset="hemibrain:v1.2.1", query=["clx"],
+        output_dir=str(tmp_path / "out"), generate_heatmaps=False,
+        verbose=False, project_root=str(tmp_path)).run()
+    type_df = _read_matrix(
+        Path(result["output_folder"]) / "type_level"
+        / "type_similarity_vector_v2.csv")
+    assert sorted(type_df.index) == ["T1", "T2"]

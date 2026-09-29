@@ -1,7 +1,8 @@
 """MorphologyProfileComparer - intra-dataset morphology comparison.
 
-Given ONE dataset and 2+ queried neurons (types, bodyIds, or regex
-patterns), computes the N×N morphological similarity matrix at bodyId level
+Given ONE dataset and 2+ queried neurons (types, taxonomy labels such as a
+cell_type value, bodyIds, instance names, or regex patterns), computes the
+N×N morphological similarity matrix at bodyId level
 plus, unless the comparison IS at bodyId level, an aggregated matrix over
 them, then writes CSV matrices, interactive heatmaps, and a report — the
 morphology analogue of the Connectivity tab's Comparison sub-tab
@@ -121,6 +122,11 @@ try:
 except ImportError:  # pragma: no cover - direct src/ execution
     import report_kit
 
+try:
+    from comparison.query_resolver import DatasetTaxonomyResolver
+except ImportError:  # pragma: no cover - direct src/ execution
+    from query_resolver import DatasetTaxonomyResolver
+
 
 # Regex metacharacters that mark a query token as a pattern rather than an
 # exact type name (mirrors the UI match modes: 'aMe.*', '.*KC.*', ...).
@@ -192,6 +198,12 @@ class MorphologyProfileComparer:
     - ``custom`` — rows are the source-side groups of a LabelMapper preset
       (``custom_mapping_file``); the query list is ignored.
 
+    Each query token resolves in the same order the connectivity Comparison
+    sub-tab uses: exact type name, bodyId, taxonomy label (a cell_type /
+    class / subclass value such as FAFB's ``circadian_clock`` expands into
+    one row per member type), instance name, and finally the regex-pattern
+    interpretation.
+
     The bodyId × bodyId matrix is always the scored primitive: the other
     matrices are block means over it.
 
@@ -242,6 +254,9 @@ class MorphologyProfileComparer:
             Path(project_root) if project_root
             else Path(__file__).parent.parent
         )
+        # Resolution disclosures for user_warning_notes.txt: expansions,
+        # instance matches, caps, and tokens nothing matched.
+        self._resolution_notes: List[str] = []
         if self.method not in ("vector_v2", "nblast"):
             raise ValueError(
                 f"Invalid method: {self.method} (vector_v2|nblast)")
@@ -259,6 +274,13 @@ class MorphologyProfileComparer:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"[MorphologyProfileComparer] {msg}", flush=True)
+
+    def _note(self, msg: str) -> None:
+        """Log a resolution disclosure AND keep it for user_warning_notes.txt
+        (the same file the connectivity comparison writes; the run guide
+        renders it)."""
+        self._resolution_notes.append(str(msg))
+        self._log(str(msg))
 
     def _body_id(self, value):
         return _canonical_dataset_body_id(self.dataset, value)
@@ -299,6 +321,10 @@ class MorphologyProfileComparer:
         self._type_names = sorted(
             {str(t or "").strip() for t in type_map.values()
              if str(t or "").strip()})
+        # Lazy per-run lookups for the taxonomy-label and instance-name
+        # token kinds (both read the same local tables the type map uses).
+        self._taxonomy_resolver: Optional[DatasetTaxonomyResolver] = None
+        self._instance_lookup: Optional[Dict[str, List[object]]] = None
 
         self._pinned: set = set()
         if self.aggregation_level == "custom":
@@ -328,6 +354,37 @@ class MorphologyProfileComparer:
         ids.sort(key=lambda b: str(b))
         return ids
 
+    def _taxonomy_types(self, text: str) -> Optional[List[str]]:
+        """Member type names when the token equals a taxonomy-column value
+        (cell_type / class / subclass / cross-dataset type columns), else
+        None — the connectivity comparison's first string lane.
+
+        The shared ``DatasetTaxonomyResolver`` scans the same local neuron
+        table the type map comes from; it is built lazily because that table
+        is read a second time with the taxonomy columns included. Any failure
+        degrades to None so the token falls through to the pattern lane.
+        """
+        if self._taxonomy_resolver is None:
+            self._taxonomy_resolver = DatasetTaxonomyResolver(
+                workspace_path=str(self.project_root),
+                include_cross_dataset_type_columns=True)
+        try:
+            return self._taxonomy_resolver.resolve(text, self.dataset)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Warning: taxonomy lookup for {text!r} failed: {exc}")
+            return None
+
+    def _instance_member_ids(self, text: str) -> List[object]:
+        """BodyIds whose instance name equals the token (exact, stripped)."""
+        if self._instance_lookup is None:
+            lookup: Dict[str, List[object]] = {}
+            for bid, inst in self._instance_map.items():
+                name = str(inst or "").strip()
+                if name:
+                    lookup.setdefault(name, []).append(bid)
+            self._instance_lookup = lookup
+        return self._instance_lookup.get(text, [])
+
     def _cap_members(self, ids: List[object], label: str) -> List[object]:
         """Cap one row's members, never at the expense of a pinned neuron.
 
@@ -342,11 +399,11 @@ class MorphologyProfileComparer:
         rest = [b for b in ids if self._body_id(b) not in self._pinned]
         keep_rest = max(0, limit - len(forced))
         if len(forced) > limit:
-            self._log(
+            self._note(
                 f"{label}: keeping all {len(forced)} queried neurons although "
                 f"max_members_per_type is {limit}.")
         else:
-            self._log(
+            self._note(
                 f"{label}: capping {len(ids)} members to {limit} "
                 "(max_members_per_type).")
         return forced + rest[:keep_rest]
@@ -401,6 +458,48 @@ class MorphologyProfileComparer:
                     continue
                 _add_ids(type_name, [bid] + self._type_member_ids(type_name))
                 continue
+            # Taxonomy label: a cell_type / class value (e.g. FAFB's
+            # 'circadian_clock') expands into one row per member type. Like
+            # exact type names, this exact-cell lane must run before the
+            # pattern interpretation — and it mirrors the connectivity
+            # comparison's first string lane.
+            expanded = self._taxonomy_types(text)
+            if expanded:
+                shown = ", ".join(expanded[:8])
+                if len(expanded) > 8:
+                    shown += ", …"
+                self._note(
+                    f"'{text}' is a taxonomy label: expanded to "
+                    f"{len(expanded)} dataset type(s) ({shown}).")
+                for type_name in expanded:
+                    _add_type(type_name)
+                continue
+            # Instance name: names specific neurons directly, so they are
+            # pinned like bodyId queries and fold into their types at the
+            # type level.
+            inst_ids = self._instance_member_ids(text)
+            if inst_ids:
+                self._note(
+                    f"'{text}' resolved to {len(inst_ids)} neuron(s) by "
+                    "instance name.")
+                for bid in inst_ids:
+                    self._pinned.add(self._body_id(bid))
+                if self.aggregation_level == "bodyid":
+                    for bid in inst_ids:
+                        rows.setdefault(str(self._body_id(bid)), [bid])
+                    continue
+                by_type: Dict[str, List[object]] = {}
+                for bid in inst_ids:
+                    type_name = str(self._type_map.get(
+                        self._body_id(bid), "") or "").strip()
+                    if type_name:
+                        by_type.setdefault(type_name, []).append(bid)
+                    else:
+                        rows.setdefault(str(self._body_id(bid)), [bid])
+                for type_name, bids in by_type.items():
+                    _add_ids(type_name,
+                             bids + self._type_member_ids(type_name))
+                continue
             if _looks_like_pattern(text):
                 try:
                     rx = re.compile(text)
@@ -417,7 +516,7 @@ class MorphologyProfileComparer:
             missing.append(text)
 
         if missing:
-            self._log(
+            self._note(
                 "No dataset types matched: " + ", ".join(map(str, missing)))
         # ``rows`` is already in first-occurrence query order (dicts preserve
         # insertion order).
@@ -466,11 +565,11 @@ class MorphologyProfileComparer:
                 elif text in self._type_names:
                     ids.extend(self._type_member_ids(text))
                 else:
-                    self._log(f"{name}: '{text}' is neither a type nor a "
-                              f"bodyId in {self.dataset}; skipped")
+                    self._note(f"{name}: '{text}' is neither a type nor a "
+                               f"bodyId in {self.dataset}; skipped")
             ordered = list(dict.fromkeys(self._body_id(b) for b in ids))
             if not ordered:
-                self._log(f"{name}: no members in {self.dataset}; skipped")
+                self._note(f"{name}: no members in {self.dataset}; skipped")
                 continue
             rows[name] = self._cap_members(ordered, name)
         return rows
@@ -539,13 +638,13 @@ class MorphologyProfileComparer:
                     kept[label].append(bid)
         reserved = sum(len(v) for v in kept.values())
         if reserved > limit:
-            self._log(
+            self._note(
                 f"max_total_neurons={limit} is below the "
                 f"{reserved} neuron(s) the query named; keeping every named "
                 "neuron.")
         budget = max(0, limit - reserved)
         if total - reserved > budget:
-            self._log(
+            self._note(
                 f"Query resolves to {total} neurons; truncating the "
                 f"unpinned members to {limit} (max_total_neurons).")
         for label, ids in members.items():
@@ -1399,6 +1498,7 @@ class MorphologyProfileComparer:
             report_params["_plot3d_link"] = plot3d_link
         (output_path / "parameters.json").write_text(
             json.dumps(params, indent=2, default=str), encoding="utf-8")
+        self._write_warning_notes(output_path)
         csv_links = {
             "bodyid": f"bodyid_level/bodyid_similarity_{self.method}.csv",
         }
@@ -1422,6 +1522,21 @@ class MorphologyProfileComparer:
                       if p.is_file()],
         }
 
+    def _write_warning_notes(self, output_path: Path) -> None:
+        """user_warning_notes.txt (parity with the connectivity comparison):
+        resolution disclosures — taxonomy expansions, instance matches, caps,
+        and tokens nothing matched. The run guide renders this file when
+        present, so a query that resolved through an expansion is disclosed
+        next to the results it produced."""
+        if not self._resolution_notes:
+            return
+        lines = ["User warning notes", "==================", "",
+                 "How this run's query resolved (expansions, caps, and "
+                 "tokens nothing matched):", ""]
+        lines.extend(f"- {note}" for note in self._resolution_notes)
+        (output_path / "user_warning_notes.txt").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+
     def _readme_text(self, output_path: Path,
                      heatmap_files: List[str]) -> str:
         level = self.aggregation_level
@@ -1443,6 +1558,10 @@ class MorphologyProfileComparer:
             "  parameters.json",
             "  members.csv                    row / type / bodyId provenance",
         ]
+        if (output_path / "user_warning_notes.txt").exists():
+            layout.append(
+                "  user_warning_notes.txt         how the query resolved "
+                "(expansions / caps / unmatched tokens)")
         if level != "bodyid":
             layout.append(
                 f"  {agg_dir}/{agg_stem}_{self.method}.csv"

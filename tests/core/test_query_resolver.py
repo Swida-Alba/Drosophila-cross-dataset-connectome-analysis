@@ -213,3 +213,45 @@ def test_taxonomy_without_hits_stays_unmapped():
         taxonomy_resolver=lambda t, ds: None)
     assert all(r['status'] in (qr.STATUS_UNMAPPED, qr.STATUS_SAME_NAME)
                for r in recs)
+
+
+# --- DatasetTaxonomyResolver: generic table + cross-dataset-column flag -----
+
+def _taxonomy_csv(tmp_path, folder, rows):
+    import pandas as pd
+
+    ddir = tmp_path / "datasets" / folder
+    ddir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(
+        ddir / f"{folder}_allneurons_neuron_df.csv", index=False)
+
+
+def test_taxonomy_resolver_generic_folder_fallback(tmp_path):
+    """Datasets outside _TABLES resolve through the canonical allneurons
+    table — the same one morphology's _load_neuron_type_map reads."""
+    _taxonomy_csv(tmp_path, "hemibrain_v1_2_1", [
+        {"bodyId": 1, "type": "T1", "instance": "i1", "cell_type": "clx"},
+        {"bodyId": 2, "type": "T2", "instance": "i2", "cell_type": "clx"},
+    ])
+    resolver = qr.DatasetTaxonomyResolver(workspace_path=str(tmp_path))
+    assert resolver.resolve("clx", "hemibrain:v1.2.1") == ["T1", "T2"]
+    assert resolver.resolve("nobody", "hemibrain:v1.2.1") is None
+    # A dataset with no local table answers None (NeuPrint-style fallback
+    # stays with the caller).
+    assert resolver.resolve("clx", "flywire_FAFB_v783") is None
+
+
+def test_taxonomy_resolver_cross_dataset_columns_flag(tmp_path):
+    """flywireType/hemibrainType/mancType stay out of the default scan (the
+    cross-dataset flow bridges those names instead of matching them); the
+    intra-dataset flag includes them, matching the connectivity profiler's
+    get_types_for_label column list."""
+    _taxonomy_csv(tmp_path, "male-cns_v1_0", [
+        {"bodyId": 1, "type": "T1", "instance": "i1", "flywireType": "FW9"},
+    ])
+    default = qr.DatasetTaxonomyResolver(workspace_path=str(tmp_path))
+    assert default.resolve("FW9", "male-cns:v1.0") is None
+    intra = qr.DatasetTaxonomyResolver(
+        workspace_path=str(tmp_path),
+        include_cross_dataset_type_columns=True)
+    assert intra.resolve("FW9", "male-cns:v1.0") == ["T1"]
