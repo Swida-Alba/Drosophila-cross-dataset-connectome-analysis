@@ -60,11 +60,13 @@ FAFB_SYNAPSE_PROFILE = {
 try:
     from utils.parquet_utils import (
         parquet_is_reusable, parquet_readable, reencode_parquet_lossless,
-        temp_sibling, write_file_atomic, write_parquet_atomic)
+        reclaim_writer_temps, temp_sibling, write_file_atomic,
+        write_parquet_atomic)
 except ImportError:  # pragma: no cover - src laid bare on sys.path
     from utils.parquet_utils import (
         parquet_is_reusable, parquet_readable, reencode_parquet_lossless,
-        temp_sibling, write_file_atomic, write_parquet_atomic)
+        reclaim_writer_temps, temp_sibling, write_file_atomic,
+        write_parquet_atomic)
 
 
 def compact_synapse_table(syn_pq, progress_callback=None) -> bool:
@@ -496,12 +498,18 @@ def process_skeletons_to_parquet(zip_path, save_path, batch_size=500):
     Process skeletons from a ZIP of SWC files to a single Parquet file.
     Optimized for space and speed using parallel processing and batched writing.
     """
+    # Reclaim crashed-conversion temps BEFORE the reuse early-return: a
+    # present final means a prior run finished, but its crashed temp (or a
+    # pre-R7-2 naked '{save_path}.tmp') would otherwise sit forever — this
+    # function never reaches the writer that owns the temp again.
+    reclaim_writer_temps(save_path, 'fafb-table')
+
     if os.path.exists(save_path):
         print(f"  ✓ Found existing converted file: {save_path}")
         return True
 
     print(f"  ⏳ Processing {zip_path} -> {save_path}...")
-    
+
     if not os.path.exists(zip_path):
         print(f"  ⚠️ Error: Input file not found: {zip_path}")
         return False
@@ -509,7 +517,6 @@ def process_skeletons_to_parquet(zip_path, save_path, batch_size=500):
     # Use a temporary file to avoid corrupting the destination if
     # interrupted — through the shared temp-sibling scheme so an
     # interrupted write is reclaimable (round-7 R7-2), not a naked .tmp.
-    write_file_atomic  # noqa: F821 — resolved below via the module import
     temp_path = temp_sibling(save_path, 'fafb-table')
     writer = None
     

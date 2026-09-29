@@ -40,6 +40,7 @@ if ensure_utf8_stdio is not None:
     ensure_utf8_stdio()
 
 import os
+import threading
 import time
 
 LOSSLESS_MARKER_KEY = b"DROCAT.lossless"
@@ -70,21 +71,28 @@ def temp_sibling(path, kind):
     """Return the atomic-rewrite temp path for *path*.
 
     Single source of truth for the naming scheme: a hidden sibling
-    ``.{name}.{kind}.<pid>.tmp`` that ``remove_stale_temp_files`` matches.
+    ``.{name}.{kind}.<pid>.<thread>.tmp`` that ``remove_stale_temp_files``
+    matches.  The thread id keeps two concurrent writers in one process
+    (the fetch pools persist from worker-adjacent threads) from sharing
+    one temp path and corrupting each other — the convention coana's own
+    older writers already used.
     """
     directory = os.path.dirname(os.path.abspath(path))
     name = os.path.basename(path)
-    return os.path.join(directory, f".{name}.{kind}.{os.getpid()}.tmp")
+    return os.path.join(
+        directory,
+        f".{name}.{kind}.{os.getpid()}.{threading.get_ident()}.tmp")
 
 
 def _temp_pid(entry, prefix):
-    """PID encoded in a ``{prefix}<pid>.tmp`` name, or None if it is not one."""
+    """PID encoded in a ``{prefix}<pid>[.<thread>].tmp`` name, else None."""
     if not (entry.startswith(prefix) and entry.endswith(".tmp")):
         return None
-    try:
-        return int(entry[len(prefix):-len(".tmp")])
-    except ValueError:
+    parts = entry[len(prefix):-len(".tmp")].split(".")
+    # '{pid}' (pre-thread-id names) or '{pid}.{thread}' (current scheme)
+    if len(parts) > 2 or not all(part.isdigit() for part in parts):
         return None
+    return int(parts[0])
 
 
 def _process_alive(pid):
@@ -182,6 +190,73 @@ def remove_stale_temp_files(path, kind, max_age_seconds=DEFAULT_TEMP_MAX_AGE_SEC
                 os.unlink(candidate)
             except OSError:
                 pass
+
+
+def remove_stale_temp_files_in_dir(directory, kind,
+                                   max_age_seconds=DEFAULT_TEMP_MAX_AGE_SECONDS):
+    """Delete leftover ``.{any}.{kind}.<pid>[.<thread>].tmp`` entries in
+    *directory*.
+
+    Same reclamation rule as :func:`remove_stale_temp_files`, for writers
+    whose finals are many small files in one directory (the per-neuron
+    profile batches): an orphan is matched by *kind* alone, whatever its
+    final name was — so an orphaned batch temp cannot wedge the
+    ``rmdir()`` that empties the batch directory after consolidation.
+    """
+    marker = f".{kind}."
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for entry in entries:
+        if not (entry.endswith(".tmp") and marker in entry):
+            continue
+        _name, _sep, tail = entry[:-len(".tmp")].rpartition(marker)
+        parts = tail.split(".")
+        if not parts or not all(part.isdigit() for part in parts):
+            continue
+        candidate = os.path.join(directory, entry)
+        if _temp_is_stale(candidate, int(parts[0]), max_age_seconds):
+            try:
+                os.unlink(candidate)
+            except OSError:
+                pass
+
+
+def _remove_legacy_naked_temp(final_path,
+                              max_age_seconds=DEFAULT_TEMP_MAX_AGE_SECONDS):
+    """Reclaim a pre-R7-2 naked ``{final}.tmp`` sibling, by age only.
+
+    The temp-sibling migration removed the writers of these names but,
+    outside the profiler, not their orphans: hosts that ran the older code
+    keep them forever.  Only age decides — a live writer still using a
+    naked ``.tmp`` (e.g. the morph npz caches, not yet migrated) is never
+    touched, because its temp is young; a crashed writer's orphan is days
+    old and reclaims cleanly.
+    """
+    legacy = f"{final_path}.tmp"
+    try:
+        age = time.time() - os.path.getmtime(legacy)
+    except OSError:
+        return
+    if age > max_age_seconds:
+        try:
+            os.unlink(legacy)
+        except OSError:
+            pass
+
+
+def reclaim_writer_temps(final_path, kind,
+                         max_age_seconds=DEFAULT_TEMP_MAX_AGE_SECONDS):
+    """Reclaim every reclaimable temp sibling of *final_path*.
+
+    One public entry point for writers that manage their temp manually
+    (``temp_sibling`` + their own replace): the current-scheme temps of
+    *kind* plus the legacy naked ``{final}.tmp``.  ``write_file_atomic``
+    applies the same pair internally.
+    """
+    remove_stale_temp_files(final_path, kind, max_age_seconds)
+    _remove_legacy_naked_temp(final_path, max_age_seconds)
 
 
 def _declared_data_extent(metadata):
@@ -310,6 +385,7 @@ def write_file_atomic(final_path, write_fn, kind="build",
     a truncated file that a later ``os.path.exists`` would trust.
     """
     remove_stale_temp_files(final_path, kind, max_age_seconds)
+    _remove_legacy_naked_temp(final_path, max_age_seconds)
     temp = temp_sibling(final_path, kind)
     try:
         write_fn(temp)

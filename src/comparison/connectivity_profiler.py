@@ -1588,7 +1588,7 @@ class ConnectivityProfiler:
         temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
-            temp_file.rename(batch_file)
+            os.replace(temp_file, batch_file)
         except Exception as e:
             if temp_file.exists():
                 try:
@@ -1596,7 +1596,7 @@ class ConnectivityProfiler:
                 except Exception:
                     pass
             self._log(f"Warning: Could not save profile batch file: {e}")
-    
+
     def _consolidate_profile_batch_files(self, dataset: str, delete_after: bool = True) -> int:
         """
         Merge all profile batch files into the main connectivity_profiles.parquet.
@@ -1691,11 +1691,17 @@ class ConnectivityProfiler:
             # temp-sibling scheme (round-7 R7-2: the naked
             # '.parquet.tmp' name leaked a non-reclaimable orphan and its
             # os.replace raced an existing temp into WinError 183).
+            # The sweep must name THIS writer's kind: the loader's
+            # 'profile-cache' sweep below cannot see a crashed
+            # consolidation temp, so without it the heaviest writer leaks
+            # a permanent orphan — exactly the R7-2 defect.
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            from utils.parquet_utils import remove_stale_temp_files as _sweep
+            _sweep(main_cache_path, 'profile-consolidation')
             temp_path = Path(temp_sibling(str(main_cache_path),
                                           'profile-consolidation'))
             combined.write_parquet(str(temp_path))
-            temp_path.rename(main_cache_path)
+            os.replace(temp_path, main_cache_path)
             
             # Update in-memory cache
             self._disk_cache_df[dataset] = combined.to_pandas()
@@ -1710,7 +1716,16 @@ class ConnectivityProfiler:
                         bf.unlink()
                     except Exception:
                         pass
-                # Remove batch directory if empty
+                # Remove batch directory if empty.  Reclaim crashed batch
+                # temps first: an orphaned '.{neuron}.parquet.profile-batch'
+                # sibling would otherwise keep the "empty" dir alive forever.
+                try:
+                    from utils.parquet_utils import (
+                        remove_stale_temp_files_in_dir)
+                except ImportError:
+                    from .utils.parquet_utils import (
+                        remove_stale_temp_files_in_dir)
+                remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')
                 try:
                     batch_dir.rmdir()
                 except Exception:
@@ -1746,10 +1761,12 @@ class ConnectivityProfiler:
             combined = combined.drop_duplicates(subset=['neuron_id'], keep='last')
 
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            from utils.parquet_utils import remove_stale_temp_files as _sweep
+            _sweep(main_cache_path, 'profile-consolidation')
             temp_path = Path(temp_sibling(str(main_cache_path),
                                           'profile-consolidation'))
             combined.to_parquet(temp_path, index=False)
-            temp_path.rename(main_cache_path)
+            os.replace(temp_path, main_cache_path)
             
             self._disk_cache_df[dataset] = combined
             self._build_disk_cache_index(dataset)
@@ -1760,11 +1777,19 @@ class ConnectivityProfiler:
                         bf.unlink()
                     except Exception:
                         pass
+                # Same pre-rmdir temp reclaim as the polars path above.
+                try:
+                    from utils.parquet_utils import (
+                        remove_stale_temp_files_in_dir)
+                except ImportError:
+                    from .utils.parquet_utils import (
+                        remove_stale_temp_files_in_dir)
+                remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')
                 try:
                     batch_dir.rmdir()
                 except Exception:
                     pass
-            
+
             return len(batch_files)
     
     def _load_cache_dataframe(self, dataset: str, force_reload: bool = False) -> Optional[pd.DataFrame]:
@@ -1919,8 +1944,9 @@ class ConnectivityProfiler:
             except Exception:
                 pass  # fsync failure is non-fatal, rename will still work for Ctrl+C
             
-            # Atomic rename (on POSIX systems, rename is atomic)
-            temp_path.rename(cache_path)
+            # Atomic swap (os.replace keeps the overwrite semantics on
+            # Windows too, where Path.rename over an existing file raises)
+            os.replace(temp_path, cache_path)
             
             # Update in-memory cache
             self._disk_cache_df[dataset] = df
@@ -2244,7 +2270,7 @@ class ConnectivityProfiler:
         temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
-            temp_file.rename(batch_file)
+            os.replace(temp_file, batch_file)
         except Exception as e:
             if temp_file.exists():
                 try:

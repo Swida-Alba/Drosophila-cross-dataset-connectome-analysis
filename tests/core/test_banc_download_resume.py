@@ -120,11 +120,26 @@ def test_consolidation_temps_use_the_reclaimable_naming():
     import FAFB_file_converter
 
     src = Path(cp.__file__).read_text(encoding="utf-8")
-    # the two consolidation writes name their temps via temp_sibling
-    assert src.count("'profile-consolidation'") >= 2
+    # the two consolidation writes name their temps via temp_sibling AND
+    # pre-sweep their own kind: the loader's 'profile-cache' sweep cannot
+    # see a crashed consolidation temp, so without the matching-kind sweep
+    # the heaviest writer leaked a permanent orphan
+    assert src.count("'profile-consolidation'") >= 4
+    # the swaps overwrite atomically on Windows too (Path.rename raises
+    # FileExistsError there when the destination exists)
+    assert src.count("os.replace(temp_path, main_cache_path)") >= 2
+    assert src.count("os.replace(temp_file, batch_file)") >= 2
+    # orphaned per-neuron batch temps are reclaimed before the batch-dir
+    # rmdir so they cannot wedge the directory open
+    assert src.count(
+        "remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')") >= 2
     # the naked consolidation naming is gone from the profiler
     assert "with_suffix('.parquet.tmp')" not in src or (
         "legacy" in src)  # only the legacy-orphan cleanup may keep one
+
+    fafb_src = Path(FAFB_file_converter.__file__).read_text(encoding="utf-8")
+    # the table converter reclaims its temps even on the reuse path
+    assert "reclaim_writer_temps(save_path, 'fafb-table')" in fafb_src
 
     for module in (coana, fafb_bundle, FAFB_file_converter):
         # strip comments: the pattern lives in CODE, and the fix's own
@@ -148,4 +163,122 @@ def test_consolidation_temps_use_the_reclaimable_naming():
                             "._r7_probe_target.parquet.probe.") is not None
     finally:
         temp.unlink(missing_ok=True)
+        work.rmdir()
+
+
+def test_temp_reclamation_round_trips_across_name_formats():
+    """R7-2 finish: the reclaimer must match the CURRENT temp names
+    (.{name}.{kind}.{pid}.{thread}.tmp) and the pre-thread scheme
+    (.{name}.{kind}.{pid}.tmp); a live writer's temp is never touched."""
+    import os
+    import shutil
+    import tempfile
+    import utils.parquet_utils as pu
+
+    dead_pid = 999_999_99  # above every platform's pid ceiling
+    work = Path(tempfile.mkdtemp())
+    try:
+        final = work / "connectivity_profiles.parquet"
+        final.write_bytes(b"final")
+        current = work / (
+            f".connectivity_profiles.parquet.profile-consolidation."
+            f"{dead_pid}.12345.tmp")
+        current.write_bytes(b"orphan")
+        pre_thread = work / (
+            f".connectivity_profiles.parquet.profile-consolidation."
+            f"{dead_pid}.tmp")
+        pre_thread.write_bytes(b"orphan")
+        live = Path(pu.temp_sibling(str(final), "profile-consolidation"))
+        live.write_bytes(b"in-progress")
+
+        pu.remove_stale_temp_files(final, "profile-consolidation")
+        assert not current.exists(), "current-scheme orphan not reclaimed"
+        assert not pre_thread.exists(), "pre-thread-scheme orphan not reclaimed"
+        assert live.exists(), "own in-progress temp was reclaimed"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_batch_dir_temp_reclaim_empties_the_directory():
+    """An orphaned per-neuron batch temp must not wedge the batch-dir
+    rmdir after consolidation: the kind-only directory sweep reclaims
+    orphans whatever their final name was, and keeps live ones."""
+    import os
+    import shutil
+    import tempfile
+    import utils.parquet_utils as pu
+
+    dead_pid = 999_999_99
+    work = Path(tempfile.mkdtemp())
+    batch_dir = work / "profile_batches"
+    batch_dir.mkdir()
+    try:
+        (batch_dir / "123.parquet").write_bytes(b"b")
+        (batch_dir / "456.parquet").write_bytes(b"b")
+        orphan = batch_dir / f".789.parquet.profile-batch.{dead_pid}.7.tmp"
+        orphan.write_bytes(b"orphan")
+        live = batch_dir / (
+            f".321.parquet.profile-batch.{os.getpid()}.{threading.get_ident()}.tmp")
+        live.write_bytes(b"in-progress")
+
+        pu.remove_stale_temp_files_in_dir(batch_dir, "profile-batch")
+        assert not orphan.exists()
+        assert live.exists()
+        assert (batch_dir / "123.parquet").exists()
+        assert (batch_dir / "456.parquet").exists()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_reclaim_writer_temps_removes_only_aged_legacy_naked_temps():
+    """The legacy naked '{final}.tmp' sibling is reclaimed by AGE only:
+    an aged orphan from the pre-R7-2 writers goes, a young one (a live
+    unmigrated writer's in-flight temp) stays."""
+    import os
+    import shutil
+    import tempfile
+    import time
+    import utils.parquet_utils as pu
+
+    work = Path(tempfile.mkdtemp())
+    try:
+        final = work / "connections.parquet"
+        final.write_bytes(b"final")
+        young = work / "connections.parquet.tmp"
+        young.write_bytes(b"in-flight")
+        aged = work / "other.parquet"
+        aged_tmp = work / "other.parquet.tmp"
+        aged_tmp.write_bytes(b"orphan")
+        old = time.time() - (7 * 3600)
+        os.utime(aged_tmp, (old, old))
+
+        pu.reclaim_writer_temps(aged, "fafb-table")
+        assert not aged_tmp.exists(), "aged legacy orphan not reclaimed"
+        pu.reclaim_writer_temps(final, "fafb-table")
+        assert young.exists(), "young naked temp (live writer) was reclaimed"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_temp_sibling_separates_concurrent_threads():
+    """Two threads sharing one process must not share a temp path."""
+    import os
+    import tempfile
+    import utils.parquet_utils as pu
+
+    work = Path(tempfile.mkdtemp())
+    try:
+        names = {}
+
+        def worker(key):
+            names[key] = pu.temp_sibling(str(work / "t.parquet"), "probe")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert names[0] != names[1]
+        assert all(str(os.getpid()) in name for name in names.values())
+    finally:
         work.rmdir()
