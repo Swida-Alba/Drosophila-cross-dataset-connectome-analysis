@@ -404,9 +404,12 @@ Same layout as Section 5, plus:
 ## 6c. Morphology Comparison (MorphologyProfileComparer)
 
 Intra-dataset N×N morphology comparison (Morphology tab → Comparison
-sub-tab with exactly one selected dataset): queried neurons, types, or
-patterns produce a bodyId-level similarity matrix and a type-level
-aggregation. The population gate counts **neurons in scope, not matrix
+sub-tab with exactly one selected dataset): queried neurons, types,
+taxonomy labels (a cell_type value expands to one row per member type),
+instance names, or patterns produce a bodyId-level similarity matrix and
+a type-level aggregation. BANC runs with an explicit caveat (public
+L2/full skeletons, vector quality unvalidated — scores are provisional,
+disclosed in `user_warning_notes.txt`). The population gate counts **neurons in scope, not matrix
 rows**, so one type with several members is a legitimate run (its aggregate
 cell is that type's cohesion, and the pairwise detail is the bodyId matrix);
 a query that resolves to a single neuron raises.
@@ -416,8 +419,9 @@ dispatches to the cross-dataset comparison — see Section 6d
 mean over the cross-member bodyId pairs; the diagonal is the type's
 intra-type cohesion. `vector_v2` scores the per-dataset whitened vector
 cache (missing skeletons are fetched online by default and persist into
-the shared cache — NeuPrint raw SWC, FAFB healed bundle → CAVE); `nblast` scores raw-skeleton dotprops both ways (capped at 30 total
-neurons, contralateral pairs excluded from type means).
+the shared cache — NeuPrint raw SWC, FAFB healed bundle → CAVE); `nblast` scores raw-skeleton dotprops both ways (populations past 30
+scored neurons warn that the run may take very long — never refused;
+contralateral pairs excluded from type means).
 
 ### Folder Structure
 
@@ -442,6 +446,10 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     `{bodyId}_{type}_L/_R` (FAFB/BANC) — the same labels the 3D skeleton
     legend tree uses; `members.csv` maps every label back to its raw
     bodyId.
+*   **`user_warning_notes.txt`**: Written only when the query resolved
+    through something worth disclosing: taxonomy-label expansions,
+    instance-name matches, member/total caps, the NBLAST cost warning, or
+    tokens nothing matched. Rendered by the run guide.
 *   **`visualization/heatmap_{type|bodyid}_{method}.html`**: Interactive
     (VisPath) heatmaps, plotly fallback when VisPath is unavailable. One per
     computed level, so `heatmap_type_*` is absent at the bodyId level.
@@ -453,8 +461,11 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     Ward-clustered heatmap cards with CSV + VisPath editor links,
     compared-neuron and parameter details, scene link; Plotly embedded so
     it renders offline), parameters, and the layout description.
+    Heatmap cells render square (1:1) at any window size.
     vector_v2 renders on the diverging [-1, 1] scale; NBLAST on the
-    positive [0, 1] scale.
+    positive [0, 1] scale unless the run contains negative scores
+    (normalized NBLAST can score below zero), which switch it to the
+    diverging scale.
 
 ---
 

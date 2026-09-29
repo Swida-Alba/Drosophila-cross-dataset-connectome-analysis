@@ -937,17 +937,30 @@ class MorphologyProfileComparer:
                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         return base / name
 
-    def _metric_style(self) -> "report_kit.MetricStyle":
+    def _metric_style(self, matrices: Optional[Dict[str, pd.DataFrame]] = None
+                      ) -> "report_kit.MetricStyle":
         """Report/heatmap presentation per scoring method.
 
         vector_v2 is a whitened cosine that can go negative, so it uses
-        the shared kit's diverging [-1, 1] scale; NBLAST similarity is
-        treated as a [0, 1] score on the positive scale (matching the
-        historical rendering).
+        the shared kit's diverging [-1, 1] scale. NBLAST similarity keeps
+        the positive [0, 1] scale while every score is non-negative, but
+        normalized NBLAST genuinely scores below zero (less similar than
+        chance — verified at −0.88 on real FAFB pairs), so a run with
+        negative cells switches to the diverging scale instead of clamping
+        them onto the ramp's zero end.
         """
         if self.method == "vector_v2":
             return report_kit.MetricStyle(
                 "morph_similarity", "Vector v2",
+                report_kit.REPORT_DIVERGING_COLORSCALE, -1.0, 1.0)
+        low = 0.0
+        for matrix in (matrices or {}).values():
+            if matrix is not None and not matrix.empty:
+                low = min(low, float(pd.to_numeric(
+                    matrix.stack(), errors="coerce").min()))
+        if low < 0.0:
+            return report_kit.MetricStyle(
+                "morph_similarity", "NBLAST similarity",
                 report_kit.REPORT_DIVERGING_COLORSCALE, -1.0, 1.0)
         return report_kit.MetricStyle(
             "morph_similarity", "NBLAST similarity",
@@ -964,7 +977,7 @@ class MorphologyProfileComparer:
         renders with native clustering; any failure re-renders through the
         plotly fallback.
         """
-        style = self._metric_style()
+        style = self._metric_style(matrices)
         styles = {style.key: style}
         method_label = _METHOD_LABELS.get(self.method, self.method)
         level_labels = self._level_display_labels()
@@ -1009,7 +1022,7 @@ class MorphologyProfileComparer:
         member_rows = params.pop("_member_rows", [])
         plot3d_link = str(params.pop("_plot3d_link", "") or "")
         method_label = _METHOD_LABELS.get(self.method, self.method)
-        style = self._metric_style()
+        style = self._metric_style(matrices)
         compared = sum(1 for m in member_rows
                        if m.get("status") == "compared")
 
@@ -1059,11 +1072,17 @@ class MorphologyProfileComparer:
                  f"{compared}/{len(member_rows)}"),
             '</div>',
         ]
-        scale_note = ('negative vector_v2 cells are genuinely negative '
-                      '(whitened cosine) and render blue on the diverging '
-                      'scale.' if self.method == "vector_v2" else
-                      'NBLAST similarity renders on the positive [0, 1] '
-                      'scale.')
+        if self.method == "vector_v2":
+            scale_note = ('negative vector_v2 cells are genuinely negative '
+                          '(whitened cosine) and render blue on the diverging '
+                          'scale.')
+        elif style.zmin < 0.0:
+            scale_note = ('normalized NBLAST can score below zero (less '
+                          'similar than chance), so this run renders on the '
+                          'diverging [-1, 1] scale.')
+        else:
+            scale_note = ('every NBLAST score in this run is non-negative, '
+                          'so it renders on the positive [0, 1] scale.')
         lines.append(
             f"<p class='report-note'>Generated "
             f"{datetime.now():%Y-%m-%d %H:%M:%S} · {scale_note}</p>")

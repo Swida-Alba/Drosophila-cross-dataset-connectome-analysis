@@ -20,6 +20,9 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
         Default font size.
     verbose : bool
         Whether to print progress messages.
+
+    Matrix cells are locked square (1:1) via Plotly's scaleanchor — the
+    same contract as report_kit's ``square_cells`` figures.
     """
     
     available_metrics = list(matrices_dict.keys())

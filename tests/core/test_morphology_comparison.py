@@ -1106,7 +1106,8 @@ def test_nblast_cap_below_30_is_honoured_not_refused(monkeypatch, tmp_path):
 
     Regression: the gate tested max_total_neurons while printing the 30
     bound, so this raised "capped at 30 total neurons (got 15)" and built no
-    dotprops at all.
+    dotprops at all. That gate is gone entirely since the 2026-09-29 warn
+    round; the cap-honouring property this test pins still holds.
     """
     type_map = {**{i: "T1" for i in range(1, 14)}, 14: "T2", 15: "T3"}
     _install_nblast(monkeypatch, type_map)
@@ -1358,3 +1359,21 @@ def test_nblast_dotprops_lookup_uses_canonical_ids(monkeypatch, tmp_path):
     assert kept == ["1", "2"]
     assert matrix.shape == (2, 2)
     assert matrix[0, 0] == pytest.approx(1.0)
+
+
+def test_nblast_style_switches_to_diverging_on_negative_scores():
+    """Normalized NBLAST genuinely scores below zero (verified −0.88 on real
+    FAFB pairs); the positive [0, 1] ramp would clamp those cells, so a run
+    with negative cells renders on the diverging scale instead."""
+    cmp = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["a", "b"], method="nblast",
+        verbose=False, generate_heatmaps=False)
+    positive = cmp._metric_style({"bodyid": pd.DataFrame([[0.2, 0.4]])})
+    assert positive.zmin == 0.0
+    assert positive.colorscale == mc.report_kit.REPORT_POSITIVE_COLORSCALE
+    diverging = cmp._metric_style({"bodyid": pd.DataFrame([[-0.5, 0.4]])})
+    assert diverging.zmin == -1.0
+    assert diverging.colorscale == mc.report_kit.REPORT_DIVERGING_COLORSCALE
+    # NaN-only cells (e.g. a fully dropped type) never flip the scale.
+    assert cmp._metric_style(
+        {"bodyid": pd.DataFrame([[np.nan]])}).zmin == 0.0

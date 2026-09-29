@@ -2,7 +2,8 @@
 
 Reproduce the **Morphology tab → Comparison sub-tab** as a direct backend
 call: an intra-dataset N×N morphology comparison of the queried neurons
-(types, bodyIds, or patterns). `aggregation_level` picks what a matrix row
+(types, taxonomy labels, bodyIds, instance names, or patterns).
+`aggregation_level` picks what a matrix row
 is — a type, one neuron, or a custom group. The bodyId × bodyId matrix is
 always the scored primitive; the aggregate over types (or groups) is derived
 from it and skipped when the comparison is already at bodyId level.
@@ -20,13 +21,13 @@ from it and skipped when the comparison is already at bodyId level.
 from morphology_comparison import MorphologyProfileComparer
 
 comparer = MorphologyProfileComparer(
-    dataset="male-cns:v1.0",             # ONE dataset (intra-dataset only; no BANC)
-    query=["aMe12", "aMe10", "aMe.*"],   # types, bodyIds, or regex patterns
+    dataset="male-cns:v1.0",             # ONE dataset (intra-dataset; BANC runs with a warning)
+    query=["aMe12", "aMe10", "aMe.*"],   # types, taxonomy labels, bodyIds, instance names, or patterns
     method="vector_v2",                  # "vector_v2" (default) | "nblast"
     aggregation_level="type",            # "type" | "bodyid" | "custom group"
     custom_mapping_file=None,            # LabelMapper preset; forces "custom"
     max_members_per_type=25,             # members kept per type / per group
-    max_total_neurons=200,               # safety cap (truncates; NBLAST refuses > 30)
+    max_total_neurons=200,               # safety cap (truncates; NBLAST warns past 30)
     fetch_online=True,                   # pull missing skeletons via API (NeuPrint SWC / FAFB bundle→CAVE)
     output_dir="/absolute/output/morph_cmp",
     saveas="",
@@ -60,8 +61,14 @@ python skills/drocat-usage/scripts/run_direct.py \
   always written, and the run's only matrix at the bodyId level.
 - `members.csv` — resolved population (`row` / `type` / `bodyId` / `instance`
   / status), status being `compared` / `no vector` / `no dotprops`.
+- `user_warning_notes.txt` — written only when something needs
+  disclosing: taxonomy-label expansions, instance-name matches, member /
+  total caps, NBLAST cost warnings, tokens nothing matched, and the BANC
+  provisional-scores caveat. Rendered by the run guide.
 - `visualization/heatmap_*.html`, `report.html`, `parameters.json`,
-  `README.txt`.
+  `README.txt`. Heatmap pages carry interactive dendrograms, and the
+  report's heatmap cards embed mini-dendrograms of the same Ward order;
+  every heatmap's cells render square (1:1) at any window size.
 
 ## Notes
 
@@ -80,23 +87,35 @@ python skills/drocat-usage/scripts/run_direct.py \
   or `max_total_neurons`; those caps only ever remove other members. The
   `row` column tells you which matrix row a neuron fed; `type` stays its real
   type.
-- The UI hides the bodyId level while NBLAST is selected (see the cap below),
-  so the combination cannot be requested from the tab; a direct backend call
-  can still ask for it and gets the refusal.
+- The UI hides the bodyId level while NBLAST is selected (each row would
+  be one neuron, so the per-type cap cannot bound the population), so the
+  combination cannot be requested from the tab; a direct backend call can
+  still ask for it and runs.
 - **Intra-dataset only**: scores live in one dataset's coordinate space
   against that dataset's caches. Cross-dataset comparison belongs to the
   connectivity side (`HomologFinder` / `ConnectivityProfileComparer`).
-- `method="nblast"` scores every neuron pair, so it refuses any population
-  over 30 **neurons** — the capped population counts, which is why
-  `max_total_neurons=20` over a 50-neuron query runs instead of refusing.
-  It needs local raw skeletons (online fetch only happens through
-  `MorphologyComparer`'s shared dotprops pipeline) and excludes contralateral
-  pairs from aggregate means.
+- `method="nblast"` scores every neuron pair twice, so populations past
+  30 scored **neurons** warn that the run may take very long — they are
+  never refused (a `max_total_neurons=20` cap over a 50-neuron query stays
+  under the bound and stays silent). It needs local raw skeletons (FAFB
+  resolves through the healed zip / CAVE pipeline; BANC through the public
+  SWC chain) and excludes contralateral pairs from aggregate means.
+  Normalized NBLAST can score below zero; runs with negative cells switch
+  the report and heatmaps to the diverging scale.
 - `vector_v2` uses the per-dataset `SkeletonVectorCacheV2`; missing members
   are fetched online by default (`fetch_online=True`) through the same
   skeleton pipeline as Find Similar (NeuPrint raw SWC; FAFB healed zip
   → CAVE/local-fix fallback) and persist into the shared cache. Set
   `fetch_online=False` for a strictly offline comparison.
-- Patterns (`aMe.*`) expand against the dataset's type names; an exact type
-  name always wins over pattern interpretation (some type names contain
-  metacharacters, e.g. `PPL1*`).
+- Query tokens resolve in order: exact type name → bodyId → taxonomy label
+  (a cell_type / class value such as FAFB's `circadian_clock` expands into
+  one row per member type) → instance name (those neurons are pinned, like
+  bodyId queries) → regex pattern. Patterns (`aMe.*`) expand against the
+  dataset's type names; an exact type name always wins over pattern
+  interpretation (some type names contain metacharacters, e.g. `PPL1*`).
+  Every expansion, pin, cap, and unmatched token is disclosed in the run
+  log and `user_warning_notes.txt`.
+- **BANC runs with an explicit caveat**: the public L2/full skeleton
+  products' vector quality is still unvalidated, so treat BANC scores as
+  provisional (the caveat is recorded in `user_warning_notes.txt`).
+  Cross-dataset BANC comparisons carry their own experimental banner.
