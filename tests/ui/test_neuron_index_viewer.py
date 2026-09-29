@@ -2566,6 +2566,206 @@ class TestNeuronIndexViewer:
         assert row["match_column_key"] == "type"
         assert row["__can_expand"] is False
 
+    def test_match_toggles_preserve_group_selection_across_rebuilds(
+        self, isolated_index_root, monkeypatch
+    ):
+        """Selection pushes must survive the toggle-path update_rows calls.
+
+        Both toggle handlers re-render the match table; the default
+        ``clear_selection=True`` used to uncheck every checked group on
+        that render.
+        """
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.components.neuron_index_viewer as viewer
+        from ui.components.neuron_index_viewer import create_neuron_index_viewer_link
+
+        dataset = _write_taxonomy_index(isolated_index_root)
+        monkeypatch.setattr(viewer, "PROJECT_ROOT", isolated_index_root)
+        monkeypatch.setattr(viewer.ui, "run_javascript", lambda *a, **k: None)
+        selection_batches = []
+
+        client = Client(page("/neuron-index-viewer-selection-preserve"))
+        with client:
+            link = create_neuron_index_viewer_link(
+                lambda: dataset,
+                query_selection=lambda values: selection_batches.append(list(values)),
+            )
+        self._click(link)
+
+        tables = [el for el in client.elements.values() if type(el).__name__ == "Table"]
+        match_table = next(
+            table for table in tables
+            if table._props["columns"][0]["name"] == "match_column"
+        )
+        assert ":data-match-group" in match_table.slots["body"].template
+
+        search_input = next(
+            element for element in client.elements.values()
+            if getattr(element, "_props", {}).get("label")
+            == "Search identities & taxonomy"
+        )
+        search_listener = next(iter(search_input._event_listeners.values()))
+        search_input._handle_event({
+            "listener_id": search_listener.id,
+            "args": "circadian",
+        })
+
+        group_row = next(
+            row for row in match_table._props["rows"] if row.get("__can_expand")
+        )
+        group_key = group_row["__match_group_key"]
+
+        def checked_group_values():
+            return {str(r.get("match_value")) for r in match_table.selected}
+
+        select_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchSelectionToggle"
+        )
+        match_table._handle_event({
+            "listener_id": select_listener.id,
+            "args": {"row": dict(group_row), "selected": True},
+        })
+        assert checked_group_values() == {"circadian"}
+
+        expand_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchExpandToggle"
+        )
+        match_table._handle_event({
+            "listener_id": expand_listener.id,
+            "args": group_key,
+        })
+        assert checked_group_values() == {"circadian"}
+
+        subtype_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchSubtypeToggle"
+        )
+        match_table._handle_event({
+            "listener_id": subtype_listener.id,
+            "args": {"group": group_key, "value": "DN1a", "selected": True},
+        })
+        assert checked_group_values() == {"circadian"}
+        assert selection_batches[-1] == ["circadian", "DN1a"]
+
+    def test_subtype_scroll_guard_script_is_installed(self):
+        """The body-rebuild scroll guard targets the type lists by group key."""
+        import ui.components.neuron_index_viewer as viewer
+
+        script = viewer._MATCH_SUBTYPE_SCROLL_GUARD_JS
+        assert "__drocatMatchSubtypeScrollGuard" in script
+        assert "addEventListener('scroll'" in script
+        assert "MutationObserver" in script
+        assert "drocat-neuron-match-subtype-list" in script
+        assert "data-match-group" in script
+        # Removed-node capture: a scroll event that never fired before the
+        # rebuild (frame throttling) still leaves the offset on record.
+        assert "removedNodes" in script
+
+    def test_subtype_select_all_toggles_every_displayed_type(
+        self, isolated_index_root, monkeypatch
+    ):
+        """The head checkbox selects/deselects every displayed subtype.
+
+        The head renders Quasar's tri-state: True (all), None (some, the
+        indeterminate dash) or False (none). Selections stay subtype-level —
+        the group row itself is not checked.
+        """
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.components.neuron_index_viewer as viewer
+        from ui.components.neuron_index_viewer import create_neuron_index_viewer_link
+
+        dataset = _write_taxonomy_index(isolated_index_root)
+        monkeypatch.setattr(viewer, "PROJECT_ROOT", isolated_index_root)
+        monkeypatch.setattr(viewer.ui, "run_javascript", lambda *a, **k: None)
+        selection_batches = []
+        resolution_batches = []
+
+        client = Client(page("/neuron-index-viewer-subtype-select-all"))
+        with client:
+            link = create_neuron_index_viewer_link(
+                lambda: dataset,
+                query_selection=lambda values: selection_batches.append(list(values)),
+                query_resolution=lambda values: resolution_batches.append(list(values)),
+            )
+        self._click(link)
+
+        tables = [el for el in client.elements.values() if type(el).__name__ == "Table"]
+        match_table = next(
+            table for table in tables
+            if table._props["columns"][0]["name"] == "match_column"
+        )
+        body_template = match_table.slots["body"].template
+        assert "match-subtype-select-all" in body_template
+        assert "head_checked" in body_template
+
+        search_input = next(
+            element for element in client.elements.values()
+            if getattr(element, "_props", {}).get("label")
+            == "Search identities & taxonomy"
+        )
+        search_listener = next(iter(search_input._event_listeners.values()))
+        search_input._handle_event({
+            "listener_id": search_listener.id,
+            "args": "circadian",
+        })
+
+        expand_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchExpandToggle"
+        )
+        match_table._handle_event({
+            "listener_id": expand_listener.id,
+            "args": "circadian",
+        })
+
+        def display():
+            return match_table._props["rows"][0]["__subtypes"]
+
+        assert display()["head_checked"] is False
+
+        # One subtype first: the head goes indeterminate (None).
+        subtype_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchSubtypeToggle"
+        )
+        match_table._handle_event({
+            "listener_id": subtype_listener.id,
+            "args": {"group": "circadian", "value": "DN1a", "selected": True},
+        })
+        assert display()["head_checked"] is None
+
+        # Select-all fills in the remaining types in list order.
+        select_all_listener = next(
+            listener for listener in match_table._event_listeners.values()
+            if listener.type == "matchSubtypeSelectAll"
+        )
+        match_table._handle_event({
+            "listener_id": select_all_listener.id,
+            "args": {"group": "circadian", "selected": True},
+        })
+        flags = {s["match_value"]: s["selected"] for s in display()["subtypes"]}
+        assert flags == {"DN1a": True, "l-LNv": True, "s-LNv": True}
+        assert display()["head_checked"] is True
+        assert selection_batches[-1] == ["DN1a", "l-LNv", "s-LNv"]
+        assert resolution_batches[-1] == ["100", "200", "300"]
+        # Subtype selections never check the group row itself.
+        assert match_table.selected == []
+
+        # Deselect-all clears exactly the displayed types again.
+        match_table._handle_event({
+            "listener_id": select_all_listener.id,
+            "args": {"group": "circadian", "selected": False},
+        })
+        flags = {s["match_value"]: s["selected"] for s in display()["subtypes"]}
+        assert not any(flags.values())
+        assert display()["head_checked"] is False
+        assert selection_batches[-1] == []
+        assert resolution_batches[-1] == []
+
 
 class TestBridgeBodyIdPooling:
     """pool_bridge_body_ids: one-side pooling per standardized linker,

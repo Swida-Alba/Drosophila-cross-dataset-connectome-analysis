@@ -60,6 +60,62 @@ ALIAS_SCAN_SETTLE_SECONDS = 0.6
 # heartbeats and the connection drops (the CB2438 crash).
 BROAD_QUERY_LOCAL_HITS = 10_000
 
+# Quasar rebuilds a QTable's whole <tbody> whenever its rows or selection
+# props are pushed (subtype toggles, group checkboxes, expansions), which
+# recreates the expanded match panel and its inner scroll box and snaps the
+# type list the user is working through back to the top. This one-time page
+# guard remembers every open type list's scroll offset — keyed by table and
+# match-group key — and re-applies it after each rebuild. Lists whose key is
+# new (another page, a fresh search) intentionally start at the top.
+_MATCH_SUBTYPE_SCROLL_GUARD_JS = r"""
+(() => {
+  if (window.__drocatMatchSubtypeScrollGuard) return;
+  window.__drocatMatchSubtypeScrollGuard = true;
+  const listSelector = '.drocat-neuron-match-subtype-list';
+  const scrollTops = new Map();
+  const keyOf = (el) => {
+    const table = el.closest('.drocat-neuron-match-table');
+    return (table && table.id ? table.id : '') + '|' + (el.getAttribute('data-match-group') || '');
+  };
+  document.addEventListener('scroll', (event) => {
+    const el = event.target;
+    if (!(el instanceof Element) || !el.classList.contains('drocat-neuron-match-subtype-list')) return;
+    scrollTops.set(keyOf(el), el.scrollTop);
+  }, { capture: true, passive: true });
+  const restoreIn = (node) => {
+    if (!(node instanceof Element)) return;
+    const lists = node.matches(listSelector) ? [node] : Array.from(node.querySelectorAll(listSelector));
+    for (const el of lists) {
+      const saved = scrollTops.get(keyOf(el));
+      if (saved) el.scrollTop = saved;
+    }
+  };
+  const rememberIn = (node) => {
+    if (!(node instanceof Element)) return;
+    const lists = node.matches(listSelector) ? [node] : Array.from(node.querySelectorAll(listSelector));
+    for (const el of lists) scrollTops.set(keyOf(el), el.scrollTop);
+  };
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.removedNodes) rememberIn(node);
+      for (const node of mutation.addedNodes) restoreIn(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+})();
+"""
+
+
+def _subtype_head_state(subtypes) -> bool | None:
+    """Return the select-all checkbox state for one expanded panel.
+
+    True when every listed subtype is selected, None (Quasar's
+    indeterminate dash) when some are, False when none are.
+    """
+    flags = [bool(subtype.get("selected")) for subtype in subtypes]
+    if not flags:
+        return False
+    return True if all(flags) else (None if any(flags) else False)
+
 
 def _effective_search_text(raw: str, *, force: bool = False) -> str:
     """Return the search text this box sends to the backend.
@@ -915,6 +971,9 @@ def _render_index(
                         str(subtype.get("match_value", "") or "").strip()
                         in selected_match_values
                     )
+                display["head_checked"] = _subtype_head_state(
+                    display.get("subtypes", ())
+                )
             if match_table is not None:
                 visible_match_rows = [
                     row for row in current_groups
@@ -1055,17 +1114,19 @@ def _render_index(
             key = str(group.get("__match_group_key", "") or "")
             members = tuple(sorted(group_members.get(key, ())))
             payload = query_match_group_subtypes(index, members)
+            display_subtypes = [
+                {
+                    "match_value": subtype["match_value"],
+                    "body_count": subtype["body_count"],
+                    "selected": subtype["match_value"] in selected_match_values,
+                }
+                for subtype in payload["subtypes"]
+            ]
             display = {
-                "subtypes": [
-                    {
-                        "match_value": subtype["match_value"],
-                        "body_count": subtype["body_count"],
-                        "selected": subtype["match_value"] in selected_match_values,
-                    }
-                    for subtype in payload["subtypes"]
-                ],
+                "subtypes": display_subtypes,
                 "total_types": payload["total_types"],
                 "truncated": payload["truncated"],
+                "head_checked": _subtype_head_state(display_subtypes),
             }
             entry = {
                 "members": set(members),
@@ -1096,7 +1157,8 @@ def _render_index(
             entry["expanded"] = not entry["expanded"]
             group["__subtypes"] = entry["display"]
             group["__expanded"] = entry["expanded"]
-            match_table.update_rows(current_groups)
+            # clear_selection would uncheck every checked group on this render.
+            match_table.update_rows(current_groups, clear_selection=False)
 
         def handle_subtype_toggle(event) -> None:
             """Apply one expanded-subtype checkbox toggle."""
@@ -1131,7 +1193,45 @@ def _render_index(
                 forget_match(value)
             sync_query_selection()
             refresh_table_selection()
-            match_table.update_rows(current_groups)
+            # Keep the selection refresh_table_selection just pushed; the
+            # default clear would uncheck the group checkboxes on render.
+            match_table.update_rows(current_groups, clear_selection=False)
+
+        def handle_subtype_select_all(event) -> None:
+            """Apply one expanded-subtype select-all/deselect-all toggle.
+
+            The toggle covers the displayed (possibly truncated) type list;
+            the panel's truncation note already directs users to a refined
+            search for the remaining types.
+            """
+            args = getattr(event, "args", None)
+            if not isinstance(args, dict):
+                return
+            entry = subtype_expansions.get(
+                str(args.get("group", "") or "").strip()
+            )
+            if entry is None:
+                return
+            subtypes = list(entry["payload"]["subtypes"])
+            if not subtypes:
+                return
+            if bool(args.get("selected")):
+                for subtype in subtypes:
+                    value = str(subtype.get("match_value", "") or "").strip()
+                    if value and value not in selected_match_values:
+                        remember_subtype(
+                            value,
+                            subtype.get("member_keys", ()),
+                            subtype.get("body_ids", ()),
+                        )
+            else:
+                for subtype in subtypes:
+                    value = str(subtype.get("match_value", "") or "").strip()
+                    if value:
+                        forget_match(value)
+            sync_query_selection()
+            refresh_table_selection()
+            match_table.update_rows(current_groups, clear_selection=False)
 
         def handle_body_selection(event) -> None:
             visible = {
@@ -1325,11 +1425,21 @@ def _render_index(
                     >
                       <q-td colspan="4" class="drocat-neuron-match-subtype-cell">
                         <div class="drocat-neuron-match-subtype-head">
+                          <q-checkbox
+                            v-if="props.row.__subtypes.subtypes.length"
+                            :model-value="props.row.__subtypes.head_checked"
+                            dense
+                            style="vertical-align: -5px; margin-right: 3px;"
+                            @click.stop="$parent.$emit('match-subtype-select-all', { group: props.row.__match_group_key, selected: props.row.__subtypes.head_checked !== true })"
+                          />
                           {{ props.row.__subtypes.total_types }}
                           {{ props.row.__subtypes.total_types === 1 ? 'type' : 'types' }}
                           in {{ props.row.match_value }}
                         </div>
-                        <div class="drocat-neuron-match-subtype-list">
+                        <div
+                          class="drocat-neuron-match-subtype-list"
+                          :data-match-group="props.row.__match_group_key"
+                        >
                           <div
                             v-for="subtype in props.row.__subtypes.subtypes"
                             :key="subtype.match_value"
@@ -3240,7 +3350,18 @@ def _render_index(
     match_table.on("match-selection-toggle", handle_match_toggle)
     match_table.on("match-expand-toggle", handle_match_expand_toggle)
     match_table.on("match-subtype-toggle", handle_subtype_toggle)
+    match_table.on("match-subtype-select-all", handle_subtype_select_all)
     table.on("full-table-select-all", handle_full_table_select_all)
+    # The scroll guard rides on a fire-and-forget JS task, which needs the
+    # running app loop. Direct _render_index calls from tests run without
+    # one and assert the guard script statically instead (same probe as
+    # _dispatch_refresh).
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        match_table.client.run_javascript(_MATCH_SUBTYPE_SCROLL_GUARD_JS)
     refresh()
 
 
