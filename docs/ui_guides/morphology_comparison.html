@@ -16,9 +16,9 @@
   <h1>Comparison <span class="tag">Morphology tab</span></h1>
   <p class="lede">
     Compare the morphology of already-identified neurons <b>within one
-    dataset</b>: enter neurons, types, or patterns and get the
-    N×N similarity matrix at the bodyId level plus a type-level aggregation,
-    with interactive heatmaps and a summary report.
+    dataset</b>: enter neurons, types, taxonomy labels, or patterns and get
+    the N×N similarity matrix at the bodyId level plus a type-level
+    aggregation, with interactive heatmaps and a summary report.
   </p>
 
   <div class="callout warning">
@@ -37,9 +37,11 @@
       comparison is deferred there pending vector-quality validation of the
       public L2/full skeletons, not because skeletons are missing; BANC 3D
       visualization and pathfinding work).</li>
-    <li>Enter <b>one or more</b> neurons: exact types, bodyIds, or patterns
-      (e.g. <code>aMe.*</code>) — or pick <b>custom group</b> as the
-      Aggregation Level and define the groups on the grouping board instead.</li>
+    <li>Enter <b>one or more</b> query tokens: exact types, bodyIds,
+      taxonomy labels (e.g. FAFB's <code>circadian_clock</code>), instance
+      names, or patterns (e.g. <code>aMe.*</code>) — or pick <b>custom
+      group</b> as the Aggregation Level and define the groups on the
+      grouping board instead.</li>
     <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) in
       <b>Advanced Settings</b> to decide what one matrix row is.</li>
     <li>Click <b>Run Comparison</b>; open <code>report.html</code> in the
@@ -54,6 +56,18 @@
     One query that resolves to a single neuron is refused, with the message
     naming what collapsed it — the query itself, or
     <b>Max Members per Type</b> being below 2 at the bodyId level.
+  </div>
+
+  <div class="callout info">
+    <b>How each query token resolves.</b> Tokens resolve in the same order
+    the Connectivity ▸ Comparison tab uses: exact type name → bodyId →
+    <b>taxonomy label</b> (a cell_type / class value such as FAFB's
+    <code>circadian_clock</code> expands into one row per member type) →
+    <b>instance name</b> (those neurons are pinned, like bodyId inputs) →
+    pattern. Every expansion, pin, cap, and unmatched token is disclosed in
+    the run folder's <code>user_warning_notes.txt</code> and in the run log,
+    so a query that resolved through an expansion never looks like a
+    literal-type run.
   </div>
 
   <h2>Aggregation Level — what one matrix row is</h2>
@@ -168,6 +182,7 @@
   parameters.json
   README.txt
   members.csv                              # row/type/bodyId + status
+  user_warning_notes.txt                   # query-resolution disclosures (when present)
   type_level/type_similarity_{method}.csv   # type×type — type level only
   group_level/group_similarity_{method}.csv # group×group — custom group level
   bodyid_level/bodyid_similarity_{method}.csv  # bodyId×bodyId matrix
@@ -180,6 +195,8 @@
     <code>report_kit</code>): a hero header, Type-level / BodyId-level
     tabs with Ward-clustered heatmap cards (hover for exact values, CSV
     and VisPath editor links), and compared-neuron / parameter details.
+    Every heatmap card's <b>cells render square</b> (1:1, at any window
+    size) — the card itself is not squared, only the matrix cells.
     Plotly.js is embedded, so the report renders offline. vector_v2
     renders on a diverging blue–white–red scale (a whitened cosine can be
     negative); NBLAST stays on the positive [0, 1] scale.</p>

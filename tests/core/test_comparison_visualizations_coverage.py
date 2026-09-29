@@ -1162,3 +1162,17 @@ def test_generate_vis_summary_pdf_all_unreadable(viz, tmp_path):
     (plots / "bad2.png").write_bytes(b"junk")
     viz._generate_vis_summary_pdf(str(plots))
     assert not (tmp_path / "vis_summary.pdf").exists()
+
+
+def test_interactive_heatmap_cells_are_square(tmp_path):
+    """The standalone fallback (used when VisPath is unavailable) locks cells
+    1:1 with the same scaleanchor contract as the report-kit figures."""
+    from comparison.interactive_heatmap import generate_interactive_heatmap
+
+    out = tmp_path / "square.html"
+    generate_interactive_heatmap(
+        {"jaccard": _metric_df()}, str(out), title="Square",
+        showfig=False, verbose=False)
+    html = out.read_text(encoding="utf-8")
+    assert "scaleanchor: 'x'" in html
+    assert "constrain: 'domain'" in html

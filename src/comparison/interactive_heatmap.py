@@ -241,7 +241,13 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
                 yaxis: {{
                     title: 'Source',
                     showticklabels: showLabels,
-                    autorange: 'reversed'
+                    autorange: 'reversed',
+                    // Square cells: lock the cell aspect to 1:1 whatever the
+                    // container does (same contract as report_kit's
+                    // square_cells figures).
+                    scaleanchor: 'x',
+                    scaleratio: 1,
+                    constrain: 'domain'
                 }},
                 margin: {{ l: 150, b: 100 }}
             }};

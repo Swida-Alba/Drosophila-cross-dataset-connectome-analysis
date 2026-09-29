@@ -300,13 +300,15 @@ def test_report_redraws_plotly_and_links_vispath_editor(tmp_path):
     # actual generated chart invocation at the end of the report instead.
     plot_call = text.rsplit("Plotly.newPlot(", 1)[1].split(");", 1)[0]
     assert '"texttemplate":' not in plot_call
-    # Small-matrix square strategy (square_cells, finished 2026-09-18):
-    # for matrices <= 30 the cells are made square by the computed
-    # heatmap-square-fit wrapper width, and Plotly's scaleanchor is
-    # deliberately ABSENT — anchoring centered the constrained domain and
-    # detached the row labels from the cell band in wide cards.  (Large
-    # matrices keep the scaleanchor path.)
-    assert '"scaleanchor"' not in plot_call
+    # Square-cell strategy (exactness round, 2026-09-29): the scaleanchor
+    # locks cells 1:1 at ANY container width (narrow two-per-row cards, the
+    # estimated colorbar footprint, responsive re-renders), while the
+    # computed heatmap-square-fit wrapper width stays as the natural size
+    # that keeps a wide single-metric card from centering the band away
+    # from the section header. (Supersedes the 2026-09-18 two-regime split,
+    # which left the anchor off small matrices and let narrow cards stretch
+    # the cells into rectangles.)
+    assert '"scaleanchor"' in plot_call
     square_fit = re.search(
         r'heatmap-square-fit" style="max-width:(\d+)px', text)
     assert square_fit, 'square-fit wrapper missing'

@@ -1510,6 +1510,12 @@ TOOL_GUIDE_SPECS = {
              "preview": True,
              "preview_title": "Compared neurons",
              "columns": ["row", "type", "bodyId", "instance", "status"]},
+            {"pattern": "user_warning_notes.txt",
+             "description": "How the query resolved, written only when "
+                            "something needs disclosing: taxonomy-label "
+                            "expansions (e.g. a cell_type value expanding "
+                            "into member types), instance-name matches, "
+                            "member/total caps, and tokens nothing matched."},
             {"pattern": "type_level/type_similarity_*.csv",
              "description": "Type×type similarity matrix: each entry is the "
                             "mean over the cross-member bodyId pairs, the "
@@ -1537,7 +1543,9 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "visualization/heatmap_*.html",
              "description": "Interactive heatmaps, one per computed level — "
                             "heatmap_type_* / heatmap_group_* / "
-                            "heatmap_bodyid_*."},
+                            "heatmap_bodyid_*. Matrix cells render square "
+                            "(1:1) in both the VisPath renderer and the "
+                            "offline fallback."},
             {"pattern": "plot-3d_*/",
              "description": "Optional 3D skeleton scene (3D Skeleton "
                             "Visualization checkbox): one layer per "
@@ -2264,6 +2272,13 @@ TOOL_GUIDE_SPECS = {
                             "held/excluded by the mapper, or multi-value "
                             "type cells (kept atomic) - advisory "
                             "accounting, never a gate."},
+            {"pattern": "mapping/disclosure_evidence.csv",
+             "description": "Evidence-tier disclosure (three-tier readout): "
+                            "the ends the mapper decision DECLINED but the "
+                            "derivation evidence reaches, with the decline "
+                            "reason and - when --verify-suspects ran - the "
+                            "verification verdicts. Advisory bin, never the "
+                            "headline counts."},
             {"pattern": "mapping/suspects_verification.csv",
              "description": "Opt-in (--verify-suspects): advisory "
                             "connectivity verification of the mapper's "

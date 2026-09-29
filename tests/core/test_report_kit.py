@@ -107,3 +107,45 @@ def test_generate_standalone_heatmaps_writes_and_falls_back(tmp_path):
     html = out.read_text(encoding='utf-8')
     assert 'customColorScale = [[0.0, "#053061"]' in html or \
            'customColorScale = [[0.0,"#053061"]' in html
+
+
+def test_square_cells_anchors_cells_and_caps_natural_width():
+    """square_cells locks cells 1:1 via the scaleanchor at any container
+    width; small matrices keep the natural-width wrapper so a wide
+    single-metric card does not center the band away from the header."""
+    pytest.importorskip("plotly")
+    matrix = pd.DataFrame(
+        np.eye(4), index=[f"r{i}" for i in range(4)],
+        columns=[f"c{i}" for i in range(4)])
+    style = report_kit.metric_style('jaccard')
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', square_cells=True)
+    assert 'scaleanchor' in fragment
+    assert 'heatmap-square-fit' in fragment
+
+
+def test_square_cells_large_matrix_anchors_without_wrapper():
+    pytest.importorskip("plotly")
+    n = 35
+    matrix = pd.DataFrame(
+        np.eye(n), index=[f"r{i}" for i in range(n)],
+        columns=[f"c{i}" for i in range(n)])
+    style = report_kit.metric_style('jaccard')
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', square_cells=True)
+    assert 'scaleanchor' in fragment
+    assert 'heatmap-square-fit' not in fragment
+
+
+def test_non_square_cells_stay_free_aspect():
+    """square_cells=False (e.g. the profiling inter-dataset grids) keeps the
+    rectangular rendering — no anchor, no width cap."""
+    pytest.importorskip("plotly")
+    matrix = pd.DataFrame(
+        np.eye(4), index=[f"r{i}" for i in range(4)],
+        columns=[f"c{i}" for i in range(4)])
+    style = report_kit.metric_style('jaccard')
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', square_cells=False)
+    assert 'scaleanchor' not in fragment
+    assert 'heatmap-square-fit' not in fragment

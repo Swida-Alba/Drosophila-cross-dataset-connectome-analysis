@@ -145,13 +145,13 @@ def plotly_heatmap_fragment(
 ) -> Tuple[Optional[str], bool]:
     """Render one clustered Plotly heatmap fragment without cell labels.
 
-    ``square_cells`` locks each matrix cell to a 1:1 aspect ratio.
-    For small matrices (max dimension <= 30) an explicit figure width is
-    computed so cells render square *without* Plotly's ``scaleanchor``
-    (which would center the constrained domain and detach row labels from
-    the cell band in wide single-metric cards). For larger matrices the
-    plot area is tall enough that ``scaleanchor`` works correctly and is
-    retained.
+    ``square_cells`` locks each matrix cell to a 1:1 aspect ratio:
+    Plotly's ``scaleanchor`` is the exactness guarantee (it survives narrow
+    metric cards, the estimated colorbar footprint, and responsive
+    re-renders), while for small matrices (max dimension <= 30) an explicit
+    figure width is additionally computed as the natural size target so a
+    wide single-metric card does not leave the constrained domain centered
+    far from the section header.
     """
     if matrix is None or matrix.empty:
         return None, False
@@ -196,13 +196,14 @@ def plotly_heatmap_fragment(
     left_margin = min(235, max(90, max_label_length * 5 + 22))
     matrix_dimension = max(len(y_labels), len(x_labels))
     row_height = 18 if len(y_labels) > 60 else 23
-    # Square-cell strategy depends on matrix size. For small matrices the
-    # single-metric card's 1100px plotly-graph-div cap leaves the plot area
-    # much wider than tall; Plotly's scaleanchor then centers the constrained
-    # domain and detaches row labels from the cell band. In that regime we
-    # compute an explicit figure width so cells are naturally square without
-    # any anchor. Large matrices have a balanced plot area, so the anchor
-    # path stays.
+    # Square-cell strategy: the scaleanchor below is the exactness guarantee —
+    # it locks cells 1:1 whatever the container does (a two-per-row metric
+    # card is roughly half the width the explicit math assumes, the colorbar
+    # footprint is only estimated, and a responsive re-render on window
+    # resize would otherwise stretch the cells). The explicit width
+    # computation stays as the NATURAL size target for small matrices: it
+    # caps the plotly div so a wide single-metric card does not leave the
+    # constrained domain centered far from the section header.
     n_cols = max(len(x_labels), 1)
     n_rows = max(len(y_labels), 1)
     colorbar_allow = 100
@@ -240,11 +241,12 @@ def plotly_heatmap_fragment(
         'zeroline': False,
         'showline': False,
     }
-    if square_cells and not square_explicit_width:
-        # Large matrix: equal axis scaling makes each matrix cell a true
-        # square even when the responsive report card is resized. The plot
-        # area is tall enough that the constrained domain stays adjacent
-        # to the row labels.
+    if square_cells:
+        # Equal axis scaling makes each matrix cell a true square at any
+        # container width, including responsive re-renders and the narrow
+        # cards of a two-per-row metric grid. The explicit height above
+        # keeps the plot area tall enough that the constrained domain stays
+        # adjacent to the row labels.
         yaxis.update({
             'scaleanchor': 'x',
             'scaleratio': 1,
