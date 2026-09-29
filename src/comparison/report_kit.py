@@ -101,18 +101,25 @@ def metric_style(key: str, display_name: Optional[str] = None) -> MetricStyle:
                        REPORT_POSITIVE_COLORSCALE, 0.0, 1.0)
 
 
-def cluster_heatmap_matrix(matrix: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
-    """Apply the same Ward/Euclidean ordering used by VisPath.
+def cluster_heatmap_matrix_with_linkage(
+    matrix: pd.DataFrame,
+) -> Tuple[pd.DataFrame, bool, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Apply the same Ward/Euclidean ordering used by VisPath, keeping the linkages.
 
     VisPath clusters a finite copy of the matrix, replacing missing values
     with zero before calculating row and column Euclidean distances.  The
     report follows that ordering while retaining missing cells as blanks
     in the displayed Plotly heatmap.
+
+    Returns ``(ordered, clustered, row_linkage, col_linkage)`` where the
+    linkage matrices are the scipy Ward linkages behind the applied leaf
+    orders (``None`` for axes with fewer than two labels or on failure) —
+    the raw material for drawing dendrograms beside the heatmap.
     """
     numeric = matrix.apply(pd.to_numeric, errors='coerce')
     numeric = numeric.replace([np.inf, -np.inf], np.nan)
     if numeric.empty:
-        return numeric, False
+        return numeric, False, None, None
 
     try:
         from scipy.cluster.hierarchy import leaves_list, linkage
@@ -121,17 +128,71 @@ def cluster_heatmap_matrix(matrix: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
         finite = numeric.fillna(0.0).to_numpy(dtype=float)
         row_order = list(range(numeric.shape[0]))
         col_order = list(range(numeric.shape[1]))
+        row_linkage: Optional[np.ndarray] = None
+        col_linkage: Optional[np.ndarray] = None
         if finite.shape[0] > 1:
-            row_order = leaves_list(
-                linkage(pdist(finite, metric='euclidean'), method='ward')
-            ).tolist()
+            row_linkage = linkage(pdist(finite, metric='euclidean'), method='ward')
+            row_order = leaves_list(row_linkage).tolist()
         if finite.shape[1] > 1:
-            col_order = leaves_list(
-                linkage(pdist(finite.T, metric='euclidean'), method='ward')
-            ).tolist()
-        return numeric.iloc[row_order, col_order], True
+            col_linkage = linkage(pdist(finite.T, metric='euclidean'), method='ward')
+            col_order = leaves_list(col_linkage).tolist()
+        return numeric.iloc[row_order, col_order], True, row_linkage, col_linkage
     except (ImportError, ValueError, TypeError, FloatingPointError):
-        return numeric, False
+        return numeric, False, None, None
+
+
+def cluster_heatmap_matrix(matrix: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
+    """Apply the same Ward/Euclidean ordering used by VisPath.
+
+    VisPath clusters a finite copy of the matrix, replacing missing values
+    with zero before calculating row and column Euclidean distances.  The
+    report follows that ordering while retaining missing cells as blanks
+    in the displayed Plotly heatmap.
+    """
+    ordered, clustered, _, _ = cluster_heatmap_matrix_with_linkage(matrix)
+    return ordered, clustered
+
+
+def _dendrogram_line_points(linkage_matrix: np.ndarray) -> Tuple[Optional[list], Optional[list]]:
+    """Convert a scipy linkage matrix into dendrogram line-segment coordinates.
+
+    Returns ``(positions, distances)`` lists with ``None`` separators between
+    merge segments. Positions are leaf-slot indices (0..n-1) in the linkage's
+    own leaf order — scipy spaces its icoord leaves at 5, 15, 25, ..., so the
+    slots are ``(value - 5) / 10`` — and distances are merge heights.
+    """
+    try:
+        from scipy.cluster.hierarchy import dendrogram as scipy_dendrogram
+    except ImportError:
+        return None, None
+    result = scipy_dendrogram(linkage_matrix, no_plot=True)
+    positions: list = []
+    distances: list = []
+    for seg_positions, seg_distances in zip(result['icoord'], result['dcoord']):
+        positions.extend((value - 5.0) / 10.0 for value in seg_positions)
+        distances.extend(seg_distances)
+        positions.append(None)
+        distances.append(None)
+    return positions, distances
+
+
+def _thinned_ticks(labels: List[str], max_ticks: int = 45) -> Tuple[List[int], List[str]]:
+    """(tickvals, ticktext) for the dendrogram's shared leaf-slot axis.
+
+    Explicit per-leaf ticks keep the tree leaves and the axis labels on one
+    grid, but drawing every label turns a large matrix's axes into an
+    overlapping mass (a 200-row band is ~3px per label). Beyond
+    ``max_ticks`` an even stride subsamples, keeping the first and last
+    leaf so both ends stay anchored.
+    """
+    n = len(labels)
+    if n <= max_ticks:
+        return list(range(n)), list(labels)
+    stride = -(-n // max_ticks)
+    idx = list(range(0, n, stride))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return idx, [labels[i] for i in idx]
 
 
 def plotly_heatmap_fragment(
@@ -142,6 +203,7 @@ def plotly_heatmap_fragment(
     y_title: str,
     include_plotlyjs: bool = False,
     square_cells: bool = False,
+    show_dendrogram: bool = True,
 ) -> Tuple[Optional[str], bool]:
     """Render one clustered Plotly heatmap fragment without cell labels.
 
@@ -152,6 +214,10 @@ def plotly_heatmap_fragment(
     figure width is additionally computed as the natural size target so a
     wide single-metric card does not leave the constrained domain centered
     far from the section header.
+
+    When the matrix clustered successfully and ``show_dendrogram`` is set,
+    mini-dendrograms for the applied Ward orderings are drawn beside the
+    heatmap (column tree above, row tree right) within the same figure.
     """
     if matrix is None or matrix.empty:
         return None, False
@@ -161,13 +227,27 @@ def plotly_heatmap_fragment(
     except ImportError:
         return None, False
 
-    ordered, clustered = cluster_heatmap_matrix(matrix)
+    ordered, clustered, row_linkage, col_linkage = cluster_heatmap_matrix_with_linkage(matrix)
     z = [
         [None if pd.isna(value) else float(value) for value in row]
         for row in ordered.itertuples(index=False, name=None)
     ]
     x_labels = [str(value) for value in ordered.columns]
     y_labels = [str(value) for value in ordered.index]
+
+    # Dendrogram overlay: line coordinates in leaf-slot / distance space.
+    top_points = (None, None)
+    right_points = (None, None)
+    top_max = right_max = 0.0
+    use_dendrogram = clustered and show_dendrogram
+    if use_dendrogram:
+        if col_linkage is not None:
+            top_points = _dendrogram_line_points(col_linkage)
+            top_max = float(np.max(col_linkage[:, 2])) if top_points[0] is not None else 0.0
+        if row_linkage is not None:
+            right_points = _dendrogram_line_points(row_linkage)
+            right_max = float(np.max(row_linkage[:, 2])) if right_points[0] is not None else 0.0
+        use_dendrogram = top_points[0] is not None or right_points[0] is not None
 
     heatmap_kwargs = {
         'z': z,
@@ -190,6 +270,20 @@ def plotly_heatmap_fragment(
             '<extra></extra>'
         ),
     }
+    if use_dendrogram:
+        # Numeric axes so the dendrogram scatters share the heatmap's tick
+        # space; labels move to ticktext and the hover text carries both ends.
+        heatmap_kwargs['x'] = list(range(len(x_labels)))
+        heatmap_kwargs['y'] = list(range(len(y_labels)))
+        heatmap_kwargs['text'] = [
+            [f'{row_label} · {col_label}' for col_label in x_labels]
+            for row_label in y_labels
+        ]
+        heatmap_kwargs['hovertemplate'] = (
+            '<b>%{text}</b><br>'
+            f'{style.display_name}: %{{z:.3f}}'
+            '<extra></extra>'
+        )
 
     fig = go.Figure(data=[go.Heatmap(**heatmap_kwargs)])
     max_label_length = max((len(label) for label in y_labels), default=12)
@@ -209,14 +303,17 @@ def plotly_heatmap_fragment(
     colorbar_allow = 100
     square_explicit_width = False
     fig_width_px: Optional[int] = None
+    dendro_band_px = 44
+    top_band_px = dendro_band_px if top_points[0] is not None else 0
+    right_band_px = dendro_band_px if right_points[0] is not None else 0
     if square_cells and matrix_dimension <= 30:
         row_height = 18 if matrix_dimension > 60 else 27
         # Compute cell size from BOTH dimensions so the height cap is
         # respected even for non-square matrices (e.g. 19 rows x 13 cols).
-        width_limit = (1100 - left_margin - 12 - colorbar_allow) // n_cols
+        width_limit = (1100 - left_margin - 12 - colorbar_allow - right_band_px) // n_cols
         height_limit = (880 - 168) // n_rows
         cell_px = max(30, min(80, width_limit, height_limit))
-        fig_width_px = min(1100, left_margin + 12 + colorbar_allow + n_cols * cell_px)
+        fig_width_px = min(1100, left_margin + 12 + colorbar_allow + right_band_px + n_cols * cell_px)
         height = max(390, min(880, 168 + n_rows * cell_px))
         square_explicit_width = True
     elif square_cells:
@@ -225,6 +322,9 @@ def plotly_heatmap_fragment(
         height = min(880, height)
     else:
         height = max(335, min(880, 185 + len(y_labels) * row_height))
+    if top_band_px:
+        # Keep the heatmap band at its computed size; the tree lives above it.
+        height = min(924, height + top_band_px)
     xaxis = {
         'title': {'text': x_title, 'font': {'size': 10}},
         'tickangle': -42,
@@ -241,6 +341,13 @@ def plotly_heatmap_fragment(
         'zeroline': False,
         'showline': False,
     }
+    if use_dendrogram:
+        # Numeric axes so the dendrogram scatters share the heatmap's tick
+        # space; labels move to ticktext. Large matrices thin the ticks —
+        # an explicit per-leaf list would draw ~3px-pitch labels as an
+        # overlapping mass.
+        xaxis['tickvals'], xaxis['ticktext'] = _thinned_ticks(x_labels)
+        yaxis['tickvals'], yaxis['ticktext'] = _thinned_ticks(y_labels)
     if square_cells:
         # Equal axis scaling makes each matrix cell a true square at any
         # container width, including responsive re-renders and the narrow
@@ -252,6 +359,16 @@ def plotly_heatmap_fragment(
             'scaleratio': 1,
             'constrain': 'domain',
         })
+    # Carve the tree bands out of the heatmap's plot area so leaf edges stay
+    # flush with the heatmap: column tree above, row tree right. The domains
+    # must be part of the update_layout call below — mutating these dicts
+    # afterwards would not reach the figure.
+    top_frac = (top_band_px / height) if top_band_px else 0.0
+    right_frac = right_band_px / float(fig_width_px or 1100)
+    if top_frac:
+        yaxis['domain'] = [0.0, 1.0 - top_frac]
+    if right_frac:
+        xaxis['domain'] = [0.0, 1.0 - right_frac]
     fig.update_layout(
         template='plotly_white',
         title={
@@ -273,6 +390,31 @@ def plotly_heatmap_fragment(
         xaxis=xaxis,
         yaxis=yaxis,
     )
+    if use_dendrogram:
+        dendro_line = {'color': '#8a8f98', 'width': 1}
+        if top_points[0] is not None:
+            fig.add_trace(go.Scatter(
+                x=top_points[0], y=top_points[1], mode='lines',
+                line=dendro_line, hoverinfo='skip', showlegend=False,
+                xaxis='x', yaxis='y2'))
+            fig.update_layout(yaxis2={
+                'domain': [1.0 - top_frac, 1.0],
+                'range': [0.0, top_max * 1.05],
+                'visible': False, 'fixedrange': True,
+            })
+        if right_points[0] is not None:
+            # Right band: x = merge heights (the band's depth axis), y = leaf
+            # slots on the shared heatmap y axis. _dendrogram_line_points
+            # returns (positions, distances), so the axes are swapped here.
+            fig.add_trace(go.Scatter(
+                x=right_points[1], y=right_points[0], mode='lines',
+                line=dendro_line, hoverinfo='skip', showlegend=False,
+                xaxis='x2', yaxis='y'))
+            fig.update_layout(xaxis2={
+                'domain': [1.0 - right_frac, 1.0],
+                'range': [0.0, right_max * 1.05],
+                'visible': False, 'fixedrange': True,
+            })
 
     fragment = fig.to_html(
         full_html=False,
@@ -438,7 +580,54 @@ def report_script() -> str:
     if (!panel || !window.Plotly) return;
     panel.querySelectorAll('.js-plotly-plot').forEach(function (plot) {
       try { window.Plotly.Plots.resize(plot); } catch (error) { /* no-op */ }
+      alignDendrogramBands(plot);
     });
+  }
+
+  // Dendrogram bands must hug the heatmap's cell edges. Plotly's square-cell
+  // scaleanchor pads the heatmap's autoranged axis to satisfy the aspect
+  // ratio, so the plot-domain edge (where the band starts) can sit one
+  // padding-width away from the actual cell edge; after each render, move the
+  // band edges onto the padding.
+  function alignDendrogramBands(plot) {
+    if (!window.Plotly || !plot || !plot._fullLayout) return;
+    try {
+      var full = plot._fullLayout;
+      if (!full.xaxis2 && !full.yaxis2) return;
+      var heat = plot.data && plot.data[0];
+      if (!heat || heat.type !== 'heatmap') return;
+      var layout = plot.layout || {};
+      var update = {};
+      if (full.xaxis2) {
+        var xa = full.xaxis;
+        var nX = (heat.x || []).length;
+        var xSpan = xa.range[1] - xa.range[0];
+        if (nX > 0 && xSpan > 0) {
+          var padX = (xa.range[1] - (nX - 0.5)) / xSpan;
+          if (padX > 0.002) {
+            var xd = (layout.xaxis && layout.xaxis.domain) || xa.domain;
+            update['xaxis2.domain'] = [xd[1] - padX * (xd[1] - xd[0]), xd[1]];
+          }
+        }
+      }
+      if (full.yaxis2) {
+        var ya = full.yaxis;
+        var nY = (heat.y || []).length;
+        var yHi = Math.max(ya.range[0], ya.range[1]);
+        var yLo = Math.min(ya.range[0], ya.range[1]);
+        var ySpan = yHi - yLo;
+        if (nY > 0 && ySpan > 0) {
+          var padY = (yHi - (nY - 0.5)) / ySpan;
+          if (padY > 0.002) {
+            var yd = (layout.yaxis && layout.yaxis.domain) || ya.domain;
+            update['yaxis2.domain'] = [yd[1] - padY * (yd[1] - yd[0]), yd[1]];
+          }
+        }
+      }
+      if (update['xaxis2.domain'] || update['yaxis2.domain']) {
+        window.Plotly.relayout(plot, update);
+      }
+    } catch (error) { /* no-op */ }
   }
 
   document.querySelectorAll('[data-tab-button]').forEach(function (button) {
@@ -460,7 +649,18 @@ def report_script() -> str:
   });
 
   window.addEventListener('load', function () {
+    document.querySelectorAll('.js-plotly-plot').forEach(function (plot) {
+      setTimeout(function () { alignDendrogramBands(plot); }, 0);
+    });
     document.querySelectorAll('.tab-panel.active').forEach(resizePlots);
+  });
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      document.querySelectorAll('.js-plotly-plot').forEach(alignDendrogramBands);
+    }, 80);
   });
 }());
 </script>"""

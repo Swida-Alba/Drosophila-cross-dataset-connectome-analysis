@@ -109,6 +109,113 @@ def test_generate_standalone_heatmaps_writes_and_falls_back(tmp_path):
            'customColorScale = [[0.0,"#053061"]' in html
 
 
+def test_cluster_heatmap_matrix_with_linkage_returns_ward_linkages():
+    pytest.importorskip("scipy")
+    from scipy.cluster.hierarchy import leaves_list
+
+    rng = np.random.default_rng(21)
+    matrix = pd.DataFrame(
+        rng.random((5, 4)),
+        index=[f"r{i}" for i in range(5)],
+        columns=[f"c{j}" for j in range(4)],
+    )
+    ordered, clustered, row_linkage, col_linkage = (
+        report_kit.cluster_heatmap_matrix_with_linkage(matrix))
+    assert clustered is True
+    assert row_linkage.shape == (4, 4)
+    assert col_linkage.shape == (3, 4)
+    # The applied leaf order comes from exactly the returned linkage
+    assert ordered.index.tolist() == [
+        f"r{i}" for i in leaves_list(row_linkage).tolist()]
+    assert ordered.columns.tolist() == [
+        f"c{i}" for i in leaves_list(col_linkage).tolist()]
+
+
+def test_cluster_heatmap_matrix_wrapper_matches_linkage_variant():
+    pytest.importorskip("scipy")
+    rng = np.random.default_rng(22)
+    matrix = pd.DataFrame(rng.random((4, 3)), index=list("abcd"),
+                          columns=list("xyz"))
+    ordered, clustered, row_linkage, _ = (
+        report_kit.cluster_heatmap_matrix_with_linkage(matrix))
+    wrapped_ordered, wrapped_clustered = report_kit.cluster_heatmap_matrix(matrix)
+    assert wrapped_clustered == clustered
+    assert wrapped_ordered.equals(ordered)
+    assert row_linkage.shape == (3, 4)
+
+
+def test_plotly_heatmap_fragment_draws_dendrograms_when_clustered():
+    pytest.importorskip("plotly")
+    import re
+
+    rng = np.random.default_rng(23)
+    matrix = pd.DataFrame(
+        rng.random((5, 4)),
+        index=[f"r{i}" for i in range(5)],
+        columns=[f"c{j}" for j in range(4)],
+    )
+    style = report_kit.metric_style('weight', 'Synapses')
+    fragment, clustered = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y')
+    assert clustered is True
+    assert fragment is not None
+    # Column tree on y2 (shared x), row tree on x2 (shared y)
+    assert '"yaxis":"y2"' in fragment
+    assert '"xaxis":"x2"' in fragment
+    assert '"yaxis2"' in fragment and '"xaxis2"' in fragment
+    # Heatmap moved to numeric ticks with the labels as ticktext
+    assert '"ticktext"' in fragment and '"tickvals"' in fragment
+    # Orientation: the right tree's y values are leaf slots (0..n-1; internal
+    # nodes sit at child midpoints); its x values are merge heights. A swapped
+    # pair would clip the tree at xaxis2's height range and truncate it.
+    match = re.search(r'"xaxis":"x2","y":\[([^\]]*)\]', fragment)
+    assert match, "right dendrogram trace not found"
+    slots = [float(v) for v in match.group(1).split(',') if v != 'null']
+    assert min(slots) == 0.0 and max(slots) == 4.0  # first/last leaf stems
+
+
+def test_plotly_heatmap_fragment_without_dendrogram_has_no_trees():
+    pytest.importorskip("plotly")
+    rng = np.random.default_rng(24)
+    matrix = pd.DataFrame(
+        rng.random((5, 4)),
+        index=[f"r{i}" for i in range(5)],
+        columns=[f"c{j}" for j in range(4)],
+    )
+    style = report_kit.metric_style('weight', 'Synapses')
+    fragment, clustered = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', show_dendrogram=False)
+    assert clustered is True
+    assert '"yaxis":"y2"' not in fragment
+    assert '"xaxis":"x2"' not in fragment
+    assert '"yaxis2"' not in fragment and '"xaxis2"' not in fragment
+    assert '"ticktext"' not in fragment
+
+
+def test_plotly_heatmap_fragment_single_row_has_column_tree_only():
+    pytest.importorskip("plotly")
+    matrix = pd.DataFrame([[0.2, 0.9, 0.4, 0.7]], index=["only"],
+                          columns=["c0", "c1", "c2", "c3"])
+    style = report_kit.metric_style('weight', 'Synapses')
+    fragment, clustered = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y')
+    assert clustered is True
+    assert '"yaxis":"y2"' in fragment
+    assert '"xaxis":"x2"' not in fragment
+
+
+def test_plotly_heatmap_fragment_degenerate_matrix_stays_flat():
+    pytest.importorskip("plotly")
+    matrix = pd.DataFrame([[0.5]], index=["a"], columns=["b"])
+    style = report_kit.metric_style('weight', 'Synapses')
+    fragment, clustered = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y')
+    assert clustered is True
+    # 1x1: clustering "succeeds" trivially but both linkages are None, so
+    # no dendrogram bands may appear
+    assert '"yaxis":"y2"' not in fragment
+
+
 def test_square_cells_anchors_cells_and_caps_natural_width():
     """square_cells locks cells 1:1 via the scaleanchor at any container
     width; small matrices keep the natural-width wrapper so a wide
@@ -149,3 +256,34 @@ def test_non_square_cells_stay_free_aspect():
         matrix, 't', style, 'x', 'y', square_cells=False)
     assert 'scaleanchor' not in fragment
     assert 'heatmap-square-fit' not in fragment
+
+
+def test_dendrogram_ticks_thin_on_large_matrices():
+    """A 200-row dendrogram matrix thins the shared leaf-slot ticks to a
+    readable stride (first and last leaf kept) instead of drawing every
+    label at ~3px pitch."""
+    pytest.importorskip("plotly")
+    n = 200
+    rng = np.random.default_rng(25)
+    matrix = pd.DataFrame(
+        rng.random((n, n)),
+        index=[f"r{i}" for i in range(n)],
+        columns=[f"c{i}" for i in range(n)],
+    )
+    style = report_kit.metric_style('jaccard')
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y')
+    import re
+    tick_arrays = re.findall(r'"tickvals":\[([0-9.,\s]+)\]', fragment)
+    assert tick_arrays, 'dendrogram mode must carry explicit tickvals'
+    for array in tick_arrays:
+        ticks = [t for t in array.split(',') if t.strip()]
+        assert len(ticks) <= 47
+        assert ticks[0] == '0' and ticks[-1] == str(n - 1)
+    # Small matrices keep every leaf labelled.
+    small = pd.DataFrame(
+        np.eye(5), index=[f"r{i}" for i in range(5)],
+        columns=[f"c{i}" for i in range(5)])
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        small, 't', style, 'x', 'y')
+    assert '"tickvals":[0,1,2,3,4]' in fragment

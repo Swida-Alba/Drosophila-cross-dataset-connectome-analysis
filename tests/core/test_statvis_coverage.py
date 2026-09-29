@@ -929,6 +929,94 @@ class TestVisConnMatInteractiveLocal:
         assert out.exists()
 
 
+class TestVisConnMatInteractiveDendrogram:
+    """Dendrogram support in the live vispath_pkg heatmap page.
+
+    These target vispath_pkg directly (not the deprecated statvis local
+    copy) because the dendrogram template changes live there.
+    """
+
+    def _cmat(self, rows, cols, seed=0):
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame(
+            rng.integers(0, 20, size=(rows, cols)).astype(float),
+            index=[f"r{i}" for i in range(rows)],
+            columns=[f"c{j}" for j in range(cols)],
+        )
+
+    def _render(self, tmp_path, cmat, **kwargs):
+        import vispath_pkg
+        out = tmp_path / "dendro.html"
+        vispath_pkg.VisConnMatInteractive(
+            cmat, str(out), title="dendro", showfig=False, verbose=False,
+            **kwargs)
+        assert out.exists()
+        return out.read_text(encoding="utf-8")
+
+    def _clustering_results(self, text):
+        import json
+        import re
+        match = re.search(r"const clusteringResults = (\{.*?\});\n", text)
+        assert match, "clusteringResults payload not found"
+        return json.loads(match.group(1))
+
+    def test_linkage_matrices_embedded_per_method(self, tmp_path):
+        pytest.importorskip("vispath_pkg")
+        text = self._render(tmp_path, self._cmat(6, 5, seed=11))
+        results = self._clustering_results(text)
+        assert set(results) == {"ward", "average", "complete", "single"}
+        for method, payload in results.items():
+            assert len(payload["row_order"]) == 6
+            assert len(payload["col_order"]) == 5
+            # scipy linkage matrices: (n-1) merges x 4 columns
+            assert len(payload["row_linkage"]) == 5
+            assert all(len(row) == 4 for row in payload["row_linkage"])
+            assert len(payload["col_linkage"]) == 4
+            assert all(len(row) == 4 for row in payload["col_linkage"])
+
+    def test_toggle_and_builder_markers_present(self, tmp_path):
+        pytest.importorskip("vispath_pkg")
+        text = self._render(tmp_path, self._cmat(5, 4, seed=12))
+        assert "buildDendrogramSegments" in text
+        assert "buildDendrogramTrace" in text
+        assert 'id="dendrogramToggle" onchange="toggleDendrogram()" checked' in text
+        assert "showDendrogram = true" in text
+
+    def test_init_clustered_false_leaves_toggle_off(self, tmp_path):
+        pytest.importorskip("vispath_pkg")
+        text = self._render(tmp_path, self._cmat(5, 4, seed=13),
+                            init_clustered=False)
+        # Linkage data still ships so switching to Clustered works client-side
+        assert '"row_linkage"' in text
+        assert "showDendrogram = false" in text
+        assert 'onchange="toggleDendrogram()" checked' not in text
+
+    def test_single_row_matrix_has_column_linkage_only(self, tmp_path):
+        pytest.importorskip("vispath_pkg")
+        single = pd.DataFrame(
+            [[5.0, 0.0, 2.0, 9.0, 1.0]], index=["only"], columns=[f"c{j}" for j in range(5)])
+        text = self._render(tmp_path, single)
+        results = self._clustering_results(text)
+        for payload in results.values():
+            assert "row_linkage" not in payload
+            assert payload["row_order"] == [0]
+            assert len(payload["col_linkage"]) == 4
+
+    def test_clustering_failure_omits_dendrogram_data(self, tmp_path,
+                                                      monkeypatch):
+        pytest.importorskip("vispath_pkg")
+        import scipy.cluster.hierarchy as hierarchy
+
+        def broken_linkage(*a, **k):
+            raise RuntimeError("clustering unavailable")
+
+        monkeypatch.setattr(hierarchy, "linkage", broken_linkage)
+        text = self._render(tmp_path, self._cmat(4, 4, seed=14))
+        results = self._clustering_results(text)
+        assert results == {}
+        assert "clusteringAvailable = false" in text
+
+
 # =============================================================================
 # VisConnMat large-matrix optimization branch (2444, 2510-2632)
 # =============================================================================
