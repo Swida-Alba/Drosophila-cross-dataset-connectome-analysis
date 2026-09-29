@@ -63,6 +63,7 @@ prefixes — so the legend and the CSVs cannot disagree.
 """
 
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -509,6 +510,222 @@ def check_scene_identities(viz, scene_bboxes: Dict[int,
     return problems
 
 
+class EmptyQueryLayerError(RuntimeError):
+    """A scene's queried source neurons all failed to load a skeleton.
+
+    Raised into the scene-failure marker by ``render_pair_scenes``: a
+    scene whose query layer is empty is a FAILURE, not a smaller picture
+    (plan-tmvev-reverse-scene-loader-defects.md fix 2 — the 2026-09-29
+    reverse run rendered 21 target-only scenes while all 204 queried
+    male-cns sources dropped silently, and every gate stayed green).
+    """
+
+
+def _scene_folder_slug(name: str) -> str:
+    """Folder-safe slug for a synthetic failed-scene folder name (the
+    report's scene-failure reader only needs the ``plot-3d_`` prefix)."""
+    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(name)).strip('_') or 'scene'
+
+
+def _is_tree_neuron(nrn) -> bool:
+    """True for objects carrying a centerline (navis TreeNeuron — or a
+    test double shaped like one).  A prepared mesh has ``vertices`` but
+    no ``nodes``; under ``skeleton_mode='line'`` it must never be plotted,
+    so the scene loader refuses it as dropped."""
+    return nrn is not None and hasattr(nrn, 'nodes')
+
+
+def _raw_skeleton_cache_dir(cache_dir, dataset: str) -> Path:
+    """The dataset's own raw-skeleton store:
+    ``<cache>/<dataset_folder>/skeletons/raw_skeletons/``."""
+    return (Path(cache_dir) /
+            dataset.replace(':', '_').replace('.', '_') /
+            'skeletons' / 'raw_skeletons')
+
+
+def _load_scene_skeletons(dataset: str, bids, cache_dir=None, log=None
+                          ) -> Tuple[List, List[Tuple[int, str]]]:
+    """Scene skeleton loader for EVERY dataset kind — the one loader both
+    the query and the target layers go through.
+
+    Three measured defects this closes (all on the 2026-09-29 MCNS→FAFB
+    run, ``plan-tmvev-reverse-scene-loader-defects.md``):
+
+    - the query layer went through ``_resolve_fafb_skeleton_trees``,
+      which returns ``{}`` for any non-FAFB dataset — all 204 queried
+      male-cns sources silently vanished from the reverse scenes;
+    - the target layer probed ``raw_skeletons/`` (0 files for FAFB — its
+      centerlines live in ``cave_skeletons/``) and fell back to
+      ``fetch_skeleton_on_demand``, whose FAFB branch returns a prepared
+      MESH: no centerline, served under ``Skeleton Mode: line``;
+    - neither path ever passed ``check_extrusions=True``, so drawn FAFB
+      geometry was not extrusion-refined (the picture and the morph
+      score were not guaranteed to come from the same skeleton).
+
+    Dispatch: FAFB/BANC → ``morphology.load_local_release_skeletons``
+    with ``check_extrusions=True`` (repair caches → raw cache → healed
+    zip → extrusion check/repair → token-gated CAVE; BANC from its
+    public-release bucket).  NeuPrint → the dataset's own
+    ``raw_skeletons`` cache, then ``fetch_skeleton_on_demand`` (its
+    NeuPrint branch returns TreeNeurons and persists there).  Anything
+    that is not a centerline-bearing neuron is refused as dropped —
+    never plotted.  ``_resolve_fafb_skeleton_trees``'s non-FAFB early
+    return stays untouched: it is load-bearing for build-time
+    vectorization, where ``check_extrusions=False`` is deliberate.
+
+    Returns ``(neurons, dropped)``; neurons are stamped ``id`` / ``name``
+    (bodyId — the backend's trace-identity resolver matches on name) and
+    ``_drocat_source_dataset``; ``dropped`` is ``(bodyId, why)`` pairs.
+    """
+    from morphology import (_load_cached_skeleton_file,
+                            fetch_skeleton_on_demand)
+    from flywire_ids import is_local_connectome_dataset
+
+    def _stamp(nrn, bid: int) -> None:
+        try:
+            nrn.id = int(bid)
+            nrn.name = str(int(bid))
+            nrn._drocat_source_dataset = dataset
+        except Exception:  # noqa: BLE001
+            pass
+
+    ids = [int(b) for b in bids]
+    neurons, dropped = [], []
+    if is_local_connectome_dataset(dataset):
+        try:
+            from morphology import load_local_release_skeletons
+            trees = load_local_release_skeletons(
+                dataset, ids, log=log, check_extrusions=True)
+        except Exception as exc:  # noqa: BLE001
+            return [], [(b, str(exc)) for b in ids]
+        for b in ids:
+            nrn = trees.get(b)
+            if nrn is None:
+                dropped.append((b, 'no skeleton'))
+            elif not _is_tree_neuron(nrn):
+                dropped.append((b, 'non-skeleton object refused'))
+            else:
+                _stamp(nrn, b)
+                neurons.append(nrn)
+    else:
+        skel_dir = _raw_skeleton_cache_dir(cache_dir, dataset)
+        for b in ids:
+            try:
+                path = skel_dir / f'{b}.swc.zst'
+                nrn = (_load_cached_skeleton_file(path)
+                       if path.exists() else None)
+                if nrn is None:
+                    nrn = fetch_skeleton_on_demand(dataset, b)
+            except Exception as exc:  # noqa: BLE001
+                dropped.append((b, str(exc)))
+                continue
+            if nrn is None:
+                dropped.append((b, 'no skeleton'))
+            elif not _is_tree_neuron(nrn):
+                dropped.append((b, 'non-skeleton object refused'))
+            else:
+                _stamp(nrn, b)
+                neurons.append(nrn)
+    return neurons, dropped
+
+
+def _neuron_leaf_census(viz) -> Dict[int, Dict]:
+    """Per-bodyId census of the rendered neuron-kind legend leaves: how
+    many traces carry the leaf and whether any of them is a centerline
+    (``mode='lines'``).  Hidden (default-off) layers keep their traces in
+    the payload (``visible=False``), so they are censused like the rest."""
+    census: Dict[int, Dict] = {}
+    for tr in getattr(getattr(viz, 'fig_3d', None), 'data', []) or []:
+        meta = getattr(tr, 'meta', None) or {}
+        lg = meta.get('drocatLegend')
+        if not isinstance(lg, dict) or lg.get('kind') != 'neuron':
+            continue
+        m = re.match(r'^(\d+)', str(lg.get('item') or ''))
+        if not m:
+            continue
+        rec = census.setdefault(int(m.group(1)),
+                                {'item': lg.get('item'), 'traces': 0,
+                                 'lines': False})
+        rec['traces'] += 1
+        if str(getattr(tr, 'mode', '')) == 'lines':
+            rec['lines'] = True
+    return census
+
+
+def check_scene_population(viz, expected_by_layer: Dict[str, set],
+                           planted_by_layer: Dict[str, set],
+                           skeleton_mode=None) -> List[str]:
+    """Population self-check: every EXPECTED id must be planted, and every
+    planted id must be rendered.
+
+    ``check_scene_identities`` compares plotted geometry against legend
+    leaves, both derived from the same load pass — a layer that never
+    loaded produces neither traces nor bboxes and is invisible to it.
+    That is the gate blind spot that let the 2026-09-29 reverse run ship
+    21 target-only scenes ("40/40 self-checks passed") with all 204
+    queried sources missing.  This check compares:
+
+    - per layer, expected ids (captured at the loader call sites) against
+      planted ids (what ``add_layer`` actually received);
+    - planted ids against the rendered neuron leaves in the figure
+      payload — a planted neuron the backend dropped is still missing;
+    - a geometry census: under ``skeleton_mode='line'`` a neuron leaf
+      whose payload holds no ``lines`` trace is mesh-only, i.e. the
+      declared mode and the served geometry disagree.
+
+    Returns problem strings; empty means the population is complete.
+    """
+    problems: List[str] = []
+
+    def _fmt(bids: List[int]) -> str:
+        shown = ', '.join(str(b) for b in bids[:8])
+        if len(bids) > 8:
+            shown += f' … (+{len(bids) - 8} more)'
+        return shown
+
+    for layer in sorted(set(expected_by_layer) | set(planted_by_layer)):
+        exp = expected_by_layer.get(layer) or set()
+        got = planted_by_layer.get(layer) or set()
+        missing = sorted(exp - got)
+        if missing:
+            problems.append(f'layer {layer}: {len(got)}/{len(exp)} '
+                            f'plotted, missing: {_fmt(missing)}')
+        extra = sorted(got - exp)
+        if extra:
+            problems.append(f'layer {layer}: {len(extra)} plotted id(s) '
+                            f'not in the expected set: {_fmt(extra)}')
+    census = _neuron_leaf_census(viz)
+    planted_all: set = set()
+    for ids in planted_by_layer.values():
+        planted_all |= ids
+    ghost = sorted(planted_all - set(census))
+    if ghost:
+        problems.append(f'{len(ghost)} planted neuron(s) rendered no '
+                        f'trace: {_fmt(ghost)}')
+    if str(skeleton_mode or '') == 'line':
+        mesh_only = [rec for rec in census.values()
+                     if rec['traces'] and not rec['lines']]
+        if mesh_only:
+            names = ', '.join(str(rec['item']) for rec in mesh_only[:6])
+            if len(mesh_only) > 6:
+                names += f' … (+{len(mesh_only) - 6} more)'
+            problems.append(
+                f'{len(mesh_only)} neuron leaf/leaves carry no centerline '
+                f'trace under skeleton_mode=line (mesh-only): {names}')
+    return problems
+
+
+def _planted_query_ids(planted_by_layer: Dict[str, set]) -> set:
+    """Ids planted in the query/unassigned layers — the keys ending in
+    ``:: query`` / ``:: unassigned``.  ``:: out-map query`` is a different
+    population (the unclaimed-source gap) and does not match."""
+    planted: set = set()
+    for key, pids in planted_by_layer.items():
+        if key.endswith(':: query') or key.endswith(':: unassigned'):
+            planted |= pids
+    return planted
+
+
 def pool_rows_by_host(pool_rows) -> Dict[str, List[Dict]]:
     """The ``pooling`` pool grouped by the scene that may host it: the TYPE
     of each candidate target's best source.  A pool row belongs to no branch,
@@ -640,7 +857,6 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                                     dataset_native_space,
                                     dataset_render_space,
                                     transform_neurons_to_space)
-    from morphology import _load_cached_skeleton_file
 
     # The backend renders injected overlay layers AS-IS in its template
     # space (visualize_skeleton's template target = the RENDER space), so
@@ -717,10 +933,6 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             f"not rendered: {', '.join(dropped)} — set Max Scenes to 0 to "
             'render every parent, or split the query into separate runs')
 
-    skel_dir = (Path(validator.profiler.cache_dir) /
-                cfg.target_dataset.replace(':', '_').replace('.', '_') /
-                'skeletons' / 'raw_skeletons')
-
     # `pooling` mode (plan-tmvev-pooling-mode.md): the unsupervised pool is
     # hosted by the parent group of the source that reached each target BEST
     # — a pool row has no branch, so the source type is its only scene
@@ -737,57 +949,27 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             f"{', '.join(unhosted)}, which no branch group covers. "
             'pooling/pooling_pool.csv holds every one of them.')
 
+    # ONE loader for both layers (plan-tmvev-reverse-scene-loader-defects
+    # fix 1): the query path's `_resolve_fafb_skeleton_trees` returned {}
+    # for any non-FAFB source (all 204 male-cns queries vanished from the
+    # 2026-09-29 reverse scenes), and the target path's
+    # `fetch_skeleton_on_demand` fallback serves prepared MESHES for FAFB
+    # — no centerline under `Skeleton Mode: line`, and never
+    # extrusion-checked.  `_load_scene_skeletons` routes every dataset
+    # kind to a TreeNeuron guarantee instead.
     def load_target_neurons(bids: List[int]):
-        neurons, dropped = [], []
-        for bid in bids:
-            try:
-                path = skel_dir / f'{bid}.swc.zst'
-                if path.exists():
-                    nrn = _load_cached_skeleton_file(path)
-                else:
-                    from morphology import fetch_skeleton_on_demand
-                    nrn = fetch_skeleton_on_demand(cfg.target_dataset, bid)
-            except Exception as exc:  # noqa: BLE001
-                dropped.append((bid, str(exc)))
-                continue
-            if nrn is None:
-                dropped.append((bid, 'no skeleton'))
-                continue
-            try:
-                nrn.id = int(bid)
-                # Revision 3.5 Issue 6a: navis names plotly traces after
-                # the neuron name; exact unique names keep the backend
-                # trace-identity resolver on name matching instead of the
-                # positional fallback that rendered 50274's geometry
-                # under 61430's legend item in the R5 scene.
-                nrn.name = str(int(bid))
-                nrn._drocat_source_dataset = cfg.target_dataset
-            except Exception:  # noqa: BLE001
-                pass
-            neurons.append(nrn)
-        return neurons, dropped
+        return _load_scene_skeletons(
+            cfg.target_dataset, bids,
+            cache_dir=validator.profiler.cache_dir, log=validator.log)
 
     def load_query_neurons(bids: List[int]):
-        try:
-            from morphology import _resolve_fafb_skeleton_trees
-            trees = _resolve_fafb_skeleton_trees(
-                cfg.source_dataset, [int(b) for b in bids])
-            neurons = []
-            for b in bids:
-                if b in trees:
-                    trees[b]._drocat_source_dataset = cfg.source_dataset
-                    try:
-                        trees[b].name = str(int(b))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    neurons.append(trees[b])
-            dropped = [(b, 'no skeleton') for b in bids if b not in trees]
-            # The scene renders in the source RENDER space; raw cached
-            # skeletons are in the dataset's native frame.
-            neurons = bridge_to_scene_space(neurons)
-            return neurons, dropped
-        except Exception as exc:  # noqa: BLE001
-            return [], [(b, str(exc)) for b in bids]
+        neurons, dropped = _load_scene_skeletons(
+            cfg.source_dataset, bids,
+            cache_dir=validator.profiler.cache_dir, log=validator.log)
+        # The scene renders in the source RENDER space; raw cached
+        # skeletons are in the dataset's native frame.
+        neurons = bridge_to_scene_space(neurons)
+        return neurons, dropped
 
     for si, ((query, src_type), branch_list) in enumerate(scenes, 1):
         validator.log(f'[stage 4] scene {si}/{len(scenes)}: {src_type} '
@@ -812,6 +994,21 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             # Issue 6c: loaded (post-transform) bbox per bodyId in scene
             # space, for the optional legend-leaf self-check.
             scene_bboxes: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+            # Population self-check bookkeeping (fix 3): per layer, the ids
+            # the loaders were ASKED for (expected, keyed at each call
+            # site) and the ids `add_layer` actually received (planted).
+            # A layer that never loaded has no traces and no bboxes, so
+            # `check_scene_identities` alone cannot see it.
+            expected_by_layer: Dict[str, set] = {}
+            planted_by_layer: Dict[str, set] = {}
+            # The branch's queried sources across ALL its branches — the
+            # population an empty-query-layer failure is measured against.
+            scene_query_expected: set = set()
+
+            def note_expected(group, category, bids):
+                rec = expected_by_layer.setdefault(
+                    f'{group} :: {category}', set())
+                rec.update(int(b) for b in bids)
 
             def add_layer(group, neurons, color, legend_types, category,
                           leaf_types=None, leaf_tags=None, leaf_sorts=None,
@@ -881,6 +1078,13 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 entries.append((layer_name, navis.NeuronList(neurons),
                                 color))
                 group_names.append(layer_name)
+                # Population self-check: what this layer actually received.
+                layer_planted = planted_by_layer.setdefault(layer_name, set())
+                for n in neurons:
+                    try:
+                        layer_planted.add(int(n.id))
+                    except Exception:  # noqa: BLE001
+                        pass
 
             for bi, (pair, res) in enumerate(branch_list, 0):
                 sig = _linker_sig(pair)
@@ -893,6 +1097,10 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 for r in res['rows']:
                     (live_src if r['verdict'] != 'skipped'
                      else skipped_src).append(int(r['source_bodyId']))
+                scene_query_expected.update(live_src)
+                scene_query_expected.update(skipped_src)
+                note_expected(group, 'query', live_src)
+                note_expected(group, 'unassigned', skipped_src)
                 if live_src:
                     qn, qdrop = load_query_neurons(live_src)
                     for bid, why in qdrop:
@@ -902,14 +1110,10 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                                   [f'query · {src_type}'] * len(qn),
                                   category='query')
                 if skipped_src:
-                    from morphology import _resolve_fafb_skeleton_trees
-                    try:
-                        trees = _resolve_fafb_skeleton_trees(
-                            cfg.source_dataset, skipped_src)
-                        sn = [trees[b] for b in skipped_src if b in trees]
-                    except Exception:  # noqa: BLE001
-                        sn = []
-                    sn = bridge_to_scene_space(sn)
+                    sn, sdrop = load_query_neurons(skipped_src)
+                    for bid, why in sdrop:
+                        validator.log(f'    ! query {bid} skipped '
+                                      f'(unassigned lane: {why})')
                     if sn:
                         add_layer(group, sn, colors['unassigned'],
                                   [f'query · {src_type} · unassigned']
@@ -929,6 +1133,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     if not ids:
                         continue
                     root = f'{cat} · {pair.target_type}'
+                    note_expected(group, cat, ids)
                     raw, dropped = load_target_neurons(ids)
                     for bid, why in dropped:
                         validator.log(f'    ! {root}: {bid} unavailable '
@@ -970,6 +1175,7 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     for c in cand_rows:
                         by_src.setdefault(int(c['source_bodyId']), c)
                     cids = sorted(by_src)
+                    note_expected(group, 'source-candidates', cids)
                     cn, cd = load_query_neurons(cids)
                     for bid, why in cd:
                         validator.log(f'    ! source-candidate {bid} '
@@ -1105,6 +1311,10 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                         root = bucket_root_label(key, rec['types'])
                         if rec.get('cap_note'):
                             root = f"{root} · {rec['cap_note']}"
+                        # `rec['ids']` is already the post-cap render set
+                        # (cap_bucket_per_type pruned it) — that is the
+                        # population this layer PROMISES on its root label.
+                        note_expected(group, root, ids)
                         raw, dropped = load_target_neurons(ids)
                         for bid, why in dropped:
                             validator.log(f'    ! {root}: {bid} '
@@ -1151,6 +1361,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
             if not out_map:
                 out_map = compute_out_map_sources(branch_list)
             if out_map:
+                note_expected(f'{src_type} · out-map query',
+                              'out-map query', out_map)
                 on, on_drop = load_query_neurons(out_map)
                 for bid, why in on_drop:
                     validator.log(f'    ! out-map query {bid} '
@@ -1177,6 +1389,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     for r in sorted(exp_rows, key=chain_key):
                         best.setdefault(int(r['target_bodyId']), r)
                     cand_ids = sorted(best)
+                    note_expected(f'{src_type} · out-map candidates',
+                                  'out-map candidates', cand_ids)
                     raw, dropped = load_target_neurons(cand_ids)
                     for bid, why in dropped:
                         validator.log(f'    ! out-map candidates: {bid} '
@@ -1215,6 +1429,8 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                 by_bid = {}
                 for r in pool_rows:
                     by_bid.setdefault(int(r['target_bodyId']), r)
+                note_expected(f'{src_type} · pooling',
+                              f'pooling · {src_type}', sorted(by_bid))
                 raw, drop = load_target_neurons(sorted(by_bid))
                 for bid, why in drop:
                     validator.log(f'    ! pooling: {bid} unavailable '
@@ -1240,6 +1456,27 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                               [root] * len(neurons), category=root,
                               leaf_types=p_types, leaf_tags=p_tags or None,
                               leaf_sorts=p_sorts)
+
+            # A scene whose QUERY layer is empty is a failure, not a
+            # smaller picture (fix 2).  The 2026-09-29 reverse run
+            # rendered 21 target-only scenes while all 204 queried
+            # sources dropped silently — on disk indistinguishable from a
+            # correct scene.  Partial query drops still render (the
+            # population self-check below names them); a fully empty
+            # query layer writes the SCENE_FAILED marker the report's
+            # Scenes tab already reads, and nothing is rendered.
+            planted_query = _planted_query_ids(planted_by_layer)
+            if scene_query_expected and not planted_query:
+                why = (f'{len(scene_query_expected)} queried source '
+                       'neuron(s) resolved to no skeleton — the query '
+                       'layer is empty')
+                validator.log(f'    ! scene {src_type} failed: {why}')
+                folder = Path(viz_dir) / (
+                    'plot-3d_branches_' + _scene_folder_slug(src_type)
+                    + '_' + time.strftime('%Y%m%d_%H%M%S'))
+                _write_scene_failure_marker(folder, src_type,
+                                            EmptyQueryLayerError(why), '')
+                continue
 
             if not entries:
                 validator.log('    nothing to render for this parent')
@@ -1306,6 +1543,26 @@ def render_pair_scenes(validator, per_pair_res: Dict) -> None:
                     validator.log(f'    self-check [{src_type}]: all '
                                   'legend leaves match their neuron '
                                   'geometry')
+                # Population self-check (fix 3): the leaf-vs-geometry
+                # check above is blind to an ABSENT population — expected
+                # vs planted per layer, planted vs rendered traces, and a
+                # geometry census under skeleton_mode=line (fix 4's
+                # detector: a declared `line` scene serving mesh-only
+                # neurons is a documentation lie).
+                pop_problems = check_scene_population(
+                    viz, expected_by_layer, planted_by_layer,
+                    skeleton_mode=viz_kwargs.get('skeleton_mode'))
+                if pop_problems:
+                    for why in pop_problems:
+                        validator.log(f'    ! self-check [{src_type}]: '
+                                      f'{why}')
+                else:
+                    validator.log(
+                        f'    self-check [{src_type}]: population '
+                        f'complete — {len(planted_by_layer)} layer(s), '
+                        f'{sum(len(v) for v in planted_by_layer.values())}'
+                        f' neuron(s) plotted, skeleton_mode='
+                        f"{viz_kwargs.get('skeleton_mode')}")
         except Exception as exc:  # noqa: BLE001
             import traceback
             validator.log(f'    ! scene {src_type} failed: {exc}')

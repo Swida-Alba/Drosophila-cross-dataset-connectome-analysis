@@ -3074,3 +3074,262 @@ def test_relative_cap_note_format():
     from comparison.mapping_validation_visualize import relative_cap_note
     assert relative_cap_note(400, 2730, 50) == \
         'rendered 400 of 2,730 · 50/type'
+
+
+# ---------------------------------------------------------------------------
+# Scene skeleton loader unification + population self-check
+# (plan-tmvev-reverse-scene-loader-defects.md, fixes 1-4)
+# ---------------------------------------------------------------------------
+
+class _FakeTree:
+    """Centerline-bearing neuron double (navis TreeNeuron shape)."""
+
+    def __init__(self, bid):
+        self.id = bid
+        self.name = 'unfixed'
+        self.nodes = []   # the centerline marker the loader guards on
+
+
+class _FakeMesh:
+    """Prepared-mesh double (navis MeshNeuron shape: vertices, no nodes)
+    — what fetch_skeleton_on_demand's FAFB branch used to hand the
+    target layer under `Skeleton Mode: line`."""
+
+    def __init__(self, bid):
+        self.id = bid
+        self.vertices = []
+
+
+def test_scene_loader_routes_fafb_through_release_loader(monkeypatch):
+    """FAFB scene skeletons must go through load_local_release_skeletons
+    with check_extrusions=True: the raw_skeletons probe always misses for
+    FAFB (0 files on disk — its centerlines live in cave_skeletons), and
+    the fetch_skeleton_on_demand fallback serves prepared meshes.  This
+    is fix 1 + fix 3 of the reverse-scene-loader defects: one loader,
+    extrusion-refined geometry, TreeNeurons only."""
+    import morphology
+    seen = {}
+
+    def _fake_loader(dataset, body_ids, project_root=None, log=None,
+                     check_extrusions=False, denoise_twigs=None):
+        seen.update(dataset=dataset, ids=list(body_ids),
+                    check_extrusions=check_extrusions)
+        return {11: _FakeTree(11)}
+
+    monkeypatch.setattr(morphology, 'load_local_release_skeletons',
+                        _fake_loader)
+    from comparison.mapping_validation_visualize import _load_scene_skeletons
+    neurons, dropped = _load_scene_skeletons('flywire_FAFB_v783', [11, 22])
+    assert seen['dataset'] == 'flywire_FAFB_v783'
+    assert seen['ids'] == [11, 22]
+    assert seen['check_extrusions'] is True
+    assert [n.id for n in neurons] == [11]
+    assert neurons[0].name == '11'
+    assert neurons[0]._drocat_source_dataset == 'flywire_FAFB_v783'
+    assert dropped == [(22, 'no skeleton')]
+
+
+def test_scene_loader_refuses_mesh_objects(monkeypatch):
+    """A non-skeleton object (prepared mesh) must surface as a dropped id,
+    never as a plotted mesh-only neuron."""
+    import morphology
+    monkeypatch.setattr(morphology, 'load_local_release_skeletons',
+                        lambda *a, **k: {5: _FakeMesh(5)})
+    from comparison.mapping_validation_visualize import _load_scene_skeletons
+    neurons, dropped = _load_scene_skeletons('flywire_FAFB_v783', [5])
+    assert neurons == []
+    assert dropped == [(5, 'non-skeleton object refused')]
+
+
+def test_scene_loader_neuprint_cache_then_fetch(monkeypatch, tmp_path):
+    """NeuPrint sources resolve from the dataset's OWN raw_skeletons
+    store, then via fetch_skeleton_on_demand (its NeuPrint branch returns
+    TreeNeurons) — and never touch the FAFB/BANC release loader.  This is
+    the issue-1 regression: the 2026-09-29 reverse run dropped all 204
+    queried male-cns sources because the old query loader called
+    _resolve_fafb_skeleton_trees, which returns {} for non-FAFB."""
+    import morphology
+    release_calls = []
+    monkeypatch.setattr(morphology, 'load_local_release_skeletons',
+                        lambda *a, **k: release_calls.append((a, k)))
+
+    cache_hits = []
+
+    def _fake_cached(path):
+        cache_hits.append(Path(path))
+        return _FakeTree(7) if Path(path).name == '7.swc.zst' else None
+
+    monkeypatch.setattr(morphology, '_load_cached_skeleton_file',
+                        _fake_cached)
+    fetched = []
+
+    def _fake_fetch(dataset, bid, **k):
+        fetched.append((dataset, bid))
+        return _FakeTree(8) if bid == 8 else None
+
+    monkeypatch.setattr(morphology, 'fetch_skeleton_on_demand', _fake_fetch)
+    from comparison.mapping_validation_visualize import (
+        _load_scene_skeletons,
+        _raw_skeleton_cache_dir,
+    )
+    cache_dir = tmp_path / 'cache'
+    # the id-7 entry exists on disk (content irrelevant — the loader is
+    # monkeypatched); without it the probe short-circuits to the fetch
+    hit = (_raw_skeleton_cache_dir(cache_dir, 'male-cns:v1.0')
+           / '7.swc.zst')
+    hit.parent.mkdir(parents=True)
+    hit.write_bytes(b'swc-bytes')
+    neurons, dropped = _load_scene_skeletons(
+        'male-cns:v1.0', [7, 8, 9], cache_dir=cache_dir)
+    assert cache_hits == [_raw_skeleton_cache_dir(cache_dir, 'male-cns:v1.0')
+                          / '7.swc.zst']
+    # 7 from cache; 8 and 9 miss the cache so both reach the fetch —
+    # 8 resolves, 9 comes back None and drops
+    assert fetched == [('male-cns:v1.0', 8), ('male-cns:v1.0', 9)]
+    assert [n.id for n in neurons] == [7, 8]
+    assert neurons[0].name == '7'
+    assert neurons[0]._drocat_source_dataset == 'male-cns:v1.0'
+    assert dropped == [(9, 'no skeleton')]
+    assert release_calls == []
+
+
+def test_scene_loader_banc_dispatches_to_release_loader(monkeypatch):
+    """BANC is a local-connectome dataset: it takes the release loader
+    (public-release bucket stage), not the NeuPrint fetch."""
+    import morphology
+    seen = {}
+
+    def _fake_loader(dataset, body_ids, **k):
+        seen.update(dataset=dataset, kwargs=k)
+        return {}
+
+    monkeypatch.setattr(morphology, 'load_local_release_skeletons',
+                        _fake_loader)
+    monkeypatch.setattr(morphology, 'fetch_skeleton_on_demand',
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError('NeuPrint fetch used for BANC')))
+    from comparison.mapping_validation_visualize import _load_scene_skeletons
+    neurons, dropped = _load_scene_skeletons('banc_v888', [3])
+    assert seen['dataset'] == 'banc_v888'
+    assert seen['kwargs']['check_extrusions'] is True
+    assert neurons == [] and dropped == [(3, 'no skeleton')]
+
+
+def test_scene_loader_crash_becomes_drops(monkeypatch):
+    """A loader-level failure degrades to per-id drops (the scene lane
+    logs them), never an escaped exception."""
+    import morphology
+
+    def _boom(*a, **k):
+        raise RuntimeError('cable cut')
+
+    monkeypatch.setattr(morphology, 'load_local_release_skeletons', _boom)
+    from comparison.mapping_validation_visualize import _load_scene_skeletons
+    neurons, dropped = _load_scene_skeletons('banc_v888', [3, 4])
+    assert neurons == []
+    assert dropped == [(3, 'cable cut'), (4, 'cable cut')]
+
+
+def test_planted_query_ids_key_matching():
+    """The empty-query gate counts only the query/unassigned layers —
+    `out-map query` is a different population and must not match."""
+    from comparison.mapping_validation_visualize import _planted_query_ids
+    planted = {
+        's-LNv → s-LNv · direct :: query': {1, 2},
+        's-LNv → s-LNv · direct :: unassigned': {3},
+        's-LNv · out-map query :: out-map query': {9},
+        's-LNv → s-LNv · direct :: verified · s-LNv': {5},
+    }
+    assert _planted_query_ids(planted) == {1, 2, 3}
+    assert _planted_query_ids({}) == set()
+
+
+def test_check_scene_population_flags_missing_ids():
+    pts = np.zeros((2, 3))
+    viz = _FakeViz([_FakeTrace('lines', '1_A', pts)])
+    from comparison.mapping_validation_visualize import (
+        check_scene_population)
+    problems = check_scene_population(
+        viz, {'g :: verified · T': {1, 2}}, {'g :: verified · T': {1}},
+        skeleton_mode='line')
+    assert len(problems) == 1
+    assert 'layer g :: verified · T' in problems[0]
+    assert '1/2 plotted' in problems[0] and 'missing: 2' in problems[0]
+
+
+def test_check_scene_population_flags_unexpected_planted():
+    pts = np.zeros((2, 3))
+    viz = _FakeViz([_FakeTrace('lines', '1_A', pts)])
+    from comparison.mapping_validation_visualize import (
+        check_scene_population)
+    problems = check_scene_population(
+        viz, {}, {'g :: query': {1}}, skeleton_mode='line')
+    assert any('not in the expected set' in p for p in problems)
+
+
+def test_check_scene_population_flags_mesh_only_under_line_mode():
+    """A neuron leaf whose payload holds no `lines` trace is mesh-only —
+    exactly what the reverse FAFB scenes served under `Skeleton Mode:
+    line`.  Under `tube` the same payload is the caller's choice, not a
+    documentation lie."""
+    pts = np.zeros((2, 3))
+    viz = _FakeViz([
+        _FakeTrace('lines', '1_A', pts),   # centerline neuron
+        _FakeTrace(None, '2_B', pts),      # mesh-only neuron
+    ])
+    from comparison.mapping_validation_visualize import (
+        check_scene_population)
+    problems = check_scene_population(
+        viz, {'g :: query': {1, 2}}, {'g :: query': {1, 2}},
+        skeleton_mode='line')
+    assert any('no centerline' in p and '2_B' in p for p in problems)
+    problems = check_scene_population(
+        viz, {'g :: query': {1, 2}}, {'g :: query': {1, 2}},
+        skeleton_mode='tube')
+    assert not any('no centerline' in p for p in problems)
+
+
+def test_check_scene_population_flags_planted_without_trace():
+    """A planted neuron the backend rendered no trace for is still a
+    missing neuron in the picture."""
+    pts = np.zeros((2, 3))
+    viz = _FakeViz([_FakeTrace('lines', '1_A', pts)])
+    from comparison.mapping_validation_visualize import (
+        check_scene_population)
+    problems = check_scene_population(
+        viz, {'g :: query': {1, 77}}, {'g :: query': {1, 77}},
+        skeleton_mode='line')
+    assert any('rendered no trace' in p and '77' in p for p in problems)
+
+
+def test_check_scene_population_passes_complete_scene():
+    pts = np.zeros((2, 3))
+    viz = _FakeViz([
+        _FakeTrace('lines', '1_A', pts),
+        _FakeTrace('lines', '2_B', pts),
+        _FakeTrace('markers', '1_soma', np.zeros((1, 3))),
+    ])
+    from comparison.mapping_validation_visualize import (
+        check_scene_population)
+    assert check_scene_population(
+        viz,
+        {'g :: query': {1}, 'g :: matched · T': {2}},
+        {'g :: query': {1}, 'g :: matched · T': {2}},
+        skeleton_mode='line') == []
+
+
+def test_empty_query_layer_error_names_itself_for_the_marker():
+    from comparison.mapping_validation_visualize import EmptyQueryLayerError
+    err = EmptyQueryLayerError('the query layer is empty')
+    assert isinstance(err, RuntimeError)
+    assert type(err).__name__ == 'EmptyQueryLayerError'
+
+
+def test_scene_folder_slug_is_glob_safe():
+    """The synthetic failed-scene folder must keep the `plot-3d_` glob
+    working for whatever type names a run throws at it."""
+    from comparison.mapping_validation_visualize import _scene_folder_slug
+    assert _scene_folder_slug('s-LNv') == 's-LNv'
+    assert _scene_folder_slug('LNd_CRY-') == 'LNd_CRY-'
+    assert _scene_folder_slug('a/b:c') == 'a_b_c'
+    assert _scene_folder_slug('///') == 'scene'

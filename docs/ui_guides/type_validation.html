@@ -118,7 +118,13 @@
       <b>Simplification Method</b> / <b>Mesh Simplification</b> &mdash; these
       scenes inject skeletons the pipeline already loaded, so simplification is
       what keeps a tube render of a hundred neurons from stalling the
-      browser.</li>
+      browser. In <code>line</code> mode the served geometry is guaranteed
+      to match the label: every scene neuron loads as a centerline skeleton
+      (FAFB targets via the CAVE-skeleton path with the extrusion check on,
+      never the prepared mesh), and the run's scene self-check flags any
+      leaf that would render mesh-only. A parent whose queried sources all
+      fail to load skeletons writes <code>SCENE_FAILED.txt</code> instead
+      of rendering a target-only picture.</li>
     <li><b>Category Colors</b> paint the legend <i>by category</i>, not by
       layer: one row per bin (<code>query</code>, <code>matched</code>,
       <code>verified</code>, <code>borderline</code>, <code>unmatched</code>,

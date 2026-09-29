@@ -1175,3 +1175,55 @@ def test_a_run_that_recorded_no_palette_shows_no_palette_block(run_dir: Path):
     html = _scenes_tab(collect_run_data(run_dir))
     assert 'Scene palette' not in html
     assert 'scenes rendered' in html                   # the tab still renders
+
+
+def test_population_selfcheck_lines_flow_into_report_tally(tmp_path: Path):
+    """The population self-check emits the same `self-check [` /
+    `! self-check [` line shapes as the leaf-geometry check, so the
+    report's [self-check] x/y tally counts them without a parser
+    change — and a population FAIL cannot pass silently."""
+    from comparison.mapping_validation_report import _parse_readme
+    (tmp_path / "README.txt").write_text(
+        "Run log:\n"
+        "    self-check [s-LNv]: all legend leaves match their neuron "
+        "geometry\n"
+        "    self-check [s-LNv]: population complete — 3 layer(s), 12 "
+        "neuron(s) plotted, skeleton_mode=line\n"
+        "    ! self-check [s-LNv]: layer s-LNv → s-LNv · direct :: query: "
+        "0/10 plotted, missing: 15832, 16634\n"
+        "Pair summaries:\n",
+        encoding="utf-8")
+    out = _parse_readme(tmp_path)
+    assert len(out["selfcheck_pass"]) == 2
+    assert len(out["selfcheck_fail"]) == 1
+    assert any("population complete" in ln for ln in out["selfcheck_pass"])
+    assert any("missing: 15832" in ln for ln in out["selfcheck_fail"])
+    # the FAIL line is also a bang line: it must surface in §10 warnings
+    assert any("self-check" in ln for ln in out["bang_lines"])
+
+
+def test_empty_query_layer_scene_failure_is_named_by_the_report(
+        run_dir: Path):
+    """Both failure channels — the README `! scene X failed:` line and
+    the synthetic folder's SCENE_FAILED.txt — land in _scene_failures,
+    so a query-empty scene is named in the Scenes tab, not folded into
+    the rendered count."""
+    from comparison.mapping_validation_visualize import (
+        EmptyQueryLayerError,
+        _scene_folder_slug,
+        _write_scene_failure_marker,
+    )
+    viz_dir = run_dir / "visualization"
+    folder = viz_dir / (
+        "plot-3d_branches_" + _scene_folder_slug("s-LNv") + "_20260929_1")
+    marker_text = _write_scene_failure_marker(
+        folder, "s-LNv",
+        EmptyQueryLayerError("10 queried source neuron(s) resolved to no "
+                             "skeleton — the query layer is empty"), "")
+    assert marker_text
+    failed = dict(_scene_failures({"run_dir": str(run_dir), "readme": {
+        "bang_lines": [
+            "! scene s-LNv failed: 10 queried source neuron(s) resolved "
+            "to no skeleton — the query layer is empty"]}}))
+    assert "s-LNv" in failed
+    assert "query layer is empty" in failed["s-LNv"]

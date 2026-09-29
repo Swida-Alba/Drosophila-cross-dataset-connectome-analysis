@@ -262,7 +262,7 @@ Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined
 
 *   **`{saveas}.html`**: The **canonical** interactive viewer page (`plot_individuals()` and the video re-exporters must open this one, never a copy). It carries the full scene and every viewer extra: the collapsible tree-legend panel (when `legend_mode='tree'`), the light/dark theme switch, and — with `freeze_view=True` (the default) — the script that pins the scene axes to the padded extents of *all* traces so showing or hiding a legend row cannot rescale the view (a Freeze/Fit button and the `F` key toggle it; the script no-ops under WebDriver, so static exports still autoscale).
 *   **`{saveas}_simplified.html`**: Size-reduced copy of the viewer page, written by the export paths that decimate the scene to fit the renderer's HTML size cap (the WebDriver view-retry writes it inside `exported_views/`). It carries the same three extras as the canonical page, over the decimated scene. The WebDriver session reuses it as its rendering input, so it is both a viewer and an intermediate; `resolve_viewer_page()` recognises it by its `_simplified` suffix and re-exports from the canonical page instead.
-*   **`SCENE_FAILED.txt`**: This scene did not render. The viewer creates its folder before writing the figure, so a failure part-way through would otherwise leave a directory holding `parameters.txt` and the layer CSVs with no HTML — indistinguishable from a completed scene on disk (5 of 21 parent scenes on one male-cns family run were exactly that). The marker names the parent type, the error and the traceback, and says which files were never written; `scripts/verify_tmvev_run_exports.py` fails a run that has a scene folder with neither a page nor this file.
+*   **`SCENE_FAILED.txt`**: This scene did not render. The viewer creates its folder before writing the figure, so a failure part-way through would otherwise leave a directory holding `parameters.txt` and the layer CSVs with no HTML — indistinguishable from a completed scene on disk (5 of 21 parent scenes on one male-cns family run were exactly that). The marker names the parent type, the error and the traceback, and says which files were never written; `scripts/verify_tmvev_run_exports.py` fails a run that has a scene folder with neither a page nor this file. The TM VEV scene builder also writes this marker — as a synthetic `plot-3d_branches_*` folder — when a parent's queried source neurons ALL fail to load skeletons: a scene whose query layer is empty is a failure, not a smaller picture.
 
 *   **`visualization_manifest.json`**: What the page *means*, so a stored run can be re-exported without its source data. Re-export inputs, each read back by `resolve_viewer_page()` / `profile_plan_from_html()` / `export_individuals_from_html()`: `canonical_page`, `dataset` / `brain_mesh` / `mesh_roi` / `background_color`, the per-view `views` cameras (`eye`/`up`/`center`), and a `traces` table of `{index, kind, rule, label, group, type, item, body_id, visible}` roles — which the re-exporter re-reads against the page it parsed, so identity stamps that fail to survive the HTML round trip are reported instead of silently coarsening every profile. Provenance for whoever opens the run next: `schema_version`, `client_type` / `version` / `saveas`, `legend_mode` (`single` | `type` | `tree` | `layer`), `freeze_view` (the ranges it pinned live in the page's own scene layout), `export_method`, `export_scale`, `neuron_alpha`, `layer_names`.
 
@@ -1277,6 +1277,23 @@ and no other dataset's agreement is joined into this mode's pool.
     **`out-map candidates · {type}`** expansion layer
     (connectivity-ranked, light blue), for comparison against
     `candidates`.
+    Scene skeletons load through ONE dataset-general path
+    (`_load_scene_skeletons`), for query and target layers alike: FAFB
+    and BANC route through `load_local_release_skeletons` with the
+    extrusion check ON (CAVE-centerline TreeNeurons — never the prepared
+    mesh, which has no centerline and is never extrusion-refined), and
+    NeuPrint datasets resolve from their own raw-skeleton cache with
+    on-demand fetch. So a non-FAFB source no longer loses its query
+    layer (the 2026-09-29 reverse MCNS→FAFB run dropped all 204 queried
+    sources this way), FAFB targets honor `Skeleton Mode: line`, and
+    every drawn FAFB neuron is extrusion-refined. With the scene
+    self-check enabled, a per-scene population check compares each
+    layer's expected ids (the branch's scanned sources, the bucket's
+    post-cap kept set, the pool's targets, …) against what was actually
+    planted and rendered, and flags mesh-only leaves under
+    `Skeleton Mode: line`; a parent whose query layer is entirely empty
+    writes `SCENE_FAILED.txt` and renders nothing, while a partial
+    query drop renders with a self-check FAIL naming the ids.
 
 ---
 
