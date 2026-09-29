@@ -1361,19 +1361,21 @@ def test_nblast_dotprops_lookup_uses_canonical_ids(monkeypatch, tmp_path):
     assert matrix[0, 0] == pytest.approx(1.0)
 
 
-def test_nblast_style_switches_to_diverging_on_negative_scores():
-    """Normalized NBLAST genuinely scores below zero (verified −0.88 on real
-    FAFB pairs); the positive [0, 1] ramp would clamp those cells, so a run
-    with negative cells renders on the diverging scale instead."""
+def test_both_similarity_styles_render_diverging_full_domain():
+    """Both morphology similarity metrics span [-1, 1] (normalized NBLAST
+    verified at -0.88 on real FAFB pairs), so BOTH always render on the
+    diverging scale over the full domain — a run-conditional scale would
+    give the same metric different colormaps across runs, and a
+    positive-only run would lose the [-1, 0) colormap entirely."""
+    for method in ("vector_v2", "nblast"):
+        cmp = mc.MorphologyProfileComparer(
+            dataset="male-cns:v1.0", query=["a", "b"], method=method,
+            verbose=False, generate_heatmaps=False)
+        style = cmp._metric_style()
+        assert style.zmin == -1.0 and style.zmax == 1.0
+        assert style.colorscale == mc.report_kit.REPORT_DIVERGING_COLORSCALE
+    # The style no longer depends on the matrices at all.
     cmp = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["a", "b"], method="nblast",
         verbose=False, generate_heatmaps=False)
-    positive = cmp._metric_style({"bodyid": pd.DataFrame([[0.2, 0.4]])})
-    assert positive.zmin == 0.0
-    assert positive.colorscale == mc.report_kit.REPORT_POSITIVE_COLORSCALE
-    diverging = cmp._metric_style({"bodyid": pd.DataFrame([[-0.5, 0.4]])})
-    assert diverging.zmin == -1.0
-    assert diverging.colorscale == mc.report_kit.REPORT_DIVERGING_COLORSCALE
-    # NaN-only cells (e.g. a fully dropped type) never flip the scale.
-    assert cmp._metric_style(
-        {"bodyid": pd.DataFrame([[np.nan]])}).zmin == 0.0
+    assert cmp._metric_style().zmin == cmp._metric_style().zmin

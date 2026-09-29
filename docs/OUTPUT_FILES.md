@@ -461,11 +461,10 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     Ward-clustered heatmap cards with CSV + VisPath editor links,
     compared-neuron and parameter details, scene link; Plotly embedded so
     it renders offline), parameters, and the layout description.
-    Heatmap cells render square (1:1) at any window size.
-    vector_v2 renders on the diverging [-1, 1] scale; NBLAST on the
-    positive [0, 1] scale unless the run contains negative scores
-    (normalized NBLAST can score below zero), which switch it to the
-    diverging scale.
+    Heatmap cells render square (1:1) at any window size. Both similarity
+    metrics span [-1, 1] (negative = less similar than chance), so every
+    heatmap renders on the diverging [-1, 1] scale — report cards, VisPath
+    pages, and the plotly fallback alike.
 
 ---
 

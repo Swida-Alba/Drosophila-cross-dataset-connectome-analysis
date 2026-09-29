@@ -855,12 +855,20 @@ def generate_heatmaps_fallback(
             if matrix is None:
                 continue
             html_path = viz_dir / filename_builder(group, key)
+            style = style_for(styles, key)
             generate_interactive_heatmap(
                 matrices_dict={key: matrix},
                 filename=str(html_path),
                 title=fallback_title(group, key, group_display(group)),
                 showfig=show_figures,
-                verbose=verbose
+                verbose=verbose,
+                # The fallback must honor the metric's colormap and fixed
+                # domain (e.g. the diverging [-1, 1] similarity scale) —
+                # without it the page defaults to sequential Viridis with
+                # an auto-ranged axis and the negative half loses meaning.
+                color_scale=style.colorscale,
+                zmin=style.zmin,
+                zmax=style.zmax,
             )
             saved_files['heatmaps_generated'].append(str(html_path))
             if log:

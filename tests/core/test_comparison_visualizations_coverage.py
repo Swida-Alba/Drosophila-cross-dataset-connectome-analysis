@@ -1176,3 +1176,34 @@ def test_interactive_heatmap_cells_are_square(tmp_path):
     html = out.read_text(encoding="utf-8")
     assert "scaleanchor: 'x'" in html
     assert "constrain: 'domain'" in html
+
+
+def test_interactive_heatmap_honors_metric_scale_and_domain(tmp_path):
+    """The fallback must carry the metric's diverging colormap and fixed
+    [-1, 1] domain — sequential Viridis on an auto-ranged axis would strip
+    the negative half of its meaning."""
+    from comparison.interactive_heatmap import generate_interactive_heatmap
+    from comparison.report_kit import REPORT_DIVERGING_COLORSCALE
+
+    out = tmp_path / "signed.html"
+    generate_interactive_heatmap(
+        {"morph_similarity": _metric_df(with_nan=True)}, str(out),
+        title="Signed", showfig=False, verbose=False,
+        color_scale=REPORT_DIVERGING_COLORSCALE, zmin=-1.0, zmax=1.0)
+    html = out.read_text(encoding="utf-8")
+    assert '"__metric__"' in html and "Metric scale</option>" in html
+    assert "const zminFixed = -1.0" in html
+    assert "const zmaxFixed = 1.0" in html
+    assert '"#053061"' in html  # the diverging ramp's dark-blue stop
+    # Callers without a style keep the sequential default, unfixed domain.
+    plain = tmp_path / "plain.html"
+    generate_interactive_heatmap(
+        {"jaccard": _metric_df()}, str(plain), title="Plain",
+        showfig=False, verbose=False)
+    plain_html = plain.read_text(encoding="utf-8")
+    assert "const zminFixed = null" in plain_html
+    assert "const zmaxFixed = null" in plain_html
+    # The update handler always knows the sentinel; what must be absent is
+    # the dropdown option (plain pages start on Viridis).
+    assert 'value="__metric__"' not in plain_html
+    assert "const metricScale = null" in plain_html

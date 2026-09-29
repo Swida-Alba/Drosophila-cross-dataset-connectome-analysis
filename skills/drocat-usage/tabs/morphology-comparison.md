@@ -100,8 +100,9 @@ python skills/drocat-usage/scripts/run_direct.py \
   under the bound and stays silent). It needs local raw skeletons (FAFB
   resolves through the healed zip / CAVE pipeline; BANC through the public
   SWC chain) and excludes contralateral pairs from aggregate means.
-  Normalized NBLAST can score below zero; runs with negative cells switch
-  the report and heatmaps to the diverging scale.
+  Both similarity metrics span [-1, 1] (negative = below chance), so all
+  heatmaps — report cards, VisPath pages, and the plotly fallback —
+  render on the diverging scale over the full [-1, 1] domain, every run.
 - `vector_v2` uses the per-dataset `SkeletonVectorCacheV2`; missing members
   are fetched online by default (`fetch_online=True`) through the same
   skeleton pipeline as Find Similar (NeuPrint raw SWC; FAFB healed zip

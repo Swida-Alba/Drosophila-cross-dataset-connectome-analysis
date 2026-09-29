@@ -2,7 +2,8 @@ import os
 import json
 import numpy as np
 
-def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True, fontsize=12, verbose=True):
+def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True, fontsize=12, verbose=True,
+                                 color_scale=None, zmin=None, zmax=None):
     """
     Create interactive heatmap for comparison metrics.
     
@@ -20,6 +21,17 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
         Default font size.
     verbose : bool
         Whether to print progress messages.
+    color_scale : optional
+        The metric's plotly colorscale (list of [stop, color] pairs, from a
+        MetricStyle). Becomes the initial selection and an extra dropdown
+        entry, so signed metrics keep their diverging colormap; without it
+        the page falls back to the sequential Viridis default.
+    zmin : optional
+        Fixed color-axis minimum (e.g. -1 for [-1, 1] similarity metrics) —
+        without it the axis auto-ranges and loses the negative half's
+        meaning.
+    zmax : optional
+        Fixed color-axis maximum.
 
     Matrix cells are locked square (1:1) via Plotly's scaleanchor — the
     same contract as report_kit's ``square_cells`` figures.
@@ -98,6 +110,14 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
     
     # Metric display names
     metric_display_names = {m: m.replace('_', ' ').title() for m in available_metrics}
+
+    # The metric's own colorscale (e.g. the diverging [-1, 1] similarity
+    # scale) leads the dropdown when the caller supplies one.
+    if color_scale is not None:
+        metric_scale_option = ('<option value="__metric__" selected>'
+                               'Metric scale</option>')
+    else:
+        metric_scale_option = ''
     
     # Generate HTML options for metric select
     metric_options = ""
@@ -151,6 +171,7 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
                 <div class="control-section">
                     <h3>🎨 Color</h3>
                     <select id="colorscaleSelect" onchange="updateColorscale()" style="margin-bottom: 8px;">
+                        {metric_scale_option}
                         <option value="Viridis">Viridis</option>
                         <option value="Plasma">Plasma</option>
                         <option value="Inferno">Inferno</option>
@@ -190,8 +211,11 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
         const colOrderClustered = {json.dumps(col_order_clustered)};
         const clusteringAvailable = {json.dumps(clustering_successful)};
         
+        const metricScale = {json.dumps(color_scale)};
+        const zminFixed = {json.dumps(zmin)};
+        const zmaxFixed = {json.dumps(zmax)};
         let currentMetric = '{default_metric}';
-        let currentColorscale = 'Viridis';
+        let currentColorscale = metricScale !== null ? metricScale : 'Viridis';
         let currentFontSize = {fontsize};
         let showLabels = {json.dumps(not is_large)};
         let useClusteredOrder = false;
@@ -226,6 +250,8 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
                 y: plotY,
                 type: 'heatmap',
                 colorscale: currentColorscale,
+                zmin: zminFixed,
+                zmax: zmaxFixed,
                 colorbar: {{
                     title: metricDisplayNames[currentMetric],
                     titleside: 'right'
@@ -264,7 +290,8 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
         }}
         
         function updateColorscale() {{
-            currentColorscale = document.getElementById('colorscaleSelect').value;
+            const v = document.getElementById('colorscaleSelect').value;
+            currentColorscale = (v === '__metric__') ? metricScale : v;
             createHeatmap();
         }}
         

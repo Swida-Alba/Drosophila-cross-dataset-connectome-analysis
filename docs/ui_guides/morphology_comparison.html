@@ -200,12 +200,12 @@
     and VisPath editor links), and compared-neuron / parameter details.
     Every heatmap card's <b>cells render square</b> (1:1, at any window
     size) — the card itself is not squared, only the matrix cells.
-    Plotly.js is embedded, so the report renders offline. vector_v2
-    renders on a diverging blue–white–red scale (a whitened cosine can be
-    negative); NBLAST renders on the positive [0, 1] scale unless the run
-    contains negative scores — normalized NBLAST can score below zero
-    (less similar than chance), and such runs switch to the diverging
-    scale.</p>
+    Plotly.js is embedded, so the report renders offline. Both similarity
+    metrics span <b>[-1, 1]</b> — negative means less similar than chance
+    (a whitened cosine and normalized NBLAST both genuinely score below
+    zero) — so every heatmap renders on the diverging blue–white–red
+    scale over the full [-1, 1] domain, whether or not a run happens to
+    contain negative cells.</p>
   <p>BodyId-level rows and axes are labeled
     <code>{bodyId}_{instance}</code> (NeuPrint-style datasets, e.g.
     <code>11309_aMe4_L</code>) or <code>{bodyId}_{type}_L/_R</code>
