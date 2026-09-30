@@ -147,8 +147,10 @@ source map — never a substitute for the curated per-dataset label columns;
 its cross-dataset reach comes from the mirror landing — a FAFB
 primary whose own name appears in a BANC primary's ACT cell derives
 `FAFB --ACT--> BANC` chains (7,637 of 7,643 v888 ACT tokens are FAFB
-primaries; 2,273–2,348 endpoint pairs, the second-most-selected lane after
-the curated labels).
+primaries; after the 2026-09-30 post-arrival discipline the lane derives
+1,476 FAFB→BANC endpoint pairs on v626 and 1,478 on v888 — mirror
+landings, `aT`→`ACT` two-linker bridges, and the backward-reciprocal hub
+pairs — the second-most-selected lane after the curated labels).
 
 #### The FAFB ↔ BANC annotation bridge (additional Type(S) ⇄ Alternative Cell Type(s))
 
@@ -198,6 +200,40 @@ circadian type (`l-LNv`) onto every primary sharing its `BM_InOm` label
 (1,212 interommatidial bristle neurons) with zero supporting rows on the
 reached types.
 
+**Post-arrival ACT discipline with backward-reciprocity rescue
+(2026-09-30)**: once a chain has arrived at a target-namespace primary by
+same-name identity, a BANC `Alternative Cell Type(s)` hop may not depart
+from it. An ACT cell names how the reached type's neurons are called
+ELSEWHERE; two BANC primaries sharing one such foreign token are
+co-named elsewhere, not bridged to each other — using the token as
+intra-BANC transitivity glues unrelated primaries. Real failures this
+closes: FAFB `R8` arrived at BANC `R8` and its `R7p`/`R8p`/`R8y`
+sub-type tokens fanned out onto 26 unrelated BANC ends (`m_NSC_DILP`,
+`MBON26`, `Tm3` …), and `s-CPDN3A`/`s-CPDN3D` were cross-paired onto
+`CB1791`/`CB3612` through the shared `SMP220` token while the reverse
+direction refused both cross-pairs — that direction asymmetry is the
+tell. A glue chain whose pair IS corroborated in the reverse direction
+(some reverse bridge from the end type reaches the source type) is real
+correspondence and survives, flagged `reciprocal` (e.g. FAFB
+`DNp17` ↔ BANC `DNpe054`, whose reverse leg runs through FAFB
+`additional_type(s) 'DNp16/17'`). The rule is scoped to ACT departures
+only; the registry continuation through target-side
+`additional_type(s)` (crosswalk primary → its annotated siblings)
+keeps its licence. Verified effect on real data: the FAFB→BANC pair
+space loses exactly the 1,144 (v626) / 1,070 (v888) non-reciprocated
+glue pairs and keeps the 49/50 reciprocated ones; every other pair
+direction is unchanged. The designed ACT forms — mirror landings and
+the `aT`→`ACT` two-linker bridge — are 100% backward-reciprocated on
+real data and are never suppressed.
+
+**BANC joint type labels**: BANC `type` cells may carry comma-joined
+labels the release itself left ambiguous (e.g. `TuBu09,TuBu10`,
+`PVLP004,PVLP005`; ~130 distinct values per release). These are
+release-native target primaries with their own curated evidence — they
+are never split into their component names (splitting would claim a
+resolution the release did not make) and may legitimately appear as
+bridge ends.
+
 Production resolution applies the bridge as an overlay with this
 precedence:
 
@@ -224,6 +260,8 @@ column — `same name` (bare echo), `same name+evidence` (a same-name
 pair whose chain carries the verifying relation), `cross-dataset cell
 type` (curated label lane), `cross-dataset cell type (alignment)`
 (fallback lane), `crosswalk`, `annotation bridge via <tokens>`,
+`annotation bridge via <tokens> (reciprocal)` (a glue chain rescued by
+the backward-reciprocity check, e.g. `DNp17` → `DNpe054`),
 `release relation`, `release alias` — so every surface distinguishes the
 label lanes. Bridge pairs whose
 endpoints have no male-cns anchor get their own rows. Ambiguity

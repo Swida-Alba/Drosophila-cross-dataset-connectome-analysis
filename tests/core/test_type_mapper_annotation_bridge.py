@@ -200,6 +200,72 @@ def test_reverse_bridge_banc_to_fafb():
 
 
 # ---------------------------------------------------------------------------
+# ACT-glue suppression with backward-reciprocity rescue (user 2026-09-30,
+# plan _plan/plan-type-mapper-act-lane-precedence-and-backward-reciprocity.md)
+# ---------------------------------------------------------------------------
+
+def _seed_glue_pair(m, *, reciprocate=False):
+    """The synthetic s-CPDN3 pattern: FAFB T1 annotates token V1, V1 is a
+    BANC primary, and BANC V1 + P2 share the ACT token W — so the walk can
+    arrive at BANC V1 by same-name identity and depart through ACT onto the
+    unrelated P2.  ``reciprocate`` adds P2's ACT naming T1 (a FAFB primary),
+    giving the reverse direction a real bridge back to the source."""
+    banc_ann = {'W': {'V1', 'P2'}}
+    if reciprocate:
+        banc_ann['T1'] = {'P2'}
+    _seed_pair(
+        m,
+        fafb_primaries={'T1'},
+        banc_primaries={'V1', 'P2'},
+        fafb_ann={'V1': {'T1'}},
+        banc_ann=banc_ann,
+    )
+
+
+def test_act_glue_chain_suppressed_without_reciprocity():
+    """A chain that same-name-arrives at a BANC primary and departs through
+    ``Alternative Cell Type(s)`` transitivity is glue, not pair evidence —
+    offered only when the reverse direction corroborates the pair."""
+    m = _bare_mapper()
+    _seed_glue_pair(m)
+    ends = {c[-1]['value'] for c in m.get_type_bridges('T1', FAFB, BANC)}
+    assert 'V1' in ends          # clean aT -> identity landing survives
+    assert 'P2' not in ends      # the glue target is suppressed
+    # the escape hatch used by the reciprocity probe still sees it
+    raw = m.get_type_bridges(
+        'T1', FAFB, BANC, _skip_glue_filter=True)
+    assert 'P2' in {c[-1]['value'] for c in raw}
+
+
+def test_act_glue_chain_rescued_when_reciprocal():
+    """Reciprocal glue pairs survive and carry the ``reciprocal`` flag on
+    the arrival hop (the DNp17 <-> DNpe054 class).  The pair may also
+    carry an ordinary mirror chain — only the glue chain is flagged."""
+    m = _bare_mapper()
+    _seed_glue_pair(m, reciprocate=True)
+    back = m.get_type_bridges('P2', BANC, FAFB)
+    assert 'T1' in {c[-1]['value'] for c in back}
+    chains = m.get_type_bridges('T1', FAFB, BANC)
+    assert 'P2' in {c[-1]['value'] for c in chains}
+    rescued = [c for c in chains
+               if c[-1]['value'] == 'P2' and c[-1].get('reciprocal')]
+    assert len(rescued) == 1
+
+
+def test_reciprocal_flag_reaches_standardized_linkers():
+    """The collapsed landing+arrival linker keeps the rescue flag so
+    ``mapping_origin`` can disclose it."""
+    m = _bare_mapper()
+    _seed_glue_pair(m, reciprocate=True)
+    rescued = [c for c in m.get_type_bridges('T1', FAFB, BANC)
+               if c[-1]['value'] == 'P2' and c[-1].get('reciprocal')][0]
+    linkers = standardize_bridge(rescued, FAFB, BANC)
+    act = [l for l in linkers
+           if l['column'] == 'Alternative Cell Type(s)']
+    assert act and act[0].get('reciprocal') is True
+
+
+# ---------------------------------------------------------------------------
 # Production overlay: same-name identity + annotation-bridge candidates
 # ---------------------------------------------------------------------------
 
@@ -472,6 +538,9 @@ class TestRealDataAcceptance:
             's-CPDN3A', FAFB_RELEASE, BANC_RELEASE)
         ends = {c[-1]['value'] for c in chains}
         assert {'CB1770', 'CB1791', 'SMP229'} <= ends
+        # ACT-glue suppression (2026-09-30): the CB1791/CB3612 SMP220
+        # cross-glue is gone — forward and backward now agree 1:1.
+        assert 'CB3612' not in ends
         # The curated BANC FAFB labels independently expose three BANC
         # primaries.  They remain valid split evidence, but no single BANC
         # target is accepted merely because one direct chain is ranked first.
@@ -500,6 +569,46 @@ class TestRealDataAcceptance:
             for t in c.target_types:
                 assert not CrossDatasetTypeMapper._is_untyped_value(t), (
                     c.source_type, t)
+
+    def test_scpdn3_mirror_side_of_the_cross_glue_also_gone(self, real_mapper):
+        # s-CPDN3D's ends keep the curated fan-out but lose the CB1791
+        # cross-glue; both directions of the pair space now agree.
+        ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
+            's-CPDN3D', FAFB_RELEASE, BANC_RELEASE)}
+        assert 'CB3612' in ends
+        assert 'CB1791' not in ends
+
+    def test_backward_clock_routes_unchanged_by_suppression(
+            self, real_mapper):
+        # The reverse direction never had the glue (its arrival lands in
+        # the source namespace); the fix must not disturb it.
+        for banc_type, fafb_type in (('CB1791', 's-CPDN3A'),
+                                     ('CB3612', 's-CPDN3D')):
+            ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
+                banc_type, BANC_RELEASE, FAFB_RELEASE)}
+            assert ends == {fafb_type}
+
+    def test_r8_act_hub_collapses_to_same_name(self, real_mapper):
+        # R8's own ACT sub-type tokens (R7p/R8p/R8y/...) used to glue it
+        # onto 26 unrelated BANC ends incl. m_NSC_DILP and MBON26.
+        ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
+            'R8', FAFB_RELEASE, BANC_RELEASE)}
+        assert ends == {'R8'}
+
+    def test_reciprocal_glue_pair_survives_with_flag(self, real_mapper):
+        # DNp17 <-> DNpe054 is real mutual correspondence (the reverse
+        # leg runs through FAFB additional_type(s) 'DNp16/17'): kept and
+        # disclosed as reciprocal.
+        from comparison.mapping_visualization import _pair_mapping_origin
+        rescued = [
+            c for c in real_mapper.get_type_bridges(
+                'DNp17', FAFB_RELEASE, BANC_RELEASE)
+            if c[-1]['value'] == 'DNpe054']
+        assert len(rescued) == 1
+        assert rescued[0][-1].get('reciprocal') is True
+        linkers = standardize_bridge(rescued[0], FAFB_RELEASE, BANC_RELEASE)
+        origin = _pair_mapping_origin(linkers, 'DNp17', 'DNpe054')
+        assert origin == 'annotation bridge via DNht001 (reciprocal)'
 
 
 def test_scoped_pair_bridges_stay_two_namespace():

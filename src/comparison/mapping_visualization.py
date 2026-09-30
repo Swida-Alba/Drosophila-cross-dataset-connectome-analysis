@@ -3565,7 +3565,12 @@ def _pair_mapping_origin(linkers, source_type, target_type) -> str:
                      if linker.get('column') in ANNOTATION_COLUMNS
                      and linker.get('value')})
     if tokens:
-        return 'annotation bridge via ' + ', '.join(tokens)
+        origin = 'annotation bridge via ' + ', '.join(tokens)
+        if any(linker.get('reciprocal') for linker in linkers):
+            # glue chain rescued by backward reciprocity (2026-09-30):
+            # the pair survives the stricter gate and the export says so.
+            origin += ' (reciprocal)'
+        return origin
     if BANC_RELEASE_LINKER in columns:
         return 'release relation'
     if RELEASE_ALIAS_LINKER in columns:

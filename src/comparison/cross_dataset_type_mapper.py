@@ -758,7 +758,7 @@ def standardize_bridge(chain, source_dataset: str,
         canonical = str(
             hop.get("canonical_value") or canonical_linker_token(raw_value)
         ).strip()
-        return {
+        entry = {
             'column': hop.get('column', ''),
             'value': raw_value,
             'raw_value': raw_value,
@@ -769,6 +769,12 @@ def standardize_bridge(chain, source_dataset: str,
             'evidence_tier': hop.get('evidence_tier') or
             linker_evidence_tier(hop.get('column', ''), raw_value, indirect),
         }
+        # glue chains rescued by backward reciprocity carry the flag on
+        # their arrival hop; keep it beside the evidence so origin
+        # strings can disclose it (2026-09-30 rule).
+        if hop.get('reciprocal'):
+            entry['reciprocal'] = True
+        return entry
 
     middle = chain[1:-1]
     for hop in middle:
@@ -820,6 +826,10 @@ def standardize_bridge(chain, source_dataset: str,
         if not linkers or (final['column'], final['value']) != (
                 linkers[-1]['column'], linkers[-1]['value']):
             linkers.append(final)
+        elif final.get('reciprocal'):
+            # the collapsed landing+arrival legs share one linker; the
+            # arrival leg's reciprocity flag must survive the dedupe.
+            linkers[-1]['reciprocal'] = True
     return linkers
 
 
@@ -6651,6 +6661,7 @@ class CrossDatasetTypeMapper:
         target_dataset: str,
         *,
         max_bridges: int = 6,
+        _skip_glue_filter: bool = False,
     ) -> List[List[Dict[str, str]]]:
         """Derivation chains connecting one type name to a target dataset.
 
@@ -6664,7 +6675,10 @@ class CrossDatasetTypeMapper:
         including FlyWire primary types routed through their rows'
         additional Type(S) values, e.g. BANC type names into the male-cns
         crosswalk), and hub-transitive pairs; ambiguous splits return one
-        candidate chain per split target.
+        candidate chain per split target.  Chains that would depart a
+        target-namespace primary through BANC ``Alternative Cell Type(s)``
+        transitivity are suppressed unless the pair is reciprocated in the
+        reverse direction (then flagged ``reciprocal``).
         """
         if not self._loaded:
             if not self.load():
@@ -7003,6 +7017,57 @@ class CrossDatasetTypeMapper:
                 if not subsumed:
                     kept.append(chain)
             bridges = kept
+        # ACT-glue suppression with backward-reciprocity rescue (user
+        # 2026-09-30, plan §3/§4): once a chain has ARRIVED at a primary
+        # of the target namespace by same-name identity, a BANC
+        # ``Alternative Cell Type(s)`` hop may not depart from it.  An
+        # ACT cell names how the reached type's neurons are called
+        # ELSEWHERE (cross-reference rule); using it as intra-BANC
+        # transitivity glues unrelated primaries through any shared
+        # foreign token — FAFB R8 reached BANC R8 and its 'R7p'/'R8p'/
+        # 'R8y' tokens fanned out onto 26 unrelated BANC ends
+        # (m_NSC_DILP, MBON26, Tm3 ...); s-CPDN3A/D were cross-paired
+        # onto CB1791/CB3612 through the shared 'SMP220' token, and the
+        # reverse direction refuses those pairs — the asymmetry is the
+        # tell.  Label-hop arrivals were already terminal
+        # (TERMINAL_LINKER_COLUMNS); this closes the same-name arrival
+        # for ACT departures only, so the registry continuation through
+        # target-side ``additional_type(s)`` (crosswalk primary -> its
+        # annotated siblings) keeps its licence.  A glue chain whose
+        # pair is corroborated in the reverse direction (some reverse
+        # bridge from the end type reaches the source type) is real
+        # correspondence, not glue: kept and flagged ``reciprocal``
+        # (e.g. FAFB DNp17 <-> BANC DNpe054, whose reverse leg runs
+        # through FAFB additional_type(s) 'DNp16/17').
+        if source_key != target_key and not _skip_glue_filter:
+            def _act_glue_departure(chain) -> bool:
+                for i in range(2, len(chain)):
+                    if (chain[i].get("column") == "Alternative Cell Type(s)"
+                            and chain[i - 1].get("column") == "type"
+                            and chain[i - 1].get("dataset") == target_key):
+                        return True
+                return False
+
+            reciprocal_cache: Dict[str, bool] = {}
+            surviving: List[List[Dict[str, str]]] = []
+            for chain in bridges:
+                if not _act_glue_departure(chain):
+                    surviving.append(chain)
+                    continue
+                end_value = chain[-1]["value"]
+                if end_value not in reciprocal_cache:
+                    try:
+                        reverse = self.get_type_bridges(
+                            end_value, target_dataset, source_dataset,
+                            max_bridges=0, _skip_glue_filter=True)
+                        reciprocal_cache[end_value] = any(
+                            c[-1]["value"] == source_type for c in reverse)
+                    except Exception:
+                        reciprocal_cache[end_value] = False
+                if reciprocal_cache[end_value]:
+                    chain[-1] = dict(chain[-1], reciprocal=True)
+                    surviving.append(chain)
+            bridges = surviving
         # Honour the public bridge budget and make the preferred direct label
         # or release relation win over longer annotation alternatives.
         bridges.sort(key=lambda chain: (

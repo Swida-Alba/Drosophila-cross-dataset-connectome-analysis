@@ -275,6 +275,41 @@ with zero row-level support on the reached types):
   bridge (e.g. `malecns_cell_type via 'MDN'` for a curated label pair)
   instead of dropping it.
 
+### 3.7 Post-arrival ACT discipline with backward-reciprocity rescue (2026-09-30)
+
+`TERMINAL_LINKER_COLUMNS` makes label-hop arrivals terminal, but a
+same-name `type` arrival in the target namespace is not a terminal
+linker — and the post-arrival continuation block then licenses departing
+the arrived primary through its annotation edges. For a BANC target that
+meant `Alternative Cell Type(s)` transitivity: two BANC primaries sharing
+one foreign token in their ACT cells became "bridged" (FAFB `R8` → BANC
+`R8` → 26 unrelated ends through `R7p`/`R8p`/`R8y`; `s-CPDN3A/D` ↔
+`CB1791`/`CB3612` through the shared `SMP220` token). The reverse
+direction structurally refuses the same chains (the glue hop would arrive
+back in the SOURCE namespace, where the annotation-chaining guard has no
+exception) — which is why backward verification is the discriminator:
+non-ACT pairs are 100% reciprocal on real data, designed ACT pairs
+(mirror landing, `aT`→`ACT` two-linker) are 100% reciprocal, and the
+post-arrival glue class is 96% NON-reciprocal.
+
+The filter runs in `get_type_bridges` after the curated-subsumption
+pass: a chain with an ACT hop departing from a same-name-arrived target
+primary is dropped unless some reverse bridge from the chain's end
+reaches the source type (reverse call made with `_skip_glue_filter=True`
+so the probe cannot recurse). Surviving glue chains carry
+`reciprocal: True` on the arrival hop; `standardize_bridge` propagates it
+onto the (possibly deduped) annotation linker, and
+`_pair_mapping_origin` discloses `annotation bridge via <tokens>
+(reciprocal)`. Scoped to ACT departures only — the registry continuation
+through target-side `additional_type(s)` keeps its licence. Real-data
+effect: FAFB→BANC loses exactly 1,144 (v626) / 1,070 (v888)
+non-reciprocated glue pairs, keeps the 49/50 reciprocated ones; every
+other direction byte-identical. A sibling hazard class remains
+deliberately untouched: post-arrival glue through FAFB
+`additional_type(s)` on BANC→FAFB / MCNS→FAFB pairs (≈2,527 + 1,028
+non-reciprocated pairs, e.g. BANC `T3` → FAFB `Pm03`) — no census of its
+designed-form baseline exists yet, so it awaits its own decision.
+
 ## 4. Production resolution precedence
 
 `_build_type_mappings` + the release/BANC overlays +
