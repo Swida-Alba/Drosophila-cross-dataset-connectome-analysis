@@ -389,9 +389,11 @@ def create_morphology_tab():
                 comparison_query_input = neuron_list_input(
                     label="Neurons to Compare",
                     placeholder="Type or upload CSV/TSV/Excel (e.g., aMe12, aMe10, aMe9)",
-                    hint="Enter neuron types, bodyIds, or patterns "
-                         "(e.g. aMe.*); one entry is enough — a single type "
-                         "still compares its own neurons. What one matrix row "
+                    hint="Enter neuron types, bodyIds, taxonomy labels "
+                         "(e.g. circadian_clock), instance names, or "
+                         "patterns (e.g. aMe.*); one entry is enough — a "
+                         "single type still compares its own neurons. What "
+                         "one matrix row "
                          "is depends on Aggregation Level in Advanced "
                          "Settings below: a type (bodyIds resolve to their "
                          "type), an individual neuron, or a custom group. "
@@ -564,8 +566,9 @@ def create_morphology_tab():
                             hint="Serve neuron vectors from the dataset's "
                                  "local cache instead of recomputing them. "
                                  "Turn off to rebuild from the connection and "
-                                 "skeleton data. Same setting as the Find "
-                                 "Similar panel above; the cross-dataset "
+                                 "skeleton data. Same SAVED DEFAULT as Find "
+                                 "Similar (Settings → Default Settings → "
+                                 "Use Cache); the cross-dataset "
                                  "comparison always uses the cache.",
                         )
 

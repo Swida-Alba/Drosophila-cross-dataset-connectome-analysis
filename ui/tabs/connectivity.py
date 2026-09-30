@@ -2,8 +2,9 @@
 
 Two sub-tabs share this page:
 - Find Homolog: homolog-style connectivity search (Target = Source gives the
-  intra-dataset similar-neuron search), with an optional cross-dataset
-  morphological qualification of the visualized top matches.
+  intra-dataset similar-neuron search), with an optional morphological
+  qualification (cross- and intra-dataset alike) of the visualized top
+  matches.
 - Comparison: profile existing neurons within and across datasets.
 """
 

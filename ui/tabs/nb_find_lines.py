@@ -267,7 +267,9 @@ def create_nb_find_lines_tab():
                     "Rolling window for Compact output detail: the newest N "
                     "expanded Find Lines runs keep their bodyId-level match "
                     "tables; older Compact runs are pruned. 0 deletes this "
-                    "run's tables immediately. Full ignores this."
+                    "run's tables immediately. Applies to EXPANDED runs — "
+                    "a plain Compact run always deletes immediately "
+                    "regardless of N. Full ignores this."
                 ),
             )
 

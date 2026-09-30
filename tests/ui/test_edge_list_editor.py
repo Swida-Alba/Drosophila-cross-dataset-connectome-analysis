@@ -939,3 +939,25 @@ def test_edge_editor_focus_guard_replay_requires_an_unshifted_grid():
     assert "rec2.rowId != null ||" not in _COL_RESIZE_JS
     assert "Array.prototype.indexOf.call(tb.children, tr2)" in _COL_RESIZE_JS
     assert "__drocatEnterMoveHooked" in _COL_RESIZE_JS
+
+
+def test_csv_import_names_columns_it_cannot_round_trip(
+        store_patch_for_component):
+    """2026-09-30 audit F-UI-005: importing the expanded in-HTML export
+    loads fine, but its extra columns (nt_type, ratio, ...) are not
+    editable here and would be silently dropped on re-export — the status
+    line must name them instead."""
+    client, handle = build_editor(store_patch_for_component)
+    csv_text = ("source,target,weight,nt_type,ratio,probability\n"
+                "aMe12,PPL101,3.0,GABA,0.5,0.25\n")
+    assert handle.load_csv_text(csv_text) is True
+    status = handle.status_label.text
+    assert "Loaded 1 rows from CSV" in status
+    assert "nt_type" in status and "ratio" in status
+    assert "dropped on re-export" in status
+    # the editor's own export round-trips cleanly: no dropped-column note
+    plain = ("source,target,weight,color,source_group,target_group,"
+             "edge info,source info,target info\n"
+             "aMe12,PPL101,3.0,,,,,,,,\n")
+    assert handle.load_csv_text(plain) is True
+    assert "dropped on re-export" not in handle.status_label.text

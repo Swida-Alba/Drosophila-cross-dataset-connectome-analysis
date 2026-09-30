@@ -4,8 +4,11 @@ Mirrors the Advanced Layer Editor's editing model (Visualization > Skeleton):
 inline-only table editing, empty scaffolding rows, a gated debounced
 auto-save, a deferred validation panel, CSV import and drag-resizable
 columns. The editor keeps its rows in a disk-backed draft (see
-``ui.edge_list_store``): every change is auto-saved after a short debounce,
-so an accidental UI/port shutdown never loses edits. A draft stays "dirty"
+``ui.edge_list_store``): every change is auto-saved after a short debounce
+once the table holds at least AUTOSAVE_MIN_NON_EMPTY_ROWS filled rows AND a
+Draft Name is entered, so an accidental UI/port shutdown never loses edits
+that cleared those gates (below them, nothing is saved — export explicitly
+instead). A draft stays "dirty"
 (pending export) until the user explicitly exports the CSV.
 """
 from datetime import datetime
@@ -486,8 +489,29 @@ class EdgeListEditorHandle:
         except Exception:
             return False
         if self.status_label is not None:
-            self.status_label.text = f"Loaded {len(self.rows)} rows from CSV"
+            note = ""
+            dropped = self._columns_dropped_by_import(text)
+            if dropped:
+                # The expanded in-HTML export carries columns this table
+                # cannot edit; importing it is fine, but re-exporting from
+                # the editor would silently lose them — say so instead.
+                note = (f" ({len(dropped)} column(s) not editable here, "
+                        f"dropped on re-export: {', '.join(dropped)})")
+            self.status_label.text = (f"Loaded {len(self.rows)} rows from CSV"
+                                      f"{note}")
         return True
+
+    @staticmethod
+    def _columns_dropped_by_import(text: str) -> list:
+        """Header columns the editor's store will not round-trip."""
+        try:
+            import csv as _csv
+            import io as _io
+            header = next(_csv.reader(_io.StringIO(text)))
+        except Exception:  # noqa: BLE001 — a headerless/odd import degrades to no note
+            return []
+        known = set(edge_list_store.EDGE_COLUMNS)
+        return [name for name in header if name and name not in known]
 
     # ------------------------------------------------------------- selection
     def on_select(self, event) -> None:
@@ -777,8 +801,9 @@ def edge_list_editor(
             "Edit the edge list directly (source → target with weight); use "
             "Add Row for an extra row. Columns switches to the group and "
             "hover-info columns VisualizePath understands. Changes are "
-            "auto-saved, so edits survive an app/port shutdown; the draft "
-            "stays marked as unsaved until you export it."
+            "auto-saved (once the table holds 5 filled rows and a Draft "
+            "Name is entered), so edits survive an app/port shutdown; the "
+            "draft stays marked as unsaved until you export it."
         ).classes("text-caption drocat-muted")
 
         # Authoring notice: complex enriched graphs (hover labels, custom

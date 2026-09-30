@@ -12963,7 +12963,7 @@ class ConnectivityProfileComparer:
             '<header class="report-hero">',
             '<div class="report-kicker">DROCAT · Connectivity profiling</div>',
             '<h1 class="report-title">Connectivity profile report</h1>',
-            '<p class="report-subtitle">Six similarity metrics, Ward-clustered to match '
+            '<p class="report-subtitle">Five similarity metrics, Ward-clustered to match '
             'the VisPath heatmap ordering. Use the VisPath editor links when you need '
             'to change clustering or inspect the source matrix.</p>',
             '<div class="report-meta">',

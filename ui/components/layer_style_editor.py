@@ -1,9 +1,11 @@
 """Interactive layer-style editor for the Skeleton tab (advanced table).
 
 The editor keeps its rows in a disk-backed draft (see ``ui.layer_style_store``):
-every change is auto-saved after a short debounce, so an accidental UI/port
-shutdown never loses edits. A draft stays "dirty" (pending export) until the
-user explicitly exports the CSV.
+every change is auto-saved after a short debounce once the table holds at
+least AUTOSAVE_MIN_NON_EMPTY_ROWS filled rows AND a Draft Name is entered,
+so an accidental UI/port shutdown never loses edits that cleared those
+gates (below them, nothing is saved — export explicitly instead). A draft
+stays "dirty" (pending export) until the user explicitly exports the CSV.
 
 Each row is one neuron with an optional per-neuron color and a synapse /
 pre-synaptic / post-synaptic color, exactly matching the Skeleton backend's

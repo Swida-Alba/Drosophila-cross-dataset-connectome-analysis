@@ -364,8 +364,10 @@ def create_find_shortest_tab():
         output_panel.clear()
         output_panel.set_running(True)
 
-        # Parse keyword filter (chips are already individual keywords)
-        keywords = [str(k) for k in keyword_filter.get_value()[1]]
+        # Parse keyword filter (chips are already individual keywords); the
+        # empty-field default matches Complete Paths — the backend's own
+        # 'None' default is overridden by an explicit empty list
+        keywords = [str(k) for k in keyword_filter.get_value()[1]] or ['None']
 
         constructor_params = {
             "dataset": dataset.value,

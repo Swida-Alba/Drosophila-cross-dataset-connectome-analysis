@@ -1550,7 +1550,7 @@ def _hero(d: Dict) -> str:
             f" · <span class='mv-note'>disclosure evidence "
             f"+{_esc(len(_disc_rows))} row(s) / "
             f"{_esc(_disc_types)} declined type(s) — advisory, not in "
-            'the claim set (see the Mapping tab)</span>')
+            'the claim set (see the Coverage tab)</span>')
         headline = supervised
     px = (d.get('pooling_xval') or {}) if str(mode) == 'pooling' else {}
     psrc = d.get('pooling_sources') or []

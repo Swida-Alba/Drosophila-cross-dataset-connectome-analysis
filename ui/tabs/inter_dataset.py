@@ -402,6 +402,17 @@ def create_inter_dataset_tab():
                         raise ValueError(
                             "Synapse thresholds must be positive integers."
                         )
+                    # The docs' contract (guide + skill): auto mode derives
+                    # thresholds from cross-dataset overlap, so it needs at
+                    # least two datasets — one selected dataset falls back
+                    # to plain per-threshold vertical rows, which is NOT
+                    # what the user asked Auto for.
+                    if len(selected) < 2:
+                        raise ValueError(
+                            "Auto threshold mode needs at least two selected "
+                            "datasets (it derives thresholds from cross-"
+                            "dataset overlap)."
+                        )
                     return mode, sorted(set(values)) or [3], None
                 if mode == "standard":
                     try:
