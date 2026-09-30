@@ -78,7 +78,7 @@ class NeuronBridgeParquetCache:
         <cache_root>/parquet/<neuronbridge-version>/
             manifest.json
             id_to_lines/<canonical-key>.parquet
-            image_cache/<match_type>_<lm_sample>.parquet
+            image_cache/<match_type>_<image_id>.parquet
 
     Files are replaced atomically after a complete write.  A per-instance
     lock protects read/merge/write operations when Finder workers process LM

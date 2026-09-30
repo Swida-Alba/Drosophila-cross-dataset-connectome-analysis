@@ -2110,9 +2110,16 @@ def export_individuals_webdriver(
                 legend_names = list(legend_entries.keys())
                 progress_iter = tqdm(legend_names, desc='Exporting individuals') if verbose else legend_names
                 
+                taken_profile_names = set()
                 for legend_name in progress_iter:
                     trace_indices = legend_entries[legend_name]
-                    safe_name = _sanitize_filename(legend_name)
+                    # Distinct legend keys can sanitize to the same
+                    # filename (the kaleido/HTML loops dedupe for exactly
+                    # this reason): without the dedupe the later export
+                    # silently overwrites the earlier profile's PNGs and
+                    # summary entries.
+                    safe_name = VisualizeSkeleton._dedupe_profile_name(
+                        _sanitize_filename(legend_name), taken_profile_names)
                     
                     # Set visibility: show this legend's traces + background
                     visible_indices = list(trace_indices) + list(background_indices)
@@ -7051,9 +7058,11 @@ class VisualizeSkeleton:
         The CSV must have a 'layer' column and a neuron column named 'neuron'
         (the legacy 'id_type_instance' name is accepted as an alias). Rows with
         the same 'layer' value are grouped together into a single layer. The
-        layer column may be numeric, in which case the base is auto-detected
-        (minimum 0 => 0-based, minimum 1 => 1-based and shifted to 0
-        internally), or it may hold group-name labels which are used verbatim.
+        layer column may be numeric — any base is supported, free integers
+        with gaps included: values are shifted by the minimum so the lowest
+        layer becomes index 0, and only numerically consecutive layers pair
+        for inter-layer synapses (a numbering jump breaks pairs by design) —
+        or it may hold group-name labels which are used verbatim.
 
         Optional color columns:
         - 'color': per-neuron display color (alpha overrides neuron_alpha).
@@ -9605,10 +9614,7 @@ class VisualizeSkeleton:
             warning_note = "in-page warning threshold >0.95"
         else:
             warning_note = "in-page warning threshold >0.90"
-        if is_fafb:
-            pipeline_note = f"neuprint_skeleton_pipeline={pipeline}"
-        else:
-            pipeline_note = f"neuprint_skeleton_pipeline={pipeline}"
+        pipeline_note = f"neuprint_skeleton_pipeline={pipeline}"
         synapse_mode = str(getattr(self, "synapse_mode", "") or "").strip().lower()
         pre_post_note = ""
         if synapse_mode == "pre_post":
@@ -9668,7 +9674,10 @@ class VisualizeSkeleton:
         method runs during initialization, before the HTML exists.
         """
 
-        if os.path.basename(html_path) == "_temp_export.html":
+        if os.path.basename(html_path).startswith("_temp"):
+            # _temp_export.html AND _temp_main_figure.html: transient
+            # render inputs deleted right after the export session — a
+            # note about them would outlive the file it names.
             return False
 
         threshold_mb = 50
@@ -14556,11 +14565,13 @@ class VisualizeSkeleton:
             - cached_df: DataFrame of cached synapses (may be None if nothing cached)
             - missing_pairs: List of (pre_id, post_id) tuples not found in cache
         """
+        # Bound on every path: the FAFB branch below reads it when the
+        # native table read returns None, cache or no cache.
+        all_pairs = [(s, t) for s in source_ids for t in target_ids]
         if not self.cache_synapses:
             # Return all pairs as missing
-            all_pairs = [(s, t) for s in source_ids for t in target_ids]
             return None, all_pairs
-        
+
         source_ids = set(str(s) for s in source_ids)
         target_ids = set(str(t) for t in target_ids)
         
@@ -14818,11 +14829,6 @@ class VisualizeSkeleton:
                         for pre_id in conn_df['bodyId_pre']
                     ]
                     is_color_array = True
-                elif isinstance(c_val, (list, np.ndarray)) and len(c_val) == len(xyz_df):
-                     # Check if it's not just a single RGB tuple
-                     if len(xyz_df) != 3 or (isinstance(c_val[0], (str, list, tuple, np.ndarray))):
-                         xyz_df['__color'] = c_val
-                         is_color_array = True
                 
                 # Transform synapses only if needed (skip for FAFB native coords)
                 if self._needs_skeleton_transform():
@@ -22773,8 +22779,8 @@ def export_png_webdriver(
     -----
     Requires: selenium, webdriver-manager
     
-    On macOS, headless Chrome doesn't support WebGL, so we use an offscreen
-    window (positioned at -10000,-10000) instead of true headless mode.
+    Uses Chrome's ``--headless=new`` mode, which supports WebGL on every
+    platform including macOS (the old offscreen-window workaround is gone).
     
     Examples
     --------
