@@ -342,7 +342,6 @@ def _api_dataset_body_id(dataset: str, body_id) -> int:
     return int(body_id)
 
 
-
 def _has_local_dataset_presence(dataset: str, root: Path) -> bool:
     """Whether the dataset has real local data beyond a shipped index seed.
 
@@ -1736,7 +1735,6 @@ def _resolve_fafb_skeleton_trees(dataset: str, body_ids,
         except (TypeError, ValueError):
             continue
     return out
-
 
 
 def _import_visualizer():

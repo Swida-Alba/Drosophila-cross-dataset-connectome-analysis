@@ -14,7 +14,8 @@ folders and caches.)
 | Connectivity / pathfinding / network analysis | ✅ (local parquet tables) |
 | **3D skeleton visualization** (native BANC space) | ✅ (public-bucket SWCs) |
 | BANC ROI / neuropil meshes + CNS outline template | ✅ (public `region_outlines` layer) |
-| Morphology find-similar / NBLAST-style similarity | ❌ deferred |
+| Morphology find-similar | ❌ deferred (vector-quality validation pending) |
+| Morphology comparison (vector_v2 / NBLAST) | ✅ runs, with a provisional-scores warning |
 | CAVE API queries (`brain_and_nerve_cord`) | ❌ token-gated, not used |
 
 ## Data Preparation (automatic)

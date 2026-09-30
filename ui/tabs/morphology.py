@@ -582,11 +582,12 @@ def create_morphology_tab():
                             "Max Total Neurons", 200, 2, 2000,
                             hint="Safety cap on the compared population: "
                                  "truncation walks the rows in order and "
-                                 "never drops a neuron you queried by bodyId. "
-                                 "NBLAST scores every pair twice, so "
-                                 "populations past 30 neurons (capped size "
-                                 "included, which is why a cap below 30 is "
-                                 "honoured rather than refused) warn that the "
+                                 "never drops a neuron you queried by "
+                                 "bodyId. NBLAST scores every pair twice, "
+                                 "so populations past 30 neurons (the size "
+                                 "that will actually be scored — the cap, "
+                                 "or more when your queried bodyIds alone "
+                                 "exceed it) warn that the "
                                  "run may take very long — they are not "
                                  "refused.",
                         )

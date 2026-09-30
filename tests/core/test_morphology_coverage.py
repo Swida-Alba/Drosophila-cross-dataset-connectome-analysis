@@ -79,7 +79,7 @@ def test_dataset_folder_and_body_id_helpers():
 
 
 # ---------------------------------------------------------------------------
-# flywire soma positions + local presence
+# local dataset presence
 # ---------------------------------------------------------------------------
 
 def test_has_local_dataset_presence(tmp_path):
