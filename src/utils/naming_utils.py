@@ -57,7 +57,7 @@ _BANC_LEGACY_NAME_RE = re.compile(
     # FlyWire-prefixed colon forms (and canonical underscore forms) are
     # local-release identifiers that should fold into a cache namespace.
     r"^(?:(?:flywire[_-]?)banc(?:[_:-](v\d+(?:[._]\d+)*))?|"
-    r"banc(?:_(v\d+(?:[._]\d+)*))?)$",
+    r"banc(?:[_-](v\d+(?:[._]\d+)*))?)$",
     re.IGNORECASE,
 )
 

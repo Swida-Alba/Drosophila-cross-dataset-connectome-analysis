@@ -269,11 +269,14 @@ def canonicalize_flywire_id_expr(column: str):
 
     import polars as pl
 
-    s = pl.col(column).cast(pl.Utf8)
-    s = pl.when(s.str.len_chars() == SHORT_ID_DIGITS).then(
+    # Strip FIRST (a padded '123456789 ' must not miss the completion,
+    # an embedded-space ' 12345678' must not become an invalid id), and
+    # gate the short-id completion on pure digits — mirroring
+    # normalize_flywire_body_id's strip-then-fullmatch order.
+    s = pl.col(column).cast(pl.Utf8).str.strip_chars()
+    s = pl.when(s.str.contains(r"^\d+$") & (s.str.len_chars() == SHORT_ID_DIGITS)).then(
         pl.concat_str(pl.lit(FLYWIRE_SHORT_ID_PREFIX), s)
     ).otherwise(s)
-    s = s.str.strip_chars()
     s = s.str.replace(r"^([0-9]+)\.0+$", "${1}")
     s = s.str.strip_chars_start("0")
     return pl.when(s.str.len_chars() == 0).then(pl.lit("0")).otherwise(s)

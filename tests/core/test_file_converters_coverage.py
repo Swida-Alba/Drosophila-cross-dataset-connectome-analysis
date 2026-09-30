@@ -524,11 +524,21 @@ def test_fafb_skeletons_corrupt_zip(tmp_path, fake_pool):
 
 
 def test_fafb_skeletons_existing_output_short_circuits(tmp_path):
+    import pandas as pd
+
     save_path = tmp_path / "skeletons.parquet"
-    save_path.write_bytes(b"already")
+    # A READABLE table short-circuits (parquet_is_reusable, not bare
+    # existence — the audit round tightened the gate).
+    pd.DataFrame({"bodyId": ["1"]}).to_parquet(save_path, index=False)
     assert fafb.process_skeletons_to_parquet(
         str(tmp_path / "missing.zip"), str(save_path)
     ) is True
+    # Truncated/garbage bytes are NOT trusted: the converter declines
+    # instead of serving a partial table forever.
+    save_path.write_bytes(b"already")
+    assert fafb.process_skeletons_to_parquet(
+        str(tmp_path / "missing.zip"), str(save_path)
+    ) is False
 
 
 def test_fafb_skeletons_missing_zip(tmp_path):

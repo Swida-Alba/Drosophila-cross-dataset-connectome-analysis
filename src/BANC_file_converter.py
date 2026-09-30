@@ -18,10 +18,12 @@ if ensure_utf8_stdio is not None:
 
 try:
     from .utils.parquet_utils import (
-        parquet_is_reusable, write_file_atomic, write_parquet_atomic)
+        parquet_is_reusable, replace_with_retry, temp_sibling,
+        write_file_atomic, write_parquet_atomic)
 except ImportError:  # pragma: no cover - src laid bare on sys.path
     from utils.parquet_utils import (
-        parquet_is_reusable, write_file_atomic, write_parquet_atomic)
+        parquet_is_reusable, replace_with_retry, temp_sibling,
+        write_file_atomic, write_parquet_atomic)
 
 try:
     from .flywire_ids import (
@@ -518,9 +520,9 @@ def build_connection_cache_from_tables(dataset_dir, cache_dir=None):
         )
         .collect()
     )
-    temp_file = cache_file + f".{os.getpid()}.tmp"
+    temp_file = temp_sibling(cache_file, "connection-cache")
     frame.write_parquet(temp_file, compression="snappy")
-    os.replace(temp_file, cache_file)
+    replace_with_retry(temp_file, cache_file)
     print(f"  ✓ Connection cache rebuilt: {frame.height:,} connections "
           f"-> {cache_file}")
 
@@ -544,9 +546,9 @@ def build_connection_cache_from_tables(dataset_dir, cache_dir=None):
             "connection_count",
         )
         state_file = os.path.join(cache_dir, "neuron_index_state.parquet")
-        state_temp = state_file + f".{os.getpid()}.tmp"
+        state_temp = temp_sibling(state_file, "neuron-index-state")
         state.write_parquet(state_temp, compression="snappy")
-        os.replace(state_temp, state_file)
+        replace_with_retry(state_temp, state_file)
     # The .src marker goes LAST: an interruption anywhere above leaves no
     # marker, so the (idempotent) rebuild simply re-runs next time instead
     # of a current-looking signature short-circuiting a stale sidecar

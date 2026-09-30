@@ -242,7 +242,13 @@ def http_get(url: str, timeout: float = 120, attempts: int = 3,
                 if received and status == 206:
                     received.extend(response.read())  # continuation
                 else:
-                    received = bytearray(response.read())  # full restart
+                    # Full restart: the reassignment must happen BEFORE
+                    # any read — if this read raises IncompleteRead, the
+                    # handler below would otherwise append the restart's
+                    # partial bytes (offset-0 content) onto the OLD
+                    # prefix, silently corrupting the blob.
+                    received = bytearray()
+                    received.extend(response.read())
                 return bytes(received)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -587,7 +593,10 @@ def _remote_size(url: str) -> Optional[int]:
     req = urllib.request.Request(url, method="HEAD")
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            return int(response.headers["Content-Length"])
+            length = response.headers.get("Content-Length")
+            if length is None:
+                raise OSError("HEAD response carried no Content-Length")
+            return int(length)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
@@ -891,7 +900,7 @@ def download_meta_feather(dataset, project_root=None,
     if blob is None:
         return None
     local.parent.mkdir(parents=True, exist_ok=True)
-    temp = local.with_name(f".{local.name}.{os.getpid()}.tmp")
+    temp = Path(temp_sibling(str(local), "product-download"))
     temp.write_bytes(blob)
     os.replace(temp, local)
     return local
@@ -909,7 +918,7 @@ def download_connections_product(dataset, project_root=None,
     if blob is None:
         return None
     local.parent.mkdir(parents=True, exist_ok=True)
-    temp = local.with_name(f".{local.name}.{os.getpid()}.tmp")
+    temp = Path(temp_sibling(str(local), "product-download"))
     temp.write_bytes(blob)
     os.replace(temp, local)
     return local

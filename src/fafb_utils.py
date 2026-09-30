@@ -1,5 +1,10 @@
 import gzip
 import os
+
+try:
+    from utils.parquet_utils import temp_sibling
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    from .utils.parquet_utils import temp_sibling
 import shutil
 import pandas as pd
 from pathlib import Path
@@ -87,8 +92,6 @@ def prepare_flywire_data(data_dir):
         else:
             # Generic error message for missing files (one-time download +
             # conversion; same story the converters print)
-            dataset_key = 'banc' if is_banc_dataset(dataset_name) else 'fafb'
-            converter = 'BANC_file_converter' if dataset_key == 'banc' else 'FAFB_file_converter'
             raise FileNotFoundError(
                 f"Required data files not found in {data_dir}.\n"
                 f"This is a one-time preparation step: download the files from\n"
@@ -371,7 +374,7 @@ def _write_extrusion_cache(project_root, dataset_folder, results, statuses,
             for body_id in sorted(results, key=str)
         ]
         frame = pd.DataFrame(rows)
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary = Path(temp_sibling(str(path), "extrusion-cache"))
         try:
             frame.to_parquet(temporary, index=False)
             os.replace(temporary, path)

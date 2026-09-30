@@ -63,7 +63,7 @@ try:
         reclaim_writer_temps, temp_sibling, write_file_atomic,
         write_parquet_atomic)
 except ImportError:  # pragma: no cover - src laid bare on sys.path
-    from utils.parquet_utils import (
+    from .utils.parquet_utils import (
         parquet_is_reusable, parquet_readable, reencode_parquet_lossless,
         reclaim_writer_temps, temp_sibling, write_file_atomic,
         write_parquet_atomic)
@@ -346,18 +346,14 @@ def process_connections_to_parquet(read_path, save_path):
             old: new for old, new in rename_map.items() if old in df.columns
         })
         
-        # Canonical ID strings (strip whitespace, drop leading zeros, accept
-        # integral '123.0' spellings) - same semantics as
-        # normalize_flywire_id_columns, vectorized.
-        def _canonical_ids(column: str):
-            s = pl.col(column).cast(pl.Utf8).str.strip_chars()
-            s = s.str.replace(r'^([0-9]+)\.0+$', '${1}')
-            s = s.str.strip_chars_start('0')
-            return pl.when(s.str.len_chars() == 0).then(pl.lit('0')).otherwise(s)
-
+        # Canonical ID strings through the shared expression: it also
+        # expands bare 9-digit FlyWire short ids to the full form (the
+        # synapse path and the BANC twin already do) — a short id left
+        # unexpanded here could never join the neuron/synapse tables.
         for column in ('bodyId_pre', 'bodyId_post'):
             if column in df.columns:
-                df = df.with_columns(_canonical_ids(column).alias(column))
+                df = df.with_columns(
+                    canonicalize_flywire_id_expr(column).alias(column))
         
         # Aggregate weights and ROIs (sum weights, join ROIs)
         print("  Aggregating connections across ROIs...")
@@ -504,7 +500,7 @@ def process_skeletons_to_parquet(zip_path, save_path, batch_size=500):
     # function never reaches the writer that owns the temp again.
     reclaim_writer_temps(save_path, 'fafb-table')
 
-    if os.path.exists(save_path):
+    if parquet_is_reusable(save_path):
         print(f"  ✓ Found existing converted file: {save_path}")
         return True
 
@@ -651,13 +647,22 @@ def update_neuron_post_counts(neuron_path, conn_path, save_csv_path=None):
         # Save
         print(f"  Saving updated neurons to {neuron_path}...")
         if neuron_path.endswith('.parquet'):
-            df_neuron.to_parquet(neuron_path, index=False, compression='snappy')
+            # Atomic like the BANC twin: a truncated neuron table here
+            # self-heals only through a full re-conversion.
+            write_parquet_atomic(
+                neuron_path,
+                lambda tmp: df_neuron.to_parquet(
+                    tmp, index=False, compression='snappy'))
         else:
-            df_neuron.to_csv(neuron_path, index=False)
-            
+            write_file_atomic(
+                neuron_path,
+                lambda tmp: df_neuron.to_csv(tmp, index=False))
+
         if save_csv_path:
             print(f"  Saving updated neurons to {save_csv_path}...")
-            df_neuron.to_csv(save_csv_path, index=False)
+            write_file_atomic(
+                save_csv_path,
+                lambda tmp: df_neuron.to_csv(tmp, index=False))
             
         print("  ✓ Post counts updated.")
         return True

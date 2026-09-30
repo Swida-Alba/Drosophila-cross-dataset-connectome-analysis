@@ -16,9 +16,10 @@ def ensure_utf8_stdio():
     """Reconfigure stdout/stderr to UTF-8 with replacement on encode errors.
 
     Safe to call multiple times and under any embedding: streams without
-    ``reconfigure`` (string buffers, captured streams) and already-UTF-8
-    streams are left untouched, and failures are swallowed — this guard
-    must never be the reason a run fails.
+    ``reconfigure`` (string buffers, captured streams) are skipped,
+    already-UTF-8 streams are simply reconfigured to the same encoding,
+    and failures are swallowed — this guard must never be the reason a
+    run fails.
     """
     for stream in (sys.stdout, sys.stderr):
         _ensure_utf8_stream(stream)
