@@ -889,6 +889,12 @@ class MorphologyProfileComparer:
                             if self._body_id(xa) not in pos \
                                     or self._body_id(xb) not in pos:
                                 continue
+                            # Custom groups may share a neuron (a type
+                            # listed under two preset labels); its forced
+                            # diagonal 1.0 must not inflate the cross-group
+                            # mean.
+                            if a != b and self._body_id(xa) == self._body_id(xb):
+                                continue
                             if not _pair_ok(xa, xb):
                                 continue
                             vals.append(

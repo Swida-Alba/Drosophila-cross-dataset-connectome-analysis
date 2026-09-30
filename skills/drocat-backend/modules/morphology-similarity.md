@@ -166,7 +166,7 @@ vecs = cache.vectors_for(body_ids, compute_missing=True)
 ## Supporting functions
 
 - `find_similar_raw_cache(dataset, ...)` — the raw skeleton cache helper.
-- `find_similar_dataset_cache(dataset, ...)` — dataset-level cache helper.
+- `find_similar_dataset_cache_v2(dataset, ...)` — dataset-level cache helper (the non-V2 name was removed with its dead implementation).
 - `find_similar_flywire_mesh_cache(...)` — FlyWire mesh cache helper.
 - `load_local_release_skeletons(dataset, body_ids, ...)` — canonical local
   raw-skeleton loader: locally repaired caches (`cave_skeletons` /

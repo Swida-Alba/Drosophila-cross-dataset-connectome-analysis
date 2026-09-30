@@ -200,10 +200,10 @@ SPATIAL_EXTRA_FEATURES: List[str] = (
 # locally vectorized neurons, so a representative random sample of the
 # whole-brain skeleton bundle is vectorized once (and cached) whenever the
 # population falls below this target.
-# FAFB bundle population seeding is DISABLED by default: the search is
-# candidate-list-first (connectivity screen -> fetch -> vectorize), so the
-# cache no longer defines the search population. Set a positive target to
-# opt back into a pre-seeded exploratory pool for cache-direct browsing.
+# FAFB bundle population seeding is ENABLED (re-enabled by da3266c3): the
+# search itself is candidate-list-first (connectivity screen -> fetch ->
+# vectorize), and the pre-seeded pool (~1500 raw-basis skeletons) serves
+# cache-direct browsing. Set 0 to skip seeding.
 FAFB_BUNDLE_SAMPLE_TARGET = 1500   # raw-basis whole-brain sample: the V2
 # cache seeds itself from the healed zip so identity-space runs (Find
 # Similar / cross-dataset targets) have population artifacts and a
@@ -1868,21 +1868,6 @@ def _fafb_skeleton_zip_path(dataset: str,
             return candidate
     return None
 
-
-def _read_fafb_zip_skeleton(zfile: "zipfile.ZipFile",
-                            body_id: int) -> Optional["navis.TreeNeuron"]:
-    """Load one skeleton (``{bodyId}.swc``) from the healed FAFB bundle."""
-    try:
-        import io
-
-        content = zfile.read(f"{int(body_id)}.swc").decode("utf-8")
-        nrn = navis.read_swc(io.StringIO(content))
-        nrn.units = "nm"
-        nrn.id = int(body_id)
-        nrn.name = str(int(body_id))
-        return nrn
-    except Exception:
-        return None
 
 
 def _skeleton_folder_level(dataset: str,
@@ -3659,26 +3644,6 @@ def find_similar_flywire_mesh_cache(
     )
 
 
-def find_similar_dataset_cache(
-        dataset: str,
-        project_root: Optional[str] = None,
-        n_workers: int = 8,
-        verbose: bool = True,
-        ) -> SkeletonVectorCache:
-    """Return the dataset-native vector/cache manager.
-
-    NeuPrint and BANC own raw SWC managers; FAFB owns the prepared mesh
-    manager. This boundary prevents a CAVE MeshNeuron from being serialized
-    through a raw SWC writer.
-    """
-    if is_flywire_dataset(dataset):
-        return find_similar_flywire_mesh_cache(
-            dataset, project_root=project_root, n_workers=n_workers,
-            verbose=verbose)
-    return find_similar_raw_cache(
-        dataset, project_root=project_root, n_workers=n_workers,
-        verbose=verbose)
-
 
 class SkeletonVectorCacheV2(SkeletonVectorCache):
     """V2 (spatial/topological) vector cache: same skeletons, richer schema.
@@ -4548,6 +4513,8 @@ def population_stats(dataset: str, project_root: Optional[str] = None,
                 + [str(p) for p in skel_dir.rglob("*.pkl.zst")
                    if "raw_skeletons" not in p.parts]
                 + [str(p) for p in skel_dir.rglob("*.swc.gz")
+                   if "raw_skeletons" not in p.parts]
+                + [str(p) for p in skel_dir.rglob("*.swc.zst")
                    if "raw_skeletons" not in p.parts]
             )
             if len(sf) > len(sibling_files):
@@ -5807,7 +5774,7 @@ class MorphologyComparer:
         # (top-N results visualization, Skeleton tab). Similarity runs load
         # skeletons unchecked by default because the detector dominates the
         # FAFB fetch cost while extrusions are a small fraction of each tree.
-        check_extrusions: bool = True,
+        check_extrusions: bool = False,
         project_root: Optional[str] = None,
     ):
         self.query = query
@@ -6267,7 +6234,6 @@ class MorphologyComparer:
         return results
 
     def _scoring_step_label(self) -> str:
-        return "Scoring similarity (vector: shape + spatial)"
         if self.method == "nblast":
             return "Building dotprops & NBLAST scoring"
         return "Scoring similarity (vector: shape + spatial)"
@@ -8485,7 +8451,8 @@ class MorphologyComparer:
         the requested top-N result count. With ``visualize_by='type'``
         (default) each of the top-N distinct result types becomes one layer
         containing its member bodyIds (the result rows for bodyId-level
-        searches, or the vector-cache members capped at ``n_per_type`` for
+        searches, or the vector-cache members capped at
+        ``TYPE_RENDER_MEMBER_CAP`` for
         type-level searches); with ``'bodyId'`` each top result row is one
         layer. The intra-type reference row is never rendered. Output goes to
         the same run folder (plot-3d_{dataset}/subfolder); a visualization

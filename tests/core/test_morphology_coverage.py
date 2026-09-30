@@ -1142,11 +1142,8 @@ def test_find_similar_cache_factories(tmp_path):
     with pytest.raises(ValueError):
         M.find_similar_flywire_mesh_cache("hemibrain:v1.2.1",
                                           project_root=str(tmp_path))
-    assert M.find_similar_dataset_cache(
-        "flywire", project_root=str(tmp_path), verbose=False).mesh_only
-    assert M.find_similar_dataset_cache(
-        "hemibrain:v1.2.1", project_root=str(tmp_path),
-        verbose=False).raw_only
+    # (the non-V2 find_similar_dataset_cache dispatcher was removed with
+    # its dead implementation — raw/mesh factories asserted above)
 
 
 def test_cache_fetched_skeleton_vectors(tmp_path):

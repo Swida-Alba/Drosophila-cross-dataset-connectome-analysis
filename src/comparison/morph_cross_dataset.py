@@ -2327,11 +2327,16 @@ class CrossDatasetMorphComparer:
                 skeletons = fetch_source_skeletons(
                     ds, shown, project_root=self.project_root, log=self._log,
                     allow_fetch=self.fetch_online)
-                members = [(int(b), skeletons[int(b)]) for b in shown
-                           if int(b) in skeletons]
-                if not members:
+                # Local only — the `members` PARAMETER (the per-dataset
+                # type map) must survive for the next dataset/type
+                # iteration; rebinding it crashed every run with >= 3
+                # datasets or >= 2 queried types, silently dropping all
+                # overlay scenes.
+                scene_members = [(int(b), skeletons[int(b)]) for b in shown
+                                 if int(b) in skeletons]
+                if not scene_members:
                     continue
-                neurons = _tag_scene_members(members, type_name, abbrev, ds)
+                neurons = _tag_scene_members(scene_members, type_name, abbrev, ds)
                 native = dataset_native_space(ds)
                 if native == ref_render:
                     custom_neurons.append((label, neurons))
