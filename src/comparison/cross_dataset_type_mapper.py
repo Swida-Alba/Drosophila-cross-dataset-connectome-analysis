@@ -2840,6 +2840,11 @@ class CrossDatasetTypeMapper:
         reverse_label_candidates: Dict[Tuple[str, str, str], Set[str]] = \
             defaultdict(set)
         reverse_label_records: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+        # Token-level vote distribution per (banc release, label column,
+        # canonical token): how the token's votes spread across BANC
+        # primaries — the input to the tail-claimant guard below.
+        token_type_votes: Dict[Tuple[str, str, str], Counter] = \
+            defaultdict(Counter)
 
         def record_votes(banc_key, column, target_keys, banc_type,
                          votes, verified_votes, verification_conflicts,
@@ -2854,6 +2859,9 @@ class CrossDatasetTypeMapper:
                 for candidate, values in raw_values.items()
                 if values
             }
+            for candidate, n in votes.items():
+                token_type_votes[
+                    (banc_key, column, str(candidate))][banc_type] += n
             self._banc_label_votes[(
                 banc_key, column, banc_type
             )] = {
@@ -3157,6 +3165,43 @@ class CrossDatasetTypeMapper:
             banc_type = next(iter(source_types))
             record = reverse_label_records[(
                 target_key, winner, banc_key, banc_type)]
+            # Tail-claimant guard (user 2026-09-30, plan §11 / R2
+            # hygiene): the single-candidate reverse lookup asks "which
+            # BANC primary's dominant label IS this token" — a 1-2-row
+            # type whose only labelled row carries the token wins that
+            # internal election while the token's real population lives
+            # on ANOTHER primary (BANC CL257 elected the MCNS 'R8y'
+            # slot with one row while BANC R8 holds 107 R8y votes but
+            # its own winner is a different token; FAFB 'T1' elected
+            # BANC 'R8_unclear' with one row against 636 votes
+            # elsewhere — 29 slots of 6,674 on real data, all of this
+            # shape).  The ratified population-asymmetry signal (>=10x,
+            # user 2026-09-10) refuses such tail claimants: no reverse
+            # slot is written and the provenance discloses the refusal
+            # with the dominant claimants.  Forward lanes, same-name
+            # slots and real conflicts are untouched.
+            token_dist = token_type_votes.get(
+                (banc_key, record['column'], winner))
+            elected_n = (token_dist or {}).get(banc_type, 0)
+            other_max = max(
+                (n for t, n in (token_dist or {}).items()
+                 if t != banc_type), default=0)
+            if token_dist and other_max >= 10 * max(elected_n, 1):
+                self._bridge_provenance[(
+                    target_key, winner, banc_key
+                )] = {
+                    'kind': label_lane_kind(record['column']),
+                    'column': record['column'],
+                    'target': None,
+                    'conflict': True,
+                    'tail_claimant': True,
+                    'elected_votes': elected_n,
+                    'dominant_others': dict(sorted(
+                        ((t, n) for t, n in token_dist.items()
+                         if t != banc_type),
+                        key=lambda kv: -kv[1])[:3]),
+                }
+                continue
             reverse = self._type_mappings.setdefault(
                 target_key, {}).setdefault(winner, {})
             reverse[banc_key] = banc_type
@@ -7022,32 +7067,46 @@ class CrossDatasetTypeMapper:
                 if not subsumed:
                     kept.append(chain)
             bridges = kept
-        # ACT-glue suppression with backward-reciprocity rescue (user
-        # 2026-09-30, plan §3/§4): once a chain has ARRIVED at a primary
-        # of the target namespace by same-name identity, a BANC
-        # ``Alternative Cell Type(s)`` hop may not depart from it.  An
-        # ACT cell names how the reached type's neurons are called
-        # ELSEWHERE (cross-reference rule); using it as intra-BANC
-        # transitivity glues unrelated primaries through any shared
-        # foreign token — FAFB R8 reached BANC R8 and its 'R7p'/'R8p'/
-        # 'R8y' tokens fanned out onto 26 unrelated BANC ends
-        # (m_NSC_DILP, MBON26, Tm3 ...); s-CPDN3A/D were cross-paired
-        # onto CB1791/CB3612 through the shared 'SMP220' token, and the
-        # reverse direction refuses those pairs — the asymmetry is the
-        # tell.  Label-hop arrivals were already terminal
-        # (TERMINAL_LINKER_COLUMNS); this closes the same-name arrival
-        # for ACT departures only, so the registry continuation through
-        # target-side ``additional_type(s)`` (crosswalk primary -> its
-        # annotated siblings) keeps its licence.  A glue chain whose
-        # pair is corroborated in the reverse direction (some reverse
-        # bridge from the end type reaches the source type) is real
-        # correspondence, not glue: kept and flagged ``reciprocal``
-        # (e.g. FAFB DNp17 <-> BANC DNpe054, whose reverse leg runs
-        # through FAFB additional_type(s) 'DNp16/17').
-        if source_key != target_key and not _skip_glue_filter:
-            def _act_glue_departure(chain) -> bool:
+        # Terminal-glue suppression with backward-reciprocity rescue
+        # (user 2026-09-30, plan §3/§4 + §10): once a chain has ARRIVED
+        # at a primary of the target namespace by same-name identity, an
+        # annotation hop may not depart from it on the FAFB<->BANC pair
+        # (either direction: BANC ``Alternative Cell Type(s)`` departing
+        # a BANC arrival, FAFB ``additional_type(s)`` departing an FAFB
+        # arrival).  An annotation cell names how the reached type's
+        # neurons are called ELSEWHERE (cross-reference rule); using it
+        # as intra-namespace transitivity glues unrelated primaries
+        # through any shared foreign token — FAFB R8 reached BANC R8 and
+        # its 'R7p'/'R8p'/'R8y' tokens fanned out onto 26 unrelated BANC
+        # ends (m_NSC_DILP, MBON26, Tm3 ...); s-CPDN3A/D were
+        # cross-paired onto CB1791/CB3612 through the shared 'SMP220'
+        # token; BANC T3 reached FAFB T3 and its 'Pm03'/'Pm08'
+        # additional names fanned onto unrelated FAFB ends — and the
+        # reverse direction refuses all of those pairs, the asymmetry
+        # being the tell.  Both directions' DESIGNED annotation forms
+        # are 100% backward-reciprocated on real data (census
+        # /tmp/atglue_census.json), so non-reciprocity singles out
+        # exactly the glue class.  Deliberately NOT applied to other
+        # pairs (e.g. MCNS->FAFB): there the designed-form control is
+        # only ~55% reciprocal — MCNS crosswalk evidence is structurally
+        # one-directional — so non-reciprocity proves nothing, and the
+        # same-name+aT continuation is adjacent to the ratified registry
+        # standard.  Label-hop arrivals were already terminal
+        # (TERMINAL_LINKER_COLUMNS); the registry continuation through
+        # target-side ``additional_type(s)`` after a CROSSWALK arrival
+        # keeps its licence.  A glue chain whose pair is corroborated in
+        # the reverse direction (some reverse bridge from the end type
+        # reaches the source type) is real correspondence, not glue:
+        # kept and flagged ``reciprocal`` (e.g. FAFB DNp17 <-> BANC
+        # DNpe054, whose reverse leg runs through FAFB
+        # additional_type(s) 'DNp16/17').
+        if (source_key != target_key and not _skip_glue_filter
+                and {source_key, target_key} in (
+                    {'flywire_FAFB_v783', 'banc_v626'},
+                    {'flywire_FAFB_v783', 'banc_v888'})):
+            def _glue_departure(chain) -> bool:
                 for i in range(2, len(chain)):
-                    if (chain[i].get("column") == "Alternative Cell Type(s)"
+                    if (chain[i].get("column") in ANNOTATION_COLUMNS
                             and chain[i - 1].get("column") == "type"
                             and chain[i - 1].get("dataset") == target_key):
                         return True
@@ -7056,7 +7115,7 @@ class CrossDatasetTypeMapper:
             reciprocal_cache: Dict[str, bool] = {}
             surviving: List[List[Dict[str, str]]] = []
             for chain in bridges:
-                if not _act_glue_departure(chain):
+                if not _glue_departure(chain):
                     surviving.append(chain)
                     continue
                 end_value = chain[-1]["value"]

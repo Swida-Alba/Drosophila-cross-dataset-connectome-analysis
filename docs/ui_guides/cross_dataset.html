@@ -645,10 +645,11 @@
       <code>hemibrainType</code>/<code>mancType</code> crosswalks). The
       linker network lays out ONE column per linker (e.g.
       <code>MCNS type → flywireType → additional_type(s) → FAFB type</code>
-      = four columns). Annotation routes through
-      <code>Alternative Cell Type(s)</code> never extend past a same-name
-      arrival into BANC — such transitive extensions are only offered when
-      the pair is confirmed by a reverse-direction bridge, and then carry a
+      = four columns). On the FAFB↔BANC pair (both directions), annotation
+      routes through <code>Alternative Cell Type(s)</code> or
+      <code>additional_type(s)</code> never extend past a same-name
+      arrival — such transitive extensions are only offered when the pair
+      is confirmed by a reverse-direction bridge, and then carry a
       <code>(reciprocal)</code> provenance in the exports.</li>
   </ul>
   <p>Full semantics: <code>docs/AUTO_TYPE_MAPPING.md</code>; implementation

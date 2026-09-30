@@ -278,40 +278,69 @@ with zero row-level support on the reached types):
   bridge (e.g. `malecns_cell_type via 'MDN'` for a curated label pair)
   instead of dropping it.
 
-### 3.7 Post-arrival ACT discipline with backward-reciprocity rescue (2026-09-30)
+### 3.7 Post-arrival annotation discipline with backward-reciprocity rescue (2026-09-30)
 
 `TERMINAL_LINKER_COLUMNS` makes label-hop arrivals terminal, but a
 same-name `type` arrival in the target namespace is not a terminal
 linker — and the post-arrival continuation block then licenses departing
-the arrived primary through its annotation edges. For a BANC target that
-meant `Alternative Cell Type(s)` transitivity: two BANC primaries sharing
-one foreign token in their ACT cells became "bridged" (FAFB `R8` → BANC
-`R8` → 26 unrelated ends through `R7p`/`R8p`/`R8y`; `s-CPDN3A/D` ↔
-`CB1791`/`CB3612` through the shared `SMP220` token). The reverse
-direction structurally refuses the same chains (the glue hop would arrive
-back in the SOURCE namespace, where the annotation-chaining guard has no
-exception) — which is why backward verification is the discriminator:
-non-ACT pairs are 100% reciprocal on real data, designed ACT pairs
-(mirror landing, `aT`→`ACT` two-linker) are 100% reciprocal, and the
-post-arrival glue class is 96% NON-reciprocal.
+the arrived primary through its annotation edges. On the FAFB↔BANC pair
+(both directions) that meant annotation transitivity: two BANC primaries
+sharing one foreign ACT token, or two FAFB primaries sharing one
+additional name, became "bridged" (FAFB `R8` → BANC `R8` → 26 unrelated
+ends through `R7p`/`R8p`/`R8y`; `s-CPDN3A/D` ↔ `CB1791`/`CB3612`
+through the shared `SMP220` token; BANC `T3` → FAFB `T3` → `Pm03`/
+`Pm08`). The reverse direction structurally refuses the same chains (the
+glue hop would arrive back in the SOURCE namespace, where the
+annotation-chaining guard has no exception) — which is why backward
+verification is the discriminator: both directions' designed annotation
+forms are 100% reciprocal on real data (census `/tmp/atglue_census.json`),
+while the post-arrival glue classes are 95–96% NON-reciprocal.
 
-The filter runs in `get_type_bridges` after the curated-subsumption
-pass: a chain with an ACT hop departing from a same-name-arrived target
-primary is dropped unless some reverse bridge from the chain's end
-reaches the source type (reverse call made with `_skip_glue_filter=True`
-so the probe cannot recurse). Surviving glue chains carry
-`reciprocal: True` on the arrival hop; `standardize_bridge` propagates it
-onto the (possibly deduped) annotation linker, and
-`_pair_mapping_origin` discloses `annotation bridge via <tokens>
-(reciprocal)`. Scoped to ACT departures only — the registry continuation
-through target-side `additional_type(s)` keeps its licence. Real-data
-effect: FAFB→BANC loses exactly 1,144 (v626) / 1,070 (v888)
-non-reciprocated glue pairs, keeps the 49/50 reciprocated ones; every
-other direction byte-identical. A sibling hazard class remains
-deliberately untouched: post-arrival glue through FAFB
-`additional_type(s)` on BANC→FAFB / MCNS→FAFB pairs (≈2,527 + 1,028
-non-reciprocated pairs, e.g. BANC `T3` → FAFB `Pm03`) — no census of its
-designed-form baseline exists yet, so it awaits its own decision.
+The filter runs in `get_type_bridges` after the curated-subsumption pass
+and is scoped to the `{'flywire_FAFB_v783', 'banc_v626'}` /
+`{'flywire_FAFB_v783', 'banc_v888'}` pairs: a chain with an annotation
+hop departing from a same-name-arrived target primary is dropped unless
+some reverse bridge from the chain's end reaches the source type
+(reverse call made with `_skip_glue_filter=True` so the probe cannot
+recurse). Surviving glue chains carry `reciprocal: True` on the arrival
+hop; `standardize_bridge` propagates it onto the (possibly deduped)
+annotation linker, and `_pair_mapping_origin` discloses
+`annotation bridge via <tokens> (reciprocal)`. The registry continuation
+through target-side `additional_type(s)` after a CROSSWALK arrival keeps
+its licence. Real-data effect: FAFB→BANC loses exactly 1,144 (v626) /
+1,070 (v888) non-reciprocated glue pairs and keeps the 49/50
+reciprocated ones; BANC→FAFB loses 2,527 per release and keeps 121
+reciprocated pairs; all other directions byte-identical. Deliberately
+NOT applied to MCNS→FAFB: its designed-form control is only ~55%
+reciprocal (the crosswalk is structurally one-directional), so
+non-reciprocity proves nothing there and the same-name+aT continuation
+stays adjacent to the ratified registry standard (pinned by
+`test_glue_rule_scoped_to_fafb_banc_pair` / `test_mcns_t3_continuation_
+stays_untouched`). The deep-harness oracle (§R3 re-baseline) pins the
+residual MCNS drift budget at 36 missing / 83 extra types.
+
+### 3.8 Reverse-label tail-claimant guard (2026-09-30)
+
+The BANC label lanes are naturally read BANC-primary → labelled source
+type; the reverse materialization (a source type's BANC slot) fires when
+exactly ONE BANC primary's dominant label is that token. A 1–2-row type
+whose only labelled row carries the token wins that internal election
+while the token's real population lives on ANOTHER primary whose own
+winner is a different token — BANC `CL257` (2 rows, one labelled)
+elected the MCNS `R8y` slot although BANC `R8` holds 107 `R8y` votes
+(its own winner is `auto:R8_unclear`); FAFB `T1` elected BANC
+`R8_unclear` with one vote against 636 elsewhere. The guard accumulates
+the token-level vote distribution during `record_votes` and refuses the
+materialization when another primary holds ≥10× the elected type's
+votes (the ratified population-asymmetry signal, 2026-09-10): no reverse
+slot, `_bridge_provenance` records `tail_claimant: True` with
+`dominant_others`. Real-data effect: 45 refusals of 6,674 reverse
+materializations; forward lanes, same-name slots, singleton-type label
+mappings and real conflicts untouched. Known limit: the refused slot
+leaves the pair unmapped in that direction even when a dominant claimant
+is biologically obvious (its own winner being a different token blocks
+the materialization) — resolving that needs a token-plurality reverse
+rule, deliberately out of scope.
 
 ## 4. Production resolution precedence
 

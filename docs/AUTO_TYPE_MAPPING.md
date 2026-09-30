@@ -200,31 +200,52 @@ circadian type (`l-LNv`) onto every primary sharing its `BM_InOm` label
 (1,212 interommatidial bristle neurons) with zero supporting rows on the
 reached types.
 
-**Post-arrival ACT discipline with backward-reciprocity rescue
-(2026-09-30)**: once a chain has arrived at a target-namespace primary by
-same-name identity, a BANC `Alternative Cell Type(s)` hop may not depart
-from it. An ACT cell names how the reached type's neurons are called
-ELSEWHERE; two BANC primaries sharing one such foreign token are
-co-named elsewhere, not bridged to each other — using the token as
-intra-BANC transitivity glues unrelated primaries. Real failures this
-closes: FAFB `R8` arrived at BANC `R8` and its `R7p`/`R8p`/`R8y`
+**Post-arrival annotation discipline with backward-reciprocity rescue
+(2026-09-30)**: on the FAFB↔BANC pair — both directions — once a chain
+has arrived at a target-namespace primary by same-name identity, an
+annotation hop (`Alternative Cell Type(s)` departing a BANC arrival, or
+`additional_type(s)` departing an FAFB arrival) may not depart from it.
+An annotation cell names how the reached type's neurons are called
+ELSEWHERE; two primaries sharing one such foreign token are co-named
+elsewhere, not bridged to each other — using the token as
+intra-namespace transitivity glues unrelated primaries. Real failures
+this closes: FAFB `R8` arrived at BANC `R8` and its `R7p`/`R8p`/`R8y`
 sub-type tokens fanned out onto 26 unrelated BANC ends (`m_NSC_DILP`,
-`MBON26`, `Tm3` …), and `s-CPDN3A`/`s-CPDN3D` were cross-paired onto
-`CB1791`/`CB3612` through the shared `SMP220` token while the reverse
-direction refused both cross-pairs — that direction asymmetry is the
-tell. A glue chain whose pair IS corroborated in the reverse direction
-(some reverse bridge from the end type reaches the source type) is real
+`MBON26`, `Tm3` …); `s-CPDN3A`/`s-CPDN3D` were cross-paired onto
+`CB1791`/`CB3612` through the shared `SMP220` token; BANC `T3` arrived
+at FAFB `T3` and its `Pm03`/`Pm08` additional names fanned onto
+unrelated FAFB ends — and in every case the reverse direction refuses
+those pairs; that direction asymmetry is the tell (both directions'
+designed annotation forms are 100% backward-reciprocated on real data).
+A glue chain whose pair IS corroborated in the reverse direction (some
+reverse bridge from the end type reaches the source type) is real
 correspondence and survives, flagged `reciprocal` (e.g. FAFB
-`DNp17` ↔ BANC `DNpe054`, whose reverse leg runs through FAFB
-`additional_type(s) 'DNp16/17'`). The rule is scoped to ACT departures
-only; the registry continuation through target-side
-`additional_type(s)` (crosswalk primary → its annotated siblings)
-keeps its licence. Verified effect on real data: the FAFB→BANC pair
-space loses exactly the 1,144 (v626) / 1,070 (v888) non-reciprocated
-glue pairs and keeps the 49/50 reciprocated ones; every other pair
-direction is unchanged. The designed ACT forms — mirror landings and
-the `aT`→`ACT` two-linker bridge — are 100% backward-reciprocated on
-real data and are never suppressed.
+`DNp17` ↔ BANC `DNpe054`, whose two legs ride INDEPENDENT BANC-side and
+FAFB-side annotation cells). Verified effect on real data: FAFB→BANC
+loses exactly the 1,144 (v626) / 1,070 (v888) non-reciprocated glue
+pairs and keeps the 49/50 reciprocated ones; BANC→FAFB loses 2,527 per
+release and keeps 121 reciprocated pairs; every other pair direction is
+unchanged. Deliberately NOT applied to other pairs — e.g. MCNS→FAFB,
+whose designed-form control is only ~55% reciprocal (the crosswalk is
+structurally one-directional), so non-reciprocity proves nothing there
+and the same-name+aT continuation stays adjacent to the ratified
+registry standard.
+
+**Reverse-label tail-claimant guard (2026-09-30)**: the label lanes are
+naturally read BANC-primary → labelled source type; the reverse lookup
+(a source type's BANC slot) materializes only when exactly ONE BANC
+primary's dominant label IS that token. A 1–2-row type whose only
+labelled row carries the token wins that internal election while the
+token's real population lives on ANOTHER primary (BANC `CL257` elected
+the MCNS `R8y` slot with one row while BANC `R8` holds 107 `R8y`
+votes but its own winner is a different token; FAFB `T1` elected BANC
+`R8_unclear` with one row against 636 votes elsewhere — 45 refusals of
+6,674 reverse materializations on real data, all of this shape). The
+ratified population-asymmetry signal (≥10×) refuses such tail
+claimants: no reverse slot is written and the provenance discloses the
+refusal (`tail_claimant` + `dominant_others`). Forward lanes, same-name
+slots, singleton-type label mappings (the release's own curation) and
+real conflicts are untouched.
 
 **BANC joint type labels**: BANC `type` cells may carry comma-joined
 labels the release itself left ambiguous (e.g. `TuBu09,TuBu10`,

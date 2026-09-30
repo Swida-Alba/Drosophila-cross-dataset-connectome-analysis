@@ -237,6 +237,44 @@ def test_act_glue_chain_suppressed_without_reciprocity():
     assert 'P2' in {c[-1]['value'] for c in raw}
 
 
+def test_at_glue_suppressed_banc_to_fafb_direction():
+    """The mirror direction (2026-09-30 §10): a BANC primary that
+    same-name-arrives in FAFB may not depart through FAFB
+    ``additional_type(s)`` transitivity — the real-data class is
+    BANC T3 -> FAFB T3 -> aT 'Pm2' -> Pm03 (a shared non-primary token;
+    primary-valued annotation cells are cross-references and filtered)."""
+    m = _bare_mapper()
+    _seed_pair(
+        m,
+        fafb_primaries={'P1', 'T2'},
+        banc_primaries={'P1'},
+        fafb_ann={'W': {'P1', 'T2'}},   # P1 and T2 share the aT token W
+    )
+    raw = m.get_type_bridges('P1', BANC, FAFB, _skip_glue_filter=True)
+    assert 'T2' in {c[-1]['value'] for c in raw}   # non-vacuous: it exists
+    ends = {c[-1]['value'] for c in m.get_type_bridges('P1', BANC, FAFB)}
+    assert 'P1' in ends           # same-name identity survives
+    assert 'T2' not in ends       # the aT-glue target is suppressed
+
+
+def test_glue_rule_scoped_to_fafb_banc_pair():
+    """MCNS->FAFB is deliberately EXEMPT: its designed-form control is
+    only ~55% reciprocal (one-directional crosswalk), so non-reciprocity
+    proves nothing there — the same-name+aT continuation keeps deriving
+    (real-data pin: MCNS T3 keeps Pm03 via the shared 'Pm2' token)."""
+    m = _bare_mapper()
+    _seed_pair(
+        m,
+        fafb_primaries={'T3', 'Pm03'},
+        banc_primaries={'T3'},
+        fafb_ann={'Pm2': {'T3', 'Pm03'}},
+    )
+    m._flywire_primaries[MCNS] = {'T3'}
+    ends = {c[-1]['value'] for c in m.get_type_bridges('T3', MCNS, FAFB)}
+    assert 'Pm03' in ends, (
+        'MCNS->FAFB same-name+aT continuation must stay untouched')
+
+
 def test_act_glue_chain_rescued_when_reciprocal():
     """Reciprocal glue pairs survive and carry the ``reciprocal`` flag on
     the arrival hop (the DNp17 <-> DNpe054 class).  The pair may also
@@ -626,6 +664,56 @@ class TestRealDataAcceptance:
         ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
             'R8', FAFB_RELEASE, BANC_RELEASE)}
         assert ends == {'R8'}
+
+    def test_banc_t3_at_hub_collapses_banc_to_fafb(self, real_mapper):
+        # §10 (2026-09-30): BANC T3 same-name-arrives at FAFB T3 and its
+        # 'Pm03'/'Pm08' additional names used to fan onto unrelated FAFB
+        # ends; the same-name identity survives.
+        ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
+            'T3', BANC_RELEASE, FAFB_RELEASE)}
+        assert 'T3' in ends
+        assert 'Pm03' not in ends and 'Pm08' not in ends
+
+    def test_mcns_t3_continuation_stays_untouched(self, real_mapper):
+        # Scope exemption pin: MCNS->FAFB is not part of the FAFB<->BANC
+        # pair — its designed control is ~55% reciprocal, so the glue
+        # gate must not fire there (real-data: MCNS T3 keeps Pm03).
+        ends = {c[-1]['value'] for c in real_mapper.get_type_bridges(
+            'T3', 'male-cns:v1.0', FAFB_RELEASE)}
+        assert 'Pm03' in ends
+
+    def test_backward_mutual_rescue_flagged(self, real_mapper):
+        # DNpe054 -> DNp17 is the BANC->FAFB leg of the mutual pair; it
+        # is itself a glue chain, rescued by the FAFB-side aT evidence
+        # 'DNp16/17' — kept and flagged.
+        rescued = [
+            c for c in real_mapper.get_type_bridges(
+                'DNpe054', BANC_RELEASE, FAFB_RELEASE)
+            if c[-1]['value'] == 'DNp17']
+        assert len(rescued) == 1
+        assert rescued[0][-1].get('reciprocal') is True
+
+    def test_reverse_label_tail_claimant_refused(self, real_mapper):
+        # R2 hygiene (2026-09-30 §11): BANC CL257 (2 rows, one labelled)
+        # used to elect the MCNS 'R8y' BANC slot although BANC R8 holds
+        # 107 R8y votes — a >=10x tail claimant.  The slot is refused and
+        # the provenance discloses the refusal; the FAFB slot (a real
+        # crosswalk fact, 481/481 rows) is untouched.
+        assert real_mapper._type_mappings['male-cns:v1.0']['R8y'] == {
+            FAFB_RELEASE: 'R8'}
+        prov = real_mapper._bridge_provenance[(
+            'male-cns:v1.0', 'R8y', BANC_RELEASE)]
+        assert prov['target'] is None
+        assert prov.get('tail_claimant') is True
+        assert prov['dominant_others']['R8'] >= 100
+
+    def test_singleton_label_mappings_survive_tail_guard(self, real_mapper):
+        # The guard must not touch the release's own singleton-type
+        # curation: 23k single-vote label mappings are dominated by
+        # self-name slots on tiny types (e.g. BANC DNge015 -> FAFB
+        # DNge015, one curated row, no rival claimant).
+        assert real_mapper._type_mappings[BANC_RELEASE]['DNge015'][
+            FAFB_RELEASE] == 'DNge015'
 
     def test_reciprocal_glue_pair_survives_with_flag(self, real_mapper):
         # DNp17 <-> DNpe054 is real mutual correspondence (the reverse
