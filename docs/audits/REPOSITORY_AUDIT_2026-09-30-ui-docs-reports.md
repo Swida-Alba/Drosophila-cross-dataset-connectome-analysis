@@ -59,7 +59,7 @@ The dominant pattern is **contract drift after recent feature rounds**: contract
 
 - Every P1/P2 finding re-verified by direct read before recording (backward default in CLI/config/UI; `SCENE_FAILED` writer grep; fnmatch probe `plot-3d_*/` → False; keywords payload lines; auto-mode gate absence; metrics.py column writers vs zero guide mentions).
 - Post-fix targeted suites, all green: output-guide consistency (55 incl. the new pins — every added spec column has a glossary entry, enforced by `test_all_spec_columns_exist_in_glossary`), editors (77 incl. the new dropped-columns behavioral test), UI tab suites (107), report/skill suites (169: profile-comparator coverage, mapping-validation report, drocat-usage skill). `check_docs_links.py` OK (184 files).
-- Full staged battery: run after the fix commits — see the session record; all three stages clean.
+- Full staged battery after the fix commits (2026-09-30 15:47): 3/3 stages clean — core 5,163 passed / 1 skipped / 1 xfailed, ui 1,092 passed, docs-and-misc 176 passed.
 
 ## Fix record (same session, user-expanded scope)
 
