@@ -85,6 +85,9 @@ def prepare_flywire_data(data_dir):
     if output_neuron_df.exists() and conn_file.exists():
         return str(output_neuron_df), str(conn_file)
 
+    converter = 'FAFB_file_converter'  # BANC raised above; FAFB is the
+    # only converter this fallback describes.
+    dataset_key = 'fafb'  # the download URL names the FAFB bucket
     if not conn_file_gz.exists() or not types_file_gz.exists():
         # Check if uncompressed files exist (maybe user extracted them manually)
         if conn_file.exists() and types_file.exists():

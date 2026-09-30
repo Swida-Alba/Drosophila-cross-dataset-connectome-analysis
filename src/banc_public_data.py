@@ -37,6 +37,11 @@ if ensure_utf8_stdio is not None:
 import io
 import os
 import time
+
+try:
+    from utils.parquet_utils import temp_sibling
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    from .utils.parquet_utils import temp_sibling
 import http.client
 import urllib.error
 import urllib.request

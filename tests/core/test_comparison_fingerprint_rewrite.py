@@ -52,15 +52,13 @@ def _fingerprint_of(dirpath):
     return json.loads(sidecar.read_text(encoding='utf-8'))
 
 
-@pytest.mark.xfail(
-    reason='J6 rewrite trace incomplete: on a real (unstubbed) replay flow '
-           'run 2 never re-runs FNC, so neither the rewrite nor the '
-           'stale-pair removal fires; the mismatch log comes from a loader '
-           'this test does not reach. Round-7 report lists three candidate '
-           'readings — settle with a traced run before flipping this to a '
-           'hard assertion.',
-    strict=True)
 def test_mismatch_run_rewrites_sidecar_with_new_query(tmp_path, monkeypatch):
+    # The 2026-09-30 code audit closed the J6 third state: a definitive
+    # fingerprint mismatch now returns None from _try_load_cached instead
+    # of falling through to the same folder's unchecked legacy files, so
+    # the re-run actually re-derives and the sidecar rewrite (or the
+    # stale-pair removal) fires. Flipped from xfail(strict) to a hard
+    # assertion by that fix.
     output_folder = str(tmp_path)
     rows = [{'bodyId_pre': 1, 'bodyId_post': 2, 'weight': 5}]
 
