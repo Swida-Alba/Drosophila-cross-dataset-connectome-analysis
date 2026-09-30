@@ -849,7 +849,10 @@ trivially). NaN below 5 paths per side.
 #### NetSimile-lite (v2.2 graph-level representative)
 Alignment-free whole-graph similarity: per-node log out/in-strengths and
 mean edge weights summarized by median + MAD into one signature, compared
-with a normalized Canberra distance mapped to [0, 1] via 1/(1+d). Node
+with a normalized Canberra distance mapped to [0.5, 1] via 1/(1+d)
+(every Canberra term is <= 1 for the non-negative features, so the
+distance is <= 1 and the similarity floors at 0.5 — 0.5 means maximally
+dissimilar, not unrelated). Node
 identity is not required, so it stays meaningful when the aligned type
 table is sparse.
 
@@ -857,7 +860,8 @@ table is sparse.
 - `coverage_min` = min(|A∩B|/|A|, |A∩B|/|B|) — size-asymmetry-robust
   presence (BANC vs MCNS: Jaccard 0.075 but coverage 0.43).
 - `top20_overlap` — Jaccard of the 20 heaviest edges per side (head of
-  the ranking, tie-safe).
+  the ranking; deterministic per input, but ties at the k-th boundary
+  resolve by sort order, not a stable key).
 - `spearman_rank_correlation` — rank correlation on shared positive
   edges, gated: NaN below 10 shared edges (`common_edges` reported
   beside it). Intentional asymmetry: only the CSV column and the

@@ -14820,7 +14820,6 @@ class VisualizeSkeleton:
                 # point takes the set color of its pre neuron; otherwise the layer's
                 # connection color is used (possibly as a per-point array when the
                 # palette already varies per connection).
-                c_val = self.synapse_colors[self._synapse_color_slot(i)]
                 is_color_array = False
                 per_neuron_synapse_colors = getattr(self, '_neuron_synapse_color_overrides', None)
                 if per_neuron_synapse_colors and 'bodyId_pre' in conn_df.columns:

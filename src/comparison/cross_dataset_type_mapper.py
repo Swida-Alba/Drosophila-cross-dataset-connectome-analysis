@@ -1637,9 +1637,8 @@ class CrossDatasetTypeMapper:
         }
         shared_names = old_names & new_names
         common_types = both_typed[both_typed['type_v09'].eq(both_typed['type_v10'])]
-        disagreement_rows = both_typed[
-            ~both_typed['type_v09'].eq(both_typed['type_v10'])
-        ].copy()
+        # (disagreement_rows removed 2026-09-30 audit: write-only local —
+        # only alias_disagreement_rows below is consumed)
         # The source-side v0.9 name is the actionable alias key.  A changed
         # v0.9 body whose old name is shared with v1.0 is therefore a
         # release-alias disagreement even when the v1.0 replacement name is
@@ -7264,11 +7263,8 @@ class CrossDatasetTypeMapper:
         for canonical, group_items in canonical_groups.items():
             # Collect all distinct type names (excluding canonical if present)
             all_names = set()
-            has_canonical_as_base = False
             for prefixed, prefix, base_type in group_items:
                 all_names.add(base_type)
-                if base_type == canonical:
-                    has_canonical_as_base = True
             
             # Determine main name: queried_name if provided, else male-cns canonical
             main_name = queried_name if queried_name else canonical

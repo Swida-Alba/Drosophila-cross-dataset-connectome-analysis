@@ -4826,6 +4826,11 @@ class ComparisonAnalyzer:
                     f"Cached {dataset_name} @ {threshold} was written for a "
                     "different query — ignoring it", 'always')
                 if remove_stale:
+                    # The post-replay loader: the FNC replay has just
+                    # REWRITTEN this folder's legacy files (paths.csv /
+                    # connection_info_*) for the current query, so after
+                    # removing the stale pair, falling through below loads
+                    # the fresh data and _save_result restamps the pair.
                     try:
                         os.unlink(filepath)
                         os.unlink(os.path.join(
@@ -4837,11 +4842,15 @@ class ComparisonAnalyzer:
                     except OSError as exc:
                         self._log(f"Could not remove the stale pair: {exc}",
                                   'always')
-                # A definitive mismatch must not fall through to the
-                # SAME folder's legacy files (paths.csv, connection_info_*)
-                # — none of those are fingerprint-checked, so the previous
-                # query's edges came back as this run's raw_results.
-                return None
+                else:
+                    # The pre-derivation probe: a definitive mismatch must
+                    # NOT fall through to the same folder's legacy files
+                    # (paths.csv, connection_info_*) — none are
+                    # fingerprint-checked, and at probe time nothing has
+                    # rewritten them, so the previous query's edges would
+                    # come back as this run's raw_results. A clean miss
+                    # forces re-derivation instead.
+                    return None
             else:
                 try:
                     df = self._read_csv(filepath)
@@ -9361,10 +9370,12 @@ class ComparisonAnalyzer:
                     if pd.isna(weight):
                         weight = 1
                     
-                    # Presence and weight columns (True/0 for CSV readability)
+                    # Presence and weight columns (int presence: a True/0
+                    # mix made the CSV column dtype object, the exact
+                    # pattern the edge matrix's N3 fix removed)
                     pres_col = f'{safe_name}_t{threshold}'
                     weight_col = f'w_{safe_name}_t{threshold}'
-                    all_paths[path_key][pres_col] = True
+                    all_paths[path_key][pres_col] = 1
                     all_paths[path_key][weight_col] = float(weight)
                     
                     # Parse hop weights
@@ -9698,12 +9709,9 @@ class ComparisonAnalyzer:
         if not silent:
             self._log(f"Saved: {output_name} ({len(presence_df)} edges)")
         
-        # Also save a threshold-independent version at the middle threshold
-        mid_threshold = self.parameters.thresholds[len(self.parameters.thresholds) // 2]
-        if not query_id and threshold == mid_threshold:
-            self._save_csv(presence_df, os.path.join(comparison_results_dir, "edge_presence_matrix.csv"))
-            if not silent:
-                self._log("Saved: edge_presence_matrix.csv (default)")
+        # (No mid-threshold "default" copy: the unified presence matrix
+        # exported later in the same run owns edge_presence_matrix.csv and
+        # overwrote it with a different schema.)
     
     def _export_path_presence_matrix(self, comparison_results_dir: str, threshold: Any, silent: bool = False):
         """
@@ -10102,12 +10110,9 @@ class ComparisonAnalyzer:
         if not silent:
             self._log(f"Saved: {output_name} ({len(path_presence_df)} paths)")
         
-        # Save default version at middle threshold
-        mid_threshold = self.parameters.thresholds[len(self.parameters.thresholds) // 2]
-        if not query_id and threshold == mid_threshold:
-            self._save_csv(path_presence_df, os.path.join(comparison_results_dir, "path_presence_matrix.csv"))
-            if not silent:
-                self._log("Saved: path_presence_matrix.csv (default)")
+        # (No mid-threshold "default" copy: the unified path matrix
+        # exported later in the same run owns path_presence_matrix.csv and
+        # overwrote it with a different schema.)
     
     def _export_motif_analysis(self, comparison_results_dir: str, threshold: Any):
         """
@@ -11634,6 +11639,14 @@ class ComparisonAnalyzer:
         # Pairwise comparisons
         pairwise_records: List[Dict[str, Any]] = []
 
+        # Fresh stores per CALL — hoisted ABOVE the pair loop: a reset at
+        # pair depth kept only the last dataset pair's columns, while the
+        # old hasattr guard (also at pair depth) persisted across calls
+        # and leaked a previous invocation's types into the matrices.
+        self._matrix_stores = {
+            m: {t: {} for t in neuron_types}
+            for m in ('rank_corr', 'rank_union', 'cosine', 'jaccard')}
+
         for ds_a, ds_b in combinations(dataset_names, 2):
             pair_label = f"{ds_a} vs {ds_b}"
             self._log(f"Comparing {len(neuron_types)} types: {pair_label}")
@@ -11678,11 +11691,6 @@ class ComparisonAnalyzer:
                 'avg_jaccard': 'jaccard', 'jaccard': 'jaccard'
             }
             
-            # Fresh stores per call: a second invocation with a different
-            # type list used to keep the first call's types and pair
-            # values, leaking them into the matrices and the summary.
-            self._matrix_stores = {m: {t: {} for t in neuron_types} for m in set(metric_map.values())}
-
             found_any = False
             for col, canonical in metric_map.items():
                 if col in type_df.columns:

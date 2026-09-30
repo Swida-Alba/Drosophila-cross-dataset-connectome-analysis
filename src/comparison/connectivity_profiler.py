@@ -5240,8 +5240,9 @@ class ConnectivityProfiler:
         # Get neuron types if not specified
         if neuron_types is None:
             neuron_types = self.list_types(dataset=dataset)
-            if neuron_types is None:
-                self._log(f"Could not retrieve types for {dataset}")
+            if not neuron_types:
+                self._log(f"Could not retrieve types for {dataset} "
+                          "(empty type listing)")
                 self.config = original_config
                 return {}
         

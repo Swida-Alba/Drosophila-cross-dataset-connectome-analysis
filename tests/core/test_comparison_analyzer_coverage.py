@@ -1757,10 +1757,13 @@ def test_export_presence_matrix(tmp_path, monkeypatch):
     a.raw_results = _standard_results()
     outdir = tmp_path / "res"
     outdir.mkdir()
-    # mid threshold -> also writes edge_presence_matrix.csv
+    # mid threshold writes ONLY the per-threshold file: the default-name
+    # copy used to be written here and then overwritten by the unified
+    # presence exporter later in the same run with a different schema
+    # (2026-09-30 audit F-CA-006 dropped the dead write).
     a._export_presence_matrix(str(outdir), 3)
     assert (outdir / "edge_presence_matrix_minsyn_3.csv").exists()
-    assert (outdir / "edge_presence_matrix.csv").exists()
+    assert not (outdir / "edge_presence_matrix.csv").exists()
 
     # empty aligned data -> early return
     monkeypatch.setattr(a, "get_aligned_data", lambda t: pd.DataFrame())

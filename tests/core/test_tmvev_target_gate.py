@@ -265,3 +265,16 @@ def test_parquet_utils_installs_utf8_guard_on_import(monkeypatch, tmp_path):
         gbk_out.flush()
         sys.stdout = sys.__stdout__
     assert ok in (True, False)  # no UnicodeEncodeError escaped
+
+
+def test_banc_dash_spelled_alias_folds_to_its_release():
+    """The dash spelling banc-v888 names the same release as banc_v888 —
+    it must fold to the canonical form (2026-09-30 code audit F-DP-010)
+    while the hidden NeuPrint colon spelling banc:v888 passes through by
+    design."""
+    from comparison.connectivity_profiler import canonical_dataset_name
+    assert canonical_dataset_name('banc-v888') == 'banc_v888'
+    assert canonical_dataset_name('banc_v888') == 'banc_v888'
+    assert canonical_dataset_name('banc:v888') == 'banc:v888'
+    assert canonical_dataset_name('flywire-banc-v888') == 'banc_v888'
+    assert canonical_dataset_name('banc') == 'banc_v626'

@@ -97,3 +97,35 @@ def test_mismatch_run_rewrites_sidecar_with_new_query(tmp_path, monkeypatch):
     for csv in Path(output_folder).rglob('connections_edge.csv'):
         assert _fingerprint_of(csv.parent) is not None or \
             csv.stat().st_size == 0, f'stale unlabelled pair at {csv}'
+
+
+def test_mismatch_verdict_is_caller_conditional(tmp_path, monkeypatch):
+    """2026-09-30 verification round: the mismatch handling must serve BOTH
+    callers. The PRE-derivation probe (remove_stale=False) returns None —
+    a definitive mismatch must not serve the folder's unchecked legacy
+    files, forcing re-derivation instead. The POST-replay loader
+    (remove_stale=True) removes the stale pair and FALLS THROUGH — the
+    replay has just rewritten paths.csv for the current query, and the
+    blanket return-None made that lane return an empty frame (silently
+    empty exports for a default-flow mismatched re-run)."""
+    a = _analyzer('DN2.*', str(tmp_path), 'cond_folder')
+    folder = (tmp_path / 'cond_folder' / 'dataset_data' / 'banc_v888'
+              / 'minsyn_3')
+    folder.mkdir(parents=True)
+    # stale pair naming a different query + a legacy file with FRESH rows
+    fresh = pd.DataFrame([{'bodyId_pre': 1, 'bodyId_post': 2, 'weight': 7}])
+    fresh.to_csv(folder / 'connections_edge.csv', index=False)
+    (folder / 'connections_edge.fingerprint.json').write_text(
+        json.dumps({'target_neurons': ['OLD']}), encoding='utf-8')
+    fresh.to_csv(folder / 'paths.csv', index=False)
+
+    # probe: definitive miss, no removal
+    assert a._try_load_cached('banc_v888', 3, remove_stale=False) is None
+    assert (folder / 'connections_edge.csv').exists()
+
+    # post-replay load: stale pair removed, fresh legacy rows served
+    loaded = a._try_load_cached('banc_v888', 3, remove_stale=True)
+    assert loaded is not None and len(loaded) == 1
+    assert int(loaded.iloc[0]['weight']) == 7
+    assert not (folder / 'connections_edge.csv').exists()
+    assert not (folder / 'connections_edge.fingerprint.json').exists()
