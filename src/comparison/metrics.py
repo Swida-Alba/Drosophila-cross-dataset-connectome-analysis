@@ -154,8 +154,11 @@ class ComparisonMetrics:
             Jaccard similarity coefficient (0-1)
         """
         if not edges_a and not edges_b:
+            # NOTE: the CONVENTION DIVERGES from ProfileComparator's
+            # partner-set jaccard (both-empty = 0.0 there) — that path
+            # feeds the intra/homolog scores, this one the matrices.
             return 1.0  # Both empty = identical
-        
+
         intersection = len(edges_a & edges_b)
         union = len(edges_a | edges_b)
         
@@ -291,7 +294,9 @@ class ComparisonMetrics:
         """
         Overlap of the k heaviest edges per side: |top-k(A) ∩ top-k(B)| / k.
 
-        Tie-safe head-of-ranking signal ("do the strongest edges agree").
+        Head-of-ranking signal ("do the strongest edges agree");
+        deterministic per input, but ties at the k-th boundary resolve
+        by quicksort order, not a stable key.
         k shrinks to min(|A|, |B|) when either set is smaller; NaN when
         either side has no positive-weight edges.
         """
@@ -413,9 +418,10 @@ class ComparisonMetrics:
         weights_b: pd.Series
     ) -> float:
         """
-        Similarity in [0, 1] from the two NetSimile-lite signatures:
-        1 / (1 + normalized Canberra distance). NaN when either graph is
-        empty.
+        Similarity in [0.5, 1] from the two NetSimile-lite signatures:
+        1 / (1 + normalized Canberra distance) — every Canberra term is
+        <= 1 for the non-negative features, so the distance is <= 1. NaN
+        when either graph is empty.
         """
         s1 = self.netsimile_signature(weights_a)
         s2 = self.netsimile_signature(weights_b)

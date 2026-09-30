@@ -494,7 +494,8 @@ def build_merge_policy(
         per_ds = records.get(token) or {}
         non_type = all(
             str((per_ds.get(ds) or {}).get('status') or '')
-            in ('body_id', 'pattern', 'group', 'taxonomy')
+            in ('body_id', 'pattern', 'group', 'taxonomy',
+                'taxonomy_mapped')
             for ds in datasets
         ) if per_ds else False
         if non_type:

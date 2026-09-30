@@ -154,11 +154,17 @@ def _finite(v) -> bool:
 
 
 def candidate_qualified(bars: BarSet, pool_ref, track_a) -> bool:
-    """Candidate-bar admission; compares the currency the bar kind names."""
+    """Candidate-bar admission; compares the currency the bar kind names.
+
+    A None/missing floor of the bar's own kind is NOT qualified (a
+    serialized-spec rebuild can decouple kind and floor; comparing
+    against None would raise instead of deciding)."""
     if bars.candidate_kind == CANDIDATE_NATIVE:
-        return _finite(pool_ref) and pool_ref >= bars.native_floor
+        return _finite(pool_ref) and bars.native_floor is not None \
+            and pool_ref >= bars.native_floor
     if bars.candidate_kind == CANDIDATE_BACKUP:
-        return _finite(track_a) and track_a >= bars.backup_floor
+        return _finite(track_a) and bars.backup_floor is not None \
+            and track_a >= bars.backup_floor
     return _finite(track_a) and _finite(bars.null_bar) \
         and track_a >= bars.null_bar
 

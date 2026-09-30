@@ -694,6 +694,7 @@ class TargetVectorStore:
             existing: Dict[int, Any] = {}
             existing_sides: Dict[int, str] = {}
             if self.path.exists():
+                self.stats = {'loaded': 0, 'stale_dropped': 0}
                 existing, existing_sides = self.load()
             existing = {k: v for k, v in existing.items()
                         if np.asarray(v).shape == (VECTOR_V2_DIM,)}
@@ -1076,10 +1077,13 @@ def _mapper_ref_pools(source_types: Dict[int, str], source_dataset: str,
                                                   target_dataset)
                 targets = list(dec.get('target_types') or [])
                 refs: List[int] = []
+                # Bridge chains do not depend on the target type — derive
+                # once per branch (a 1-to-N fan-out used to pay N full
+                # searches).
+                chains = mapper.get_type_bridges(
+                    stype, source_dataset, target_dataset,
+                    max_bridges=0)
                 for ttype in targets:
-                    chains = mapper.get_type_bridges(
-                        stype, source_dataset, target_dataset,
-                        max_bridges=0)
                     pool = resolve_prioritized_bridge_pool(
                         source_dataset, target_dataset, chains, stype, ttype)
                     if pool.get('resolution_status') == 'supported':
@@ -1967,7 +1971,6 @@ class CrossDatasetMorphComparer:
         tgt_bids = sorted({b for bids_ in tgt_members.values() for b in bids_})
         bid_to_type = {b: t for t, bids_ in tgt_members.items() for b in bids_}
         src_bid_type = {b: t for t, bids_ in src_members.items() for b in bids_}
-        candidate_set = set(tgt_bids)
 
         # The scorer never fetches TARGET skeletons on demand; without a
         # pre-fetch, members outside the local cache would silently drop

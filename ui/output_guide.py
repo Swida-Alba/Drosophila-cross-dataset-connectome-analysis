@@ -527,7 +527,8 @@ COLUMN_GLOSSARY = {
     "netsimile_similarity": (
         "v2.2 graph-level representative: NetSimile-lite similarity of the "
         "two weighted edge lists (degree/strength signature vectors, "
-        "cosine compared).", "0-1"),
+        "1/(1+normalized Canberra distance); the range floors at 0.5 "
+        "because every Canberra term is <= 1).", "0.5-1"),
     "coverage_d1": (
         "v2.2 detail metric: overlap coefficient restricted to dataset 1's "
         "edges (|shared| / |d1 edges|).", "0-1"),

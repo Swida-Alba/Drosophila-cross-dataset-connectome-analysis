@@ -382,7 +382,11 @@ class ProfileComparator:
         """
         set_a = ProfileComparator._get_partner_sets(profile_a, direction)
         set_b = ProfileComparator._get_partner_sets(profile_b, direction)
-        
+
+        # NOTE: the CONVENTION DIVERGES from metrics.calculate_jaccard_
+        # similarity (which returns 1.0 for both-empty) — that engine
+        # feeds the similarity matrices, this one the intra/homolog
+        # scores; both-empty reads 0.0 here.
         if not set_a and not set_b:
             return 0.0
         
@@ -3260,6 +3264,7 @@ class HomologFinder:
 
                     # Enforce minimum shared partners if requested
                     overlap_count = 0
+                    overlap_failed = False
                     try:
                         # Same partner source the combined score uses (typed +
                         # untyped bodyIds), so the filter matches the metric.
@@ -3268,9 +3273,13 @@ class HomologFinder:
                         partner_set_b = ProfileComparator._get_all_bodyids(profile_b, direction)
                         overlap_count = len(set(partner_set_a) & set(partner_set_b))
                     except Exception:
-                        pass
+                        # A computation failure is NOT "too few partners" —
+                        # leave the ranks alone instead of NaN-ing them under
+                        # a mislabel.
+                        overlap_failed = True
 
-                    if min_common_partners and overlap_count < min_common_partners:
+                    if (min_common_partners and not overlap_failed
+                            and overlap_count < min_common_partners):
                         scores['rank'] = np.nan
                         scores['rank_union'] = np.nan
 
@@ -3363,6 +3372,7 @@ class HomologFinder:
 
                         # Enforce minimum shared partners if requested
                         overlap_count = 0
+                        overlap_failed = False
                         try:
                             # Same partner source the combined score uses
                             # (typed + untyped bodyIds).
@@ -3371,9 +3381,12 @@ class HomologFinder:
                             partner_set_b = ProfileComparator._get_all_bodyids(profile_b, direction)
                             overlap_count = len(set(partner_set_a) & set(partner_set_b))
                         except Exception:
-                            pass
+                            # A computation failure is NOT "too few
+                            # partners" — leave the ranks alone.
+                            overlap_failed = True
 
-                        if min_common_partners and overlap_count < min_common_partners:
+                        if (min_common_partners and not overlap_failed
+                                and overlap_count < min_common_partners):
                             scores['rank'] = np.nan
                             scores['rank_union'] = np.nan
 
@@ -6110,7 +6123,6 @@ class HomologFinder:
                 else:
                     # Same dataset - reuse source aggregates
                     target_conn = None  # Don't need a separate reference
-                    target_up, target_down = source_up, source_down
                     target_bodyid_up, target_bodyid_down = source_bodyid_up, source_bodyid_down
                     target_type_lookup = source_type_lookup
                     pbar.update(2)
@@ -9550,7 +9562,6 @@ class HomologFinder:
         
         # Get all available types from the dataset for shuffling
         # We use the type pool from the dataset's connection cache
-        dataset_key = canonical_dataset_name(profile.dataset).replace(':', '_').replace('.', '_')
         type_pool = self._get_type_pool(profile.dataset)
         
         if not type_pool:
@@ -10004,7 +10015,7 @@ class HomologFinder:
         if 'rank_corr' in results_df.columns:
             results_df['rank_corr'] = (results_df['rank_corr'] + 1) / 2
         
-        # Sort by rank_union and return top_n
+        # Sort by jaccard and return top_n (convention since 2026-09-20)
         if 'jaccard' in results_df.columns:
             results_df = results_df.sort_values('jaccard', ascending=False).head(top_n)
         else:
@@ -11491,8 +11502,9 @@ class ConnectivityProfileComparer:
         Compute per-anchor datasets × datasets similarity matrices using the
         homolog-finding backend algorithm (2-hop expanded partner types,
         resolved to canonical names through the shared validity-aware
-        resolver — conflicts excluded, splits expanded — combined =
-        0.5·jaccard + 0.5·rank).
+        resolver — conflicts excluded, splits expanded; per-metric
+        matrices only — the normalized 0-1 rank variants and the derived
+        combined score are no longer computed).
     
         Returns:
             Dict[anchor -> {direction: {metric: DataFrame}}]
@@ -12061,7 +12073,8 @@ class ConnectivityProfileComparer:
         - jaccard: Set-based overlap (0-1)
         - cosine: Weight vector similarity (0-1)
         - rank_corr: Spearman correlation (-1 to 1)
-        - rank_corr_union: Normalized rank correlation (0-1)
+        - rank_corr_union: RAW union-based rank correlation (sign meaningful,
+        0 = neutral — not normalized to 0-1)
         
         Args:
             profiles: Dictionary mapping label -> ConnectivityProfile
