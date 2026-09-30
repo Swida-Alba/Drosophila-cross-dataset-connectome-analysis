@@ -28,6 +28,7 @@ fc = FindNeuronConnection(
     search_columns="auto",              # "auto" | "type" | "instance" | "bodyId"
     network_layout="distributed",
     use_cache=True,
+    drop_untyped=True,                 # drop edges whose endpoint type is untyped (the UI default)
     edgeN_limit=500,
     output_format="csv",
     skip_bodyId=True,

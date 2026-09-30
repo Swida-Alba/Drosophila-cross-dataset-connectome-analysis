@@ -47,7 +47,7 @@ params = ComparisonParameters(
     # threshold_mode="auto",
     # threshold_dataset_order=["hemibrain:v1.2.1", "male-cns:v0.9"],
     top_edges=500,
-    graph_edge_limit_bodyid=0,          # Edge Budget off; set ~1_000_000 to cap the discovery cone
+    graph_edge_limit_bodyid=1_000_000,  # Edge Budget (the UI default in 'all' mode; 0 = off)
     edgeN_limit=500,
     pathfinding="StrongestFirst",       # built-in default; budgeted by max_paths_bodyid (tau on bite)
     max_paths_bodyid=0,                 # auto -> internal 1,000,000 path budget
@@ -59,7 +59,7 @@ params = ComparisonParameters(
     _min_prob=0.0,
     _output_format="csv",
     parallel=True,
-    max_workers=None,                   # None disables parallelism
+    max_workers=4,                      # the UI default; None disables parallelism
     separate_hemispheres=False,
     keep_only_hemisphere_conserved_connections=False,
     symmetry_analysis=False,

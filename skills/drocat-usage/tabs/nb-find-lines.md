@@ -54,14 +54,14 @@ result = finder.run(
     download_img_for_top_n_lines=None,
     summary_format=None,                # ["pdf"], ["pptx"], or None
     sort_by="max",
-    image_formats=["png"],
-    image_types=["cdm"],
+    image_formats=["png", "jpg"],       # the UI defaults
+    image_types=["cdm", "mip"],
     max_download_images_per_line=None,
     flylight_category=None,
-    simple_mode=False,
+    simple_mode=True,                   # the UI default
     organize_by_region=False,
     pdf_images_per_page=(3, 2),
-    summary_background_color="#ffffff",
+    summary_background_color="black",   # the UI default
 )
 ```
 

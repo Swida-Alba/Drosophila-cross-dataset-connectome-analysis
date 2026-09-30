@@ -102,7 +102,10 @@
       and keeps the chip. A click on the field, an
       Escape or leaving the cell closes the list and resets it to Recent.
       Rows are auto-saved to
-      disk as you edit; use <b>Export CSV</b> to download, or
+      disk as you edit — the debounced auto-save arms once the table holds
+      <b>5 filled rows</b> and a <b>Draft Name</b> is entered (below those
+      gates nothing is saved; export explicitly instead); use
+      <b>Export CSV</b> to download, or
       <b>Upload CSV</b> to load a file into the table. The Neuron Colors /
       Synapse Colors palette editors are hidden (colors come from the file);
       the Brain Region ROIs panel stays available.</li>

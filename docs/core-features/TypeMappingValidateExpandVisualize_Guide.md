@@ -92,6 +92,7 @@ target-side holes, the fill proposals with per-row provenance, the
 **Reciprocal** tab (stage 5d, on by default — §2.2c), the
 **Homolog · forward** / **Homolog · backward** tabs (per-bodyId match
 sheets — §2.2d), the out-map expansion, the backward `source-` view, the
+**Suspects verification** tab (opt-in same-name-suspect runs), the
 **Pooling** tab (the whole result of a `--mode pooling` run — §4), the
 morphology record (with the null-sample advisory when null-kind bars are
 in play), the scene gallery, and a file index.
@@ -672,7 +673,7 @@ be ranked on). Only
 | `--pooling-jaccard-floor` / `--pooling-rank-union-floor` | **advisory flags, not filters** (default 0.10 / 0): every admitted row is measured against them and published as `below_jaccard_floor` / `below_rank_union_floor`, and nothing is removed for missing one. They were filters until the rank_union one alone was measured to starve 119 of 242 queried sources |
 | `--pooling-window-mult` | the window the `outside_window` flag measures against = this × the source type's own queried population (default 2.0). Advisory: it removed nothing even when it was a filter |
 | `--pooling-max-morph-targets N` | morph budget in **scoring units** (one network-bound step each; a unit is a tier-1 row, or the chain-best row that owes a target its verdict). Default **0 = auto: 3 × the number of queried source neurons**, so a 58-source query is not budgeted like a 242-source one. Rows past the budget are labelled `morph_gate=not-attempted-cap`, never blank, never read as rejections, and `morph.capped` / `morph.budget` say how many and under which rule |
-| `--backward-evidence` | stage 5d: reverse (target → source) homolog evidence on the `candidates` / `family` / `relative` bins (§2.2c) — **advisory, connectivity-only, default OFF** |
+| `--backward-evidence` | stage 5d: reverse (target → source) homolog evidence on the `candidates` / `family` / `relative` bins (§2.2c) — **advisory, connectivity-only, default on**; it is the slowest stage, so `--no-backward-evidence` skips it |
 | `--skip-backward-pass` | force-skip stage 5d even when `--backward-evidence` is set |
 | `--backward-top-n N` | reverse hits kept per neuron — the hover list in the Reciprocal tab (default 5) |
 | `--backward-max-neurons N` | per-run budget of dataset-scale reverse scans (default 300) |

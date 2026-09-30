@@ -68,7 +68,7 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Datasets</td><td>the hosted releases</td><td>Multi-select (labeled "Datasets ('(all)' or empty searches everywhere)"); <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
+    <tr><td>Datasets</td><td>(all)</td><td>Multi-select (labeled "Datasets ('(all)' or empty searches everywhere)"); <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
     <tr><td>Expand query names across datasets</td><td>on</td><td>Expand each name through the cross-dataset type mapper into every hosted release before searching (splits expand to all branch names, conflicts to none, unmapped keeps the raw name)</td></tr>
     <tr><td>Algorithm</td><td>cds</td><td>cds (fast), pppm (precise), both</td></tr>
     <tr><td>Top Lines for Images</td><td>30</td><td>When image download is enabled, download images only for the top N ranked lines (per category in separate mode); the search CSVs still contain all matches</td></tr>
@@ -92,8 +92,8 @@
       automatically fall back to MCFO, RawImages, then NeuronBridge.</li>
     <li><b>Simple Mode</b> (labeled "Simple Mode (fewer files)"): fewer
       representative files.</li>
-    <li><b>Organize by Region</b>: Brain/VNC subfolders; <b>Flat Folder
-      Structure</b> saves files directly instead.</li>
+    <li><b>Organize by Region</b>: Brain/VNC subfolders for the downloaded
+      images (off saves everything directly in the output root).</li>
     <li><b>PDF Summary</b> (on), <b>PPTX Summary</b> (off), <b>Summary
       Background</b> (black / white), and the <b>PDF Images Per Page</b>
       (cols 3 / rows 2) layout.</li>

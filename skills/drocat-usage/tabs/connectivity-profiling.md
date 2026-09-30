@@ -21,10 +21,10 @@ comparer = ConnectivityProfileComparer(
                                        # where custom_mapping_file supplies the rows
     datasets=["male-cns:v0.9", "hemibrain:v1.2.1"],
     output_dir="/absolute/output/profiles",
-    top_k=15,
+    top_k=25,                            # the UI default (Settings → Default Settings)
     top_m=5,
     min_synapse_threshold=3,
-    direction="both",                   # input, output, or both
+    direction="both",                   # upstream, downstream, or both
     generate_heatmaps=True,
     show_figures=False,
     verbose=True,

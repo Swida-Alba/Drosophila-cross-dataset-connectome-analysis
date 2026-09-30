@@ -306,7 +306,12 @@ PPL101,0,0,22</code></pre>
       <a href="#enriched-edge-list">Enriched edge lists</a>.</li>
     <li><b>CSV import</b>: the upload button next to <b>Export CSV</b> loads
       an edge-list CSV into the table for continued editing (the editor's own
-      export or the expanded in-HTML export both work).</li>
+      export or the expanded in-HTML export both work). Columns beyond the
+      editor's own set (e.g. the expanded export's
+      <code>nt_type</code>/<code>ratio</code>/<code>probability</code>) load
+      but are not editable — the status line names them, and re-exporting
+      from the editor drops them, so keep the expanded file for the full
+      column set.</li>
     <li><b>Auto-save</b>: once the table holds at least five filled rows,
       edits are flushed atomically about half a second after the last commit
       to <code>local_data/edge_list_drafts/</code> (<code>{name}.csv</code> +

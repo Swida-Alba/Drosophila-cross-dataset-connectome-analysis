@@ -15,7 +15,7 @@ Successfully implemented fast hierarchical clustering with interactive toggle fo
 ### 1. Hierarchical Clustering
 
 **Algorithm**: 
-- Method: Average linkage
+- Method: Ward linkage (average/complete/single remain page-selector options)
 - Distance metric: Euclidean
 - Implementation: scipy.cluster.hierarchy
 
@@ -65,7 +65,7 @@ Successfully implemented fast hierarchical clustering with interactive toggle fo
 
 ### Core Implementation
 
-**`src/statvis.py`** - Enhanced VisConnMatInteractive function
+**`vispath-subproject/src/vispath_pkg/vispath.py`** - Enhanced VisConnMatInteractive (the statvis.py copy is a deprecated redirect)
 
 **Changes**:
 1. Added clustering computation (lines ~835-865)
@@ -197,12 +197,12 @@ from scipy.spatial.distance import pdist
 
 # Cluster rows
 row_distances = pdist(data_linear, metric='euclidean')
-row_linkage = linkage(row_distances, method='average')
+row_linkage = linkage(row_distances, method='ward')
 row_order_clustered = leaves_list(row_linkage)
 
 # Cluster columns
 col_distances = pdist(data_linear.T, metric='euclidean')
-col_linkage = linkage(col_distances, method='average')
+col_linkage = linkage(col_distances, method='ward')
 col_order_clustered = leaves_list(col_linkage)
 ```
 
@@ -213,12 +213,14 @@ col_order_clustered = leaves_list(col_linkage)
 - **Interpretability**: Distance reflects connectivity pattern similarity
 - **Standard**: Widely used in neuroscience literature
 
-### Why Average Linkage?
+### Why Ward Linkage?
 
-- **Balance**: Between single (noisy) and complete (loose) linkage
-- **Speed**: Faster than Ward's method
-- **Results**: Produces compact, well-separated clusters
-- **Standard**: Most common choice for connectivity analysis
+- **Compactness**: Minimizes within-cluster variance, producing compact,
+  well-separated clusters on Euclidean distances
+- **Consistency**: The same method across the VisPath pages, the report
+  cards and the offline fallback, so a matrix orders identically
+  everywhere it renders
+- **Standard**: Widely used for connectivity-pattern clustering
 
 ### Error Handling
 
@@ -456,7 +458,7 @@ The implementation is production-ready and enhances the analysis of neural conne
 ---
 
 **Implementation completed**: October 31, 2024  
-**Files modified**: 1 (src/statvis.py)  
+**Files modified**: 1 (historically src/statvis.py; the live implementation is vispath-subproject/src/vispath_pkg/vispath.py)  
 **Files created**: 3 (2 docs + 1 test)  
 **Lines added**: ~270 (150 code + 120 test)  
 **Test coverage**: 3 comprehensive test cases (all passed)  
@@ -467,7 +469,7 @@ The implementation is production-ready and enhances the analysis of neural conne
 ## Quick Statistics
 
 **Development time**: ~2 hours  
-**Code changes**: 1 file (src/statvis.py)  
+**Code changes**: 1 file (historically src/statvis.py)  
 **New features**: 1 (clustering toggle)  
 **Bug fixes**: 0  
 **Breaking changes**: 0  

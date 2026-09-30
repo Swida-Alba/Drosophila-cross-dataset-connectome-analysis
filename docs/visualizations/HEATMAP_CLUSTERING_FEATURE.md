@@ -14,7 +14,7 @@ The interactive heatmap visualization now includes a **clustering toggle** featu
 
 ### Hierarchical Clustering
 
-- **Algorithm**: Hierarchical clustering with average linkage
+- **Algorithm**: Hierarchical clustering with Ward linkage (Ward is the default everywhere since 2026-09-29: the report cards and the interactive-heatmap fallback are Ward-only; the VisPath pages additionally offer average/complete/single in their clustering-method selector.)
 - **Distance metric**: Euclidean distance
 - **Speed**: Fast clustering using scipy's optimized implementation
 - **Robustness**: Automatic fallback to original order if clustering fails
@@ -33,7 +33,7 @@ The interactive heatmap visualization now includes a **clustering toggle** featu
 ### Clustering Process
 
 1. **Compute distance matrix**: Calculate pairwise Euclidean distances between rows and columns
-2. **Hierarchical clustering**: Use average linkage to build dendrogram
+2. **Hierarchical clustering**: Use Ward linkage to build dendrogram
 3. **Extract leaf order**: Get optimal linear ordering from dendrogram
 4. **Store both orders**: Keep original and clustered orderings in memory
 5. **Apply on toggle**: Reorder data matrix when user clicks "Clustered" button
@@ -43,12 +43,12 @@ The interactive heatmap visualization now includes a **clustering toggle** featu
 ```python
 # Row clustering
 row_distances = pdist(data_matrix, metric='euclidean')
-row_linkage = linkage(row_distances, method='average')
+row_linkage = linkage(row_distances, method='ward')
 row_order = leaves_list(row_linkage)
 
 # Column clustering  
 col_distances = pdist(data_matrix.T, metric='euclidean')
-col_linkage = linkage(col_distances, method='average')
+col_linkage = linkage(col_distances, method='ward')
 col_order = leaves_list(col_linkage)
 ```
 
@@ -201,7 +201,7 @@ vis.create_heatmap()
 ### Implementation
 
 **Files modified**:
-- `src/statvis.py`: Added clustering computation and toggle functionality
+- The clustering computation and toggle now live in the vendored `vispath-subproject/src/vispath_pkg/vispath.py` page (the statvis.py copy is a deprecated redirect)
 
 **Key functions**:
 - `scipy.cluster.hierarchy.linkage()`: Compute hierarchical clustering
@@ -482,6 +482,6 @@ The feature is production-ready and enhances the analysis of neural connectivity
 ---
 
 **Implementation completed**: October 31, 2024  
-**Files modified**: 1 (src/statvis.py)  
+**Files modified**: 1 (historically src/statvis.py; the live implementation is vispath-subproject/src/vispath_pkg/vispath.py)  
 **Lines added**: ~150  
 **Test coverage**: 3 comprehensive test cases

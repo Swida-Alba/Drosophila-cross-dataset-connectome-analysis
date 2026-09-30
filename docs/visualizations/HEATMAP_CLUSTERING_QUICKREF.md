@@ -34,7 +34,7 @@ Controls Panel
 
 **Clustered Order**:
 - Groups similar neurons together
-- Uses hierarchical clustering (euclidean distance, average linkage)
+- Uses hierarchical clustering (euclidean distance, Ward linkage)
 - Reveals modular structure automatically
 - Shows block-diagonal patterns for modules
 
@@ -141,7 +141,7 @@ Toggle back and forth to see structure emerge:
 
 ## Technical Details
 
-**Algorithm**: Hierarchical clustering with average linkage  
+**Algorithm**: Hierarchical clustering with Ward linkage  
 **Distance**: Euclidean  
 **Complexity**: O(n² log n) for n neurons  
 **Speed**: ~50ms for 100×100 matrix  
