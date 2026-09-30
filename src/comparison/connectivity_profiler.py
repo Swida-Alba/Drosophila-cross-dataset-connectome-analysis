@@ -1582,13 +1582,13 @@ class ConnectivityProfiler:
         
         # Atomic write with a reclaimable temp-sibling name (R7-2)
         try:
-            from utils.parquet_utils import temp_sibling
+            from utils.parquet_utils import replace_with_retry, temp_sibling
         except ImportError:
-            from .utils.parquet_utils import temp_sibling
+            from .utils.parquet_utils import replace_with_retry, temp_sibling
         temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
-            os.replace(temp_file, batch_file)
+            replace_with_retry(temp_file, batch_file)
         except Exception as e:
             if temp_file.exists():
                 try:
@@ -1625,9 +1625,13 @@ class ConnectivityProfiler:
         # Shared by both engine paths below (R7-2 temp-sibling naming);
         # hoisted so the pandas fallback sees the binding too.
         try:
-            from utils.parquet_utils import temp_sibling
+            from utils.parquet_utils import (
+                remove_stale_temp_files, remove_stale_temp_files_in_dir,
+                replace_with_retry, temp_sibling)
         except ImportError:
-            from .utils.parquet_utils import temp_sibling
+            from .utils.parquet_utils import (  # pragma: no cover
+                remove_stale_temp_files, remove_stale_temp_files_in_dir,
+                replace_with_retry, temp_sibling)
         
         try:
             import polars as pl
@@ -1696,12 +1700,11 @@ class ConnectivityProfiler:
             # consolidation temp, so without it the heaviest writer leaks
             # a permanent orphan — exactly the R7-2 defect.
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            from utils.parquet_utils import remove_stale_temp_files as _sweep
-            _sweep(main_cache_path, 'profile-consolidation')
+            remove_stale_temp_files(main_cache_path, 'profile-consolidation')
             temp_path = Path(temp_sibling(str(main_cache_path),
                                           'profile-consolidation'))
             combined.write_parquet(str(temp_path))
-            os.replace(temp_path, main_cache_path)
+            replace_with_retry(temp_path, main_cache_path)
             
             # Update in-memory cache
             self._disk_cache_df[dataset] = combined.to_pandas()
@@ -1719,12 +1722,6 @@ class ConnectivityProfiler:
                 # Remove batch directory if empty.  Reclaim crashed batch
                 # temps first: an orphaned '.{neuron}.parquet.profile-batch'
                 # sibling would otherwise keep the "empty" dir alive forever.
-                try:
-                    from utils.parquet_utils import (
-                        remove_stale_temp_files_in_dir)
-                except ImportError:
-                    from .utils.parquet_utils import (
-                        remove_stale_temp_files_in_dir)
                 remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')
                 try:
                     batch_dir.rmdir()
@@ -1761,12 +1758,11 @@ class ConnectivityProfiler:
             combined = combined.drop_duplicates(subset=['neuron_id'], keep='last')
 
             main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            from utils.parquet_utils import remove_stale_temp_files as _sweep
-            _sweep(main_cache_path, 'profile-consolidation')
+            remove_stale_temp_files(main_cache_path, 'profile-consolidation')
             temp_path = Path(temp_sibling(str(main_cache_path),
                                           'profile-consolidation'))
             combined.to_parquet(temp_path, index=False)
-            os.replace(temp_path, main_cache_path)
+            replace_with_retry(temp_path, main_cache_path)
             
             self._disk_cache_df[dataset] = combined
             self._build_disk_cache_index(dataset)
@@ -1778,12 +1774,6 @@ class ConnectivityProfiler:
                     except Exception:
                         pass
                 # Same pre-rmdir temp reclaim as the polars path above.
-                try:
-                    from utils.parquet_utils import (
-                        remove_stale_temp_files_in_dir)
-                except ImportError:
-                    from .utils.parquet_utils import (
-                        remove_stale_temp_files_in_dir)
                 remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')
                 try:
                     batch_dir.rmdir()
@@ -1912,10 +1902,10 @@ class ConnectivityProfiler:
         # by remove_stale_temp_files, not a permanent naked .tmp orphan.
         try:
             from utils.parquet_utils import (
-                remove_stale_temp_files, temp_sibling)
+                remove_stale_temp_files, replace_with_retry, temp_sibling)
         except ImportError:
             from .utils.parquet_utils import (
-                remove_stale_temp_files, temp_sibling)
+                remove_stale_temp_files, replace_with_retry, temp_sibling)
         remove_stale_temp_files(cache_path, 'profile-cache')
         temp_path = Path(temp_sibling(str(cache_path), 'profile-cache'))
         try:
@@ -1944,9 +1934,10 @@ class ConnectivityProfiler:
             except Exception:
                 pass  # fsync failure is non-fatal, rename will still work for Ctrl+C
             
-            # Atomic swap (os.replace keeps the overwrite semantics on
-            # Windows too, where Path.rename over an existing file raises)
-            os.replace(temp_path, cache_path)
+            # Atomic swap (atomic_replace keeps the overwrite semantics on
+            # Windows too, where Path.rename over an existing file raises;
+            # the retry loop rides out a destination briefly held open)
+            replace_with_retry(temp_path, cache_path)
             
             # Update in-memory cache
             self._disk_cache_df[dataset] = df
@@ -2264,13 +2255,13 @@ class ConnectivityProfiler:
         
         # Atomic write with a reclaimable temp-sibling name (R7-2)
         try:
-            from utils.parquet_utils import temp_sibling
+            from utils.parquet_utils import replace_with_retry, temp_sibling
         except ImportError:
-            from .utils.parquet_utils import temp_sibling
+            from .utils.parquet_utils import replace_with_retry, temp_sibling
         temp_file = Path(temp_sibling(str(batch_file), 'profile-batch'))
         try:
             df.to_parquet(temp_file, index=False)
-            os.replace(temp_file, batch_file)
+            replace_with_retry(temp_file, batch_file)
         except Exception as e:
             if temp_file.exists():
                 try:

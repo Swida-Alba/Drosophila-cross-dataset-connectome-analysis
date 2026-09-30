@@ -213,7 +213,9 @@ def remove_stale_temp_files_in_dir(directory, kind,
             continue
         _name, _sep, tail = entry[:-len(".tmp")].rpartition(marker)
         parts = tail.split(".")
-        if not parts or not all(part.isdigit() for part in parts):
+        # same shape contract as _temp_pid: '{pid}' or '{pid}.{thread}'
+        if not parts or len(parts) > 2 or not all(
+                part.isdigit() for part in parts):
             continue
         candidate = os.path.join(directory, entry)
         if _temp_is_stale(candidate, int(parts[0]), max_age_seconds):

@@ -126,16 +126,19 @@ def test_consolidation_temps_use_the_reclaimable_naming():
     # the heaviest writer leaked a permanent orphan
     assert src.count("'profile-consolidation'") >= 4
     # the swaps overwrite atomically on Windows too (Path.rename raises
-    # FileExistsError there when the destination exists)
-    assert src.count("os.replace(temp_path, main_cache_path)") >= 2
-    assert src.count("os.replace(temp_file, batch_file)") >= 2
+    # FileExistsError there) and ride out a briefly-locked destination
+    # through replace_with_retry rather than failing immediately
+    assert src.count("replace_with_retry(temp_path, main_cache_path)") >= 2
+    assert src.count("replace_with_retry(temp_file, batch_file)") >= 2
+    assert src.count("replace_with_retry(temp_path, cache_path)") >= 1
     # orphaned per-neuron batch temps are reclaimed before the batch-dir
     # rmdir so they cannot wedge the directory open
     assert src.count(
         "remove_stale_temp_files_in_dir(batch_dir, 'profile-batch')") >= 2
-    # the naked consolidation naming is gone from the profiler
-    assert "with_suffix('.parquet.tmp')" not in src or (
-        "legacy" in src)  # only the legacy-orphan cleanup may keep one
+    # the naked '.parquet.tmp' naming survives in exactly ONE place: the
+    # reader-side legacy-orphan cleanup in _load_cache_dataframe. A second
+    # occurrence would be a writer regressing to the non-reclaimable name.
+    assert src.count("with_suffix('.parquet.tmp')") == 1
 
     fafb_src = Path(FAFB_file_converter.__file__).read_text(encoding="utf-8")
     # the table converter reclaims its temps even on the reuse path
@@ -199,10 +202,12 @@ def test_temp_reclamation_round_trips_across_name_formats():
         shutil.rmtree(work, ignore_errors=True)
 
 
-def test_batch_dir_temp_reclaim_empties_the_directory():
-    """An orphaned per-neuron batch temp must not wedge the batch-dir
-    rmdir after consolidation: the kind-only directory sweep reclaims
-    orphans whatever their final name was, and keeps live ones."""
+def test_batch_dir_temp_reclaim_is_selective():
+    """The kind-only directory sweep reclaims ORPHANED batch temps
+    (whatever their final name was, dead writer) and keeps live ones and
+    the batch finals — the production emptying of the directory happens
+    because consolidation unlinks the finals first, then this sweep clears
+    the orphans so ``rmdir()`` can succeed."""
     import os
     import shutil
     import tempfile
