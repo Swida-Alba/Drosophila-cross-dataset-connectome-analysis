@@ -2260,7 +2260,8 @@ class TestBuildConnectivityProfileCache:
                 self.kwargs = kwargs
 
         class FakeProfiler:
-            def __init__(self, config):
+            def __init__(self, datasets=None, config=None):
+                self.datasets = datasets
                 self.config = config
 
             def build_connectivity_profile_cache(self, **kwargs):

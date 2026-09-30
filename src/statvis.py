@@ -5957,9 +5957,13 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
     
     UNIFIED ENTRY POINT: dispatches to the pandas implementation (below) or the
     Polars implementation (``build_path_dataframe_from_paths_polars``)
-    based on ``engine`` / the input type. Both engines return the same schema
-    for the same input (the polars engine stringifies list-valued columns for
-    CSV compatibility and omits the pandas-only 'path_str' column).
+    based on ``engine`` / the input type. The engines' schemas differ in
+    three known ways: the polars engine stringifies list-valued columns
+    for CSV compatibility and omits the pandas-only 'path_str' column; it
+    ignores ``type_lookup`` (path strings carry IDs only, and the
+    pandas-only 'path_types' column is absent); and it aggregates
+    duplicated (pre, post) rows with ``nt_type.first()`` where the pandas
+    builder joins the distinct values with '|'.
     """
     if engine == 'polars' or (engine == 'auto' and not isinstance(conn_data, pd.DataFrame)):
         if not isinstance(conn_data, pl.DataFrame):

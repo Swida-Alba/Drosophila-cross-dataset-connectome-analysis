@@ -976,11 +976,11 @@ def _hop_budget_pass_once(conn_layers, sources, targets, bound,
     few edges that no SIMPLE path uses — pruning is lossless, not
     complete.)
 
-    Returns (pruned_tables, anchored, stats). Inputs are never mutated —
+    Returns (pruned_tables, stats). Inputs are never mutated —
     the cached FindAllPath graph entries stay shareable across thresholds.
-    ``stats`` reports rows_before/rows_dropped/nodes/strongest_retained;
-    ``anchored`` is False when no source/target id appears in the tables
-    (the caller keeps its frames untouched in that case).
+    ``stats`` reports rows_before/rows_dropped/nodes/strongest_retained
+    and ``anchored`` (False when no source/target id appears in the
+    tables — the caller keeps its frames untouched in that case).
     """
     from collections import deque
 
@@ -12182,12 +12182,6 @@ class FindNeuronConnection:
         
         return output_dir
 
-    def PrintROIHierarchy(self):
-        '''print the ROI hierarchy, with primary ROIs marked with *'''
-        # Show the ROI hierarchy, with primary ROIs marked with '*'
-        print('*: Primary ROI')
-        print(fetch_roi_hierarchy(False, mark_primary=True, format='text'))
-            
     def FindDirectConnections(self):
         '''
         find direct connections between source and target neurons
@@ -15140,11 +15134,15 @@ class FindNeuronConnection:
     def _density_dir(self):
         """Dataset-level home for the shared density arrays (plan §4.1).
 
-        Written once per (dataset, query) at
-        ``dataset_data/{safe}/_density/`` — one level ABOVE the ``minsyn_*``
-        folders — because tau-collapse deletes the t0 folder (F5 folder
-        discipline) while every slice folder references this single copy
-        through its ``density_meta.json`` ``density_source`` pointer.
+        Shared PER DATASET at ``dataset_data/{safe}/_density/`` — one level
+        ABOVE the ``minsyn_*`` folders — because tau-collapse deletes the
+        t0 folder (F5 folder discipline) while every slice folder
+        references this single copy through its ``density_meta.json``
+        ``density_source`` pointer. The keep-guard keeps whichever capture
+        has the larger cone: reusing the folder for a DIFFERENT query
+        silently keeps the earlier query's arrays when its cone is bigger,
+        so treat the arrays as the dataset's representative capture, not a
+        per-query record.
         """
         base = self.allpath_folder or self.save_folder
         if not base:
@@ -17827,14 +17825,19 @@ class FindNeuronConnection:
             all_neurons_df_pd = self._fetch_neurons_local_or_api(all_bodyIds.to_list(), columns=['bodyId', 'type', 'post'])
             all_neurons_df = pl.from_pandas(all_neurons_df_pd)
         
-        # Get unique post types for global incoming weight calculation
+        # Get unique post types for global incoming weight calculation.
+        # F9: the ratio denominator is a threshold-free READOUT —
+        # min_weight=1 (all posts), the same contract every sibling call
+        # site obeys; the threshold-truncated denominators here made the
+        # matrix ratios jump with Min Synapse Count and disagree with
+        # connection_type.csv in the same run.
         global_post_types = conn_inpath_global['type_post'].unique().to_list() if 'type_post' in conn_inpath_global.columns else []
-        global_incoming_weights = self._fetch_total_incoming_weight_by_type(global_post_types, min_weight=self.min_synapse_num) if global_post_types else None
+        global_incoming_weights = self._fetch_total_incoming_weight_by_type(global_post_types, min_weight=1) if global_post_types else None
         
         # Global bodyId-level denominators (local fallback inside
         # EnrichConnectionTable prevents 0 ratios for untyped posts)
         global_post_bodyIds = conn_inpath_global['bodyId_post'].unique().to_list()
-        global_incoming_body_weights = self._fetch_total_incoming_weight(global_post_bodyIds, min_weight=self.min_synapse_num) if global_post_bodyIds else None
+        global_incoming_body_weights = self._fetch_total_incoming_weight(global_post_bodyIds, min_weight=1) if global_post_bodyIds else None
         
         _, conn_types_global, _ = sv.EnrichConnectionTable(
             conn_inpath_global, 
