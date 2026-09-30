@@ -265,6 +265,38 @@ def test_reciprocal_flag_reaches_standardized_linkers():
     assert act and act[0].get('reciprocal') is True
 
 
+def test_branch_record_linkers_carry_value_key():
+    """get_mapping_branches' linker projection keeps ``value`` (and the
+    rescue flag) — the per-bridge export's mapping_origin reads tokens
+    from it (2026-09-30 review: the stripped projection made
+    annotation-only rows export a bare ``mapped`` origin)."""
+    from comparison.mapping_visualization import branches_to_per_bridge_rows
+    m = _bare_mapper()
+    _seed_pair(
+        m,
+        fafb_primaries={'T1'},
+        banc_primaries={'P1'},
+        fafb_ann={'V1': {'T1'}},
+        banc_ann={'V1': {'P1'}},
+    )
+    m._apply_annotation_bridge_overlay()
+    # the decision layer needs loader-built caches the bare mapper does
+    # not seed; stub the parent decision — this test targets the linker
+    # projection, not the decision machinery.
+    m.get_mapping_decision = lambda *a, **k: {
+        'status': 'mapped', 'target_types': ['P1'],
+        'relationship': '1-to-1'}
+    records = m.get_mapping_branches(
+        'T1', FAFB, BANC, pool_fn=lambda *a, **k: None)
+    assert records
+    rows = branches_to_per_bridge_rows(records)
+    origins = {r['mapping_origin'] for r in rows}
+    assert any('annotation bridge via V1' in o for o in origins), origins
+    for record in records:
+        for linker in record['linkers']:
+            assert linker.get('value'), linker
+
+
 # ---------------------------------------------------------------------------
 # Production overlay: same-name identity + annotation-bridge candidates
 # ---------------------------------------------------------------------------
@@ -609,6 +641,30 @@ class TestRealDataAcceptance:
         linkers = standardize_bridge(rescued[0], FAFB_RELEASE, BANC_RELEASE)
         origin = _pair_mapping_origin(linkers, 'DNp17', 'DNpe054')
         assert origin == 'annotation bridge via DNht001 (reciprocal)'
+
+    def test_per_bridge_export_origin_and_reciprocal(self, real_mapper,
+                                                     tmp_path):
+        # End-to-end through the export: annotation-lane rows name their
+        # tokens, the rescued glue pair carries (reciprocal), and no row
+        # falls back to a bare 'mapped' origin (2026-09-30 review fix).
+        out = tmp_path / 'mapping_review.csv'
+        n = real_mapper.export_mapping_per_bridge(
+            str(out), source_types=['DNp17', 'LLPC2'],
+            source_dataset=FAFB_RELEASE, target_datasets=[BANC_RELEASE],
+            pool_fn=lambda *a, **k: None)
+        assert n > 0
+        df = pd.read_csv(out, dtype=str).fillna('')
+        rescued = df[(df['source_type'] == 'DNp17')
+                     & (df['target_type'] == 'DNpe054')]
+        assert len(rescued) == 1
+        assert rescued['mapping_origin'].iloc[0] == \
+            'annotation bridge via DNht001 (reciprocal)'
+        designed = df[(df['source_type'] == 'LLPC2')
+                      & (df['target_type'] == 'LLPC1')]
+        assert len(designed) >= 1
+        assert designed['mapping_origin'].iloc[0].startswith(
+            'annotation bridge via LLPC2')
+        assert not (df['mapping_origin'] == 'mapped').any()
 
 
 def test_scoped_pair_bridges_stay_two_namespace():

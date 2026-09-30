@@ -106,6 +106,46 @@ def side_pool(index, type_name, column, value):
     return set(body_ids(frame))
 
 
+def check_act_glue_residue(mapper):
+    """ACT-glue rule (2026-09-30, plan §3/§4 in
+    _plan/plan-type-mapper-act-lane-precedence-and-backward-reciprocity.md).
+
+    No returned FAFB->BANC chain may depart a same-name-arrived BANC
+    primary through ``Alternative Cell Type(s)`` unless the pair is
+    backward-reciprocated (such survivors carry ``reciprocal`` on the
+    arrival hop).  The escape hatch (``_skip_glue_filter=True``) still
+    offers the raw glue chains; the two outputs may differ ONLY by
+    non-reciprocated glue ends.
+    """
+    def glue(chain, banc):
+        return any(
+            chain[i].get("column") == "Alternative Cell Type(s)"
+            and chain[i - 1].get("column") == "type"
+            and chain[i - 1].get("dataset") == banc
+            for i in range(2, len(chain)))
+
+    fafb_prim = sorted(mapper._flywire_primaries.get(FAFB, ()))
+    for banc in ("banc_v626", "banc_v888"):
+        residue = []
+        bad_diff = []
+        for t in fafb_prim:
+            filtered = mapper.get_type_bridges(t, FAFB, banc, max_bridges=0)
+            for chain in filtered:
+                if glue(chain, banc) and not chain[-1].get("reciprocal"):
+                    residue.append((t, chain[-1]["value"]))
+            raw = mapper.get_type_bridges(
+                t, FAFB, banc, max_bridges=0, _skip_glue_filter=True)
+            ends_filtered = {c[-1]["value"] for c in filtered}
+            for chain in raw:
+                end = chain[-1]["value"]
+                if end not in ends_filtered and not glue(chain, banc):
+                    bad_diff.append((t, end))
+        check(f"ACT-glue residue zero ({banc})", not residue,
+              f"non-reciprocated glue survives: {residue[:5]}")
+        check(f"suppression touches only glue ends ({banc})", not bad_diff,
+              f"non-glue ends removed: {bad_diff[:5]}")
+
+
 def main():
     mapper = get_type_mapper()
     assert mapper.load() is True
@@ -365,6 +405,8 @@ def main():
     row_types = {r["type"] for r in result.rows}
     check("every mapped-view row type has provenance data",
           row_types <= mapped, f"{len(row_types)} types on full row set")
+
+    check_act_glue_residue(mapper)
 
     print()
     if FAILURES:

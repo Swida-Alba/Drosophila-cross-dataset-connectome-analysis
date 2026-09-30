@@ -147,10 +147,13 @@ alignment lane 18; v888 — fct 7,484, pure-ACT 2,273 (selected 1,803),
 aT→ACT 421 (selected 199), aT→type 297 (selected 287), aT→fct 113,
 bare 114, alignment 18. All classes reach the decision layer, pooling
 (linker-row or full-population bases per hop home) and the mapping
-exports. A rarer composed continuation also derives per the registry
+exports. A rarer composed continuation also derived per the registry
 standard — `aT → type → ACT → ACT` (a same-name hop INTO BANC mid-chain
 followed by ACT walking; 17 pairs in v626, 21 in v888, e.g.
 `M_adPNm4a`); subsumption can never fire on it (two or more linkers).
+**(2026-09-30, §3.7):** that composed continuation is the terminal-glue
+class and is now suppressed unless the pair is backward-reciprocated —
+the dated counts in this census paragraph predate the rule.
 Two semantic confirmations recorded with the 2026-09-27 review: (a) §12
 incoming families are wider for split tokens — a token whose alt entry
 splits to multiple primaries now appears in every split sibling's

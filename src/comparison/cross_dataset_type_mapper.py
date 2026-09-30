@@ -5596,11 +5596,16 @@ class CrossDatasetTypeMapper:
             linker_nodes = [
                 {
                     'column': lnk.get('column', ''),
+                    'value': lnk.get('value', ''),
                     'raw_value': lnk.get('raw_value',
                                          lnk.get('value', '')),
                     'canonical_value': lnk.get('canonical_value',
                                                lnk.get('value', '')),
                     'home': lnk.get('home', ''),
+                    # glue chains rescued by backward reciprocity keep
+                    # their flag so the per-pair export can disclose it
+                    **({'reciprocal': True}
+                       if lnk.get('reciprocal') else {}),
                 }
                 for lnk in linkers if lnk.get('kind') == 'linker'
             ]
