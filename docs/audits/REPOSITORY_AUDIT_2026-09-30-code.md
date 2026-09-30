@@ -52,7 +52,7 @@ The dominant P2 patterns: **contract violations the code's own comments name** (
 
 - Per-cluster targeted suites green after each commit: profiler 89 + analyzer 142, coana/statvis pathfinding 311+117+138, morphology 379+162, viewer 494+9, converters/utils 106+53+63, mapper/morph 227+47+165+33. pyflakes: zero new warnings (only the pre-existing baseline classes).
 - First full-battery run caught 4 regressions from the fix round itself, all repaired before the record was finalized: the fafb_utils dead-arm deletion removed two names its own error message still used (restored as FAFB-only bindings); banc_public_data used `temp_sibling` without importing it; and the J6 `xfail(strict)` test XPASSed — because the P1 fingerprint fix makes the mismatch re-run actually re-derive and rewrite, the round-7 open contract was flipped to a hard assertion (it passes).
-- Final full staged battery after the repairs: see the runner log for the closing run of 2026-09-30 (3/3 stages).
+- Final full staged battery after the repairs (2026-09-30 18:33): **3/3 stages clean — core 5,164 passed / 1 skipped, ui 1,092 passed, docs-and-misc 176 passed** (the +1 core pass over the prior baseline is the J6 contract, now a hard assertion).
 - Bug-documenting tests rewritten to pin the FIXED behavior (`test_build_connectivity_profile_cache_config_bug`, homolog-finder `list_types` patches, the FakeProfiler `datasets` kwarg, the parquet gate test, the cache-factory test).
 
 ## Residual uncertainty
