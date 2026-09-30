@@ -511,6 +511,77 @@ COLUMN_GLOSSARY = {
                              "all-but-debris when off) — the same number "
                              "density_curves.csv reports at w_start.",
                              "integer"),
+    # v2.2 similarity-matrix columns (plan-similarity-matrix-schema-v2)
+    "path_jaccard_similarity": (
+        "v2.2 path-level representative: Jaccard similarity of the two "
+        "datasets' path sets (union of paths as node sequences). NaN when "
+        "no path data was provided.", "0-1"),
+    "path_top20_overlap": (
+        "v2.2 detail metric: overlap of the two datasets' top-20 paths "
+        "(ranked by traversal probability). NaN without path data.",
+        "0-1"),
+    "hop_profile_w1": (
+        "v2.2 detail metric: W1 (earth-mover) distance between the two "
+        "datasets' hop-count profiles of paths, mapped to a similarity "
+        "(1/(1+W1)). NaN without path data.", "0-1"),
+    "netsimile_similarity": (
+        "v2.2 graph-level representative: NetSimile-lite similarity of the "
+        "two weighted edge lists (degree/strength signature vectors, "
+        "cosine compared).", "0-1"),
+    "coverage_d1": (
+        "v2.2 detail metric: overlap coefficient restricted to dataset 1's "
+        "edges (|shared| / |d1 edges|).", "0-1"),
+    "coverage_d2": (
+        "v2.2 detail metric: overlap coefficient restricted to dataset 2's "
+        "edges (|shared| / |d2 edges|).", "0-1"),
+    "coverage_min": (
+        "v2.2 detail metric: conservative overlap coefficient "
+        "(|shared| / min(|d1|, |d2|) edges) — the smaller dataset's "
+        "coverage.", "0-1"),
+    "top20_overlap": (
+        "v2.2 detail metric: overlap of the two datasets' top-20 edges by "
+        "weight.", "0-1"),
+    "strength_w1_out": (
+        "v2.2 detail metric: W1 distance between outgoing-strength "
+        "distributions, mapped to a similarity (1/(1+W1)).", "0-1"),
+    "strength_w1_in": (
+        "v2.2 detail metric: W1 distance between incoming-strength "
+        "distributions, mapped to a similarity (1/(1+W1)).", "0-1"),
+    "type_coverage": (
+        "Morphological similarity: coverage of the target type's members "
+        "found for the query (types with a coverage snapshot only — "
+        "written whenever coverage exists).", "0-1"),
+    "edges_retained_from_prev": (
+        "Threshold sensitivity: unique edges retained from the previous "
+        "(lower) threshold; blank on the first threshold of a schedule and "
+        "in combination mode.", "integer"),
+    "retention_rate": (
+        "Threshold sensitivity: edges_retained_from_prev / previous "
+        "edge_count; blank where the retention columns are blank.",
+        "0-1"),
+    "edges_lost": (
+        "Threshold sensitivity: unique edges present at the previous "
+        "threshold but not this one; blank on the first threshold of a "
+        "schedule and in combination mode.", "integer"),
+    "total_edges": (
+        "Unified summary: unique (source, target) type pairs at this "
+        "threshold (per-layer occurrences of the same pair are not "
+        "double-counted).", "integer"),
+    "total_layer_rows": (
+        "Unified summary: raw connection rows including per-layer "
+        "occurrences of the same pair.", "integer"),
+    "total_weight": (
+        "Unified summary: sum of connection weights at this threshold.",
+        "float"),
+    "mean_weight": (
+        "Unified summary: mean connection weight at this threshold.",
+        "float"),
+    "unique_sources": (
+        "Unified summary: distinct source types with at least one edge at "
+        "this threshold.", "integer"),
+    "unique_targets": (
+        "Unified summary: distinct target types with at least one edge at "
+        "this threshold.", "integer"),
 }
 
 
@@ -1104,6 +1175,14 @@ _HOMOLOG_FILES = [
          "source_type", "target_type", "target_type_members", "is_same_type",
          "target_dataset", "jaccard", "weighted_jaccard", "cosine",
          "rank_union", "rank"]},
+    {"pattern": "results/shuffle_test.json",
+     "description": "Null-model shuffle test for the type-level ranking "
+                    "(metric values of true pairings vs shuffled-label "
+                    "nulls): written when the shuffle test runs."},
+    {"pattern": "by_type/**",
+     "description": "Per-query-type subfolders for multi-type runs: each "
+                    "by_type/<query type>/ holds the same results/ tables "
+                    "restricted to that query type."},
     {"pattern": "auto_type_mapping.json",
      "description": "Auto-type-mapping provenance for this search: which "
                     "mapper was requested vs active, source table and version, "
@@ -1207,19 +1286,6 @@ TOOL_GUIDE_SPECS = {
              "description": "Degraded copy of the interactive scene, written "
                             "only when the full page was too large for the "
                             "browser export. Re-export from the main page."},
-            {"pattern": "SCENE_FAILED.txt",
-             "description": "This scene did NOT render: the page, PNG and "
-                            "manifest are absent. Two causes. (1) A "
-                            "mid-render failure: the folder is created "
-                            "before the figure, so it would otherwise look "
-                            "like a finished scene on disk, and everything "
-                            "else inside is a partial artifact. (2) The TM "
-                            "VEV empty-query-layer gate: the parent's "
-                            "queried source neurons all failed to load "
-                            "skeletons, so the folder is synthetic and "
-                            "holds nothing but this marker. Names the "
-                            "parent type and the error (plus the traceback "
-                            "for render failures)."},
             {"pattern": "visualization_manifest.json",
              "description": "Machine-readable record of the run: dataset, "
                             "canonical viewer page, legend mode, freeze "
@@ -1300,14 +1366,19 @@ TOOL_GUIDE_SPECS = {
                    "comparison.",
         "files": [
             {"pattern": "results.csv",
-             "description": "BodyId-level similarity results.",
+             "description": "BodyId-level similarity results. The leading "
+                            "columns are always present; the source_* and "
+                            "pool_stage columns appear only when applicable "
+                            "(cross-dataset runs), and type_coverage is "
+                            "written whenever a coverage snapshot exists.",
              "preview": True,
              "preview_title": "Similarity results",
              "columns": [
-                 "rank", "source_bodyId", "source_type", "target_bodyId",
+                 "rank", "target_bodyId",
                  "target_type", "target_instance", "profile_similarity",
                  "roi_similarity", "similarity", "is_same_type",
-                 "intra_type_similarity", "method", "metric"]},
+                 "intra_type_similarity", "method", "metric",
+                 "type_coverage", "source_bodyId", "source_type"]},
             {"pattern": "type_summary.csv",
              "description": "Type-level summary.",
              "preview": True,
@@ -1558,7 +1629,7 @@ TOOL_GUIDE_SPECS = {
                             "(1:1) in both the VisPath renderer and the "
                             "offline fallback, and the clustered pages draw "
                             "Ward dendrograms beside the matrix."},
-            {"pattern": "plot-3d_*/",
+            {"pattern": "plot-3d_*/**",
              "description": "Optional 3D skeleton scene (3D Skeleton "
                             "Visualization checkbox): one layer per "
                             "compared matrix row, linked from report.html."},
@@ -1657,6 +1728,13 @@ TOOL_GUIDE_SPECS = {
                             "(custom_mapper_dataset/from/to) — the user's "
                             "inclusion path. Rivals are never merged "
                             "automatically."},
+            {"pattern": "auto_type_mapping_per_bridge.csv",
+             "description": "Auto-type-mapping decisions per BRIDGE (one "
+                            "row per dataset pair the mapper walked, not "
+                            "per source type): the lane that carried the "
+                            "mapping and its support counts. Companion of "
+                            "auto_type_mapping.csv for auditing multi-hop "
+                            "chains."},
             {"pattern": "auto_type_mapping.json",
              "description": "Auto-type-mapping provenance for this run: "
                             "which mapper was requested vs active, its source "
@@ -1705,7 +1783,9 @@ TOOL_GUIDE_SPECS = {
                             "columns for every edge; combination rows also "
                             "carry query_id and per-dataset threshold columns "
                             "plus the per-endpoint source_status/target_status "
-                            "union-resolution columns.",
+                            "union-resolution columns (the "
+                            "query_id/query_label/threshold_mode columns "
+                            "below exist only in combination mode).",
              "columns": ["query_id", "query_label", "edge_key", "source",
                          "target", "threshold_mode", "conservation"]},
             {"pattern": "comparison_results/type_resolution_union.csv",
@@ -1735,7 +1815,9 @@ TOOL_GUIDE_SPECS = {
                          "tau_canonical", "strongest_dropped_bottleneck",
                          "edge_budget", "edge_budget_applied",
                          "edge_budget_landing", "edge_weight_floor",
-                         "strongest_retained_bottleneck", "paths_complete"]},
+                         "strongest_retained_bottleneck", "paths_complete",
+                         "total_edges", "total_layer_rows", "total_weight",
+                         "mean_weight", "unique_sources", "unique_targets"]},
             {"pattern": "comparison_results/unique_to_*.csv",
              "description": "Edges unique to one dataset. Standard mode "
                             "only: combination runs omit these files instead "
@@ -1781,6 +1863,8 @@ TOOL_GUIDE_SPECS = {
                          "edge_budget_applied", "edge_budget_landing",
                          "edge_weight_floor",
                          "strongest_retained_bottleneck", "paths_complete",
+                         "edge_count", "edges_retained_from_prev",
+                         "retention_rate", "edges_lost",
                          "skipped", "duplicate_of", "drop_untyped",
                          "untyped_dropped_rows", "untyped_dropped_neurons"]},
             {"pattern": "comparison_results/pathfinding_provenance.csv",
@@ -1941,7 +2025,11 @@ TOOL_GUIDE_SPECS = {
                  "edges_in_d2", "common_edges", "union_edges", "unique_to_d1",
                  "unique_to_d2", "edge_rank_correlation", "cosine_similarity",
                  "path_rank_correlation", "spearman_rank_correlation",
-                 "rv_coefficient", "threshold"]},
+                 "rv_coefficient", "path_jaccard_similarity",
+                 "path_top20_overlap", "hop_profile_w1",
+                 "netsimile_similarity", "coverage_d1", "coverage_d2",
+                 "coverage_min", "top20_overlap", "strength_w1_out",
+                 "strength_w1_in", "threshold"]},
             {"pattern": "similarity_matrices/similarity_query_*.csv",
              "description": "Combination-mode similarity rows for one query. "
                             "The filename uses a filesystem-safe query-ID slug, "
@@ -1953,7 +2041,11 @@ TOOL_GUIDE_SPECS = {
              "columns": ["query_id", "query_label", "dataset_1", "dataset_2",
                          "threshold_", "jaccard_similarity",
                          "ruzicka_similarity", "pearson_correlation",
-                         "common_edges"]},
+                         "common_edges", "path_jaccard_similarity",
+                         "path_top20_overlap", "hop_profile_w1",
+                         "netsimile_similarity", "coverage_d1", "coverage_d2",
+                         "coverage_min", "top20_overlap", "strength_w1_out",
+                         "strength_w1_in"]},
             {"pattern": "similarity_matrices/similarity_by_query.csv",
              "description": "Combined combination-mode similarity export; "
                             "filter by query_id before comparing rows."},
@@ -1961,13 +2053,30 @@ TOOL_GUIDE_SPECS = {
              "description": "Network graph of hemisphere-conserved "
                             "reciprocal connections (when both options are "
                             "on)."},
+            {"pattern": "conserved_paths/*.html",
+             "description": "Network graphs of hemisphere-conserved "
+                            "connections per threshold (Conserved Hemisphere "
+                            "analysis): same renderer as the reciprocal "
+                            "graphs, one page per threshold."},
+            {"pattern": "type_resolution_topology.json",
+             "description": "Machine-readable record of the type-resolution "
+                            "topology used to union types across datasets "
+                            "(merge-policy decisions: anchors, residuals, "
+                            "fan-ins)."},
+            {"pattern": "comparison_report_used_data/type_appearance_order.csv",
+             "description": "Order in which types first appear in the "
+                            "comparison tables — the canonical ordering the "
+                            "report's tables and heatmaps follow."},
             {"pattern": "dataset_data/**",
              "description": "Raw per-dataset FindNeuronConnection runs "
                             "(one subfolder per dataset/threshold, same "
                             "layout as Complete Paths — see the pathfinding "
                             "model sections above for the threshold/budget "
                             "provenance and file naming — plus "
-                            "connections_edge.csv)."},
+                            "connections_edge.csv and its "
+                            "connections_edge.fingerprint.json query-"
+                            "fingerprint sidecar, whose match/mismatch "
+                            "governs cache reuse)."},
         ],
         "explanation": _PATHFINDING_EXPLANATION,
     },
@@ -2184,14 +2293,17 @@ TOOL_GUIDE_SPECS = {
         "title": "FlyLight Image Download",
         "summary": "Confocal image downloads for driver lines.",
         "files": [
-            {"pattern": "**/*_mip.png",
+            {"pattern": "*_mip.png",
              "description": "Downloaded maximum-intensity-projection images, "
-                            "organized by collection and line. File names "
+                            "organized by collection and line (or directly "
+                            "in the output root in flat-structure mode). "
+                            "File names "
                             "encode slide, sex, zoom, region, and driver "
                             "type."},
-            {"pattern": "**/*.jpg",
+            {"pattern": "*.jpg",
              "description": "Downloaded JPG images (when jpg format is "
-                            "requested)."},
+                            "requested), nested by collection or flat "
+                            "depending on the structure mode."},
             {"pattern": "*_summary.pdf",
              "description": "Summary document with the downloaded images "
                             "(when a PDF summary is requested)."},
@@ -2209,14 +2321,17 @@ TOOL_GUIDE_SPECS = {
                    "the mapping is never rewritten.",
         "files": [
             {"pattern": "report.html",
-             "description": "The per-run report's 12 tabs: Coverage "
+             "description": "The per-run report's 14 tabs: Coverage "
                             "(headline + the three coverage levels L1 claim "
-                            "/ L2 provenance / L3 validation), Branches "
+                            "/ L2 provenance / L3 validation, plus the "
+                            "disclosure-evidence card), Branches "
                             "(marks same-name-first selections), Targets, "
                             "Fill, Reciprocal (stage-5d reverse evidence, "
                             "one row per scanned neuron), Out-map, Backward "
-                            "source status, Suspects verification (opt-in "
-                            "runs), Morph, Pooling, Scenes "
+                            "source status, Homolog · forward and "
+                            "Homolog · backward (the offline morph "
+                            "top-match tables), Suspects verification "
+                            "(opt-in runs), Morph, Pooling, Scenes "
                             "(which also prints the palette the run actually "
                             "wore, one chip per category, each recolored bin "
                             "naming the default it replaced) "
@@ -2517,6 +2632,22 @@ TOOL_GUIDE_SPECS = {
                             "leaf carries its reciprocal grade as a "
                             "trailing · high / · medium / · low tag "
                             "(an unscanned member keeps a bare leaf)."},
+            {"pattern": "visualization/*/SCENE_FAILED.txt",
+             "description": "This scene did NOT render: the page, PNG and "
+                            "manifest are absent. Two causes. (1) A "
+                            "mid-render failure: the scene folder is "
+                            "created before the figure, so it would "
+                            "otherwise look like a finished scene on disk, "
+                            "and everything else inside is a partial "
+                            "artifact. (2) The empty-query-layer gate: the "
+                            "parent's queried source neurons all failed to "
+                            "load skeletons, so the folder is synthetic "
+                            "and holds nothing but this marker. Names the "
+                            "parent type and the error (plus the traceback "
+                            "for render failures). NOTE: this marker is "
+                            "written by the TM VEV scene builder only — a "
+                            "plain 3D-Skeleton viewer run that dies "
+                            "mid-render leaves an unmarked partial folder."},
         ],
     },
 }

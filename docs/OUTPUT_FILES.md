@@ -262,7 +262,7 @@ Example: `plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/` (layer names joined
 
 *   **`{saveas}.html`**: The **canonical** interactive viewer page (`plot_individuals()` and the video re-exporters must open this one, never a copy). It carries the full scene and every viewer extra: the collapsible tree-legend panel (when `legend_mode='tree'`), the light/dark theme switch, and — with `freeze_view=True` (the default) — the script that pins the scene axes to the padded extents of *all* traces so showing or hiding a legend row cannot rescale the view (a Freeze/Fit button and the `F` key toggle it; the script no-ops under WebDriver, so static exports still autoscale).
 *   **`{saveas}_simplified.html`**: Size-reduced copy of the viewer page, written by the export paths that decimate the scene to fit the renderer's HTML size cap (the WebDriver view-retry writes it inside `exported_views/`). It carries the same three extras as the canonical page, over the decimated scene. The WebDriver session reuses it as its rendering input, so it is both a viewer and an intermediate; `resolve_viewer_page()` recognises it by its `_simplified` suffix and re-exports from the canonical page instead.
-*   **`SCENE_FAILED.txt`**: This scene did not render. The viewer creates its folder before writing the figure, so a failure part-way through would otherwise leave a directory holding `parameters.txt` and the layer CSVs with no HTML — indistinguishable from a completed scene on disk (5 of 21 parent scenes on one male-cns family run were exactly that). The marker names the parent type, the error and the traceback, and says which files were never written; `scripts/verify_tmvev_run_exports.py` fails a run that has a scene folder with neither a page nor this file. The TM VEV scene builder also writes this marker — as a synthetic `plot-3d_branches_*` folder — when a parent's queried source neurons ALL fail to load skeletons: a scene whose query layer is empty is a failure, not a smaller picture.
+*   **`SCENE_FAILED.txt`** (TM VEV runs only — written by the scene builder into `visualization/plot-3d_branches_*` folders): This scene did not render. The scene builder creates its folder before writing the figure, so a failure part-way through would otherwise leave a directory holding `parameters.txt` and the layer CSVs with no HTML — indistinguishable from a completed scene on disk (5 of 21 parent scenes on one male-cns family run were exactly that). The marker names the parent type, the error and the traceback, and says which files were never written; `scripts/verify_tmvev_run_exports.py` fails a run that has a scene folder with neither a page nor this file. The same marker is also written — as a synthetic `plot-3d_branches_*` folder — when a parent's queried source neurons ALL fail to load skeletons: a scene whose query layer is empty is a failure, not a smaller picture. A plain 3D-Skeleton viewer run that dies mid-render leaves NO marker — its partial folder is recognizable only by the missing `{saveas}.html`.
 
 *   **`visualization_manifest.json`**: What the page *means*, so a stored run can be re-exported without its source data. Re-export inputs, each read back by `resolve_viewer_page()` / `profile_plan_from_html()` / `export_individuals_from_html()`: `canonical_page`, `dataset` / `brain_mesh` / `mesh_roi` / `background_color`, the per-view `views` cameras (`eye`/`up`/`center`), and a `traces` table of `{index, kind, rule, label, group, type, item, body_id, visible}` roles — a neuron leaf whose stamp carries no `body_id` (the TM VEV overlay scenes never reach the render-loop stamp) gets it from the leading bodyId of its `item` label — which the re-exporter re-reads against the page it parsed, so identity stamps that fail to survive the HTML round trip are reported instead of silently coarsening every profile. Provenance for whoever opens the run next: `schema_version`, `client_type` / `version` / `saveas`, `legend_mode` (`single` | `type` | `tree` | `layer`), `freeze_view` (the ranges it pinned live in the page's own scene layout), `export_method`, `export_scale`, `neuron_alpha`, `layer_names`.
 
@@ -450,14 +450,16 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     through something worth disclosing: taxonomy-label expansions,
     instance-name matches, member/total caps, the NBLAST cost warning, or
     tokens nothing matched. Rendered by the run guide.
-*   **`visualization/heatmap_{type|bodyid}_{method}.html`**: Interactive
+*   **`visualization/heatmap_{type|bodyid|group}_{method}.html`**: Interactive
     (VisPath) heatmaps, plotly fallback when VisPath is unavailable. One per
-    computed level, so `heatmap_type_*` is absent at the bodyId level.
+    computed level, so `heatmap_type_*` is absent at the bodyId level and
+    the custom group level writes `heatmap_group_*`.
 *   **`plot-3d_{dataset_folder}/`**: Optional 3D skeleton scene (Comparison
     panel → "3D Skeleton Visualization" checkbox) — one skeleton layer per
     compared matrix row, line rendering by default; linked from `report.html`.
 *   **`report.html` / `parameters.json` / `README.txt`**: Tabbed report on
-    the shared `report_kit` (hero header, Type-level / BodyId-level tabs,
+    the shared `report_kit` (hero header, Type/Group-level and BodyId-level
+    tabs,
     Ward-clustered heatmap cards with CSV + VisPath editor links,
     compared-neuron and parameter details, scene link; Plotly embedded so
     it renders offline), parameters, and the layout description.
@@ -492,9 +494,8 @@ Example: `morph_cross_MCNS_FAFB_aMe12_aMe26_l-LNv_20260916_023121/`
     vector_v2 renders on a diverging blue–white–red scale (the whitened
     cosine can be negative).
 *   **`parameters.json` / `README.txt`**: Run config (queries, datasets,
-    member caps, `null_k`, `generate_heatmaps`, reference template, the
-    scene drop policy (`max_scenes`, recorded since 2026-09-25 — a run
-    that dropped nothing can now prove it), warnings) and the layout
+    member caps, `null_k`, `generate_heatmaps`, reference template,
+    `scene_members_per_type`, warnings) and the layout
     description.
 *   **`overview.csv`**: Queried type × dataset pair: the best target-type
     mean score, the winning target type, and the pair's baseline p95.
@@ -587,6 +588,9 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`pathfinding_provenance.csv`**: One complete pathfinding provenance row per dataset and requested threshold. `threshold_scope` distinguishes scalar rows from query cells. `applied_threshold` is the canonical equivalent Min Synapse Count; `tau` is the StrongestFirst landing/collapse bound; `edge_weight_floor` is w0, `edge_budget_landing` is w1, `strongest_dropped_bottleneck` is w2, and `strongest_retained_bottleneck` is W*. In combination mode, rows also carry the stable query identity.
 *   **`threshold_combinations.csv`**: Canonical cross-dataset threshold-query manifest. One row per `query_id` and dataset, with `query_label`, `threshold_mode`, `requested_threshold`, the raw-run key, applied-threshold source, StrongestFirst budget/tau, Edge Budget and `w0`/`w1`, `w2`, `W*`, `paths_complete`, skip/alias state, and path/comparison mode. In standard mode each row is a same-N query; in advanced mode each row is an explicit dataset-column combination. The manifest is the join key for all combination exports.
 *   **`untyped_dropped_records.csv`**: Edges removed by the comparison-level **Drop Untyped Neurons** filter (written only when rows were dropped). Comparison runs standardize type labels first and filter post label-mapping here, while the per-dataset `FindNeuronConnection` runs execute with `drop_untyped=False` so only the comparison-level filter fires. Same shape as the pathfinding file (Section 1), plus `untyped_side` (`pre` | `post` | `pre+post`); combination-mode rows also include the query IDs that reuse the raw run, `;`-joined in `query_id`/`query_label` when one threshold cell serves several rows (for example `threshold=3;aligned_density=2.779`); the `[untyped dropped]` line in `user_warning_notes.txt` carries that same string, so a note can be read straight back to its rows.
+*   **`conserved_paths/`**: Network graphs of hemisphere-conserved connections per threshold (`conserved_network_*` HTML pages; written when the Conserved Hemisphere analysis runs) — the per-threshold sibling of `conserved_reciprocal_graph/`.
+*   **`type_resolution_topology.json`**: Machine-readable record of the type-resolution topology the union resolver used across datasets (merge-policy decisions: anchors, residuals, fan-ins).
+*   **`comparison_report_used_data/type_appearance_order.csv`**: The order in which types first appear in the comparison tables — the canonical ordering the report's tables and heatmaps follow.
 
 #### Visualizations (`comparison_visualizations/`)
 *   **`edge_heatmap_{N}.png`**, **`path_heatmap_{N}.png`**, **`path_counts.png`**: Standard static heatmaps/counts per threshold. Combination mode uses `edge_heatmap_query_{query_id}.png`, `path_heatmap_query_{query_id}.png`, and query-annotated CSVs for every query.
@@ -665,8 +669,8 @@ custom groups (same rule the morphology comparison applies).
 *   **`results/similarity_{direction}_{metric}.csv`**: Type-level N×N similarity matrices
 *   **`results/bodyid_similarity_{metric}_{direction}.csv`**: BodyId-to-bodyId comparisons — rows/columns read as `{bodyId}_{instance}` (NeuPrint-style datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC); the resolved comparison type is the fallback when the neuron table has no metadata
 *   **`results/type_avg_bodyid_similarity_{metric}_{direction}.csv`**: Type similarities averaged from bodyId pairs
-*   **`visualization/heatmap_intra_{direction}_{metric}.html`** and **`visualization/heatmap_intra_type_avg_{direction}_{metric}.html`**: Interactive heatmaps
-*   Metrics: `jaccard`, `weighted_jaccard`, `cosine`, `rank_corr`, `rank_union`; directions: `upstream`, `downstream`, `overall` (both directions)
+*   **`visualization/heatmap_intra_{direction}_{metric}.html`**, **`visualization/heatmap_intra_type_avg_{direction}_{metric}.html`** and **`visualization/heatmap_intra_bodyid_{direction}_{metric}.html`**: Interactive heatmaps
+*   Metrics: `jaccard`, `weighted_jaccard`, `cosine`, `rank_corr`, `rank_corr_union`; directions: `upstream`, `downstream`, `overall` (both directions)
 
 #### Cross-Dataset Results (`cross_dataset/`)
 *   **`mapping_summary.csv`**: Resolved type names per dataset with same-name flags — columns `anchor`, one column per queried dataset, `same name`
@@ -1232,11 +1236,14 @@ and no other dataset's agreement is joined into this mode's pool.
     `rival_has_own_clean_pair`, votes and rival populations. Rendered
     in the report's Suspects tab; never merged into the validation
     counts, fills or dedup.
-*   **`report.html`**: the per-run report — headline + the three
-    coverage levels (L1 claim / L2 provenance / L3 validation),
-    branches (⟡ marks same-name-first selections), targets, fills,
-    out-map expansion, backward source status, suspects verification
-    (opt-in runs), morphology record, scenes, and the file index; a
+*   **`report.html`**: the per-run report — **fourteen tabs**: headline +
+    the three coverage levels (L1 claim / L2 provenance / L3 validation)
+    plus the disclosure-evidence card, branches (⟡ marks same-name-first
+    selections), targets, fills, reciprocal (stage-5d reverse evidence),
+    out-map expansion, backward source status, homolog · forward and
+    homolog · backward (per-bodyId morph match sheets), suspects verification
+    (opt-in runs), morphology record, pooling (pooling runs), scenes, the
+    log, and the file index; a
     same-name-first & multivalue accounting card renders when the run
     has such content; the **Scenes** tab also prints the palette the run
     actually wore (one chip per category, each recolored bin naming the
