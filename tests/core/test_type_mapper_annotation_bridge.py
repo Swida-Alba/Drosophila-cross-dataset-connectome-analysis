@@ -715,6 +715,17 @@ class TestRealDataAcceptance:
         assert real_mapper._type_mappings[BANC_RELEASE]['DNge015'][
             FAFB_RELEASE] == 'DNge015'
 
+    def test_compact_export_row_order_deterministic(self, real_mapper,
+                                                    tmp_path):
+        # 2026-10-01 review: same-first-key rows previously kept the
+        # loader's set-driven insertion order, reordering 21k cells
+        # between processes.  Rows must now sort by EVERY dataset column.
+        out = tmp_path / 'det.csv'
+        real_mapper.export_mapping(str(out), only_different=False)
+        df = pd.read_csv(out, dtype=str).fillna('')
+        keys = df[['male-cns:v1.0', 'flywire_FAFB_v783']].values.tolist()
+        assert keys == sorted(keys), 'rows not in deterministic order'
+
     def test_reciprocal_glue_pair_survives_with_flag(self, real_mapper):
         # DNp17 <-> DNpe054 is real mutual correspondence (the reverse
         # leg runs through FAFB additional_type(s) 'DNp16/17'): kept and

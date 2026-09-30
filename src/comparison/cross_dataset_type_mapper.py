@@ -2824,7 +2824,11 @@ class CrossDatasetTypeMapper:
         curated winner keeps its provenance, a curated conflict stays
         fail-closed, and the lane's own vote conflicts are diagnostics in
         ``_banc_label_votes`` (surfaced via ``alignment_fallback_rows``),
-        never ``TypeMappingConflict`` records.
+        never ``TypeMappingConflict`` records.  The reverse
+        materialization additionally refuses tail claimants (2026-09-30):
+        a sole reverse candidate whose token votes are dominated >=10x by
+        another primary's gets no slot, with the refusal disclosed in
+        ``_bridge_provenance`` (``tail_claimant``).
         """
         import polars as pl
 
@@ -5267,8 +5271,11 @@ class CrossDatasetTypeMapper:
         df = pd.DataFrame(rows, columns=output_datasets
                           + ['mapping_origin', 'mapping_support'])
         if not df.empty:
-            # Sort by first column
-            df = df.sort_values(output_datasets[0])
+            # Deterministic row order across runs: sort by EVERY dataset
+            # column — the loader's set-driven insertion order otherwise
+            # reorders same-key rows between processes, defeating naive
+            # run-to-run diffs (found in the 2026-10-01 export review).
+            df = df.sort_values(output_datasets, kind='mergesort')
         df.to_csv(output_path, index=False)
         
         filter_parts = []
@@ -5372,8 +5379,15 @@ class CrossDatasetTypeMapper:
         if not rows:
             self._log("No conflicts to export (all filtered out)")
             return
-        
+
         df = pd.DataFrame(rows)
+        # Deterministic row order across runs (same rationale as
+        # export_mapping): the conflict list's append order follows the
+        # loader's set-driven iteration.
+        sort_cols = [c for c in ('source_dataset', 'source_type',
+                                 'target_dataset') if c in df.columns]
+        if sort_cols:
+            df = df.sort_values(sort_cols, kind='mergesort')
         df.to_csv(output_path, index=False)
         
         filter_msg = f" (filtered to result types)" if filter_types else " (complete)"
@@ -6725,10 +6739,12 @@ class CrossDatasetTypeMapper:
         including FlyWire primary types routed through their rows'
         additional Type(S) values, e.g. BANC type names into the male-cns
         crosswalk), and hub-transitive pairs; ambiguous splits return one
-        candidate chain per split target.  Chains that would depart a
-        target-namespace primary through BANC ``Alternative Cell Type(s)``
-        transitivity are suppressed unless the pair is reciprocated in the
-        reverse direction (then flagged ``reciprocal``).
+        candidate chain per split target.  On the FAFB↔BANC pairs (both
+        directions), chains that would depart a same-name-arrived
+        target-namespace primary through annotation transitivity
+        (``Alternative Cell Type(s)`` or ``additional_type(s)``) are
+        suppressed unless the pair is reciprocated in the reverse
+        direction (then flagged ``reciprocal``).
         """
         if not self._loaded:
             if not self.load():
