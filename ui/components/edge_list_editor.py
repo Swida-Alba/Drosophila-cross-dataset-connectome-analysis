@@ -220,12 +220,14 @@ if (!window.__drocatCellFocusGuard) {
       inp2.focus();
       if (inp2.tagName === 'BUTTON') return;
       if (!inp2.value && rec2.value) {
-        // Replay the wiped text only into the SAME logical row (the body
-        // slots stamp data-row-id): a purely positional restore after a
-        // row shift would commit it into whatever row now occupies the
-        // recorded index, and a deleted row restores nothing at all.
-        var sameRow = rec2.rowId != null ||
-          (Array.prototype.indexOf.call(tb.children, tr2) === rec2.rowIndex);
+        // Replay the wiped text only when the grid did NOT shift. Row ids
+        // are per-refresh INDICES, so after a shift the row now carrying
+        // the recorded id is a different logical row — replaying into it
+        // would commit the text server-side into the wrong row. The id
+        // lookup still targets data rows only and restores nothing when
+        // the recorded id fell out of range (a deleted row).
+        var sameRow = Array.prototype.indexOf.call(tb.children, tr2)
+          === rec2.rowIndex;
         if (sameRow) {
           inp2.value = rec2.value;
           inp2.dispatchEvent(new Event('input', { bubbles: true }));
@@ -254,12 +256,17 @@ if (!window.__drocatCellFocusGuard) {
 // focus the same column of the row below (no server round trip, so no remount
 // risk; on the last row it is a no-op). The cell templates call this AFTER
 // emitting their commit event. Shared with the Skeleton layer editor via the
-// window.drocatTableMove name.
-document.addEventListener('drocat-enter-move', function (ev) {
-  // Vue's production render proxy hides `window` from template expressions, so
-  // the cell templates dispatch this DOM event instead of calling the helper.
-  if (window.drocatTableMove) window.drocatTableMove(ev);
-});
+// window.drocatTableMove name. The registration is window-guarded: with the
+// per-editor injection flags, a page hosting BOTH editors executes both
+// scripts, and one Enter must dispatch exactly one move.
+if (!window.__drocatEnterMoveHooked) {
+  window.__drocatEnterMoveHooked = true;
+  document.addEventListener('drocat-enter-move', function (ev) {
+    // Vue's production render proxy hides `window` from template expressions, so
+    // the cell templates dispatch this DOM event instead of calling the helper.
+    if (window.drocatTableMove) window.drocatTableMove(ev);
+  });
+}
 if (!window.drocatTableMove) {
   window.drocatTableMove = function (ev) {
     var inp = ev && ev.target;

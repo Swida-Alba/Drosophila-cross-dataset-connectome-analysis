@@ -1406,12 +1406,23 @@ def test_second_render_recreates_the_autosave_timer(store_patch_for_component):
     assert first not in client.elements.values()
 
 
-def test_focus_guard_restore_is_keyed_to_the_row_id():
-    """The wiped-text replay must target the SAME logical row: the body
-    slot stamps data-row-id and the guard resolves the restore row by it,
-    so a rebuild that shifts rows can never commit the text into the row
-    that now occupies the recorded index."""
-    from ui.components.layer_style_editor import _BODY_SLOT, _SUGGESTION_JS
+def test_focus_guard_replay_requires_an_unshifted_grid():
+    """The wiped-text replay must never land in the wrong row. Row ids are
+    per-refresh INDICES, so the replay is gated on the resolved row still
+    sitting at the recorded position — after a shift, the row now carrying
+    the recorded id is a different logical row and nothing is replayed
+    (the id lookup still finds data rows only, and a deleted row restores
+    nothing). The Enter-move listener registration is window-guarded so a
+    page hosting both editors dispatches exactly one move per Enter."""
+    from ui.components.layer_style_editor import (
+        _BODY_SLOT, _COL_RESIZE_JS, _SUGGESTION_JS)
     assert ':data-row-id="props.row.id"' in _BODY_SLOT
     assert "tr.getAttribute('data-row-id')" in _SUGGESTION_JS
     assert 'tr[data-row-id="' in _SUGGESTION_JS
+    # replay gate: index-consistency required on BOTH lookup paths
+    assert "rec2.rowId != null ||" not in _SUGGESTION_JS
+    assert "Array.prototype.indexOf.call(tb.children, tr2)" in _SUGGESTION_JS
+    # the enter-move registration is window-guarded here (the layer
+    # editor carries it in _SUGGESTION_JS; the edge editor in its own
+    # _COL_RESIZE_JS — pinned in its own test file)
+    assert "__drocatEnterMoveHooked" in _SUGGESTION_JS

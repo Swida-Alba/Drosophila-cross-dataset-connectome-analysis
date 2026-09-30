@@ -926,10 +926,16 @@ def test_edge_editor_script_injects_under_its_own_flag(store_patch_for_component
     assert not hasattr(table_client, "_drocat_col_resize_added")
 
 
-def test_edge_editor_focus_guard_restore_is_keyed_to_the_row_id():
-    """The wiped-text replay must target the SAME logical row (the body
-    slot stamps data-row-id; the guard resolves the restore row by it)."""
+def test_edge_editor_focus_guard_replay_requires_an_unshifted_grid():
+    """Same invariant as the layer editor: row ids are per-refresh indices,
+    so the replay gate requires the resolved row to still sit at the
+    recorded position; a shifted grid replays nothing. The Enter-move
+    listener registration is window-guarded (one move per Enter even when
+    both editors' scripts execute on one page)."""
     from ui.components.edge_list_editor import _COL_RESIZE_JS, _EDGE_BODY_SLOT
     assert ':data-row-id="props.row.id"' in _EDGE_BODY_SLOT
     assert "tr.getAttribute('data-row-id')" in _COL_RESIZE_JS
     assert 'tr[data-row-id="' in _COL_RESIZE_JS
+    assert "rec2.rowId != null ||" not in _COL_RESIZE_JS
+    assert "Array.prototype.indexOf.call(tb.children, tr2)" in _COL_RESIZE_JS
+    assert "__drocatEnterMoveHooked" in _COL_RESIZE_JS
