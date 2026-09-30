@@ -1412,15 +1412,21 @@ def test_get_available_types(profiler, fake_repo, monkeypatch):
 # Round-7 cache build + homolog finders (loose/strict/hybrid)
 # ---------------------------------------------------------------------------
 
-def test_build_connectivity_profile_cache_config_bug(profiler):
-    # BUG (reported): build_connectivity_profile_cache rebuilds ProfilerConfig
-    # with cache_dir/verbose kwargs that ProfilerConfig does not accept, and
-    # also relies on get_all_types which does not exist. Cover the entry
-    # lines and document the failure instead of modifying source.
-    profiler.config.cache_dir = str(profiler.cache_dir)
-    profiler.config.verbose = False
-    with pytest.raises(TypeError):
-        profiler.build_connectivity_profile_cache(DS, neuron_types=['T1'])
+def test_build_connectivity_profile_cache_config_bug(profiler, monkeypatch):
+    # FIXED (2026-09-30 code audit): the config rebuild dropped the
+    # invalid cache_dir/verbose kwargs and get_all_types became list_types,
+    # so the documented entry point now runs instead of raising TypeError.
+    # Pin that the rebuild succeeds and the type listing routes through
+    # list_types.
+    listed = []
+    monkeypatch.setattr(profiler, 'list_types',
+                        lambda pattern=None, dataset=None: listed.append(dataset) or ['T1'])
+    monkeypatch.setattr(
+        profiler, 'get_profile',
+        lambda n, d, force_refresh=False: _profile(n))
+    out = profiler.build_connectivity_profile_cache(DS, neuron_types=None)
+    assert listed == [DS]
+    assert set(out) == {'T1'}
 
 
 def test_find_homologs_loose(profiler, monkeypatch):
@@ -1431,8 +1437,8 @@ def test_find_homologs_loose(profiler, monkeypatch):
     monkeypatch.setattr(
         profiler, 'get_profile',
         lambda n, d, force_refresh=False: profs[(n, d)])
-    monkeypatch.setattr(profiler, 'get_all_types',
-                        lambda d: ['T1', 'T2'], raising=False)
+    monkeypatch.setattr(profiler, 'list_types',
+                        lambda pattern=None, dataset=None: ['T1', 'T2'])
     df = profiler.find_homologs_loose('Q', 'src_ds', 'tgt_ds', top_n=5)
     assert not df.empty
     assert df.iloc[0]['target_type'] == 'T1'
@@ -1442,7 +1448,8 @@ def test_find_homologs_loose(profiler, monkeypatch):
         'Q', 'src_ds', 'tgt_ds', direction='upstream', use_ranks=False)
     assert not df_w.empty
     # no candidate types -> empty
-    monkeypatch.setattr(profiler, 'get_all_types', lambda d: [], raising=False)
+    monkeypatch.setattr(profiler, 'list_types',
+                        lambda pattern=None, dataset=None: [])
     assert profiler.find_homologs_loose('Q', 'src_ds', 'tgt_ds').empty
 
 
@@ -1456,8 +1463,8 @@ def test_find_homologs_strict(profiler, monkeypatch):
     monkeypatch.setattr(
         profiler, 'get_profile',
         lambda n, d, force_refresh=False: profs[(n, d)])
-    monkeypatch.setattr(profiler, 'get_all_types',
-                        lambda d: ['T1', 'T2'], raising=False)
+    monkeypatch.setattr(profiler, 'list_types',
+                        lambda pattern=None, dataset=None: ['T1', 'T2'])
     df = profiler.find_homologs_strict(
         'Q', 'src_ds', 'tgt_ds', top_n=5, min_common_partners=3)
     assert len(df) == 1
@@ -1471,7 +1478,8 @@ def test_find_homologs_strict(profiler, monkeypatch):
         'Q', 'src_ds', 'tgt_ds', min_common_partners=10)
     assert empty.empty
     # no target types -> empty
-    monkeypatch.setattr(profiler, 'get_all_types', lambda d: [], raising=False)
+    monkeypatch.setattr(profiler, 'list_types',
+                        lambda pattern=None, dataset=None: [])
     assert profiler.find_homologs_strict('Q', 'src_ds', 'tgt_ds').empty
 
 

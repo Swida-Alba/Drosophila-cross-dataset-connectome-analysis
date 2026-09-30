@@ -11433,10 +11433,11 @@ class FindNeuronConnection:
             top_m_type=top_m,
             expand_untyped_2hop=expand_2hop,
             use_cache=True,
-            verbose=self.verbose_mode != 'none'
         )
-        
-        profiler = ConnectivityProfiler(config)
+
+        # The first positional parameter is `datasets`, not `config` —
+        # passing the config positionally bound it to the dataset list.
+        profiler = ConnectivityProfiler(datasets=[self.dataset], config=config)
         
         # Build profiles
         profiles = profiler.build_connectivity_profile_cache(

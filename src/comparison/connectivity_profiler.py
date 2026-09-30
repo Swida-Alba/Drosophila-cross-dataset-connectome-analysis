@@ -1195,6 +1195,14 @@ class ConnectivityProfile:
             downstream_ranks=downstream_ranks,
             upstream_top_k=profiles[0].upstream_top_k,
             downstream_top_k=profiles[0].downstream_top_k,
+            # Provenance must reflect the MEMBERS, not the dataclass
+            # defaults: an aggregate claiming top_k_bodyid_used=20 built
+            # from k=5 members would pass the tier-1 cache gate and serve
+            # silently truncated partner sets.
+            top_k_bodyid_used=max(
+                (p.top_k_bodyid_used for p in profiles), default=0),
+            top_m_type_target=max(
+                (p.top_m_type_target for p in profiles), default=0),
             total_upstream_weight=total_upstream_weight,
             total_downstream_weight=total_downstream_weight,
             num_neurons_aggregated=len(profiles),
@@ -1844,12 +1852,12 @@ class ConnectivityProfiler:
             except ImportError:
                 df = pd.read_parquet(cache_path)
         except Exception as e:
-            # Corrupt parquet file - delete it so it can be regenerated
-            self._log(f"Warning: Corrupt cache parquet for {dataset}, removing: {e}")
-            try:
-                cache_path.unlink()
-            except Exception:
-                pass
+            # Corrupt parquet: quarantine it aside (the same policy the
+            # consolidation paths apply) instead of deleting — the file may
+            # hold consolidated rows that exist in no batch file, so
+            # destroying it on one bad read loses an expensive cache.
+            self._log(f"Warning: Corrupt cache parquet for {dataset}: {e}")
+            self._quarantine_unreadable_cache(cache_path, e)
             return None
         
         # Cache in memory
@@ -2326,14 +2334,17 @@ class ConnectivityProfiler:
         load times.
         
         Args:
-            dataset: Dataset to consolidate. If None, consolidates all datasets.
+            dataset: Dataset to consolidate. If None, consolidates the
+                datasets already loaded into memory THIS SESSION (batch
+                dirs of never-loaded datasets are skipped — pass each
+                dataset explicitly to consolidate those).
         """
         if dataset:
             count = self._consolidate_profile_batch_files(dataset)
             if count > 0:
                 self._log(f"Consolidated {count} profiles for {dataset}")
         else:
-            # Consolidate all datasets
+            # Consolidate the session's loaded datasets
             for ds in list(self._disk_cache_df.keys()):
                 count = self._consolidate_profile_batch_files(ds)
                 if count > 0:
@@ -5213,7 +5224,9 @@ class ConnectivityProfiler:
         """
         self._log(f"Building connectivity profile cache for {dataset}...")
         
-        # Update config for this operation
+        # Update config for this operation (ProfilerConfig has no
+        # cache_dir/verbose fields — passing them raised TypeError on
+        # every call of this documented entry point)
         original_config = self.config
         self.config = ProfilerConfig(
             top_k_bodyid=top_k_bodyid,
@@ -5222,13 +5235,11 @@ class ConnectivityProfiler:
             top_k_2hop=self.config.top_k_2hop,
             use_bodyid_for_intra=self.config.use_bodyid_for_intra,
             use_cache=True,
-            cache_dir=original_config.cache_dir or Path("cache"),
-            verbose=original_config.verbose,
         )
-        
+
         # Get neuron types if not specified
         if neuron_types is None:
-            neuron_types = self.get_all_types(dataset)
+            neuron_types = self.list_types(dataset=dataset)
             if neuron_types is None:
                 self._log(f"Could not retrieve types for {dataset}")
                 self.config = original_config
@@ -5267,11 +5278,17 @@ class ConnectivityProfiler:
                         profiles[neuron_type] = cached
                         continue
                 
-                # Temporarily disable per-profile cache save
+                # Temporarily disable per-profile cache save; restored in
+                # finally — a swallowed profile failure used to leave
+                # use_cache False for every remaining profile AND the final
+                # batch flush, silently writing nothing to disk.
                 self.config.use_cache = False
-                profile = self.get_profile(neuron_type, dataset, force_refresh=True)
-                self.config.use_cache = save_per_profile
-                
+                try:
+                    profile = self.get_profile(
+                        neuron_type, dataset, force_refresh=True)
+                finally:
+                    self.config.use_cache = save_per_profile
+
                 profiles[neuron_type] = profile
                 batch_profiles[neuron_type] = profile
                 
@@ -5351,7 +5368,7 @@ class ConnectivityProfiler:
         query_profile = self.get_profile(query_type, query_dataset)
         
         # Get all types in target dataset
-        target_types = self.get_all_types(target_dataset)
+        target_types = self.list_types(dataset=target_dataset)
         if not target_types:
             self._log(f"No types found in {target_dataset}")
             return pd.DataFrame()
@@ -5514,7 +5531,7 @@ class ConnectivityProfiler:
         query_profile = self.get_profile(query_type, query_dataset)
         
         # Get all types in target dataset
-        target_types = self.get_all_types(target_dataset)
+        target_types = self.list_types(dataset=target_dataset)
         if not target_types:
             self._log(f"No types found in {target_dataset}")
             return pd.DataFrame()

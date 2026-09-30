@@ -12140,8 +12140,6 @@ class ConnectivityProfileComparer:
             }
         
         return all_matrices
-        
-        return all_matrices
     
     def _compute_bodyid_similarity_matrices(
         self,

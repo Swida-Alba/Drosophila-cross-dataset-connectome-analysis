@@ -1796,6 +1796,12 @@ class ComparisonAnalyzer:
         self._mapping_status_counts = {}
         self._conflicted_merge_types = {}
         self._type_coverage_cache = None
+        # Re-finalizing the same cells on a reused analyzer used to
+        # append the same untyped-drop rows twice into the exported CSV
+        # while the stats dict was overwritten, so the CSV and the
+        # [untyped dropped] note counts disagreed.
+        self._untyped_dropped_records = []
+        self._untyped_drop_stats = {}
 
     def run_all_analyses(self, skip_existing: bool = True) -> Dict[str, Dict[int, pd.DataFrame]]:
         """
@@ -4831,6 +4837,11 @@ class ComparisonAnalyzer:
                     except OSError as exc:
                         self._log(f"Could not remove the stale pair: {exc}",
                                   'always')
+                # A definitive mismatch must not fall through to the
+                # SAME folder's legacy files (paths.csv, connection_info_*)
+                # — none of those are fingerprint-checked, so the previous
+                # query's edges came back as this run's raw_results.
+                return None
             else:
                 try:
                     df = self._read_csv(filepath)
@@ -5021,8 +5032,8 @@ class ComparisonAnalyzer:
                 hemi_aware=self.parameters.separate_hemispheres,
             )
         else:
-            # Generate comprehensive summary. Pass label_mapper=None because
-            # raw_results are already mapped.
+            # Generate comprehensive summary through the policy mapper
+            # lane (raw_results are NOT pre-mapped; the mapper runs here).
             merge_policy = self._merge_policy_or_none()
             policy_label_mapper = self._policy_label_mapper()
             summary = self.metrics.generate_comparison_summary(
@@ -5139,7 +5150,8 @@ class ComparisonAnalyzer:
             from .type_resolver import get_mapper_snapshot
             self._mapper_snapshot = get_mapper_snapshot(type_mapper)
         
-        # Pass label_mapper=None because raw_results are already mapped in run_path_analysis/run_edge_analysis
+        # Run through the policy mapper lane (raw_results are NOT
+        # pre-mapped; the mapper runs here).
         aligned = self.metrics._align_results_at_threshold(
             self.raw_results,
             dataset_names,
@@ -5297,7 +5309,8 @@ class ComparisonAnalyzer:
                 if original_weights:
                     unconserved_edges.append(edge_key)
                     unconserved_reasons.append(f"Missing counterpart: {counterpart}")
-                aligned.loc[edge_key, dataset_names] = 0
+                aligned.loc[edge_key, [ds for ds in dataset_names
+                                       if ds in aligned.columns]] = 0
                 continue
 
             for ds in dataset_names:
@@ -9259,8 +9272,10 @@ class ComparisonAnalyzer:
             for dataset in dataset_names:
                 safe_name = self.parameters._sanitize_name(dataset)
                 
-                # Find path data file
-                dataset_output_path = self.parameters.get_dataset_output_path(dataset, threshold)
+                # Find path data file (disk-aware: honors applied-grammar
+                # folder renames in a fresh process, like every other path
+                # reader)
+                dataset_output_path = self._resolve_dataset_output_path(dataset, threshold)
                 
                 path_files_to_try = [
                     os.path.join(dataset_output_path, f"minsyn_{threshold}_data_original_paths.csv"),
@@ -9734,8 +9749,9 @@ class ComparisonAnalyzer:
             if dataset_threshold is None:
                 continue
             
-            # Find path data file: minsyn_X_data_original_paths.csv or {source}_to_{target}_allpaths_type.csv
-            dataset_output_path = self.parameters.get_dataset_output_path(
+            # Find path data file: minsyn_X_data_original_paths.csv or
+            # {source}_to_{target}_allpaths_type.csv (disk-aware resolution)
+            dataset_output_path = self._resolve_dataset_output_path(
                 dataset, dataset_threshold)
             
             # Try multiple path file patterns
@@ -11617,7 +11633,6 @@ class ComparisonAnalyzer:
 
         # Pairwise comparisons
         pairwise_records: List[Dict[str, Any]] = []
-        matrix_store: Dict[str, Dict[str, float]] = {t: {} for t in neuron_types}
 
         for ds_a, ds_b in combinations(dataset_names, 2):
             pair_label = f"{ds_a} vs {ds_b}"
@@ -11663,9 +11678,10 @@ class ComparisonAnalyzer:
                 'avg_jaccard': 'jaccard', 'jaccard': 'jaccard'
             }
             
-            # Initialize stores for each metric if not exists
-            if not hasattr(self, '_matrix_stores'):
-                self._matrix_stores = {m: {t: {} for t in neuron_types} for m in set(metric_map.values())}
+            # Fresh stores per call: a second invocation with a different
+            # type list used to keep the first call's types and pair
+            # values, leaking them into the matrices and the summary.
+            self._matrix_stores = {m: {t: {} for t in neuron_types} for m in set(metric_map.values())}
 
             found_any = False
             for col, canonical in metric_map.items():
