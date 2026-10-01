@@ -42,8 +42,15 @@ Default is Python 3.11 (matplotlib 3.10.0 requires >= 3.10; validated through
   then set `envs."4.5.0"` to that env name.
 - Keep the interpreter's Python within 3.10-3.11; `verify_install.py` rejects
   other versions.
-- Do not use the system Python (non-conda) for the UI — the pinned dependency set
-  is only reproducible in a clean conda env.
+- **Validated conda-less venv path** (macOS arm64, 2026-10-01, python.org/uv
+  3.11.15): `python3.11 -m venv .venv` then, with `PYTHONNOUSERSITE=1`,
+  `.venv/bin/pip install -r requirements.txt -r ui/requirements.txt -e .`
+  — BOTH requirement files are required (`ui/requirements.txt` carries
+  nicegui/pydantic/Jinja2) — then `.venv/bin/python
+  skills/drocat-install/scripts/verify_install.py --project .` (green),
+  `pip check` (clean), and `ui/app.py` launches from the venv directly. Only
+  `gevent` builds from source on arm64. The venv python is a symlink;
+  `verify_install.py` intentionally does not resolve it (fixed 2026-10-01).
 
 ## Custom repository location / moving the project
 
