@@ -47,7 +47,8 @@ from ..components.palette_picker import (
     notify_empty_custom_palettes,
 )
 from ..components.edge_list_editor import edge_list_editor
-from ..dataset_service import is_banc_dataset
+from ..dataset_service import is_banc_dataset, is_fafb_dataset
+from ..codex_pull import codex_puller
 from .. import layer_style_store
 from visualization_options import default_skeleton_tab_simplification
 from ..roi_options import (
@@ -202,6 +203,22 @@ def banc_synapse_warning(dataset: str, view: str):
         "datasets/<dataset>/downloads/ (resumable). The BANC release provides "
         "only PRE-synaptic site coordinates, so markers are drawn at "
         "pre-sites (scatter) regardless of the selected shape."
+    )
+
+
+def fafb_synapse_warning(dataset: str, view: str):
+    """Warning when FAFB synapse rendering is on without the local table."""
+    import codex_downloader
+
+    if not is_fafb_dataset(str(dataset)) or view == "skip":
+        return None
+    if codex_downloader.synapse_table_ready(str(dataset)):
+        return None
+    return (
+        "FAFB synapse markers need the synapse table (2.7 GB, one-time): "
+        "download it here via the amber notice above the run controls (or "
+        "Settings → FAFB Data Downloads, level 2 · Synapses) with a FlyWire "
+        "Codex token. This run draws skeletons without synapse markers."
     )
 
 
@@ -781,7 +798,8 @@ def create_skeleton_tab():
 
             synapse_view_mode.on_value_change(
                 lambda _e: (_sync_synapse_view_mode(),
-                            _refresh_banc_note_from_view()))
+                            _refresh_banc_note_from_view(),
+                            _refresh_fafb_synapse_note()))
             skeleton_mode.on_value_change(lambda _e: _sync_shape_defaults())
             synapse_shape.on_value_change(lambda _e: _sync_synapse_size_default())
             pre_post_shape.on_value_change(lambda _e: _sync_synapse_size_default())
@@ -1097,6 +1115,73 @@ def create_skeleton_tab():
             "pre-synaptic site coordinates — markers are drawn at pre-sites."
         ).classes("text-caption text-amber-8").set_visibility(False)
 
+        _fafb_synapse_note = ui.label("").classes(
+            "text-caption text-amber-8").set_visibility(False)
+        _fafb_synapse_btn = ui.button(
+            "Download Synapse Table (2.7 GB, one-time)", icon="cloud_download",
+            color="secondary").props("outline").classes("text-caption")
+        _fafb_synapse_btn.set_visibility(False)
+
+        def _fafb_synapse_missing() -> bool:
+            import codex_downloader
+            return (
+                is_fafb_dataset(str(dataset.value))
+                and synapse_view_mode.value != "skip"
+                and not codex_downloader.synapse_table_ready(
+                    str(dataset.value)))
+
+        def _refresh_fafb_synapse_note():
+            if codex_puller.running:
+                state = codex_puller.state
+                if state.get("total"):
+                    _fafb_synapse_note.text = (
+                        f"⬇️ FlyWire Codex download: {state['info']} "
+                        f"({state['current'] / state['total'] * 100:.1f}%)")
+                else:
+                    _fafb_synapse_note.text = (
+                        f"⬇️ FlyWire Codex download: {state['info']}")
+                _fafb_synapse_note.set_visibility(True)
+                _fafb_synapse_btn.set_visibility(False)
+                return
+            if _fafb_synapse_missing():
+                _fafb_synapse_note.text = (
+                    "⚠️ FAFB synapse markers are enabled but the local "
+                    "synapse table is missing (2.7 GB, one-time). Download "
+                    "it with a FlyWire Codex token, or markers will be "
+                    "skipped.")
+                _fafb_synapse_note.set_visibility(True)
+                import codex_downloader
+                _fafb_synapse_btn.set_visibility(
+                    bool(codex_downloader.get_codex_token()))
+            else:
+                _fafb_synapse_note.set_visibility(False)
+                _fafb_synapse_btn.set_visibility(False)
+
+        def _start_fafb_synapse_download():
+            import codex_downloader
+            if codex_puller.running:
+                ui.notify("A Codex download is already running",
+                          type="warning")
+                return
+            if not codex_downloader.get_codex_token():
+                ui.notify(
+                    "Save a FlyWire Codex token first "
+                    "(Settings → API Tokens)", type="warning")
+                return
+            ok = codex_puller.start(
+                [codex_downloader.LEVEL_SYNAPSE], run_converter=True)
+            if ok:
+                ui.notify(
+                    "Downloading the FAFB synapse table (2.7 GB); the "
+                    "notice above shows progress", type="info")
+                _refresh_fafb_synapse_note()
+            else:
+                ui.notify("A Codex download is already running",
+                          type="warning")
+
+        _fafb_synapse_btn.on_click(_start_fafb_synapse_download)
+        ui.timer(2.0, _refresh_fafb_synapse_note)
+
         def _sync_banc_synapse_default():
             # Keep the BANC synapse default (skip) in sync with the dataset.
             if is_banc_dataset(dataset.value):
@@ -1126,6 +1211,7 @@ def create_skeleton_tab():
         dataset.on_value_change(lambda _e: (
             _sync_banc_synapse_default(),
             _refresh_banc_note_from_view(),
+            _refresh_fafb_synapse_note(),
         ))
         banc_normalize_radius.on_value_change(
             lambda _e: banc_radius_target_nm.set_enabled(
@@ -1319,7 +1405,8 @@ def create_skeleton_tab():
 
         # BANC + synapses: explicit warning before the run (the per-synapse
         # table downloads once; only pre-site markers are drawn).
-        warning = banc_synapse_warning(dataset.value, view)
+        warning = banc_synapse_warning(dataset.value, view) \
+            or fafb_synapse_warning(dataset.value, view)
         if warning:
             push_banner(warning, icon="warning")
 
