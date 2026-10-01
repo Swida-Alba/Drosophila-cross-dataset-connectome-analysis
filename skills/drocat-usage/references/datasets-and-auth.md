@@ -25,6 +25,12 @@ Do not substitute a similarly named dataset silently.
 The raw Codex downloads belong under `datasets/<dataset>/downloads/`, not in
 the dataset root and not under generated output names.
 
+FAFB downloads can be fetched automatically: save a FlyWire Codex token
+(`FLYWIRE_CODEX_TOKEN`, Settings → API Tokens) and use Settings → FAFB Data
+Downloads (levels: necessary data / synapses / skeleton bundle). Skeletons
+also fetch lazily per neuron from the Codex server during visualization,
+so the bundle is optional.
+
 - FAFB v783 requires `classification.csv.gz` and one supported connection file:
   `connections_princeton_no_threshold.csv.gz` (preferred),
   `connections_princeton.csv.gz`, or `connections.csv.gz`.

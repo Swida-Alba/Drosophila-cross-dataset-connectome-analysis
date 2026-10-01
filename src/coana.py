@@ -7598,7 +7598,7 @@ class FindNeuronConnection:
                          "(public release bucket).",
                          level='full')
                  else:
-                     self._vprint("  Please download the neuron table from: https://codex.flywire.ai/api/download?dataset=fafb", level='full')
+                     self._vprint("  Please download the neuron table from: https://codex.flywire.ai/api/download?dataset=fafb (or Settings > FAFB Data Downloads, level 1)", level='full')
                  self._vprint(f"  Save the file to: {dataset_path}", level='full')
                  self._vprint("  Skipping API fetch to avoid timeouts/limits.", level='full')
                  return pd.DataFrame(columns=columns if columns else [])
@@ -7764,7 +7764,7 @@ class FindNeuronConnection:
                          "(public release bucket).",
                          level='full')
                  else:
-                     self._vprint("  Please download the neuron table from: https://codex.flywire.ai/api/download?dataset=fafb", level='full')
+                     self._vprint("  Please download the neuron table from: https://codex.flywire.ai/api/download?dataset=fafb (or Settings > FAFB Data Downloads, level 1)", level='full')
                  self._vprint(f"  Save the file to: {dataset_path}", level='full')
                  self._vprint("  Skipping API fetch to avoid timeouts/limits.", level='full')
                  return pd.DataFrame(columns=columns if columns else [])
@@ -8913,7 +8913,7 @@ class FindNeuronConnection:
             # Check if we should enforce local-only for FAFB/FlyWire
             if is_local_connectome_dataset(self.dataset):
                 self._vprint(f"\n  ⚠️  Local connection data not found for dataset '{self.dataset}'.", level='full')
-                self._vprint("  Please download the synapse table from: https://codex.flywire.ai/api/download?dataset=fafb", level='full')
+                self._vprint("  Please download the synapse table from: https://codex.flywire.ai/api/download?dataset=fafb (or Settings > FAFB Data Downloads, level 2)", level='full')
                 self._vprint(f"  Save the file to: datasets/{self.dataset.replace(':', '_')}", level='full') 
                 self._vprint("  Skipping API fetch to avoid timeouts/limits.", level='full')
                 return None

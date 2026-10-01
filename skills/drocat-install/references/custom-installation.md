@@ -76,7 +76,9 @@ python skills/drocat-install/scripts/verify_install.py --project . --require-tok
 ```
 
 - Tokens: `NEUPRINT_TOKEN` from <https://neuprint.janelia.org/account>;
-  `CAVE_TOKEN` (FlyWire only) from <https://codex.flywire.ai/auth_token>. Ask the
+  `CAVE_TOKEN` (FlyWire only) from <https://codex.flywire.ai/auth_token>;
+  `FLYWIRE_CODEX_TOKEN` (optional; automatic FAFB downloads and lazy
+  skeleton fetching) from <https://codex.flywire.ai/account>. Ask the
   user; never invent or reuse tokens without permission.
 
 ## Headless / server install

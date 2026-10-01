@@ -8,7 +8,13 @@ We provide a dedicated script to prepare the FAFB data for analysis. This script
 
 ### 1. Download Data
 
-Download the following files from [FlyWire Codex Downloads](https://codex.flywire.ai/api/download?dataset=fafb):
+**Automatic (recommended):** save a FlyWire Codex API token in *Settings →
+API Tokens*, then use *Settings → FAFB Data Downloads* to fetch everything
+in three levels (necessary data / synapses / skeleton bundle) and run the
+converter. Skeletons also fetch lazily per neuron from the Codex server
+during visualization, so the 13 GB bundle is optional.
+
+The manual path — download the following files from [FlyWire Codex Downloads](https://codex.flywire.ai/api/download?dataset=fafb):
 
 **Required for local connection analysis:**
 *   `classification.csv.gz` (Neuron Classification) - **~1 MB**

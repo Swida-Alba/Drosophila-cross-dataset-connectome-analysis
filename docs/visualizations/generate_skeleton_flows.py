@@ -173,7 +173,7 @@ fafb = skeleton_flow(
         ('pill', "FAFB body IDs (layer)"),
         ('D', ['raw skeleton cache hit?', '(raw_skeletons/*.swc.zst)'], 'raw level',
          ('Cache used', 'skip bundle; still check extrusion')),
-        ('P', 'Healed bundle → warm raw cache', 'sk_lod1_783_healed.zst (541 MB)', False),
+        ('P', 'Healed bundle → raw cache (lazy)', 'sk_lod1_783_healed.zip (~13.8 GB)', False),
         ('P', 'Extrusion check → CAVE replacement', 'cave_skeletons/ hit or wavefront tree', False),
         ('P', 'Fast prep: nodes → 25% retention', 'topology floor: roots · branch · terminals', True),
         ('P', 'Tube mesh (6 pts)', '', False),

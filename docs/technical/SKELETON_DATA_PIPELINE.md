@@ -62,9 +62,16 @@ TreeNeurons. Per-body resolution order:
    `cache/<ds>/skeletons/cave_skeletons/`; `local_fallback` bodies from
    `cave_skeletons/` first, then `cache/<ds>/skeletons/extrusion_fixes/`.
 2. Shared raw-skeleton cache (`cache/<ds>/skeletons/raw_skeletons/*.swc.zst`;
-   legacy frozen reads — the pipeline no longer writes new entries there).
+   legacy frozen reads, plus the lazy FlyWire Codex fetch writes below).
 3. Local healed skeleton zip `datasets/<ds>/sk_lod1_783_healed.zip`
-   (~13.8 GB, the only skeleton source; served directly, read-only).
+   (~13.8 GB; the canonical local source, served directly, read-only).
+3b. Lazy FlyWire Codex fetch for bodies still missing after the zip: one
+   ranged GET per neuron against the remote `skeleton_swc_files` bundle
+   (a one-time ~10.9 MB central-directory index is cached under
+   `cache/<ds>/skeletons/`); the healed SWC is persisted into the shared
+   raw cache with the `# DROCAT source: fafb_codex_healed` header.
+   Gated on the `flywire_codex` token (Settings → API Tokens); silent
+   no-op without it. Without a local zip this is the primary source.
 4. Extrusion check on the tree (one-time per body; parquet-cached in
    `extrusion_check_results.parquet` — only ids without a recorded row pay
    the detector cost). Flagged or missing bodies are replaced by the

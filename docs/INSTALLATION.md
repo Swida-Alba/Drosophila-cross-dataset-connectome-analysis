@@ -123,9 +123,14 @@ developer-specific file. Create it manually when you need local overrides:
 itself always ships with the repository.
 
 - NeuPrint token: <https://neuprint.janelia.org/account>
-- CAVE token: <https://codex.flywire.ai/auth_token>
+- CAVE token (contributor-gated; only for live CAVE fetching): <https://codex.flywire.ai/auth_token>
+- FlyWire Codex token (optional; enables automatic FAFB downloads and lazy
+  skeleton fetching): sign in at <https://codex.flywire.ai/api/download?dataset=fafb>
+  and copy the token from <https://codex.flywire.ai/account>
 - FlyWire FAFB also needs its local data files in
-  `datasets/flywire_FAFB_v783/downloads/` — see the Settings tab guide.
+  `datasets/flywire_FAFB_v783/downloads/` — see the Settings tab guide; with
+  a FlyWire Codex token, Settings → FAFB Data Downloads fetches them
+  automatically (skeletons also fetch lazily per neuron).
   BANC (`banc_v626`/`banc_v888`) needs no manual downloads: it auto-prepares
   from its public release bucket on first use (network only, no token).
 - Strict verification for a configured workstation:

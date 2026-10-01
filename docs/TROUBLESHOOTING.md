@@ -438,7 +438,9 @@ until a CAVE fetch succeeds.
 
 ### FAFB Dataset Setup
 
-FlyWire FAFB data requires manual download from the Codex website.
+FlyWire FAFB data is prepared either automatically (Settings → FAFB Data
+Downloads, after saving a FlyWire Codex token in Settings → API Tokens) or
+by manual download from the Codex website.
 
 **Symptom:**
 ```
@@ -449,6 +451,8 @@ CRITICAL ERROR: FAFB data preparation failed.
 **Solution:**
 
 1. **Download required files** from: https://codex.flywire.ai/api/download?dataset=fafb
+   (or run Settings → FAFB Data Downloads · level 1, which fetches the
+   required files plus the metadata enrichment below and runs the converter)
 
 2. **Save files to:** `datasets/flywire_FAFB_v783/downloads/`
 
@@ -457,13 +461,17 @@ CRITICAL ERROR: FAFB data preparation failed.
    | ------------------------------------------- | --------------------- | -------------------- |
    | `classification.csv.gz`                     | Neuron Classification | ✅ Yes                |
    | `connections_princeton_no_threshold.csv.gz` | Connectivity Data     | ✅ Yes                |
-   | `names.csv.gz`                              | Neuron Names          | ✅ Yes                |
-   | `coordinates.csv.gz`                        | Soma Coordinates      | ✅ Yes                |
-   | `neurons.csv.gz`                            | Neurotransmitters     | ✅ Yes                |
-   | `cell_stats.csv.gz`                         | Cell Statistics       | ✅ Yes                |
-   | `consolidated_cell_types.csv.gz`            | Cell Types            | ✅ Yes                |
+   | `names.csv.gz`                              | Neuron Names          | Recommended (optional) |
+   | `coordinates.csv.gz`                        | Soma Coordinates      | Recommended (optional) |
+   | `neurons.csv.gz`                            | Neurotransmitters     | Recommended (optional) |
+   | `cell_stats.csv.gz`                         | Cell Statistics       | Recommended (optional) |
+   | `consolidated_cell_types.csv.gz`            | Cell Types            | Recommended (optional) |
    | `fafb_v783_princeton_synapse_table.csv.gz`  | Synapse Coordinates   | For 3D visualization |
    | `sk_lod1_783_healed.zip`                    | Skeletons             | For 3D visualization |
+
+   The converter warns when the recommended metadata files are missing and
+   continues with incomplete neuron metadata; only the classification and
+   connectivity inputs are hard requirements.
 
 4. **Run the converter:**
    ```bash
@@ -514,6 +522,11 @@ Visualization might fail or be incomplete.
 1. Download `sk_lod1_783_healed.zip` from the Codex website
 2. Place in `datasets/flywire_FAFB_v783/` directory
 3. The file will be automatically detected on next run
+
+Alternatively, save a FlyWire Codex token (Settings → API Tokens):
+skeletons then fetch lazily per neuron from the Codex server during
+visualization, and Settings → FAFB Data Downloads · level 3 downloads the
+full bundle automatically.
 
 ---
 

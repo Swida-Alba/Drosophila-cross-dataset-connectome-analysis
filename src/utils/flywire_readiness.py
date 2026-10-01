@@ -69,6 +69,10 @@ def flywire_manual_skeleton_instruction(
         f"  1. Download {bundle} https://codex.flywire.ai/api/download?dataset={key}\n"
         f"  2. Save the download into {download_dir}\n"
         f"  3. Run the one-time converter: python src/{converter}.py\n"
+        "Alternatively, save a FlyWire Codex API token (Settings > API "
+        "Tokens) and use Settings > FAFB Data Downloads: skeletons fetch "
+        "lazily per neuron from the Codex server during visualization, or "
+        "the full bundle downloads as level 3.\n"
         "The converter moves the bundle into the dataset folder and builds "
         "the local tables; on-demand CAVE fetches for individual missing "
         "skeletons still work during visualization."
@@ -118,6 +122,12 @@ def print_download_instructions(
     print(f"Local tables for '{dataset_name}' were not found. DROCAT queries need the")
     print("raw FAFB downloads converted into local parquet tables first; this is a")
     print("ONE-TIME preparation step (re-runs reuse the converted tables):")
+    if key == "fafb":
+        print()
+        print("  Automatic alternative: save a FlyWire Codex API token")
+        print("  (Settings > API Tokens) and use Settings > FAFB Data")
+        print("  Downloads (levels: necessary data / synapses / skeleton")
+        print("  bundle).")
     print()
     print(f"  1. Download the required files from:")
     print(f"     https://codex.flywire.ai/api/download?dataset={key}")
@@ -329,6 +339,10 @@ def require_flywire_skeleton_access(
             "through the CAVE API."
         )
         log(
+            "Settings > FAFB Data Downloads (Skeleton bundle; needs the "
+            "FlyWire Codex token) automates the bundle download below."
+        )
+        log(
             "For repeatable/offline runs, download sk_lod1_783_healed.zip "
             "from https://codex.flywire.ai/api/download?dataset=fafb, place "
             f"it in datasets/{dataset_name}/downloads/, then run "
@@ -356,5 +370,11 @@ def require_flywire_skeleton_access(
         "Or configure CAVE_TOKEN in config.json (or the environment) "
         "using https://codex.flywire.ai/auth_token and rerun. The converted "
         "local neuron/connection tables are still required for FAFB queries."
+    )
+    log(
+        "A FlyWire Codex API token (Settings > API Tokens) also unblocks "
+        "skeletons: they fetch lazily per neuron from the Codex server "
+        "during visualization, and Settings > FAFB Data Downloads offers "
+        "the full bundle."
     )
     raise FlyWireSkeletonAccessError(message)

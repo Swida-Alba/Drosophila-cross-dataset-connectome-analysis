@@ -2,7 +2,9 @@
 
 This toolkit supports analysis of FAFB and standalone BANC datasets using
 separate **local-release workflows**. FAFB raw files come from the
-Codex/FlyWire portal and are converted from `datasets/<dataset>/downloads/`.
+Codex/FlyWire portal (automatically downloadable via Settings → FAFB Data
+Downloads once a FlyWire Codex token is saved) and are converted from
+`datasets/<dataset>/downloads/`.
 BANC metadata and connections are prepared on demand from its public release
 bucket, and BANC skeletons are fetched from that same bucket. FAFB alone has
 an optional CAVE API path for workflows that explicitly request remote
@@ -10,10 +12,16 @@ fetching; BANC never uses CAVE.
 
 ## 1. Data Preparation
 
-### FAFB: Manual local-release preparation
+### FAFB: local-release preparation
 
 FAFB raw files come from the Codex/FlyWire portal. See the [FAFB Integration
 Guide](FAFB_INTEGRATION.md) for the full file list.
+
+**Automatic path:** save a FlyWire Codex API token (Settings → API Tokens)
+and use Settings → FAFB Data Downloads — three levels (necessary data /
+synapses / skeleton bundle), resumable, with the converter run for you.
+Skeletons also fetch lazily per neuron from the Codex server during
+visualization. The manual steps below are the offline fallback.
 
 #### Step 1: Download FAFB data files
 
@@ -116,7 +124,9 @@ the metadata and connection tables from the public release bucket.
 
 ### Example: Visualizing Skeletons
 
-If you downloaded the `sk_lod1_783_healed.zip` file for FAFB, you can visualize 3D skeletons.
+If you downloaded the `sk_lod1_783_healed.zip` file for FAFB — or saved a
+FlyWire Codex token, in which case skeletons fetch lazily per neuron — you
+can visualize 3D skeletons.
 
 ```python
 from visualize_skeleton import VisualizeSkeleton
