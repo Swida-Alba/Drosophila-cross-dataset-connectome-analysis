@@ -123,7 +123,10 @@ developer-specific file. Create it manually when you need local overrides:
 itself always ships with the repository.
 
 - NeuPrint token: <https://neuprint.janelia.org/account>
-- CAVE token (contributor-gated; only for live CAVE fetching): <https://codex.flywire.ai/auth_token>
+- CAVE token (advanced, optional; live-CAVE fallback only — no download or
+  analysis needs it, and there is no Settings input for it): set
+  `tokens.cave` in `config.json` or the `CAVE_TOKEN` env var; issued at
+  <https://codex.flywire.ai/auth_token> (contributor-gated)
 - FlyWire Codex token (optional; enables automatic FAFB downloads and lazy
   skeleton fetching): sign in at <https://codex.flywire.ai/api/download?dataset=fafb>
   and copy the token from <https://codex.flywire.ai/account>

@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from utils.flywire_readiness import (  # noqa: E402
     FlyWireSkeletonAccessError,
-    _cave_token_from_config,
+    _configured_token_from_config,
     flywire_skeleton_readiness,
     print_download_instructions,
     require_flywire_skeleton_access,
@@ -94,6 +94,7 @@ def test_fafb_without_local_source_or_cave_token_is_blocked_with_instructions(
     tmp_path, monkeypatch
 ):
     monkeypatch.delenv("CAVE_TOKEN", raising=False)
+    monkeypatch.delenv("FLYWIRE_CODEX_TOKEN", raising=False)
     log = []
 
     with pytest.raises(FlyWireSkeletonAccessError, match="no local FAFB"):
@@ -160,7 +161,7 @@ def test_fafb_cave_token_from_config_json_wins_over_config_local(tmp_path, monke
         '{"tokens": {"cave": "local-cave-token"}}\n', encoding="utf-8"
     )
 
-    assert _cave_token_from_config(tmp_path) == "cfg-cave-token"
+    assert _configured_token_from_config(tmp_path, "cave") == "cfg-cave-token"
     status = flywire_skeleton_readiness(
         "flywire_FAFB_v783", project_root=tmp_path
     )
@@ -177,7 +178,7 @@ def test_fafb_cave_token_from_config_local_fills_empty_config_json(tmp_path, mon
         '{"tokens": {"cave": "local-cave-token"}}\n', encoding="utf-8"
     )
 
-    assert _cave_token_from_config(tmp_path) == "local-cave-token"
+    assert _configured_token_from_config(tmp_path, "cave") == "local-cave-token"
     status = flywire_skeleton_readiness(
         "flywire_FAFB_v783", project_root=tmp_path
     )
@@ -260,6 +261,7 @@ def test_skeleton_visualizer_banc_preparation_runs(tmp_path, capsys, monkeypatch
 
 def test_fafb_plot_guard_runs_before_skeleton_query(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("CAVE_TOKEN", raising=False)
+    monkeypatch.delenv("FLYWIRE_CODEX_TOKEN", raising=False)
     import FAFB_file_converter
 
     monkeypatch.setattr(
@@ -280,3 +282,37 @@ def test_fafb_plot_guard_runs_before_skeleton_query(tmp_path, monkeypatch, capsy
     text = capsys.readouterr().out
     assert "sk_lod1_783_healed.zip" in text
     assert "CAVE_TOKEN" in text
+
+
+def test_fafb_codex_token_enables_lazy_access(tmp_path, monkeypatch):
+    """Pristine tree + FlyWire Codex token: the guard accepts FAFB (lazy
+    per-neuron fetch) instead of raising before the resolver can run."""
+    monkeypatch.delenv("CAVE_TOKEN", raising=False)
+    monkeypatch.delenv("FLYWIRE_CODEX_TOKEN", raising=False)
+    (tmp_path / "config_local.json").write_text(
+        '{"tokens": {"flywire_codex": "codex-token"}}\n', encoding="utf-8")
+
+    status = flywire_skeleton_readiness(
+        "flywire_FAFB_v783", project_root=tmp_path)
+    assert status["flywire_codex"] is True
+    assert status["cave_token"] is False
+    assert status["local_skeletons"] is False
+    assert status["ready"] is True
+
+    log = []
+    require_flywire_skeleton_access(
+        "flywire_FAFB_v783", project_root=tmp_path, log=log.append
+    )
+    text = "\n".join(log)
+    assert "lazily per neuron" in text
+    assert "CAVE fallback is disabled" in text
+    assert "codex-token" not in text
+
+
+def test_fafb_codex_token_from_env_counts(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAVE_TOKEN", raising=False)
+    monkeypatch.setenv("FLYWIRE_CODEX_TOKEN", "env-codex-token")
+    status = flywire_skeleton_readiness(
+        "flywire_FAFB_v783", project_root=tmp_path)
+    assert status["flywire_codex"] is True
+    assert status["ready"] is True

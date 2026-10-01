@@ -17,7 +17,9 @@ token_manager.get_auto_token(prefer_type="cave")  # config/env resolution
   `config_local.json` fills entries left empty). Never read `token_info*.txt`
   (removed). `config_local.json` is never auto-created.
 - `NEUPRINT_TOKEN` from <https://neuprint.janelia.org/account>;
-  `CAVE_TOKEN` (FlyWire only) from <https://codex.flywire.ai/auth_token>;
+  `CAVE_TOKEN` (advanced, optional — live-CAVE fallback only;
+  config.json/env, no Settings input) from
+  <https://codex.flywire.ai/auth_token>;
   `FLYWIRE_CODEX_TOKEN` (optional; automatic FAFB downloads via
   `codex_downloader`) from <https://codex.flywire.ai/account>.
 

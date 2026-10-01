@@ -83,7 +83,9 @@ python skills/drocat-install/scripts/verify_install.py --project . --require-tok
 ```
 
 - Tokens: `NEUPRINT_TOKEN` from <https://neuprint.janelia.org/account>;
-  `CAVE_TOKEN` (FlyWire only) from <https://codex.flywire.ai/auth_token>;
+  `CAVE_TOKEN` (advanced, optional — live-CAVE fallback only; set via
+  config.json or the env var, there is no Settings input) from
+  <https://codex.flywire.ai/auth_token>;
   `FLYWIRE_CODEX_TOKEN` (optional; automatic FAFB downloads and lazy
   skeleton fetching) from <https://codex.flywire.ai/account>. Ask the
   user; never invent or reuse tokens without permission.

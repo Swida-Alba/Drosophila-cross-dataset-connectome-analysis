@@ -84,7 +84,9 @@ symptoms.
 - Placeholders: `config.json` ships empty token values and wins per key; real
   tokens can go there directly or in the gitignored `config_local.json`.
 - **`NEUPRINT_TOKEN`** from <https://neuprint.janelia.org/account>;
-  **`CAVE_TOKEN`** (FlyWire only) from <https://codex.flywire.ai/auth_token>;
+  **`CAVE_TOKEN`** (advanced, optional — live-CAVE fallback only;
+  config.json/env, no Settings input) from
+  <https://codex.flywire.ai/auth_token>;
   **`FLYWIRE_CODEX_TOKEN`** (optional; automatic FAFB downloads) from
   <https://codex.flywire.ai/account>.
   Ask the user; never invent or reuse tokens without permission.

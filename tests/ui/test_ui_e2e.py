@@ -3193,7 +3193,8 @@ class TestDatasetService:
         )
         monkeypatch.delenv("NEUPRINT_APPLICATION_CREDENTIALS", raising=False)
         monkeypatch.delenv("NEUPRINT_TOKEN", raising=False)
-        monkeypatch.setenv("CAVE_TOKEN", "env-cave-token")
+        monkeypatch.delenv("CAVE_TOKEN", raising=False)
+        monkeypatch.setenv("FLYWIRE_CODEX_TOKEN", "env-codex-token")
 
         client = Client(page("/settings-token-source"))
         with client:
@@ -3204,7 +3205,7 @@ class TestDatasetService:
             if getattr(el, "text", "") and el.text.startswith("configured (")
         ]
         assert "configured (config.json)" in statuses
-        assert "configured (env var CAVE_TOKEN)" in statuses
+        assert "configured (env var FLYWIRE_CODEX_TOKEN)" in statuses
         assert not any("kept hidden" in s for s in statuses)
 
     def test_custom_grouping_instruction_link_present(self):
@@ -3275,31 +3276,21 @@ class TestDatasetService:
             )
             return reminder, reminder.default_slot.children[0]
 
-        # both missing -> prominent reminder (plus the optional Codex note)
+        # NeuPrint missing -> required-token reminder (plus the Codex note)
         reminder, text = build("", "")
         assert reminder.visible is True
-        assert "No API tokens configured" in text.text
-        assert "required for NeuPrint datasets" in text.text
-        assert "only needed for FAFB online CAVE fetching" in text.text
-
-        # only CAVE missing -> soft reminder marking it optional
-        reminder, text = build("real-neuprint-token", "")
-        assert reminder.visible is True
-        assert "CAVE token not configured - optional" in text.text
-        assert "FAFB online CAVE fetching" in text.text
-
-        # only NeuPrint missing -> required-token reminder
-        reminder, text = build("", "real-cave-token")
-        assert reminder.visible is True
         assert "NeuPrint token not configured - it is required" in text.text
+        assert "FlyWire Codex token not configured - optional" in text.text
 
-        # neuprint + cave set, Codex missing -> soft Codex-only note
-        reminder, text = build("real-neuprint-token", "real-cave-token")
+        # CAVE no longer has a Settings row: an absent CAVE token alone
+        # never shows a reminder
+        reminder, text = build("real-neuprint-token", "")
         assert reminder.visible is True
         assert "FlyWire Codex token not configured - optional" in text.text
 
-        # all three set -> no reminder
-        reminder, text = build("real-neuprint-token", "real-cave-token", "real-codex-token")
+        # all tokens set -> no reminder
+        reminder, text = build("real-neuprint-token", "real-cave-token",
+                               "real-codex-token")
         assert reminder.visible is False
 
     def test_settings_codex_download_card(self, tmp_path, monkeypatch):
@@ -7323,7 +7314,7 @@ class TestApp:
             getattr(element, "_props", {})
             for element in client.elements.values()
             if getattr(element, "_props", {}).get("label")
-            in {"NeuPrint Token", "CAVE Token (for FAFB)"}
+            in {"NeuPrint Token", "FlyWire Codex Token"}
         ]
         assert len(input_props) == 2
         assert all(props.get("value", "") == "" for props in input_props)

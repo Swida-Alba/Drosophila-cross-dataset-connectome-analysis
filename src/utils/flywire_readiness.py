@@ -145,27 +145,8 @@ def print_download_instructions(
     print("=" * 70)
 
 
-def _configured_cave_token(project_root: Path) -> Optional[str]:
-    """Read a CAVE token without ever returning it to a caller-facing log.
-
-    config.json (project config) is checked first; the environment is the
-    fallback, matching the project's token manager.  A ``YOUR_*`` placeholder
-    is treated as unconfigured.
-    """
-
-    config_value = _cave_token_from_config(project_root)
-    if config_value:
-        return config_value
-    environment_value = os.environ.get("CAVE_TOKEN", "").strip()
-    return (
-        environment_value
-        if environment_value and not environment_value.startswith("YOUR_")
-        else None
-    )
-
-
-def _cave_token_from_config(project_root: Path) -> Optional[str]:
-    """Read the CAVE token from config.json (primary) or config_local.json."""
+def _configured_token_from_config(project_root: Path, key: str) -> Optional[str]:
+    """Read a token from config.json (primary) or config_local.json."""
     import json
 
     for filename in ("config.json", "config_local.json"):
@@ -179,12 +160,45 @@ def _cave_token_from_config(project_root: Path) -> Optional[str]:
         section = data.get("tokens") if isinstance(data, dict) else None
         if not isinstance(section, dict):
             continue
-        value = section.get("cave")
+        value = section.get(key)
         if isinstance(value, str):
             value = value.strip()
             if value and not value.startswith("YOUR_"):
                 return value
     return None
+
+
+def _configured_cave_token(project_root: Path) -> Optional[str]:
+    """Read a CAVE token without ever returning it to a caller-facing log.
+
+    config.json (project config) is checked first; the environment is the
+    fallback, matching the project's token manager.  A ``YOUR_*`` placeholder
+    is treated as unconfigured.
+    """
+
+    config_value = _configured_token_from_config(project_root, "cave")
+    if config_value:
+        return config_value
+    environment_value = os.environ.get("CAVE_TOKEN", "").strip()
+    return (
+        environment_value
+        if environment_value and not environment_value.startswith("YOUR_")
+        else None
+    )
+
+
+def _configured_codex_token(project_root: Path) -> Optional[str]:
+    """Read the FlyWire Codex token (automatic FAFB downloads, lazy fetch)."""
+
+    config_value = _configured_token_from_config(project_root, "flywire_codex")
+    if config_value:
+        return config_value
+    environment_value = os.environ.get("FLYWIRE_CODEX_TOKEN", "").strip()
+    return (
+        environment_value
+        if environment_value and not environment_value.startswith("YOUR_")
+        else None
+    )
 
 
 def _first_existing(paths: list[Path]) -> Optional[Path]:
@@ -270,12 +284,16 @@ def flywire_skeleton_readiness(
         local_source = local_fafb_skeleton_source(dataset, root)
     else:
         local_source = None
-    # BANC is deliberately independent of CAVE. Do not surface an ambient
-    # FAFB token as BANC readiness, because BANC never consumes that token.
+    # BANC is deliberately independent of CAVE/Codex. Do not surface an
+    # ambient FAFB token as BANC readiness, because BANC never consumes it.
     cave_configured = False if banc else bool(_configured_cave_token(root))
-    # BANC is always ready (public bucket); FAFB needs local data or a
-    # token; NeuPrint datasets need neither.
-    ready = (not fafb) or local_source is not None or cave_configured
+    codex_configured = (
+        False if banc else bool(_configured_codex_token(root)))
+    # BANC is always ready (public bucket); FAFB needs local data, the
+    # FlyWire Codex token (lazy per-neuron fetch), or a CAVE token;
+    # NeuPrint datasets need neither.
+    ready = ((not fafb) or local_source is not None or codex_configured
+             or cave_configured)
     return {
         "dataset": str(dataset or ""),
         "is_banc": banc,
@@ -283,6 +301,7 @@ def flywire_skeleton_readiness(
         "local_skeletons": local_source is not None,
         "local_source": str(local_source) if local_source is not None else None,
         "cave_token": cave_configured,
+        "flywire_codex": codex_configured,
         "ready": ready,
     }
 
@@ -296,9 +315,10 @@ def require_flywire_skeleton_access(
 
     BANC is always accepted: skeletons fetch on demand from the public
     release bucket and no CAVE token is involved.  FAFB is accepted when
-    either local skeleton data or a CAVE token is available.  When both are
-    absent, the log includes the local preparation and token setup
-    instructions before raising a clear exception.
+    local skeleton data, the FlyWire Codex token (lazy per-neuron fetch),
+    or a CAVE token is available.  When all are absent, the log includes
+    the local preparation and token setup instructions before raising a
+    clear exception.
     """
 
     status = flywire_skeleton_readiness(dataset, project_root)
@@ -352,9 +372,24 @@ def require_flywire_skeleton_access(
         )
         return status
 
+    if status.get("flywire_codex"):
+        log(
+            "[DROCAT][dataset-guard] FAFB skeleton access ready: no local "
+            "skeleton data yet, but the FlyWire Codex token is configured "
+            "— skeletons fetch lazily per neuron from the Codex server "
+            "during visualization and cache into the local overlay "
+            "(CAVE fallback is disabled)."
+        )
+        log(
+            "For repeatable/offline runs, Settings > FAFB Data Downloads "
+            "(level 3, Skeleton bundle) downloads the full local bundle."
+        )
+        return status
+
     message = (
         f"Skeleton workflow blocked for {dataset_name}: no local FAFB "
-        "skeleton source was found and CAVE_TOKEN is not configured."
+        "skeleton source was found and no FlyWire Codex or CAVE token "
+        "is configured."
     )
     log(f"[DROCAT][dataset-guard] BLOCKED: {message}")
     log(

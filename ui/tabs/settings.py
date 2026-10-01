@@ -512,9 +512,9 @@ def create_settings_tab():
             }
 
             # Reminder when tokens are missing: the NeuPrint token is
-            # required for NeuPrint datasets; the CAVE token is optional and
-            # only needed for FAFB online CAVE fetching. Refreshed
-            # whenever the saved tokens change.
+            # required for NeuPrint datasets; the FlyWire Codex token
+            # enables the automatic FAFB downloads. Refreshed whenever the
+            # saved tokens change.
             token_reminder = ui.element("div").props('id="drocat-token-reminder"').classes(
                 "w-full drocat-token-reminder"
             )
@@ -522,11 +522,7 @@ def create_settings_tab():
                 token_reminder_text = ui.label("").classes("text-sm drocat-warn")
 
             def _refresh_token_reminder():
-                missing = []
-                if not token_state.get("neuprint"):
-                    missing.append("neuprint")
-                if not token_state.get("cave"):
-                    missing.append("cave")
+                neuprint_missing = not token_state.get("neuprint")
                 codex_note = ""
                 if not token_state.get("flywire_codex"):
                     codex_note = (
@@ -534,28 +530,15 @@ def create_settings_tab():
                         "it enables the automatic FAFB downloads on this tab "
                         "and lazy skeleton fetching."
                     )
-                if not missing and not codex_note:
+                if not neuprint_missing and not codex_note:
                     token_reminder.set_visibility(False)
                     return
                 token_reminder.set_visibility(True)
-                if missing == ["neuprint"]:
-                    base = (
-                        "⚠️ NeuPrint token not configured - it is required for NeuPrint datasets. "
-                        "Set it below or in config.json."
-                    )
-                elif missing == ["cave"]:
-                    base = (
-                        "ℹ️ CAVE token not configured - optional; it is only needed for "
-                        "FAFB online CAVE fetching. BANC never uses it."
-                    )
-                elif not missing:
-                    base = ""
-                else:
-                    base = (
-                        "⚠️ No API tokens configured. The NeuPrint token is required for NeuPrint "
-                        "datasets; the CAVE token is optional (only needed for FAFB online CAVE "
-                        "fetching; BANC never uses it). Set them below or in config.json."
-                    )
+                base = (
+                    "⚠️ NeuPrint token not configured - it is required for "
+                    "NeuPrint datasets. Set it below or in config.json."
+                    if neuprint_missing else ""
+                )
                 token_reminder_text.text = (base + codex_note).strip()
                 token_reminder_text.update()
 
@@ -579,27 +562,10 @@ def create_settings_tab():
 
             with ui.column().classes("w-full gap-1"):
                 with ui.row().classes("items-center gap-2"):
-                    ui.label("CAVE Token (for FAFB CAVE API features)").classes("text-caption font-bold drocat-warn")
-                    cave_status = ui.label(_token_status(token_state["cave"], token_sources["cave"][1])).classes("text-caption drocat-muted")
-                ui.html("Get it from <a href='https://codex.flywire.ai/auth_token' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai/auth_token</a>").classes("text-caption drocat-muted")
-                ui.label("Local converted FAFB tables work without this token. A CAVE token is needed only for explicit FAFB CAVE fetches; BANC uses its public release bucket and never uses this token.").classes("text-caption drocat-warn")
-
-            cave_token = ui.input(
-                label="CAVE Token (for FAFB)",
-                value="",
-                placeholder="Leave blank to keep the saved token",
-                password=True,
-                password_toggle_button=True,
-            ).classes("w-full")
-
-            ui.separator()
-
-            with ui.column().classes("w-full gap-1"):
-                with ui.row().classes("items-center gap-2"):
                     ui.label("FlyWire Codex Token (for automatic FAFB downloads)").classes("text-caption font-bold")
                     codex_status = ui.label(_token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])).classes("text-caption drocat-muted")
                 ui.html("Sign in at <a href='https://codex.flywire.ai/api/download?dataset=fafb' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai</a> with a Google account, then copy your API token from <a href='https://codex.flywire.ai/account' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai/account</a>").classes("text-caption drocat-muted")
-                ui.label("Needed only for the automatic FAFB data downloads on this tab and lazy per-neuron skeleton fetching. The CAVE token above is a separate, contributor-gated credential.").classes("text-caption drocat-muted")
+                ui.label("Needed only for the automatic FAFB data downloads on this tab and lazy per-neuron skeleton fetching. The CAVE token is a separate, contributor-gated credential that no download or analysis needs; power users can still set it via config.json (see the FAFB instructions below).").classes("text-caption drocat-muted")
 
             codex_token = ui.input(
                 label="FlyWire Codex Token",
@@ -1202,7 +1168,7 @@ def create_settings_tab():
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">4. Verify before running analysis</p>
                     <p>The dataset root should contain generated files named <code>flywire_FAFB_v783_allneurons_neuron_df.parquet</code> (and CSV) and <code>flywire_FAFB_v783_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>ready</b> status chips.</p>
-                    <p style="color:var(--drocat-warn)"><b>A CAVE token is not a substitute for these local tables.</b> It is only needed for CAVE API fetching or skeleton fallback; local converted tables and a local skeleton ZIP can be used without it.</p>
+                    <p style="color:var(--drocat-warn)"><b>CAVE token (advanced, optional):</b> a live-CAVE fallback only — no download or analysis needs it, and there is no Settings input for it (set <code>tokens.cave</code> in <code>config.json</code> or the <code>CAVE_TOKEN</code> env var if ever needed; contributor-gated). Local converted tables, the Codex downloads and lazy skeletons all work without it.</p>
                 </div>
                 """)
 
@@ -1234,7 +1200,6 @@ def create_settings_tab():
 
     def _update_token_status():
         neuprint_status.text = _token_status(token_state["neuprint"], token_sources["neuprint"][1])
-        cave_status.text = _token_status(token_state["cave"], token_sources["cave"][1])
         codex_status.text = _token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])
         _refresh_codex_gate()
         _refresh_token_reminder()
@@ -1244,7 +1209,6 @@ def create_settings_tab():
         # the committed config.json stays clean on GitHub.
         config_path = PROJECT_ROOT / "config_local.json"
         entered_neuprint = (neuprint_token.value or "").strip()
-        entered_cave = (cave_token.value or "").strip()
         entered_codex = (codex_token.value or "").strip()
         # Base the save on the config-file tokens only: an env-var token
         # must never be copied into config_local.json by clicking Save.
@@ -1254,22 +1218,19 @@ def create_settings_tab():
             saved_tokens["neuprint"] = entered_neuprint
         elif clear_blank.value:
             saved_tokens.pop("neuprint", None)
-        if entered_cave:
-            saved_tokens["cave"] = entered_cave
-        elif clear_blank.value:
-            saved_tokens.pop("cave", None)
         if entered_codex:
             saved_tokens["flywire_codex"] = entered_codex
         elif clear_blank.value:
             saved_tokens.pop("flywire_codex", None)
 
         # Keep the versioned env map, any other sections, and token keys
-        # this tab does not manage; only the three managed keys are
+        # this tab does not manage (e.g. an advanced CAVE token set
+        # directly in config.json); only the two managed keys are
         # replaced.
         data = _read_config_dict(config_path)
         existing_tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
         tokens_section = dict(existing_tokens)
-        for key in ("neuprint", "cave", "flywire_codex"):
+        for key in ("neuprint", "flywire_codex"):
             tokens_section[key] = saved_tokens.get(key, "")
         data["tokens"] = tokens_section
         try:
@@ -1283,7 +1244,6 @@ def create_settings_tab():
             # Clear the client-side fields after saving so a browser DOM
             # snapshot can never retain a secret value.
             neuprint_token.value = ""
-            cave_token.value = ""
             codex_token.value = ""
             clear_blank.value = False
             _update_token_status()
@@ -1292,7 +1252,7 @@ def create_settings_tab():
             from ..dataset_service import get_dataset_service
             service = get_dataset_service()
             service._token = saved_tokens.get("neuprint") or None
-            service._cave_token = saved_tokens.get("cave") or None
+            service._cave_token = _load_tokens().get("cave") or None
             service._cache.clear()
             service._available_neuprint = None
             service._server_datasets = {}

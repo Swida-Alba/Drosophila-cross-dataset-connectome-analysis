@@ -24,7 +24,7 @@
     <tr><th>Token</th><th>Needed for</th><th>Where to get it</th></tr>
     <tr><td>NeuPrint Token</td><td>All NeuPrint datasets (hemibrain, male-cns, optic-lobe, manc, ...)</td><td>neuprint.janelia.org/account</td></tr>
     <tr><td>FlyWire Codex Token</td><td>Automatic FAFB data downloads (Settings &rarr; FAFB Data Downloads) and lazy per-neuron skeleton fetching</td><td>codex.flywire.ai/account (sign in with Google at the download page, then copy the token)</td></tr>
-    <tr><td>CAVE Token</td><td>FAFB CAVE API fetching or skeleton fallback (contributor-gated; not needed for downloads or local conversion)</td><td>codex.flywire.ai/auth_token</td></tr>
+    <tr><td>CAVE Token (advanced)</td><td>Optional live-CAVE fallback only; no download or analysis needs it. Set via <code>config.json</code>/<code>config_local.json</code> or the <code>CAVE_TOKEN</code> env var — there is no Settings input for it (contributor-gated at codex.flywire.ai/auth_token)</td><td>config files / env only</td></tr>
   </table>
   <p>Tokens are saved to <code>config_local.json</code> (gitignored local
     override; template <code>config.example.json</code>) which also holds the
