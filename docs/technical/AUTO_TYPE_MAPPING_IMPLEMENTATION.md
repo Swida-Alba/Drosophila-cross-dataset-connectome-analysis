@@ -319,6 +319,35 @@ stays adjacent to the ratified registry standard (pinned by
 stays_untouched`). The deep-harness oracle (§R3 re-baseline) pins the
 residual MCNS drift budget at 36 missing / 83 extra types.
 
+### 3.9 Route scope — the full-map parallel mode (2026-10-01)
+
+Re-ratification of the 2026-09-28 panel-only boundary: full map is a
+COMPLETE second mode.  `licensed_route_mids` licenses ALL datasets as
+connectors (endpoints excluded, v0.9 deduped); the composition engine
+`compose_full_map_bridges` builds two-leg routes from curated per-leg
+walks, marks post-mid hops `transitive_via`, classes ends
+corroborated/transitive-only/route-conflicted, and records per-route
+provenance (source type, mid, via type, both leg chain lists).
+`get_type_bridges(route_scope='full')` appends the composed chains
+DIRECT-FIRST (budget per class); `get_mapping_decision(route_scope='full')`
+merges transitive-only ends with per-target provenance under the same
+fail-closed vocabulary; `resolve_valid_targets` /
+`resolve_flow_status` / `mapped_type_targets` /
+`enrich_native_type_matches` / `origin_seeded_flows` /
+`build_mapping_flows` thread the keyword — passing it ONLY in full mode
+so mapper fakes and the curated call shapes stay byte-identical.  The
+panel runs its whole data path on the mode's universe (flows, tiers,
+strip "Full-map ends" cell, breakdown "Full-map reach" column with
+via-badges and route-conflict markers, pair-card counts, per-pair
+`mapping_fullmap_*.csv`); `mapping_origin` gains the
+`(transitive via <mid>)` suffix.  `MappingValidator` accepts
+`route_scope in {curated, full}` (curated = today), `_pairs_for_type`
+uses the full decision, transitive `TypePair`s carry
+`route_scope='full'` + `via_mid` (advisory; exported in
+`mapping_export.csv` and the report's advisory accounting), and the
+CLI gains `--route-scope`.  Signature guards re-ratified in
+`test_type_mapper_real_datasets.py` (defaults pinned to 'curated').
+
 ### 3.8 Reverse-label tail-claimant guard (2026-09-30)
 
 The BANC label lanes are naturally read BANC-primary → labelled source

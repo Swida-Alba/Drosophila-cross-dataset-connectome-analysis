@@ -1831,14 +1831,24 @@ def _coverage_tab(d: Dict) -> str:
         [r for r in excl_rows
          if r.get('reason') == 'multivalue_cell'])
     mv_tgt = cov.get('multivalue_target_types') or 0
+    fullmap_pairs = cov.get('full_map_pairs') or 0
+    snf_rows: list = []
+    if fullmap_pairs:
+        snf_rows.append((
+            'Full-map transitive pairs',
+            f"{fullmap_pairs} pair(s) across "
+            f"{cov.get('full_map_types') or 0} source type(s) reached "
+            f"through connector dataset(s) "
+            f"{', '.join(cov.get('full_map_mids') or [])} — labeled "
+            'route_scope/via_mid in mapping_export.csv '
+            '(2026-10-01 full-map mode)'))
     if any((snf_pairs, snf_held, snf_excl, mv_types, mv_tgt)):
-        snf_rows = [
-            ('Same-name-first selections (fired)',
-             f"{snf_pairs} pair(s) across "
-             f"{cov.get('same_name_first_types') or 0} source "
-             'type(s) — marked ⟡ in Branches; rivals withheld to '
-             'auto_type_mapping_suspects.csv'),
-        ]
+        snf_rows.append((
+            'Same-name-first selections (fired)',
+            f"{snf_pairs} pair(s) across "
+            f"{cov.get('same_name_first_types') or 0} source "
+            'type(s) — marked ⟡ in Branches; rivals withheld to '
+            'auto_type_mapping_suspects.csv'))
         if snf_held or snf_excl:
             snf_rows.append((
                 'Held / evidence-only fan-outs',
@@ -1849,12 +1859,15 @@ def _coverage_tab(d: Dict) -> str:
                 'Multi-value type cells',
                 f'{mv_types} source cell(s) + {mv_tgt} target '
                 'cell(s) — kept atomic, accounted not split'))
+    if snf_rows:
         cards.append(_section_card(
-            'Same-name-first & multivalue accounting',
-            'Advisory record of how the mapper\'s same-name-first '
-            'rule shaped this run\'s pair set. Never a gate.',
+            'Route scope, same-name-first & multivalue accounting',
+            'Advisory record of how the mapping scope and the mapper\'s '
+            'same-name-first rule shaped this run\'s pair set. Never a '
+            'gate.',
             _kv_block('', snf_rows),
-            ['same-name-first', 'suspects', 'multi-value type cells']))
+            ['full-map mode', 'same-name-first', 'suspects',
+             'multi-value type cells']))
 
     # §three-tier readout (user 2026-09-27): the DISCLOSURE tier — ends
     # the mapper decision declined but the derivation evidence reaches.

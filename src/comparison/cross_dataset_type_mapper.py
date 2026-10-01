@@ -711,6 +711,8 @@ def bridge_linker_text(chains: List[List[Dict[str, str]]],
             continue
         if entry["indirect"] and hubs:
             base += f" (via {'/'.join(sorted(hubs))})"
+        if entry.get("transitive_via"):
+            base += f" (via {entry['transitive_via']} connector)"
         entry["text"] = base
     if same_name_direct and not any(
             e["kind"] == "linker" for e in entries):
@@ -774,6 +776,11 @@ def standardize_bridge(chain, source_dataset: str,
         # strings can disclose it (2026-09-30 rule).
         if hop.get('reciprocal'):
             entry['reciprocal'] = True
+        # full-map composed chains carry their connector on every
+        # post-mid hop (2026-10-01) — the display/origin layers
+        # disclose the transitive route.
+        if hop.get('transitive_via'):
+            entry['transitive_via'] = hop['transitive_via']
         return entry
 
     middle = chain[1:-1]
@@ -4706,6 +4713,99 @@ class CrossDatasetTypeMapper:
         target_dataset: str,
         *,
         include_bridges: bool = True,
+        route_scope: str = 'curated',
+    ) -> Dict[str, Any]:
+        """Scoped policy decision for one type-level edge, mode-gated.
+
+        ``route_scope='curated'`` (default) is byte-identical to the
+        historical decision.  ``route_scope='full'`` (user 2026-10-01,
+        plan-full-map-route-scope re-ratification) expands the target
+        universe with the full-map transitive-only ends: every target
+        carries provenance in ``target_provenance`` (``curated`` or
+        ``transitive via <mid>``), a curated ``mapped`` 1:1 that gains
+        transitive additions becomes ``valid_split_evidence`` over the
+        expanded set (fail-closed is preserved — no target is silently
+        selected), a curated ``unmapped`` with exactly one transitive end
+        becomes ``mapped`` (transitive-backed), and a curated
+        ``conflict`` stays fail-closed with the transitive ends moved to
+        ``disclosure_targets``.  A ``full_map`` summary field carries the
+        composed counts and connectors.
+        """
+        result = self._get_mapping_decision_curated(
+            source_type, source_dataset, target_dataset,
+            include_bridges=include_bridges)
+        if route_scope != 'full':
+            return result
+        raw_type = str(source_type or '').strip()
+        if not raw_type:
+            return result
+        try:
+            composed = self.compose_full_map_bridges(
+                [raw_type], source_dataset, target_dataset)
+        except Exception:  # noqa: BLE001 — advisory expansion
+            return result
+        transitive_only = [e for e in composed.get('transitive_only_ends',
+                                                   ()) if e]
+        result['full_map'] = {
+            'ends': composed.get('ends', []),
+            'transitive_only': transitive_only,
+            'corroborated': composed.get('corroborated', []),
+            'mids': composed.get('mids', []),
+            'route_conflicts': composed.get('route_conflicts', []),
+        }
+        if not transitive_only:
+            return result
+        provenance = {t: {'route': 'curated'}
+                      for t in (result.get('target_types') or [])}
+        for end in transitive_only:
+            route = (composed.get('routes', {}).get(end) or [{}])[0]
+            provenance[end] = {
+                'route': f"transitive via {route.get('mid')}",
+                'mid': route.get('mid'),
+                'via_type': route.get('via_type'),
+            }
+        result['target_provenance'] = provenance
+        status = result.get('status')
+        if status == 'conflict':
+            # fail-closed stays: the transitive ends are disclosure only
+            for end in transitive_only:
+                result.setdefault('disclosure_targets', []).append({
+                    'target': end,
+                    'reason': 'transitive (full map); curated conflict '
+                              'stays fail-closed',
+                    'via_mid': provenance[end].get('mid'),
+                })
+            return result
+        merged = sorted(
+            set(result.get('target_types') or []) | set(transitive_only))
+        result['target_types'] = merged
+        if len(merged) == 1:
+            result['target_type'] = merged[0]
+            if status in ('unmapped',):
+                result['status'] = 'mapped'
+                result['relationship'] = (
+                    result.get('relationship')
+                    or '1-to-1 (full map, transitive-backed)')
+        else:
+            # Any curated single-target status (mapped / bridged / a
+            # unique claim) that gains transitive additions becomes
+            # split evidence over the expanded set — no target is
+            # silently selected; provenance shows which one was the
+            # curated answer.
+            result['target_type'] = None
+            if status != 'evidence_only':
+                result['status'] = 'valid_split_evidence'
+                result['relationship'] = (
+                    result.get('relationship') or '1-to-N (full map)')
+        return result
+
+    def _get_mapping_decision_curated(
+        self,
+        source_type: Union[str, int, None],
+        source_dataset: str,
+        target_dataset: str,
+        *,
+        include_bridges: bool = True,
     ) -> Dict[str, Any]:
         """Return the scoped policy decision for one type-level edge.
 
@@ -6726,6 +6826,7 @@ class CrossDatasetTypeMapper:
         *,
         max_bridges: int = 6,
         _skip_glue_filter: bool = False,
+        route_scope: str = 'curated',
     ) -> List[List[Dict[str, str]]]:
         """Derivation chains connecting one type name to a target dataset.
 
@@ -6744,7 +6845,12 @@ class CrossDatasetTypeMapper:
         target-namespace primary through annotation transitivity
         (``Alternative Cell Type(s)`` or ``additional_type(s)``) are
         suppressed unless the pair is reciprocated in the reverse
-        direction (then flagged ``reciprocal``).
+        direction (then flagged ``reciprocal``).  ``route_scope='full'``
+        (user 2026-10-01) additionally composes transitive chains through
+        every licensed connector dataset (see
+        :meth:`compose_full_map_bridges`), appended DIRECT-FIRST after
+        the curated chains and flagged ``transitive_via``; the curated
+        default is byte-identical to the pre-full-map behavior.
         """
         if not self._loaded:
             if not self.load():
@@ -6764,7 +6870,7 @@ class CrossDatasetTypeMapper:
                 and source_type in getattr(self, '_mcns_v09_shared_names', set())):
             downstream = self.get_type_bridges(
                 source_type, 'male-cns:v1.0', target_dataset,
-                max_bridges=max_bridges,
+                max_bridges=max_bridges, route_scope=route_scope,
             )
             alias = {
                 'dataset': 'male-cns:v1.0',
@@ -6794,7 +6900,7 @@ class CrossDatasetTypeMapper:
                 and source_key != 'male-cns:v0.9'):
             downstream = self.get_type_bridges(
                 source_type, source_dataset, 'male-cns:v1.0',
-                max_bridges=max_bridges,
+                max_bridges=max_bridges, route_scope=route_scope,
             )
             chains = []
             for chain in downstream:
@@ -7163,7 +7269,176 @@ class CrossDatasetTypeMapper:
                 for hop in chain
             ),
         ))
-        return bridges[:max_bridges] if max_bridges > 0 else bridges
+        if max_bridges > 0:
+            bridges = bridges[:max_bridges]
+        if route_scope == 'full':
+            # §full-map parallel mode (user 2026-10-01, re-ratifying the
+            # 2026-09-28 panel-only boundary): compose the transitive
+            # route universe through EVERY licensed connector and offer
+            # those chains alongside the curated ones.  DIRECT-FIRST by
+            # construction (transitive chains are appended after the
+            # sorted curated list — never rely on a downstream
+            # prioritizer for this ordering); the budget caps each class
+            # separately so transitive evidence is not starved by direct
+            # fan-outs.
+            composed = self.compose_full_map_bridges(
+                [source_type], source_dataset, target_dataset)
+            transitive: List[List[Dict[str, str]]] = []
+            for end in sorted(composed.get('chains_by_end', {})):
+                transitive.extend(
+                    composed['chains_by_end'][end].get('transitive', []))
+            if max_bridges > 0:
+                transitive = transitive[:max_bridges]
+            return bridges + transitive
+        return bridges
+
+    def licensed_route_mids(
+        self,
+        source_dataset: str,
+        target_dataset: str,
+    ) -> List[str]:
+        """Full-map connector licensing (user 2026-10-01): ALL datasets.
+
+        In the curated scope ``ROUTE_MIDS`` licenses only male-cns:v1.0
+        as a connector (neuprint pairs) and BANC is never a connector.
+        The full-map mode licenses EVERY known namespace except the two
+        endpoints as a candidate mid — release siblings included, so the
+        v626/v888 release crosswalk can act as a leg inside compositions.
+        A mid's yield is decided by its actual licensed legs (both legs
+        are curated walks; a mid with no lanes toward either side simply
+        contributes nothing).  male-cns:v0.9 is deduped against v1.0
+        (shared-name delegation makes their leg output identical —
+        measured on real data).
+        """
+        src_key = self._get_type_mapping_key(source_dataset)
+        tgt_key = self._get_type_mapping_key(target_dataset)
+        namespaces = sorted(
+            set(self._dataset_types) | set(self._flywire_primaries))
+        mids = [n for n in namespaces if n not in (src_key, tgt_key)]
+        if 'male-cns:v0.9' in mids and 'male-cns:v1.0' in mids:
+            mids.remove('male-cns:v0.9')
+        return mids
+
+    def compose_full_map_bridges(
+        self,
+        source_types,
+        source_dataset: str,
+        target_dataset: str,
+    ) -> Dict[str, Any]:
+        """Compose the FULL-MAP transitive route universe for one batch.
+
+        Per source type x licensed mid: leg A is a curated walk into the
+        mid, leg B a curated walk from EACH reached mid type into the
+        target — so every composed route records its own provenance.
+        Composed chains concatenate leg-a hops with leg-b hops minus the
+        redundant mid source hop (seam dedupe), and leg-b hops carry
+        ``transitive_via: <mid>``.  Both legs are ordinary curated walks,
+        so every per-hop rule (glue suppression, subsumptions, crosswalk
+        licensing, registry scoping) applies per leg — this mode widens
+        the ROUTE universe, never the per-hop rule set.
+
+        Returns ``ends`` / ``direct_ends`` / ``transitive_only_ends`` /
+        ``corroborated``, per-end ``chains_by_end`` (``direct`` +
+        ``transitive`` chains), per-end ``routes`` (one record per
+        (mid, via_type) with the FULL leg chain lists), cross-mid
+        ``route_conflicts``, and the ``mids`` consulted.
+        """
+        def _reach(leg_src: str, leg_dst: str, types) -> Dict[str, list]:
+            reach: Dict[str, list] = {}
+            for otype in types:
+                try:
+                    chains = self.get_type_bridges(
+                        otype, leg_src, leg_dst, max_bridges=0,
+                        route_scope='curated')
+                except Exception:  # noqa: BLE001 — advisory composition
+                    continue
+                for chain in chains:
+                    end = str(chain[-1].get('value') or '')
+                    if end:
+                        reach.setdefault(end, []).append(
+                            [dict(hop) for hop in chain])
+            return reach
+
+        mids = self.licensed_route_mids(source_dataset, target_dataset)
+        direct = _reach(source_dataset, target_dataset, source_types)
+        chains_by_end: Dict[str, Dict[str, list]] = {
+            end: {'direct': chains, 'transitive': []}
+            for end, chains in direct.items()}
+        routes: Dict[str, List[Dict[str, Any]]] = {
+            end: [] for end in direct}
+        # (mid, via_type) -> leg-B end sets, for cross-mid conflicts
+        mid_end_sets: Dict[Tuple[str, str], Set[str]] = {}
+        for mid in mids:
+            for source_type in sorted(set(map(str, source_types or []))):
+                leg_a = _reach(source_dataset, mid, [source_type])
+                if not leg_a:
+                    continue
+                for via_type, a_chains in sorted(leg_a.items()):
+                    leg_b = _reach(mid, target_dataset, [via_type])
+                    if not leg_b:
+                        continue
+                    mid_end_sets.setdefault(
+                        (mid, via_type), set()).update(leg_b)
+                    for b_end, b_chains in leg_b.items():
+                        bucket = chains_by_end.setdefault(
+                            b_end, {'direct': [], 'transitive': []})
+                        routes.setdefault(b_end, []).append({
+                            'source_type': source_type,
+                            'mid': mid,
+                            'via_type': via_type,
+                            'leg_a': a_chains,
+                            'leg_b': b_chains,
+                        })
+                        composed_chain = [
+                            dict(hop) for hop in a_chains[0]]
+                        for hop in b_chains[0][1:]:
+                            seam = dict(hop)
+                            seam['transitive_via'] = mid
+                            composed_chain.append(seam)
+                        bucket['transitive'].append(composed_chain)
+        # cap the representative transitive chains per end so fan-outs
+        # stay readable; the full route list stays in ``routes``
+        for end, bucket in chains_by_end.items():
+            if len(bucket['transitive']) > 6:
+                bucket['transitive'] = sorted(
+                    bucket['transitive'],
+                    key=lambda c: tuple(
+                        (h.get('dataset', ''), h.get('column', ''),
+                         h.get('value', '')) for h in c))[:6]
+        by_via: Dict[str, Dict[str, Set[str]]] = {}
+        for (mid, via_type), ends in mid_end_sets.items():
+            by_via.setdefault(via_type, {})[mid] = ends
+        conflicts: List[Dict[str, Any]] = []
+        for via_type in sorted(by_via):
+            end_sets = by_via[via_type]
+            if len(end_sets) < 2:
+                continue
+            mids_sorted = sorted(end_sets)
+            ref_mid = mids_sorted[0]
+            ref_set = end_sets[ref_mid]
+            for other_mid in mids_sorted[1:]:
+                if end_sets[other_mid] != ref_set:
+                    conflicts.append({
+                        'source_type': via_type,
+                        'mid_a': ref_mid, 'ends_a': sorted(ref_set),
+                        'mid_b': other_mid,
+                        'ends_b': sorted(end_sets[other_mid]),
+                    })
+        direct_ends = set(direct)
+        return {
+            'ends': sorted(chains_by_end),
+            'direct_ends': sorted(direct_ends),
+            'transitive_only_ends': sorted(
+                end for end, b in chains_by_end.items()
+                if b['transitive'] and not b['direct']),
+            'corroborated': sorted(
+                end for end, b in chains_by_end.items()
+                if b['direct'] and b['transitive']),
+            'chains_by_end': chains_by_end,
+            'routes': {end: rts for end, rts in routes.items() if rts},
+            'route_conflicts': conflicts,
+            'mids': mids,
+        }
 
     def get_mapping_origins(
         self,

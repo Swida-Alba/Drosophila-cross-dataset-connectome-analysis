@@ -161,12 +161,13 @@ FILL_KEEP_TOP = 100
 class MappingValidationConfig:
     source_dataset: str
     target_dataset: str
-    # §full-map boundary guard (user 2026-09-28): the validation pipeline
-    # consumes the mapper's CLAIM tier exclusively — a full-map (transitive
-    # composition) scope exists only in the Type Mapping panel's display
-    # layer and must NEVER reach validation.  Hard-refuse anything but the
-    # curated scope so a future wiring mistake cannot silently validate
-    # panel-composed pairs (plan-full-map-route-scope.md §6).
+    # §full-map mode gating (user 2026-09-28 boundary; RE-RATIFIED
+    # 2026-10-01 as a full parallel mode): 'curated' (default) validates
+    # exactly the historical claim tier; 'full' additionally accepts the
+    # full-map transitive universe — decisions come from
+    # get_mapping_decision(route_scope='full') and transitive-backed
+    # pairs carry route_scope/via_mid markers so the report labels them.
+    # Any other value still fails fast below.
     route_scope: str = 'curated'
     query_types: List[str] = field(default_factory=list)
     # profile construction (benchmark-frozen: homolog_param_benchmark)
@@ -489,6 +490,13 @@ class TypePair:
     # None for ordinary pairs.  Advisory marking only — the pair validates
     # exactly like any other mapped pair.
     same_name_first: Optional[dict] = None
+    # §full-map mode (user 2026-10-01): 'curated' (default — the pair
+    # comes from the historical claim tier) or 'full' with ``via_mid``
+    # set when the target was reached through a connector dataset.
+    # Advisory marking — the report labels transitive pairs; the
+    # validation bins treat them exactly like curated pairs.
+    route_scope: str = 'curated'
+    via_mid: str = ''
     # §three-tier readout (user 2026-09-27): 'claim' (default — the pair
     # validates into the ordinary bins) or 'disclosure' (an end the mapper
     # decision declined but the evidence reaches; verified with the same
@@ -717,6 +725,14 @@ def compute_set_coverage(pairs: List["TypePair"],
     snf_pairs = [p for p in pairs if p.same_name_first]
     out['same_name_first_pairs'] = len(snf_pairs)
     out['same_name_first_types'] = len({p.source_type for p in snf_pairs})
+    # §full-map mode (2026-10-01): additive transitive accounting — pairs
+    # whose target was reached through a connector dataset, and their
+    # connectors.  Zero in curated runs.
+    fullmap_pairs = [p for p in pairs if getattr(p, 'route_scope', '') == 'full'
+                     and getattr(p, 'via_mid', '')]
+    out['full_map_pairs'] = len(fullmap_pairs)
+    out['full_map_types'] = len({p.source_type for p in fullmap_pairs})
+    out['full_map_mids'] = sorted({p.via_mid for p in fullmap_pairs})
     out.update(extra_counters or {})
     return out
 
@@ -1250,7 +1266,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'mapping_export.csv': [
         'source_dataset', 'source_type', 'target_dataset', 'target_type',
         'relationship', 'mapping_status', 'tier',
-        'same_name_first',
+        'same_name_first', 'route_scope', 'via_mid',
         'same_name_rivals', 'query', 'is_selected', 'chain_rank',
         'selected_bridge', 'source_bridge', 'bridge_linkers',
         'selected_linker_values',
@@ -2243,16 +2259,14 @@ class MappingValidator:
 
     def __init__(self, cfg: MappingValidationConfig):
         self.cfg = cfg
-        if str(getattr(cfg, 'route_scope', 'curated')) != 'curated':
-            # §full-map boundary (plan-full-map-route-scope.md §6): the
-            # validation pipeline grades the mapper's CLAIM tier only.  A
-            # full-map scope exists only in the Type Mapping panel's
-            # display layer; hard-refuse it here so a wiring mistake can
-            # never validate panel-composed pairs.
+        if str(getattr(cfg, 'route_scope', 'curated')) not in (
+                'curated', 'full'):
+            # §full-map mode gating (re-ratified 2026-10-01): only the
+            # two named scopes are accepted — curated is the historical
+            # behavior, full validates the transitive universe with
+            # labeled pairs; anything else is a wiring mistake.
             raise ValueError(
-                "route_scope must be 'curated' — full-map (transitive "
-                "composition) results are panel-display-only and are not "
-                "accepted by the validation pipeline")
+                "route_scope must be 'curated' or 'full'")
         # fail before any stage runs, not after 30 minutes of scanning: a
         # pooling run without morphology cannot qualify its own tiers (the
         # CLI refuses it too; this is the backend/UI-payload path)
@@ -2413,9 +2427,12 @@ class MappingValidator:
         be validated against full populations)."""
         from ui.neuron_index import resolve_prioritized_bridge_pool
         try:
+            bkwargs = {'max_bridges': 0}
+            if str(getattr(self.cfg, 'route_scope', 'curated')) == 'full':
+                bkwargs['route_scope'] = 'full'
             chains = self.mapper.get_type_bridges(
                 pair.source_type, pair.source_dataset,
-                pair.target_dataset, max_bridges=0)
+                pair.target_dataset, **bkwargs)
             pool = resolve_prioritized_bridge_pool(
                 pair.source_dataset, pair.target_dataset, chains,
                 pair.source_type, pair.target_type)
@@ -2585,7 +2602,8 @@ class MappingValidator:
         cfg = self.cfg
         self._current_query = query
         dec = self.mapper.get_mapping_decision(
-            src_type, cfg.source_dataset, cfg.target_dataset)
+            src_type, cfg.source_dataset, cfg.target_dataset,
+            route_scope=str(getattr(cfg, 'route_scope', 'curated')))
         status = dec.get('status')
         snf = dec.get('same_name_first') or {}
         # §three-tier delivery (user 2026-09-27): record the DISCLOSURE
@@ -2688,6 +2706,16 @@ class MappingValidator:
                     'path': snf.get('path'),
                     'disposition': snf.get('disposition'),
                 }
+            # §full-map mode (2026-10-01): label pairs whose target was
+            # reached through a connector dataset (advisory marking —
+            # the report discloses the transitive route; the bins treat
+            # the pair exactly like a curated pair).
+            if str(getattr(cfg, 'route_scope', 'curated')) == 'full':
+                pair.route_scope = 'full'
+                prov = (dec.get('target_provenance') or {}).get(tgt_type) \
+                    or {}
+                if prov.get('mid'):
+                    pair.via_mid = str(prov['mid'])
             pair.parent_source_pool = list(pair.source_pool)
             pair.parent_target_pool = list(pair.target_pool)
             if not self._refine_pair_branch(pair) \
@@ -3169,6 +3197,8 @@ class MappingValidator:
             'same_name_rivals': ';'.join(
                 pair.same_name_first.get('rivals') or [])
             if pair.same_name_first else '',
+            'route_scope': pair.route_scope,
+            'via_mid': pair.via_mid,
             'pool_basis': pair.pool_basis,
             'branch_linker_values': pair.linker_values,
             'branch_annotation': pair.branch_annotation,
@@ -3244,6 +3274,8 @@ class MappingValidator:
             'same_name_rivals': ';'.join(
                 pair.same_name_first.get('rivals') or [])
             if pair.same_name_first else '',
+            'route_scope': pair.route_scope,
+            'via_mid': pair.via_mid,
             'pool_basis': pair.pool_basis,
             'target_pool_basis': pair.target_pool_basis,
             'selected_chain': pair.chain_text,

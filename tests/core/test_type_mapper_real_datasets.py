@@ -2241,28 +2241,87 @@ def test_full_map_yield_pin_structural_properties(mapper):
     assert with_yield >= 100, with_yield
 
 
-def test_mapping_decision_signature_has_no_route_scope(mapper):
-    """Guard 2 (plan §6): the mapper's decision/derivation surfaces gain
-    NO route_scope parameter — the full-map composition lives in the
-    panel layer only, so the mapper->TM VEV interface cannot receive it."""
+def test_mapping_decision_route_scope_signature_re_ratified(mapper):
+    """Guard 2, RE-RATIFIED (user 2026-10-01): the mapper's
+    derivation/decision surfaces now carry ``route_scope`` — a FULL
+    parallel mode beside the curated default.  The pins:
+
+    * ``get_type_bridges`` and ``get_mapping_decision`` have
+      ``route_scope`` DEFAULTING TO 'curated' (every historical caller
+      is byte-identical);
+    * ``resolve_type_across_datasets`` (compatibility-only) still has
+      no such parameter."""
     import inspect
-    assert 'route_scope' not in inspect.signature(
-        mapper.get_mapping_decision).parameters
-    assert 'route_scope' not in inspect.signature(
-        mapper.get_type_bridges).parameters
+    sig_bridges = inspect.signature(mapper.get_type_bridges).parameters
+    assert sig_bridges['route_scope'].default == 'curated'
+    sig_dec = inspect.signature(mapper.get_mapping_decision).parameters
+    assert sig_dec['route_scope'].default == 'curated'
     assert 'route_scope' not in inspect.signature(
         mapper.resolve_type_across_datasets).parameters
 
 
-def test_validator_config_refuses_noncurated_route_scope(tmp_path):
-    """Guard 1 (plan §6): MappingValidator hard-refuses any route_scope
-    other than 'curated' — a wiring mistake cannot validate full-map
-    pairs."""
+def test_validator_config_gates_route_scope(tmp_path):
+    """Guard 1, re-ratified (2026-10-01): MappingValidator accepts BOTH
+    named scopes — 'curated' (the historical behavior) and 'full' (the
+    full-map parallel mode) — and still fails fast on anything else."""
     import pytest
     from comparison.mapping_validation import (
         MappingValidationConfig, MappingValidator)
-    cfg = MappingValidationConfig(
+    cfg_full = MappingValidationConfig(
         source_dataset=FW, target_dataset=BANC888,
         query_types=['circadian_clock'], route_scope='full')
+    validator = MappingValidator(cfg_full)
+    assert str(getattr(validator.cfg, 'route_scope', '')) == 'full'
+    cfg_bad = MappingValidationConfig(
+        source_dataset=FW, target_dataset=BANC888,
+        query_types=['circadian_clock'], route_scope='panel')
     with pytest.raises(ValueError, match='curated'):
-        MappingValidator(cfg)
+        MappingValidator(cfg_bad)
+
+
+def test_full_map_mode_bridges_and_decision(mapper):
+    """The full-map parallel mode end to end on the canonical yield
+    example (2026-10-01): HEMI AOTU002_b reaches FAFB CB1963 ONLY
+    through the BANC connector — the curated walk never offers it, the
+    full-mode bridges and decision do, with transitive provenance."""
+    hemi, src_type = 'hemibrain:v1.2.1', 'AOTU002_b'
+    curated_ends = {c[-1]['value'] for c in mapper.get_type_bridges(
+        src_type, hemi, FW, max_bridges=0)}
+    assert 'CB1963' not in curated_ends
+    full = mapper.get_type_bridges(
+        src_type, hemi, FW, max_bridges=0, route_scope='full')
+    full_ends = {c[-1]['value'] for c in full}
+    assert curated_ends <= full_ends
+    assert 'CB1963' in full_ends
+    # direct-first: no transitive hop in any chain before the first
+    # curated chain
+    assert not any(h.get('transitive_via') for h in full[0])
+    transitive = [c for c in full if c[-1]['value'] == 'CB1963']
+    assert transitive and all(
+        any(h.get('transitive_via') for h in c) for c in transitive)
+    # decision merge: the full decision carries CB1963 with provenance
+    dec = mapper.get_mapping_decision(src_type, hemi, FW, route_scope='full')
+    prov = dec.get('target_provenance') or {}
+    assert 'CB1963' in (dec.get('target_types') or [])
+    assert prov.get('CB1963', {}).get('mid', '').startswith('banc')
+    # curated default untouched
+    dec_cur = mapper.get_mapping_decision(src_type, hemi, FW)
+    assert 'CB1963' not in (dec_cur.get('target_types') or [])
+
+
+def test_full_map_mode_all_datasets_connectors(mapper):
+    """§all-datasets licensing (user 2026-10-01): the connector set is
+    every known namespace minus the endpoints, with male-cns v0.9
+    deduped against v1.0 (identical leg output via shared-name
+    delegation)."""
+    hemi = 'hemibrain:v1.2.1'
+    mids = mapper.licensed_route_mids(hemi, FW)
+    known = set(mapper._dataset_types) | set(mapper._flywire_primaries)
+    assert set(mids) == known - {hemi, FW} - {'male-cns:v0.9'}
+    # the previously-disabled BANC routes are licensed now
+    assert 'banc_v626' in mids and 'banc_v888' in mids
+    # manc releases are licensed but contribute nothing (measured): a
+    # yield-less mid simply adds no chains
+    comp = mapper.compose_full_map_bridges(
+        ['AOTU002_b'], hemi, FW)
+    assert 'manc:v1.0' in comp['mids']

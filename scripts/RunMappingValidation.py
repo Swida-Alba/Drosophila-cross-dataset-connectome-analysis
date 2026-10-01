@@ -149,6 +149,14 @@ def parse_args(argv=None):
                         'floors only FLAG, never filter), and joins the '
                         'type mapper afterwards as a post-hoc comparison '
                         '(plan-tmvev-pooling-mode.md).')
+    p.add_argument('--route-scope', choices=('curated', 'full'),
+                   default='curated',
+                   help='mapping route scope (2026-10-01): curated (default) '
+                        '= the historical licensed routes; full = the '
+                        'full-map parallel mode — ALL datasets licensed as '
+                        'connectors, decisions carry the transitive ends, '
+                        'and transitive-backed pairs are labeled '
+                        '(route_scope/via_mid) in the exports.')
     p.add_argument('--aggressive-expansion', action='store_true',
                    help='alias for --mode aggressive (Rev 3.12; retained '
                         'for compatibility).')
@@ -314,6 +322,7 @@ def main(argv=None):
         source_dataset=args.source,
         target_dataset=args.target,
         query_types=[t for t in args.types.split(',') if t.strip()],
+        route_scope=args.route_scope,
         rank_top_k=args.rank_top_k,
         gap_min=args.gap_min,
         verified_top_n=args.verified_top_n,

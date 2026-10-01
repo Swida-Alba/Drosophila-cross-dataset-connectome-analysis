@@ -462,13 +462,23 @@
     <code>comparison/type_resolver.py</code>) backs the panel, the viewer's
     <i>See available neurons</i> mapping, homolog finding, and the
     connectivity-profile comparison. A <b>Route scope</b> selector above
-    the preview picks how far the evidence reach is composed:
-    <b>Curated</b> (default) counts only the mapper's curated links, while
-    <b>Full map</b> additionally composes transitive reach through
-    candidate intermediate datasets (e.g. HEMI&harr;FAFB ends via
-    BANC bridges) — evidence/display only: composed flows never enter the
-    claim tier, and the validation pipeline hard-refuses a full-map scope
-    (its results are panel-display-only by design).</p>
+    the preview picks the mapping's route universe (re-ratified
+    2026-10-01): <b>Curated</b> (default) is exactly the historical
+    licensed routes, while <b>Full map</b> is a complete parallel mode —
+    <b>all datasets are licensed as connectors</b> (the previously
+    disabled BANC routes included: HEMI&harr;FAFB ends via BANC bridges,
+    FAFB&harr;BANC via male-cns, &hellip;). In full mode the whole panel
+    runs on that universe: flows, the claim/reach readout, the summary
+    strip's labeled <code>Full-map ends</code> cell, the per-type
+    breakdown's <code>Full-map reach</code> column (delta,
+    <code>via &lt;mid&gt;</code> badges, &and; route-conflict markers),
+    the bridge visualizations, and a per-pair
+    <code>Export full-map routes (CSV)</code> — all matched to the same
+    composed routes. The validation pipeline accepts the scope gated
+    (<code>RunMappingValidation.py --route-scope full</code>); transitive
+    pairs are labeled <code>route_scope/via_mid</code> in its exports.
+    Per-hop licensing rules are unchanged in both modes — full map
+    widens the <i>route</i> universe, never the per-hop rule set.</p>
   <ul>
     <li><b>Unique rename</b> (e.g. MCNS <code>MeVPLo2</code> &harr; FAFB
       <code>MTe07</code>): one canonical target everywhere.</li>

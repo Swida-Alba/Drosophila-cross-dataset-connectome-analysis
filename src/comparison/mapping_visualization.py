@@ -286,7 +286,8 @@ def _origin_metadata(origin_dataset: str, matched_origin: str,
 
 
 def build_mapping_flows(entries, source_dataset: str,
-                        source_counts: Optional[Dict[str, int]] = None):
+                        source_counts: Optional[Dict[str, int]] = None,
+                        route_scope: str = 'curated'):
     """Flatten expansion entries into mapped flows with bridge chains.
 
     ``entries`` are enriched native-match entries (see
@@ -300,7 +301,9 @@ def build_mapping_flows(entries, source_dataset: str,
     ``ui.neuron_index.count_types_in_index``). When supplied,
     ``source_count`` is that per-side number; ``foreign_count`` always is
     the foreign type's count in the foreign dataset. Without the map the
-    source side falls back to the foreign count.
+    source side falls back to the foreign count.  ``route_scope='full'``
+    (2026-10-01) scopes the flow status through the full-map decision;
+    the curated default keeps the historical call shapes.
     """
     counts = source_counts or {}
     try:
@@ -380,10 +383,15 @@ def build_mapping_flows(entries, source_dataset: str,
                     str(c[-1].get('value'))
                     for c in (bridges_by_target.get(target) or [])
                     if c and c[-1].get('value')}))
+                fkwargs2 = {
+                    'bridge_end_count': len(flow_ends),
+                    'bridge_ends': flow_ends,
+                }
+                if route_scope != 'curated':
+                    fkwargs2['route_scope'] = route_scope
                 mapping_status, decision_fields = resolve_flow_status(
                     mapper, target, source_dataset, foreign,
-                    bridge_end_count=len(flow_ends),
-                    bridge_ends=flow_ends)
+                    **fkwargs2)
                 if mapping_status == "conflict":
                     # Bridge discovery may retain a same-name or other
                     # diagnostic chain, but a scoped vote conflict is not an
@@ -448,7 +456,8 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
                         foreign_counts: Optional[Dict[str, int]] = None,
                         matched_origins: Optional[Dict[str, Any]] = None,
                         max_chains_per_flow: int = 8,
-                        max_types: int = 500) -> List[Dict[str, Any]]:
+                        max_types: int = 500,
+                        route_scope: str = 'curated') -> List[Dict[str, Any]]:
     """Map one ORIGIN dataset's matched types into a target dataset (§12).
 
     Exact / literal / regex chip matches are resolved per dataset first;
@@ -457,6 +466,8 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
     ``BRIDGE_SOURCE_MAP`` licensing and ``bridge_is_valid``), emitting
     the SAME flow dicts as ``build_mapping_flows`` so the per-pair
     cards, CSV and mapping graph are unchanged downstream.
+    ``route_scope='full'`` (user 2026-10-01) seeds from the full-map
+    transitive universe; the curated default is unchanged.
     """
     from comparison.cross_dataset_type_mapper import get_type_mapper
 
@@ -502,10 +513,13 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
                 return f"{column} · '{value}'"
         return f"type · '{type_name}'"
 
+    bkwargs = {'max_bridges': 0}
+    if route_scope != 'curated':
+        bkwargs['route_scope'] = route_scope
     for type_name in types:
         try:
             chains = mapper.get_type_bridges(
-                type_name, origin_dataset, target_dataset, max_bridges=0)
+                type_name, origin_dataset, target_dataset, **bkwargs)
         except Exception:
             # one unmappable type must not sink the sweep, but the
             # failure is logged, not silent
@@ -529,10 +543,15 @@ def origin_seeded_flows(origin_dataset: str, matched_types, target_dataset: str,
             # RES-3: pass the end names so a relabeled flow carries them
             # as its target_types (flow_is_claimed then sees the same
             # claim set the panel's resolver-validated half counts).
+            fkwargs = {
+                'bridge_end_count': len(by_end),
+                'bridge_ends': tuple(sorted(by_end)),
+            }
+            if route_scope != 'curated':
+                fkwargs['route_scope'] = route_scope
             mapping_status, decision_fields = resolve_flow_status(
                 mapper, type_name, origin_dataset, target_dataset,
-                bridge_end_count=len(by_end),
-                bridge_ends=tuple(sorted(by_end)))
+                **fkwargs)
             if mapping_status == "conflict":
                 # Keep unresolved BANC/annotation conflicts out of accepted
                 # flow and coverage totals even when a bare same-name chain
@@ -3532,6 +3551,21 @@ def annotate_branch_records(records: List[Dict[str, Any]]) -> None:
 
 
 def _pair_mapping_origin(linkers, source_type, target_type) -> str:
+    """Unified ``mapping_origin`` for one per-pair mapping row.
+
+    Full-map composed routes (2026-10-01) append an honest
+    ``(transitive via <mid>)`` marker for whichever lane carried the
+    pair through a connector dataset.
+    """
+    origin = _pair_mapping_origin_base(linkers, source_type, target_type)
+    transitive = sorted({str(l.get('transitive_via')) for l in linkers
+                         if l.get('transitive_via')})
+    if transitive and 'transitive via' not in origin:
+        origin += f" (transitive via {', '.join(transitive)})"
+    return origin
+
+
+def _pair_mapping_origin_base(linkers, source_type, target_type) -> str:
     """Unified ``mapping_origin`` for one per-pair mapping row.
 
     Same vocabulary as the compact ``auto_type_mapping.csv`` export and

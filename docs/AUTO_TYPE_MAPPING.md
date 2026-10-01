@@ -247,6 +247,34 @@ refusal (`tail_claimant` + `dominant_others`). Forward lanes, same-name
 slots, singleton-type label mappings (the release's own curation) and
 real conflicts are untouched.
 
+**Route scope — Curated vs Full map (re-ratified 2026-10-01)**: the
+mapper's surfaces (`get_type_bridges`, `get_mapping_decision`, the
+resolver) carry a `route_scope` keyword defaulting to `'curated'` — the
+historical licensed routes, byte-identical. `'full'` switches to a
+COMPLETE parallel mode: `licensed_route_mids` licenses **all datasets**
+as connectors (minus the two endpoints; male-cns v0.9 deduped against
+v1.0 — identical leg output via shared-name delegation; the previously
+forbidden BANC routes included), and
+`compose_full_map_bridges` composes two-leg routes from curated walks
+(leg A into the mid, leg B re-walked per reached mid type). Every
+per-hop rule (glue suppression, subsumptions, crosswalk licensing,
+registry scoping) applies per leg — the mode widens the ROUTE universe,
+never the per-hop rule set. Composed chains flag `transitive_via:
+<mid>` on post-mid hops (propagated to standardized linkers, disclosure
+texts, and the per-pair `mapping_origin` suffix
+`(transitive via <mid>)`), and the combined bridge list stays
+DIRECT-FIRST with the budget capping each class separately. Full-mode
+decisions merge the transitive-only ends into the target universe with
+per-target provenance (fail-closed preserved: a curated 1:1 that gains
+additions becomes `valid_split_evidence` over the expanded set; a
+curated conflict stays fail-closed with transitive ends disclosed).
+Measured yield (200-type samples, 2026-10-01): HEMI→FAFB +88 ends (85
+via BANC), MCNS→BANC +108 (78 via FAFB), FAFB→BANC +94 (67 via MCNS),
+BANC→FAFB +65, HEMI→MCNS +100, MANC→FAFB +12. The validation pipeline
+accepts the scope gated (`MappingValidationConfig.route_scope`,
+`--route-scope full`); transitive pairs carry `route_scope`/`via_mid`
+markers in `mapping_export.csv` and the report's advisory accounting.
+
 **BANC joint type labels**: BANC `type` cells may carry comma-joined
 labels the release itself left ambiguous (e.g. `TuBu09,TuBu10`,
 `PVLP004,PVLP005`; ~130 distinct values per release). These are

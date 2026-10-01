@@ -167,6 +167,7 @@ class MapperSnapshot:
 
     def decision(self, source_type: str, source_dataset: str,
                  target_dataset: str, include_bridges: bool = False,
+                 route_scope: str = 'curated',
                  ) -> Dict[str, Any]:
         """Cached :meth:`get_mapping_decision` for the run."""
         mapper = self.mapper
@@ -174,13 +175,19 @@ class MapperSnapshot:
             return {'status': STATUS_MAPPER_UNAVAILABLE, 'target_type': None,
                     'target_types': [], 'conflicts': [], 'relationship': None}
         key = (str(source_type), str(source_dataset), str(target_dataset),
-               bool(include_bridges))
+               bool(include_bridges), str(route_scope))
         cached = self._decision_cache.get(key)
         if cached is None:
+            # route_scope is passed ONLY in full mode — the curated
+            # default keeps the historical call shape so mapper fakes
+            # (tests) and older snapshots are unaffected.
+            kwargs = {'include_bridges': include_bridges}
+            if route_scope != 'curated':
+                kwargs['route_scope'] = route_scope
             try:
                 cached = mapper.get_mapping_decision(
                     source_type, source_dataset, target_dataset,
-                    include_bridges=include_bridges)
+                    **kwargs)
             except Exception as exc:  # mapper API failure != unmapped data
                 cached = {'status': STATUS_MAPPER_UNAVAILABLE,
                           'target_type': None, 'target_types': [],
@@ -323,6 +330,7 @@ def resolve_valid_targets(
     alias_cache: Optional[Dict[Any, Any]] = None,
     bridge_cache: Optional[Dict[Tuple[str, str, str],
                                 list]] = None,
+    route_scope: str = 'curated',
 ) -> TypeResolution:
     """Resolve one type-level edge with full validity policy.
 
@@ -336,6 +344,9 @@ def resolve_valid_targets(
     ``source_dataset=None`` auto-detects the source namespace from the
     type name (the legacy ``resolve_type_across_datasets`` behavior); when
     detection fails the result is ``unmapped`` with the reason attached.
+    ``route_scope='full'`` (user 2026-10-01) threads the full-map
+    transitive universe through the bridge ends AND the scoping decision;
+    the curated default is byte-identical.
     """
     snap = snapshot if snapshot is not None else MapperSnapshot(mapper)
     meta = snap.metadata()
@@ -398,7 +409,7 @@ def resolve_valid_targets(
     # 1) Curated decision WITHOUT bridge derivation: conflict must win over
     #    any same-name bridge chain (BANC CB1011 class).
     decision = snap.decision(raw, source_dataset, target_dataset,
-                             include_bridges=False)
+                             include_bridges=False, route_scope=route_scope)
     # Same-name-first disclosure (plan-samename-first-fanout-resolution):
     # carry the mapper's own verdict on this resolution so display surfaces
     # can tell a deliberate SELECTION from a bare same-name echo without
@@ -439,8 +450,11 @@ def resolve_valid_targets(
             chains = bridge_cache[bridge_key]
         else:
             try:
+                bkwargs = {'max_bridges': 8}
+                if route_scope != 'curated':
+                    bkwargs['route_scope'] = route_scope
                 chains = mapper.get_type_bridges(
-                    raw, source_dataset, target_dataset, max_bridges=8)
+                    raw, source_dataset, target_dataset, **bkwargs)
             except Exception:
                 chains = []
             if bridge_cache is not None:
@@ -507,8 +521,11 @@ def resolve_valid_targets(
         chains = bridge_cache[bridge_key]
     else:
         try:
+            bkwargs = {'max_bridges': 8}
+            if route_scope != 'curated':
+                bkwargs['route_scope'] = route_scope
             chains = mapper.get_type_bridges(
-                raw, source_dataset, target_dataset, max_bridges=8)
+                raw, source_dataset, target_dataset, **bkwargs)
         except Exception:
             chains = []
         if bridge_cache is not None:
@@ -729,6 +746,7 @@ def resolve_flow_status(
     bridge_ends: Optional[Tuple[str, ...]] = None,
     snapshot: Optional[MapperSnapshot] = None,
     cache: Optional[Dict] = None,
+    route_scope: str = 'curated',
 ) -> Tuple[str, Dict[str, Any]]:
     """The flow-builder status policy, defined once (shared resolver).
 
@@ -752,7 +770,7 @@ def resolve_flow_status(
     """
     snap = snapshot if snapshot is not None else MapperSnapshot(mapper)
     cache_key = (str(source_dataset), str(type_name), str(target_dataset),
-                 int(bridge_end_count))
+                 int(bridge_end_count), str(route_scope))
     if cache is not None and cache_key in cache:
         return cache[cache_key]
 
@@ -766,7 +784,7 @@ def resolve_flow_status(
         return result
 
     decision = snap.decision(type_name, source_dataset, target_dataset,
-                             include_bridges=False)
+                             include_bridges=False, route_scope=route_scope)
     status = decision.get('status', STATUS_UNMAPPED)
     relabeled = status == STATUS_UNMAPPED
     if relabeled:

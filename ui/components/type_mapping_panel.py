@@ -94,169 +94,65 @@ def _format_mapped_neurons(neurons: int, types: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# §full-map route scope (plan-full-map-route-scope.md, user 2026-09-28)
+# §full-map route scope (plan-full-map-route-scope.md; user 2026-09-28;
+# RE-RATIFIED 2026-10-01 as a full parallel mode)
 # ---------------------------------------------------------------------------
-# The FULL-MAP view composes the union of ALL licensed routes — including
-# through an intermediate dataset — ENTIRELY in this panel layer, from the
-# licensed per-leg bridge ends.  The mapper's derivation surface
-# (get_type_bridges / get_mapping_decision) is never asked for transitive
-# routes, so the mapper->TM VEV interface cannot see the composition (the
-# validator reads those surfaces exclusively).  Claim-tier figures are
-# route-scope-INDEPENDENT; only the reach tier composes.
-
-
-def _candidate_mids(mapper, src_ds: str, tgt_ds: str) -> List[str]:
-    """Datasets licensed to bridge the queried pair from BOTH sides.
-
-    A mid must carry at least one registry column toward each endpoint
-    (a one-sided mid cannot complete a composition).  The endpoints
-    themselves are never mids, and BANC releases never mid for each
-    other (the release crosswalk is not a transitive lane)."""
-    from comparison.cross_dataset_type_mapper import BRIDGE_STANDARD
-    mids = []
-    for ds in sorted(set(mapper._dataset_types) | set(mapper._flywire_primaries)):
-        if ds in (src_ds, tgt_ds):
-            continue
-        if ds.startswith('banc') and (src_ds.startswith('banc')
-                                      or tgt_ds.startswith('banc')):
-            continue
-        # a release SIBLING of an endpoint is not a mid (same family — the
-        # release_alias lane is a direct edge, not a transitive route)
-        if (ds.split(':')[0].split('_v')[0]
-                in (src_ds.split(':')[0].split('_v')[0],
-                    tgt_ds.split(':')[0].split('_v')[0])):
-            continue
-        reg_a = (BRIDGE_STANDARD.get((ds, src_ds))
-                 or BRIDGE_STANDARD.get((src_ds, ds)))
-        reg_b = (BRIDGE_STANDARD.get((ds, tgt_ds))
-                 or BRIDGE_STANDARD.get((tgt_ds, ds)))
-        if reg_a and reg_b:
-            mids.append(ds)
-    return mids
+# Full map is now a COMPLETE second mode beside Curated: the composition
+# engine lives in the mapper (compose_full_map_bridges — ALL datasets
+# licensed as connectors), get_type_bridges/get_mapping_decision carry a
+# route_scope keyword, the panel data path (flows, tiers, exports,
+# visualizations) runs on the mode's route universe, and the validation
+# pipeline accepts the mode through MappingValidationConfig.route_scope.
+# Curated stays the default and is byte-identical to the 2026-09-28
+# behavior; claim/reach figures in FULL mode legitimately differ (the
+# mode is wholesale).
 
 
 def compose_full_map_reach(mapper, src_ds: str, tgt_ds: str,
                            source_types: List[str]) -> Dict[str, Any]:
-    """Compose the FULL-MAP reach for one queried pair (plan-full-map-
-    route-scope.md): the union of the direct reach and the transitive
-    reach through every candidate mid, built ENTIRELY from the licensed
-    per-leg bridge ends.
+    """Compose the FULL-MAP reach for one queried pair.
 
-    Panel-layer composition — the mapper's derivation/decision surfaces
-    are never asked for transitive routes, so the mapper->TM VEV
-    interface cannot see this view (§6 boundary, plan §6).  Returns:
+    Thin back-compat wrapper (2026-10-01 re-ratification): the
+    composition engine now lives in the mapper
+    (``CrossDatasetTypeMapper.compose_full_map_bridges`` — the same
+    engine behind ``get_type_bridges(route_scope='full')`` and the
+    full-mode decisions), licensed over ALL datasets as connectors.  The
+    historical return contract is preserved:
 
     * ``ends`` / ``routes`` — every composed target end and the routes
-      reaching it (``('direct', chain-tuple)`` or
-      ``('transitive', route-record)``);
+      reaching it (``direct`` chain lists + ``transitive`` route
+      records carrying ``source_type``/``mid``/``via_type``/``leg_a``/
+      ``leg_b``);
     * ``direct_ends`` / ``transitive_only_ends`` / ``corroborated``;
-    * ``route_conflicts`` — one entry per (source type, mid pair) whose
+    * ``route_conflicts`` — one entry per (mid type, mid pair) whose
       transitive routes license DIFFERENT ends (the union shows both;
       the marker makes the disagreement visible);
     * ``mids`` — the candidate intermediates consulted.
     """
-    def _reach(leg_src: str, leg_dst: str, types: List[str]) -> Dict[str, set]:
-        reach: Dict[str, set] = {}
-        for otype in types:
-            try:
-                chains = mapper.get_type_bridges(
-                    otype, leg_src, leg_dst, max_bridges=0)
-            except Exception:
-                continue
-            for c in chains:
-                end = str(c[-1].get('value') or '')
-                if end:
-                    reach.setdefault(end, set()).add(
-                        tuple((h.get('dataset'), h.get('column'),
-                               h.get('value')) for h in c))
-        return reach
-
-    mids = _candidate_mids(mapper, src_ds, tgt_ds)
-    _all_mid_end_sets: Dict[str, Dict[str, set]] = {}
-    direct = _reach(src_ds, tgt_ds, source_types)
-
-    # composed[end] = {'direct': chain-tuples, 'transitive': route records}
-    composed: Dict[str, Dict[str, list]] = {}
-    for end, rts in direct.items():
-        composed[end] = {'direct': [tuple(sorted(rts, key=str))],
-                         'transitive': []}
-    transitive_only: Dict[str, list] = []
-    conflicts: List[Dict[str, Any]] = []
-    for mid in mids:
-        leg_a = _reach(src_ds, mid, source_types)
-        if not leg_a:
-            continue
-        mid_ends_by_src: Dict[str, Dict[str, list]] = {}
-        for mid_type, a_routes in leg_a.items():
-            # compose per mid type: leg B is re-walked from THIS mid type
-            # so every composed route records its own full provenance
-            leg_b = _reach(mid, tgt_ds, [mid_type])
-            for brt_src, brt_routes in leg_b.items():
-                for brt in brt_routes:
-                    end = str(brt[-1][2]) if brt and len(brt[-1]) > 2 \
-                        else str(brt[-1][1]) if brt else ''
-                    if not end:
-                        continue
-                    route = {
-                        'mid': mid,
-                        'via_type': mid_type,
-                        'leg_a': [list(h) for h in a_routes
-                                  ][0] if a_routes else [],
-                        'leg_b': [list(h) for h in brt],
-                    }
-                    bucket = composed.setdefault(
-                        end, {'direct': [], 'transitive': []})
-                    bucket['transitive'].append(route)
-                    mid_ends_by_src.setdefault(mid_type, {}).setdefault(
-                        end, []).append(route)
-                    if end not in direct:
-                        transitive_only.append(route)
-        # route conflicts (§5 class 3, refined): two different mids
-        # licensing DIFFERENT end sets for the same source type.  A single
-        # mid's transitive-only ends are class 2 (transitive-only), not a
-        # conflict.  The union shows both sets; the marker shows the
-        # disagreement.
-        _all_mid_end_sets[mid] = {mt: set(eb) for mt, eb
-                                  in mid_ends_by_src.items()}
-    # cross-mid comparison after all mids are composed
-    _by_src: Dict[str, Dict[str, set]] = {}
-    for mid_key, esets in getattr(compose_full_map_reach,
-                                  '_last_mid_end_sets', {}).items():
-        pass
-    conflicts_out: List[Dict[str, Any]] = []
-    for src_type in sorted({mt for esets in _all_mid_end_sets.values()
-                            for mt in esets}):
-        end_sets = {mid: esets.get(src_type, set())
-                    for mid, esets in _all_mid_end_sets.items()
-                    if src_type in esets}
-        if len(end_sets) < 2:
-            continue
-        mids_sorted = sorted(end_sets)
-        ref_mid = mids_sorted[0]
-        ref_set = end_sets[ref_mid]
-        for other_mid in mids_sorted[1:]:
-            oset = end_sets[other_mid]
-            if oset != ref_set:
-                conflicts_out.append({
-                    'source_type': src_type,
-                    'mid_a': ref_mid, 'ends_a': sorted(ref_set),
-                    'mid_b': other_mid, 'ends_b': sorted(oset),
-                })
-    conflicts.extend(conflicts_out)
+    composed = mapper.compose_full_map_bridges(source_types, src_ds, tgt_ds)
+    routes_out: Dict[str, Dict[str, list]] = {}
+    transitive_only: List[Dict[str, Any]] = []
+    direct_ends = set(composed.get('direct_ends') or [])
+    for end in composed.get('ends', []):
+        bucket = composed.get('chains_by_end', {}).get(end, {})
+        records = list(composed.get('routes', {}).get(end, []))
+        routes_out[end] = {
+            'direct': [list(h) for h in bucket.get('direct', [])],
+            'transitive': records,
+        }
+        if records and end not in direct_ends:
+            transitive_only.extend(records)
     return {
-        'ends': sorted(composed),
-        'direct_ends': sorted(direct),
+        'ends': list(composed.get('ends', [])),
+        'direct_ends': list(composed.get('direct_ends', [])),
         'routes': {end: {k: v for k, v in rts.items() if v}
-                   for end, rts in composed.items()},
+                   for end, rts in routes_out.items()},
         'transitive_only': transitive_only,
-        'transitive_only_ends': sorted(
-            {end for end, rts in composed.items()
-             if rts.get('transitive') and not rts.get('direct')}),
-        'corroborated': sorted(end for end, rts in composed.items()
-                               if rts.get('direct')
-                               and rts.get('transitive')),
-        'route_conflicts': conflicts,
-        'mids': mids,
+        'transitive_only_ends': list(
+            composed.get('transitive_only_ends', [])),
+        'corroborated': list(composed.get('corroborated', [])),
+        'route_conflicts': list(composed.get('route_conflicts', [])),
+        'mids': list(composed.get('mids', [])),
     }
 
 
@@ -530,7 +426,8 @@ def _compute_type_mapping(queries, datasets, mode,
                 continue
             flows = origin_seeded_flows(
                 origin, o_types, target, source_counts=source_counts,
-                matched_origins=origin_matches.get(origin))
+                matched_origins=origin_matches.get(origin),
+                route_scope=route_scope)
             if not flows:
                 continue
             ends = sorted({f["foreign_type"] for f in flows})
@@ -559,13 +456,14 @@ def _compute_type_mapping(queries, datasets, mode,
             flat = [e for entries in entries_by_foreign.values()
                     for e in entries]
             if flat:
-                enrich_native_type_matches(flat, ds)
+                enrich_native_type_matches(flat, ds, route_scope=route_scope)
             for foreign, entries in entries_by_foreign.items():
                 source_counts = count_types_in_index(index, [
                     t for e in entries
                     for t in e.get("mapped_type_names", [])])
-                flows = build_mapping_flows(entries, ds,
-                                            source_counts=source_counts)
+                flows = build_mapping_flows(
+                    entries, ds, source_counts=source_counts,
+                    route_scope=route_scope)
                 if not flows:
                     continue
                 pair_flows[(ds, foreign)] = \
@@ -936,11 +834,11 @@ def _compute_type_mapping(queries, datasets, mode,
     meta = dict(meta or {})
     meta["notes"] = notes + list(meta.get("notes", []))
 
-    # §full-map route scope (user 2026-09-28): compose the transitive
-    # reach per queried pair — PANEL-LAYER ONLY (the mapper's derivation
-    # and decision surfaces are never asked for transitive routes, so the
-    # mapper->TM VEV interface cannot see this view; plan §6).  Claim-tier
-    # figures above are identical in both scopes by construction.
+    # §full-map route scope (user 2026-09-28; RE-RATIFIED 2026-10-01 as a
+    # full parallel mode): the flows above were already seeded from the
+    # mode's route universe (origin_seeded_flows / enrich carry
+    # route_scope); this block composes the per-pair summary the strip
+    # cell, the breakdown column and the full-map CSV render from.
     full_map: Dict[tuple, Dict[str, Any]] = {}
     if route_scope == 'full' and mapper is not None \
             and getattr(mapper, "_loaded", False):
@@ -963,9 +861,59 @@ def _compute_type_mapping(queries, datasets, mode,
                     f"[full map] {src} -> {tgt}: composed reach "
                     f"{len(info.get('ends', []))} ends "
                     f"(+{_to} transitive-only via "
-                    f"{', '.join(info.get('mids') or [])}) — advisory "
-                    "view; the claim tier and the validation pipeline "
-                    "grade the curated routes only.")
+                    f"{', '.join(info.get('mids') or [])}) — full-map "
+                    "mode; the validation pipeline accepts this scope "
+                    "gated (MappingValidationConfig.route_scope).")
+        # post-fill the per-type breakdown rows with what full mode ADDS
+        # for each source type (matched surfaces): the transitive-only
+        # ends attributed to the row's source type, their connectors, and
+        # the cross-mid conflict count.
+        for row in summary_per_type:
+            pair_key = (row.get('dataset'), row.get('target'))
+            info = full_map.get(pair_key)
+            if not info:
+                continue
+            src_type = str(row.get('type') or '')
+            transitive_ends = set()
+            mids_for_type = set()
+            for end in info.get('transitive_only_ends', []):
+                for r in (info.get('routes', {}).get(end) or {}).get(
+                        'transitive', []):
+                    if r.get('source_type') == src_type:
+                        transitive_ends.add(end)
+                        if r.get('mid'):
+                            mids_for_type.add(r['mid'])
+            conflicts_for_type = [
+                c for c in (info.get('route_conflicts') or [])
+                if c.get('source_type') == src_type]
+            row['fullmap_reach'] = len(transitive_ends) + int(
+                row.get('reach_types') or 0)
+            row['fullmap_delta'] = len(transitive_ends)
+            row['fullmap_mids'] = sorted(mids_for_type)
+            row['fullmap_conflicts'] = len(conflicts_for_type)
+            row['fullmap_cell'] = (
+                f"{row['fullmap_reach']} (+{row['fullmap_delta']} via "
+                f"{', '.join(row['fullmap_mids'])})"
+                + (f" ⚠{row['fullmap_conflicts']}"
+                   if row['fullmap_conflicts'] else ''))
+        # strip cells (matched surfaces): per received dataset, the
+        # composed end count and the transitive-only delta across the
+        # pairs pointing into it — an ADDITIVE labeled cell; the ratified
+        # Evidence reach cell above stays untouched.
+        for row in summary:
+            tgt_ds = row.get('dataset')
+            ends = set()
+            transitive = set()
+            mids = set()
+            for (src, tgt), info in full_map.items():
+                if tgt != tgt_ds:
+                    continue
+                ends.update(info.get('ends', []))
+                transitive.update(info.get('transitive_only_ends', []))
+                mids.update(info.get('mids') or [])
+            row['fullmap'] = (
+                f"{len(ends)} (+{len(transitive)} via "
+                f"{', '.join(sorted(mids))})") if ends else ''
 
     return {"pair_flows": pair_flows, "pools": pools, "meta": meta,
             "composed": html, "datasets": datasets,
@@ -1166,6 +1114,65 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         push_banner(
             f"{name} — check your browser's default downloads folder. "
             "Informational only, please double check.")
+
+    def _deliver_fullmap_csv(src: str, tgt: str, stamp: str) -> None:
+        """Full-map mode (2026-10-01): one row per composed route —
+        source type, connector (mid), via type, both leg chains, the
+        composed end, its class, and the cross-mid conflicts — so the
+        transitive universe is auditable beside the curated CSVs."""
+        import csv as _csv
+        import io
+
+        info = (state.get("full_map") or {}).get((src, tgt)) or {}
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["source_dataset", "source_type", "connector",
+                    "via_type", "class", "target_dataset", "target_type",
+                    "leg_a", "leg_b"])
+
+        def _chain_text(chain) -> str:
+            return " -> ".join(
+                f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+                for h in (chain or []))
+
+        direct_ends = set(info.get("direct_ends") or [])
+        rows_written = 0
+        for end in info.get("ends", []):
+            bucket = (info.get("routes") or {}).get(end) or {}
+            klass = ("corroborated" if end in direct_ends
+                     else "transitive_only")
+            if bucket.get("direct") and not bucket.get("transitive"):
+                continue  # curated-only end: the ordinary CSVs carry it
+            for r in bucket.get("transitive", []):
+                for leg_a in r.get("leg_a") or [None]:
+                    w.writerow([
+                        src, r.get("source_type", ""), r.get("mid", ""),
+                        r.get("via_type", ""), klass, tgt, end,
+                        _chain_text(leg_a),
+                        _chain_text((r.get("leg_b") or [None])[0]),
+                    ])
+                    rows_written += 1
+        for c in info.get("route_conflicts", []):
+            w.writerow([
+                src, c.get("source_type", ""),
+                f"{c.get('mid_a')}|{c.get('mid_b')}", c.get("source_type",
+                                                            ""),
+                "route_conflict", tgt,
+                f"{','.join(c.get('ends_a') or [])} VS "
+                f"{','.join(c.get('ends_b') or [])}",
+                "", ""])
+            rows_written += 1
+        if not rows_written:
+            ui.notify("No composed transitive routes for this pair.",
+                      type="info")
+            return
+        name = (f"mapping_fullmap_{src.replace(':', '_')}_"
+                f"{tgt.replace(':', '_')}_{stamp}.csv")
+        ui.download.content(buf.getvalue(), name, "text/csv")
+        push_banner(
+            f"{name} — check your browser's default downloads folder. "
+            "Full-map composed routes (evidence; connectors licensed per "
+            "the full-map mode).")
 
     def _deliver_branch_bodyids(src: str, tgt: str, flows, pools,
                                 stamp: str) -> None:
@@ -1577,6 +1584,11 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             ui.button("Export branch bodyIds",
                       on_click=lambda: _deliver_branch_bodyids(
                           src, tgt, flows, pools, stamp))
+            if (state.get("route_scope") == "full"
+                    and (state.get("full_map") or {}).get((src, tgt))):
+                ui.button("Export full-map routes (CSV)",
+                          on_click=lambda: _deliver_fullmap_csv(
+                              src, tgt, stamp)).props("outline")
 
     def _coverage_panel(src: str, tgt: str, flows, pools: dict,
                         contexts: dict) -> None:
@@ -1892,7 +1904,20 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "own 1-to-1 pairing, so none was "
                                     "selected (see the Orphan types list for "
                                     "the per-row reason)."},
-                    ],
+                    ] + ([{
+                        "name": "fullmap",
+                        "label": "Full-map ends (transitive via connectors)",
+                        "field": "fullmap", "align": "left",
+                        "tooltip": "FULL-MAP MODE ONLY (2026-10-01): the "
+                                   "composed reach through ALL licensed "
+                                   "connector datasets — direct ends plus "
+                                   "transitive-only ends '(+K via <mids>)'. "
+                                   "An additive disclosure cell; the "
+                                   "Evidence reach cell keeps its curated "
+                                   "definition. The validation pipeline "
+                                   "accepts this scope gated "
+                                   "(route_scope='full')."}]
+                        if (state.get("route_scope") == "full") else []),
                     rows=summary,
                 ).classes("w-full").add_slot("header-cell",
                                              _HEADER_TOOLTIP_SLOT)
@@ -1977,6 +2002,22 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                          "the reach tier (same scope "
                                          "as the strip's Evidence "
                                          "reach column)."),
+                            *([_col(
+                                "fullmap_cell", "Full-map reach",
+                                "fullmap_cell", min_w=150,
+                                tooltip="FULL-MAP MODE ONLY (2026-10-01): "
+                                        "composed ends for this source "
+                                        "type through ALL licensed "
+                                        "connectors — curated reach plus "
+                                        "the transitive-only delta "
+                                        "'(+K via <mids>)'; ⚠ marks "
+                                        "source types where two "
+                                        "connectors license DIFFERENT "
+                                        "end sets (route conflict — the "
+                                        "full list rides the full-map "
+                                        "CSV).")]
+                              if (state.get("route_scope") == "full")
+                              else []),
                             _col("out_map", "Out-map (in-map types)",
                                  "out_map", min_w=120,
                                  tooltip="Neurons of THIS row's mapped "
@@ -2029,8 +2070,16 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                     src, tgt, flows, pools,
                     (state.get("reverse_contexts") or {}).get((src, tgt))
                     or {})
+                _label = _pair_card_label(src, tgt, flows)
+                _fm = (state.get("full_map") or {}).get((src, tgt)) or {}
+                if state.get("route_scope") == "full" and _fm:
+                    _to = len(_fm.get("transitive_only_ends") or [])
+                    _mids = ', '.join(_fm.get('mids') or [])
+                    _label += (f" · full map: +{_to} transitive-only"
+                               f" via {_mids}" if _to else
+                               " · full map: no transitive-only ends")
                 with ui.expansion(
-                        _pair_card_label(src, tgt, flows),
+                        _label,
                         icon="compare_arrows").classes("w-full"):
                     _pair_card(src, tgt, flows, pools)
             if not pair_flows:

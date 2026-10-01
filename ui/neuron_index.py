@@ -4498,6 +4498,7 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
                         bridge_cache: Optional[Dict[Tuple[str, str, str],
                                                       List[List[Dict[str, str]]]]] = None,
                         snapshot: Optional[Any] = None,
+                        route_scope: str = 'curated',
                         ) -> Optional[Dict[str, Any]]:
     """Canonical mapped-target resolution — the UI adapter.
 
@@ -4510,6 +4511,8 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
     mapping (the viewer's mapped view via ``enrich_native_type_matches``)
     and the cross-dataset tab's Type Mapping panel (its summary via
     ``_compute``) resolve every foreign type through THIS function.
+    ``route_scope='full'`` (user 2026-10-01) threads the full-map
+    transitive universe; the curated default is unchanged.
     """
     from comparison.type_resolver import (
         STATUS_CONFLICT, STATUS_MAPPER_UNAVAILABLE, STATUS_MAPPED,
@@ -4519,7 +4522,7 @@ def mapped_type_targets(mapper, foreign_type: str, foreign_ds: str,
     res = resolve_valid_targets(
         mapper, foreign_type, foreign_ds, selected_ds,
         alias_cache=alias_cache, bridge_cache=bridge_cache,
-        snapshot=snapshot)
+        snapshot=snapshot, route_scope=route_scope)
     if res.status == STATUS_MAPPER_UNAVAILABLE:
         return None
     if res.status == STATUS_CONFLICT:
@@ -4559,6 +4562,7 @@ def enrich_native_type_matches(
     selected_dataset: str,
     *,
     should_abort: Optional[Callable[[], bool]] = None,
+    route_scope: str = 'curated',
 ) -> None:
     """Annotate native type matches with their mapped names, in place.
 
@@ -4602,7 +4606,7 @@ def enrich_native_type_matches(
         return mapped_type_targets(
             mapper, foreign_type, foreign_ds, selected_dataset,
             alias_cache=cache, bridge_cache=bridge_cache,
-            snapshot=snapshot)
+            snapshot=snapshot, route_scope=route_scope)
 
     for entry in native_matches:
         if should_abort is not None and should_abort():
@@ -4631,10 +4635,13 @@ def enrich_native_type_matches(
                 bridge_key = (
                     str(local_target), str(selected_dataset), str(foreign_ds))
                 if bridge_key not in bridge_cache:
+                    bkwargs = {'max_bridges': 8}
+                    if route_scope != 'curated':
+                        bkwargs['route_scope'] = route_scope
                     try:
                         bridge_cache[bridge_key] = mapper.get_type_bridges(
                             local_target, selected_dataset, foreign_ds,
-                            max_bridges=8)
+                            **bkwargs)
                     except Exception:
                         bridge_cache[bridge_key] = []
                 chains = bridge_cache[bridge_key]
