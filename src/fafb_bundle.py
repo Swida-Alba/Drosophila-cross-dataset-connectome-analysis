@@ -1,7 +1,8 @@
 """FAFB healed skeleton bundle — appendable columnar zstd container.
 
 ``sk_lod1_783_healed.zst`` (magic ``DRCB1SWC``) stores the healed SWC
-skeletons as zstd-19 frames of column-major numeric blocks (~8 MiB each,
+skeletons of the FlyWire FAFB v783 release as zstd-19 frames of
+column-major numeric blocks (~8 MiB each,
 28 B/node: f32 x/y/z/radius, i32 node_id/type/parent_id).  A sorted neuron
 index (bodyId -> block + row) gives fast per-id random access, and the
 container is *appendable*: lazy conversion appends new blocks and rewrites
@@ -11,8 +12,13 @@ per-skeleton conversion produce the exact same format and can be mixed.
 The application serves skeletons from the healed ZIP directly (zip-only
 mode): ``open_bundle`` resolves the ZIP and returns a bundle with
 ``bundle_path=None`` that never creates, appends to, or requires a
-``.zst`` container.  The columnar format and its tooling
-(``pack|verify|info|compact|append``) remain available for manual
+``.zst`` container — with the ``codex_skeleton_cache.zip`` overlay layered
+on top: lazily fetched Codex SWCs (and their locally pruned repairs) are
+cached there via ``write_overlay_members``, win over the base source per
+id, and never mutate the pristine release files. Provenance for overlay
+members lives in ``codex_skeleton_cache.json`` because this reader strips
+SWC comment lines when rebuilding text.  The columnar format and its
+tooling (``pack|verify|info|compact|append``) remain available for manual
 maintenance; an existing ``.zst`` is opened read-only only when no ZIP
 is present.
 
@@ -278,7 +284,9 @@ class FAFBSkeletonBundle:
     lock.  When ``zip_path`` is given and ``lazy_convert`` is true, ids
     missing from the container are served from the ZIP and converted into
     the bundle (buffered into ~8 MiB blocks, flushed on ``flush``/``close``
-    and when the buffer fills).
+    and when the buffer fills).  ``overlay_path`` adds the Codex
+    skeleton-cache overlay: members win over every other source for their
+    ids (see the module docstring).
     """
 
     def __init__(self, bundle_path, zip_path: Optional[Path] = None,

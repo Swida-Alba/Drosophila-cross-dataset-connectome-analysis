@@ -201,8 +201,11 @@ def get_fafb_skeleton_bundle(data_dir):
     """Get a healed-zip reader for the FAFB skeleton source.
 
     Serves the healed ZIP directly (zip-only mode: no ``.zst`` container is
-    created or appended to).  A legacy ``.zst`` container is opened
-    read-only only when no zip exists.  Returns None when neither exists.
+    created or appended to), with the ``codex_skeleton_cache.zip`` overlay
+    (lazily fetched Codex skeletons + pruned repairs) layered on top when
+    present — overlay members win per id and the release files stay
+    byte-untouched.  A legacy ``.zst`` container is opened read-only only
+    when no zip exists.  Returns None when neither exists.
     """
     data_path = Path(data_dir)
     if is_banc_dataset(data_path.name):

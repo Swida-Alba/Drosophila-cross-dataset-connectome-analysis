@@ -11,7 +11,7 @@ Use the exact identifiers below. Version suffixes are significant.
 | `hemibrain:v1.2.1` | NeuPrint | adult central brain |
 | `optic-lobe:v1.1` | NeuPrint | optic-lobe dataset |
 | `manc:v1.2.1` | NeuPrint | male VNC |
-| `flywire_FAFB_v783` | FlyWire local files (optional CAVE API) | requires converted local files; CAVE token only for explicit remote fetch/fallback |
+| `flywire_FAFB_v783` | FlyWire local files (+ Codex lazy fetch) | requires converted local files; `flywire_codex` token enables Settings downloads and lazy per-neuron skeleton fetch (cached into the `codex_skeleton_cache.zip` overlay); CAVE token is an advanced config-file-only fallback |
 | `banc_v888` | Public BANC bucket (auto-prepared) | no token; neuron metadata + connections auto-download on first use; manual Codex files remain an offline fallback |
 | `banc_v626` | Public BANC bucket (auto-prepared) | legacy BANC release; same public-bucket preparation |
 
@@ -62,6 +62,7 @@ Typical file entries are:
 {
   "tokens": {
     "neuprint": "...",
+    "flywire_codex": "...",
     "cave": "..."
   },
   "envs": {
@@ -69,6 +70,10 @@ Typical file entries are:
   }
 }
 ```
+
+`flywire_codex` (Settings → API Tokens) powers the FAFB Data Downloads
+card and the lazy per-neuron skeleton fetch; `cave` is advanced and
+optional (live-CAVE fallback only — there is no Settings input for it).
 
 Never include token contents in logs, patches, notebooks, output reports, or
 agent prompts. Use `--require-token` with the install verifier when the user

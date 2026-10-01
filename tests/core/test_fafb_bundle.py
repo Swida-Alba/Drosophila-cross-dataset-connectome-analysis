@@ -327,3 +327,80 @@ class TestCli:
             capture_output=True, text=True, cwd=str(PROJECT_ROOT), env=env)
         assert run.returncode == 0 and "deleted" in run.stdout
         assert not zip_path.exists() and out.exists()
+
+
+class TestCodexOverlay:
+    """Overlay bundle: union reads, overlay-wins, rewrite safety."""
+
+    SWC = ("# SWC format file\n"
+           "1 1 0 0 0 1 -1\n"
+           "2 3 100 0 0 1 1\n")
+
+    def _dataset_dir(self, tmp_path, with_base=True):
+        from fafb_bundle import write_overlay_members
+        dataset_dir = tmp_path / "flywire_FAFB_v783"
+        dataset_dir.mkdir()
+        if with_base:
+            import zipfile
+            with zipfile.ZipFile(dataset_dir / "sk_lod1_783_healed.zip",
+                                 "w") as zf:
+                zf.writestr("111.swc", self.SWC)
+                zf.writestr("222.swc", self.SWC)
+        return dataset_dir
+
+    def test_overlay_wins_over_base_and_union_ids(self, tmp_path):
+        from fafb_bundle import open_bundle, write_overlay_members
+        dataset_dir = self._dataset_dir(tmp_path)
+        write_overlay_members(dataset_dir, {"333": self.SWC},
+                              origin="fafb_codex_healed")
+        bundle = open_bundle(dataset_dir)
+        try:
+            assert bundle.get(333) is not None      # overlay-only id
+            assert bundle.get(111) is not None      # base id
+            assert bundle.contains(333) and bundle.contains(111)
+            assert bundle.ids() == {111, 222, 333}
+        finally:
+            bundle.close()
+
+    def test_overlay_replaces_base_member_for_same_id(self, tmp_path):
+        from fafb_bundle import open_bundle, write_overlay_members
+        dataset_dir = self._dataset_dir(tmp_path)
+        replacement = "9 1 0 0 0 1 -1\n"
+        write_overlay_members(dataset_dir, {"111": replacement},
+                              origin="local_extrusion_fix")
+        bundle = open_bundle(dataset_dir)
+        try:
+            assert bundle.get(111).strip() == replacement.strip()
+        finally:
+            bundle.close()
+
+    def test_rewrite_preserves_other_members_and_manifest(self, tmp_path):
+        from fafb_bundle import (open_bundle, read_overlay_manifest,
+                                 write_overlay_members)
+        dataset_dir = self._dataset_dir(tmp_path)
+        write_overlay_members(dataset_dir, {"111": self.SWC, "333": self.SWC},
+                              origin="fafb_codex_healed")
+        write_overlay_members(dataset_dir, {"111": "7 1 0 0 0 1 -1\n"},
+                              origin="local_extrusion_fix")
+        bundle = open_bundle(dataset_dir)
+        try:
+            assert bundle.get(111).strip() == "7 1 0 0 0 1 -1"
+            assert bundle.get(333) is not None  # untouched sibling kept
+        finally:
+            bundle.close()
+        manifest = read_overlay_manifest(dataset_dir)
+        assert manifest["111"]["origin"] == "local_extrusion_fix"
+        assert manifest["111"]["replaced"] is True
+        assert manifest["333"]["replaced"] is False
+
+    def test_overlay_only_without_base_zip(self, tmp_path):
+        from fafb_bundle import open_bundle, write_overlay_members
+        dataset_dir = self._dataset_dir(tmp_path, with_base=False)
+        write_overlay_members(dataset_dir, {"111": self.SWC},
+                              origin="fafb_codex_healed")
+        bundle = open_bundle(dataset_dir)
+        try:
+            assert bundle is not None
+            assert bundle.get(111) is not None
+        finally:
+            bundle.close()

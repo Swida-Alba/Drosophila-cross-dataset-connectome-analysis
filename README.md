@@ -120,7 +120,7 @@ Every UI panel links to its own instruction guide (see [docs/ui_guides/README.ht
 
 ## Supported Datasets
 
-All NeuPrint server datasets are supported (verified against `api.neuprint.janelia.org`), plus the FAFB and standalone BANC local releases. NeuPrint datasets are fetched automatically; FAFB uses local Codex files — auto-downloadable from the Settings tab with a FlyWire Codex token (skeletons also fetch lazily per neuron) — plus optional CAVE access, while BANC uses its public release bucket with no CAVE token (see the Settings tab).
+All NeuPrint server datasets are supported (verified against `api.neuprint.janelia.org`), plus the FAFB and standalone BANC local releases. NeuPrint datasets are fetched automatically; FAFB uses local Codex files — auto-downloadable from the Settings tab with a FlyWire Codex token (skeletons also fetch lazily per neuron) — plus an advanced optional CAVE fallback (config-file only), while BANC uses its public release bucket with no CAVE token (see the Settings tab).
 
 <details>
 <summary><b>NeuPrint (11 datasets)</b> — male-cns, hemibrain, optic-lobe, manc, fib19, mushroombody</summary>
