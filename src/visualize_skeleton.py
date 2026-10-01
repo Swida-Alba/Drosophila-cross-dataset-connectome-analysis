@@ -11616,21 +11616,7 @@ class VisualizeSkeleton:
             nonlocal remaining
             if not remaining:
                 return
-            try:
-                import codex_downloader
-                token = codex_downloader.get_codex_token(self.script_path)
-            except Exception:
-                return
-            if not token:
-                return
-            try:
-                swcs, _absent = codex_downloader.fetch_skeleton_swcs(
-                    list(remaining), project_root=self.script_path)
-            except Exception as exc:
-                self._vprint(
-                    f'  ⚠️ FlyWire Codex lazy fetch skipped: {exc}',
-                    level='simple')
-                return
+            swcs = self._fetch_fafb_skeletons_via_codex(list(remaining))
             if not swcs:
                 return
             fetched = {}
@@ -11883,6 +11869,32 @@ class VisualizeSkeleton:
                 self._vprint(
                     f'  ⚠️ Failed to save extrusion repair status: '
                     f'{exc}', level='full')
+
+    def _fetch_fafb_skeletons_via_codex(self, body_ids) -> dict:
+        """Fetch healed SWC texts lazily from the FlyWire Codex bundle.
+
+        Token-gated (``flywire_codex``): a missing token, a fetch failure
+        or absent bodies return ``{}`` so the resolver falls through to the
+        CAVE step unchanged. One ranged GET per neuron against the bundle
+        whose zip64 central directory is cached under
+        ``cache/<ds>/skeletons/`` (see ``codex_downloader``).
+        """
+        try:
+            import codex_downloader
+            token = codex_downloader.get_codex_token(self.script_path)
+        except Exception:
+            return {}
+        if not token:
+            return {}
+        try:
+            swcs, _absent = codex_downloader.fetch_skeleton_swcs(
+                list(body_ids), project_root=self.script_path)
+        except Exception as exc:
+            self._vprint(
+                f'  ⚠️ FlyWire Codex lazy fetch skipped: {exc}',
+                level='simple')
+            return {}
+        return swcs
 
     def _fetch_fafb_skeletons_via_cave(self, body_ids) -> dict:
         """Fetch FAFB trees through CAVE by skeletonizing the raw mesh.
