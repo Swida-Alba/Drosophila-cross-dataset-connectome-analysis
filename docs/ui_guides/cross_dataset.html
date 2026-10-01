@@ -719,6 +719,14 @@
     <b>Plots</b> (per-threshold and density-matched charts as separate
     sub-tabs), <b>Matrices &amp; Networks</b>, <b>Cross-views</b> and
     <b>Notes</b>. Deep links: <code>#tab=combos</code> etc.:</p>
+  <p>Additionally, <code>scripts/PathsPairReport.py &lt;run_folder&gt;</code>
+    can generate a per-source-target-pair report (<code>path_report.html</code>
+    + <code>paths_pair_breakdown/*.csv</code>) at the run root after the
+    fact: each <code>dataset_data/&lt;dataset&gt;/minsyn_&lt;N&gt;/</code>
+    delegate becomes a unit, the Global tab gives the pair × unit path-count
+    matrix and coverage histogram, and the Pair Explorer renders per-pair
+    presence matrices and interactive networks alongside this comparison
+    report (see <code>docs/OUTPUT_FILES.md</code> §1 "Pair Report").</p>
   <pre><code>{output_dir}/cross-dataset_{source}_to_{target}_{dataset_codes}_{timestamp}/
   comparison_report.html, comparison_report.txt   # single-page report shell
                                                    # (report_layout='tabbed' opts

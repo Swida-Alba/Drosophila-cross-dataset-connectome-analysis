@@ -205,6 +205,17 @@ find-paths-shortest_MCNS_aMe12_to_PPL101_L1w3_20260815_142717/  &lt;!-- Shortest
     <code>edge_budget_landing</code>, <code>edge_weight_floor</code>) — so a
     budgeted run states the exact strength cutoff its outputs represent.</p>
 
+  <h2>Pair report (post-hoc)</h2>
+  <p>After a run, <code>scripts/PathsPairReport.py &lt;run_folder&gt;</code>
+    generates a per-source-target-pair report INTO the run folder:
+    <code>path_report.html</code> (Overview / Global / Pair Explorer / Data,
+    with interactive networks and a per-pair paths presence matrix) plus two
+    lossless CSVs under <code>paths_pair_breakdown/</code>. Every capped
+    view in the report (top-10 paths per pair and length, 50 matrix rows)
+    states its cap and links to the uncapped CSVs. Works for Complete
+    Paths, Shortest Paths, and cross-dataset runs; see
+    <code>docs/OUTPUT_FILES.md</code> §1 "Pair Report".</p>
+
   <h2>Common issues &amp; tips</h2>
   <div class="callout tip">
     <b>No paths found</b> - raise Max Intermediate Layers, lower Min Synapse,

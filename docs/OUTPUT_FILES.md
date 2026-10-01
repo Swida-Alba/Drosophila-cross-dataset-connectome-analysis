@@ -202,6 +202,45 @@ Written when `find_reciprocal=True`:
 *   **`reciprocal_type_network.html`** / **`reciprocal_type_heatmap.html`**: Reciprocal visualizations
 *   **`parameters.csv`**: Reciprocal-analysis parameters
 
+#### Pair Report (`path_report.html`, `paths_pair_breakdown/`) — post-hoc
+
+Not written by the run itself: `scripts/PathsPairReport.py` (CLI over
+`src/paths_pair_report.py`) generates these INTO an existing run folder, for
+Complete Paths, Shortest Paths, and cross-dataset runs alike (each
+`dataset_data/<dataset>/minsyn_<N>/` delegate becomes a "unit"; unit labels
+are the raw folder names, e.g. `minsyn_5_applied_floor`; skipped delegates
+hold no paths table and are ignored). Re-running overwrites only these
+files, byte-identically modulo the report's `Generated:` timestamp.
+
+*   **`path_report.html`**: Self-contained per-source-target-pair report
+    (house cross-dataset styling; the vis-network library is **vendored**
+    into the file, so the interactive networks work fully offline — a
+    static-SVG map renders instead if the library ever fails to
+    initialize). Four pages: **Overview** (run summary, hops
+    histogram, pair table, artifact links), **Global** (per-unit stats, the
+    pair × unit path-count matrix — the global analog of the path presence
+    matrix — a pairs-by-unit-coverage histogram, and an interactive global
+    route network of the top 60 edges by traversal count), **Pair
+    Explorer** (Source and Target selects render one pair pane: paths ×
+    units presence matrix, the capped top-paths table, and an interactive
+    layered network coloring shared (blue) vs unique (gray) intermediates),
+    and **Data** (unit rollup + artifact links). Caps are viewport-only —
+    top-10 paths per (pair, length), 50 presence-matrix rows per pair, 50
+    global-matrix pairs, 60 global-network edges — and every capped view
+    states its cap and links to the lossless CSVs below. Ranking is
+    bottleneck-first (`min_weight` desc, `path_prob` desc, path asc).
+    Shared = intermediate on ≥2 paths of the same pair, unique = exactly 1
+    (classified over the pair's FULL path set, drawn subset colored
+    accordingly).
+*   **`paths_pair_breakdown/pair_breakdown_paths.csv`**: One row per path,
+    uncapped — columns `dataset`, `threshold`, `unit`, `source`, `target`,
+    `pair`, `rank_in_pair_length`, `path`, `weights`, `probabilities`,
+    `ratios`, `min_weight`, `path_prob`, `length`, `paths_in_pair`.
+*   **`paths_pair_breakdown/pair_breakdown_intermediates.csv`**: One row
+    per (pair, intermediate) — `dataset`, `threshold`, `unit`, `source`,
+    `target`, `intermediate`, `n_paths_using`, `classification`
+    (`shared` | `unique`), `min_hop_position`.
+
 > ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio`, `traversal_probability`, and filtering thresholds.
 >
 > ℹ️ With `skip_bodyId=False`, bodyId-level tables are written alongside the type-level ones: `data_details/connection_info_bodyId.csv` (edge table), `{source}_to_{target}_allpaths_bodyId_paths.csv` (bodyId-level path table, same score columns as the type table), and `data_details/conn_mat_bodyId_weight.csv` / `_ratio.csv` / `_prob.csv` bodyId-level matrices. With `output_format='xlsx'`, tables are written as multi-sheet Excel workbooks instead of CSVs (sheets mirror the CSV file names, e.g. `connection_info_bodyId`, `conn_mat_type_weight`). The structure above reflects the UI defaults (`skip_bodyId=True`, `output_format='csv'`).

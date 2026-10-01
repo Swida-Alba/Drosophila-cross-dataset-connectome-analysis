@@ -90,6 +90,24 @@ python skills/drocat-usage/scripts/run_direct.py \
 - Use `visualize_before_reconstruct=False` (the UI default) for headless runs and
   hand off to PlotPath for the interactive network.
 
+## Pair report (post-hoc)
+
+`scripts/PathsPairReport.py` generates a per-source-target-pair HTML report
+(`path_report.html`) plus two lossless breakdown CSVs
+(`paths_pair_breakdown/pair_breakdown_paths.csv`,
+`pair_breakdown_intermediates.csv`) INTO an existing run folder — Overview /
+Global / Pair Explorer (Source+Target selects; presence matrix, capped
+top-10-per-length table, interactive layered network coloring shared vs
+unique intermediates) / Data. Works for complete, shortest, and
+cross-dataset runs (delegates become units). Cap notes in the report link
+every capped view to the uncapped CSVs.
+
+```bash
+python scripts/PathsPairReport.py <run_dir> [--top-per-length 10] \
+    [--matrix-rows 50] [--global-pairs 50] [--global-edges 60] \
+    [--rank-by min_weight]
+```
+
 ## Notes
 
 - `max_interlayer=0` means "no limit" only when a source/target set is marked as

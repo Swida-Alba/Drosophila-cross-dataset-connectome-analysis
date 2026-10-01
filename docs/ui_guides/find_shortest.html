@@ -230,6 +230,16 @@
     any warnings recorded for the run. Format (html / txt / markdown /
     disabled) is set in Settings → Default Settings → Run Guide Format.
   </div>
+  <div class="callout tip">
+    <b>Pair report (post-hoc):</b>
+    <code>scripts/PathsPairReport.py &lt;run_folder&gt;</code> generates
+    <code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>
+    into the run folder — per-pair presence matrices, capped top-paths
+    tables, and interactive networks (vendored vis-network, works offline).
+    Shortest is minimum-hop per bodyId pair, so a type-level pair can still
+    span several lengths; the per-length cap applies normally (the report
+    states this).
+  </div>
 </main>
 </body>
 </html>
