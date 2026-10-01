@@ -3554,14 +3554,14 @@ def _pair_mapping_origin(linkers, source_type, target_type) -> str:
     """Unified ``mapping_origin`` for one per-pair mapping row.
 
     Full-map composed routes (2026-10-01) append an honest
-    ``(transitive via <mid>)`` marker for whichever lane carried the
+    ``(composed via <mid>)`` marker for whichever lane carried the
     pair through a connector dataset.
     """
     origin = _pair_mapping_origin_base(linkers, source_type, target_type)
-    transitive = sorted({str(l.get('transitive_via')) for l in linkers
-                         if l.get('transitive_via')})
-    if transitive and 'transitive via' not in origin:
-        origin += f" (transitive via {', '.join(transitive)})"
+    composed = sorted({str(l.get('transitive_via')) for l in linkers
+                       if l.get('transitive_via')})
+    if composed and 'composed via' not in origin:
+        origin += f" (composed via {', '.join(composed)})"
     return origin
 
 

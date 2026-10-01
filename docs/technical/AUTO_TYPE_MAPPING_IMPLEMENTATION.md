@@ -342,9 +342,11 @@ via-badges and route-conflict markers, pair-card counts, per-pair
 `mapping_fullmap_*.csv`); `mapping_origin` gains the
 `(transitive via <mid>)` suffix.  `MappingValidator` accepts
 `route_scope in {curated, full}` (curated = today), `_pairs_for_type`
-uses the full decision, transitive `TypePair`s carry
-`route_scope='full'` + `via_mid` (advisory; exported in
-`mapping_export.csv` and the report's advisory accounting), and the
+uses the full decision, composed `TypePair`s carry
+`route_basis='composed'` + `via_mid` (advisory; exported in
+`mapping_export.csv` / `validation_results.csv` and the report's
+advisory accounting — direct pairs keep `route_basis='direct'` even
+in full runs: the basis names the ROUTE, not the run mode), and the
 CLI gains `--route-scope`.  Signature guards re-ratified in
 `test_type_mapper_real_datasets.py` (defaults pinned to 'curated').
 

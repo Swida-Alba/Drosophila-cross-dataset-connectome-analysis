@@ -2329,9 +2329,9 @@ def test_full_map_mode_all_datasets_connectors(mapper):
 
 def test_full_map_validator_export_rows_labeled(mapper):
     """R6 regression (2026-10-01 review): the run's mapping_export.csv
-    rows carry route_scope/via_mid for transitive pairs — the columns
+    rows carry route_basis/via_mid for composed pairs — the columns
     existed via the empty-file schema registry, but the row builder
-    missed them."""
+    missed them (renamed to direct/composed same day)."""
     from comparison.mapping_validation import (
         MappingValidationConfig, MappingValidator)
     cfg = MappingValidationConfig(
@@ -2344,6 +2344,8 @@ def test_full_map_validator_export_rows_labeled(mapper):
     rows = validator._mapping_export_rows()
     by_target = {r['target_type']: r for r in rows}
     assert 'CB1963' in by_target
-    assert by_target['CB1963']['route_scope'] == 'full'
+    assert by_target['CB1963']['route_basis'] == 'composed'
     assert by_target['CB1963']['via_mid'].startswith('banc')
-    assert by_target.get('CB1080', {}).get('route_scope') == 'full'
+    # direct pairs keep 'direct' even inside a full-mode run (2026-10-01
+    # rename round): the basis names the ROUTE, not the run mode
+    assert by_target.get('CB1080', {}).get('route_basis') == 'direct'

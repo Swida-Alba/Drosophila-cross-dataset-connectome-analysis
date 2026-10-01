@@ -272,8 +272,10 @@ Measured yield (200-type samples, 2026-10-01): HEMI→FAFB +88 ends (85
 via BANC), MCNS→BANC +108 (78 via FAFB), FAFB→BANC +94 (67 via MCNS),
 BANC→FAFB +65, HEMI→MCNS +100, MANC→FAFB +12. The validation pipeline
 accepts the scope gated (`MappingValidationConfig.route_scope`,
-`--route-scope full`); transitive pairs carry `route_scope`/`via_mid`
-markers in `mapping_export.csv` and the report's advisory accounting.
+`--route-scope full`); composed pairs carry `route_basis=composed` +
+`via_mid` markers in `mapping_export.csv` / `validation_results.csv`
+and the report's advisory accounting (the pair-level vocabulary is
+DIRECT/COMPOSED — it names the pair's route, not the run mode).
 
 **BANC joint type labels**: BANC `type` cells may carry comma-joined
 labels the release itself left ambiguous (e.g. `TuBu09,TuBu10`,

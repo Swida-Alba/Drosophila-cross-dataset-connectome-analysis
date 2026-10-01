@@ -88,7 +88,7 @@ $PY scripts/RunMappingValidation.py \
   units per queried source). Morphology is mandatory in this mode, so
   `--no-morphology` beside `--mode pooling` is a usage error, as is a target outside FAFB / male-cns / BANC.
 
-`--route-scope` (2026-10-01): `curated` (default) = exactly the historical licensed routes; `full` = the full-map parallel mode — ALL datasets licensed as connectors, decisions carry the transitive ends, and transitive-backed pairs are labeled `route_scope`/`via_mid` in `mapping_export.csv` plus the report's advisory accounting (`full_map_pairs`). Full-mode claim/reach numbers are NOT comparable with curated runs.
+`--route-scope` (2026-10-01): `curated` (default) = exactly the historical licensed routes; `full` = the full-map parallel mode — ALL datasets licensed as connectors, decisions carry the transitive ends, and composed pairs are labeled `route_basis=composed` + `via_mid` in `mapping_export.csv` / `validation_results.csv` plus the report's advisory accounting (`composed_pairs`). Full-mode claim/reach numbers are NOT comparable with curated runs.
 - Stage 2 pre-flights the TARGET profile cache: typed neurons missing
   from the cache are built through the profiler backend (cache-first,
   resumable, ~125 neurons/s measured on banc_v888; fail-open to

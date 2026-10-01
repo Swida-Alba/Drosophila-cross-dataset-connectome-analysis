@@ -166,7 +166,7 @@ class MappingValidationConfig:
     # exactly the historical claim tier; 'full' additionally accepts the
     # full-map transitive universe — decisions come from
     # get_mapping_decision(route_scope='full') and transitive-backed
-    # pairs carry route_scope/via_mid markers so the report labels them.
+    # pairs carry route_basis/via_mid markers so the report labels them.
     # Any other value still fails fast below.
     route_scope: str = 'curated'
     query_types: List[str] = field(default_factory=list)
@@ -490,12 +490,13 @@ class TypePair:
     # None for ordinary pairs.  Advisory marking only — the pair validates
     # exactly like any other mapped pair.
     same_name_first: Optional[dict] = None
-    # §full-map mode (user 2026-10-01): 'curated' (default — the pair
-    # comes from the historical claim tier) or 'full' with ``via_mid``
-    # set when the target was reached through a connector dataset.
-    # Advisory marking — the report labels transitive pairs; the
-    # validation bins treat them exactly like curated pairs.
-    route_scope: str = 'curated'
+    # §full-map mode (user 2026-10-01; vocabulary renamed same-day
+    # review): 'direct' (default — the pair's evidence lives entirely
+    # inside the two endpoint datasets) or 'composed' with ``via_mid``
+    # naming the connector dataset the route was composed through.
+    # Advisory marking — the report labels composed pairs; the
+    # validation bins treat them exactly like direct pairs.
+    route_basis: str = 'direct'
     via_mid: str = ''
     # §three-tier readout (user 2026-09-27): 'claim' (default — the pair
     # validates into the ordinary bins) or 'disclosure' (an end the mapper
@@ -728,11 +729,11 @@ def compute_set_coverage(pairs: List["TypePair"],
     # §full-map mode (2026-10-01): additive transitive accounting — pairs
     # whose target was reached through a connector dataset, and their
     # connectors.  Zero in curated runs.
-    fullmap_pairs = [p for p in pairs if getattr(p, 'route_scope', '') == 'full'
-                     and getattr(p, 'via_mid', '')]
-    out['full_map_pairs'] = len(fullmap_pairs)
-    out['full_map_types'] = len({p.source_type for p in fullmap_pairs})
-    out['full_map_mids'] = sorted({p.via_mid for p in fullmap_pairs})
+    composed_pairs = [p for p in pairs
+                      if getattr(p, 'route_basis', 'direct') == 'composed']
+    out['composed_pairs'] = len(composed_pairs)
+    out['composed_types'] = len({p.source_type for p in composed_pairs})
+    out['composed_mids'] = sorted({p.via_mid for p in composed_pairs})
     out.update(extra_counters or {})
     return out
 
@@ -1155,7 +1156,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'validation_results.csv': [
         'query', 'source_dataset', 'source_type', 'target_dataset',
         'target_type', 'mapping_status', 'relationship', 'same_name_first',
-        'same_name_rivals', 'route_scope', 'via_mid',
+        'same_name_rivals', 'route_basis', 'via_mid',
         'pool_basis', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_bodyId',
         'source_connectivity_status', 'verdict', 'metric_top1', 'flags',
@@ -1268,7 +1269,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'mapping_export.csv': [
         'source_dataset', 'source_type', 'target_dataset', 'target_type',
         'relationship', 'mapping_status', 'tier',
-        'same_name_first', 'route_scope', 'via_mid',
+        'same_name_first', 'route_basis', 'via_mid',
         'same_name_rivals', 'query', 'is_selected', 'chain_rank',
         'selected_bridge', 'source_bridge', 'bridge_linkers',
         'selected_linker_values',
@@ -2709,14 +2710,15 @@ class MappingValidator:
                     'disposition': snf.get('disposition'),
                 }
             # §full-map mode (2026-10-01): label pairs whose target was
-            # reached through a connector dataset (advisory marking —
-            # the report discloses the transitive route; the bins treat
-            # the pair exactly like a curated pair).
+            # COMPOSED through a connector dataset (advisory marking —
+            # the report discloses the composed route; the bins treat
+            # the pair exactly like a direct pair).  Direct pairs keep
+            # 'direct' even inside a full-mode run.
             if str(getattr(cfg, 'route_scope', 'curated')) == 'full':
-                pair.route_scope = 'full'
                 prov = (dec.get('target_provenance') or {}).get(tgt_type) \
                     or {}
                 if prov.get('mid'):
+                    pair.route_basis = 'composed'
                     pair.via_mid = str(prov['mid'])
             pair.parent_source_pool = list(pair.source_pool)
             pair.parent_target_pool = list(pair.target_pool)
@@ -3199,7 +3201,7 @@ class MappingValidator:
             'same_name_rivals': ';'.join(
                 pair.same_name_first.get('rivals') or [])
             if pair.same_name_first else '',
-            'route_scope': pair.route_scope,
+            'route_basis': pair.route_basis,
             'via_mid': pair.via_mid,
             'pool_basis': pair.pool_basis,
             'branch_linker_values': pair.linker_values,
@@ -3276,7 +3278,7 @@ class MappingValidator:
             'same_name_rivals': ';'.join(
                 pair.same_name_first.get('rivals') or [])
             if pair.same_name_first else '',
-            'route_scope': pair.route_scope,
+            'route_basis': pair.route_basis,
             'via_mid': pair.via_mid,
             'pool_basis': pair.pool_basis,
             'target_pool_basis': pair.target_pool_basis,
@@ -7217,7 +7219,7 @@ class MappingValidator:
                 'same_name_rivals': ';'.join(
                     p.same_name_first.get('rivals') or [])
                 if p.same_name_first else '',
-                'route_scope': getattr(p, 'route_scope', 'curated'),
+                'route_basis': getattr(p, 'route_basis', 'direct'),
                 'via_mid': getattr(p, 'via_mid', ''),
                 'query': p.query,
                 'is_selected': True,

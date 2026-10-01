@@ -1831,17 +1831,17 @@ def _coverage_tab(d: Dict) -> str:
         [r for r in excl_rows
          if r.get('reason') == 'multivalue_cell'])
     mv_tgt = cov.get('multivalue_target_types') or 0
-    fullmap_pairs = cov.get('full_map_pairs') or 0
+    composed_pairs = cov.get('composed_pairs') or 0
     snf_rows: list = []
-    if fullmap_pairs:
+    if composed_pairs:
         snf_rows.append((
-            'Full-map transitive pairs',
-            f"{fullmap_pairs} pair(s) across "
-            f"{cov.get('full_map_types') or 0} source type(s) reached "
+            'Full-map composed pairs',
+            f"{composed_pairs} pair(s) across "
+            f"{cov.get('composed_types') or 0} source type(s) reached "
             f"through connector dataset(s) "
-            f"{', '.join(cov.get('full_map_mids') or [])} — labeled "
-            'route_scope/via_mid in mapping_export.csv '
-            '(2026-10-01 full-map mode)'))
+            f"{', '.join(cov.get('composed_mids') or [])} — labeled "
+            'route_basis=composed + via_mid in mapping_export.csv / '
+            'validation_results.csv (2026-10-01 full-map mode)'))
     if any((snf_pairs, snf_held, snf_excl, mv_types, mv_tgt)):
         snf_rows.append((
             'Same-name-first selections (fired)',

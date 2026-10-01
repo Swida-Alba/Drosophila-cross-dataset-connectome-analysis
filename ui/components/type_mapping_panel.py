@@ -184,7 +184,7 @@ def build_fullmap_csv(info: Dict[str, Any], src: str, tgt: str
     for end in info.get("ends", []):
         bucket = (info.get("routes") or {}).get(end) or {}
         klass = ("corroborated" if end in direct_ends
-                 else "transitive_only")
+                 else "composed_only")
         if bucket.get("direct") and not bucket.get("transitive"):
             continue  # curated-only end: the ordinary CSVs carry it
         for r in bucket.get("transitive", []):
