@@ -4,9 +4,12 @@ removal via ``src/storage_inventory.py``)."""
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from nicegui import run, ui
+
+from ..codex_pull import codex_puller, human_bytes
 
 from ..config import (
     CACHE_SIMPLIFICATION_OPTIONS,
@@ -505,6 +508,7 @@ def create_settings_tab():
             token_state = {
                 "neuprint": token_sources["neuprint"][0],
                 "cave": token_sources["cave"][0],
+                "flywire_codex": token_sources["flywire_codex"][0],
             }
 
             # Reminder when tokens are missing: the NeuPrint token is
@@ -523,26 +527,36 @@ def create_settings_tab():
                     missing.append("neuprint")
                 if not token_state.get("cave"):
                     missing.append("cave")
-                if not missing:
+                codex_note = ""
+                if not token_state.get("flywire_codex"):
+                    codex_note = (
+                        " ℹ️ FlyWire Codex token not configured - optional; "
+                        "it enables the automatic FAFB downloads on this tab "
+                        "and lazy skeleton fetching."
+                    )
+                if not missing and not codex_note:
                     token_reminder.set_visibility(False)
                     return
                 token_reminder.set_visibility(True)
                 if missing == ["neuprint"]:
-                    token_reminder_text.text = (
+                    base = (
                         "⚠️ NeuPrint token not configured - it is required for NeuPrint datasets. "
                         "Set it below or in config.json."
                     )
                 elif missing == ["cave"]:
-                    token_reminder_text.text = (
+                    base = (
                         "ℹ️ CAVE token not configured - optional; it is only needed for "
                         "FAFB online CAVE fetching. BANC never uses it."
                     )
+                elif not missing:
+                    base = ""
                 else:
-                    token_reminder_text.text = (
+                    base = (
                         "⚠️ No API tokens configured. The NeuPrint token is required for NeuPrint "
                         "datasets; the CAVE token is optional (only needed for FAFB online CAVE "
                         "fetching; BANC never uses it). Set them below or in config.json."
                     )
+                token_reminder_text.text = (base + codex_note).strip()
                 token_reminder_text.update()
 
             _refresh_token_reminder()
@@ -578,9 +592,27 @@ def create_settings_tab():
                 password_toggle_button=True,
             ).classes("w-full")
 
+            ui.separator()
+
+            with ui.column().classes("w-full gap-1"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("FlyWire Codex Token (for automatic FAFB downloads)").classes("text-caption font-bold")
+                    codex_status = ui.label(_token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])).classes("text-caption drocat-muted")
+                ui.html("Sign in at <a href='https://codex.flywire.ai/api/download?dataset=fafb' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai</a> with a Google account, then copy your API token from <a href='https://codex.flywire.ai/account' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai/account</a>").classes("text-caption drocat-muted")
+                ui.label("Needed only for the automatic FAFB data downloads on this tab and lazy per-neuron skeleton fetching. The CAVE token above is a separate, contributor-gated credential.").classes("text-caption drocat-muted")
+
+            codex_token = ui.input(
+                label="FlyWire Codex Token",
+                value="",
+                placeholder="Leave blank to keep the saved token",
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full")
+
             with ui.row().classes("items-center gap-2 flex-wrap"):
                 save_btn = ui.button("Save Tokens", icon="save", color="primary")
                 test_btn = ui.button("Test NeuPrint", icon="wifi", color="secondary")
+                codex_test_btn = ui.button("Test Codex", icon="wifi", color="secondary")
                 clear_blank = ui.checkbox(
                     "Clear a saved value when its field is blank",
                     value=False,
@@ -589,6 +621,218 @@ def create_settings_tab():
                 "Saved token values stay on the server and are never pre-filled in the browser. "
                 "Enter a new value only when you want to replace the current one."
             ).classes("text-caption drocat-muted")
+
+        # FlyWire Codex downloads (FAFB)
+        import codex_downloader
+        with ui.card().classes("w-full drocat-card"):
+            section_header("FAFB Data Downloads (FlyWire Codex)", "cloud_download")
+            downloads_dir = codex_downloader.downloads_dir_for(
+                project_root=PROJECT_ROOT)
+
+            codex_gate_label = ui.label("").classes("text-caption drocat-warn")
+            necessary_check = ui.checkbox(
+                "1 · Necessary data — always included ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_NECESSARY))}, 7 files: "
+                "neuron table, connections and metadata for the FAFB converter)",
+                value=True,
+            ).props("disable").tooltip(
+                "The FAFB converter's required downloads plus the metadata "
+                "enrichment files. This level is part of every download.")
+            synapse_check = ui.checkbox(
+                "2 · Synapse table ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SYNAPSE))})"
+                " — needed for synapse visualization",
+                value=False,
+            ).tooltip(
+                "Downloads the per-synapse table and converts it into the "
+                "local synapse parquet that skeleton visualization reads.")
+            skeleton_check = ui.checkbox(
+                "3 · Skeleton bundle ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SKELETON))})"
+                " — full local skeletons",
+                value=False,
+            ).tooltip(
+                "Without the bundle, skeletons fetch lazily per neuron from "
+                "the Codex server during visualization (a Codex token is "
+                "still needed).")
+
+            with ui.column().classes("w-full gap-0"):
+                codex_status_labels = {
+                    key: ui.label("").classes("text-caption drocat-muted")
+                    for key in codex_downloader.PRODUCT_CATALOG
+                }
+
+            def _refresh_codex_file_status():
+                for key, label in codex_status_labels.items():
+                    status = codex_downloader.product_status(key, downloads_dir)
+                    if status["complete"]:
+                        mark = "✓"
+                    elif status["local"]:
+                        mark = "◐ partial"
+                    else:
+                        mark = "· missing"
+                    label.text = (f"{mark}  {status['filename']} "
+                                  f"({human_bytes(status['expected'])})")
+
+            _refresh_codex_file_status()
+
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                download_btn = ui.button(
+                    "Download & Convert", icon="cloud_download", color="primary"
+                ).tooltip(
+                    "Downloads the selected levels into "
+                    "datasets/flywire_FAFB_v783/downloads/ (resumable; "
+                    "interrupted files continue where they stopped) and runs "
+                    "the FAFB converter when the necessary level completes.")
+                convert_btn = ui.button(
+                    "Convert Only", icon="transform", color="secondary"
+                ).props("outline").tooltip(
+                    "Runs the FAFB converter over the local downloads "
+                    "(no network) — the python src/FAFB_file_converter.py "
+                    "equivalent.")
+                codex_cancel_btn = ui.button(
+                    "Cancel", icon="stop", color="negative").props("outline")
+                codex_cancel_btn.set_enabled(False)
+
+            codex_progress = ui.linear_progress(
+                value=0, show_value=False, size="20px"
+            ).props("instant-feedback").classes("w-full")
+            with codex_progress:
+                codex_progress_label = ui.label("0%").classes(
+                    "absolute-center text-white"
+                ).style("font-size: 0.875rem")
+            codex_status_label = ui.label("Idle").classes(
+                "text-caption drocat-muted")
+            codex_result_label = ui.label("").classes("text-caption")
+            codex_done_synced = {"value": False}
+
+            def _refresh_codex_gate():
+                has_token = bool(token_state.get("flywire_codex"))
+                codex_gate_label.text = (
+                    "⚠️ Save a FlyWire Codex API token in the API Tokens "
+                    "card above to enable Codex downloads (Convert Only "
+                    "works without one).")
+                codex_gate_label.set_visibility(not has_token)
+                download_btn.set_enabled(
+                    has_token and not codex_puller.running)
+                convert_btn.set_enabled(not codex_puller.running)
+
+            def _selected_levels():
+                levels = [codex_downloader.LEVEL_NECESSARY]
+                if synapse_check.value:
+                    levels.append(codex_downloader.LEVEL_SYNAPSE)
+                if skeleton_check.value:
+                    levels.append(codex_downloader.LEVEL_SKELETON)
+                return levels
+
+            def _free_space_anchor() -> Path:
+                anchor = downloads_dir
+                while not anchor.exists() and anchor.parent != anchor:
+                    anchor = anchor.parent
+                return anchor
+
+            def _start_codex_pull(download: bool):
+                if codex_puller.running:
+                    ui.notify("A Codex download is already running",
+                              type="warning")
+                    return
+                levels = _selected_levels() if download else []
+                if levels and not token_state.get("flywire_codex"):
+                    ui.notify(
+                        "Save a FlyWire Codex token first "
+                        "(API Tokens card above)", type="warning")
+                    return
+                if levels:
+                    needed = 0
+                    for level in levels:
+                        for product in codex_downloader.level_products(level):
+                            status = codex_downloader.product_status(
+                                product.key, downloads_dir)
+                            if not status["complete"]:
+                                needed += product.size - status["local"]
+                    free = shutil.disk_usage(_free_space_anchor()).free
+                    if needed > free:
+                        ui.notify(
+                            f"Not enough disk space: {human_bytes(needed)} "
+                            f"needed, {human_bytes(free)} free",
+                            type="negative")
+                        return
+                if codex_puller.start(levels, run_converter=True,
+                                      project_root=PROJECT_ROOT):
+                    codex_result_label.text = ""
+                    codex_progress.set_value(0)
+                    codex_progress_label.text = "0%"
+                    codex_done_synced["value"] = False
+                    _refresh_codex_gate()
+                else:
+                    ui.notify("A Codex download is already running",
+                              type="warning")
+
+            def refresh_codex_pull_state():
+                st = codex_puller.state
+                has_token = bool(token_state.get("flywire_codex"))
+                download_btn.set_enabled(has_token and not st["running"])
+                convert_btn.set_enabled(not st["running"])
+                codex_cancel_btn.set_enabled(st["running"])
+                synapse_check.set_enabled(not st["running"])
+                skeleton_check.set_enabled(not st["running"])
+                if not st["running"] and not st["done"]:
+                    return
+                if st["running"]:
+                    codex_done_synced["value"] = False
+                    if st.get("cancel_requested"):
+                        codex_progress.props(add="indeterminate")
+                        codex_progress_label.text = ""
+                        codex_status_label.text = (
+                            "Cancelling — finishing the current chunk "
+                            "(partial files resume)...")
+                        return
+                    if st["total"] and st["total"] > 0:
+                        codex_progress.props(remove="indeterminate")
+                        frac = min(st["current"] / st["total"], 1.0)
+                        codex_progress.set_value(frac)
+                        codex_progress_label.text = f"{frac * 100:.1f}%"
+                        codex_status_label.text = (
+                            f"{st['info']} "
+                            f"({human_bytes(st['current'])} / "
+                            f"{human_bytes(st['total'])}) | {_format_eta(st)}")
+                    else:
+                        codex_progress.props(add="indeterminate")
+                        codex_progress_label.text = ""
+                        codex_status_label.text = st["info"]
+                    return
+                if not st["done"]:
+                    return
+                if not codex_done_synced["value"]:
+                    codex_progress.props(remove="indeterminate")
+                    _refresh_codex_file_status()
+                    refresh_dataset_selector_statuses()
+                    codex_done_synced["value"] = True
+                if st["error"]:
+                    codex_status_label.text = "Failed"
+                    codex_result_label.text = f"❌ {st['error']}"
+                else:
+                    s = st["summary"] or {}
+                    if st["cancelled"]:
+                        codex_progress_label.text = ""
+                    else:
+                        codex_progress.set_value(1.0)
+                        codex_progress_label.text = "100%"
+                    head = ("⏹ Cancelled — partial files resume on the "
+                            "next run." if st["cancelled"]
+                            else "✅ Codex download complete.")
+                    codex_result_label.text = (
+                        f"{head} downloaded {len(s.get('downloaded', []))} "
+                        f"file(s), already present "
+                        f"{len(s.get('skipped', []))} | converter: "
+                        f"{s.get('convert_note', 'not run')}")
+                    codex_status_label.text = "Idle"
+
+            _refresh_codex_gate()
+            download_btn.on_click(lambda: _start_codex_pull(download=True))
+            convert_btn.on_click(lambda: _start_codex_pull(download=False))
+            codex_cancel_btn.on_click(codex_puller.cancel)
+            ui.timer(0.5, refresh_codex_pull_state)
 
         # Output
         with ui.card().classes("w-full drocat-card"):
@@ -933,6 +1177,7 @@ def create_settings_tab():
             with ui.expansion("FlyWire FAFB v783 · strict local preparation", icon="download").classes("w-full"):
                 ui.html("""
                 <div style="color:var(--drocat-navy)" class="text-sm">
+                    <p class="mt-3" style="color:var(--drocat-cobalt)"><b>Automatic:</b> save a FlyWire Codex API token in the API Tokens card above, then use the <code>FAFB Data Downloads</code> card on this tab to fetch the levels you need. Skeletons fetch lazily per neuron, so the 13.9 GB bundle is optional. The manual steps below remain the offline fallback.</p>
                     <p style="color:var(--drocat-warn)"><b>Follow the converter layout exactly.</b> Download the raw Codex files; do not rename them to a generated <code>*_allneurons_*</code> filename and do not place raw files in the dataset root.</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">1. Create the input folder</p>
@@ -990,6 +1235,8 @@ def create_settings_tab():
     def _update_token_status():
         neuprint_status.text = _token_status(token_state["neuprint"], token_sources["neuprint"][1])
         cave_status.text = _token_status(token_state["cave"], token_sources["cave"][1])
+        codex_status.text = _token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])
+        _refresh_codex_gate()
         _refresh_token_reminder()
 
     def save_tokens():
@@ -998,6 +1245,7 @@ def create_settings_tab():
         config_path = PROJECT_ROOT / "config_local.json"
         entered_neuprint = (neuprint_token.value or "").strip()
         entered_cave = (cave_token.value or "").strip()
+        entered_codex = (codex_token.value or "").strip()
         # Base the save on the config-file tokens only: an env-var token
         # must never be copied into config_local.json by clicking Save.
         saved_tokens = _load_tokens()
@@ -1010,14 +1258,20 @@ def create_settings_tab():
             saved_tokens["cave"] = entered_cave
         elif clear_blank.value:
             saved_tokens.pop("cave", None)
+        if entered_codex:
+            saved_tokens["flywire_codex"] = entered_codex
+        elif clear_blank.value:
+            saved_tokens.pop("flywire_codex", None)
 
-        # Keep the versioned env map and any other sections of the local
-        # config, and only replace the tokens section.
+        # Keep the versioned env map, any other sections, and token keys
+        # this tab does not manage; only the three managed keys are
+        # replaced.
         data = _read_config_dict(config_path)
-        data["tokens"] = {
-            "neuprint": saved_tokens.get("neuprint", ""),
-            "cave": saved_tokens.get("cave", ""),
-        }
+        existing_tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        tokens_section = dict(existing_tokens)
+        for key in ("neuprint", "cave", "flywire_codex"):
+            tokens_section[key] = saved_tokens.get(key, "")
+        data["tokens"] = tokens_section
         try:
             config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
             config_path.chmod(0o600)
@@ -1030,6 +1284,7 @@ def create_settings_tab():
             # snapshot can never retain a secret value.
             neuprint_token.value = ""
             cave_token.value = ""
+            codex_token.value = ""
             clear_blank.value = False
             _update_token_status()
 
@@ -1075,8 +1330,29 @@ def create_settings_tab():
         finally:
             test_btn.enable()
 
+    async def test_codex_connection():
+        # Like the NeuPrint test: use the typed value if present, else the
+        # saved one.
+        token = (codex_token.value or "").strip() or token_state.get("flywire_codex", "")
+        if not token:
+            ui.notify("Enter a FlyWire Codex token first", type="warning")
+            return
+        ui.notify("Testing FlyWire Codex access...", type="info")
+        codex_test_btn.disable()
+        try:
+            import codex_downloader
+
+            ok, message = await run.io_bound(
+                codex_downloader.verify_codex_token, None, token)
+            ui.notify(message, type="positive" if ok else "warning")
+        except Exception as e:
+            ui.notify(f"Codex test failed: {str(e)[:80]}", type="negative")
+        finally:
+            codex_test_btn.enable()
+
     save_btn.on_click(save_tokens)
     test_btn.on_click(test_connection)
+    codex_test_btn.on_click(test_codex_connection)
 
 
 def _read_config_dict(config_path: Path) -> dict:
@@ -1116,7 +1392,7 @@ def _load_tokens() -> dict:
             cfg = None
         cfg_tokens = (cfg or {}).get("tokens") if isinstance(cfg, dict) else None
         if isinstance(cfg_tokens, dict):
-            for key in ("neuprint", "cave"):
+            for key in ("neuprint", "cave", "flywire_codex"):
                 value = cfg_tokens.get(key)
                 if isinstance(value, str) and value.strip() and not value.startswith("YOUR_"):
                     # First non-empty value wins: config.json is read first.
@@ -1138,6 +1414,7 @@ def _token_sources() -> dict:
     for key, env_names in (
         ("neuprint", ("NEUPRINT_APPLICATION_CREDENTIALS", "NEUPRINT_TOKEN")),
         ("cave", ("CAVE_TOKEN",)),
+        ("flywire_codex", ("FLYWIRE_CODEX_TOKEN",)),
     ):
         token, source = "", ""
         for filename in ("config.json", "config_local.json"):

@@ -2565,7 +2565,7 @@ class TestDatasetService:
         next(iter(save_btn._event_listeners.values())).handler(None)
 
         saved = _json.loads((tmp_path / "config_local.json").read_text(encoding="utf-8"))
-        assert saved["tokens"] == {"neuprint": "saved-np", "cave": ""}
+        assert saved["tokens"] == {"neuprint": "saved-np", "cave": "", "flywire_codex": ""}
         # the versioned env map must survive a token save
         assert saved["envs"] == {"4.5.0": "my-custom-env"}
         # the committed config.json is never rewritten
@@ -2609,7 +2609,7 @@ class TestDatasetService:
         next(iter(save_btn._event_listeners.values())).handler(None)
 
         saved = _json.loads((tmp_path / "config_local.json").read_text(encoding="utf-8-sig"))
-        assert saved["tokens"] == {"neuprint": "bom-saved", "cave": ""}
+        assert saved["tokens"] == {"neuprint": "bom-saved", "cave": "", "flywire_codex": ""}
         assert saved["envs"] == {"4.5.0": "drocat-4.5.0"}
 
     def test_settings_dataset_cache_card(self):
@@ -3254,12 +3254,14 @@ class TestDatasetService:
 
         built = []
 
-        def build(neuprint: str, cave: str):
+        def build(neuprint: str, cave: str, codex: str = ""):
             monkeypatch.delenv("NEUPRINT_APPLICATION_CREDENTIALS", raising=False)
             monkeypatch.delenv("NEUPRINT_TOKEN", raising=False)
             monkeypatch.delenv("CAVE_TOKEN", raising=False)
+            monkeypatch.delenv("FLYWIRE_CODEX_TOKEN", raising=False)
             (tmp_path / "config.json").write_text(
-                '{"tokens": {"neuprint": "' + neuprint + '", "cave": "' + cave + '"}}\n',
+                '{"tokens": {"neuprint": "' + neuprint + '", "cave": "' + cave
+                + '", "flywire_codex": "' + codex + '"}}\n',
                 encoding="utf-8",
             )
             monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
@@ -3273,7 +3275,7 @@ class TestDatasetService:
             )
             return reminder, reminder.default_slot.children[0]
 
-        # both missing -> prominent reminder
+        # both missing -> prominent reminder (plus the optional Codex note)
         reminder, text = build("", "")
         assert reminder.visible is True
         assert "No API tokens configured" in text.text
@@ -3291,9 +3293,92 @@ class TestDatasetService:
         assert reminder.visible is True
         assert "NeuPrint token not configured - it is required" in text.text
 
-        # both set -> no reminder
+        # neuprint + cave set, Codex missing -> soft Codex-only note
         reminder, text = build("real-neuprint-token", "real-cave-token")
+        assert reminder.visible is True
+        assert "FlyWire Codex token not configured - optional" in text.text
+
+        # all three set -> no reminder
+        reminder, text = build("real-neuprint-token", "real-cave-token", "real-codex-token")
         assert reminder.visible is False
+
+    def test_settings_codex_download_card(self, tmp_path, monkeypatch):
+        """The FAFB Data Downloads card shows the three levels (necessary
+        locked on), per-product status, and gates the download button on the
+        Codex token while keeping Convert Only usable."""
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.tabs import settings as settings_module
+
+        monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+        monkeypatch.delenv("FLYWIRE_CODEX_TOKEN", raising=False)
+        (tmp_path / "config.json").write_text(
+            '{"tokens": {"neuprint": "np", "cave": "", "flywire_codex": ""}}\n',
+            encoding="utf-8",
+        )
+
+        client = Client(page("/settings-codex-card"))
+        with client:
+            settings_module.create_settings_tab()
+
+        elements = list(client.elements.values())
+        box_texts = [
+            el.text for el in elements
+            if getattr(el, "text", "")
+            and el.text.startswith(("1 ·", "2 ·", "3 ·"))
+        ]
+        assert len(box_texts) == 3, box_texts
+        necessary = next(
+            el for el in elements
+            if getattr(el, "text", "").startswith("1 ·"))
+        assert necessary._props.get("disable") is True
+        assert "necessary data".lower() in necessary.text.lower()
+
+        download_btn = next(
+            el for el in elements
+            if getattr(el, "text", "") == "Download & Convert")
+        convert_btn = next(
+            el for el in elements
+            if getattr(el, "text", "") == "Convert Only")
+        assert download_btn.enabled is False  # no Codex token
+        assert convert_btn.enabled is True
+
+        texts = [getattr(el, "text", "") or "" for el in elements]
+        conn_status = next(
+            t for t in texts
+            if "connections_princeton_no_threshold.csv.gz" in t)
+        assert conn_status.startswith("· missing")
+        product_count = sum(
+            1 for key in (
+                "classification.csv.gz", "names.csv.gz",
+                "coordinates.csv.gz", "neurons.csv.gz", "cell_stats.csv.gz",
+                "consolidated_cell_types.csv.gz",
+                "fafb_v783_princeton_synapse_table.csv.gz",
+                "sk_lod1_783_healed.zip")
+            if any(key in t for t in texts))
+        assert product_count == 8
+
+        gate = next(
+            el for el in elements
+            if getattr(el, "text", "").startswith("⚠️ Save a FlyWire Codex"))
+        assert gate.visible is True
+
+        # with a saved Codex token the gate disappears and the download
+        # button enables
+        (tmp_path / "config_local.json").write_text(
+            '{"tokens": {"flywire_codex": "tok"}}\n', encoding="utf-8")
+        client2 = Client(page("/settings-codex-card-tok"))
+        with client2:
+            settings_module.create_settings_tab()
+        elements2 = list(client2.elements.values())
+        gate2 = next(
+            el for el in elements2
+            if getattr(el, "text", "").startswith("⚠️ Save a FlyWire Codex"))
+        assert gate2.visible is False
+        download_btn2 = next(
+            el for el in elements2
+            if getattr(el, "text", "") == "Download & Convert")
+        assert download_btn2.enabled is True
 
     def test_local_dataset_listing_requires_complete_flywire_conversion(self, tmp_path):
         from ui.dataset_service import DatasetService
