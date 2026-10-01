@@ -82,7 +82,7 @@ class FakeMapper:
         self.include_suspects_in_targets = False
         self.with_accessors = with_accessors
 
-    def get_mapping_decision(self, t, src, tgt):
+    def get_mapping_decision(self, t, src, tgt, route_scope=None):
         return self._decisions.get(
             (t, src, tgt),
             {'status': 'unmapped', 'target_type': None,
@@ -377,7 +377,7 @@ def test_p4_multivalue_source_accounted_never_split():
         def is_multivalue_type(self, name, dataset):
             return name == 'A, B'
 
-        def get_mapping_decision(self, t, src, tgt):
+        def get_mapping_decision(self, t, src, tgt, route_scope=None):
             return {'status': 'unmapped', 'target_type': None,
                     'target_types': []}
 
@@ -396,7 +396,7 @@ def test_p4_multivalue_target_skipped_and_counted():
         def is_multivalue_type(self, name, dataset):
             return name == 'X, Y'
 
-        def get_mapping_decision(self, t, src, tgt):
+        def get_mapping_decision(self, t, src, tgt, route_scope=None):
             if t == 'T1':
                 return {'status': 'mapped', 'target_type': 'T1',
                         'target_types': ['X, Y', 'T1']}
