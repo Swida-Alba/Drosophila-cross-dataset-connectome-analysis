@@ -1155,7 +1155,8 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'validation_results.csv': [
         'query', 'source_dataset', 'source_type', 'target_dataset',
         'target_type', 'mapping_status', 'relationship', 'same_name_first',
-        'same_name_rivals', 'pool_basis', 'branch_linker_values',
+        'same_name_rivals', 'route_scope', 'via_mid',
+        'pool_basis', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_bodyId',
         'source_connectivity_status', 'verdict', 'metric_top1', 'flags',
         'suspicious_count', 'suspicious_noise_filtered',
@@ -1245,6 +1246,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'pair_summary.csv': [
         'query', 'source_type', 'target_type', 'mapping_status',
         'relationship', 'same_name_first', 'same_name_rivals',
+        'route_scope', 'via_mid',
         'pool_basis', 'target_pool_basis', 'selected_chain',
         'source_chain', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_pool',

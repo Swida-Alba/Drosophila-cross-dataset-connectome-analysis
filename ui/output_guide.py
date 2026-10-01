@@ -2383,7 +2383,8 @@ TOOL_GUIDE_SPECS = {
                             "export). Additive route_scope/via_mid columns "
                             "label full-map transitive pairs (--route-scope "
                             "full; curated runs leave them at their "
-                            "defaults)."},
+                            "defaults) — the same additive columns ride "
+                            "validation_results.csv and pair_summary.csv."},
             {"pattern": "validation/validation_results.csv",
              "description": "Source×branch verdict rows: verdict tier, "
                             "ranks + scores, connectivity flags, source "
