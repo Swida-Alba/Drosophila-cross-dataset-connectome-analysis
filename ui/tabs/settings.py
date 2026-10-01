@@ -386,7 +386,6 @@ def create_settings_tab():
             ui.timer(0.5, refresh_codex_pull_state)
 
         # BANC dataset downloads (public bucket, no token)
-        import banc_public_data
         from ..banc_pull import (BANC_SYNAPSE_TABLE_BYTES, BancPuller,
                                  LEVEL_NECESSARY, LEVEL_ORDER, LEVEL_SKELETONS,
                                  LEVEL_SYNAPSE, banc_level_status)
@@ -464,6 +463,12 @@ def create_settings_tab():
                     levels.append(LEVEL_SKELETONS)
                 return levels
 
+            def _banc_free_space_anchor() -> Path:
+                anchor = PROJECT_ROOT / "datasets"
+                while not anchor.exists() and anchor.parent != anchor:
+                    anchor = anchor.parent
+                return anchor
+
             def _start_banc_pull():
                 if banc_puller.running:
                     ui.notify("A BANC download is already running",
@@ -471,8 +476,7 @@ def create_settings_tab():
                     return
                 levels = _selected_banc_levels()
                 if LEVEL_SYNAPSE in levels:
-                    anchor = PROJECT_ROOT / "datasets"
-                    free = shutil.disk_usage(anchor).free
+                    free = shutil.disk_usage(_banc_free_space_anchor()).free
                     if BANC_SYNAPSE_TABLE_BYTES > free:
                         ui.notify(
                             "Not enough disk space for the ~3.9 GB synapse "

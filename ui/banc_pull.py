@@ -159,12 +159,11 @@ class BancPuller:
                             "Fetching all BANC skeletons (per-neuron SWCs "
                             "from the public bucket)...")
                 from morphology import download_all_skeletons
-                summary = download_all_skeletons(
+                download_all_skeletons(
                     dataset, project_root=root, verbose=False,
                     progress_callback=self._progress,
                     cancel_event=self._cancel_event)
                 completed.append(LEVEL_SKELETONS)
-                skeletons_done = bool(summary) and not summary.get("cancelled")
 
             cancelled = self._cancel_event.is_set()
             self._finish(cancelled=cancelled, summary={
