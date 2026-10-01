@@ -141,6 +141,7 @@ py-modules = [
     "build_seed_indexes",
     "cave_data_fetcher",
     "coana",
+    "codex_downloader",
     "connection_map",
     "fafb_bundle",
     "fafb_utils",
