@@ -8,7 +8,7 @@ from ..config import FILTER_OPTIONS, OUTPUT_FORMATS, NETWORK_LAYOUTS, SEARCH_COL
 from ..components.common import (
     dataset_selector, neuron_list_input, number_input, select_input,
     checkbox_input, dir_input, apply_filter_mode, section_header, param_grid,
-    tool_page, ALL_NEURONS_TOKEN, uses_all_neurons_token,
+    tool_page, ALL_NEURONS_TOKEN, uses_all_neurons_token, pair_report_button,
 )
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
@@ -50,6 +50,7 @@ def create_find_path_tab():
                 group_recommended=True,
             )
             output_dir = dir_input(scope="find_path")
+            pair_report_button(output_dir, output_panel, runner)
 
         with ui.card().classes("w-full drocat-card").props('id="card-findpath-neurons"'):
             section_header("Neuron Selection", "hub")

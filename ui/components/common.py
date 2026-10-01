@@ -3124,6 +3124,54 @@ def dir_input(
     return inp
 
 
+def pair_report_button(output_dir_input, output_panel, runner) -> None:
+    """Button that generates the per-pair paths report (``path_report.html``
+    + ``paths_pair_breakdown/``) INTO the latest pathfinding run folder
+    found under *output_dir_input*'s value (plan-paths-pair-report §7).
+
+    Works for Complete Paths, Shortest Paths, and cross-dataset runs; the
+    generator itself is ``src/paths_pair_report.py`` (TOOL_REGISTRY entry
+    ``paths_pair_report``).
+    """
+
+    def _latest_run_folder(directory: str):
+        folder = Path(str(directory or "")).expanduser()
+        if not folder.is_dir():
+            return None
+        try:
+            from src.utils.naming_utils import is_run_folder_name
+        except ImportError:  # pragma: no cover - direct src/ execution
+            from utils.naming_utils import is_run_folder_name
+        candidates = [
+            p for p in folder.iterdir()
+            if p.is_dir() and is_run_folder_name(p.name)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    async def _generate_pair_report():
+        latest = _latest_run_folder(output_dir_input.value)
+        if latest is None:
+            ui.notify(
+                "No pathfinding run folder found in the output directory.",
+                type="warning")
+            return
+        await output_panel.run(
+            runner, "paths_pair_report", {}, "generate",
+            method_params={"run_dir": str(latest)},
+            output_dir=str(latest))
+
+    with ui.row().classes("w-full items-center no-wrap gap-2"):
+        ui.button("🛤️ Pair report", on_click=_generate_pair_report).props(
+            "outline dense no-caps").tooltip(
+            "Generate path_report.html + paths_pair_breakdown/ into the "
+            "latest run folder in the output directory: per-pair presence "
+            "matrices, capped top-paths tables, interactive networks.")
+        ui.label("into the latest run folder in the output directory"
+                 ).classes("text-xs text-grey-7")
+
+
 def sync_output_dir_fields(source, value: str, force: bool = False) -> None:
     """Update inherited output fields after a Settings-tab change.
 

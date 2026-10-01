@@ -9,7 +9,7 @@ from ..config import COMPARISON_MODES, PATH_MODES, SEARCH_COLUMNS, get_user_defa
 from ..components.common import (
     dataset_multi_selector, neuron_list_input, number_input, select_input,
     checkbox_input, dir_input, section_header, param_grid, tool_page,
-    apply_filter_mode,
+    apply_filter_mode, pair_report_button,
 )
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
@@ -65,6 +65,7 @@ def create_inter_dataset_tab():
             datasets_select.on_value_change(_sync_type_mapping_state)
             _sync_type_mapping_state()
             output_dir = dir_input(scope="inter_dataset")
+            pair_report_button(output_dir, output_panel, runner)
 
         with ui.card().classes("w-full drocat-card").props('id="card-interdataset-neurons"'):
             section_header("Neuron Selection", "hub")

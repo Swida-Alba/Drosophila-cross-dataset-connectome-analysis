@@ -152,6 +152,23 @@ COLUMN_GLOSSARY = {
     "block_probability": ("Probability the signal is blocked: "
                          "$1 - \\text{traversal\\_probability}$.", "0-1"),
     "path": ("Path as a neuron-type sequence, e.g. aMe12 → SMP238 → PPL101.", "text"),
+    # --- Pair report (post-hoc, scripts/PathsPairReport.py) -----------------
+    "unit": ("Pathfinding unit the row came from: the raw folder name relative "
+             "to the run root ('' = run root; cross-dataset delegates look "
+             "like dataset/minsyn_N, e.g. flywire_FAFB_v783/minsyn_3).", "text"),
+    "rank_in_pair_length": ("1-based rank of the path within its (pair, "
+                            "length) group, bottleneck-first: min_weight desc, "
+                            "path_prob desc, path asc.", "integer"),
+    "paths_in_pair": ("Total paths found for this (unit, source, target) pair "
+                      "— the denominator of every capped view.", "integer"),
+    "intermediate": ("Intermediate (non-source, non-target) node on a path.", "text"),
+    "n_paths_using": ("How many paths of the pair pass through this "
+                      "intermediate.", "integer"),
+    "classification": ("shared = the intermediate lies on >=2 paths of the "
+                       "pair (full path set); unique = exactly 1.", "shared | unique"),
+    "min_hop_position": ("Earliest hop index (1-based) at which the "
+                         "intermediate appears across the pair's paths; also "
+                         "its column in the report's layered network.", "integer"),
     "path_prob": ("Overall path probability = product of edge traversal "
                    "probabilities $\\left(\\prod p_k\\right)$.", "0-1"),
     "min_weight": ("Smallest edge weight along the path.", "integer"),
@@ -930,6 +947,29 @@ _PATHFINDING_FILES = [
      "description": "Reciprocal heatmap visualization."},
     {"pattern": "find_reciprocal/parameters.csv",
      "description": "Reciprocal-analysis parameters."},
+    # Post-hoc pair-report additions (scripts/PathsPairReport.py writes
+    # these INTO the run folder after the fact; the entries surface in the
+    # run guide only when the files exist).
+    {"pattern": "path_report.html",
+     "description": "Per-source-target-pair HTML report (post-hoc, generated "
+                    "by scripts/PathsPairReport.py): Overview / Global / "
+                    "Pair Explorer / Data tabs, interactive networks; capped "
+                    "views link to the lossless breakdown CSVs below."},
+    {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
+     "description": "Pair-report breakdown, one row per path (uncapped): "
+                    "rank within (pair, length), bottleneck-first ordering.",
+     "preview": True,
+     "preview_title": "Pair breakdown (per path)",
+     "columns": ["unit", "source", "target", "rank_in_pair_length", "path",
+                 "min_weight", "length", "paths_in_pair"]},
+    {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
+     "description": "Pair-report breakdown, one row per (pair, intermediate): "
+                    "shared (>=2 paths of the pair) vs unique (exactly 1), "
+                    "min hop position.",
+     "preview": True,
+     "preview_title": "Pair breakdown (intermediates)",
+     "columns": ["unit", "source", "target", "intermediate", "n_paths_using",
+                 "classification", "min_hop_position"]},
 ]
 
 # Reusable pathfinding explanation, rendered by all three run-guide formats
@@ -2124,6 +2164,40 @@ TOOL_GUIDE_SPECS = {
             {"pattern": WARNING_FILENAME,
              "description": "Notes collected during the run (rendered in "
                             "the Warnings section above)."},
+        ],
+    },
+    "paths_pair_report": {
+        "title": "Paths Pair Report (post-hoc generator)",
+        "summary": "Generates path_report.html + paths_pair_breakdown/ INTO "
+                   "an existing pathfinding run folder (Complete Paths, "
+                   "Shortest Paths, or cross-dataset): four report pages "
+                   "(Overview / Global / Pair Explorer / Data) with per-pair "
+                   "presence matrices, capped top-paths tables, and "
+                   "interactive vis-network graphs (the library is vendored "
+                   "into the file, so they work offline). Capped views link "
+                   "to the lossless breakdown CSVs.",
+        "files": [
+            {"pattern": "path_report.html",
+             "description": "Self-contained per-source-target-pair HTML "
+                            "report (vis-network vendored; re-running the "
+                            "generator overwrites it byte-identically "
+                            "modulo the Generated timestamp)."},
+            {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
+             "description": "Lossless per-path breakdown: rank within "
+                            "(pair, length), bottleneck-first ordering.",
+             "preview": True,
+             "preview_title": "Pair breakdown (per path)",
+             "columns": ["unit", "source", "target", "rank_in_pair_length",
+                         "path", "min_weight", "length", "paths_in_pair"]},
+            {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
+             "description": "Per (pair, intermediate) breakdown: shared "
+                            "(>=2 paths of the pair) vs unique (exactly 1), "
+                            "min hop position.",
+             "preview": True,
+             "preview_title": "Pair breakdown (intermediates)",
+             "columns": ["unit", "source", "target", "intermediate",
+                         "n_paths_using", "classification",
+                         "min_hop_position"]},
         ],
     },
     "nb_find_lines_expanded": {

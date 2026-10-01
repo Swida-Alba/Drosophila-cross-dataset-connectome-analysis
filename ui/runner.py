@@ -325,6 +325,18 @@ TOOL_REGISTRY: Dict[str, dict] = {
         "class": None, "var": None, "init_method": None,
         "methods": {"run": ""},  # dispatched to _generate_tmvev_script by name
     },
+    # Post-hoc generator: writes path_report.html + paths_pair_breakdown/
+    # INTO an existing pathfinding run folder (plan-paths-pair-report §7).
+    "paths_pair_report": {
+        "label": "Paths Pair Report",
+        "import": "from paths_pair_report import PathsPairReportTool",
+        "class": "PathsPairReportTool",
+        "var": "pair_report",
+        "init_method": None,
+        "methods": {
+            "generate": "pair_report.generate(**method_params)",
+        },
+    },
 }
 
 
