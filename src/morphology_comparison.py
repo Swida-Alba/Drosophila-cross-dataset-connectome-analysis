@@ -319,7 +319,7 @@ class MorphologyProfileComparer:
         if not type_map:
             raise ValueError(
                 f"Dataset '{self.dataset}' has no local neuron table; pull "
-                "the dataset first (Settings → Dataset Cache).")
+                "the dataset first (Settings → NeuPrint Dataset Downloads).")
         # Cached for the bodyId display labels and the members table so the
         # neuron table is read once per run.
         self._type_map = type_map
@@ -751,7 +751,7 @@ class MorphologyProfileComparer:
             raise ValueError(
                 f"No morphology vector cache for '{self.dataset}' and no "
                 "skeletons available locally or online. Run Find Similar "
-                "once or download skeletons (Settings → Dataset Cache).")
+                "once or download skeletons (Settings → NeuPrint Dataset Downloads).")
         X = data["X"]
         rows = np.full((len(canonical), X.shape[1]), np.nan)
         for out_i, bid in enumerate(canonical):

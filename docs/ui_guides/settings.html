@@ -23,7 +23,7 @@
   <table>
     <tr><th>Token</th><th>Needed for</th><th>Where to get it</th></tr>
     <tr><td>NeuPrint Token</td><td>All NeuPrint datasets (hemibrain, male-cns, optic-lobe, manc, ...)</td><td>neuprint.janelia.org/account</td></tr>
-    <tr><td>FlyWire Codex Token</td><td>Automatic FAFB data downloads (Settings &rarr; FAFB Data Downloads) and lazy per-neuron skeleton fetching</td><td>codex.flywire.ai/account (sign in with Google at the download page, then copy the token)</td></tr>
+    <tr><td>FlyWire Codex Token</td><td>Automatic FAFB data downloads (Settings &rarr; FAFB Dataset Downloads) and lazy per-neuron skeleton fetching</td><td>codex.flywire.ai/account (sign in with Google at the download page, then copy the token)</td></tr>
     <tr><td>CAVE Token (advanced)</td><td>Optional live-CAVE fallback only; no download or analysis needs it. Set via <code>config.json</code>/<code>config_local.json</code> or the <code>CAVE_TOKEN</code> env var — there is no Settings input for it (contributor-gated at codex.flywire.ai/auth_token)</td><td>config files / env only</td></tr>
   </table>
   <p>Tokens are saved to <code>config_local.json</code> (gitignored local
@@ -230,7 +230,7 @@
 
   <h3>FlyWire FAFB v783</h3>
   <p><b>Automatic:</b> save a FlyWire Codex token in the API Tokens card,
-    then use the <b>FAFB Data Downloads</b> card on the Settings tab — three
+    then use the <b>FAFB Dataset Downloads</b> card on the Settings tab — three
     levels (necessary data &middot; synapses &middot; skeleton bundle),
     resumable, and the converter runs automatically. Skeletons also fetch
     lazily per neuron from the Codex server during visualization.</p>

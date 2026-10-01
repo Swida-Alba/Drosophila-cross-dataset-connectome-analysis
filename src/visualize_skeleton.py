@@ -14854,7 +14854,7 @@ class VisualizeSkeleton:
                         self._vprint(
                             "  Please download the synapse table from: "
                             "https://codex.flywire.ai/api/download?dataset=fafb "
-                            "(or Settings > FAFB Data Downloads, level 2 - "
+                            "(or Settings > FAFB Dataset Downloads, level 2 - "
                             "Synapses, with a FlyWire Codex token)",
                             level='full')
                     elif is_banc_dataset(self.dataset):

@@ -159,6 +159,74 @@ def test_fafb_synapse_warning_gates(monkeypatch, tmp_path):
     assert fafb_synapse_warning("hemibrain:v1.2.1", "synapse") is None
     warning = fafb_synapse_warning("flywire_FAFB_v783", "synapse")
     assert warning and "synapse table" in warning
-    assert "FAFB Data Downloads" in warning
+    assert "FAFB Dataset Downloads" in warning
     monkeypatch.setattr(cd, "synapse_table_ready", lambda *a, **k: True)
     assert fafb_synapse_warning("flywire_FAFB_v783", "synapse") is None
+
+
+def test_banc_puller_levels_and_cancel(monkeypatch, tmp_path):
+    """BancPuller walks the three levels in order; cancel after level 1."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    import banc_public_data as bpd
+    import morphology
+    from ui.banc_pull import (BancPuller, LEVEL_NECESSARY, LEVEL_ORDER,
+                              LEVEL_SKELETONS, LEVEL_SYNAPSE, banc_level_status)
+
+    calls = []
+
+    def fake_prepare(dataset_name, dataset_dir, project_root=None):
+        calls.append(("prepare", dataset_name))
+        return True
+
+    def fake_synapse(dataset, project_root=None, force=False,
+                     progress_callback=None):
+        calls.append(("synapse", dataset))
+        return Path(tmp_path) / "synapse.parquet"
+
+    def fake_skeletons(dataset, **kwargs):
+        calls.append(("skeletons", dataset))
+        return {"total_neurons": 1, "cancelled": False}
+
+    monkeypatch.setattr(bpd, "prepare_dataset_tables", fake_prepare)
+    monkeypatch.setattr(bpd, "ensure_synapse_table", fake_synapse)
+    monkeypatch.setattr(morphology, "download_all_skeletons", fake_skeletons)
+
+    puller = BancPuller()
+    assert puller.start("banc_v888", list(LEVEL_ORDER),
+                        project_root=str(tmp_path))
+    puller._thread.join(timeout=10)
+    assert not puller._thread.is_alive()
+    state = puller.state
+    assert [c[0] for c in calls] == ["prepare", "synapse", "skeletons"]
+    assert state["done"] and not state["error"] and not state["cancelled"]
+    assert state["summary"]["completed"] == list(LEVEL_ORDER)
+
+    # failure path: preparation returns False
+    monkeypatch.setattr(bpd, "prepare_dataset_tables",
+                        lambda *a, **k: False)
+    puller2 = BancPuller()
+    assert puller2.start("banc_v888", [LEVEL_NECESSARY],
+                         project_root=str(tmp_path))
+    puller2._thread.join(timeout=10)
+    state2 = puller2.state
+    assert state2["error"] and "did not complete" in state2["error"]
+
+
+def test_banc_level_status(tmp_path):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from ui.banc_pull import LEVEL_NECESSARY, LEVEL_SYNAPSE, banc_level_status
+
+    dataset_dir = tmp_path / "datasets" / "banc_v888"
+    dataset_dir.mkdir(parents=True)
+    status = banc_level_status("banc_v888", project_root=str(tmp_path))
+    assert status[LEVEL_NECESSARY]["complete"] is False
+    assert status[LEVEL_SYNAPSE]["complete"] is False
+
+    (dataset_dir / "banc_v888_merged_connections.parquet").write_bytes(b"x")
+    (dataset_dir / "banc_v888_allneurons_neuron_df.parquet").write_bytes(b"x")
+    status = banc_level_status("banc_v888", project_root=str(tmp_path))
+    assert status[LEVEL_NECESSARY]["complete"] is True

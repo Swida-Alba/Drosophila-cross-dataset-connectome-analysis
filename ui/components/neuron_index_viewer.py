@@ -223,7 +223,7 @@ def _render_missing_cache(content, dataset: str, path: Path) -> None:
         ).classes("text-body2")
         ui.label("Recommended UI flow").classes("font-bold text-primary mt-2")
         ui.label(
-            "Open Settings → Dataset Cache, choose "
+            "Open Settings → NeuPrint Dataset Downloads, choose "
             f"{dataset}, then click Pull Dataset Metadata, followed by "
             "Pull Complete Connections for the connection cache. "
             "The connection pull is resumable."
@@ -289,7 +289,7 @@ def _render_index(
             )
             ui.label(str(exc)).classes("text-body2 drocat-err")
             ui.label(
-                "Use Settings → Dataset Cache → Force rebuild, then open this viewer again."
+                "Use Settings → NeuPrint Dataset Downloads → Force rebuild, then open this viewer again."
             ).classes("text-caption drocat-muted")
         return
 

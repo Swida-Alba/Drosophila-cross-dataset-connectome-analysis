@@ -102,7 +102,7 @@ def prepare_flywire_data(data_dir):
                 f"save them into {downloads_dir}, then run the one-time conversion:\n"
                 f"python src/{converter}.py\n"
                 f"Alternatively, save a FlyWire Codex API token and use\n"
-                f"Settings > FAFB Data Downloads to fetch + convert automatically.\n"
+                f"Settings > FAFB Dataset Downloads to fetch + convert automatically.\n"
                 f"Required files in {downloads_dir}:\n"
                 "1. connections_princeton_no_threshold.csv.gz (or connections_princeton.csv.gz)\n"
                 "2. consolidated_cell_types.csv.gz (or neurons.csv.gz)\n"

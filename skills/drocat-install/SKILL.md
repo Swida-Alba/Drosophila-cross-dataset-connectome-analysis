@@ -96,7 +96,7 @@ configured workstation. The verifier needs no network.
   `DROCAT_UI_SHOW=0` for a headless launch. First run: datasets auto-download on
   first query (requires token + network). FlyWire FAFB data files download
   automatically from the Settings tab once a FlyWire Codex token is saved
-  (Settings → FAFB Data Downloads; skeletons also fetch lazily per neuron);
+  (Settings → FAFB Dataset Downloads; skeletons also fetch lazily per neuron);
   BANC (`banc_v626`/`banc_v888`) auto-prepares from its public bucket — no
   token, no manual downloads.
 

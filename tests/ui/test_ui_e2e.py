@@ -2631,7 +2631,7 @@ class TestDatasetService:
             text = getattr(el, "text", None)
             if label:
                 labels[label] = el
-            if text == "Dataset Cache":
+            if text == "NeuPrint Dataset Downloads":
                 labels["card_title"] = el
 
         assert "card_title" in labels
@@ -2681,50 +2681,39 @@ class TestDatasetService:
         # the skeleton download button in the element order.
         assert elements.index(cancel_button) < elements.index(download_button)
 
-    def test_settings_skeleton_pull_blocks_flywire_with_manual_instruction(self):
-        """Clicking 'Download All Skeletons' on a FlyWire dataset must not
-        start a pull; it shows the manual Codex instruction instead.
-
-        Regression: the guard imported ``is_flywire_dataset`` from
-        utils.flywire_readiness, which only defines is_banc/is_fafb, so the
-        click crashed with ImportError before showing the instruction.
-        """
+    def test_settings_neuprint_card_excludes_flywire_and_banc(self):
+        """The NeuPrint Dataset Downloads card only offers NeuPrint datasets:
+        FlyWire moved to the FAFB Dataset Downloads card and BANC to the
+        BANC Dataset Downloads card, so their bulk pulls can no longer be
+        pointed at the wrong workflow from this selector."""
         from nicegui import Client
         from nicegui.page import page
         from ui.tabs import settings as settings_module
+        from ui.config import BANC_DATASETS, FLYWIRE_DATASETS, NEUPRINT_DATASETS
 
-        client = Client(page("/settings-skeleton-flywire-guard"))
+        client = Client(page("/settings-neuprint-card-scope"))
         with client:
             settings_module.create_settings_tab()
 
-        # Pick a FlyWire dataset in the shared dataset selector.
-        dataset_select = next(
-            el for el in client.elements.values()
-            if (getattr(el, "_props", {}).get("label") == "Dataset")
-        )
-        dataset_select.value = "flywire_FAFB_v783"
-
-        skeleton_btn = next(
-            el for el in client.elements.values()
-            if getattr(el, "text", None) == "Download All Skeletons"
-        )
-        next(iter(skeleton_btn._event_listeners.values())).handler(None)
-
-        # The guard ran (no ImportError) and displayed the manual instruction.
-        result_texts = [
+        titles = [
             el.text for el in client.elements.values()
-            if getattr(el, "text", "") and el.text.startswith("❌")
+            if getattr(el, "text", "") in (
+                "NeuPrint Dataset Downloads",
+                "FAFB Dataset Downloads (FlyWire Codex)",
+                "BANC Dataset Downloads (public bucket)")
         ]
-        assert any(
-            "sk_lod1_783_healed.zip" in text and "codex.flywire.ai" in text
-            for text in result_texts
-        ), result_texts
-        # The status line switched to the manual-download state (the guard
-        # returned before any pull could start).
-        assert any(
-            getattr(el, "text", "") == "Manual download required (FAFB)"
-            for el in client.elements.values()
-        )
+        assert len(titles) == 3, titles
+
+        selectors = [
+            el for el in client.elements.values()
+            if getattr(el, "_props", {}).get("label") == "Dataset"]
+        options_sets = [set(el.options) for el in selectors]
+        neuprint_options = next(
+            opts for opts in options_sets
+            if "hemibrain:v1.2.1" in opts)
+        assert neuprint_options == set(NEUPRINT_DATASETS)
+        assert not (set(FLYWIRE_DATASETS) | set(BANC_DATASETS)) & neuprint_options
+        assert any(set(BANC_DATASETS) == opts for opts in options_sets)
 
     def test_settings_cancel_shows_cancelling_hint_until_wind_down_ends(
             self, monkeypatch):
@@ -3317,6 +3306,9 @@ class TestDatasetService:
             el.text for el in elements
             if getattr(el, "text", "")
             and el.text.startswith(("1 ·", "2 ·", "3 ·"))
+            and ("FAFB converter" in el.text
+                 or "Synapse table (2.5 GB)" in el.text
+                 or "Skeleton bundle (12.9 GB)" in el.text)
         ]
         assert len(box_texts) == 3, box_texts
         necessary = next(

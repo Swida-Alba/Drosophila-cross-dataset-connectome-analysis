@@ -71,7 +71,7 @@ Typical file entries are:
 }
 ```
 
-`flywire_codex` (Settings → API Tokens) powers the FAFB Data Downloads
+`flywire_codex` (Settings → API Tokens) powers the FAFB Dataset Downloads
 card and the lazy per-neuron skeleton fetch; `cave` is advanced and
 optional (live-CAVE fallback only — there is no Settings input for it).
 

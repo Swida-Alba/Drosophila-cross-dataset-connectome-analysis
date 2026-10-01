@@ -9,7 +9,7 @@ We provide a dedicated script to prepare the FAFB data for analysis. This script
 ### 1. Download Data
 
 **Automatic (recommended):** save a FlyWire Codex API token in *Settings →
-API Tokens*, then use *Settings → FAFB Data Downloads* to fetch everything
+API Tokens*, then use *Settings → FAFB Dataset Downloads* to fetch everything
 in three levels (necessary data / synapses / skeleton bundle) and run the
 converter. Skeletons also fetch lazily per neuron from the Codex server
 during visualization, so the 13 GB bundle is optional.

@@ -2411,7 +2411,7 @@ class TestNeuronIndexViewer:
         texts = [el.text for el in client.elements.values() if getattr(el, "text", "")]
         joined = "\n".join(texts)
         assert "not cached locally" in joined
-        assert "Settings → Dataset Cache" in joined
+        assert "Settings → NeuPrint Dataset Downloads" in joined
         assert any(
             getattr(el, "_props", {}).get("content")
             == "python src/build_connection_cache.py missing:v2.0"

@@ -18,7 +18,7 @@ FAFB raw files come from the Codex/FlyWire portal. See the [FAFB Integration
 Guide](FAFB_INTEGRATION.md) for the full file list.
 
 **Automatic path:** save a FlyWire Codex API token (Settings → API Tokens)
-and use Settings → FAFB Data Downloads — three levels (necessary data /
+and use Settings → FAFB Dataset Downloads — three levels (necessary data /
 synapses / skeleton bundle), resumable, with the converter run for you.
 Skeletons also fetch lazily per neuron from the Codex server during
 visualization. The manual steps below are the offline fallback.

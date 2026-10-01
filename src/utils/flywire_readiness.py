@@ -70,7 +70,7 @@ def flywire_manual_skeleton_instruction(
         f"  2. Save the download into {download_dir}\n"
         f"  3. Run the one-time converter: python src/{converter}.py\n"
         "Alternatively, save a FlyWire Codex API token (Settings > API "
-        "Tokens) and use Settings > FAFB Data Downloads: skeletons fetch "
+        "Tokens) and use Settings > FAFB Dataset Downloads: skeletons fetch "
         "lazily per neuron from the Codex server during visualization, or "
         "the full bundle downloads as level 3.\n"
         "The converter moves the bundle into the dataset folder and builds "
@@ -125,7 +125,7 @@ def print_download_instructions(
     if key == "fafb":
         print()
         print("  Automatic alternative: save a FlyWire Codex API token")
-        print("  (Settings > API Tokens) and use Settings > FAFB Data")
+        print("  (Settings > API Tokens) and use Settings > FAFB Dataset")
         print("  Downloads (levels: necessary data / synapses / skeleton")
         print("  bundle).")
     print()
@@ -359,7 +359,7 @@ def require_flywire_skeleton_access(
             "through the CAVE API."
         )
         log(
-            "Settings > FAFB Data Downloads (Skeleton bundle; needs the "
+            "Settings > FAFB Dataset Downloads (Skeleton bundle; needs the "
             "FlyWire Codex token) automates the bundle download below."
         )
         log(
@@ -381,7 +381,7 @@ def require_flywire_skeleton_access(
             "(CAVE fallback is disabled)."
         )
         log(
-            "For repeatable/offline runs, Settings > FAFB Data Downloads "
+            "For repeatable/offline runs, Settings > FAFB Dataset Downloads "
             "(level 3, Skeleton bundle) downloads the full local bundle."
         )
         return status
@@ -409,7 +409,7 @@ def require_flywire_skeleton_access(
     log(
         "A FlyWire Codex API token (Settings > API Tokens) also unblocks "
         "skeletons: they fetch lazily per neuron from the Codex server "
-        "during visualization, and Settings > FAFB Data Downloads offers "
+        "during visualization, and Settings > FAFB Dataset Downloads offers "
         "the full bundle."
     )
     raise FlyWireSkeletonAccessError(message)

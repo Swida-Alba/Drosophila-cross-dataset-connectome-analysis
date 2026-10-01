@@ -451,7 +451,7 @@ CRITICAL ERROR: FAFB data preparation failed.
 **Solution:**
 
 1. **Download required files** from: https://codex.flywire.ai/api/download?dataset=fafb
-   (or run Settings → FAFB Data Downloads · level 1, which fetches the
+   (or run Settings → FAFB Dataset Downloads · level 1, which fetches the
    required files plus the metadata enrichment below and runs the converter)
 
 2. **Save files to:** `datasets/flywire_FAFB_v783/downloads/`
@@ -525,7 +525,7 @@ Visualization might fail or be incomplete.
 
 Alternatively, save a FlyWire Codex token (Settings → API Tokens):
 skeletons then fetch lazily per neuron from the Codex server during
-visualization, and Settings → FAFB Data Downloads · level 3 downloads the
+visualization, and Settings → FAFB Dataset Downloads · level 3 downloads the
 full bundle automatically.
 
 ---

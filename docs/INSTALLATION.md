@@ -132,7 +132,7 @@ itself always ships with the repository.
   and copy the token from <https://codex.flywire.ai/account>
 - FlyWire FAFB also needs its local data files in
   `datasets/flywire_FAFB_v783/downloads/` — see the Settings tab guide; with
-  a FlyWire Codex token, Settings → FAFB Data Downloads fetches them
+  a FlyWire Codex token, Settings → FAFB Dataset Downloads fetches them
   automatically (skeletons also fetch lazily per neuron).
   BANC (`banc_v626`/`banc_v888`) needs no manual downloads: it auto-prepares
   from its public release bucket on first use (network only, no token).

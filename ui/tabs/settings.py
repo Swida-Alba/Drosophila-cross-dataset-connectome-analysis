@@ -13,7 +13,9 @@ from ..codex_pull import codex_puller, human_bytes
 
 from ..config import (
     CACHE_SIMPLIFICATION_OPTIONS,
+    BANC_DATASETS,
     DATASETS,
+    NEUPRINT_DATASETS,
     DEFAULT_OUTPUT_DIR,
     APP_DOCS_BRANCH,
     APP_DOCS_URL,
@@ -79,8 +81,476 @@ def create_settings_tab():
         # two different availability controls.
         dataset_status_card()
 
+
+        # Tokens
         with ui.card().classes("w-full drocat-card"):
-            section_header("Dataset Cache", "download")
+            section_header("API Tokens", "key")
+
+            # Full detection chain (config files then env vars) so env-var
+            # tokens are recognized as configured; the source is shown in
+            # the status labels next to each field.
+            token_sources = _token_sources()
+            token_state = {
+                "neuprint": token_sources["neuprint"][0],
+                "cave": token_sources["cave"][0],
+                "flywire_codex": token_sources["flywire_codex"][0],
+            }
+
+            # Reminder when tokens are missing: the NeuPrint token is
+            # required for NeuPrint datasets; the FlyWire Codex token
+            # enables the automatic FAFB downloads. Refreshed whenever the
+            # saved tokens change.
+            token_reminder = ui.element("div").props('id="drocat-token-reminder"').classes(
+                "w-full drocat-token-reminder"
+            )
+            with token_reminder:
+                token_reminder_text = ui.label("").classes("text-sm drocat-warn")
+
+            def _refresh_token_reminder():
+                neuprint_missing = not token_state.get("neuprint")
+                codex_note = ""
+                if not token_state.get("flywire_codex"):
+                    codex_note = (
+                        " ℹ️ FlyWire Codex token not configured - optional; "
+                        "it enables the automatic FAFB downloads on this tab "
+                        "and lazy skeleton fetching."
+                    )
+                if not neuprint_missing and not codex_note:
+                    token_reminder.set_visibility(False)
+                    return
+                token_reminder.set_visibility(True)
+                base = (
+                    "⚠️ NeuPrint token not configured - it is required for "
+                    "NeuPrint datasets. Set it below or in config.json."
+                    if neuprint_missing else ""
+                )
+                token_reminder_text.text = (base + codex_note).strip()
+                token_reminder_text.update()
+
+            _refresh_token_reminder()
+
+            with ui.column().classes("w-full gap-1"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("NeuPrint Token (Required for all NeuPrint datasets)").classes("text-caption font-bold")
+                    neuprint_status = ui.label(_token_status(token_state["neuprint"], token_sources["neuprint"][1])).classes("text-caption drocat-muted")
+                ui.html("Get it from <a href='https://neuprint.janelia.org/account' target='_blank' style='color:var(--drocat-cobalt)'>neuprint.janelia.org/account</a>").classes("text-caption drocat-muted")
+
+            neuprint_token = ui.input(
+                label="NeuPrint Token",
+                value="",
+                placeholder="Leave blank to keep the saved token",
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full")
+
+            ui.separator()
+
+            with ui.column().classes("w-full gap-1"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("FlyWire Codex Token (for automatic FAFB downloads)").classes("text-caption font-bold")
+                    codex_status = ui.label(_token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])).classes("text-caption drocat-muted")
+                ui.html("Sign in at <a href='https://codex.flywire.ai/api/download?dataset=fafb' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai</a> with a Google account, then copy your API token from <a href='https://codex.flywire.ai/account' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai/account</a>").classes("text-caption drocat-muted")
+                ui.label("Needed only for the automatic FAFB data downloads on this tab and lazy per-neuron skeleton fetching. The CAVE token is a separate, contributor-gated credential that no download or analysis needs; power users can still set it via config.json (see the FAFB instructions below).").classes("text-caption drocat-muted")
+
+            codex_token = ui.input(
+                label="FlyWire Codex Token",
+                value="",
+                placeholder="Leave blank to keep the saved token",
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full")
+
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                save_btn = ui.button("Save Tokens", icon="save", color="primary")
+                test_btn = ui.button("Test NeuPrint", icon="wifi", color="secondary")
+                codex_test_btn = ui.button("Test Codex", icon="wifi", color="secondary")
+                clear_blank = ui.checkbox(
+                    "Clear a saved value when its field is blank",
+                    value=False,
+                ).classes("text-caption")
+            ui.label(
+                "Saved token values stay on the server and are never pre-filled in the browser. "
+                "Enter a new value only when you want to replace the current one."
+            ).classes("text-caption drocat-muted")
+
+        # FlyWire Codex downloads (FAFB)
+        import codex_downloader
+        with ui.card().classes("w-full drocat-card"):
+            section_header("FAFB Dataset Downloads (FlyWire Codex)", "cloud_download")
+            downloads_dir = codex_downloader.downloads_dir_for(
+                project_root=PROJECT_ROOT)
+
+            codex_gate_label = ui.label("").classes("text-caption drocat-warn")
+            necessary_check = ui.checkbox(
+                "1 · Necessary data — always included ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_NECESSARY))}, 7 files: "
+                "neuron table, connections and metadata for the FAFB converter)",
+                value=True,
+            ).props("disable").tooltip(
+                "The FAFB converter's required downloads plus the metadata "
+                "enrichment files. This level is part of every download.")
+            synapse_check = ui.checkbox(
+                "2 · Synapse table ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SYNAPSE))})"
+                " — needed for synapse visualization",
+                value=False,
+            ).tooltip(
+                "Downloads the per-synapse table and converts it into the "
+                "local synapse parquet that skeleton visualization reads.")
+            skeleton_check = ui.checkbox(
+                "3 · Skeleton bundle ("
+                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SKELETON))})"
+                " — full local skeletons",
+                value=False,
+            ).tooltip(
+                "Without the bundle, skeletons fetch lazily per neuron from "
+                "the Codex server during visualization (a Codex token is "
+                "still needed).")
+
+            with ui.column().classes("w-full gap-0"):
+                codex_status_labels = {
+                    key: ui.label("").classes("text-caption drocat-muted")
+                    for key in codex_downloader.PRODUCT_CATALOG
+                }
+
+            def _refresh_codex_file_status():
+                for key, label in codex_status_labels.items():
+                    status = codex_downloader.product_status(key, downloads_dir)
+                    if status["complete"]:
+                        mark = "✓"
+                    elif status["local"]:
+                        mark = "◐ partial"
+                    else:
+                        mark = "· missing"
+                    label.text = (f"{mark}  {status['filename']} "
+                                  f"({human_bytes(status['expected'])})")
+
+            _refresh_codex_file_status()
+
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                download_btn = ui.button(
+                    "Download & Convert", icon="cloud_download", color="primary"
+                ).tooltip(
+                    "Downloads the selected levels into "
+                    "datasets/flywire_FAFB_v783/downloads/ (resumable; "
+                    "interrupted files continue where they stopped) and runs "
+                    "the FAFB converter when the necessary level completes.")
+                convert_btn = ui.button(
+                    "Convert Only", icon="transform", color="secondary"
+                ).props("outline").tooltip(
+                    "Runs the FAFB converter over the local downloads "
+                    "(no network) — the python src/FAFB_file_converter.py "
+                    "equivalent.")
+                codex_cancel_btn = ui.button(
+                    "Cancel", icon="stop", color="negative").props("outline")
+                codex_cancel_btn.set_enabled(False)
+
+            codex_progress = ui.linear_progress(
+                value=0, show_value=False, size="20px"
+            ).props("instant-feedback").classes("w-full")
+            with codex_progress:
+                codex_progress_label = ui.label("0%").classes(
+                    "absolute-center text-white"
+                ).style("font-size: 0.875rem")
+            codex_status_label = ui.label("Idle").classes(
+                "text-caption drocat-muted")
+            codex_result_label = ui.label("").classes("text-caption")
+            codex_done_synced = {"value": False}
+
+            def _refresh_codex_gate():
+                has_token = bool(token_state.get("flywire_codex"))
+                codex_gate_label.text = (
+                    "⚠️ Save a FlyWire Codex API token in the API Tokens "
+                    "card above to enable Codex downloads (Convert Only "
+                    "works without one).")
+                codex_gate_label.set_visibility(not has_token)
+                download_btn.set_enabled(
+                    has_token and not codex_puller.running)
+                convert_btn.set_enabled(not codex_puller.running)
+
+            def _selected_levels():
+                levels = [codex_downloader.LEVEL_NECESSARY]
+                if synapse_check.value:
+                    levels.append(codex_downloader.LEVEL_SYNAPSE)
+                if skeleton_check.value:
+                    levels.append(codex_downloader.LEVEL_SKELETON)
+                return levels
+
+            def _free_space_anchor() -> Path:
+                anchor = downloads_dir
+                while not anchor.exists() and anchor.parent != anchor:
+                    anchor = anchor.parent
+                return anchor
+
+            def _start_codex_pull(download: bool):
+                if codex_puller.running:
+                    ui.notify("A Codex download is already running",
+                              type="warning")
+                    return
+                levels = _selected_levels() if download else []
+                if levels and not token_state.get("flywire_codex"):
+                    ui.notify(
+                        "Save a FlyWire Codex token first "
+                        "(API Tokens card above)", type="warning")
+                    return
+                if levels:
+                    needed = 0
+                    for level in levels:
+                        for product in codex_downloader.level_products(level):
+                            status = codex_downloader.product_status(
+                                product.key, downloads_dir)
+                            if not status["complete"]:
+                                needed += product.size - status["local"]
+                    free = shutil.disk_usage(_free_space_anchor()).free
+                    if needed > free:
+                        ui.notify(
+                            f"Not enough disk space: {human_bytes(needed)} "
+                            f"needed, {human_bytes(free)} free",
+                            type="negative")
+                        return
+                if codex_puller.start(levels, run_converter=True,
+                                      project_root=PROJECT_ROOT):
+                    codex_result_label.text = ""
+                    codex_progress.set_value(0)
+                    codex_progress_label.text = "0%"
+                    codex_done_synced["value"] = False
+                    _refresh_codex_gate()
+                else:
+                    ui.notify("A Codex download is already running",
+                              type="warning")
+
+            def refresh_codex_pull_state():
+                st = codex_puller.state
+                has_token = bool(token_state.get("flywire_codex"))
+                download_btn.set_enabled(has_token and not st["running"])
+                convert_btn.set_enabled(not st["running"])
+                codex_cancel_btn.set_enabled(st["running"])
+                synapse_check.set_enabled(not st["running"])
+                skeleton_check.set_enabled(not st["running"])
+                if not st["running"] and not st["done"]:
+                    return
+                if st["running"]:
+                    codex_done_synced["value"] = False
+                    if st.get("cancel_requested"):
+                        codex_progress.props(add="indeterminate")
+                        codex_progress_label.text = ""
+                        codex_status_label.text = (
+                            "Cancelling — finishing the current chunk "
+                            "(partial files resume)...")
+                        return
+                    if st["total"] and st["total"] > 0:
+                        codex_progress.props(remove="indeterminate")
+                        frac = min(st["current"] / st["total"], 1.0)
+                        codex_progress.set_value(frac)
+                        codex_progress_label.text = f"{frac * 100:.1f}%"
+                        codex_status_label.text = (
+                            f"{st['info']} "
+                            f"({human_bytes(st['current'])} / "
+                            f"{human_bytes(st['total'])}) | {_format_eta(st)}")
+                    else:
+                        codex_progress.props(add="indeterminate")
+                        codex_progress_label.text = ""
+                        codex_status_label.text = st["info"]
+                    return
+                if not st["done"]:
+                    return
+                if not codex_done_synced["value"]:
+                    codex_progress.props(remove="indeterminate")
+                    _refresh_codex_file_status()
+                    refresh_dataset_selector_statuses()
+                    codex_done_synced["value"] = True
+                if st["error"]:
+                    codex_status_label.text = "Failed"
+                    codex_result_label.text = f"❌ {st['error']}"
+                else:
+                    s = st["summary"] or {}
+                    if st["cancelled"]:
+                        codex_progress_label.text = ""
+                    else:
+                        codex_progress.set_value(1.0)
+                        codex_progress_label.text = "100%"
+                    head = ("⏹ Cancelled — partial files resume on the "
+                            "next run." if st["cancelled"]
+                            else "✅ Codex download complete.")
+                    codex_result_label.text = (
+                        f"{head} downloaded {len(s.get('downloaded', []))} "
+                        f"file(s), already present "
+                        f"{len(s.get('skipped', []))} | converter: "
+                        f"{s.get('convert_note', 'not run')}")
+                    codex_status_label.text = "Idle"
+
+            _refresh_codex_gate()
+            download_btn.on_click(lambda: _start_codex_pull(download=True))
+            convert_btn.on_click(lambda: _start_codex_pull(download=False))
+            codex_cancel_btn.on_click(codex_puller.cancel)
+            ui.timer(0.5, refresh_codex_pull_state)
+
+        # BANC dataset downloads (public bucket, no token)
+        import banc_public_data
+        from ..banc_pull import (BANC_SYNAPSE_TABLE_BYTES, BancPuller,
+                                 LEVEL_NECESSARY, LEVEL_ORDER, LEVEL_SKELETONS,
+                                 LEVEL_SYNAPSE, banc_level_status)
+        with ui.card().classes("w-full drocat-card"):
+            section_header("BANC Dataset Downloads (public bucket)", "cloud_download")
+            banc_puller = BancPuller()
+
+            with ui.row().classes("items-center gap-2").style("flex-wrap: wrap"):
+                banc_select = ui.select(
+                    options=BANC_DATASETS, value="banc_v888", label="Dataset"
+                ).props("outlined").classes("drocat-select").style("min-width: 200px").tooltip(
+                    "BANC release version; never mix files across versions.")
+
+            banc_necessary_check = ui.checkbox(
+                "1 · Necessary data — always included (metadata + connections "
+                "from the public bucket, ~134 MB once, no token)",
+                value=True,
+            ).props("disable").tooltip(
+                "The neuron-metadata and connection tables. They also "
+                "download automatically the first time a BANC dataset is "
+                "used in a tool; this card fetches them explicitly.")
+            banc_synapse_check = ui.checkbox(
+                "2 · Synapse table (per-synapse, ~3.9 GB, resumable)",
+                value=False,
+            ).tooltip(
+                "Needed for BANC synapse rendering; downloads once from the "
+                "public bucket and resumes when interrupted.")
+            banc_skeleton_check = ui.checkbox(
+                "3 · All skeletons — bulk-cache every per-neuron SWC",
+                value=False,
+            ).tooltip(
+                "Without this level, BANC skeletons fetch on demand during "
+                "visualization; this level bulk-caches all of them up front "
+                "(many bucket requests).")
+
+            banc_status_labels = {level: ui.label("").classes(
+                "text-caption drocat-muted") for level in LEVEL_ORDER}
+
+            def _refresh_banc_file_status():
+                status = banc_level_status(
+                    str(banc_select.value), project_root=PROJECT_ROOT)
+                for level in LEVEL_ORDER:
+                    banc_status_labels[level].text = status[level]["detail"]
+
+            _refresh_banc_file_status()
+
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                banc_download_btn = ui.button(
+                    "Download Selected", icon="cloud_download",
+                    color="primary").tooltip(
+                    "Fetches the selected levels for the chosen BANC release "
+                    "from the public bucket (no token). Interrupted synapse "
+                    "downloads resume.")
+                banc_cancel_btn = ui.button(
+                    "Cancel", icon="stop", color="negative").props("outline")
+                banc_cancel_btn.set_enabled(False)
+
+            banc_progress = ui.linear_progress(
+                value=0, show_value=False, size="20px"
+            ).props("instant-feedback").classes("w-full")
+            with banc_progress:
+                banc_progress_label = ui.label("0%").classes(
+                    "absolute-center text-white"
+                ).style("font-size: 0.875rem")
+            banc_status_label = ui.label("Idle").classes(
+                "text-caption drocat-muted")
+            banc_result_label = ui.label("").classes("text-caption")
+            banc_done_synced = {"value": False}
+
+            def _selected_banc_levels():
+                levels = [LEVEL_NECESSARY]
+                if banc_synapse_check.value:
+                    levels.append(LEVEL_SYNAPSE)
+                if banc_skeleton_check.value:
+                    levels.append(LEVEL_SKELETONS)
+                return levels
+
+            def _start_banc_pull():
+                if banc_puller.running:
+                    ui.notify("A BANC download is already running",
+                              type="warning")
+                    return
+                levels = _selected_banc_levels()
+                if LEVEL_SYNAPSE in levels:
+                    anchor = PROJECT_ROOT / "datasets"
+                    free = shutil.disk_usage(anchor).free
+                    if BANC_SYNAPSE_TABLE_BYTES > free:
+                        ui.notify(
+                            "Not enough disk space for the ~3.9 GB synapse "
+                            f"table ({human_bytes(free)} free)",
+                            type="negative")
+                        return
+                if banc_puller.start(str(banc_select.value), levels,
+                                     project_root=PROJECT_ROOT):
+                    banc_result_label.text = ""
+                    banc_progress.set_value(0)
+                    banc_progress_label.text = "0%"
+                    banc_done_synced["value"] = False
+                else:
+                    ui.notify("A BANC download is already running",
+                              type="warning")
+
+            def refresh_banc_pull_state():
+                st = banc_puller.state
+                banc_download_btn.set_enabled(not st["running"])
+                banc_cancel_btn.set_enabled(st["running"])
+                banc_select.set_enabled(not st["running"])
+                banc_synapse_check.set_enabled(not st["running"])
+                banc_skeleton_check.set_enabled(not st["running"])
+                if not st["running"] and not st["done"]:
+                    return
+                if st["running"]:
+                    banc_done_synced["value"] = False
+                    if st.get("cancel_requested"):
+                        banc_progress.props(add="indeterminate")
+                        banc_progress_label.text = ""
+                        banc_status_label.text = (
+                            "Cancelling — finishing the current item...")
+                        return
+                    if st["total"] and st["total"] > 0:
+                        banc_progress.props(remove="indeterminate")
+                        frac = min(st["current"] / st["total"], 1.0)
+                        banc_progress.set_value(frac)
+                        banc_progress_label.text = f"{frac * 100:.1f}%"
+                        banc_status_label.text = (
+                            f"{st['info']} ({st['current']:,}/"
+                            f"{st['total']:,}) | {_format_eta(st)}")
+                    else:
+                        banc_progress.props(add="indeterminate")
+                        banc_progress_label.text = ""
+                        banc_status_label.text = st["info"]
+                    return
+                if not st["done"]:
+                    return
+                if not banc_done_synced["value"]:
+                    banc_progress.props(remove="indeterminate")
+                    _refresh_banc_file_status()
+                    refresh_dataset_selector_statuses()
+                    banc_done_synced["value"] = True
+                if st["error"]:
+                    banc_status_label.text = "Failed"
+                    banc_result_label.text = f"❌ {st['error']}"
+                else:
+                    s = st["summary"] or {}
+                    if st["cancelled"]:
+                        banc_progress_label.text = ""
+                    else:
+                        banc_progress.set_value(1.0)
+                        banc_progress_label.text = "100%"
+                    head = ("⏹ Cancelled — completed levels stay local."
+                            if st["cancelled"]
+                            else "✅ BANC download complete.")
+                    banc_result_label.text = (
+                        f"{head} completed: "
+                        f"{', '.join(s.get('completed', [])) or 'none'} | "
+                        f"{s.get('elapsed_time', 0):.1f}s")
+                    banc_status_label.text = "Idle"
+
+            banc_download_btn.on_click(_start_banc_pull)
+            banc_cancel_btn.on_click(banc_puller.cancel)
+            ui.timer(0.5, refresh_banc_pull_state)
+
+        with ui.card().classes("w-full drocat-card"):
+            section_header("NeuPrint Dataset Downloads", "download")
             ui.label(
                 "'Pull Dataset Metadata' downloads/verifies only the neuron table, "
                 "ROI table, and the materialized neuron index "
@@ -110,7 +580,7 @@ def create_settings_tab():
 
             with ui.row().classes("items-center gap-3 w-full").style("flex-wrap: wrap"):
                 ds_select = ui.select(
-                    options=DATASETS, value=DATASETS[0], label="Dataset"
+                    options=NEUPRINT_DATASETS, value=NEUPRINT_DATASETS[0], label="Dataset"
                 ).props("outlined").classes("drocat-select").style("min-width: 260px")
                 force_rebuild = ui.checkbox(
                     "Force rebuild (clear broken cache first)"
@@ -496,310 +966,6 @@ def create_settings_tab():
         # Storage (caches + exported data): the scan/delete utility card.
         # The pull pollers below flip its actions off while a pull runs.
         storage_panel = create_storage_card(puller, skeleton_puller)
-
-        # Tokens
-        with ui.card().classes("w-full drocat-card"):
-            section_header("API Tokens", "key")
-
-            # Full detection chain (config files then env vars) so env-var
-            # tokens are recognized as configured; the source is shown in
-            # the status labels next to each field.
-            token_sources = _token_sources()
-            token_state = {
-                "neuprint": token_sources["neuprint"][0],
-                "cave": token_sources["cave"][0],
-                "flywire_codex": token_sources["flywire_codex"][0],
-            }
-
-            # Reminder when tokens are missing: the NeuPrint token is
-            # required for NeuPrint datasets; the FlyWire Codex token
-            # enables the automatic FAFB downloads. Refreshed whenever the
-            # saved tokens change.
-            token_reminder = ui.element("div").props('id="drocat-token-reminder"').classes(
-                "w-full drocat-token-reminder"
-            )
-            with token_reminder:
-                token_reminder_text = ui.label("").classes("text-sm drocat-warn")
-
-            def _refresh_token_reminder():
-                neuprint_missing = not token_state.get("neuprint")
-                codex_note = ""
-                if not token_state.get("flywire_codex"):
-                    codex_note = (
-                        " ℹ️ FlyWire Codex token not configured - optional; "
-                        "it enables the automatic FAFB downloads on this tab "
-                        "and lazy skeleton fetching."
-                    )
-                if not neuprint_missing and not codex_note:
-                    token_reminder.set_visibility(False)
-                    return
-                token_reminder.set_visibility(True)
-                base = (
-                    "⚠️ NeuPrint token not configured - it is required for "
-                    "NeuPrint datasets. Set it below or in config.json."
-                    if neuprint_missing else ""
-                )
-                token_reminder_text.text = (base + codex_note).strip()
-                token_reminder_text.update()
-
-            _refresh_token_reminder()
-
-            with ui.column().classes("w-full gap-1"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.label("NeuPrint Token (Required for all NeuPrint datasets)").classes("text-caption font-bold")
-                    neuprint_status = ui.label(_token_status(token_state["neuprint"], token_sources["neuprint"][1])).classes("text-caption drocat-muted")
-                ui.html("Get it from <a href='https://neuprint.janelia.org/account' target='_blank' style='color:var(--drocat-cobalt)'>neuprint.janelia.org/account</a>").classes("text-caption drocat-muted")
-
-            neuprint_token = ui.input(
-                label="NeuPrint Token",
-                value="",
-                placeholder="Leave blank to keep the saved token",
-                password=True,
-                password_toggle_button=True,
-            ).classes("w-full")
-
-            ui.separator()
-
-            with ui.column().classes("w-full gap-1"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.label("FlyWire Codex Token (for automatic FAFB downloads)").classes("text-caption font-bold")
-                    codex_status = ui.label(_token_status(token_state["flywire_codex"], token_sources["flywire_codex"][1])).classes("text-caption drocat-muted")
-                ui.html("Sign in at <a href='https://codex.flywire.ai/api/download?dataset=fafb' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai</a> with a Google account, then copy your API token from <a href='https://codex.flywire.ai/account' target='_blank' style='color:var(--drocat-cobalt)'>codex.flywire.ai/account</a>").classes("text-caption drocat-muted")
-                ui.label("Needed only for the automatic FAFB data downloads on this tab and lazy per-neuron skeleton fetching. The CAVE token is a separate, contributor-gated credential that no download or analysis needs; power users can still set it via config.json (see the FAFB instructions below).").classes("text-caption drocat-muted")
-
-            codex_token = ui.input(
-                label="FlyWire Codex Token",
-                value="",
-                placeholder="Leave blank to keep the saved token",
-                password=True,
-                password_toggle_button=True,
-            ).classes("w-full")
-
-            with ui.row().classes("items-center gap-2 flex-wrap"):
-                save_btn = ui.button("Save Tokens", icon="save", color="primary")
-                test_btn = ui.button("Test NeuPrint", icon="wifi", color="secondary")
-                codex_test_btn = ui.button("Test Codex", icon="wifi", color="secondary")
-                clear_blank = ui.checkbox(
-                    "Clear a saved value when its field is blank",
-                    value=False,
-                ).classes("text-caption")
-            ui.label(
-                "Saved token values stay on the server and are never pre-filled in the browser. "
-                "Enter a new value only when you want to replace the current one."
-            ).classes("text-caption drocat-muted")
-
-        # FlyWire Codex downloads (FAFB)
-        import codex_downloader
-        with ui.card().classes("w-full drocat-card"):
-            section_header("FAFB Data Downloads (FlyWire Codex)", "cloud_download")
-            downloads_dir = codex_downloader.downloads_dir_for(
-                project_root=PROJECT_ROOT)
-
-            codex_gate_label = ui.label("").classes("text-caption drocat-warn")
-            necessary_check = ui.checkbox(
-                "1 · Necessary data — always included ("
-                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_NECESSARY))}, 7 files: "
-                "neuron table, connections and metadata for the FAFB converter)",
-                value=True,
-            ).props("disable").tooltip(
-                "The FAFB converter's required downloads plus the metadata "
-                "enrichment files. This level is part of every download.")
-            synapse_check = ui.checkbox(
-                "2 · Synapse table ("
-                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SYNAPSE))})"
-                " — needed for synapse visualization",
-                value=False,
-            ).tooltip(
-                "Downloads the per-synapse table and converts it into the "
-                "local synapse parquet that skeleton visualization reads.")
-            skeleton_check = ui.checkbox(
-                "3 · Skeleton bundle ("
-                f"{human_bytes(codex_downloader.level_bytes(codex_downloader.LEVEL_SKELETON))})"
-                " — full local skeletons",
-                value=False,
-            ).tooltip(
-                "Without the bundle, skeletons fetch lazily per neuron from "
-                "the Codex server during visualization (a Codex token is "
-                "still needed).")
-
-            with ui.column().classes("w-full gap-0"):
-                codex_status_labels = {
-                    key: ui.label("").classes("text-caption drocat-muted")
-                    for key in codex_downloader.PRODUCT_CATALOG
-                }
-
-            def _refresh_codex_file_status():
-                for key, label in codex_status_labels.items():
-                    status = codex_downloader.product_status(key, downloads_dir)
-                    if status["complete"]:
-                        mark = "✓"
-                    elif status["local"]:
-                        mark = "◐ partial"
-                    else:
-                        mark = "· missing"
-                    label.text = (f"{mark}  {status['filename']} "
-                                  f"({human_bytes(status['expected'])})")
-
-            _refresh_codex_file_status()
-
-            with ui.row().classes("items-center gap-2 flex-wrap"):
-                download_btn = ui.button(
-                    "Download & Convert", icon="cloud_download", color="primary"
-                ).tooltip(
-                    "Downloads the selected levels into "
-                    "datasets/flywire_FAFB_v783/downloads/ (resumable; "
-                    "interrupted files continue where they stopped) and runs "
-                    "the FAFB converter when the necessary level completes.")
-                convert_btn = ui.button(
-                    "Convert Only", icon="transform", color="secondary"
-                ).props("outline").tooltip(
-                    "Runs the FAFB converter over the local downloads "
-                    "(no network) — the python src/FAFB_file_converter.py "
-                    "equivalent.")
-                codex_cancel_btn = ui.button(
-                    "Cancel", icon="stop", color="negative").props("outline")
-                codex_cancel_btn.set_enabled(False)
-
-            codex_progress = ui.linear_progress(
-                value=0, show_value=False, size="20px"
-            ).props("instant-feedback").classes("w-full")
-            with codex_progress:
-                codex_progress_label = ui.label("0%").classes(
-                    "absolute-center text-white"
-                ).style("font-size: 0.875rem")
-            codex_status_label = ui.label("Idle").classes(
-                "text-caption drocat-muted")
-            codex_result_label = ui.label("").classes("text-caption")
-            codex_done_synced = {"value": False}
-
-            def _refresh_codex_gate():
-                has_token = bool(token_state.get("flywire_codex"))
-                codex_gate_label.text = (
-                    "⚠️ Save a FlyWire Codex API token in the API Tokens "
-                    "card above to enable Codex downloads (Convert Only "
-                    "works without one).")
-                codex_gate_label.set_visibility(not has_token)
-                download_btn.set_enabled(
-                    has_token and not codex_puller.running)
-                convert_btn.set_enabled(not codex_puller.running)
-
-            def _selected_levels():
-                levels = [codex_downloader.LEVEL_NECESSARY]
-                if synapse_check.value:
-                    levels.append(codex_downloader.LEVEL_SYNAPSE)
-                if skeleton_check.value:
-                    levels.append(codex_downloader.LEVEL_SKELETON)
-                return levels
-
-            def _free_space_anchor() -> Path:
-                anchor = downloads_dir
-                while not anchor.exists() and anchor.parent != anchor:
-                    anchor = anchor.parent
-                return anchor
-
-            def _start_codex_pull(download: bool):
-                if codex_puller.running:
-                    ui.notify("A Codex download is already running",
-                              type="warning")
-                    return
-                levels = _selected_levels() if download else []
-                if levels and not token_state.get("flywire_codex"):
-                    ui.notify(
-                        "Save a FlyWire Codex token first "
-                        "(API Tokens card above)", type="warning")
-                    return
-                if levels:
-                    needed = 0
-                    for level in levels:
-                        for product in codex_downloader.level_products(level):
-                            status = codex_downloader.product_status(
-                                product.key, downloads_dir)
-                            if not status["complete"]:
-                                needed += product.size - status["local"]
-                    free = shutil.disk_usage(_free_space_anchor()).free
-                    if needed > free:
-                        ui.notify(
-                            f"Not enough disk space: {human_bytes(needed)} "
-                            f"needed, {human_bytes(free)} free",
-                            type="negative")
-                        return
-                if codex_puller.start(levels, run_converter=True,
-                                      project_root=PROJECT_ROOT):
-                    codex_result_label.text = ""
-                    codex_progress.set_value(0)
-                    codex_progress_label.text = "0%"
-                    codex_done_synced["value"] = False
-                    _refresh_codex_gate()
-                else:
-                    ui.notify("A Codex download is already running",
-                              type="warning")
-
-            def refresh_codex_pull_state():
-                st = codex_puller.state
-                has_token = bool(token_state.get("flywire_codex"))
-                download_btn.set_enabled(has_token and not st["running"])
-                convert_btn.set_enabled(not st["running"])
-                codex_cancel_btn.set_enabled(st["running"])
-                synapse_check.set_enabled(not st["running"])
-                skeleton_check.set_enabled(not st["running"])
-                if not st["running"] and not st["done"]:
-                    return
-                if st["running"]:
-                    codex_done_synced["value"] = False
-                    if st.get("cancel_requested"):
-                        codex_progress.props(add="indeterminate")
-                        codex_progress_label.text = ""
-                        codex_status_label.text = (
-                            "Cancelling — finishing the current chunk "
-                            "(partial files resume)...")
-                        return
-                    if st["total"] and st["total"] > 0:
-                        codex_progress.props(remove="indeterminate")
-                        frac = min(st["current"] / st["total"], 1.0)
-                        codex_progress.set_value(frac)
-                        codex_progress_label.text = f"{frac * 100:.1f}%"
-                        codex_status_label.text = (
-                            f"{st['info']} "
-                            f"({human_bytes(st['current'])} / "
-                            f"{human_bytes(st['total'])}) | {_format_eta(st)}")
-                    else:
-                        codex_progress.props(add="indeterminate")
-                        codex_progress_label.text = ""
-                        codex_status_label.text = st["info"]
-                    return
-                if not st["done"]:
-                    return
-                if not codex_done_synced["value"]:
-                    codex_progress.props(remove="indeterminate")
-                    _refresh_codex_file_status()
-                    refresh_dataset_selector_statuses()
-                    codex_done_synced["value"] = True
-                if st["error"]:
-                    codex_status_label.text = "Failed"
-                    codex_result_label.text = f"❌ {st['error']}"
-                else:
-                    s = st["summary"] or {}
-                    if st["cancelled"]:
-                        codex_progress_label.text = ""
-                    else:
-                        codex_progress.set_value(1.0)
-                        codex_progress_label.text = "100%"
-                    head = ("⏹ Cancelled — partial files resume on the "
-                            "next run." if st["cancelled"]
-                            else "✅ Codex download complete.")
-                    codex_result_label.text = (
-                        f"{head} downloaded {len(s.get('downloaded', []))} "
-                        f"file(s), already present "
-                        f"{len(s.get('skipped', []))} | converter: "
-                        f"{s.get('convert_note', 'not run')}")
-                    codex_status_label.text = "Idle"
-
-            _refresh_codex_gate()
-            download_btn.on_click(lambda: _start_codex_pull(download=True))
-            convert_btn.on_click(lambda: _start_codex_pull(download=False))
-            codex_cancel_btn.on_click(codex_puller.cancel)
-            ui.timer(0.5, refresh_codex_pull_state)
-
         # Output
         with ui.card().classes("w-full drocat-card"):
             section_header("Output Settings", "folder")
@@ -1118,32 +1284,10 @@ def create_settings_tab():
         with ui.card().classes("w-full drocat-card"):
             section_header("Dataset Preparation Guide", "menu_book")
 
-            with ui.expansion("NeuPrint Datasets (hemibrain, male-cns, optic-lobe, manc)", icon="cloud").classes("w-full"):
+            with ui.expansion("FlyWire FAFB v783 · Codex downloads + manual fallback", icon="download").classes("w-full"):
                 ui.html("""
                 <div style="color:var(--drocat-navy)" class="text-sm">
-                    <p><b>NeuPrint datasets are fetched automatically from the server.</b> No manual download required.</p>
-                    <ol class="list-decimal ml-4 mt-2">
-                        <li>Get your NeuPrint token from <a href="https://neuprint.janelia.org/account" target="_blank" style="color:var(--drocat-cobalt)">neuprint.janelia.org/account</a></li>
-                        <li>Enter the token in the API Tokens section above</li>
-                        <li>Click "Save Tokens"</li>
-                        <li>Click "Test NeuPrint" to verify the connection</li>
-                        <li>Datasets will appear in all tool tabs automatically</li>
-                    </ol>
-                    <p class="mt-2" style="color:var(--drocat-muted)">Available NeuPrint datasets:</p>
-                    <ul class="list-disc ml-4" style="color:var(--drocat-muted)">
-                        <li>hemibrain:v1.2.1 - Adult fly brain (central)</li>
-                        <li>male-cns:v1.0 - Full male CNS (latest)</li>
-                        <li>male-cns:v0.9 - Full male CNS</li>
-                        <li>optic-lobe:v1.1 - Optic lobe detailed</li>
-                        <li>manc:v1.2.1 / manc:v1.0 - Male VNC</li>
-                    </ul>
-                </div>
-                """)
-
-            with ui.expansion("FlyWire FAFB v783 · strict local preparation", icon="download").classes("w-full"):
-                ui.html("""
-                <div style="color:var(--drocat-navy)" class="text-sm">
-                    <p class="mt-3" style="color:var(--drocat-cobalt)"><b>Automatic:</b> save a FlyWire Codex API token in the API Tokens card above, then use the <code>FAFB Data Downloads</code> card on this tab to fetch the levels you need. Skeletons fetch lazily per neuron, so the 13.9 GB bundle is optional. The manual steps below remain the offline fallback.</p>
+                    <p class="mt-3" style="color:var(--drocat-cobalt)"><b>Automatic:</b> save a FlyWire Codex API token in the API Tokens card above, then use the <code>FAFB Dataset Downloads</code> card on this tab to fetch the levels you need. Skeletons fetch lazily per neuron, so the 13.9 GB bundle is optional. The manual steps below remain the offline fallback.</p>
                     <p style="color:var(--drocat-warn)"><b>Follow the converter layout exactly.</b> Download the raw Codex files; do not rename them to a generated <code>*_allneurons_*</code> filename and do not place raw files in the dataset root.</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">1. Create the input folder</p>
@@ -1172,10 +1316,10 @@ def create_settings_tab():
                 </div>
                 """)
 
-            with ui.expansion("BANC v888 / v626 · automatic public-bucket preparation", icon="download").classes("w-full"):
+            with ui.expansion("BANC v888 / v626 · public-bucket downloads (no token)", icon="download").classes("w-full"):
                 ui.html("""
                 <div style="color:var(--drocat-navy)" class="text-sm">
-                    <p><b>BANC metadata + connections now download automatically</b> from the public BANC release bucket (no token, no manual download): just select <code>banc_v888</code> or <code>banc_v626</code> in a tool and run it. Skeletons for 3D visualization fetch on demand from the same bucket.</p>
+                    <p><b>BANC downloads are automatic and token-free</b> from the public release bucket: selecting <code>banc_v888</code> or <code>banc_v626</code> in a tool prepares the necessary data on first use. The <b>BANC Dataset Downloads</b> card on this tab fetches the levels explicitly — 1 · necessary data (metadata + connections, ~134 MB), 2 · synapse table (~3.9 GB, resumable), 3 · all skeletons (bulk SWC cache; without it they fetch on demand during visualization).</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">Choose one exact dataset identifier</p>
                     <p>Use either <code>banc_v888</code> or <code>banc_v626</code>. Never mix files from one version into the other version's folder. Legacy <code>flywire_BANC_*</code> spellings keep working.</p>
@@ -1186,6 +1330,28 @@ def create_settings_tab():
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">4. Verify before running analysis</p>
                     <p>The selected dataset root should contain <code>&lt;dataset&gt;_allneurons_neuron_df.parquet</code> (and CSV) and <code>&lt;dataset&gt;_merged_connections.parquet</code>. Click <b>Refresh</b> above and look for <b>ready</b> status chips.</p>
                     <p style="color:var(--drocat-warn)"><b>BANC has no <code>force_API_fetching</code> or CAVE fallback.</b> Pathfinding, network visualization, tabular analysis, and skeleton visualization use the BANC public-release tables/SWCs.</p>
+                </div>
+                """)
+
+            with ui.expansion("NeuPrint datasets · automatic server fetch", icon="cloud").classes("w-full"):
+                ui.html("""
+                <div style="color:var(--drocat-navy)" class="text-sm">
+                    <p><b>NeuPrint datasets are fetched automatically from the server.</b> No manual download required. Bulk pulls (metadata, complete connections, all skeletons) live in the <b>NeuPrint Dataset Downloads</b> card on this tab.</p>
+                    <ol class="list-decimal ml-4 mt-2">
+                        <li>Get your NeuPrint token from <a href="https://neuprint.janelia.org/account" target="_blank" style="color:var(--drocat-cobalt)">neuprint.janelia.org/account</a></li>
+                        <li>Enter the token in the API Tokens section above</li>
+                        <li>Click "Save Tokens"</li>
+                        <li>Click "Test NeuPrint" to verify the connection</li>
+                        <li>Datasets will appear in all tool tabs automatically</li>
+                    </ol>
+                    <p class="mt-2" style="color:var(--drocat-muted)">Available NeuPrint datasets:</p>
+                    <ul class="list-disc ml-4" style="color:var(--drocat-muted)">
+                        <li>hemibrain:v1.2.1 - Adult fly brain (central)</li>
+                        <li>male-cns:v1.0 - Full male CNS (latest)</li>
+                        <li>male-cns:v0.9 - Full male CNS</li>
+                        <li>optic-lobe:v1.1 - Optic lobe detailed</li>
+                        <li>manc:v1.2.1 / manc:v1.0 - Male VNC</li>
+                    </ul>
                 </div>
                 """)
 

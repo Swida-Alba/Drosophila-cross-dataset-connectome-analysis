@@ -217,7 +217,7 @@ def fafb_synapse_warning(dataset: str, view: str):
     return (
         "FAFB synapse markers need the synapse table (2.7 GB, one-time): "
         "download it here via the amber notice above the run controls (or "
-        "Settings → FAFB Data Downloads, level 2 · Synapses) with a FlyWire "
+        "Settings → FAFB Dataset Downloads, level 2 · Synapses) with a FlyWire "
         "Codex token. This run draws skeletons without synapse markers."
     )
 
