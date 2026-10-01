@@ -89,7 +89,8 @@ class TokenManager:
             return
         for config_key, token_key in (
                 ('neuprint', 'NEUPRINT_TOKEN'),
-                ('cave', 'CAVE_TOKEN')):
+                ('cave', 'CAVE_TOKEN'),
+                ('flywire_codex', 'FLYWIRE_CODEX_TOKEN')):
             value = section.get(config_key)
             if isinstance(value, str) and value.strip():
                 # Files are parsed in priority order, so each token name's
