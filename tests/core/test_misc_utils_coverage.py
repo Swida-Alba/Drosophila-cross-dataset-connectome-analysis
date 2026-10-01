@@ -178,7 +178,7 @@ class TestCaveTokenFromConfigBranches:
         (tmp_path / "config.json").write_text('[1, 2, 3]\n', encoding="utf-8")
         (tmp_path / "config_local.json").write_text('{"tokens": "not-a-dict"}\n',
                                                     encoding="utf-8")
-        assert fwr._cave_token_from_config(tmp_path) is None
+        assert fwr._configured_token_from_config(tmp_path, "cave") is None
 
     def test_placeholder_and_non_string_values_are_unconfigured(self, tmp_path,
                                                                 monkeypatch):
@@ -187,7 +187,7 @@ class TestCaveTokenFromConfigBranches:
             '{"tokens": {"cave": "YOUR_CAVE_TOKEN"}}\n', encoding="utf-8")
         (tmp_path / "config_local.json").write_text(
             '{"tokens": {"cave": 1234}}\n', encoding="utf-8")
-        assert fwr._cave_token_from_config(tmp_path) is None
+        assert fwr._configured_token_from_config(tmp_path, "cave") is None
 
     def test_env_placeholder_token_is_unconfigured(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CAVE_TOKEN", "YOUR_CAVE_TOKEN_HERE")
