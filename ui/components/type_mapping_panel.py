@@ -156,6 +156,57 @@ def compose_full_map_reach(mapper, src_ds: str, tgt_ds: str,
     }
 
 
+def build_fullmap_csv(info: Dict[str, Any], src: str, tgt: str
+                      ) -> Optional[str]:
+    """The full-map composed-route table as CSV text (2026-10-01).
+
+    One row per composed route — source type, connector (mid), via
+    type, both leg chains, the composed end, its class — plus one row
+    per cross-mid route conflict.  Curated-only ends are omitted (the
+    ordinary mapping CSVs carry them).  ``None`` when the pair has no
+    composed transitive routes.
+    """
+    import csv as _csv
+    import io
+
+    def _chain_text(chain) -> str:
+        return " -> ".join(
+            f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+            for h in (chain or []))
+
+    direct_ends = set(info.get("direct_ends") or [])
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["source_dataset", "source_type", "connector",
+                "via_type", "class", "target_dataset", "target_type",
+                "leg_a", "leg_b"])
+    rows_written = 0
+    for end in info.get("ends", []):
+        bucket = (info.get("routes") or {}).get(end) or {}
+        klass = ("corroborated" if end in direct_ends
+                 else "transitive_only")
+        if bucket.get("direct") and not bucket.get("transitive"):
+            continue  # curated-only end: the ordinary CSVs carry it
+        for r in bucket.get("transitive", []):
+            for leg_a in r.get("leg_a") or [None]:
+                w.writerow([
+                    src, r.get("source_type", ""), r.get("mid", ""),
+                    r.get("via_type", ""), klass, tgt, end,
+                    _chain_text(leg_a),
+                    _chain_text((r.get("leg_b") or [None])[0]),
+                ])
+                rows_written += 1
+    for c in info.get("route_conflicts", []):
+        w.writerow([
+            src, c.get("source_type", ""),
+            f"{c.get('mid_a')}|{c.get('mid_b')}",
+            c.get("source_type", ""), "route_conflict", tgt,
+            f"{','.join(c.get('ends_a') or [])} VS "
+            f"{','.join(c.get('ends_b') or [])}", "", ""])
+        rows_written += 1
+    return buf.getvalue() if rows_written else None
+
+
 def _pair_card_label(src: str, tgt: str, flows) -> str:
     """The pair-card heading: the count is the ADOPTED pairs.
 
@@ -348,13 +399,16 @@ def _compute_type_mapping(queries, datasets, mode,
     mapper load uses it in a dedicated spawned process so pandas parsing and
     the Python graph build cannot starve the websocket event loop.
 
-    ``route_scope`` (§full-map, user 2026-09-28): ``'curated'`` (default —
-    today's behavior, unchanged) or ``'full'`` — the panel-layer
-    composition of the transitive reach through candidate intermediate
-    datasets (:func:`compose_full_map_reach`).  The composition NEVER
-    touches the mapper's derivation/decision surfaces: claim-tier figures
-    are identical in both scopes, and the mapper->TM VEV interface cannot
-    see the full-map view by construction.
+    ``route_scope`` (§full-map, user 2026-09-28; RE-RATIFIED 2026-10-01):
+    ``'curated'`` (default — the historical licensed routes, byte-identical)
+    or ``'full'`` — the COMPLETE parallel mode: the whole data path
+    (flows, tiers, exports) runs on the full-map route universe with ALL
+    datasets licensed as connectors, via the mapper-level
+    ``route_scope`` threading (:func:`compose_full_map_reach` is a thin
+    wrapper over ``compose_full_map_bridges``).  Claim/reach figures in
+    full mode legitimately differ from curated — the mode is wholesale;
+    the validation pipeline accepts it gated
+    (``MappingValidationConfig.route_scope``).
     """
     if route_scope not in ('curated', 'full'):
         raise ValueError(f"unknown route_scope: {route_scope!r}")
@@ -892,8 +946,9 @@ def _compute_type_mapping(queries, datasets, mode,
             row['fullmap_mids'] = sorted(mids_for_type)
             row['fullmap_conflicts'] = len(conflicts_for_type)
             row['fullmap_cell'] = (
-                f"{row['fullmap_reach']} (+{row['fullmap_delta']} via "
-                f"{', '.join(row['fullmap_mids'])})"
+                (f"{row['fullmap_reach']} (+{row['fullmap_delta']} via "
+                 f"{', '.join(row['fullmap_mids'])})"
+                 if row['fullmap_delta'] else str(row['fullmap_reach']))
                 + (f" ⚠{row['fullmap_conflicts']}"
                    if row['fullmap_conflicts'] else ''))
         # strip cells (matched surfaces): per received dataset, the
@@ -910,10 +965,15 @@ def _compute_type_mapping(queries, datasets, mode,
                     continue
                 ends.update(info.get('ends', []))
                 transitive.update(info.get('transitive_only_ends', []))
-                mids.update(info.get('mids') or [])
+                for end in info.get('transitive_only_ends', []):
+                    for r in (info.get('routes', {}).get(end) or {}).get(
+                            'transitive', []):
+                        if r.get('mid'):
+                            mids.add(r['mid'])
             row['fullmap'] = (
                 f"{len(ends)} (+{len(transitive)} via "
-                f"{', '.join(sorted(mids))})") if ends else ''
+                f"{', '.join(sorted(mids))})" if mids
+                else str(len(ends))) if ends else ''
 
     return {"pair_flows": pair_flows, "pools": pools, "meta": meta,
             "composed": html, "datasets": datasets,
@@ -1116,59 +1176,16 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             "Informational only, please double check.")
 
     def _deliver_fullmap_csv(src: str, tgt: str, stamp: str) -> None:
-        """Full-map mode (2026-10-01): one row per composed route —
-        source type, connector (mid), via type, both leg chains, the
-        composed end, its class, and the cross-mid conflicts — so the
-        transitive universe is auditable beside the curated CSVs."""
-        import csv as _csv
-        import io
-
+        """Full-map mode (2026-10-01): deliver the composed-route CSV."""
         info = (state.get("full_map") or {}).get((src, tgt)) or {}
-        buf = io.StringIO()
-        w = _csv.writer(buf)
-        w.writerow(["source_dataset", "source_type", "connector",
-                    "via_type", "class", "target_dataset", "target_type",
-                    "leg_a", "leg_b"])
-
-        def _chain_text(chain) -> str:
-            return " -> ".join(
-                f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
-                for h in (chain or []))
-
-        direct_ends = set(info.get("direct_ends") or [])
-        rows_written = 0
-        for end in info.get("ends", []):
-            bucket = (info.get("routes") or {}).get(end) or {}
-            klass = ("corroborated" if end in direct_ends
-                     else "transitive_only")
-            if bucket.get("direct") and not bucket.get("transitive"):
-                continue  # curated-only end: the ordinary CSVs carry it
-            for r in bucket.get("transitive", []):
-                for leg_a in r.get("leg_a") or [None]:
-                    w.writerow([
-                        src, r.get("source_type", ""), r.get("mid", ""),
-                        r.get("via_type", ""), klass, tgt, end,
-                        _chain_text(leg_a),
-                        _chain_text((r.get("leg_b") or [None])[0]),
-                    ])
-                    rows_written += 1
-        for c in info.get("route_conflicts", []):
-            w.writerow([
-                src, c.get("source_type", ""),
-                f"{c.get('mid_a')}|{c.get('mid_b')}", c.get("source_type",
-                                                            ""),
-                "route_conflict", tgt,
-                f"{','.join(c.get('ends_a') or [])} VS "
-                f"{','.join(c.get('ends_b') or [])}",
-                "", ""])
-            rows_written += 1
-        if not rows_written:
+        text = build_fullmap_csv(info, src, tgt)
+        if text is None:
             ui.notify("No composed transitive routes for this pair.",
                       type="info")
             return
         name = (f"mapping_fullmap_{src.replace(':', '_')}_"
                 f"{tgt.replace(':', '_')}_{stamp}.csv")
-        ui.download.content(buf.getvalue(), name, "text/csv")
+        ui.download.content(text, name, "text/csv")
         push_banner(
             f"{name} — check your browser's default downloads folder. "
             "Full-map composed routes (evidence; connectors licensed per "

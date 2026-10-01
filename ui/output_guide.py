@@ -2380,7 +2380,10 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "mapping/mapping_export.csv",
              "description": "Branch-level mapping: chains, linker values, "
                             "refined bodyId pools (the mapper-facing "
-                            "export)."},
+                            "export). Additive route_scope/via_mid columns "
+                            "label full-map transitive pairs (--route-scope "
+                            "full; curated runs leave them at their "
+                            "defaults)."},
             {"pattern": "validation/validation_results.csv",
              "description": "Source×branch verdict rows: verdict tier, "
                             "ranks + scores, connectivity flags, source "

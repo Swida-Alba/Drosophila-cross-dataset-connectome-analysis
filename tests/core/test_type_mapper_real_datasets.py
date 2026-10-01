@@ -2325,3 +2325,25 @@ def test_full_map_mode_all_datasets_connectors(mapper):
     comp = mapper.compose_full_map_bridges(
         ['AOTU002_b'], hemi, FW)
     assert 'manc:v1.0' in comp['mids']
+
+
+def test_full_map_validator_export_rows_labeled(mapper):
+    """R6 regression (2026-10-01 review): the run's mapping_export.csv
+    rows carry route_scope/via_mid for transitive pairs — the columns
+    existed via the empty-file schema registry, but the row builder
+    missed them."""
+    from comparison.mapping_validation import (
+        MappingValidationConfig, MappingValidator)
+    cfg = MappingValidationConfig(
+        source_dataset='hemibrain:v1.2.1', target_dataset=FW,
+        query_types=['AOTU002_b'], route_scope='full',
+        validation_mode='family')
+    validator = MappingValidator(cfg)
+    validator.pairs = validator._pairs_for_type(
+        'AOTU002_b', [], 'AOTU002_b')
+    rows = validator._mapping_export_rows()
+    by_target = {r['target_type']: r for r in rows}
+    assert 'CB1963' in by_target
+    assert by_target['CB1963']['route_scope'] == 'full'
+    assert by_target['CB1963']['via_mid'].startswith('banc')
+    assert by_target.get('CB1080', {}).get('route_scope') == 'full'

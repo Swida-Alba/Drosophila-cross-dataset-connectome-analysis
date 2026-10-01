@@ -7215,6 +7215,8 @@ class MappingValidator:
                 'same_name_rivals': ';'.join(
                     p.same_name_first.get('rivals') or [])
                 if p.same_name_first else '',
+                'route_scope': getattr(p, 'route_scope', 'curated'),
+                'via_mid': getattr(p, 'via_mid', ''),
                 'query': p.query,
                 'is_selected': True,
                 'chain_rank': p.branch_index,
