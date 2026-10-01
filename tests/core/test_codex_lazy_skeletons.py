@@ -231,15 +231,18 @@ def test_write_compressed_skeleton_records_source_header(tmp_path):
 
 def test_resolver_chain_wiring():
     """The lazy step sits between the bundle and the extrusion check, joins
-    the extrusion pool, and persists with the healed provenance tag."""
+    the extrusion pool, caches into the overlay bundle, and a local prune
+    replaces the overlay member it produced."""
     source = Path(cd.__file__).with_name("visualize_skeleton.py") \
         .read_text(encoding="utf-8")
     assert "_take_codex_lazy()" in source
     assert source.index("def _take_codex_lazy") > source.index("def _take_bundle")
     assert "{'zip', 'raw_cache', 'codex_lazy'}" in source
     assert "'codex_lazy', 'local_repaired', 'cave'" in source
-    assert "source=FAFB_CODEX_HEALED" in source
-    assert "simplification=0,\n                            source=" in source
+    assert "write_overlay_members(" in source
+    assert "origin=FAFB_CODEX_HEALED" in source
+    assert "def _replace_overlay_member" in source
+    assert "self._replace_overlay_member(canonical, repaired)" in source
     morphology_source = Path(cd.__file__).with_name("morphology.py") \
         .read_text(encoding="utf-8")
     assert '"source": source or "neuprint.fetch_skeleton"' in morphology_source

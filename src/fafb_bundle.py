@@ -283,11 +283,17 @@ class FAFBSkeletonBundle:
 
     def __init__(self, bundle_path, zip_path: Optional[Path] = None,
                  lazy_convert: bool = False, level: int = DEFAULT_LEVEL,
-                 block_bytes: int = BLOCK_BYTES):
+                 block_bytes: int = BLOCK_BYTES,
+                 overlay_path: Optional[Path] = None):
         """``bundle_path=None`` selects zip-only mode: the ZIP is served
-        directly and no container file is created or appended to."""
+        directly and no container file is created or appended to.
+        ``overlay_path`` adds the Codex skeleton-cache overlay: a small zip
+        of ``{bodyId}.swc`` members (lazily fetched from FlyWire Codex, or
+        locally pruned repairs) that wins over the base ZIP/container for
+        the ids it contains; the base files stay byte-untouched."""
         self.bundle_path = Path(bundle_path) if bundle_path else None
         self.zip_path = Path(zip_path) if zip_path else None
+        self.overlay_path = Path(overlay_path) if overlay_path else None
         self.lazy_convert = bool(lazy_convert)
         self.level = int(level)
         self.block_bytes = int(block_bytes)
@@ -301,6 +307,8 @@ class FAFBSkeletonBundle:
         self._last_size = -1
         self._zip_handle = None
         self._zip_names = None
+        self._overlay_handle = None
+        self._overlay_names = None
         self._pending: List[Tuple[int, List]] = []
         self._pending_ids = set()
         self._pending_nodes = 0
@@ -367,11 +375,30 @@ class FAFBSkeletonBundle:
         self._zip()
         return set(self._zip_names or ())
 
+    def _overlay_zip(self) -> Optional[zipfile.ZipFile]:
+        if self.overlay_path is None or not self.overlay_path.exists():
+            return None
+        if self._overlay_handle is None:
+            self._overlay_handle = zipfile.ZipFile(self.overlay_path, "r")
+            self._overlay_names = {
+                int(name[:-4]) for name in self._overlay_handle.namelist()
+                if name.endswith(".swc")
+            }
+        return self._overlay_handle
+
+    def _overlay_ids(self) -> set:
+        self._overlay_zip()
+        return set(self._overlay_names or ())
+
     # ---------------- public API ----------------
 
     def get(self, body_id) -> Optional[str]:
-        """SWC text for a body id (.zst first; ZIP fallback converts lazily)."""
+        """SWC text for a body id (overlay first; then .zst; then ZIP)."""
         body_id = int(body_id)
+        overlay = self._overlay_zip()
+        if overlay is not None and body_id in (self._overlay_names or ()):
+            rows = _parse_swc_rows(overlay.read(f"{body_id}.swc"))
+            return _swc_text_from_rows(rows)
         self._ensure_open()
         with self._write_lock:
             self._reload_index()
@@ -416,6 +443,8 @@ class FAFBSkeletonBundle:
 
     def contains(self, body_id) -> bool:
         body_id = int(body_id)
+        if body_id in self._overlay_ids():
+            return True
         self._ensure_open()
         with self._write_lock:
             self._reload_index()
@@ -428,6 +457,7 @@ class FAFBSkeletonBundle:
         with self._write_lock:
             self._reload_index()
         ids = set(self._ids())
+        ids.update(self._overlay_ids())
         ids.update(self._zip_ids())
         return ids
 
@@ -557,7 +587,7 @@ class FAFBSkeletonBundle:
             self.flush()
         except Exception:
             pass
-        for handle in (self._zip_handle, self._handle):
+        for handle in (self._zip_handle, self._overlay_handle, self._handle):
             if handle is not None:
                 try:
                     handle.close()
@@ -951,12 +981,82 @@ def info(bundle_path, zip_path=None) -> Dict[str, object]:
 # Resolution + CLI
 # ---------------------------------------------------------------------------
 
+# Codex skeleton-cache overlay: lazily fetched FlyWire Codex SWCs (and
+# locally pruned repairs) land here instead of mutating the pristine healed
+# bundle. Members win over the base source; provenance lives in the JSON
+# manifest because the bundle reader strips SWC comment lines.
+OVERLAY_SKELETON_CACHE_NAME = "codex_skeleton_cache.zip"
+OVERLAY_MANIFEST_NAME = "codex_skeleton_cache.json"
+
+
+def overlay_paths(data_dir) -> Tuple[Path, Path]:
+    data_dir = Path(data_dir)
+    return (data_dir / OVERLAY_SKELETON_CACHE_NAME,
+            data_dir / OVERLAY_MANIFEST_NAME)
+
+
+def read_overlay_manifest(data_dir) -> Dict[str, dict]:
+    _, manifest_path = overlay_paths(data_dir)
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_overlay_members(data_dir, members, origin: str) -> Path:
+    """Write/replace ``{bodyId}.swc`` members in the overlay (atomic).
+
+    ``members`` maps body id -> SWC text.  The overlay and its manifest are
+    rewritten through temp siblings so an interrupted write never leaves a
+    partial zip; the base healed bundle is never touched.
+    """
+    data_dir = Path(data_dir)
+    overlay_path, manifest_path = overlay_paths(data_dir)
+    existing: Dict[str, bytes] = {}
+    if overlay_path.exists():
+        with zipfile.ZipFile(overlay_path, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith(".swc"):
+                    existing[name] = zf.read(name)
+    for body_id, text in members.items():
+        existing[f"{body_id}.swc"] = text.encode("utf-8")
+    manifest = read_overlay_manifest(data_dir)
+    prior_keys = set(manifest)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    for body_id in members:
+        manifest[str(body_id)] = {
+            "origin": origin,
+            "updated_at": now,
+            "replaced": str(body_id) in prior_keys,
+        }
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_zip = overlay_path.with_name(f".{overlay_path.name}.tmp")
+    try:
+        with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(existing):
+                zf.writestr(name, existing[name])
+        os.replace(temp_zip, overlay_path)
+    finally:
+        temp_zip.unlink(missing_ok=True)
+    temp_manifest = manifest_path.with_name(f".{manifest_path.name}.tmp")
+    try:
+        temp_manifest.write_text(json.dumps(manifest, indent=1, sort_keys=True),
+                                 encoding="utf-8")
+        os.replace(temp_manifest, manifest_path)
+    finally:
+        temp_manifest.unlink(missing_ok=True)
+    return overlay_path
+
+
 def open_bundle(data_dir) -> Optional[FAFBSkeletonBundle]:
     """Resolve the FAFB skeleton source: healed ZIP served directly.
 
     Zip-only mode: no ``.zst`` container is created or appended to.  An
     existing ``.zst`` is opened read-only only when no ZIP is available,
-    so .zst-only setups keep working.
+    so .zst-only setups keep working.  A Codex skeleton-cache overlay
+    (``codex_skeleton_cache.zip``) is attached when present; its members
+    win over the base source and the base files stay byte-untouched.
     """
     data_dir = Path(data_dir)
     dataset_name = data_dir.name
@@ -969,13 +1069,21 @@ def open_bundle(data_dir) -> Optional[FAFBSkeletonBundle]:
         data_dir / f"{dataset_name}_skeletons.zip",
         data_dir / "downloads" / "sk_lod1_783_healed.zip",
     )
+    overlay_path = data_dir / OVERLAY_SKELETON_CACHE_NAME
+    overlay = overlay_path if overlay_path.is_file() else None
     zip_path = next((p for p in zip_candidates if p.is_file()), None)
     if zip_path is not None:
-        return FAFBSkeletonBundle(None, zip_path=zip_path, lazy_convert=False)
+        return FAFBSkeletonBundle(None, zip_path=zip_path, lazy_convert=False,
+                                  overlay_path=overlay)
     for candidate in bundle_candidates:
         if candidate.is_file():
             return FAFBSkeletonBundle(candidate, zip_path=None,
-                                      lazy_convert=False)
+                                      lazy_convert=False,
+                                      overlay_path=overlay)
+    if overlay is not None:
+        # Overlay only (no base bundle yet): still serve what was fetched.
+        return FAFBSkeletonBundle(None, zip_path=None, lazy_convert=False,
+                                  overlay_path=overlay)
     return None
 
 

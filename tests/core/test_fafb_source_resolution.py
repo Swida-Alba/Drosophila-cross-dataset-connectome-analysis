@@ -290,11 +290,15 @@ class CodexOnlyHarness(RecordingResolver):
     ``_fetch_fafb_skeletons_via_codex`` and ``_fetch_fafb_skeletons_via_cave``
     stay the REAL methods; the access flag reports no CAVE token so the
     real no-token gate runs, and the codex service is monkeypatched per
-    test — no network is ever touched.
+    test — no network is ever touched. ``patch_dataset_dir`` routes the
+    overlay writes into the scratch tree.
     """
 
     def __init__(self):
         super().__init__()
+        self.dataset_dir = (Path(self._tmp) / "datasets"
+                            / "flywire_FAFB_v783")
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
         self.visualizer._fetch_fafb_skeletons_via_codex = (
             VisualizeSkeleton._fetch_fafb_skeletons_via_codex.__get__(
                 self.visualizer))
@@ -303,6 +307,12 @@ class CodexOnlyHarness(RecordingResolver):
                 self.visualizer))
         self.visualizer._flywire_skeleton_access = {
             "is_fafb": True, "cave_token": False}
+
+    def patch_dataset_dir(self, monkeypatch):
+        import visualize_skeleton
+        monkeypatch.setattr(
+            visualize_skeleton, "resolve_flywire_dataset_dir",
+            lambda *args, **kwargs: self.dataset_dir)
 
 
 class TestCodexLazyFlow:
@@ -315,16 +325,30 @@ class TestCodexLazyFlow:
             lambda ids, **k: ({str(b): FAFB_SWC for b in ids}, []))
 
         resolver = CodexOnlyHarness()
+        resolver.patch_dataset_dir(monkeypatch)
         resolver.visualizer.auto_fix_extrusions = True
         sources, skeleton_cache = resolver.resolve(["720575940596125868"])
 
         assert sources == {"720575940596125868": "codex_lazy"}
         assert set(skeleton_cache["720575940596125868"].nodes["node_id"]) \
             == {1, 2, 3}
-        # the fetched tree is persisted into the shared raw cache under the
-        # scratch root (later runs resolve from raw_cache instead)
+        # the fetched tree is cached into the OVERLAY bundle (the pristine
+        # loading path), not the raw cache
+        from fafb_bundle import open_bundle, read_overlay_manifest
+        overlay_zip = resolver.dataset_dir / "codex_skeleton_cache.zip"
+        assert overlay_zip.exists()
+        manifest = read_overlay_manifest(resolver.dataset_dir)
+        assert manifest["720575940596125868"]["origin"] == "fafb_codex_healed"
+        assert manifest["720575940596125868"]["replaced"] is False
+        bundle = open_bundle(resolver.dataset_dir)
+        try:
+            assert bundle.get(720575940596125868) is not None
+            assert bundle.contains(720575940596125868)
+            assert 720575940596125868 in bundle.ids()
+        finally:
+            bundle.close()
         from skeleton_provenance import raw_skeleton_cache_path
-        assert raw_skeleton_cache_path(
+        assert not raw_skeleton_cache_path(
             resolver.visualizer.script_path, "flywire_FAFB_v783",
             "720575940596125868").exists()
 
@@ -339,6 +363,7 @@ class TestCodexLazyFlow:
             lambda ids, **k: ({str(b): FAFB_SWC for b in ids}, []))
 
         resolver = CodexOnlyHarness()
+        resolver.patch_dataset_dir(monkeypatch)
         resolver.visualizer.auto_fix_extrusions = True
         resolver.visualizer._detect_extrusions_in_skeletons = (
             lambda skeletons, **kwargs: list(skeletons))
@@ -366,6 +391,18 @@ class TestCodexLazyFlow:
         status = fafb_utils.load_extrusion_repair_status(
             resolver.visualizer.script_path, "flywire_FAFB_v783")
         assert status.get("720575940596125868") == "local_fallback"
+        # directive: the repaired tree REPLACES the cached overlay member
+        from fafb_bundle import open_bundle, read_overlay_manifest
+        manifest = read_overlay_manifest(resolver.dataset_dir)
+        entry = manifest["720575940596125868"]
+        assert entry["origin"] == "local_extrusion_fix"
+        assert entry["replaced"] is True
+        bundle = open_bundle(resolver.dataset_dir)
+        try:
+            stored = bundle.get(720575940596125868)
+        finally:
+            bundle.close()
+        assert stored is not None and stored.splitlines() == ["1 0 0 0 0 1 -1"]
 
     def test_no_codex_token_skips_lazy_and_uses_cave(self, monkeypatch):
         import codex_downloader

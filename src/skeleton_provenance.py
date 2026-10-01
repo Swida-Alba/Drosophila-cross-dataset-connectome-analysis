@@ -157,9 +157,9 @@ def make_source_line(source: str) -> bytes:
 # ---------------------------------------------------------------------------
 # Raw-store layout (shared by the NeuPrint and BANC raw skeleton caches)
 # ---------------------------------------------------------------------------
-# FAFB writes here only through the lazy FlyWire Codex fetch
-# (``fafb_codex_healed``); every other FAFB read serves from the healed zip
-# plus the cave_skeletons / extrusion_fixes repair stores.
+# FAFB does NOT write here: it serves from the healed zip (plus the
+# codex_skeleton_cache overlay for lazily fetched skeletons) and the
+# cave_skeletons / extrusion_fixes repair stores.
 RAW_SKELETON_DIRNAME = "raw_skeletons"
 
 

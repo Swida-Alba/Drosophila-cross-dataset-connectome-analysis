@@ -8670,7 +8670,7 @@ class VisualizeSkeleton:
         # pre/post connector sites.
         if self.client_type == 'flywire' or is_fafb_dataset(self.dataset):
             if self.cache_neurons:
-                self._vprint("  ℹ️  FAFB: using the healed zip plus the cave_skeletons / extrusion_fixes repair caches (raw_skeletons also receives lazy FlyWire Codex fetches)", level='full')
+                self._vprint("  ℹ️  FAFB: using the healed zip plus the cave_skeletons / extrusion_fixes repair caches (raw_skeletons is a frozen legacy read; lazily fetched Codex skeletons land in the codex_skeleton_cache overlay)", level='full')
         
         # Set the default mesh level based on the selected pipeline if it was
         # not specified. Fast/direct renders use 90% removal; fine/artistic
@@ -11540,12 +11540,19 @@ class VisualizeSkeleton:
         skeleton_cache = {}
 
         if api_only:
-            fetched = self._fetch_fafb_skeletons_via_cave(requested)
-            for key, neuron in fetched.items():
-                canonical = normalize_flywire_body_id(key)
-                sources[canonical] = 'cave'
-                skeleton_cache[canonical] = neuron
-            return sources, skeleton_cache
+            access = getattr(self, '_flywire_skeleton_access', None)
+            if access is not None and not access.get('cave_token'):
+                self._vprint(
+                    '  ⚠️  force_API_fetching needs a CAVE token; '
+                    'resolving from local sources instead.',
+                    level='simple')
+            else:
+                fetched = self._fetch_fafb_skeletons_via_cave(requested)
+                for key, neuron in fetched.items():
+                    canonical = normalize_flywire_body_id(key)
+                    sources[canonical] = 'cave'
+                    skeleton_cache[canonical] = neuron
+                return sources, skeleton_cache
 
         remaining = list(requested)
 
@@ -11637,15 +11644,13 @@ class VisualizeSkeleton:
                 'Codex (lazy)', level='simple')
             if self.cache_neurons:
                 try:
-                    from morphology import find_similar_raw_cache
+                    from fafb_bundle import write_overlay_members
                     from skeleton_provenance import FAFB_CODEX_HEALED
-                    raw_cache = find_similar_raw_cache(
-                        self.dataset, project_root=self.script_path,
-                        verbose=False)
-                    if raw_cache is not None:
-                        raw_cache.persist_skeletons(
-                            fetched, simplification=0,
-                            source=FAFB_CODEX_HEALED)
+                    dataset_dir = resolve_flywire_dataset_dir(
+                        self.script_path, self.dataset)
+                    if dataset_dir is not None:
+                        write_overlay_members(
+                            dataset_dir, swcs, origin=FAFB_CODEX_HEALED)
                 except Exception:
                     pass
             for canonical, neuron in fetched.items():
@@ -11735,6 +11740,41 @@ class VisualizeSkeleton:
                 project_root=self.script_path, cache_enabled=True,
                 verbose=False)
             return fetcher.save_extrusion_fix_skeleton(body_id, neuron)
+        except Exception:
+            return False
+
+    def _replace_overlay_member(self, body_id, neuron):
+        """Rewrite a lazily cached overlay member with a repaired tree.
+
+        Directive: a locally repaired neuron replaces the extruded
+        skeleton it came from. No-op when the body has no overlay entry
+        (healed-bundle bodies keep the repair-store shadowing); the
+        pristine bundle is never touched.
+        """
+        try:
+            from fafb_bundle import (read_overlay_manifest,
+                                     write_overlay_members)
+            from skeleton_provenance import LOCAL_EXTRUSION_FIX
+            dataset_dir = resolve_flywire_dataset_dir(
+                self.script_path, self.dataset)
+            if dataset_dir is None:
+                return False
+            if str(body_id) not in read_overlay_manifest(dataset_dir):
+                return False
+            import tempfile
+            from pathlib import Path
+            with tempfile.NamedTemporaryFile(
+                    suffix=".swc", delete=False) as handle:
+                temp = Path(handle.name)
+            try:
+                navis.write_swc(neuron, temp, write_meta=False)
+                text = temp.read_text(encoding="utf-8")
+            finally:
+                temp.unlink(missing_ok=True)
+            write_overlay_members(
+                dataset_dir, {str(body_id): text},
+                origin=LOCAL_EXTRUSION_FIX)
+            return True
         except Exception:
             return False
 
@@ -11833,6 +11873,10 @@ class VisualizeSkeleton:
                         # fallback, which remains retryable in principle.
                         self._save_extrusion_fix(canonical, repaired)
                         repair_statuses[canonical] = 'local_fallback'
+                        # A lazily cached overlay member is OUR copy:
+                        # replace it so the stored skeleton is the repaired
+                        # tree (healed-bundle members stay untouched).
+                        self._replace_overlay_member(canonical, repaired)
                     self._vprint(
                         f'  🩹 CAVE fetch failed for {canonical}; '
                         f'pruned {repair_stats["removed_nodes"]} '
