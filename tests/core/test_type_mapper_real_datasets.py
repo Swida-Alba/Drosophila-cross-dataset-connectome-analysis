@@ -2349,3 +2349,35 @@ def test_full_map_validator_export_rows_labeled(mapper):
     # direct pairs keep 'direct' even inside a full-mode run (2026-10-01
     # rename round): the basis names the ROUTE, not the run mode
     assert by_target.get('CB1080', {}).get('route_basis') == 'direct'
+    # R6/R7/R9 class guard: _write_run_csv REINDEXES every run CSV to its
+    # _RUN_CSV_SCHEMAS entry — a row-builder field whose name is missing
+    # from the schema is silently dropped.  Write ALL THREE labeled files
+    # through the real writer and assert the labels land.
+    from comparison.mapping_validation import _write_run_csv
+    import tempfile
+    from pathlib import Path
+    val_rows = [validator._val_row(p, 0, 'unmatched') for p in validator.pairs]
+    summary_rows = []
+    for p in validator.pairs:
+        summary_rows.append({
+            'query': p.query, 'source_type': p.source_type,
+            'target_type': p.target_type, 'mapping_status': p.status,
+            'relationship': p.relationship,
+            'same_name_first': bool(p.same_name_first),
+            'same_name_rivals': '',
+            'route_basis': p.route_basis, 'via_mid': p.via_mid,
+        })
+    with tempfile.TemporaryDirectory() as td:
+        _write_run_csv(Path(td), 'mapping_export.csv', rows)
+        _write_run_csv(Path(td), 'validation_results.csv', val_rows)
+        _write_run_csv(Path(td), 'pair_summary.csv', summary_rows)
+        import pandas as pd
+        for rel in ('mapping/mapping_export.csv',
+                    'validation/validation_results.csv',
+                    'validation/pair_summary.csv'):
+            df = pd.read_csv(f"{td}/{rel}", dtype=str).fillna('')
+            assert 'route_basis' in df.columns and 'via_mid' in \
+                df.columns, (rel, list(df.columns)[:8])
+            comp = df[df['route_basis'] == 'composed']
+            assert (comp['via_mid'] != '').all(), rel
+            assert (df['route_basis'] == 'direct').any(), rel
