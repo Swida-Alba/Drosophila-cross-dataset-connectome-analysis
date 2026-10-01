@@ -400,8 +400,9 @@ def create_settings_tab():
                     "BANC release version; never mix files across versions.")
 
             banc_necessary_check = ui.checkbox(
-                "1 · Necessary data — always included (metadata + connections "
-                "from the public bucket, ~134 MB once, no token)",
+                "1 · Necessary data — always included (metadata + "
+                "connections; ~134 MB from the bucket, ~186 MB total on "
+                "disk after conversion; no token)",
                 value=True,
             ).props("disable").tooltip(
                 "The neuron-metadata and connection tables. They also "
@@ -1323,7 +1324,7 @@ def create_settings_tab():
             with ui.expansion("BANC v888 / v626 · public-bucket downloads (no token)", icon="download").classes("w-full"):
                 ui.html("""
                 <div style="color:var(--drocat-navy)" class="text-sm">
-                    <p><b>BANC downloads are automatic and token-free</b> from the public release bucket: selecting <code>banc_v888</code> or <code>banc_v626</code> in a tool prepares the necessary data on first use. The <b>BANC Dataset Downloads</b> card on this tab fetches the levels explicitly — 1 · necessary data (metadata + connections, ~134 MB), 2 · synapse table (~3.9 GB, resumable), 3 · all skeletons (bulk SWC cache; without it they fetch on demand during visualization).</p>
+                    <p><b>BANC downloads are automatic and token-free</b> from the public release bucket: selecting <code>banc_v888</code> or <code>banc_v626</code> in a tool prepares the necessary data on first use. The <b>BANC Dataset Downloads</b> card on this tab fetches the levels explicitly — 1 · necessary data (metadata + connections; ~134 MB from the bucket, ~186 MB total on disk after conversion), 2 · synapse table (~3.9 GB, resumable), 3 · all skeletons (bulk SWC cache; without it they fetch on demand during visualization).</p>
 
                     <p class="mt-3 font-bold" style="color:var(--drocat-cobalt)">Choose one exact dataset identifier</p>
                     <p>Use either <code>banc_v888</code> or <code>banc_v626</code>. Never mix files from one version into the other version's folder. Legacy <code>flywire_BANC_*</code> spellings keep working.</p>

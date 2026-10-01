@@ -1,8 +1,8 @@
 """Background worker for BANC dataset downloads (public release bucket).
 
 Mirrors :class:`CodexPuller` with BANC's three levels: necessary data
-(``banc_public_data.prepare_dataset_tables`` — meta feather + connections,
-~134 MB once), the per-synapse table (``ensure_synapse_table``, ~3.9 GB,
+meta feather + connections,
+~134 MB from the bucket, ~186 MB total on disk after conversion), the per-synapse table (``ensure_synapse_table``, ~3.9 GB,
 resumable), and a bulk skeleton pull (``morphology.download_all_skeletons``
 — per-neuron SWCs from the same public bucket into the raw cache). No
 token is involved anywhere. One pull at a time.

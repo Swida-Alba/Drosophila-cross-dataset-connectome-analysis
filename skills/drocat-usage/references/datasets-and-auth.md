@@ -39,7 +39,7 @@ so the bundle is optional.
   optional. Synapse and skeleton files are optional visualization inputs.
 - BANC v626/v888 auto-prepares from the public release bucket
   (`banc_public_data.prepare_dataset_tables`: meta feather + per-neuropil
-  connection counts, ~134 MB once, no token) and fills the post-synaptic
+  connection counts; ~134 MB from the bucket, ~186 MB total on disk after conversion; no token) and fills the post-synaptic
   counts from the merged connections. Manual Codex files (`neurons.csv.gz`
   + `connections_princeton.csv.gz` in the matching version's `downloads/`
   folder) remain an offline fallback. Never mix BANC versions.

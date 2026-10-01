@@ -21,7 +21,7 @@ folders and caches.)
 ## Data Preparation (automatic)
 
 Selecting `banc_v888` or `banc_v626` in any tool prepares the dataset
-automatically from the public bucket (`~134 MB`, one time):
+automatically from the public bucket (`~134 MB` of products, `~186 MB` total on disk after conversion, one time):
 
 - **Neuron metadata** from `compiled_data/banc_888/banc_888_meta.feather`
   (ids, curated `cell_type`, `Alternative Cell Type(s)`,
