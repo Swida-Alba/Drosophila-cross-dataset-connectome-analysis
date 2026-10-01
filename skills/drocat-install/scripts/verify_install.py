@@ -224,7 +224,10 @@ def main() -> int:
     args = parser.parse_args()
 
     project = Path(args.project).expanduser().resolve()
-    python_exe = str(Path(args.python).expanduser().resolve())
+    # abspath, NOT Path.resolve(): a venv's python is a symlink (uv- and
+    # python.org-managed venvs alike), and resolving it points the probes at
+    # the base interpreter without the venv's site-packages.
+    python_exe = os.path.abspath(os.path.expanduser(args.python))
     checks = []
     version = "unknown"
 
@@ -285,6 +288,15 @@ def main() -> int:
     ]
     version_results = run_version_probe(python_exe, manifests)
     for manifest, failures in version_results.items():
+        if manifest == "__skipped__":
+            # Whole-run skip (e.g. no packaging in the target env): report
+            # it instead of feeding the sentinel into Path.relative_to.
+            check(
+                "pinned versions",
+                True,
+                f"skipped: {failures}",
+            )
+            continue
         manifest_label = str(Path(manifest).relative_to(project))
         if "__skipped__" in failures:
             check(
