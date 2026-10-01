@@ -1247,7 +1247,7 @@ _RUN_CSV_SCHEMAS: Dict[str, List[str]] = {
     'pair_summary.csv': [
         'query', 'source_type', 'target_type', 'mapping_status',
         'relationship', 'same_name_first', 'same_name_rivals',
-        'route_scope', 'via_mid',
+        'route_basis', 'via_mid',
         'pool_basis', 'target_pool_basis', 'selected_chain',
         'source_chain', 'branch_linker_values',
         'branch_annotation', 'branches_disjoint', 'source_pool',
@@ -2604,9 +2604,14 @@ class MappingValidator:
                         query: str) -> List[TypePair]:
         cfg = self.cfg
         self._current_query = query
+        # route_scope is passed ONLY in full mode — the curated default
+        # keeps the historical call shape so mapper fakes (tests) and
+        # older snapshots are unaffected (same pattern as the resolver).
+        dkwargs = {}
+        if str(getattr(cfg, 'route_scope', 'curated')) == 'full':
+            dkwargs['route_scope'] = 'full'
         dec = self.mapper.get_mapping_decision(
-            src_type, cfg.source_dataset, cfg.target_dataset,
-            route_scope=str(getattr(cfg, 'route_scope', 'curated')))
+            src_type, cfg.source_dataset, cfg.target_dataset, **dkwargs)
         status = dec.get('status')
         snf = dec.get('same_name_first') or {}
         # §three-tier delivery (user 2026-09-27): record the DISCLOSURE
