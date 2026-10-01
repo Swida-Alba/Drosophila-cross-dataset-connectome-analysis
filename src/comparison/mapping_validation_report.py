@@ -810,6 +810,18 @@ def collect_run_data(run_dir: Path,
                    or readme['mapper_gap_untyped'] or 0)
 
     val_rows = _read_csv_rows(_run_file(run_dir, 'validation_results.csv'))
+    # §full-map mode (2026-10-01): per-basis verdict counts for the
+    # advisory card — direct vs composed neuron-verdict rows, read from
+    # the run's own labeled validation_results.csv (runs archived before
+    # the route_basis column read as all-direct, which is their truth).
+    basis_verdicts: Dict[str, Dict[str, int]] = {}
+    for r in val_rows:
+        basis = str(r.get('route_basis') or 'direct') or 'direct'
+        verdict = str(r.get('verdict') or '')
+        if verdict:
+            bucket = basis_verdicts.setdefault(basis, {})
+            bucket[verdict] = bucket.get(verdict, 0) + 1
+    coverage['basis_verdicts'] = basis_verdicts
     sus_rows = _read_examinees(run_dir)
     dedup_rows = _read_csv_rows(
         _run_file(run_dir, 'gap_fill_dedup.csv'))
@@ -1842,6 +1854,24 @@ def _coverage_tab(d: Dict) -> str:
             f"{', '.join(cov.get('composed_mids') or [])} — labeled "
             'route_basis=composed + via_mid in mapping_export.csv / '
             'validation_results.csv (2026-10-01 full-map mode)'))
+        basis_verdicts = cov.get('basis_verdicts') or {}
+        if basis_verdicts.get('composed'):
+
+            def _fmt_verdicts(counts: Dict[str, int]) -> str:
+                order = ('verified_strong', 'verified', 'borderline',
+                         'unmatched', 'skipped')
+                parts = [f"{v} {counts[v]}" for v in order if counts.get(v)]
+                return '/'.join(parts) or 'none'
+
+            snf_rows.append((
+                'Direct vs composed verdicts',
+                'direct: ' + _fmt_verdicts(basis_verdicts.get('direct')
+                                           or {})
+                + ' · composed: '
+                + _fmt_verdicts(basis_verdicts.get('composed') or {})
+                + ' (neuron-verdict rows; the bins grade both bases '
+                  'identically — this split is disclosure, never a '
+                  'gate)'))
     if any((snf_pairs, snf_held, snf_excl, mv_types, mv_tgt)):
         snf_rows.append((
             'Same-name-first selections (fired)',
