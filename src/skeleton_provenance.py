@@ -47,6 +47,7 @@ BANC_GCS_L2 = "banc_gcs_l2"
 BANC_GCS_FULL = "banc_gcs_full"
 BANC_GCS_PCG_UM_X1000 = "banc_gcs_pcg_um_x1000"
 NEUPRINT_FETCH = "neuprint.fetch_skeleton"
+FAFB_CODEX_HEALED = "fafb_codex_healed"
 
 
 class SkeletonProvenance(NamedTuple):
@@ -156,8 +157,9 @@ def make_source_line(source: str) -> bytes:
 # ---------------------------------------------------------------------------
 # Raw-store layout (shared by the NeuPrint and BANC raw skeleton caches)
 # ---------------------------------------------------------------------------
-# FAFB does NOT write here: it serves from the healed zip plus the
-# cave_skeletons / extrusion_fixes repair stores.
+# FAFB writes here only through the lazy FlyWire Codex fetch
+# (``fafb_codex_healed``); every other FAFB read serves from the healed zip
+# plus the cave_skeletons / extrusion_fixes repair stores.
 RAW_SKELETON_DIRNAME = "raw_skeletons"
 
 

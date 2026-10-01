@@ -1170,7 +1170,8 @@ def _relevel_for_target(neuron, stored: int, target: int):
 def _write_compressed_skeleton(path, neuron,
                                simplification: Optional[int] = DEFAULT_SIMPLIFICATION,
                                codec: str = "zst",
-                               codec_level: int = 19) -> None:
+                               codec_level: int = 19,
+                               source: Optional[str] = None) -> None:
     """Shared simplify + compress pipeline for the on-disk skeleton cache.
 
     Every raw-SWC cache write routes through this function so the recorded
@@ -1185,6 +1186,9 @@ def _write_compressed_skeleton(path, neuron,
     - ``simplification=None``: writes the neuron as-is and records the level
       already attached to it (``neuron._drocat_simplification``; absent = 0)
       - used by lazy migrations that must not re-simplify.
+    - ``source`` records the producing pipeline as a
+      ``# DROCAT source:`` header (absent keeps the file header-identical
+      to the legacy form).
     - ``codec_level``: zstd compression level (default 19).  The transient
       ``_temp_cache`` staging writer uses level 3: measured ~2.8x faster than
       level 19 (Step 0), which lets the staging stage keep up with the fetch
@@ -1214,6 +1218,8 @@ def _write_compressed_skeleton(path, neuron,
         payload = temp_swc.read_bytes()
         # Record the level in the header so later loads can re-level.
         payload = b"# DROCAT simpl: %d\n" % int(stored) + payload
+        if source:
+            payload = _provenance.make_source_line(source) + payload
         if codec == "zst":
             if zstd is None:
                 raise ImportError(
@@ -2724,7 +2730,8 @@ class SkeletonVectorCache:
             return None
 
     def persist_skeletons(self, neurons: Dict[Union[int, str], object],
-                          simplification: Optional[int] = 0
+                          simplification: Optional[int] = 0,
+                          source: Optional[str] = None
                           ) -> int:
         """Persist neurons in this cache's skeleton namespace.
 
@@ -2734,7 +2741,9 @@ class SkeletonVectorCache:
         The default is ``0`` — raw skeletons are cached as-is; simplification
         is a visualization-time concern and must not enter the stored cache.
         ``simplification=None`` writes the neuron as-is, recording the level
-        already attached to it (used by lazy migrations).  Legacy pickle
+        already attached to it (used by lazy migrations).  ``source`` records
+        the producing pipeline (provenance header + manifest row); the
+        default keeps the historical ``neuprint.fetch_skeleton`` label.  Legacy pickle
         files remain readable and selectable with ``raw_format='pkl'``. The
         legacy visualization cache continues to use its explicit
         downsampling path and does not call this helper.
@@ -2767,7 +2776,7 @@ class SkeletonVectorCache:
                     path = self.skeleton_dir / f"{body_id}.swc.zst"
                     _write_compressed_skeleton(
                         path, neuron,
-                        simplification=simplification)
+                        simplification=simplification, source=source)
                     written += 1
                     stored_level = (
                         getattr(neuron, "_drocat_simplification", 0)
@@ -2790,7 +2799,7 @@ class SkeletonVectorCache:
                         "file": path.name,
                         "simplification": int(stored_level),
                         "representation": "skeleton",
-                        "source": "neuprint.fetch_skeleton",
+                        "source": source or "neuprint.fetch_skeleton",
                         "coordinate_units": "nm",
                         "vector_basis": VECTOR_BASIS_RAW,
                         "updated_at": datetime.now().isoformat(

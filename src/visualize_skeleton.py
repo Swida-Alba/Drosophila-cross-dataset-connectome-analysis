@@ -8670,7 +8670,7 @@ class VisualizeSkeleton:
         # pre/post connector sites.
         if self.client_type == 'flywire' or is_fafb_dataset(self.dataset):
             if self.cache_neurons:
-                self._vprint("  ℹ️  FAFB: using the healed zip plus the cave_skeletons / extrusion_fixes repair caches (raw_skeletons is a frozen legacy read)", level='full')
+                self._vprint("  ℹ️  FAFB: using the healed zip plus the cave_skeletons / extrusion_fixes repair caches (raw_skeletons also receives lazy FlyWire Codex fetches)", level='full')
         
         # Set the default mesh level based on the selected pipeline if it was
         # not specified. Fast/direct renders use 90% removal; fine/artistic
@@ -11507,6 +11507,10 @@ class VisualizeSkeleton:
         2. shared raw SWC cache (``raw_skeletons``; skipped when the
            ``cache_neurons`` policy disables it),
         3. healed-ZIP SWC (canonical raw bundle),
+        3b. lazily fetched healed SWCs from the FlyWire Codex bundle: only
+            bodies still missing after the zip, one ranged GET per neuron,
+            persisted to the shared raw cache (source ``codex_lazy``;
+            token-gated, silent no-op without a Codex token),
         4. extrusion check on those trees (one-time per body, parquet-
            cached).  Flagged bodies are replaced by CAVE-skeletonized
            trees:
@@ -11528,7 +11532,7 @@ class VisualizeSkeleton:
         tuple
             (sources, skeleton_cache):
             sources: canonical bodyId -> one of ``zip``, ``raw_cache``,
-                     ``local_repaired`` or ``cave``
+                     ``codex_lazy``, ``local_repaired`` or ``cave``
             skeleton_cache: canonical bodyId -> TreeNeuron
         """
         requested = normalize_flywire_body_ids(body_ids)
@@ -11601,14 +11605,79 @@ class VisualizeSkeleton:
                     b for b in remaining
                     if normalize_flywire_body_id(b) not in sources]
 
+        def _take_codex_lazy():
+            """Lazily fetch still-missing healed SWCs from FlyWire Codex.
+
+            Only the residual bodies after the bundle reach the network
+            (with a local bundle this step is usually empty; without one it
+            is the primary source). Persisted through the shared raw cache
+            so later runs resolve from ``raw_cache`` instead.
+            """
+            nonlocal remaining
+            if not remaining:
+                return
+            try:
+                import codex_downloader
+                token = codex_downloader.get_codex_token(self.script_path)
+            except Exception:
+                return
+            if not token:
+                return
+            try:
+                swcs, _absent = codex_downloader.fetch_skeleton_swcs(
+                    list(remaining), project_root=self.script_path)
+            except Exception as exc:
+                self._vprint(
+                    f'  ⚠️ FlyWire Codex lazy fetch skipped: {exc}',
+                    level='simple')
+                return
+            if not swcs:
+                return
+            fetched = {}
+            import io
+            for bid, text in swcs.items():
+                try:
+                    neuron = navis.read_swc(io.StringIO(text))
+                    neuron.units = 'nm'
+                    neuron.id = body_id_to_api_int(bid)
+                    neuron.name = str(bid)
+                    fetched[normalize_flywire_body_id(bid)] = neuron
+                except Exception:
+                    continue
+            if not fetched:
+                return
+            self._vprint(
+                f'  🪡 Fetched {len(fetched)} skeleton(s) from FlyWire '
+                'Codex (lazy)', level='simple')
+            if self.cache_neurons:
+                try:
+                    from morphology import find_similar_raw_cache
+                    from skeleton_provenance import FAFB_CODEX_HEALED
+                    raw_cache = find_similar_raw_cache(
+                        self.dataset, project_root=self.script_path,
+                        verbose=False)
+                    if raw_cache is not None:
+                        raw_cache.persist_skeletons(
+                            fetched, simplification=0,
+                            source=FAFB_CODEX_HEALED)
+                except Exception:
+                    pass
+            for canonical, neuron in fetched.items():
+                sources[canonical] = 'codex_lazy'
+                skeleton_cache[canonical] = neuron
+            remaining = [
+                b for b in remaining
+                if normalize_flywire_body_id(b) not in sources]
+
         _take_repaired()
         _take_raw_cache()
         _take_bundle()
+        _take_codex_lazy()
 
         # Extrusion check + CAVE repair on the tree sources.
         tree_bodies = [
             body_id for body_id, source in sources.items()
-            if source in {'zip', 'raw_cache'}
+            if source in {'zip', 'raw_cache', 'codex_lazy'}
         ]
         if tree_bodies and self.auto_fix_extrusions:
             extrusion_ids = self._detect_extrusions_in_skeletons(
@@ -11639,7 +11708,7 @@ class VisualizeSkeleton:
             counts[source] = counts.get(source, 0) + 1
         summary = ', '.join(
             f'{counts[source]} {source}' for source in
-            ('zip', 'raw_cache', 'local_repaired', 'cave')
+            ('zip', 'raw_cache', 'codex_lazy', 'local_repaired', 'cave')
             if source in counts)
         self._vprint(f'  🗂️  FAFB sources resolved: {summary}', level='simple')
         return sources, skeleton_cache
@@ -14728,7 +14797,9 @@ class VisualizeSkeleton:
                     if is_fafb_dataset(self.dataset):
                         self._vprint(
                             "  Please download the synapse table from: "
-                            "https://codex.flywire.ai/api/download?dataset=fafb",
+                            "https://codex.flywire.ai/api/download?dataset=fafb "
+                            "(or Settings > FAFB Data Downloads, level 2 - "
+                            "Synapses, with a FlyWire Codex token)",
                             level='full')
                     elif is_banc_dataset(self.dataset):
                         self._vprint(
