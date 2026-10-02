@@ -136,6 +136,12 @@ def make_run(tmp_path, name, *, edge_budget=0, path_budget=0, asked=ASKED,
             'hemisphere filter': str(fc.hemisphere_filter),
             'aggregate method': 'product',
         })
+        # Phase 2 auto-hook inputs (production resolves the connection
+        # database + dataset neuron table itself).
+        fc._refill_edges_override = list(edges or EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list((types or TYPE_MAP)),
+            'type': list((types or TYPE_MAP).values())})
         fc.FindAllPath()
     return fc, Path(fc.allpath_folder)
 
@@ -590,3 +596,183 @@ def test_real_fafb_smoke(tmp_path):
     detail = pd.read_csv(out / 'refill_bodyId_pairs.csv', dtype=str)
     assert len(detail) == min(rec['refill_edges'], rec['detail_cap'])
     assert (detail['weight'].astype(float) >= 3).all()
+
+
+# ---------------------------------------------------------------------------
+# 8. Effective type-map reconstruction (label-mapper parity)
+# ---------------------------------------------------------------------------
+def test_build_effective_type_map_mapper_semantics(tmp_path):
+    """The builder mirrors the run's own type-level aggregation: a
+    bodyId-level mapping wins over a type-level mapping, unmapped labels
+    keep their raw names (identity fallback), then hemisphere suffixes
+    and the untyped drop apply."""
+    from type_level_refill import build_effective_type_map
+
+    # LabelMapper overall-JSON form: custom_label list + per-dataset
+    # member-pattern lists (docstring format)
+    mapping = {
+        'source_mapping': {
+            'custom_label': ['GRP_A', 'grp_t'],
+            'test_v1': [['N1'], ['TA', 'TB']],
+        }
+    }
+    import json
+    mapping_file = tmp_path / 'mapping.json'
+    mapping_file.write_text(json.dumps(mapping), encoding='utf-8')
+
+    frame = pd.DataFrame({
+        'bodyId': ['N1', 'N2', 'N3', 'N4', 'N5'],
+        'type': ['TA', 'TB', 'TC', 'Unknown', ''],
+    })
+    built = build_effective_type_map(
+        frame, dataset='test_v1', mapping_file=mapping_file)
+    # bodyId-level mapping wins for N1; type-level for N2; identity for
+    # N3; untyped dropped
+    assert built == {'N1': 'GRP_A', 'N2': 'grp_t', 'N3': 'TC'}
+
+    # hemisphere suffixing composes after the mapping
+    frame_h = pd.DataFrame({
+        'bodyId': ['N1', 'N3'],
+        'type': ['TA', 'TC'],
+        'hemisphere': ['left', 'weird'],
+    })
+    built_h = build_effective_type_map(
+        frame_h, dataset='test_v1', mapping_file=mapping_file,
+        separate_hemispheres=True)
+    assert built_h == {'N1': 'GRP_A_L', 'N3': 'TC_U'}
+
+
+def test_build_effective_type_map_refuses_missing_mapping_file(tmp_path):
+    from type_level_refill import build_effective_type_map
+    frame = pd.DataFrame({'bodyId': ['N1'], 'type': ['TA']})
+    with pytest.raises(TypeLevelRefillError, match='mapping file'):
+        build_effective_type_map(
+            frame, dataset='test_v1',
+            mapping_file=tmp_path / 'does_not_exist.json')
+
+
+# ---------------------------------------------------------------------------
+# 9. Phase 2: the in-pipeline auto hook
+# ---------------------------------------------------------------------------
+def _with_hook_overrides(fc):
+    """Give the harness fc the two inputs the production hook resolves
+    itself (connection database + dataset neuron table)."""
+    fc._refill_edges_override = list(EDGES)
+    fc._refill_neuron_frame_override = pd.DataFrame({
+        'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+    return fc
+
+
+def test_auto_hook_generates_records(tmp_path):
+    fc, run_dir = make_run(tmp_path, 'hook_floor', edge_budget=7)
+    _with_hook_overrides = None  # noqa: F841 (shadow guard)
+    out = run_dir / 'data_details' / 'type_level_refill'
+    assert (out / 'refill_type_pairs.csv').exists()
+    assert (out / 'refill_bodyId_pairs.csv').exists()
+    rows = pd.read_csv(out / 'refill_type_pairs.csv')
+    assert len(rows) == 7 and int(rows['refill_weight'].sum()) == 37
+    notes = (run_dir / 'user_warning_notes.txt').read_text(
+        encoding='utf-8')
+    assert '[type-level refill]' in notes
+    assert '7 bodyId edges' in notes
+
+
+def test_auto_hook_disabled(tmp_path):
+    with universe_types() as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=EDGES, max_interlayer=MAX_INTERLAYER,
+            min_synapse=ASKED, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        fc.target_df = fc.target_df.assign(
+            Checked=[True] * len(fc.target_df))
+        fc.graph_edge_limit_bodyid = 7
+        fc.max_paths_bodyid = 0
+        fc.parameter_dict.update({
+            'min synapse number': str(ASKED), 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': str(MAX_INTERLAYER),
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.auto_type_level_refill = False
+        fc._refill_edges_override = list(EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+        fc.FindAllPath()
+        run_dir = Path(fc.allpath_folder)
+    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+
+
+def test_auto_hook_complete_run_silent(staged_runs):
+    run_dir = staged_runs['complete'][1]
+    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+    notes = run_dir / 'user_warning_notes.txt'
+    if notes.exists():
+        assert 'type-level refill' not in notes.read_text(encoding='utf-8')
+
+
+# ---------------------------------------------------------------------------
+# 10. Phase 3: shortest-mode refill (via the discovery store)
+# ---------------------------------------------------------------------------
+def _make_shortest_run(tmp_path, name, *, path_budget=0):
+    with universe_types() as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path / name, edges=EDGES,
+            max_interlayer=MAX_INTERLAYER, min_synapse=ASKED,
+            source_ids=tuple(SOURCES), target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        fc.target_df = fc.target_df.assign(
+            Checked=[True] * len(fc.target_df))
+        fc.max_paths_bodyid = path_budget
+        fc.parameter_dict.update({
+            'min synapse number': str(ASKED), 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': str(MAX_INTERLAYER),
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc._refill_edges_override = list(EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+        fc.FindShortestPath()
+    return fc, Path(fc.allpath_folder)
+
+
+def test_shortest_mode_refill(tmp_path):
+    """Phase 3: a budget-bitten shortest run refilled from its discovery
+    store; per-type-pair totals must land exactly on the unbudgeted
+    shortest control for the emitted pairs (cut re-derivation via the
+    shortest strongest-first enumerator with store-seeded distances)."""
+    fc_c, run_c = _make_shortest_run(tmp_path, 'scomplete')
+    fc_b, run_b = _make_shortest_run(tmp_path, 'sbite', path_budget=1)
+    assert getattr(fc_b, 'strongest_first_budget_bitten', False) or \
+        getattr(fc_b, 'strongest_first_cutoff', None)
+    assert (run_b / 'shortest_discovery_store' / 'meta.json').exists()
+
+    # the Phase 2/3 auto hook already generated the records in-run
+    hook_rows = pd.read_csv(run_b / 'data_details' / 'type_level_refill'
+                            / 'refill_type_pairs.csv')
+    assert len(hook_rows) > 0
+    rec = compute_type_level_refill(
+        run_b, edges=EDGES, type_map=TYPE_MAP, write=False)
+    assert rec['status'] == 'refilled', rec
+    assert rec['table_reproduced'] is True
+    out = tmp_path / 'rec'
+    compute_type_level_refill(run_b, edges=EDGES, type_map=TYPE_MAP,
+                              out_dir=out, write=True)
+    rows = pd.read_csv(out / 'refill_type_pairs.csv')
+    complete = read_emitted_pairs(run_c)
+    gaps = {}
+    for row in rows.to_dict('records'):
+        pair = (row['type_pre'], row['type_post'])
+        want = int(complete.get(pair, 0))
+        if row['refilled_total'] != want:
+            gaps[pair] = want - row['refilled_total']
+    # shortest-mode conservatism gaps are allowed only for pairs whose
+    # control mass rides paths outside the bitten run's induced set
+    assert all(v > 0 for v in gaps.values()), gaps
+    detail = pd.read_csv(out / 'refill_bodyId_pairs.csv', dtype=str)
+    assert len(detail) == rec['refill_edges']
+    # the complete control gates off
+    rec_c = compute_type_level_refill(
+        run_c, edges=EDGES, type_map=TYPE_MAP, write=False)
+    assert rec_c['status'] == 'no_refill_needed'

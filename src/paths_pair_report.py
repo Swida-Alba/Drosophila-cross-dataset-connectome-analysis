@@ -1046,7 +1046,21 @@ def _esc(value: Any) -> str:
     return _html.escape(str(value), quote=True)
 
 
-def _render_provenance_card(run: dict) -> str:
+def _load_refill_summary(run_dir) -> dict:
+    """Type-level refill provenance when the records exist in-run."""
+    if not run_dir:
+        return {}
+    path = Path(run_dir) / 'data_details' / 'type_level_refill' / \
+        'refill_provenance.json'
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def _render_provenance_card(run: dict, run_dir=None) -> str:
     """Applied-threshold / budget provenance, marking explicitly what the
     run actually used — the pathfinding counterpart of the cross-dataset
     report's 'Applied Thresholds & Bottleneck Provenance' section.
@@ -1100,6 +1114,22 @@ def _render_provenance_card(run: dict) -> str:
     field('Edge budget landing (w1)', 'edge_budget_landing')
     field('Edge weight floor (w0)', 'edge_weight_floor')
     field('Retained bottleneck (W*)', 'strongest_retained_bottleneck')
+    # Phase 2 (plan-type-level-refill): when the auto hook (or the CLI
+    # with --in-run) produced refill records, surface them beside the
+    # provenance they answer to.
+    refill = _load_refill_summary(run_dir)
+    if refill:
+        if refill.get('status') == 'refilled':
+            rows.append(
+                f'<tr><td><strong>Type-level refill</strong></td>'
+                f'<td>{refill.get("refill_edges", 0):,} bodyId edges / '
+                f'{refill.get("refill_weight_total", 0):,} synapses '
+                f'budget-cut mass recovered (see '
+                f'data_details/type_level_refill/)</td></tr>')
+        else:
+            rows.append(
+                '<tr><td>Type-level refill</td><td>'
+                f'{_esc(str(refill.get("status")))}</td></tr>')
     complete = prov.get('paths_complete')
     if complete is not None:
         cls = 'badge-success' if complete.lower() == 'true' else 'badge-warning'
@@ -1266,7 +1296,7 @@ def _render_overview(payload: dict, run_dir: Path,
             f'(pair, length) · rank by {_esc(run["rank_by"])}. Every capped '
             f'view links to the uncapped CSV beside this report.</p></div>'
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
-            + hist_html + _render_provenance_card(run) + pair_table + artifacts)
+            + hist_html + _render_provenance_card(run, run_dir) + pair_table + artifacts)
 
 
 def _meta_summary(run: dict) -> str:

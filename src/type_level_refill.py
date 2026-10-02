@@ -286,6 +286,123 @@ def _enumerate_paths(edges, sources, targets, bound, budget=None):
     return paths, info, stats
 
 
+def build_effective_type_map(neuron_frame, *, dataset,
+                             mapping_file=None, label_mapper=None,
+                             separate_hemispheres=False) -> dict:
+    """bodyId -> EFFECTIVE type label, mirroring the run's own type-level
+    aggregation (statvis ``EnrichConnectionTable`` semantics):
+
+    1. Label mapping first — a bodyId-level mapping wins when it differs
+       from the raw id, else a type-level mapping when it differs from
+       the raw type (``LabelMapper.get_label``; unmapped ids keep their
+       raw labels through the identity fallback).
+    2. Hemisphere suffix ``_L/_R/_U`` appended when the run separated
+       hemispheres (coana ``_append_hemisphere_suffix_series`` rules:
+       hemisphere > somaSide/soma side > rootSide columns, then the
+       instance ``_L/_R`` suffix, defaulting to 'U'; labels that already
+       carry a suffix are left alone).
+    3. Untyped labels dropped (``utils.label_utils.is_untyped_type_label``)
+       — they can never be involved labels.
+
+    ``label_mapper`` (a live LabelMapper) wins over ``mapping_file``; a
+    recorded mapping file that cannot be loaded raises
+    :class:`TypeLevelRefillError` (refuse-on-doubt: a wrong label map
+    would fail the table-reproduction anchor anyway, with a worse
+    diagnostic).
+    """
+    import numpy as np
+
+    frame = neuron_frame
+    if 'bodyId' not in frame.columns:
+        raise TypeLevelRefillError(
+            'neuron table lacks a bodyId column.')
+    if mapping_file is not None and label_mapper is None:
+        try:
+            from comparison.label_mapper import LabelMapper
+            label_mapper = LabelMapper(overall_mapping_json=str(mapping_file))
+        except Exception as exc:
+            raise TypeLevelRefillError(
+                f'cannot load the recorded mapping file '
+                f'{mapping_file!r} ({exc}) — the refill cannot reproduce '
+                f'the run\'s labels without it.') from exc
+
+    body_ids = frame['bodyId'].astype(str)
+    types = frame['type'].fillna('Unknown').astype(str) \
+        if 'type' in frame.columns else pd.Series(
+            ['Unknown'] * len(frame), index=frame.index)
+
+    if label_mapper is not None:
+        bid_map = {b: label_mapper.get_label(dataset, b)
+                   for b in body_ids.unique()}
+        mapped_body = body_ids.map(bid_map)
+        mask_body = mapped_body.notna() & (mapped_body != body_ids)
+        type_map_lut = {t: label_mapper.get_label(dataset, t)
+                        for t in types[~mask_body].unique()}
+        mapped_type = types.map(type_map_lut)
+        mask_type = (~mask_body & (types != 'Unknown')
+                     & (types != body_ids) & mapped_type.notna()
+                     & (mapped_type != types))
+        effective = types.copy()
+        effective.loc[mask_body] = mapped_body[mask_body]
+        effective.loc[mask_type] = mapped_type[mask_type]
+    else:
+        effective = types
+
+    if separate_hemispheres:
+        codes = _hemisphere_codes(frame)
+        has_suffix = effective.str.endswith(('_L', '_R', '_U'))
+        effective = effective.where(has_suffix, effective + '_' + codes)
+
+    from utils.label_utils import is_untyped_type_label
+    keep = ~effective.map(is_untyped_type_label)
+    return dict(zip(body_ids[keep], effective[keep]))
+
+
+def _hemisphere_codes(frame):
+    """Hemisphere codes per the coana rules (vectorized mirror of
+    ``_normalize_hemisphere_series`` + the instance-suffix fallback)."""
+    lowered = {str(c).strip().lower(): c for c in frame.columns}
+    col = next((lowered[c] for c in
+                ('hemisphere', 'soma side', 'somaside', 'rootside')
+                if c in lowered), None)
+    codes = pd.Series('U', index=frame.index, dtype=object)
+    if col is not None:
+        vals = frame[col].fillna('').astype(str).str.strip().str.lower()
+        codes = vals.map(_HEMI_ALIASES).fillna('U')
+    elif 'instance' in frame.columns:
+        inst = frame['instance'].fillna('').astype(str)
+        codes[inst.str.endswith('_R')] = 'R'
+        codes[inst.str.endswith('_L')] = 'L'
+    return codes
+
+
+_HEMI_ALIASES = {
+    'r': 'R', 'right': 'R', 'rhs': 'R', 'right hemisphere': 'R',
+    'l': 'L', 'left': 'L', 'lhs': 'L', 'left hemisphere': 'L',
+}
+
+
+def filter_edges_by_hemisphere(edges, type_map, hemi_filter):
+    """Fetch-time edge rule (coana ``_apply_hemisphere_suffix_to_conn_df``):
+    'left'/'right' keep an edge only when BOTH endpoints are that side or
+    unlabeled ('U'); 'both' keeps everything. The endpoint side is read
+    from the (possibly suffixed) effective label."""
+    if hemi_filter not in ('left', 'right'):
+        return edges
+    keep_code = hemi_filter[0].upper()
+
+    def _code(body_id):
+        label = type_map.get(str(body_id))
+        if label is None:
+            return 'U'
+        return (label.rsplit('_', 1)[-1]
+                if label.endswith(('_L', '_R', '_U')) else 'U')
+
+    return (e for e in edges
+            if _code(e[0]) in (keep_code, 'U')
+            and _code(e[1]) in (keep_code, 'U'))
+
+
 def _type_probability(pair_prob_weights: Iterable[Tuple[Optional[float],
                                                         float]],
                       method: str,
@@ -314,6 +431,98 @@ def _type_probability(pair_prob_weights: Iterable[Tuple[Optional[float],
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+def _load_shortest_store(run_dir: Path):
+    """Load the shortest discovery store's structural pieces: per-layer
+    connection frames (pair -> per-layer weights, preserving the
+    cross-layer multiplicity the exported table counts), the store meta
+    (targets found + hop limits) and the per-target distance maps."""
+    store_dir = run_dir / 'shortest_discovery_store'
+    meta_file = store_dir / 'meta.json'
+    if not meta_file.exists():
+        return None
+    try:
+        import polars as pl
+        from shortest_discovery_store import (
+            load_store_meta,
+            load_target_distances,
+        )
+        meta = load_store_meta(store_dir)
+        layer_weights = []      # [(layer, {(pre, post): w})]
+        conn_dir = store_dir / 'connections'
+        merged = conn_dir / 'connections_all.parquet'
+        if merged.exists():
+            frame = pl.read_parquet(merged)
+            for (layer,), group in frame.group_by(
+                    ['conn_layer'] if 'conn_layer' in frame.columns
+                    else ['layer']):
+                weights = {}
+                for pre, post, w in zip(group['bodyId_pre'],
+                                        group['bodyId_post'],
+                                        group['weight']):
+                    weights[(str(pre), str(post))] = float(w)
+                layer_weights.append((str(layer), weights))
+        else:
+            for path in sorted(conn_dir.glob('*.parquet')):
+                frame = pl.read_parquet(path)
+                weights = {}
+                for pre, post, w in zip(frame['bodyId_pre'],
+                                        frame['bodyId_post'],
+                                        frame['weight']):
+                    weights[(str(pre), str(post))] = float(w)
+                layer_weights.append((path.stem, weights))
+        if not layer_weights:
+            return None
+        targets = list(meta.get('targets_found') or [])
+        distances = load_target_distances(store_dir, targets)
+        hop_limits = dict(meta.get('target_hop_limits') or {})
+        return {
+            'layer_weights': layer_weights,
+            'targets': targets,
+            'distances': distances,
+            'hop_limits': hop_limits,
+        }
+    except Exception:
+        return None
+
+
+def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
+                        budget, distances, hop_limits):
+    """Shortest-mode re-exploration on the induced subgraph: per-layer
+    weights summed exactly like the production batch graphs
+    (``load_edge_weight_frame`` parity), enumeration seeded with the
+    store's full-graph distance maps so per-pair min-hop semantics match
+    the run."""
+    FastGraph = _load_fast_graph()
+    summed: Dict[Tuple[str, str], float] = defaultdict(float)
+    for _layer, weights in layer_weights:
+        for (u, v), w in weights.items():
+            if u in node_set and v in node_set:
+                summed[(u, v)] += w
+    df = pd.DataFrame([(u, v, w) for (u, v), w in summed.items()],
+                      columns=['bodyId_pre', 'bodyId_post', 'weight'])
+    g = FastGraph()
+    g.build_from_dataframe(df, 'bodyId_pre', 'bodyId_post', 'weight',
+                           store_edge_attrs=False)
+    stats: Dict[str, object] = {}
+    target_list = sorted(t for t in targets if t in g)
+    gen = g.find_paths_shortest_strongest_first(
+        target_list, [s for s in map(str, sources) if s in g], bound,
+        budget=budget, stats=stats, payload=False,
+        target_cutoffs={t: hop_limits[t] for t in target_list
+                        if t in hop_limits},
+        target_distances={t: distances.get(t, {}) for t in target_list},
+    )
+    traversals: Dict[Tuple[str, str], int] = defaultdict(int)
+    for path in gen:
+        nodes = [str(n) for n in path]
+        for i in range(len(nodes) - 1):
+            traversals[(nodes[i], nodes[i + 1])] += 1
+    weight_of = dict(summed)
+    info = {k: {'w': weight_of[k], 'traversals': n, 'hops': [0]}
+            for k, n in traversals.items()}
+    return info, stats
+
+
 def compute_type_level_refill(
     run_dir,
     *,
@@ -324,6 +533,7 @@ def compute_type_level_refill(
     out_dir=None,
     write: bool = True,
     source_note: str = '',
+    path_mode: Optional[str] = None,
 ) -> dict:
     """Compute (and by default write) the type-level refill records for
     one FindAllPath ('all' mode) run folder.
@@ -358,6 +568,19 @@ def compute_type_level_refill(
     """
     run_dir = Path(run_dir)
     prov = read_run_provenance(run_dir)
+
+    # Shortest mode (Phase 3): the target-rooted store supplies the layer
+    # frames + distance maps; the edge budget never floors shortest mode,
+    # so the only cut is the StrongestFirst budget drain.
+    is_shortest = (path_mode == 'shortest'
+                   or (path_mode is None
+                       and run_dir.name.startswith('find-paths-shortest_')))
+    store = _load_shortest_store(run_dir) if is_shortest else None
+    if is_shortest and store is None:
+        raise TypeLevelRefillError(
+            f'{run_dir}: shortest-mode refill requires the run\'s '
+            f'shortest_discovery_store/ (connections + node_distances) — '
+            f'not present (retention pruned it, or a pre-batching run).')
 
     filter_by = prov.get('filter_by', 'bodyId')
     if filter_by and filter_by != 'bodyId':
@@ -429,37 +652,70 @@ def compute_type_level_refill(
         return rec
     rec['status'] = STATUS_REFILLED
     involved = {p for pair in emitted for p in pair}
-
-    # -- node set U + induced edges at the asked threshold
     node_set = {str(b) for b, t in type_map.items() if t in involved}
-    e_u = [
-        (str(u), str(v), w) for (u, v, w) in edges
-        if str(u) in node_set and str(v) in node_set and w >= asked
-        and not (exclude_intra and type_map.get(str(u)) ==
-                 type_map.get(str(v)))]
-    non_involved_excluded = sum(
-        1 for (u, v, w) in edges if w >= asked
-        and (str(u) not in node_set or str(v) not in node_set))
-    e_pref, prefilter_dropped = hop_prefilter(e_u, sources, targets, bound)
 
-    # -- E*(asked): re-exploration on the induced subgraph (no budgets,
-    # guarded only by the honest truncation flag)
-    _paths_asked, estar, ask_stats = _enumerate_paths(
-        e_pref, sources, targets, bound, budget=path_budget)
-    refill_truncated = bool(ask_stats.get('budget_bitten'))
-
-    # -- re-derive the emitted set at the run's effective cut
-    cut_threshold = max(asked, w0 or asked)
-    if cut_threshold > asked:
-        e_cut = [(u, v, w) for (u, v, w) in e_pref if w >= cut_threshold]
+    if is_shortest:
+        # -- Phase 3: structure from the run's discovery store; `edges`
+        # is only the F9 denominator source. Per-pair weights are the
+        # per-layer sums (the exported table counts cross-layer
+        # multiplicity exactly this way).
+        estar, ask_stats = _enumerate_shortest(
+            store['layer_weights'], node_set, sources, store['targets'],
+            bound, path_budget, store['distances'], store['hop_limits'])
+        refill_truncated = bool(ask_stats.get('budget_bitten'))
+        _paths_asked = None
+        cut_threshold = asked          # the edge budget never floors here
+        cut_info, cut_stats = _enumerate_shortest(
+            store['layer_weights'], node_set, sources, store['targets'],
+            bound, (budget_n if bitten else None),
+            store['distances'], store['hop_limits'])
+        e_u = []
+        for _layer, weights in store['layer_weights']:
+            e_u.extend((u, v, w) for (u, v), w in weights.items()
+                       if u in node_set and v in node_set)
+        non_involved_excluded = sum(
+            1 for _layer, weights in store['layer_weights']
+            for (u, v) in weights
+            if u not in node_set or v not in node_set)
+        prefilter_dropped = 0
+        e_pref = e_u
     else:
-        e_cut = e_pref
-    _cut_paths, cut_info, cut_stats = _enumerate_paths(
-        e_cut, sources, targets, bound,
-        budget=(budget_n if bitten else None))
+        # -- node set U + induced edges at the asked threshold (single
+        # pass over the edge source — it may be a streamed 20M-row table)
+        e_u: List[Tuple[str, str, float]] = []
+        non_involved_excluded = 0
+        for u, v, w in edges:
+            u, v = str(u), str(v)
+            if w < asked:
+                continue
+            if u not in node_set or v not in node_set:
+                non_involved_excluded += 1
+                continue
+            if exclude_intra and type_map.get(u) == type_map.get(v):
+                continue
+            e_u.append((u, v, w))
+        e_pref, prefilter_dropped = hop_prefilter(
+            e_u, sources, targets, bound)
+
+        # -- E*(asked): re-exploration on the induced subgraph (no
+        # budgets, guarded only by the honest truncation flag)
+        _paths_asked, estar, ask_stats = _enumerate_paths(
+            e_pref, sources, targets, bound, budget=path_budget)
+        refill_truncated = bool(ask_stats.get('budget_bitten'))
+
+        # -- re-derive the emitted set at the run's effective cut
+        cut_threshold = max(asked, w0 or asked)
+        if cut_threshold > asked:
+            e_cut = [(u, v, w) for (u, v, w) in e_pref
+                     if w >= cut_threshold]
+        else:
+            e_cut = e_pref
+        _cut_paths, cut_info, cut_stats = _enumerate_paths(
+            e_cut, sources, targets, bound,
+            budget=(budget_n if bitten else None))
 
     # -- anchor: the re-derived cut must reproduce the exported table
-    edge_weight = {(str(u), str(v)): w for (u, v, w) in edges}
+    edge_weight = {(u, v): w for (u, v, w) in e_pref}
     rederived: Dict[Tuple[str, str], float] = defaultdict(float)
     for (u, v), meta in cut_info.items():
         rederived[(type_map[u], type_map[v])] += meta['w']
@@ -587,7 +843,8 @@ def compute_type_level_refill(
         'induced_edges': len(e_u),
         'prefilter_dropped_in_U': prefilter_dropped,
         'estar_size': len(estar),
-        'paths_asked': len(_paths_asked),
+        'paths_asked': (len(_paths_asked) if _paths_asked is not None
+                        else ask_stats.get('emitted')),
         'refill_path_budget': path_budget,
         'refill_truncated': refill_truncated,
         'cut_threshold': cut_threshold,

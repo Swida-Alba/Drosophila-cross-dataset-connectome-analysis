@@ -29,20 +29,19 @@ try:
         DEFAULT_DETAIL_CAP,
         DEFAULT_REFILL_PATH_BUDGET,
         TypeLevelRefillError,
+        build_effective_type_map,
         compute_type_level_refill,
+        filter_edges_by_hemisphere,
     )
 except ImportError:  # pragma: no cover - direct src/ execution
     from src.type_level_refill import (  # noqa: E402
         DEFAULT_DETAIL_CAP,
         DEFAULT_REFILL_PATH_BUDGET,
         TypeLevelRefillError,
+        build_effective_type_map,
         compute_type_level_refill,
+        filter_edges_by_hemisphere,
     )
-
-try:
-    from utils.label_utils import is_untyped_type_label  # noqa: E402
-except ImportError:  # pragma: no cover
-    from src.utils.label_utils import is_untyped_type_label  # noqa: E402
 
 try:
     from utils.naming_utils import is_run_folder_name  # noqa: E402
@@ -50,10 +49,6 @@ except ImportError:  # pragma: no cover
     from src.utils.naming_utils import is_run_folder_name  # noqa: E402
 
 DEFAULT_OUT = 'type_level_refill_output'
-_HEMI_ALIASES = {
-    'r': 'R', 'right': 'R', 'rhs': 'R', 'right hemisphere': 'R',
-    'l': 'L', 'left': 'L', 'lhs': 'L', 'left hemisphere': 'L',
-}
 
 
 def scan_run_folders(root: Path):
@@ -89,71 +84,47 @@ def load_connections(path: Path):
                                df['weight'])]
 
 
-def _hemi_codes(frame: pd.DataFrame):
-    """Hemisphere codes per the coana rules: hemisphere > somaSide/
-    soma side > rootSide, then instance _L/_R, defaulting to 'U'."""
-    lowered = {str(c).strip().lower(): c for c in frame.columns}
-    col = next((lowered[c] for c in
-                ('hemisphere', 'soma side', 'somaside', 'rootside')
-                if c in lowered), None)
-    codes = pd.Series('U', index=frame.index, dtype=object)
-    if col is not None:
-        vals = frame[col].fillna('').astype(str).str.strip().str.lower()
-        codes = vals.map(_HEMI_ALIASES).fillna('U')
-    elif 'instance' in frame.columns:
-        inst = frame['instance'].fillna('').astype(str)
-        codes = pd.Series('U', index=frame.index, dtype=object)
-        codes[inst.str.endswith('_R')] = 'R'
-        codes[inst.str.endswith('_L')] = 'L'
-    return codes
-
-
-def build_type_map(neuron_table: Path, separate_hemispheres: bool):
-    """bodyId -> EFFECTIVE label: base type (untyped dropped), suffixed
-    _L/_R/_U when the run separated hemispheres (coana suffix rules)."""
-    frame = pd.read_csv(neuron_table, dtype=str, low_memory=False)
-    if 'bodyId' not in frame.columns or 'type' not in frame.columns:
-        raise SystemExit(
-            f'--neuron-table {neuron_table}: needs bodyId and type '
-            f'columns (found {list(frame.columns)[:8]}...).')
-    labels = frame['type'].fillna('Unknown').astype(str)
-    if separate_hemispheres:
-        labels = labels + '_' + _hemi_codes(frame)
-    keep = ~labels.map(is_untyped_type_label)
-    return dict(zip(frame.loc[keep, 'bodyId'].astype(str),
-                    labels[keep]))
-
-
 def _run_bool(value) -> bool:
     return str(value).strip().lower() in ('true', '1')
 
 
 def read_run_flags(run_dir: Path):
-    """separate_hemispheres / hemisphere_filter from parameters.txt."""
+    """separate_hemispheres / hemisphere_filter / mapping file / dataset
+    from parameters.txt."""
+    import re
     text = (run_dir / 'parameters.txt').read_text(
         encoding='utf-8', errors='replace')
-    import re
-    sep = re.search(r'^separate hemispheres:\s*(\S+)', text, re.MULTILINE)
-    filt = re.search(r'^hemisphere filter:\s*(\S+)', text, re.MULTILINE)
-    return (_run_bool(sep.group(1)) if sep else False,
-            filt.group(1) if filt else 'both')
+
+    def _flag(pattern, default=None):
+        m = re.search(pattern, text, re.MULTILINE)
+        return m.group(1).strip().strip("'\"") if m else default
+
+    return (
+        _run_bool(_flag(r'^separate hemispheres:\s*(\S+)', 'False')),
+        _flag(r'^hemisphere filter:\s*(\S+)', 'both'),
+        _flag(r'^custom mapping file:\s*(.+)$'),   # may contain spaces
+        _flag(r'^dataset:\s*(\S+)'),
+    )
 
 
-def filter_edges_by_hemisphere(edges, type_map, hemi_filter):
-    """Fetch-time edge rule (coana._apply_hemisphere_suffix_to_conn_df):
-    'left'/'right' keep an edge only when BOTH endpoints are that side or
-    'U'; 'both' keeps everything."""
-    if hemi_filter not in ('left', 'right'):
-        return edges
-    keep_code = hemi_filter[0].upper()
-    code_of = {}
-    for body_id, label in type_map.items():
-        code = label.rsplit('_', 1)[-1] if label.endswith(('_L', '_R', '_U')) \
-            else 'U'
-        code_of[body_id] = code
-    return [e for e in edges
-            if code_of.get(e[0], 'U') in (keep_code, 'U')
-            and code_of.get(e[1], 'U') in (keep_code, 'U')]
+def build_type_map(neuron_table: Path, separate_hemispheres: bool,
+                   mapping_file=None, dataset=None):
+    """bodyId -> EFFECTIVE label via the shared module builder (label
+    mapping with the same semantics as the run's type-level aggregation,
+    hemisphere suffixes, untyped drop)."""
+    frame = pd.read_csv(neuron_table, dtype=str, low_memory=False)
+    if 'bodyId' not in frame.columns or 'type' not in frame.columns:
+        raise SystemExit(
+            f'--neuron-table {neuron_table}: needs bodyId and type '
+            f'columns (found {list(frame.columns)[:8]}...).')
+    if mapping_file and mapping_file.lower() in ('none', 'n/a', ''):
+        mapping_file = None
+    return build_effective_type_map(
+        frame, dataset=dataset or 'unknown',
+        mapping_file=(Path(mapping_file) if mapping_file else None),
+        separate_hemispheres=separate_hemispheres)
+
+
 
 
 def main(argv=None) -> int:
@@ -219,8 +190,16 @@ def main(argv=None) -> int:
     failures = 0
     for run_dir in folders:
         try:
-            separate, hemi_filter = read_run_flags(run_dir)
-            type_map = build_type_map(neuron_table, separate)
+            separate, hemi_filter, mapping_file, dataset = read_run_flags(
+                run_dir)
+            if mapping_file and not Path(mapping_file).exists():
+                raise SystemExit(
+                    f'{run_dir.name}: parameters.txt records custom mapping '
+                    f'file {mapping_file!r} which does not exist — the '
+                    f'refill cannot reproduce the run\'s labels without it.')
+            type_map = build_type_map(neuron_table, separate,
+                                      mapping_file=mapping_file,
+                                      dataset=dataset)
             edges = filter_edges_by_hemisphere(
                 load_connections(connections_path), type_map, hemi_filter)
             rec = compute_type_level_refill(

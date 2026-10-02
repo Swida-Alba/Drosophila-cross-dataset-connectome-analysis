@@ -1,9 +1,12 @@
 # Type-Level Connection-Strength Refill
 
-Standalone refill records for FindAllPath (full-path mode) runs whose
-**applied threshold exceeded the asked threshold** because the Edge Budget
-floored the discovery cone and/or the StrongestFirst path budget bit.
-Plan of record: `_plan/plan-type-level-refill.md` (Phase 1).
+Refill records for pathfinding runs whose **applied threshold exceeded
+the asked threshold** because the Edge Budget floored the discovery cone
+and/or the StrongestFirst path budget bit — full-path mode since Phase 1,
+**automatically generated in-run since Phase 2** (`auto_type_level_refill`,
+default on), and **shortest mode since Phase 3** (via the run's
+`shortest_discovery_store/`).
+Plan of record: `_plan/plan-type-level-refill.md`.
 
 ## When it applies
 
@@ -48,6 +51,15 @@ set with the run's `aggregate method` (`product` by default).
 
 ## Usage
 
+**Automatic (Phase 2):** every materialized FindAllPath / FindShortestPath
+folder with `applied > asked` gets the records in
+`data_details/type_level_refill/` right after the run completes
+(`auto_type_level_refill=False` disables; a `user_warning_notes.txt` line
+discloses what was generated or why it was refused; the pair report's
+provenance card shows the totals). Complete runs produce nothing.
+
+**CLI (post-hoc):**
+
 ```bash
 python scripts/TypeLevelRefill.py <run_folder> \
     --connections <dataset connections.parquet|csv> \
@@ -56,16 +68,30 @@ python scripts/TypeLevelRefill.py <run_folder> \
 ```
 
 The connection source must be the FULL dataset connections at natural
-weights; the neuron table the same one the run used (hemisphere suffixes
-are applied when the run separated hemispheres, untyped ids are dropped).
-Output goes to `--out` (default `./type_level_refill_output/<run>/`) —
-run folders are never modified. `--in-run` instead writes the records
+weights; the neuron table the same one the run used. Labels are resolved
+exactly as the run's type-level aggregation did: a recorded custom
+mapping file is loaded through `LabelMapper` (bodyId-level mapping wins
+over type-level, unmapped labels keep their raw names), hemisphere
+suffixes apply when the run separated hemispheres, untyped ids drop. A
+recorded mapping file that no longer exists refuses the run rather than
+guess. Output goes to `--out` (default `./type_level_refill_output/<run>/`)
+— run folders are never modified. `--in-run` instead writes the records
 into `<run>/data_details/type_level_refill/` (still additive only; the
 run guide surfaces them when present).
 
+**Shortest mode (Phase 3):** detected from the folder name; the refill
+reads the run's `shortest_discovery_store/` (per-layer connection frames
++ per-target distance maps) for structure and the connection source only
+for the F9 denominators. The cut re-derivation runs the SHORTEST
+strongest-first enumerator with store-seeded distances, so per-pair
+min-hop semantics and the tau tie-drain match the run. When the store was
+pruned by retention, the refill refuses with a clear message.
+
 In-process: `from type_level_refill import compute_type_level_refill`,
 passing `edges=[(pre, post, weight), ...]` and the effective
-`type_map={bodyId: label}`.
+`type_map={bodyId: label}` (or build it with
+`build_effective_type_map(frame, dataset=..., mapping_file=...,
+separate_hemispheres=...)`).
 
 ## Outputs
 
@@ -100,3 +126,13 @@ passing `edges=[(pre, post, weight), ...]` and the effective
 - Any cut re-derivation that fails to reproduce the exported table
   refuses with a diagnostic (mismatched labels/hemisphere suffixes/
   filters or a stale connection source).
+
+## Truncation guard
+
+The asked-threshold re-exploration enumerates simple paths on the induced
+subgraph with its own guard (`refill_path_budget`, default 2,000,000
+paths; `--path-budget` on the CLI). Very broad queries (e.g. all R-cells
+at depth 5) can exceed it — the provenance then carries
+`refill_truncated: true` and the refill is an honest partial set. Raise
+the guard for a full refill; the cut enumeration that reproduces the
+exported table is never guarded.

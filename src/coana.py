@@ -3207,6 +3207,20 @@ class FindNeuronConnection:
     executed, not just what the field requested.
     '''
 
+    auto_type_level_refill: bool = True
+    '''
+    If True (plan-type-level-refill Phase 2), every materialized FindAllPath
+    ('all' mode) folder whose applied threshold exceeded the asked threshold
+    (Edge Budget floor and/or StrongestFirst bite) automatically gets the
+    standalone type-level refill records written into
+    ``data_details/type_level_refill/`` (plan: _plan/plan-type-level-refill.md).
+    The records quantify the budget-cut bodyId mass behind the existing
+    connection_type.csv rows; they never modify existing exports. Generation
+    failures (e.g. the cut re-derivation cannot reproduce the exported
+    table) append a user_warning_notes entry instead of failing the run.
+    Complete runs (applied == asked) produce nothing.
+    '''
+
     discovery_batch_budget: int = 2_000_000
     '''
     Shortest-path mode only (plan-shortest-batched-discovery): discovery
@@ -15569,6 +15583,167 @@ class FindNeuronConnection:
         self.parameter_df.columns = ['parameter', 'value']
         return prov
 
+    def _maybe_generate_type_level_refill(self):
+        """Phase 2 hook (plan-type-level-refill): after a materialized
+        FindAllPath ('all' mode) folder carries its final provenance,
+        generate the standalone type-level refill records into
+        ``data_details/type_level_refill/`` when the applied threshold
+        exceeded the asked threshold. Never raises: a refused/failed
+        generation appends a user_warning_notes entry instead. The caller
+        re-writes the warning notes afterwards when a note was added
+        (same pattern as the shortest store-retention hook)."""
+        if not getattr(self, 'auto_type_level_refill', True):
+            return False
+        run_dir = getattr(self, 'allpath_folder', None)
+        if not run_dir or not os.path.isdir(run_dir):
+            return False
+        try:
+            from type_level_refill import (
+                TypeLevelRefillError,
+                build_effective_type_map,
+                compute_type_level_refill,
+                filter_edges_by_hemisphere,
+                read_run_provenance,
+            )
+
+            # Cheap pre-gate on the folder's own stamped provenance:
+            # complete runs (applied <= asked) get nothing at all — no
+            # records, no note, no enumeration cost.
+            prov = read_run_provenance(run_dir)
+
+            def _as_int(value):
+                try:
+                    return int(float(str(value)))
+                except (TypeError, ValueError):
+                    return None
+            asked = _as_int(prov.get('requested_threshold'))
+            replayed = _as_int(prov.get('replayed_from'))
+            if replayed is not None and asked is not None \
+                    and replayed < asked:
+                asked = replayed
+            applied = _as_int(prov.get('applied_threshold'))
+            if applied is None or asked is None or applied <= asked:
+                return False
+
+            def _stream_edges():
+                """Stream (pre, post, weight) from the run's connection
+                database — single pass, no 20M-row materialization.
+                Returns None when no connection database exists."""
+                override = getattr(self, '_refill_edges_override', None)
+                if override is not None:
+                    def _ovr():
+                        yield from override
+                    return _ovr()
+                db_path = self._get_connection_db_path()
+                if not os.path.exists(db_path):
+                    return None
+
+                def _gen():
+                    lf = pl.scan_parquet(db_path).select(
+                        ['bodyId_pre', 'bodyId_post', 'weight'])
+                    for chunk in lf.collect(
+                            engine='streaming').iter_slices(1_000_000):
+                        pre = chunk['bodyId_pre'].to_list()
+                        post = chunk['bodyId_post'].to_list()
+                        weight = chunk['weight'].to_list()
+                        for u, v, w in zip(pre, post, weight):
+                            if w is not None:
+                                yield str(u), str(v), float(w)
+                return _gen()
+
+            neuron_frame = getattr(
+                self, '_refill_neuron_frame_override', None)
+            if neuron_frame is None:
+                neuron_frame = self._refill_neuron_frame()
+            if neuron_frame is None:
+                self._warn_notes.append(
+                    '- [type-level refill] NOT generated: no local neuron '
+                    'table could be resolved for '
+                    f'{getattr(self, "dataset", "?")} — regenerate via '
+                    'scripts/TypeLevelRefill.py with explicit --neuron-table.')
+                return True
+            stream = _stream_edges()
+            if stream is None:
+                self._warn_notes.append(
+                    '- [type-level refill] NOT generated: the connection '
+                    'database is absent — regenerate via '
+                    'scripts/TypeLevelRefill.py with explicit --connections.')
+                return True
+            type_map = build_effective_type_map(
+                neuron_frame,
+                dataset=str(getattr(self, 'dataset', '') or ''),
+                label_mapper=getattr(self, 'label_mapper', None),
+                separate_hemispheres=bool(
+                    getattr(self, 'separate_hemispheres', False)),
+            )
+            stream = filter_edges_by_hemisphere(
+                stream, type_map,
+                str(getattr(self, 'hemisphere_filter', 'both') or 'both'))
+            rec = compute_type_level_refill(
+                run_dir, edges=stream, type_map=type_map, out_dir=None,
+                source_note='auto (post-materialization hook)')
+            if rec.get('status') == 'refilled':
+                self._warn_notes.append(
+                    '- [type-level refill] applied threshold '
+                    f'{rec["applied_threshold"]} > asked '
+                    f'{rec["requested_threshold"]} '
+                    f'({rec["applied_threshold_source"]}): standalone '
+                    'refill records written to '
+                    'data_details/type_level_refill/ — '
+                    f'{rec["refill_edges"]:,} bodyId edges / '
+                    f'{rec["refill_weight_total"]:,} synapses of '
+                    'budget-cut mass recovered behind the existing '
+                    'connection_type.csv rows (refill only; '
+                    'non-emitted type pairs counted, not recovered).')
+            return rec.get('status') == 'refilled'
+        except TypeLevelRefillError as exc:
+            self._warn_notes.append(
+                f'- [type-level refill] NOT generated: {exc}')
+            return True
+        except Exception as exc:  # never fail the run for the refill
+            self._warn_notes.append(
+                '- [type-level refill] NOT generated (unexpected error): '
+                f'{type(exc).__name__}: {exc}')
+            return True
+
+    def _refill_neuron_frame(self):
+        """Resolve the dataset neuron table the run itself used (statvis
+        layout conventions), or None when nothing local can be found."""
+        dataset = str(getattr(self, 'dataset', '') or '')
+        if not dataset:
+            return None
+        try:
+            dataset_clean = canonical_dataset_name(dataset).replace(
+                ':', '_').replace('.', '_')
+        except Exception:
+            dataset_clean = dataset.replace(':', '_').replace('.', '_')
+        candidates = []
+        try:
+            if is_local_connectome_dataset(dataset):
+                candidates.append(sv._flywire_neuron_table_path(
+                    dataset, self.script_path))
+        except Exception:
+            pass
+        folder = os.path.join(self.script_path, 'datasets', dataset_clean)
+        candidates += [
+            os.path.join(folder, f'{dataset_clean}_allneurons_neuron_df.csv'),
+            os.path.join(folder, f'{dataset_clean}_allneurons_neuron_df.parquet'),
+            os.path.join(self.script_path, 'datasets',
+                         f'{dataset_clean}_allneurons_neuron_df.csv'),
+        ]
+        for path in candidates:
+            if path and os.path.exists(path):
+                try:
+                    if str(path).lower().endswith('.parquet'):
+                        frame = pd.read_parquet(path)
+                    else:
+                        frame = pd.read_csv(path, dtype=str, low_memory=False)
+                    if 'bodyId' in frame.columns and 'type' in frame.columns:
+                        return frame
+                except Exception:
+                    continue
+        return None
+
     def _write_run_metadata(self, path_mode, extra_lines=()):
         """Post-enumeration re-stamp of all_attributes.json + parameters.txt.
 
@@ -15832,6 +16007,13 @@ class FindNeuronConnection:
                 forward_only=forward_only,
             )
             self._persist_slice_density_meta(t, slice_wstar, len(all_paths))
+            # Phase 2 refill hook: the slice folder's provenance was
+            # finalized by _replay_output_folder_for_threshold +
+            # _materialize_paths; generate the refill records for this
+            # slice on its own state (the module reads the slice's stamped
+            # provenance, incl. the replayed_from gate).
+            if self._maybe_generate_type_level_refill():
+                self._write_user_warning_notes(self.allpath_folder)
             return {
                 'tau': tau,
                 'budget_bitten': not paths_complete and t0_bitten,
@@ -17393,6 +17575,16 @@ class FindNeuronConnection:
         # applied-threshold provenance is final.
         if path_mode == 'all':
             self._persist_density_artifacts(path_bottlenecks)
+
+        # Phase 2/3 refill hook (plan-type-level-refill): budget-bitten
+        # folders get the standalone type-level refill records
+        # automatically ('all' mode via the connection database; shortest
+        # mode via its discovery store). Runs after the final metadata
+        # re-stamp so the post-hoc parser reads the finalized provenance;
+        # the notes are re-written when the hook adds an entry
+        # (store-retention pattern).
+        if self._maybe_generate_type_level_refill():
+            self._write_user_warning_notes(self.allpath_folder)
 
     def _materialize_paths(
         self,
