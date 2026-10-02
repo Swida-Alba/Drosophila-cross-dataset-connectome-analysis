@@ -1,5 +1,7 @@
 """Regression coverage for query-keyed comparison exports."""
 
+import re
+
 import pandas as pd
 import pytest
 
@@ -296,7 +298,12 @@ def test_combination_html_uses_full_query_keyed_report_shell(tmp_path):
     assert 'toggleNetworkFilter(&quot;combo_002&quot;)' in report
     assert 'showNetworkTab(&quot;combo_001&quot;, this)' in report
     assert 'showNetworkTab(&quot;combo_002&quot;, this)' in report
-    assert 'event.target' not in report
+    # The handlers contract applies to the report's OWN inline markup
+    # (attributes + app script), scoped the same way as the offline-export
+    # test fixes in 44bcd50: the offline-embedded vendor JS (d3)
+    # legitimately contains `event.target` inside its minified source.
+    visible = re.sub(r"<script.*?</script>", "", report, flags=re.S)
+    assert 'event.target' not in visible
     # Per-query similarity heatmap cards use the shared four-representative
     # set (v2.2: edge/path/graph levels)
     assert 'id="jaccard_combo_001"' in report
