@@ -250,20 +250,38 @@ def _pool_mapping_pair(flows, src, tgt, indexes, pools) -> None:
             src, tgt, chains,
             flow.get("source_type"), flow.get("foreign_type"),
             indexes=index_kw)
-        for attempt in result.get("attempts") or []:
-            if attempt.get("status") in {"unsupported", "error"}:
-                linker_text = "; ".join(
-                    f"{item.get('column', '')}="
-                    f"{item.get('raw_value', '')}"
-                    f"[{item.get('canonical_value', '')}]"
-                    for item in attempt.get("linker_values") or [])
-                logger.warning(
-                    "unsupported bridge chain dropped for %r (%s → %s; "
-                    "rank %s; linkers %s; source pool %s; target pool %s; "
-                    "%s)", key, src, tgt, attempt.get("rank"),
-                    linker_text or "none", attempt.get("source_pool_size"),
-                    attempt.get("target_pool_size"),
-                    attempt.get("reason") or attempt.get("status"))
+
+        def _linker_text(attempt: Dict[str, Any]) -> str:
+            return "; ".join(
+                f"{item.get('column', '')}="
+                f"{item.get('raw_value', '')}"
+                f"[{item.get('canonical_value', '')}]"
+                for item in attempt.get("linker_values") or [])
+
+        failed = [attempt for attempt in result.get("attempts") or []
+                  if attempt.get("status") in {"unsupported", "error"}]
+        if result.get("resolution_status") != "supported":
+            # A rendered pair card losing its m-of-n coverage line is the
+            # one outcome the terminal should shout about.
+            logger.warning(
+                "bridge pool unresolved for %r (%s → %s); every candidate "
+                "chain dropped [%s]", key, src, tgt, "; ".join(
+                    f"rank {attempt.get('rank')} linkers "
+                    f"{_linker_text(attempt) or 'none'}: "
+                    f"{attempt.get('reason') or attempt.get('status')}"
+                    for attempt in failed) or "no candidates")
+        elif failed:
+            # Losing ALTERNATIVE ranks while another chain carries the pool
+            # is routine in full-map mode — the extended mapping CSV's
+            # ``unsupported_attempts`` column already discloses them, so
+            # this stays out of the terminal (debug only).
+            logger.debug(
+                "unsupported bridge alternatives for %r (%s → %s): %s",
+                key, src, tgt, "; ".join(
+                    f"rank {attempt.get('rank')} "
+                    f"({_linker_text(attempt) or 'none'}: "
+                    f"{attempt.get('reason') or attempt.get('status')})"
+                    for attempt in failed))
         if result.get("resolution_status") != "supported":
             continue
         pools[key] = result
