@@ -179,6 +179,41 @@ COLUMN_GLOSSARY = {
     "min_hop_position": ("Earliest hop index (1-based) at which the "
                          "intermediate appears across the pair's paths; also "
                          "its column in the report's layered network.", "integer"),
+    # --- Type-level refill (post-hoc, scripts/TypeLevelRefill.py --in-run) --
+    "emitted_weight": ("The type pair's weight as exported by the run "
+                       "itself (connection_type.csv summed across its "
+                       "conn_layer rows) — what the budgets left in.",
+                       "integer"),
+    "refill_weight": ("BodyId-pair weight the budgets cut that the refill "
+                      "recovered for this emitted type pair: pairs on "
+                      "asked-threshold paths over the involved types' "
+                      "induced subgraph, minus the re-derived emitted set.",
+                      "integer"),
+    "refilled_total": ("emitted_weight + refill_weight: the refilled "
+                       "type-level connection strength.", "integer"),
+    "emitted_pair_count": ("BodyId pairs behind the emitted weight "
+                           "(re-derived).", "integer"),
+    "refill_pair_count": ("BodyId pairs behind the refill weight.", "integer"),
+    "refilled_connection_ratio": ("refilled_total over the post type's "
+                                  "ALL-post incoming weight (threshold-free "
+                                  "F9 denominator, min synapse = 1).",
+                                  "0-1"),
+    "refilled_traversal_probability": ("The type pair's traversal "
+                                       "probability over the UNION of "
+                                       "emitted + refilled bodyId pairs, "
+                                       "folded by the run's aggregate "
+                                       "method (product = 1 - "
+                                       "prod(1 - p_pair)).", "0-1"),
+    "split_status": ("How the emitted/refill split was reconstructed: "
+                     "rederived_floor (Edge Budget), rederived_topn "
+                     "(StrongestFirst bite), rederived_floor+topn (both).",
+                     "text"),
+    "traversal_count": ("How many re-exploration paths use this bodyId "
+                        "pair.", "integer"),
+    "min_hop": ("Smallest 0-based hop index of the pair's pre endpoint "
+                "across re-exploration paths.", "integer"),
+    "max_hop": ("Largest 0-based hop index of the pair's pre endpoint "
+                "across re-exploration paths.", "integer"),
     "path_prob": ("Overall path probability = product of edge traversal "
                    "probabilities $\\left(\\prod p_k\\right)$.", "0-1"),
     "min_weight": ("Smallest edge weight along the path.", "integer"),
@@ -1025,6 +1060,40 @@ _PATHFINDING_FILES = [
                     "batch composition, and (when Discovery Store = "
                     "compact/prune) the retention record — mode, sizes, "
                     "removals, and the dag-edges derivation recipe."},
+    # Type-level refill (post-hoc, scripts/TypeLevelRefill.py --in-run):
+    # standalone refill of the type-level connection strength for runs
+    # whose applied threshold exceeded the asked threshold. Like the
+    # pair-report entries above, these surface in the run guide only when
+    # the files exist.
+    {"pattern": "data_details/type_level_refill/refill_type_pairs.csv",
+     "description": "Refill summary, one row per EMITTED type pair (zeros "
+                    "included): emitted vs refill weight, the refilled "
+                    "total/ratio/probability, and how the split was "
+                    "reconstructed. Never capped.",
+     "preview": True,
+     "preview_title": "Type-level refill (per type pair)",
+     "columns": ["type_pre", "type_post", "emitted_weight", "refill_weight",
+                 "refilled_total", "emitted_pair_count",
+                 "refill_pair_count", "refilled_connection_ratio",
+                 "refilled_traversal_probability", "split_status"]},
+    {"pattern": "data_details/type_level_refill/refill_bodyId_pairs.csv",
+     "description": "The refilled bodyId pairs (capped, bottleneck-first "
+                    "order): the pruned mass behind refill_weight, with "
+                    "re-exploration traversal counts and hop positions.",
+     "preview": True,
+     "preview_title": "Type-level refill (per bodyId pair)",
+     "columns": ["bodyId_pre", "bodyId_post", "type_pre", "type_post",
+                 "weight", "traversal_count", "min_hop", "max_hop"]},
+    {"pattern": "data_details/type_level_refill/refill_provenance.json",
+     "description": "Refill provenance: asked/applied thresholds, budgets, "
+                    "induced-graph sizes, table_reproduced (the re-derived "
+                    "cut reproduced connection_type.csv exactly — the "
+                    "consistency anchor), and the disclosure counters "
+                    "(skipped non-emitted type pairs, boundary edges at or "
+                    "above the floor, refill truncation)."},
+    {"pattern": "data_details/type_level_refill/README.md",
+     "description": "Semantics, invariants, and the join recipe for the "
+                    "refill records."},
 ]
 
 # Reusable pathfinding explanation, rendered by all three run-guide formats

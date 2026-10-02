@@ -167,6 +167,7 @@ py-modules = [
     "statvis",
     "storage_inventory",
     "synapse_cache",
+    "type_level_refill",
     "vendored_assets",
     "visualization_options",
     "visualize_skeleton",

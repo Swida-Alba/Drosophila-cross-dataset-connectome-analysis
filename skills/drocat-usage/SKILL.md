@@ -150,6 +150,18 @@ expected outputs, and a runnable launcher command.
 For workflows that need more than one function (e.g. FindPath → PlotPath, or
 similar-neuron → 3D skeleton), see [references/combinations.md](references/combinations.md).
 
+## Post-run analysis tools
+
+- `scripts/PathsPairReport.py <run_dir>` — per-source-target-pair HTML
+  report from a completed pathfinding run (writes into the run folder).
+- `scripts/TypeLevelRefill.py <run_dir> --connections <dataset
+  connections.parquet> --neuron-table <allneurons csv> [--in-run]` —
+  type-level connection-strength refill for runs whose applied threshold
+  exceeded the asked threshold (Edge Budget floor / StrongestFirst bite):
+  standalone records quantifying the budget-cut bodyId mass behind the
+  existing `connection_type.csv` rows. See
+  `docs/core-features/TypeLevelRefill.md`.
+
 ## References
 
 - [Tab recipes](tabs/) — one per UI tab
