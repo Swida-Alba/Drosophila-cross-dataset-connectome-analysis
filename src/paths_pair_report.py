@@ -1640,10 +1640,12 @@ REPORT_JS = r"""
 
   // ---- pair explorer ----
   var Explorer = {
-    mounted: false,
+    // TAB.show re-clones the page template on EVERY visit, so mount() must
+    // fully re-bind the fresh selects and re-render each time — an
+    // early-return guard here left the pane empty whenever the user
+    // switched away and back (fixed 2026-10-02).
+    byUnit: null,
     mount: function() {
-      if (this.mounted) { return; }
-      this.mounted = true;
       this.byUnit = {};
       DATA.pairs.forEach(function(p) {
         (Explorer.byUnit[p.unit] = Explorer.byUnit[p.unit] || []).push(p); });
