@@ -88,8 +88,9 @@ python skills/drocat-usage/scripts/run_direct.py \
   completes (`path_report.html` + `paths_pair_breakdown/*.csv`); each
   `dataset_data/<dataset>/minsyn_<N>/` delegate becomes a unit — the
   Global tab's pair × unit matrix and coverage histogram give the
-  run-wide view next to `comparison_report.html` (see tabs/find-path.md
-  "Pair report").
+  run-wide view next to `comparison_report.html`. Every delegate folder
+  also receives its own single-unit `path_report.html` (see
+  tabs/find-path.md "Pair report").
 
 ## Report layout
 

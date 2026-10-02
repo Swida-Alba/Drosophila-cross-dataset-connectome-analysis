@@ -1050,20 +1050,26 @@ def _render_data_tab(payload: dict, run_dir: Path) -> str:
     rows = []
     for unit in run['units']:
         agg = per_unit[unit['id']]
+        report_link = '-'
+        if unit['dataset']:
+            nested = (run_dir / 'dataset_data' / unit['id'] / REPORT_NAME)
+            report_link = _link_if_exists(nested, run_dir, 'Open')
         rows.append(
             f'<tr><td>{_esc(unit["label"])}</td><td>{_esc(unit["dataset"] or "—")}</td>'
             f'<td>{_esc(unit["threshold"] or "—")}</td>'
             f'<td>{_esc(length_ranges.get(unit["id"], "—"))}</td>'
-            f'<td>{agg["pairs"]}</td><td>{agg["paths"]:,}</td></tr>')
+            f'<td>{agg["pairs"]}</td><td>{agg["paths"]:,}</td>'
+            f'<td>{report_link}</td></tr>')
     table = (
         '<div class="card"><h3>Units</h3>'
         '<div class="sticky-table-container"><table><thead><tr>'
         '<th>Unit</th><th>Dataset</th><th>Threshold</th><th>Lengths</th>'
-        '<th>Pairs</th><th>Paths</th></tr></thead><tbody>' + ''.join(rows) +
-        '</tbody></table></div>'
+        '<th>Pairs</th><th>Paths</th><th>Pair report</th></tr></thead><tbody>'
+        + ''.join(rows) + '</tbody></table></div>'
         '<p class="cap-note">Unit labels are the raw folder names relative to '
         'the run root (dataset_data/ stripped); thresholds parsed best-effort '
-        'for sorting only.</p></div>')
+        'for sorting only. Cross-dataset delegates each carry their own '
+        'single-unit <code>path_report.html</code> inside their folder.</p></div>')
 
     csv_links = []
     for unit in run['units']:
@@ -1920,6 +1926,29 @@ def generate_paths_pair_report(
     payload['global'] = build_global(units, frames, global_pairs, global_edges)
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
+
+    # Cross-dataset runs also embed a single-unit report INTO every
+    # dataset_data/<dataset>/<delegate>/ folder (user request 2026-10-02):
+    # browsing a delegate beside its own parameters.txt/all_attributes.json
+    # gets its own self-consistent report with working relative links.
+    # Nested generation happens BEFORE the root render so the root's Data
+    # tab can link the per-delegate reports via _link_if_exists.
+    nested_reports: List[Path] = []
+    if any(u.dataset for u in units):
+        for unit in units:
+            if not unit.dataset:
+                continue
+            try:
+                nested_reports.append(generate_paths_pair_report(
+                    unit.folder, top_per_length=top_per_length,
+                    matrix_rows=matrix_rows, rank_by=rank_by,
+                    global_pairs=global_pairs, global_edges=global_edges,
+                    log=None))
+            except Exception as exc:  # noqa: BLE001 - best-effort extras
+                say(f'  ! nested report for {unit.label} skipped: {exc}')
+        if nested_reports:
+            say(f'.nested reports: {len(nested_reports)} delegate folders')
+
     html_str = _render_page_shell(
         payload_json,
         _render_overview(payload, run_dir, breakdown_paths),

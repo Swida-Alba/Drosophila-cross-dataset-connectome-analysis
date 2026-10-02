@@ -951,10 +951,16 @@ _PATHFINDING_FILES = [
     # these INTO the run folder after the fact; the entries surface in the
     # run guide only when the files exist).
     {"pattern": "path_report.html",
-     "description": "Per-source-target-pair HTML report (post-hoc, generated "
-                    "by scripts/PathsPairReport.py): Overview / Global / "
-                    "Pair Explorer / Data tabs, interactive networks; capped "
-                    "views link to the lossless breakdown CSVs below."},
+     "description": "Per-source-target-pair HTML report (written "
+                    "automatically after pathfinding runs; also via "
+                    "scripts/PathsPairReport.py): Overview / Global / "
+                    "Pair Explorer / Data tabs, interactive networks; "
+                    "capped views link to the lossless breakdown CSVs "
+                    "below."},
+    {"pattern": "dataset_data/*/path_report.html",
+     "description": "Per-delegate single-unit pair report inside each "
+                    "cross-dataset dataset_data/<dataset>/<delegate>/ "
+                    "folder; the run-root report's Data tab links them."},
     {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
      "description": "Pair-report breakdown, one row per path (uncapped): "
                     "rank within (pair, length), bottleneck-first ordering.",

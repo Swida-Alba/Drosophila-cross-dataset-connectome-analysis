@@ -379,6 +379,46 @@ def test_presence_matrix_cross_unit_join(cross_run):
     assert order.index("S->X->T") < order.index("S->Y->T") < order.index("S->Z->T")
 
 
+def test_cross_run_writes_nested_per_delegate_reports(cross_run):
+    """Round 7: cross-dataset runs also write a single-unit path_report.html
+    into each dataset_data/<dataset>/<delegate>/ folder."""
+    report = generate_paths_pair_report(cross_run, log=None)
+    payload = _payload(report.read_text(encoding="utf-8"))
+    unit_ids = [u["id"] for u in payload["run"]["units"]]
+    assert unit_ids == [
+        "dsA/minsyn_3", "dsA/minsyn_5_applied_floor", "dsB/minsyn_3"]
+    for unit_id in unit_ids:
+        nested = cross_run / "dataset_data" / unit_id
+        assert (nested / REPORT_NAME).exists(), unit_id
+        assert (nested / OUTPUT_DIR_NAME / PATHS_CSV_NAME).exists(), unit_id
+        nested_payload = _payload(
+            (nested / REPORT_NAME).read_text(encoding="utf-8"))
+        # single-unit, self-consistent report: the delegate folder IS the
+        # nested report's run root (unit_id '')
+        assert [u["id"] for u in nested_payload["run"]["units"]] == ['']
+        assert all(p["unit"] == '' for p in nested_payload["pairs"])
+        nested_csv = pd.read_csv(
+            nested / OUTPUT_DIR_NAME / PATHS_CSV_NAME, keep_default_na=False)
+        root_sub = pd.read_csv(
+            cross_run / OUTPUT_DIR_NAME / PATHS_CSV_NAME,
+            keep_default_na=False)
+        root_rows = root_sub[root_sub["unit"] == unit_id]
+        assert len(nested_csv) == len(root_rows) > 0
+        assert set(nested_csv["path"]) == set(root_rows["path"])
+    # the root Data tab links every nested report (resolvable relative hrefs)
+    root_html = report.read_text(encoding="utf-8")
+    for unit_id in unit_ids:
+        assert f'dataset_data/{unit_id}/path_report.html' in root_html
+
+
+def test_single_run_writes_no_nested_reports(single_run):
+    report = generate_paths_pair_report(single_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert 'href="dataset_data/' not in text  # no nested report links
+    nested = list(single_run.glob("dataset_data"))
+    assert nested == []
+
+
 # ---------------------------------------------------------------------------
 # (g) payload integrity: selects + deep-link slugs
 # ---------------------------------------------------------------------------

@@ -242,6 +242,12 @@ the report's `Generated:` timestamp.
     per (pair, intermediate) — `dataset`, `threshold`, `unit`, `source`,
     `target`, `intermediate`, `n_paths_using`, `classification`
     (`shared` | `unique`), `min_hop_position`.
+*   **`dataset_data/<dataset>/<delegate>/path_report.html`** (cross-dataset
+    runs): each delegate folder additionally receives its own single-unit
+    copy of the pair report (with its own `paths_pair_breakdown/`), so it
+    is browsable standalone beside the delegate's `parameters.txt` and
+    `all_attributes.json`; the run-root report's Data tab links every
+    delegate report.
 
 > ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio`, `traversal_probability`, and filtering thresholds.
 >
