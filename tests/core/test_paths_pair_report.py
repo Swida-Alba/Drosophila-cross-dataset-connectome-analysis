@@ -111,6 +111,22 @@ def cross_run(tmp_path) -> Path:
         parents=True, exist_ok=True)
     (run / "dataset_data" / "dsA" / "minsyn_4_skipped" / "README.txt").write_text(
         "skipped", encoding="utf-8")
+    # per-dataset enrollment files (bodyId coverage source)
+    pd.DataFrame([
+        {"bodyId": 1, "type": "S", "isInPath": True},
+        {"bodyId": 2, "type": "S", "isInPath": True},
+        {"bodyId": 3, "type": "S", "isInPath": False},
+    ]).to_csv(run / "dataset_data" / "dsA" / "minsyn_3" / "source_neurons.csv",
+              index=False)
+    pd.DataFrame([
+        {"bodyId": 4, "type": "T", "Checked": True},
+        {"bodyId": 5, "type": "T", "Checked": True},
+    ]).to_csv(run / "dataset_data" / "dsA" / "minsyn_3" / "target_neurons.csv",
+              index=False)
+    pd.DataFrame([
+        {"bodyId": 6, "type": "S", "isInPath": True},
+    ]).to_csv(run / "dataset_data" / "dsB" / "minsyn_3" / "source_neurons.csv",
+              index=False)
     return run
 
 
@@ -473,6 +489,63 @@ def test_global_pair_matrix_has_hop_ranges(cross_run):
     assert rows[("S", "T")]["ranges"]["dsA/minsyn_3"] == "2"
     assert "<th>Lengths</th>" in text
     assert 'title="hops 2"' in text
+
+
+def test_global_pair_matrix_bodyid_coverage_columns(cross_run):
+    """Round 9: the pair × unit table's Coverage column is replaced by
+    Source/Target bodyId n/N columns (same values as the Pair Explorer)."""
+    report = generate_paths_pair_report(cross_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    row = payload["global"]["pair_matrix"]["rows"][0]
+    # primary unit = most paths (dsA/minsyn_3, 2 paths) → its enrollment n/N
+    assert row["scov"] == "2/3" and row["tcov"] == "2/2"
+    # dsB has no target_neurons.csv → target coverage unknown (—)
+    assert row["cov_detail"]["dsB/minsyn_3"] == "1/1 / —"
+    assert "Source coverage" in text and "Target coverage" in text
+    assert "Coverage</th>" not in text          # old unit-coverage column gone
+    assert 'title="dsA/minsyn_3: 2/3 / 2/2; dsB/minsyn_3: 1/1 / —"' in text
+
+
+def test_provenance_card_marks_applied_threshold(tmp_path):
+    """Round 9: applied threshold + StrongestFirst/Edge budget provenance
+    rendered explicitly, like the cross-dataset report."""
+    run = tmp_path / "find-paths-complete_FAFB_A_to_B_L5w3_20260101_000000"
+    _write_csv(run, [_row("A->M->B", 30), _row("A->N->M->B", 20)])
+    (run / "parameters.txt").write_text(
+        "min synapse number:            3\n"
+        "requested_threshold:           3\n"
+        "applied_threshold:             17\n"
+        "applied_threshold_source:      strongest_first_budget+edge_budget\n"
+        "strongest_first_budget:        1000000\n"
+        "strongest_first_budget_bitten: True\n"
+        "strongest_first_tau:           17\n"
+        "tau_canonical:                 17\n"
+        "strongest_dropped_bottleneck:  16\n"
+        "edge_budget:                   1000000\n"
+        "edge_budget_applied:           True\n"
+        "edge_budget_landing:           7\n"
+        "edge_weight_floor:             8\n"
+        "strongest_retained_bottleneck: 38\n"
+        "paths_complete:                False\n", encoding="utf-8")
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    prov = payload["run"]["meta"]["provenance"]
+    assert prov["applied_threshold"] == "17"
+    assert prov["strongest_first_budget_bitten"] == "True"
+    assert "⚙️ Applied threshold &amp; budget provenance" in text
+    assert "Threshold actually used" in text
+    assert "applied threshold: 17  (strongest_first_budget+edge_budget)" in text
+    assert "Canonical tau" in text and "strongest_retained_bottleneck" in text
+
+
+def test_provenance_absent_runs_no_card(tmp_path):
+    run = tmp_path / "find-paths-complete_FAFB_A_to_B_L1w3_20260101_000000"
+    _write_csv(run, [_row("A->B", 4)])
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Applied threshold" not in text
 
 
 def test_data_tab_rebuilt(single_run):

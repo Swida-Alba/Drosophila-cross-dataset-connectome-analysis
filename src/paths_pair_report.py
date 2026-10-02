@@ -208,6 +208,17 @@ def run_kind(run_name: str) -> str:
     return 'Pathfinding'
 
 
+# Applied-threshold / budget provenance keys (the block pathfinding runs
+# append to parameters.txt; same fields the cross-dataset report marks).
+PROVENANCE_KEYS = (
+    'requested_threshold', 'applied_threshold', 'applied_threshold_source',
+    'strongest_first_budget', 'strongest_first_budget_bitten',
+    'strongest_first_tau', 'tau_canonical', 'strongest_dropped_bottleneck',
+    'edge_budget', 'edge_budget_applied', 'edge_budget_landing',
+    'edge_weight_floor', 'strongest_retained_bottleneck', 'paths_complete',
+)
+
+
 def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
     """Best-effort run metadata; every field may come back missing."""
     meta: Dict[str, Any] = {}
@@ -227,6 +238,17 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             match = re.search(pattern, text, re.MULTILINE)
             if match:
                 meta[key] = match.group(1)
+        # applied-threshold / budget provenance block (explicitly marks
+        # what the run actually used, incl. StrongestFirst budget/tau and
+        # Edge Budget landing — the pathfinding analogue of the
+        # cross-dataset report's provenance section)
+        provenance = {}
+        prov_pattern = re.compile(
+            r'^(' + '|'.join(PROVENANCE_KEYS) + r'):\s*(.+)$', re.MULTILINE)
+        for match in prov_pattern.finditer(text):
+            provenance[match.group(1)] = match.group(2).strip()
+        if provenance:
+            meta['provenance'] = provenance
     manifest = run_dir / 'run_manifest.json'
     if manifest.exists():
         try:
@@ -549,6 +571,8 @@ def build_pair_entry(
 def build_global(
     units: Sequence[Unit], frames: Dict[str, pd.DataFrame],
     global_pairs: int, global_edges: int,
+    unit_source_cov: Optional[Dict[str, Dict[str, str]]] = None,
+    unit_target_cov: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> dict:
     """Run-wide (global) presentations, in the spirit of the cross-dataset
     report's summary sections: per-unit stats, the pair x unit path-count
@@ -583,11 +607,18 @@ def build_global(
     pair_cells: Dict[Tuple[str, str], Dict[str, int]] = {}
     pair_len_range: Dict[Tuple[str, str], List[int]] = {}
     pair_unit_range: Dict[Tuple[str, str], Dict[str, str]] = defaultdict(dict)
+    pair_cov_detail: Dict[Tuple[str, str], Dict[str, str]] = defaultdict(dict)
     for unit in units:
         frame = frames[unit.unit_id]
+        src_cov = (unit_source_cov or {}).get(unit.unit_id) or {}
+        tgt_cov = (unit_target_cov or {}).get(unit.unit_id) or {}
         for (source, target), count in (
                 frame.groupby(['_source', '_target']).size().items()):
             pair_cells.setdefault((source, target), {})[unit.unit_id] = int(count)
+            # per-unit bodyId coverage detail (source n/N · target n/N)
+            if source in src_cov or target in tgt_cov:
+                pair_cov_detail[(source, target)][unit.unit_id] = (
+                    f'{src_cov.get(source, "—")} / {tgt_cov.get(target, "—")}')
         lengths_by_pair = frame.groupby(['_source', '_target'])['_length']
         for (source, target), lengths in lengths_by_pair:
             lo, hi = int(lengths.min()), int(lengths.max())
@@ -600,9 +631,19 @@ def build_global(
          'cons': len(cells),
          'length_range': (f'{pair_len_range[(s, t)][0]}–{pair_len_range[(s, t)][1]}'
                           if (s, t) in pair_len_range else '—'),
-         'ranges': pair_unit_range.get((s, t), {})}
+         'ranges': pair_unit_range.get((s, t), {}),
+         # bodyId n/N coverage (round 9): from the unit where the pair has
+         # the most paths; cov_detail carries every unit's values
+         'scov': '', 'tcov': '', 'cov_detail': pair_cov_detail.get((s, t), {})}
         for (s, t), cells in pair_cells.items()
     ]
+    for row in matrix_rows:
+        key = (row['source'], row['target'])
+        detail = row['cov_detail']
+        if detail:
+            primary = max(detail, key=lambda u: pair_cells[key].get(u, 0))
+            scov, _, tcov = detail[primary].partition(' / ')
+            row['scov'], row['tcov'] = scov, tcov
     matrix_rows.sort(key=lambda r: (-r['cons'], -r['total'], r['source'], r['target']))
     cons_hist = Counter(r['cons'] for r in matrix_rows)
     pair_matrix = {
@@ -981,6 +1022,74 @@ def _esc(value: Any) -> str:
     return _html.escape(str(value), quote=True)
 
 
+def _render_provenance_card(run: dict) -> str:
+    """Applied-threshold / budget provenance, marking explicitly what the
+    run actually used — the pathfinding counterpart of the cross-dataset
+    report's 'Applied Thresholds & Bottleneck Provenance' section."""
+    prov = (run.get('meta') or {}).get('provenance')
+    if not prov:
+        return ''
+    rows = []
+
+    def field(label, key, badge=False, badge_cls='badge-info'):
+        value = prov.get(key)
+        if value is None:
+            return
+        if badge:
+            rows.append(
+                f'<tr><td>{_esc(label)}</td>'
+                f'<td><span class="badge {badge_cls}">{_esc(value)}</span></td></tr>')
+        else:
+            rows.append(f'<tr><td>{_esc(label)}</td><td>{_esc(value)}</td></tr>')
+
+    applied = prov.get('applied_threshold')
+    source = prov.get('applied_threshold_source')
+    if applied is not None:
+        shown = f'applied threshold: {applied}'
+        if source:
+            shown += f'  ({source})'
+        rows.append(
+            f'<tr><td><strong>Threshold actually used</strong></td>'
+            f'<td><span class="badge badge-warning">{_esc(shown)}</span></td></tr>')
+        requested = prov.get('requested_threshold')
+        if requested is not None:
+            rows.append(
+                f'<tr><td>Requested threshold</td><td>{_esc(requested)}</td></tr>')
+    field('StrongestFirst budget', 'strongest_first_budget')
+    bitten = prov.get('strongest_first_budget_bitten')
+    if bitten is not None:
+        cls = 'badge-danger' if bitten.lower() == 'true' else 'badge-success'
+        field('StrongestFirst budget bitten', 'strongest_first_budget_bitten',
+              badge=True, badge_cls=cls)
+    field('StrongestFirst tau', 'strongest_first_tau')
+    field('Canonical tau (reproduces output)', 'tau_canonical')
+    field('Dropped bottleneck (w2)', 'strongest_dropped_bottleneck')
+    field('Edge budget', 'edge_budget')
+    field('Edge budget applied', 'edge_budget_applied')
+    field('Edge budget landing (w1)', 'edge_budget_landing')
+    field('Edge weight floor (w0)', 'edge_weight_floor')
+    field('Retained bottleneck (W*)', 'strongest_retained_bottleneck')
+    complete = prov.get('paths_complete')
+    if complete is not None:
+        cls = 'badge-success' if complete.lower() == 'true' else 'badge-warning'
+        rows.append(
+            f'<tr><td>Paths complete</td>'
+            f'<td><span class="badge {cls}">{_esc(complete)}</span></td></tr>')
+    if not rows:
+        return ''
+    return (
+        '<div class="card"><h3>⚙️ Applied threshold &amp; budget provenance'
+        '</h3>'
+        '<div class="sticky-table-container"><table><thead><tr>'
+        '<th>Field</th><th>Value</th></tr></thead><tbody>'
+        + ''.join(rows) + '</tbody></table></div>'
+        '<p class="cap-note">Same provenance block as parameters.txt / '
+        'all_attributes.json: the applied threshold is what the run '
+        'actually used (it can differ from the requested one when the '
+        'StrongestFirst path budget or the Edge Budget bit — the output '
+        'equals a complete run at the canonical tau).</p></div>')
+
+
 def _render_overview(payload: dict, run_dir: Path,
                      breakdown_paths: Tuple[Path, Path]) -> str:
     run = payload['run']
@@ -1086,7 +1195,7 @@ def _render_overview(payload: dict, run_dir: Path,
             f'(pair, length) · rank by {_esc(run["rank_by"])}. Every capped '
             f'view links to the uncapped CSV beside this report.</p></div>'
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
-            + hist_html + pair_table + artifacts)
+            + hist_html + _render_provenance_card(run) + pair_table + artifacts)
 
 
 def _meta_summary(run: dict) -> str:
@@ -1236,13 +1345,17 @@ def _render_global_tab(payload: dict) -> str:
                 unit_range = (row.get('ranges') or {}).get(unit_id)
                 title = (f' title="hops {unit_range}"' if unit_range else '')
                 cells.append(f'<td{title}><strong>{count:,}</strong></td>')
-        badge_cls = ('badge-success' if row['cons'] == n_units
-                     else 'badge-warning' if row['cons'] > 1 else 'badge-danger')
+        detail = row.get('cov_detail') or {}
+        cov_title = ''
+        if detail:
+            cov_title = ' title="' + _esc(
+                '; '.join(f'{u}: {v}' for u, v in sorted(detail.items()))) + '"'
         matrix_rows.append(
             f'<tr><td class="matrix-first-col"><strong>{_esc(row["source"])}</strong> → '
             f'<strong>{_esc(row["target"])}</strong></td>'
             + ''.join(cells)
-            + f'<td><span class="badge {badge_cls}">{row["cons"]}/{n_units}</span></td>'
+            + f'<td{cov_title}><span class="badge badge-info">{_esc(row.get("scov") or "—")}</span></td>'
+            f'<td{cov_title}><span class="badge badge-info">{_esc(row.get("tcov") or "—")}</span></td>'
             f'<td>{_esc(row.get("length_range", "—"))}</td>'
             f'<td>{row["total"]:,}</td></tr>')
     matrix_card = (
@@ -1251,11 +1364,14 @@ def _render_global_tab(payload: dict) -> str:
         'analog of the cross-dataset path presence matrix: pairs (matched by '
         'name across units) as rows, units as columns, cells = path counts '
         '(hover for the hop range within that unit). Sorted by unit '
-        'coverage, then total paths.</p>'
+        'coverage, then total paths. Source/Target coverage are the '
+        'pair\u2019s bodyId n/N — the same values as the Pair Explorer '
+        '(hover for per-unit detail on cross-dataset runs).</p>'
         f'<div class="{container_cls}"><table><thead><tr>'
         '<th class="matrix-first-col">Pair</th>'
         + ''.join(f'<th>{_esc(unit_labels.get(u, u))}</th>' for u in matrix['units'])
-        + '<th>Coverage</th><th>Lengths</th><th>Total</th></tr></thead><tbody>'
+        + '<th>Source coverage</th><th>Target coverage</th>'
+        + '<th>Lengths</th><th>Total</th></tr></thead><tbody>'
         + ''.join(matrix_rows) + '</tbody></table></div>')
     if matrix['shown'] < matrix['total_pairs']:
         matrix_card += (
@@ -2375,7 +2491,9 @@ def generate_paths_pair_report(
         vispath_links=vispath_links)
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
                                unit_source_cov, unit_target_cov)
-    payload['global'] = build_global(units, frames, global_pairs, global_edges)
+    payload['global'] = build_global(
+        units, frames, global_pairs, global_edges,
+        unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov)
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
 
