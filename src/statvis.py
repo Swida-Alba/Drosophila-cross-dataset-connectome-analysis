@@ -3249,12 +3249,27 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         default_colorscale = 'Purples'
     
     # Create HTML with comprehensive interactive controls
+    # plotly.js is shared per output DIRECTORY (plan-offline-html-exports
+    # §1b #7): statvis can emit many matrix HTMLs per run, so one 4.8 MB
+    # copy per folder replaces the per-file CDN tag; inline fallback when
+    # plotly is unavailable.
+    try:
+        from vendored_assets import shared_plotly_src as _shared_plotly_src
+    except ImportError:  # pragma: no cover - direct src/ execution
+        try:
+            from src.vendored_assets import (
+                shared_plotly_src as _shared_plotly_src)
+        except ImportError:
+            _shared_plotly_src = None
+    plotly_tag = (_shared_plotly_src(filename) if _shared_plotly_src
+                  else '<script src="https://cdn.plot.ly/'
+                       'plotly-2.35.2.min.js"></script>')
     html_content = f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <title>{_statvis_html_escape(title)}</title>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    {plotly_tag}
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
@@ -6004,9 +6019,11 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
         pl_conn = pl.from_pandas(conn_data_str[agg_cols])
         agg_exprs = [pl.col('weight').sum().alias('weight')]
         if 'traversal_probability' in conn_data.columns:
-            agg_exprs.append(pl.col('traversal_probability').mean().alias('traversal_probability'))
+            # round(12): parallel group_by float means vary by ~1 ulp
+            # run-to-run; rounding keeps the path tables byte-reproducible.
+            agg_exprs.append(pl.col('traversal_probability').mean().round(12).alias('traversal_probability'))
         if 'connection_ratio' in conn_data.columns:
-            agg_exprs.append(pl.col('connection_ratio').mean().alias('connection_ratio'))
+            agg_exprs.append(pl.col('connection_ratio').mean().round(12).alias('connection_ratio'))
         if 'nt_type' in conn_data.columns:
             agg_exprs.append(
                 pl.col('nt_type').unique().implode().list.sort().list.drop_nulls().list.eval(
@@ -6262,11 +6279,13 @@ def _type_probability_series(pairs_df, group_pre: str, group_post: str, aggregat
     """
     if aggregate_method == 'product':
         blocks = pairs_df.groupby([group_pre, group_post])['block_probability'].prod()
-        return (1.0 - blocks).rename('traversal_probability')
+        # round(12) keeps the pandas engine byte-identical to the polars
+        # engine's stabilized output (see EnrichConnectionTablePolars).
+        return (1.0 - blocks).round(12).rename('traversal_probability')
     if aggregate_method == 'average':
         tmp = pairs_df.assign(_wt=pairs_df['weight'] * pairs_df['traversal_probability'])
         grouped = tmp.groupby([group_pre, group_post])[['_wt', 'weight']].sum()
-        return (grouped['_wt'] / grouped['weight'].replace(0, np.nan)).fillna(0.0).rename('traversal_probability')
+        return (grouped['_wt'] / grouped['weight'].replace(0, np.nan)).fillna(0.0).round(12).rename('traversal_probability')
     return None
 
 
@@ -8555,19 +8574,23 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     
     # Check if nt_type exists
     has_nt_type = 'nt_type' in bodyid_pairs.columns
-    
+
     # Function to aggregate
     def aggregate_connections(group_pre_col, group_post_col, ref_group_col=None):
         # Sum weights from deduplicated bodyId pairs
         agg_list = [pl.col('weight').sum()]
-        
+
         # Add nt_type aggregation if available (mode; ties break to the
         # lexicographically first value so both engines - and any row order -
         # produce identical results)
         if has_nt_type:
             agg_list.append(pl.col('nt_type').mode().sort().first().alias('nt_type'))
-        
-        agg_df = bodyid_pairs.group_by([group_pre_col, group_post_col]).agg(agg_list)
+
+        # maintain_order: the type-level table is an EXPORT (connection_type.csv
+        # and the matrices pivot from it) — without it polars' hash-group order
+        # varies run-to-run and the exported row order follows.
+        agg_df = bodyid_pairs.group_by(
+            [group_pre_col, group_post_col], maintain_order=True).agg(agg_list)
         
         # Type-level traversal_probability follows *aggregate_method* (same
         # semantics as the pandas engine, see the parameter docstring):
@@ -8677,8 +8700,15 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
                     .alias('_block_prod')
                 )
                 .with_columns(
+                    # round(12): a parallel group_by multiplies the block
+                    # factors in a thread-schedule-dependent order, so the
+                    # raw product varies by ~1 ulp run-to-run. Rounding the
+                    # aggregated probability to 12 decimals keeps exports
+                    # byte-reproducible; the absorbed error is ~1e-12
+                    # relative against values in [0, 1].
                     (1.0 - pl.col('_block_prod'))
                     .fill_null(0.0)
+                    .round(12)
                     .alias('traversal_probability')
                 )
                 .drop('_block_prod')
@@ -8696,8 +8726,11 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
                     pl.col('weight').sum().alias('_wsum'),
                 )
                 .with_columns(
+                    # round(12): same run-to-run float-order stabilization
+                    # as the 'product' branch above.
                     (pl.col('_wt') / pl.col('_wsum'))
                     .fill_null(0.0)
+                    .round(12)
                     .alias('traversal_probability')
                 )
                 .drop(['_wt', '_wsum'])

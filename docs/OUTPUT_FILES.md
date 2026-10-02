@@ -263,7 +263,24 @@ Shortest Paths runs with discovery batching (the default;
 batch, `0` = legacy single-batch behavior) stream the target-rooted
 discovery into a run-local store instead of holding every target's BFS
 maps in memory. The store is an audit/reproducibility surface, not an
-input: runs never reuse another run's store.
+input: runs never reuse another run's store (the folder is wiped at
+discovery start, so reruns into the same `saveas` folder stay clean too).
+
+**Store retention** (`discovery_store_retention`, UI: Advanced →
+Discovery Store): `keep` (default) leaves the store untouched.
+`compact` — applied after a successful run — merges the per-layer
+connection frames into one `connections/connections_all.parquet`
+(`bodyId_pre`, `bodyId_post`, `weight`, `conn_layer` only; the
+cross-layer weight multiplicity rows are preserved verbatim) and deletes
+the `dag_edges/` chunks (re-derivable by the recipe recorded in
+`meta.json`: rows where `dist_target[pre] == dist_target[post] + 1` over
+the label join); `node_distances/`, `pairs.parquet` and `meta.json`
+stay. `prune` deletes every store data file and keeps `meta.json` as the
+size census. Exported path/edge/visualization artifacts are byte-equal
+across all three modes; the mode, sizes and removals are recorded in
+`meta.json` (`retention`), in
+`shortest_discovery_diagnostics.batching.store_retention`
+(all_attributes.json) and in a `user_warning_notes.txt` entry.
 
 *   **`connections/connections_L{d}.parquet`**: the finalized per-reverse-
     layer union edge frames exactly as fetched (always `bodyId_pre`,

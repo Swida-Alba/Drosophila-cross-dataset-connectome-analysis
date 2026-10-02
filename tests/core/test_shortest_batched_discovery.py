@@ -85,7 +85,7 @@ def synth_types():
 
 
 def _make_fc(monkeypatch, tmp_path, *, budget=None, fixed=0,
-             max_paths=None, **kwargs):
+             max_paths=None, retention=None, **kwargs):
     # Same offline guards as the shortest-path optimization tests: the
     # materialization path must never reach a real NeuPrint client.
     monkeypatch.setattr(
@@ -100,6 +100,8 @@ def _make_fc(monkeypatch, tmp_path, *, budget=None, fixed=0,
     fc.target_batch_size = fixed
     if max_paths is not None:
         fc.max_paths_bodyid = max_paths
+    if retention is not None:
+        fc.discovery_store_retention = retention
     return fc, fetch_calls, logs
 
 
@@ -474,3 +476,77 @@ def test_saveas_rerun_wipes_stale_store(monkeypatch, tmp_path, synth_types):
     fresh.FindShortestPath()
     assert pl.read_csv(_paths_csv(shallow_rerun)).rows() == \
         pl.read_csv(_paths_csv(fresh)).rows()
+
+
+# ---------------------------------------------------------------------------
+# Store retention (plan-shortest-store-retention)
+# ---------------------------------------------------------------------------
+
+def _run_retention(monkeypatch, tmp_path, retention):
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+    fc, _, _ = _make_fc(monkeypatch, tmp_path / retention, retention=retention)
+    fc.FindShortestPath()
+    return fc
+
+
+def test_store_retention_modes(monkeypatch, tmp_path, synth_types):
+    fcs = {mode: _run_retention(monkeypatch, tmp_path, mode)
+           for mode in ('keep', 'compact', 'prune')}
+
+    # output invariance: exported paths identical across all three modes
+    base_rows = pl.read_csv(_paths_csv(fcs['keep'])).rows()
+    for mode in ('compact', 'prune'):
+        assert pl.read_csv(_paths_csv(fcs[mode])).rows() == base_rows, mode
+
+    # keep: full store (per-layer connection files + dag chunks)
+    store_keep = os.path.join(fcs['keep'].allpath_folder,
+                              'shortest_discovery_store')
+    assert any(name.startswith('connections_L')
+               for name in os.listdir(store_keep + '/connections'))
+    assert os.listdir(store_keep + '/dag_edges')
+
+    # compact: ONE 4-column connections file, dag_edges gone, labels and
+    # pairs kept, meta marked, and the S1->A cross-layer multiplicity row
+    # count preserved
+    store_c = os.path.join(fcs['compact'].allpath_folder,
+                           'shortest_discovery_store')
+    assert sorted(os.listdir(store_c + '/connections')) == \
+        ['connections_all.parquet']
+    merged = pl.read_parquet(store_c + '/connections/connections_all.parquet')
+    assert merged.columns == ['bodyId_pre', 'bodyId_post', 'weight',
+                              'conn_layer']
+    s1a = merged.filter((pl.col('bodyId_pre') == 'S1')
+                        & (pl.col('bodyId_post') == 'A'))
+    assert len(s1a) == 2, 'cross-layer multiplicity must survive compaction'
+    assert not os.path.isdir(store_c + '/dag_edges')
+    assert os.path.isdir(store_c + '/node_distances')
+    assert os.path.exists(store_c + '/pairs.parquet')
+    meta_c = load_store_meta(store_c)
+    assert meta_c['retention']['mode'] == 'compact'
+    assert meta_c['retention']['store_bytes_after'] \
+        <= meta_c['retention']['store_bytes_before']
+    assert meta_c['retention']['recipe']
+
+    # prune: only the meta census survives
+    store_p = os.path.join(fcs['prune'].allpath_folder,
+                           'shortest_discovery_store')
+    assert sorted(os.listdir(store_p)) == ['meta.json']
+    meta_p = load_store_meta(store_p)
+    assert meta_p['retention']['mode'] == 'prune'
+    assert meta_p['retention']['store_bytes_before'] > 0
+
+    # provenance: diagnostics + warning notes for the acting modes
+    for mode in ('compact', 'prune'):
+        diag = _attrs(fcs[mode])['shortest_discovery_diagnostics']
+        assert diag['batching']['store_retention']['mode'] == mode
+        assert '[discovery store]' in _notes(fcs[mode])
+    assert '[discovery store]' not in _notes(fcs['keep'])
+
+
+def test_store_retention_invalid_falls_back_to_keep(
+        monkeypatch, tmp_path, synth_types):
+    fc = _run_retention(monkeypatch, tmp_path, 'nonsense')
+    store = os.path.join(fc.allpath_folder, 'shortest_discovery_store')
+    assert os.path.isdir(store + '/dag_edges')
+    assert '[discovery store]' in _notes(fc)
+    assert 'unknown discovery_store_retention' in _notes(fc)

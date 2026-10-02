@@ -996,7 +996,10 @@ _PATHFINDING_FILES = [
     {"pattern": "shortest_discovery_store/connections/*.parquet",
      "description": "Discovery store: the finalized per-reverse-layer "
                     "union edge frames exactly as fetched (one file per "
-                    "conn_layer). The per-layer granularity is what the "
+                    "conn_layer; with Discovery Store = compact these are "
+                    "merged into one connections_all.parquet holding the "
+                    "same rows and conn_layer multiplicity in four "
+                    "columns). The per-layer granularity is what the "
                     "graph's cross-layer weight sums are built from — "
                     "keep the files if you want the run to stay "
                     "auditable.",
@@ -1018,8 +1021,10 @@ _PATHFINDING_FILES = [
     {"pattern": "shortest_discovery_store/meta.json",
      "description": "Discovery store manifest: query tokens, hop bound, "
                     "completeness census, per-target distance-state "
-                    "counts, edge-filter configuration, and (after "
-                    "enumeration) the realized batch composition."},
+                    "counts, edge-filter configuration, the realized "
+                    "batch composition, and (when Discovery Store = "
+                    "compact/prune) the retention record — mode, sizes, "
+                    "removals, and the dag-edges derivation recipe."},
 ]
 
 # Reusable pathfinding explanation, rendered by all three run-guide formats

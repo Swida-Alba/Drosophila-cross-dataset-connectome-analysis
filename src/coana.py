@@ -128,6 +128,7 @@ try:
     from .shortest_discovery_store import (
         DEFAULT_DISCOVERY_BATCH_BUDGET,
         STORE_FOLDER_NAME,
+        apply_store_retention,
         batched_shortest_paths,
         finalize_store_discovery,
         resolve_batching,
@@ -137,6 +138,7 @@ except ImportError:  # pragma: no cover - src laid bare on sys.path
     from shortest_discovery_store import (  # noqa: E402
         DEFAULT_DISCOVERY_BATCH_BUDGET,
         STORE_FOLDER_NAME,
+        apply_store_retention,
         batched_shortest_paths,
         finalize_store_discovery,
         resolve_batching,
@@ -3178,6 +3180,23 @@ class FindNeuronConnection:
     (0 = ignore; batching then follows ``discovery_batch_budget``).
     Batches are contiguous runs of the enumerator's sorted target order,
     so results are identical to the monolithic path either way.
+    '''
+
+    discovery_store_retention: str = 'keep'
+    '''
+    Shortest-path mode only (plan-shortest-store-retention): what to do
+    with the run's ``shortest_discovery_store/`` after a SUCCESSFUL
+    batched run. 'keep' (default) leaves it untouched — the pinned
+    audit-friendly behavior. 'compact' merges the per-layer connection
+    frames into one 4-column file (bodyId_pre/bodyId_post/weight/
+    conn_layer, multiplicity preserved) and deletes the derivable
+    dag_edges chunks — roughly halves a deep run's store. 'prune'
+    removes every store data file and keeps meta.json as the size
+    census. Every exported artifact (paths, edges, visualizations) is
+    byte-identical across the three modes; the mode + sizes are recorded
+    in meta.json, shortest_discovery_diagnostics.batching and
+    user_warning_notes.txt. Invalid values fall back to keep with a
+    warning note.
     '''
 
     separate_hemispheres: bool = False
@@ -14152,9 +14171,24 @@ class FindNeuronConnection:
              neuron_layers = [self.source_df['bodyId'].unique()]
             
         if not conn_inpath.empty:
-            conn_inpath = conn_inpath.sort_values(by=['conn_layer','traversal_probability','weight'],ascending=[True,False,False])
+            # Stable + TOTAL sort keys: (conn_layer, traversal_probability,
+            # weight) alone leaves ties broken by pandas' unstable
+            # quicksort over an input order that the polars join scheduling
+            # varies run-to-run — the exported connection tables and the
+            # matrices that pivot from them were not byte-reproducible.
+            # The endpoint columns make the key unique per row; the stable
+            # kind pins the rest.
+            conn_inpath = conn_inpath.sort_values(
+                by=['conn_layer', 'traversal_probability', 'weight',
+                    'bodyId_pre', 'bodyId_post'],
+                ascending=[True, False, False, True, True],
+                kind='stable')
             conn_inpath = conn_inpath.reset_index(drop=True)
-            conn_types = conn_types.sort_values(by=['conn_layer','traversal_probability','weight'],ascending=[True,False,False])
+            conn_types = conn_types.sort_values(
+                by=['conn_layer', 'traversal_probability', 'weight',
+                    'type_pre', 'type_post'],
+                ascending=[True, False, False, True, True],
+                kind='stable')
             conn_types = conn_types.reset_index(drop=True)
             conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
         else:
@@ -17284,6 +17318,15 @@ class FindNeuronConnection:
         )
         self.phase_timers['materialization_s'] = round(
             _time_mod.time() - _phase_t0, 3)
+        # Store retention (plan-shortest-store-retention): runs only after
+        # a successful materialization, before the final metadata re-stamp
+        # so diagnostics/meta carry the retention census. The warning
+        # notes are rewritten because materialization already wrote them
+        # without the retention note.
+        if path_mode == 'shortest' and getattr(
+                self, '_shortest_store_dir', None):
+            apply_store_retention(self)
+            self._write_user_warning_notes(self.allpath_folder)
         self._vprint(
             'Phase timers: ' + ' | '.join(
                 f"{name} {val:g}s" for name, val in self.phase_timers.items()),
@@ -17555,11 +17598,28 @@ class FindNeuronConnection:
         else:
             self._vprint('  ⚠ No targets found in paths', level='full')
         
-        # Sort the combined connection data (only if non-empty)
+        # Sort the combined connection data (only if non-empty). The
+        # endpoint columns make the sort keys TOTAL (a layer's rows are
+        # unique per endpoint pair — plus roi for the bodyId table, where
+        # a pair can carry several roi rows) and maintain_order pins the
+        # rest — without them, ties broke on the join-scheduling-dependent
+        # input order and the exported connection tables / matrices /
+        # visualizations were not byte-reproducible run-to-run.
         if not conn_inpath.is_empty():
-            conn_inpath = conn_inpath.sort(['conn_layer','traversal_probability','weight'], descending=[False,True,True])
+            bi_keys = ['conn_layer', 'traversal_probability', 'weight',
+                       'bodyId_pre', 'bodyId_post']
+            bi_desc = [False, True, True, False, False]
+            if 'roi' in conn_inpath.columns:
+                bi_keys.append('roi')
+                bi_desc.append(False)
+            conn_inpath = conn_inpath.sort(
+                bi_keys, descending=bi_desc, maintain_order=True)
         if not conn_types.is_empty():
-            conn_types = conn_types.sort(['conn_layer','traversal_probability','weight'], descending=[False,True,True])
+            conn_types = conn_types.sort(
+                ['conn_layer', 'traversal_probability', 'weight',
+                 'type_pre', 'type_post'],
+                descending=[False, True, True, False, False],
+                maintain_order=True)
 
         totalweight_df = pl.DataFrame(list(weight_layers.items()), schema={'conn_layer': pl.Utf8, 'weight': pl.Int64}, orient="row")
         if not totalweight_df.is_empty():
@@ -18109,13 +18169,34 @@ class FindNeuronConnection:
             
             # print("    - connection_type.csv", flush=True)
             conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
+            # _ensure_ratio_prob_columns joins the incoming-weight totals,
+            # which reorders rows nondeterministically — re-apply the
+            # TOTAL-KEY stable sort so the export (and everything pivoted
+            # from it) stays byte-reproducible.
+            if not conn_types.is_empty():
+                conn_types = conn_types.sort(
+                    ['conn_layer', 'traversal_probability', 'weight',
+                     'type_pre', 'type_post'],
+                    descending=[False, True, True, False, False],
+                    maintain_order=True)
             self._save_df_to_csv_polars(conn_types, os.path.join(csv_folder, 'connection_type.csv'), index=True)
             
             if conn_groups is not None and not conn_groups.is_empty():
                 # print("    - connection_custom_groups.csv", flush=True)
                 self._save_df_to_csv_polars(conn_groups, os.path.join(csv_folder, 'connection_custom_groups.csv'), index=True)
             
-            # Save matrices (use global aggregation)
+            # Save matrices (use global aggregation); same total-key sort
+            # as the connection table so the pivot orders are stable.
+            if conn_types_global is not None and not (
+                    hasattr(conn_types_global, 'is_empty')
+                    and conn_types_global.is_empty()) and not (
+                    hasattr(conn_types_global, 'empty')
+                    and conn_types_global.empty):
+                conn_types_global = conn_types_global.sort(
+                    ['traversal_probability', 'weight', 'type_pre',
+                     'type_post'],
+                    descending=[True, True, False, False],
+                    maintain_order=True)
             self._save_matrices_to_csv(conn_types_global, csv_folder, level='type')
         else:
             output_excel_name = os.path.join(self.allpath_folder, self.source_fname + '_to_' + self.target_fname + '_allpaths_info.xlsx')

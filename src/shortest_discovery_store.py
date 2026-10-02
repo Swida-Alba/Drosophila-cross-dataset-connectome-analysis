@@ -52,6 +52,9 @@ from vispath_pkg.fast_graph_core import (
 # Pinned defaults (plan §0.4; user-approved 2026-10-02).
 DEFAULT_DISCOVERY_BATCH_BUDGET = 2_000_000
 
+# Store retention modes (plan-shortest-store-retention §2).
+STORE_RETENTION_MODES = ('keep', 'compact', 'prune')
+
 # Store layout (run-folder local, v1: never reused by a later run).
 STORE_FOLDER_NAME = 'shortest_discovery_store'
 NODE_DISTANCES_DIR = 'node_distances'
@@ -64,6 +67,9 @@ STORE_SCHEMA_VERSION = 1
 # Label/dag rows are buffered per layer and flushed to a chunk file when
 # the buffer passes this size (deterministic: same rows -> same chunks).
 _CHUNK_ROWS = 2_000_000
+# Row groups inside each chunk file: with target-sorted rows, statistics
+# per row group let filtered scans skip everything but the target's span.
+_ROW_GROUP_ROWS = 262_144
 
 
 # ---------------------------------------------------------------------------
@@ -165,11 +171,18 @@ class _ChunkedLabelWriter:
     def _flush_chunk(self):
         if not self._rows:
             return
+        # Sort by (target, ...) before writing: parquet row groups then
+        # carry per-target min/max statistics, and the per-target /
+        # per-batch filtered scans (finalization, batch enumeration) prune
+        # to the relevant row groups instead of reading every chunk —
+        # this is what keeps N-targets per-target reads at deep L from
+        # each paying a full-store scan. The full-tuple sort keeps the
+        # output deterministic run to run.
         frame = pl.DataFrame(
-            self._rows, schema=self.schema, orient='row')
+            sorted(self._rows), schema=self.schema, orient='row')
         path = self.folder / (
             f'{self.kind}_L{self._layer}_c{self._chunk}.parquet')
-        frame.write_parquet(path)
+        frame.write_parquet(path, row_group_size=_ROW_GROUP_ROWS)
         self.files_written += 1
         self._chunk += 1
         self._rows = []
@@ -515,23 +528,51 @@ def load_target_dag_edges(store_dir, targets):
     return result
 
 
-def load_edge_weight_index(store_dir):
-    """``{(pre, post): summed weight}`` over ALL connection layers.
+def load_edge_weight_frame(store_dir):
+    """Compact polars frame of ``{(pre, post): summed weight}``.
 
     The sum runs across ``conn_layer`` files exactly like the monolithic
     per-layer ``build_from_dataframe`` calls (add_edge sums duplicate
     pairs across layers), so batch-graph weights match the monolithic
     ``FastGraph.adj`` bit for bit — including the cross-layer multiplicity
     of a post that sits at two reverse depths for different targets.
+    Kept as one polars row per unique pair (hundreds of MB at L4 scale,
+    versus gigabytes for an equivalent Python dict); per-batch slices
+    come from ``weights_for_pairs``.
     """
-    index = {}
-    for _layer, path in _conn_layer_files(store_dir):
-        frame = pl.read_parquet(
-            path, columns=['bodyId_pre', 'bodyId_post', 'weight'])
-        for pre, post, weight in frame.iter_rows():
-            key = (pre, post)
-            index[key] = index.get(key, 0) + weight
-    return index
+    scans = [
+        pl.scan_parquet(path).select(
+            ['bodyId_pre', 'bodyId_post', 'weight'])
+        for _layer, path in _conn_layer_files(store_dir)
+    ]
+    if not scans:
+        return pl.DataFrame(schema={'bodyId_pre': pl.Utf8,
+                                    'bodyId_post': pl.Utf8,
+                                    'weight': pl.Int64})
+    return (pl.concat(scans)
+            .group_by(['bodyId_pre', 'bodyId_post'])
+            .agg(pl.col('weight').sum().alias('weight'))
+            .sort(['bodyId_pre', 'bodyId_post'])
+            .collect())
+
+
+def weights_for_pairs(weight_frame, pairs):
+    """``{(pre, post): weight}`` for just the requested edge pairs.
+
+    A semi-join slice of the compact weight frame — the per-batch
+    replacement for the former whole-store Python dict, so enumeration
+    memory no longer carries every pair of the union graph.
+    """
+    wanted = sorted(set(pairs))
+    if not wanted:
+        return {}
+    lookup = pl.DataFrame(
+        wanted, schema={'bodyId_pre': pl.Utf8, 'bodyId_post': pl.Utf8},
+        orient='row')
+    sliced = weight_frame.join(
+        lookup, on=['bodyId_pre', 'bodyId_post'], how='semi')
+    return {(pre, post): weight
+            for pre, post, weight in sliced.iter_rows()}
 
 
 def finalize_store_discovery(store_dir, meta, source_ID):
@@ -712,7 +753,7 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
 
     Per batch: slice the store's DAG edges + distance maps, build a
     standalone ``FastGraph`` whose edge weights are the per-layer-summed
-    store weights (monolithic parity, see ``load_edge_weight_index``),
+    store weights (monolithic parity, see ``load_edge_weight_frame``),
     enumerate with ``budget=None, payload=True``, then free the graph.
     The batch emissions are merged in batch order and the global budget /
     tau tie-drain applies exactly once — via the same shared drain the
@@ -726,20 +767,21 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
         targets, per_target_states, budget=batch_states, fixed_size=fixed_size)
     fc._shortest_batch_records = batch_records(batches, per_target_states)
 
-    weight_index = None
+    weight_frame = None
     emissions = []
     for batch in batches:
         dag_edges = load_target_dag_edges(store_dir, batch)
         seeds = load_target_distances(store_dir, batch)
-        if weight_index is None:
-            weight_index = load_edge_weight_index(store_dir)
+        if weight_frame is None:
+            weight_frame = load_edge_weight_frame(store_dir)
 
         graph = FastGraph()
         batch_pairs = set()
         for edges in dag_edges.values():
             batch_pairs.update(edges)
+        batch_weights = weights_for_pairs(weight_frame, batch_pairs)
         for pre, post in sorted(batch_pairs):
-            weight = weight_index.get((pre, post))
+            weight = batch_weights.get((pre, post))
             if weight is not None:
                 graph.add_edge(pre, post, weight)
 
@@ -757,3 +799,127 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
             progress(len(emissions), len(batches))
 
     yield from merge_shortest_batch_emissions(emissions, budget, stats)
+
+
+# ---------------------------------------------------------------------------
+# Store retention (plan-shortest-store-retention)
+# ---------------------------------------------------------------------------
+
+def _dir_size_bytes(path):
+    path = Path(path)
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    return sum(p.stat().st_size for p in path.rglob('*') if p.is_file())
+
+
+def _compact_connections(store_dir):
+    """Merge the per-layer connection frames into one 4-column file.
+
+    Rows keep their exact (layer, chunk, row) order, so the cross-layer
+    (pre, post, conn_layer) multiplicity that the graph's add_edge sums
+    are built from survives verbatim; only the fetch-dependent label /
+    roi / ratio columns are dropped (re-derivable solely by re-running
+    discovery).
+    """
+    frames = []
+    for _layer, path in _conn_layer_files(store_dir):
+        frames.append(pl.read_parquet(
+            path,
+            columns=['bodyId_pre', 'bodyId_post', 'weight', 'conn_layer']))
+    folder = Path(store_dir) / CONNECTIONS_DIR
+    if not frames:
+        return 0
+    merged = pl.concat(frames)
+    merged.write_parquet(folder / 'connections_all.parquet')
+    for frame_path in folder.glob('connections_L*.parquet'):
+        frame_path.unlink()
+    return merged.height
+
+
+def apply_store_retention(fc):
+    """Post-run keep/compact/prune of the run's discovery store.
+
+    Runs only after a successful batched shortest run (the caller hooks
+    this between materialization and the final metadata re-stamp), so no
+    artifact the run exports depends on the store afterwards. ``keep`` is
+    the pinned default; ``compact`` merges the connection layers into one
+    4-column file and deletes the (derivable) dag_edges chunks; ``prune``
+    removes every data file and keeps meta.json as the census. The mode,
+    sizes, and the compact dag-derivation recipe land in meta.json, in
+    ``shortest_discovery_diagnostics.batching.store_retention``, and in a
+    user-warning note.
+    """
+    store_dir = getattr(fc, '_shortest_store_dir', None)
+    if not store_dir:
+        return
+    mode = str(getattr(fc, 'discovery_store_retention', 'keep')
+               or 'keep').strip().lower()
+    if mode not in STORE_RETENTION_MODES:
+        fc._warn_notes.append(
+            f'- [discovery store] unknown discovery_store_retention '
+            f'{mode!r}; kept the store unchanged.')
+        mode = 'keep'
+    if mode == 'keep':
+        return
+
+    store_dir = Path(store_dir)
+    meta_path = store_dir / META_FILE
+    meta = json.loads(meta_path.read_text(encoding='utf-8')) \
+        if meta_path.exists() else {}
+    sizes_before = {
+        kind: _dir_size_bytes(store_dir / kind)
+        for kind in (CONNECTIONS_DIR, DAG_EDGES_DIR, NODE_DISTANCES_DIR,
+                     'total')
+    }
+    sizes_before['total'] = _dir_size_bytes(store_dir)
+
+    removed = []
+    if mode == 'compact':
+        rows = _compact_connections(store_dir)
+        shutil.rmtree(store_dir / DAG_EDGES_DIR, ignore_errors=True)
+        removed = ['dag_edges/ (derivable, see meta.retention.recipe)',
+                   'connections label columns (merged to '
+                   'connections_all.parquet, 4 columns, '
+                   f'{rows:,} rows)']
+    else:  # prune
+        for kind in (CONNECTIONS_DIR, DAG_EDGES_DIR, NODE_DISTANCES_DIR):
+            shutil.rmtree(store_dir / kind, ignore_errors=True)
+        (store_dir / PAIRS_FILE).unlink(missing_ok=True)
+        removed = ['connections/', 'dag_edges/', 'node_distances/',
+                   'pairs.parquet']
+
+    meta['retention'] = {
+        'mode': mode,
+        'applied': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        'store_bytes_before': sizes_before['total'],
+        'store_bytes_after': _dir_size_bytes(store_dir),
+        'kind_bytes_before': {
+            kind: size for kind, size in sizes_before.items()
+            if kind != 'total'},
+        'removed': removed,
+        'recipe': (
+            'dag_edges rows are re-derivable offline: for every '
+            '(target, pre, post) with dist_target[pre] == '
+            'dist_target[post] + 1 over node_distances joined to the '
+            'compact connections on (pre, post).'
+        ) if mode == 'compact' else None,
+    }
+    with open(meta_path, 'w', encoding='utf-8') as handle:
+        json.dump(meta, handle, indent=2, sort_keys=True)
+
+    batching = getattr(fc, 'shortest_discovery_diagnostics',
+                       {}).setdefault('batching', {})
+    batching['store_retention'] = dict(meta['retention'])
+
+    fc._warn_notes.append(
+        f'- [discovery store] discovery_store_retention={mode!r}: '
+        f'removed {"; ".join(removed)}. Kept: '
+        + ('node_distances/, pairs.parquet, meta.json.'
+           if mode == 'compact' else 'meta.json only (size census).')
+        + ' Re-run the query to regenerate the full store.')
+    fc._vprint(
+        f'Discovery store {mode}: '
+        f'{sizes_before["total"]:,} -> {_dir_size_bytes(store_dir):,} '
+        f'bytes.', level='full')

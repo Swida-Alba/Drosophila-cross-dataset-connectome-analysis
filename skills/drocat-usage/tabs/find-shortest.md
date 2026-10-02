@@ -35,6 +35,7 @@ fc = FindNeuronConnection(
     max_paths_bodyid=0,            # Max Paths: path-output budget; auto -> 1M StrongestFirst budget (tau reported when it bites)
     discovery_batch_budget=2_000_000,  # memory control: per-batch BFS distance states; 0 = legacy single batch (results identical)
     target_batch_size=0,           # alternative: fixed targets per batch; 0 = use discovery_batch_budget
+    discovery_store_retention="keep",  # post-run store handling: keep | compact (merge connection layers to 4 cols, drop derivable dag chunks) | prune (keep meta.json only)
     visualize_before_reconstruct=False,
     search_columns="auto",              # "auto" | "type" | "instance" | "bodyId"
     network_layout="distributed",
@@ -107,6 +108,14 @@ python skills/drocat-usage/scripts/run_direct.py \
   Budget bounds only the result; the Edge Budget never applies here. A
   single broad target at deep L is still depth-bound — lower
   `max_interlayer` or raise `min_synapse_num` for those.
+- **Store retention** (`discovery_store_retention`, default `keep`):
+  `compact` merges the per-layer connection frames into one 4-column
+  `connections_all.parquet` (cross-layer weight multiplicity preserved)
+  and deletes the derivable `dag_edges/` chunks — roughly halves a deep
+  run's store; `prune` removes all store data files and keeps `meta.json`
+  as the size census. Applied only after a successful run; path outputs
+  are byte-identical across modes; recorded in `meta.json`
+  (`retention`), the run metadata, and `user_warning_notes.txt`.
 - `min_ratio` and `min_traversal_probability` remain available as readout
   columns for compatibility, but their filters are disabled in Shortest Paths;
   they do not appear as `r[]p[]` filename notes.

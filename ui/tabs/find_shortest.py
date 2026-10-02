@@ -294,6 +294,21 @@ def create_find_shortest_tab():
                              "number of targets per enumeration batch. "
                              "0 = use the Discovery Batch Budget instead.",
                     )
+                    # plan-shortest-store-retention: what happens to the
+                    # run's shortest_discovery_store/ after a successful
+                    # run (wired like the Complete Paths budget knobs).
+                    store_retention = select_input(
+                        "Discovery Store", ["keep", "compact", "prune"],
+                        "keep",
+                        hint="keep: leave shortest_discovery_store/ in the "
+                             "run folder (default; full audit surface). "
+                             "compact: merge the connection layers into one "
+                             "4-column file and drop the derivable dag-edge "
+                             "chunks (roughly halves a deep run's store). "
+                             "prune: delete all store data files, keeping "
+                             "meta.json as the size census. Path outputs are "
+                             "identical in every mode.",
+                    )
 
                 search_columns = select_input(
                     "Search Columns", SEARCH_COLUMNS, get_user_default("search_columns"),
@@ -409,6 +424,8 @@ def create_find_shortest_tab():
             # budgeted enumeration (0 = legacy monolithic path).
             "discovery_batch_budget": int(discovery_batch_budget.value) or 0,
             "target_batch_size": int(target_batch_size.value) or 0,
+            # plan-shortest-store-retention: post-run store handling.
+            "discovery_store_retention": store_retention.value,
             # Shortest Paths no longer exposes the early network preview in
             # the UI; keep the backend behavior explicitly disabled.
             "visualize_before_reconstruct": False,
