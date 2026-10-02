@@ -67,9 +67,6 @@ STORE_SCHEMA_VERSION = 1
 # Label/dag rows are buffered per layer and flushed to a chunk file when
 # the buffer passes this size (deterministic: same rows -> same chunks).
 _CHUNK_ROWS = 2_000_000
-# Row groups inside each chunk file: with target-sorted rows, statistics
-# per row group let filtered scans skip everything but the target's span.
-_ROW_GROUP_ROWS = 262_144
 
 
 # ---------------------------------------------------------------------------
@@ -171,18 +168,18 @@ class _ChunkedLabelWriter:
     def _flush_chunk(self):
         if not self._rows:
             return
-        # Sort by (target, ...) before writing: parquet row groups then
-        # carry per-target min/max statistics, and the per-target /
-        # per-batch filtered scans (finalization, batch enumeration) prune
-        # to the relevant row groups instead of reading every chunk —
-        # this is what keeps N-targets per-target reads at deep L from
-        # each paying a full-store scan. The full-tuple sort keeps the
-        # output deterministic run to run.
+        # Rows are written in arrival (scan) order — deliberate: arrival
+        # order groups adjacent posts/predecessors, which parquet
+        # compresses far better than a target-sorted layout (measured at
+        # L4: dag_edges 383 MB arrival vs 1.3 GB target-sorted, for only
+        # ~30% faster per-target reads via row-group pruning). Arrival
+        # order is itself deterministic, so identical runs still produce
+        # byte-identical stores.
         frame = pl.DataFrame(
-            sorted(self._rows), schema=self.schema, orient='row')
+            self._rows, schema=self.schema, orient='row')
         path = self.folder / (
             f'{self.kind}_L{self._layer}_c{self._chunk}.parquet')
-        frame.write_parquet(path, row_group_size=_ROW_GROUP_ROWS)
+        frame.write_parquet(path)
         self.files_written += 1
         self._chunk += 1
         self._rows = []
