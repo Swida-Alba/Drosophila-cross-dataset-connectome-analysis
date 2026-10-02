@@ -919,6 +919,12 @@ tr:hover { background: var(--bg-color); }
   font-size: 11px; color: var(--secondary-color); }
 .legend { display: flex; gap: 16px; font-size: 12px; margin: 4px 0 10px;
   color: var(--secondary-color); flex-wrap: wrap; }
+.viz-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.viz-tab-btn { border: 1px solid var(--border-color); background: #fff;
+  padding: 3px 12px; border-radius: 12px; cursor: pointer; font-size: 12px; }
+.viz-tab-btn:hover { background: var(--bg-color); }
+.viz-tab-btn.active { background: var(--primary-color); color: #fff;
+  border-color: var(--primary-color); font-weight: 600; }
 .legend .chip { width: 14px; height: 14px; border-radius: 3px; display: inline-block;
   vertical-align: -2px; margin-right: 5px; }
 .path-viz { width: 100%; height: auto; border: 1px solid var(--border-color);
@@ -1621,6 +1627,86 @@ REPORT_JS = r"""
     };
   }
 
+  // Round-8c item 2: build a layered viz from capped table rows alone
+  // (path + hop weights), used for the per-length network tabs — mirrors
+  // the Python build_viz rules at reduced scope (classification within
+  // the given rows).
+  function buildVizFromRows(rows) {
+    var counts = {}, minHop = {};
+    var paths = rows.map(function(r) { return String(r.path).split('->'); });
+    var ncols = 2;
+    paths.forEach(function(ids) { ncols = Math.max(ncols, ids.length); });
+    paths.forEach(function(ids) {
+      for (var i = 1; i + 1 < ids.length; i++) {
+        var n = ids[i];
+        counts[n] = (counts[n] || 0) + 1;
+        if (minHop[n] === undefined || i < minHop[n]) { minHop[n] = i; }
+      }
+    });
+    var nodeCol = {}, nodeCls = {}, nodeTitle = {};
+    paths.forEach(function(ids) {
+      ids.forEach(function(node, i) {
+        if (nodeCol[node] !== undefined) { return; }
+        if (i === 0) {
+          nodeCol[node] = 0; nodeCls[node] = 'source';
+          nodeTitle[node] = node + ' — source';
+        } else if (i === ids.length - 1) {
+          nodeCol[node] = ncols - 1; nodeCls[node] = 'target';
+          nodeTitle[node] = node + ' — target';
+        } else {
+          nodeCol[node] = Math.min(minHop[node], ncols - 2);
+          nodeCls[node] = counts[node] >= 2 ? 'shared' : 'unique';
+          nodeTitle[node] = node + ' — ' + nodeCls[node] + ' · '
+            + counts[node] + ' path' + (counts[node] !== 1 ? 's' : '');
+        }
+      });
+    });
+    var rowOf = {}, colSeen = {};
+    paths.forEach(function(ids) {
+      ids.forEach(function(node) {
+        if (rowOf[node] === undefined) {
+          var col = nodeCol[node];
+          rowOf[node] = colSeen[col] || 0;
+          colSeen[col] = (colSeen[col] || 0) + 1;
+        }
+      });
+    });
+    var edgeAgg = {};
+    rows.forEach(function(r) {
+      var ids = String(r.path).split('->');
+      var hw = null;
+      try {
+        var parsed = JSON.parse(r.weights);
+        if (parsed instanceof Array) { hw = parsed; }
+      } catch (e) { /* weights stay unmerged */ }
+      for (var k = 0; k + 1 < ids.length; k++) {
+        var key = ids[k] + '->' + ids[k + 1];
+        var rec = edgeAgg[key] = edgeAgg[key] ||
+          { f: ids[k], t: ids[k + 1], c: 0, w: 0 };
+        rec.c += 1;
+        if (hw && k < hw.length) { rec.w += Number(hw[k]) || 0; }
+      }
+    });
+    var drawn_shared = 0, drawn_unique = 0;
+    var nodes = Object.keys(nodeCol).map(function(id) {
+      var cls = nodeCls[id];
+      if (cls === 'shared') { drawn_shared += 1; }
+      if (cls === 'unique') { drawn_unique += 1; }
+      var label = id.length <= 18 ? id : id.slice(0, 17) + '…';
+      return { id: id, label: label, cls: cls, col: nodeCol[id],
+        row: rowOf[id] || 0, title: nodeTitle[id] };
+    });
+    return {
+      ncols: ncols,
+      nrows: Math.max(1, Math.max.apply(null, [1].concat(
+        Object.keys(colSeen).map(function(c) { return colSeen[c]; })))),
+      nodes: nodes,
+      edges: Object.keys(edgeAgg).map(function(k) { return edgeAgg[k]; }),
+      drawn_shared: drawn_shared,
+      drawn_unique: drawn_unique,
+    };
+  }
+
   // ---- global network (Global tab) ----
   var GlobalNet = {
     render: function() {
@@ -1796,13 +1882,14 @@ REPORT_JS = r"""
 
       // capped table + network (single pair: table/viz from its payload)
       pane.appendChild(this.renderCappedTable([p]));
-      var rowPaths = [];
+      var rows = [];
       p.table.groups.forEach(function(g) {
-        g.rows.forEach(function(r) { rowPaths.push(r.path); });
+        g.rows.forEach(function(r) { rows.push(r); });
       });
-      pane.appendChild(this.renderVizCard(p.viz, rowPaths, {
+      var rowPaths = rows.map(function(r) { return r.path; });
+      pane.appendChild(this.renderNetworkCard(rows, p.viz, rowPaths, {
         netId: p.id,
-        caption: 'Drawn: the capped top-paths set (' + p.drawn_shared
+        allCaption: 'Drawn: the capped top-paths set (' + p.drawn_shared
           + ' shared / ' + p.drawn_unique + ' unique intermediates drawn). '
           + 'Classification from the full pair path set: ' + p.shared
           + ' shared / ' + p.unique + ' unique. Edge width scales within '
@@ -1851,12 +1938,22 @@ REPORT_JS = r"""
         + (names.length > 8 ? ' … (+' + (names.length - 8) + ' more)' : '')));
       pane.appendChild(head);
 
-      var merged = mergeViz(pairs, this.unionRowPaths(pairs));
-      var rowPaths = this.unionRowPaths(pairs);
+      // per-length tab rows: {len, path, weights} flattened across the
+      // selected pairs' capped tables
+      var rows = [];
+      pairs.forEach(function(p) {
+        p.table.groups.forEach(function(g) {
+          g.rows.forEach(function(r) {
+            rows.push({ len: g.len, path: r.path, weights: r.weights });
+          });
+        });
+      });
+      var merged = mergeViz(pairs, rows.map(function(r) { return r.path; }));
       pane.appendChild(this.renderCappedTable(pairs));
-      pane.appendChild(this.renderVizCard(merged, rowPaths, {
+      pane.appendChild(this.renderNetworkCard(rows, merged,
+        rows.map(function(r) { return r.path; }), {
         netId: 'union',
-        caption: 'Drawn: the UNION of the selected pairs\u2019 capped paths ('
+        allCaption: 'Drawn: the UNION of the selected pairs\u2019 capped paths ('
           + merged.drawn_shared + ' shared / ' + merged.drawn_unique
           + ' unique intermediates drawn; shared = on \u22652 drawn paths or '
           + 'shared within any selected pair). Edge counts and widths are '
@@ -1878,21 +1975,6 @@ REPORT_JS = r"""
         'unit = ' + (UNIT_LABEL[pairs[0].unit] || pairs[0].unit)));
       pane.appendChild(foot);
       return pane;
-    },
-
-    // The union table's row order: grouped by length ascending, then
-    // bottleneck (min_weight) desc across the whole selection.
-    unionRowPaths: function(pairs) {
-      var all = [];
-      pairs.forEach(function(p) {
-        p.table.groups.forEach(function(g) {
-          g.rows.forEach(function(r) { all.push(r); });
-        });
-      });
-      all.sort(function(a, b) {
-        return a.len - b.len || b.mw - a.mw || (a.path < b.path ? -1 : 1);
-      });
-      return all.map(function(r) { return r.path; });
     },
 
     // Round 8b: one builder for 1..N pairs. With N>1 the table is the
@@ -1917,36 +1999,42 @@ REPORT_JS = r"""
       });
       var lengths = Object.keys(groupsByLen).map(Number).sort(function(a, b) {
         return a - b; });
+      // Round-8c fix: the Pair column exists ONLY in union mode — header
+      // and data cells must always agree (a 9-wide header over 8-wide rows
+      // shifted every cell one column left).
+      var union = pairs.length > 1;
       var wrap = elt('div', 'sticky-table-container');
       var table = elt('table');
       var thead = elt('thead');
       var hr = elt('tr');
-      ['#', 'Pair', 'Path', 'Len', 'Min weight', 'Path prob', 'Weights',
-       'Source bIds', 'Target bIds'].forEach(function(t) {
+      var headers = ['#'];
+      if (union) { headers.push('Pair'); }
+      headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
+        'Source coverage', 'Target coverage');
+      headers.forEach(function(t) {
         hr.appendChild(elt('th', null, t)); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = elt('tbody');
       var rowPaths = [];
+      var colSpan = headers.length;
       lengths.forEach(function(len) {
         var rows = groupsByLen[len].slice().sort(function(a, b) {
           return (b.mw || 0) - (a.mw || 0) || (a.path < b.path ? -1 : 1); });
-        var totals = {};
-        rows.forEach(function(r) {
-          totals[r.pair] = Math.max(totals[r.pair] || 0, r.total); });
         var gr = elt('tr', 'group-row');
         var gtd = elt('td', null, len + ' hops — ' + rows.length
-          + ' shown (' + (pairs.length > 1 ? 'union, top '
+          + ' shown (' + (union ? 'union, top '
             + DATA.run.top_per_length + ' per pair' : 'top ' + rows.length)
           + ' of ' + rows.reduce(function(acc, r) {
             return acc + r.total; }, 0) + ')');
-        gtd.colSpan = 9;
+        gtd.colSpan = colSpan;
         gr.appendChild(gtd);
         tbody.appendChild(gr);
         rows.forEach(function(row, i) {
           var tr = elt('tr');
           tr.dataset.i = rowPaths.length;
+          tr.dataset.path = row.path;
           tr.appendChild(elt('td', null, i + 1));
-          if (pairs.length > 1) { tr.appendChild(elt('td', null, row.pair)); }
+          if (union) { tr.appendChild(elt('td', null, row.pair)); }
           var pathTd = elt('td');
           pathTd.appendChild(elt('strong', null, row.path));
           tr.appendChild(pathTd);
@@ -1983,15 +2071,24 @@ REPORT_JS = r"""
       return card;
     },
 
-    renderVizCard: function(viz, rowPaths, opts) {
+    // Round-8c item 2: the network card carries a tab strip — "All" plus
+    // one tab per path length present in the drawn set — each tab
+    // rebuilding the layered viz from only that length's capped rows.
+    renderNetworkCard: function(rows, baseViz, baseRowPaths, opts) {
       var card = elt('div', 'card');
       card.appendChild(elt('h3', null, 'Network'));
+      var byLen = {};
+      var lengths = [];
+      rows.forEach(function(r) {
+        if (byLen[r.len] === undefined) { byLen[r.len] = []; lengths.push(r.len); }
+        byLen[r.len].push(r);
+      });
+      lengths.sort(function(a, b) { return a - b; });
+
       var legend = elt('div', 'legend');
-      var items = [['#ef4444', 'source'], ['#8b5cf6', 'target']];
-      var hasBoth = viz.nodes.some(function(n) { return n.cls === 'both'; });
-      if (hasBoth) { items.push(['#14b8a6', 'source & target']); }
-      items.push(['#2563eb', 'shared intermediate (≥2 paths)'],
-        ['#94a3b8', 'unique intermediate (1 path)']);
+      var items = [['#ef4444', 'source'], ['#8b5cf6', 'target'],
+        ['#2563eb', 'shared intermediate (≥2 paths)'],
+        ['#94a3b8', 'unique intermediate (1 path)']];
       items.forEach(function(item) {
         var span = elt('span');
         var chip = elt('span', 'chip');
@@ -2002,27 +2099,32 @@ REPORT_JS = r"""
       });
       card.appendChild(legend);
 
-      var built = makeSvg(viz);
-      var svg = built.svg;
-      var edgeEls = built.edgeEls;
-      var svgWrap = elt('div');
-      svgWrap.appendChild(svg);
-      card.appendChild(svgWrap);
-      var netWrap = elt('div', 'network-container');
-      netWrap.id = 'net-' + opts.netId;
-      card.appendChild(netWrap);
-      PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: viz,
-        hier: viz === (DATA.global && DATA.global.network) });
-      var caption = elt('p', 'cap-note');
-      caption.textContent = opts.caption;
-      card.appendChild(caption);
+      var tabStrip = elt('div', 'viz-tabs');
+      var vizArea = elt('div');
+      card.appendChild(tabStrip);
+      card.appendChild(vizArea);
 
-      // row-hover → highlight that path's edges (keys from the row path)
-      setTimeout(function() {
+      var current = { edgeEls: {} };
+      function mountViz(viz, caption) {
+        vizArea.innerHTML = '';
+        var built = makeSvg(viz);
+        current.edgeEls = built.edgeEls;
+        var svgWrap = elt('div');
+        svgWrap.appendChild(built.svg);
+        vizArea.appendChild(svgWrap);
+        var netWrap = elt('div', 'network-container');
+        netWrap.id = 'net-' + opts.netId;
+        vizArea.appendChild(netWrap);
+        PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: viz });
+        vizArea.appendChild(elt('p', 'cap-note', caption));
+      }
+      function bindHover() {
         var pane = document.getElementById('pair-pane');
         if (!pane) { return; }
-        pane.querySelectorAll('tr[data-i]').forEach(function(tr) {
-          var ids = (rowPaths[Number(tr.dataset.i)] || '').split('->');
+        pane.querySelectorAll('tr[data-path]').forEach(function(tr) {
+          if (tr.dataset.hoverBound) { return; }
+          tr.dataset.hoverBound = '1';
+          var ids = (tr.dataset.path || '').split('->');
           if (ids.length < 2) { return; }
           var keys = [];
           for (var k = 0; k + 1 < ids.length; k++) {
@@ -2030,19 +2132,45 @@ REPORT_JS = r"""
           }
           tr.addEventListener('mouseenter', function() {
             keys.forEach(function(key) {
-              var el = edgeEls[key];
+              var el = current.edgeEls[key];
               if (el) { el.classList.add('hl'); }
             });
           });
           tr.addEventListener('mouseleave', function() {
             keys.forEach(function(key) {
-              var el = edgeEls[key];
+              var el = current.edgeEls[key];
               if (el) { el.classList.remove('hl'); }
             });
           });
         });
-      }, 0);
-
+      }
+      function activate(key) {
+        Array.prototype.forEach.call(tabStrip.children, function(b) {
+          b.classList.toggle('active', b.dataset.key === String(key));
+        });
+        if (key === 'all') {
+          mountViz(baseViz, opts.allCaption);
+        } else {
+          var grp = byLen[key] || [];
+          mountViz(buildVizFromRows(grp),
+            key + '-hop paths only — ' + grp.length + ' drawn; shared = on '
+            + '≥2 of them. Hover a matching table row to highlight its route.');
+        }
+        bindHover();
+        setTimeout(flushNetworks, 0);
+      }
+      var tabs = [['all', 'All (' + rows.length + ')']];
+      lengths.forEach(function(len) {
+        tabs.push([String(len), len + ' hops (' + byLen[len].length + ')']);
+      });
+      tabs.forEach(function(item) {
+        var b = elt('button', 'viz-tab-btn', item[1]);
+        b.dataset.key = item[0];
+        b.type = 'button';
+        b.addEventListener('click', function() { activate(item[0]); });
+        tabStrip.appendChild(b);
+      });
+      activate('all');
       return card;
     }
   };
