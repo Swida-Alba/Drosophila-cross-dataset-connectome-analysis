@@ -841,3 +841,58 @@ def test_three_tier_summary_claim_reach_disclosure():
     assert row_m['mapped'] == '204(40 types)'
     assert row_m['reach'] == '204(40 types)'
     assert row_m['out_map'] == 15
+
+
+def test_fullmap_csv_legs_render_cell_tokens():
+    """Full-map CSV leg chains use the shared cell-token convention.
+
+    A crosswalk hop whose landed name differs from the cell content
+    (MCNS rows typed 5thsLNv_LNd6 carry flywireType 's-LNv_a,LNd_a')
+    renders the CELL TOKEN — the same value every linker surface shows
+    (hop_linker_token, 2026-10-02) — and a curated-only end contributes
+    no row (the ordinary mapping CSVs carry it)."""
+    import csv
+    import io
+
+    from ui.components.type_mapping_panel import build_fullmap_csv
+
+    FAFB = 'flywire_FAFB_v783'
+    MCNS = 'male-cns:v1.0'
+    HEMI = 'hemibrain:v1.2.1'
+    leg_a = [[
+        {'dataset': FAFB, 'column': 'type', 'value': '5th-LNv'},
+        {'dataset': FAFB, 'column': 'additional_type(s)',
+         'value': 's-LNv_a', 'via': '5th-LNv'},
+        {'dataset': MCNS, 'column': 'flywireType',
+         'value': '5thsLNv_LNd6', 'via': 's-LNv_a'},
+    ]]
+    leg_b = [[
+        {'dataset': MCNS, 'column': 'type', 'value': 's-LNv'},
+        {'dataset': HEMI, 'column': 'hemibrainType', 'value': 's-LNv'},
+    ]]
+    info = {
+        'ends': ['5thsLNv_LNd6', 'CURATED_ONLY'],
+        'direct_ends': ['CURATED_ONLY'],
+        'routes': {
+            '5thsLNv_LNd6': {'direct': [], 'transitive': [{
+                'source_type': '5th-LNv', 'mid': HEMI,
+                'via_type': 's-LNv_a', 'leg_a': leg_a, 'leg_b': leg_b}]},
+            'CURATED_ONLY': {'direct': [[
+                {'dataset': FAFB, 'column': 'type', 'value': 'X'}]],
+                'transitive': []},
+        },
+        'route_conflicts': [],
+    }
+    text = build_fullmap_csv(info, FAFB, MCNS)
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0][-2:] == ['leg_a', 'leg_b']
+    # one composed row; the curated-only end is omitted
+    assert len(rows) == 2
+    row = rows[1]
+    assert row[4] == 'composed_only'
+    assert row[6] == '5thsLNv_LNd6'
+    # crosswalk middle hop renders the CELL TOKEN, not the landed name
+    assert 'male-cns:v1.0:flywireType=s-LNv_a' in row[7]
+    assert 'flywireType=5thsLNv_LNd6' not in row[7]
+    # annotation hops keep ``value`` — their cell token lives there
+    assert 'flywire_FAFB_v783:additional_type(s)=s-LNv_a' in row[7]

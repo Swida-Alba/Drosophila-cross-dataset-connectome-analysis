@@ -165,13 +165,21 @@ def build_fullmap_csv(info: Dict[str, Any], src: str, tgt: str
     per cross-mid route conflict.  Curated-only ends are omitted (the
     ordinary mapping CSVs carry them).  ``None`` when the pair has no
     composed transitive routes.
+
+    Leg chains render each hop as ``dataset:column=token`` where the
+    token is the hop's physical CELL TOKEN (:func:`hop_linker_token`,
+    2026-10-02) — the same convention every linker surface (mapping CSV
+    ``selected_linker_values``, linker HTML) uses, so one hop never
+    shows two different values across exports.
     """
     import csv as _csv
     import io
 
+    from comparison.cross_dataset_type_mapper import hop_linker_token
+
     def _chain_text(chain) -> str:
         return " -> ".join(
-            f"{h.get('dataset')}:{h.get('column')}={h.get('value')}"
+            f"{h.get('dataset')}:{h.get('column')}={hop_linker_token(h)}"
             for h in (chain or []))
 
     direct_ends = set(info.get("direct_ends") or [])

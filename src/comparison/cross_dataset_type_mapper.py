@@ -385,6 +385,13 @@ BANC_LABEL_COLUMNS = (
 BANC_RELEASE_LINKER = "banc_release_crosswalk"
 RELEASE_ALIAS_LINKER = "release_alias"
 ANNOTATION_COLUMNS = ("additional_type(s)", "Alternative Cell Type(s)")
+# Columns whose hops record the LANDED type name in ``value`` while the
+# physical cell token lives in ``via`` (annotation columns are the mirror
+# image).  ``hop_linker_token`` is the shared reader.
+CELL_TOKEN_VIA_COLUMNS = (
+    *CROSSWALK_COLUMNS, *BANC_LABEL_COLUMNS,
+    BANC_RELEASE_LINKER, RELEASE_ALIAS_LINKER,
+)
 
 # Linkers that land directly in their licensed target namespace carrying
 # the reached type's own row-level evidence (curated BANC label columns,
@@ -724,6 +731,22 @@ def bridge_linker_text(chains: List[List[Dict[str, str]]],
     return {"entries": entries, "text": display}
 
 
+def hop_linker_token(hop: Dict[str, Any]):
+    """The physical CELL TOKEN one hop's linker column carries.
+
+    Hops on crosswalk/BANC-label/release columns record the LANDED type
+    name in ``value`` while the cell content lives in ``via`` (omitted
+    when the two agree); annotation-column hops are the mirror image —
+    ``value`` IS the cell token and ``via`` the row's own type.  This is
+    the one rule every surface that renders or pools a linker value
+    shares (:func:`standardize_bridge` at any hop position, the full-map
+    CSV's leg chains, the pooling layer through them).
+    """
+    if hop.get('column') in CELL_TOKEN_VIA_COLUMNS:
+        return hop.get('via') or hop.get('value')
+    return hop.get('value')
+
+
 def standardize_bridge(chain, source_dataset: str,
                        target_dataset: str) -> List[Dict[str, Any]]:
     """Standardized linker nodes of one derivation chain.
@@ -793,16 +816,6 @@ def standardize_bridge(chain, source_dataset: str,
             entry['transitive_via'] = hop['transitive_via']
         return entry
 
-    # Hops on these columns record the LANDED type name in ``value`` while
-    # the physical cell token lives in ``via`` (omitted when the two agree):
-    # reverse-crosswalk edges (MCNS rows typed 5thsLNv_LNd6 whose
-    # flywireType cell is 's-LNv_a,LNd_a') and BANC label hops with their
-    # raw 'auto:' cells.  Annotation-column hops are the mirror image —
-    # ``value`` IS the cell token and ``via`` the row's own type.
-    cell_token_via_columns = (
-        *CROSSWALK_COLUMNS, *BANC_LABEL_COLUMNS,
-        BANC_RELEASE_LINKER, RELEASE_ALIAS_LINKER,
-    )
     middle = chain[1:-1]
     for hop in middle:
         if hop['column'] == 'type':
@@ -813,20 +826,17 @@ def standardize_bridge(chain, source_dataset: str,
             hop['column'] not in registry_columns
             and hop['column'] not in special_columns
         )
-        # Middle hops pool the physical cell token: ``via or value`` for the
-        # crosswalk/label/alias classes (same rule as the terminal branch
-        # below, §pooling fix 2026-09-07 — full-map composed chains turn
-        # leg-terminal hops of those columns into MIDDLE hops at the seam),
-        # plain ``value`` for annotation columns (using ``via`` there breaks
-        # reverse crosswalk routes such as FAFB APDN3 -> MCNS CL125: FAFB
-        # rows carry CL125 in additional_type(s), not APDN3).
-        token = (
-            hop.get('via') or hop.get('value')
-            if hop['column'] in cell_token_via_columns
-            else hop.get('value'))
-        linkers.append(_linker(hop, token, indirect=indirect))
+        # Middle hops pool the physical cell token (:func:`hop_linker_token`
+        # — same rule as the terminal branch below, §pooling fix
+        # 2026-09-07; full-map composed chains turn leg-terminal hops into
+        # MIDDLE hops at the seam, seam fix 2026-10-02).  Plain ``value``
+        # for annotation columns (using ``via`` there breaks reverse
+        # crosswalk routes such as FAFB APDN3 -> MCNS CL125: FAFB rows
+        # carry CL125 in additional_type(s), not APDN3).
+        linkers.append(_linker(
+            hop, hop_linker_token(hop), indirect=indirect))
     last = chain[-1] if chain else {}
-    if len(chain) >= 2 and last.get("column") in cell_token_via_columns:
+    if len(chain) >= 2 and last.get("column") in CELL_TOKEN_VIA_COLUMNS:
         # crosswalk-arrival chain (e.g. [type, flywireType]): the terminal
         # metadata hop IS the verification linker — a same-name pair is
         # corroborated by the source's crosswalk cell naming the target.

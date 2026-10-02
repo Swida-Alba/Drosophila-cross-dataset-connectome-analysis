@@ -596,7 +596,11 @@ Evidence tiers are token-independent, so chain ORDER did not move;
 selected pools and curated-mode exports are byte-stable, and only the
 wrongly-dropped alternatives returned (real-data round: 23 unsupported
 attempts → 0; `valid_bridge_count`, the `all_valid_*` unions and the
-linker HTML's alternative pools now carry them).
+linker HTML's alternative pools now carry them). The rule lives in one
+shared reader, `hop_linker_token` (over `CELL_TOKEN_VIA_COLUMNS`), and
+the full-map CSV's `leg_a`/`leg_b` text renders through it too —
+aligned the same day, so one hop never shows two different values
+across exports (the legs previously printed the raw landed names).
 
 `granularity` ("n to m") remains a compatibility summary, while the pool
 now carries independent `source_coverage` and `target_coverage` strings

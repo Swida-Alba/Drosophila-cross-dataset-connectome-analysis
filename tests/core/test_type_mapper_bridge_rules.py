@@ -338,6 +338,31 @@ def test_middle_crosswalk_linker_carries_the_cell_token():
     assert by_column['additional_type(s)'] == 's-LNv_a'
 
 
+def test_hop_linker_token_is_the_shared_reader():
+    """:func:`hop_linker_token` states the cell-token rule once — crosswalk/
+    BANC-label/release hops read ``via or value`` (omitted via means the two
+    agree), annotation hops read ``value``; every rendering surface (bridge
+    standardization, the full-map CSV legs) shares it."""
+    from comparison.cross_dataset_type_mapper import hop_linker_token
+
+    assert hop_linker_token(
+        {'column': 'flywireType', 'value': '5thsLNv_LNd6',
+         'via': 's-LNv_a'}) == 's-LNv_a'
+    # via omitted: landed name IS the cell content
+    assert hop_linker_token(
+        {'column': 'flywireType', 'value': 'F1'}) == 'F1'
+    # BANC label hops carry the raw 'auto:' cell in via
+    assert hop_linker_token(
+        {'column': 'malecns_cell_type', 'value': '5thsLNv_LNd6',
+         'via': 'auto:5thsLNv_LNd6'}) == 'auto:5thsLNv_LNd6'
+    assert hop_linker_token(
+        {'column': 'release_alias', 'value': 'SMP530_a'}) == 'SMP530_a'
+    # annotation columns: value IS the cell token
+    assert hop_linker_token(
+        {'column': 'additional_type(s)', 'value': 's-LNv_a',
+         'via': '5th-LNv'}) == 's-LNv_a'
+
+
 # ---------------------------------------------------------------------------
 # Order and untyped rules
 # ---------------------------------------------------------------------------
