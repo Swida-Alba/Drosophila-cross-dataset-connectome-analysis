@@ -343,16 +343,25 @@ class TestGeneratedHtmlStructure:
         """Individually resized nodes (geometry editor) must re-anchor their
         edges to their ACTUAL size, not the global node-size slider."""
         js = _script_text(network_html)
-        # refreshEdgeStyles derives the anchor distances from each endpoint
-        # node's rim along the line — BOTH dimensions (the old width/2
-        # circle assumption buried arrowheads on tall nodes and detached
-        # them on wide ones)
-        assert "const rimDistance = (node, dx, dy) => {" in js
-        assert "const hw = (node.numericStyle('width') ||" in js
-        assert "const hh = (node.numericStyle('height') ||" in js
-        assert "return Math.min(hw / adx, hh / ady);" in js
-        assert "let sourceDistance = rimDistance(edge.source(), canonicalDx, canonicalDy);" in js
-        assert "let targetDistance = rimDistance(edge.target(), -canonicalDx, -canonicalDy);" in js
+        # refreshEdgeStyles derives each anchor from the endpoint node's
+        # rendered rim — the exact polar rim for ellipse nodes (the old
+        # ray-box formula overshoots a diagonal ellipse by up to 41% and
+        # detached arrows from the node), the box intersection otherwise.
+        assert "const rimDistance = (node, wx, wy) => {" in js
+        assert "const [hw, hh] = nodeHalfSizes(node);" in js
+        assert "return (hw * hh) / Math.hypot(hh * adx, hw * ady);" in js
+        # straight-mode reciprocal halves pin EXPLICIT rim endpoints with
+        # distance-from-node 0: cytoscape would otherwise pull each
+        # endpoint toward the opposite node center, rotating the two
+        # halves into a crossed X on diagonal pairs
+        assert "const srcRim = rimPointOnOffsetLine(" in js
+        assert "const tgtRim = rimPointOnOffsetLine(" in js
+        assert "'source-distance-from-node': 0," in js
+        assert "'target-distance-from-node': 0" in js
+        # one canonical comparator everywhere: the offset side must be
+        # decided in the same frame as the canonical positions and the
+        # Python pair_canonical (str < str), not locale collation
+        assert "const canonicalSign = source < target ? 1 : -1;" in js
         # the geometry editor refreshes edge styles after resizing
         assert "refreshEdgeStyles(false);  // keep endpoints/offsets attached to resized nodes" in js
 
@@ -2378,6 +2387,21 @@ class TestBidirectionalEdgesNode:
             f"bidir harness failed on plain network:\n{res.stdout}\n{res.stderr}"
         )
         assert "ALL BIDIRECTIONAL-EDGE TESTS PASSED" in res.stdout
+
+
+class TestReciprocalEdgeAnchoringNode:
+    """Headless execution of the page's REAL reciprocal-edge geometry:
+    on a diagonal pair the endpoints must sit on each node's rim, on the
+    offset line, with the two halves parallel and non-crossing (regression
+    for arrows detaching off diagonal nodes and crossing mid-gap)."""
+
+    def test_edge_anchor_harness_diagonal_pair(self, network_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "edge_anchor_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"edge anchor harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL EDGE-ANCHOR TESTS PASSED" in res.stdout
 
 
 class TestEditModeHandlersAndGeometry:

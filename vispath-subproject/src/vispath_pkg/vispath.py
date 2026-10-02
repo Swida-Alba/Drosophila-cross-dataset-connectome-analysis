@@ -9706,7 +9706,10 @@ class VisualizePath:
             cy.edges().forEach(edge => {{
                 const source = edge.source().id();
                 const target = edge.target().id();
-                const canonicalSign = source.localeCompare(target) < 0 ? 1 : -1;
+                // Code-unit ordering — must match the canonical source/target
+                // selection below AND the Python pair_canonical (str < str)
+                // so the offset side is decided in the same frame everywhere.
+                const canonicalSign = source < target ? 1 : -1;
                 
                 // Check if there's a visible parallel edge (both directions);
                 // a count > 0 for the REVERSE direction means a DIFFERENT
@@ -9757,22 +9760,61 @@ class VisualizePath:
                 // Anchor distances must follow the ACTUAL size and SHAPE of
                 // each endpoint node: nodes can be individually resized via
                 // the geometry editor (width and height independently for
-                // rectangles), so the global slider is only a fallback. The
-                // old width/2 distance was a circle assumption — on tall
-                // nodes it buried the arrowhead under the node, on wide
-                // ones it left it detached from the rim.
-                const rimDistance = (node, dx, dy) => {{
-                    const hw = (node.numericStyle('width') ||
-                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40)) / 2;
-                    const hh = (node.numericStyle('height') ||
-                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40)) / 2;
-                    // normalized direction components (dx,dy are raw deltas)
-                    const len = Math.hypot(dx, dy) || 1;
-                    const adx = Math.abs(dx) / len || 1e-6;
-                    const ady = Math.abs(dy) / len || 1e-6;
-                    // ray-box intersection: distance from center to the
-                    // rectangle rim along the (canonical) line direction
+                // rectangles), so the global slider is only a fallback.
+                const nodeHalfSizes = (node) => {{
+                    const fallback =
+                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
+                    return [(node.numericStyle('width') || fallback) / 2,
+                            (node.numericStyle('height') || fallback) / 2];
+                }};
+                // Distance from the node center to its rendered rim along a
+                // ray pointing at (wx, wy).  Ellipse — the default shape —
+                // gets the exact polar rim; a single box formula overshoots
+                // an ellipse by up to 41% on diagonals (40px circle at 45°:
+                // 28.28 vs 20), which is what used to leave line ends and
+                // arrowheads floating off diagonal nodes.  Non-ellipse
+                // shapes keep the box intersection.
+                const rimDistance = (node, wx, wy) => {{
+                    const [hw, hh] = nodeHalfSizes(node);
+                    const len = Math.hypot(wx, wy) || 1;
+                    const adx = Math.abs(wx) / len || 1e-6;
+                    const ady = Math.abs(wy) / len || 1e-6;
+                    if ((node.style('shape') || 'ellipse') === 'ellipse') {{
+                        return (hw * hh) / Math.hypot(hh * adx, hw * ady);
+                    }}
                     return Math.min(hw / adx, hh / ady);
+                }};
+                // Where the OFFSET edge line meets each node's rim, returned
+                // as an offset from that node's position.  Radial
+                // fixed-point: start on the center line, then re-project the
+                // rim direction through the perpendicular offset until the
+                // anchor stops moving (3 iterations settle far below a
+                // pixel).  Writing the rim point itself as the manual
+                // endpoint — with distance-from-node 0 — pins the rendered
+                // segment to the offset line.  The previous scheme (endpoint
+                // = perpendicular offset plus a distance-from-node rim
+                // value) let cytoscape pull every endpoint toward the
+                // OPPOSITE NODE CENTER by arrowGap + distance, a direction
+                // that is not the edge line: on diagonal pairs that both
+                // detached the arrows from the rim and rotated/shortened the
+                // two halves into a crossed X mid-gap.
+                const rimPointOnOffsetLine = (node, dx, dy, offX, offY) => {{
+                    const lineLen = Math.hypot(dx, dy);
+                    const dirX = lineLen > 0 ? dx / lineLen : 0;
+                    const dirY = lineLen > 0 ? dy / lineLen : 0;
+                    let wx = dirX, wy = dirY;
+                    if (wx === 0 && wy === 0) {{ wx = 0; wy = -1; }}
+                    let rho = rimDistance(node, wx, wy);
+                    for (let i = 0; i < 3; i++) {{
+                        wx = dirX * rho + offX;
+                        wy = dirY * rho + offY;
+                        if (!isFinite(wx) || !isFinite(wy) || (wx === 0 && wy === 0)) {{
+                            wx = dirX; wy = dirY || -1;
+                        }}
+                        rho = rimDistance(node, wx, wy);
+                    }}
+                    const len = Math.hypot(wx, wy) || 1;
+                    return [rho * wx / len, rho * wy / len];
                 }};
 
                 // Compute perpendicular offset in CANONICAL direction (smaller ID -> larger ID)
@@ -9786,42 +9828,40 @@ class VisualizePath:
                 const canonicalDy = canonicalTargetPos.y - canonicalSourcePos.y;
                 const canonicalDistance = Math.hypot(canonicalDx, canonicalDy);
 
-                let sourceOffsetX = 0;
-                let sourceOffsetY = 0;
-                let targetOffsetX = 0;
-                let targetOffsetY = 0;
-                // each endpoint anchors to ITS OWN rim along the line
-                let sourceDistance = rimDistance(edge.source(), canonicalDx, canonicalDy);
-                let targetDistance = rimDistance(edge.target(), -canonicalDx, -canonicalDy);
                 let perpX = 0;
                 let perpY = 0;
-
+                // Perpendicular of the canonical direction decides which side
+                // of the center line the pair occupies: both halves share ONE
+                // offset vector (± perp * m via canonicalSign), so they always
+                // land on parallel offset lines.
                 if (canonicalDistance > 0) {{
-                    // Perpendicular vector to canonical direction
                     perpX = -canonicalDy / canonicalDistance;
                     perpY = canonicalDx / canonicalDistance;
-                    
-                    // Apply offset: canonicalSign determines which side of the canonical line
-                    // This ensures reciprocal edges move to opposite sides relative to canvas
-                    sourceOffsetX = perpX * offsetMagnitude * canonicalSign;
-                    sourceOffsetY = perpY * offsetMagnitude * canonicalSign;
-                    targetOffsetX = perpX * offsetMagnitude * canonicalSign;
-                    targetOffsetY = perpY * offsetMagnitude * canonicalSign;
                 }} else {{
-                    sourceOffsetY = offsetMagnitude * canonicalSign;
-                    targetOffsetY = offsetMagnitude * canonicalSign;
+                    perpY = 1;  // coincident nodes: offset straight up
                 }}
+                const pairOffsetX = perpX * offsetMagnitude * canonicalSign;
+                const pairOffsetY = perpY * offsetMagnitude * canonicalSign;
 
                 if (reciprocalMode === 'straight') {{
-                    // Reciprocal edges: keep them straight but offset slightly so they don't overlap
+                    // Reciprocal edges: straight, shifted onto parallel
+                    // offset lines that terminate at each node's true rim.
                     applyStraightEdgeStyle(edge);
+                    const srcPos = edge.source().position();
+                    const tgtPos = edge.target().position();
+                    const srcRim = rimPointOnOffsetLine(
+                        edge.source(), tgtPos.x - srcPos.x, tgtPos.y - srcPos.y,
+                        pairOffsetX, pairOffsetY);
+                    const tgtRim = rimPointOnOffsetLine(
+                        edge.target(), srcPos.x - tgtPos.x, srcPos.y - tgtPos.y,
+                        pairOffsetX, pairOffsetY);
 
                     edge.style({{
                         'edge-distances': 'node-position',
-                        'source-endpoint': `${{sourceOffsetX.toFixed(2)}} ${{sourceOffsetY.toFixed(2)}}`,
-                        'target-endpoint': `${{targetOffsetX.toFixed(2)}} ${{targetOffsetY.toFixed(2)}}`,
-                        'source-distance-from-node': sourceDistance,
-                        'target-distance-from-node': targetDistance
+                        'source-endpoint': `${{srcRim[0].toFixed(2)}} ${{srcRim[1].toFixed(2)}}`,
+                        'target-endpoint': `${{tgtRim[0].toFixed(2)}} ${{tgtRim[1].toFixed(2)}}`,
+                        'source-distance-from-node': 0,
+                        'target-distance-from-node': 0
                     }});
                 }} else {{
                     // Has visible parallel edge, use curved style (no offsets in curved mode)
