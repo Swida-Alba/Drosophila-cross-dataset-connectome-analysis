@@ -105,16 +105,21 @@ _VIS_NETWORK_PATH = Path(__file__).parent / 'assets' / 'vis-network.min.js'
 
 
 def _vis_network_script() -> str:
-    """The vis-network library as an inline <script> block.
-
-    Inlines the vendored ``src/assets/vis-network.min.js`` so the
-    interactive networks work fully offline. HTML only terminates a
-    script block on the sequence ``</script``, so exactly that sequence
-    is neutralized (``<\\/script`` — an identity escape inside JS
-    strings/regexes); a blanket ``</`` escape would corrupt regex
-    literals ("Invalid regular expression flags"). Falls back to the
-    house CDN tag when the vendored asset is missing.
+    """The vis-network library as an inline <script> block, delegated to
+    the shared ``vendored_assets`` helper (plan-offline-html-exports) so
+    every exporter shares one inline/escape implementation. Falls back to
+    the module's own read (and then the CDN tag) when the helper is
+    unavailable.
     """
+    try:
+        from vendored_assets import inline_vis_network as _inline
+    except ImportError:  # pragma: no cover - direct src/ execution
+        try:
+            from src.vendored_assets import inline_vis_network as _inline
+        except ImportError:
+            _inline = None
+    if _inline is not None:
+        return _inline()
     try:
         lib = _VIS_NETWORK_PATH.read_text(encoding='utf-8')
     except OSError:

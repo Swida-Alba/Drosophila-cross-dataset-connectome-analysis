@@ -1418,30 +1418,37 @@ def _query_dataset_across_points_table(point_rows, aligned_by_id, path_by_id,
 
 
 def _generate_html_header() -> str:
-    """Generate HTML head with CSS styles."""
-    return """<!DOCTYPE html>
+    """Generate HTML head with CSS styles.
+
+    plotly and vis-network are INLINED from vendored / package assets
+    (plan-offline-html-exports Phase B) so the report works fully
+    offline; chart fragments use ``include_plotlyjs=False`` and rely on
+    this header's single plotly copy.
+    """
+    try:
+        from vendored_assets import inline_plotly, inline_vis_network
+    except ImportError:  # pragma: no cover - direct src/ execution
+        try:
+            from src.vendored_assets import (
+                inline_plotly as _inline_plotly,
+                inline_vis_network as _inline_vis_network,
+            )
+            inline_plotly = _inline_plotly
+            inline_vis_network = _inline_vis_network
+        except ImportError:  # degrade to the historical CDN tags
+            inline_plotly = lambda: ('<script src="https://cdn.plot.ly/'
+                                     'plotly-2.35.2.min.js"></script>')
+            inline_vis_network = lambda: ('<script src="https://unpkg.com/'
+                                          'vis-network/standalone/umd/'
+                                          'vis-network.min.js"></script>')
+    head = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cross-Dataset Comparison Report</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-    <script>
-        // CDN fallback guard: show a clear banner instead of a silent blank canvas
-        if (typeof vis === 'undefined') {
-            window.addEventListener('DOMContentLoaded', function() {
-                const section = document.getElementById('networks');
-                if (section && !section.querySelector('.cdn-error')) {
-                    const div = document.createElement('div');
-                    div.className = 'cdn-error';
-                    div.style.cssText = 'background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 14px;color:#92400e;font-size:13px;margin-bottom:15px;';
-                    div.textContent = '⚠️ vis-network failed to load (CDN unreachable). Check your internet connection and reload this page.';
-                    section.prepend(div);
-                }
-            });
-        }
-    </script>
+    __PLOTLY_JS__
+    __VIS_NETWORK_JS__
     <style>
         :root {
             --primary-color: #2563eb;
@@ -1653,6 +1660,9 @@ def _generate_html_header() -> str:
 <body>
     <div class="container">
 """
+    return (head
+            .replace('__PLOTLY_JS__', inline_plotly())
+            .replace('__VIS_NETWORK_JS__', inline_vis_network()))
 
 
 def _threshold_display_label(analyzer, threshold, dataset_names) -> str:

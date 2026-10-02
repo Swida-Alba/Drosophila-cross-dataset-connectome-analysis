@@ -25,6 +25,61 @@ import ast
 import re
 
 
+def _cytoscape_bundle_scripts() -> str:
+    """The cytoscape core + layout-extension bundle as inline ``<script>``
+    blocks (plan-offline-html-exports Phase A), read from the vendored
+    ``src/assets/cytoscape/`` bundle of the surrounding repository. Falls
+    back to the historical CDN tags when the bundle is not found (vispath
+    is usable standalone outside the DROCAT checkout). HTML inlining
+    neutralizes ONLY ``</script`` — a blanket ``</`` escape would corrupt
+    JS regex literals."""
+    bundle_dir = (Path(__file__).resolve().parents[3] / 'src' / 'assets'
+                  / 'cytoscape')
+    scripts = (
+        'cytoscape.min.js',
+        'dagre.min.js',
+        'cytoscape-dagre.js',
+        'layout-base.js',
+        'cose-base.js',
+        'cytoscape-cose-bilkent.js',
+        'cytoscape-fcose.js',
+        'klay.js',
+        'cytoscape-klay.js',
+        'cytoscape-svg.js',
+    )
+    cdn = (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/'
+        '3.28.1/cytoscape.min.js"></script>\n'
+        '<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js">'
+        '</script>\n'
+        '<script src="https://unpkg.com/cytoscape-dagre@2.5.0/'
+        'cytoscape-dagre.js"></script>\n'
+        '<script src="https://unpkg.com/layout-base@1.0.2/layout-base.js">'
+        '</script>\n'
+        '<script src="https://unpkg.com/cose-base@1.0.3/cose-base.js">'
+        '</script>\n'
+        '<script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/'
+        'cytoscape-cose-bilkent.js"></script>\n'
+        '<script src="https://unpkg.com/cytoscape-fcose@2.2.0/'
+        'cytoscape-fcose.js"></script>\n'
+        '<script src="https://unpkg.com/klayjs@0.4.1/klay.js"></script>\n'
+        '<script src="https://unpkg.com/cytoscape-klay@3.1.4/'
+        'cytoscape-klay.js"></script>\n'
+        '<script src="https://unpkg.com/cytoscape-svg@0.4.0/'
+        'cytoscape-svg.js"></script>'
+    )
+    try:
+        parts = []
+        for name in scripts:
+            lib = (bundle_dir / name).read_text(encoding='utf-8')
+            parts.append('<script>' + re.sub(
+                r'</(script)', r'<\\/\1', lib,
+                flags=re.IGNORECASE) + '</script>')
+        return '\n'.join(parts)
+    except OSError:
+        return cdn
+
+
 def _json_default(o):
     """JSON encoder fallback for numpy scalars in embedded visualization data."""
     if isinstance(o, (np.integer, np.floating)):
@@ -5134,31 +5189,17 @@ class VisualizePath:
         })
         
         # Create HTML content
+        cytoscape_scripts = _cytoscape_bundle_scripts()
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <title>Neural Pathway Network - Selected Paths</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
-    
-    <!-- Layout Extensions -->
-    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
-    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-    
-    <!-- CoSE-based layouts (need dependencies) -->
-    <script src="https://unpkg.com/layout-base@1.0.2/layout-base.js"></script>
-    <script src="https://unpkg.com/cose-base@1.0.3/cose-base.js"></script>
-    <script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
-    <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
-    
-    <!-- KLay layout -->
-    <script src="https://unpkg.com/klayjs@0.4.1/klay.js"></script>
-    <script src="https://unpkg.com/cytoscape-klay@3.1.4/cytoscape-klay.js"></script>
-    
-    <!-- Export Extensions -->
-    <script src="https://unpkg.com/cytoscape-svg@0.4.0/cytoscape-svg.js"></script>
+    {cytoscape_scripts}
     <script>
-        // CDN fallback guard: show a clear banner instead of a silent blank canvas
+        // Offline guard (the library itself is inlined above when the
+        // vendored bundle is present): show a clear banner instead of a
+        // silent blank canvas if cytoscape still failed to initialize.
         if (typeof cytoscape === 'undefined') {{
             window.addEventListener('DOMContentLoaded', function() {{
                 const host = document.getElementById('cy');
@@ -5166,7 +5207,7 @@ class VisualizePath:
                     const div = document.createElement('div');
                     div.className = 'cdn-error';
                     div.style.cssText = 'padding:60px;text-align:center;color:#94a3b8;font-family:sans-serif;font-size:14px;';
-                    div.textContent = '⚠️ Cytoscape.js failed to load (CDN unreachable). Check your internet connection and reload this page.';
+                    div.textContent = '⚠️ Cytoscape.js failed to load. Check your internet connection and reload this page.';
                     host.appendChild(div);
                 }}
             }});
@@ -15296,12 +15337,33 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             " }, 250); });"
         )
 
+    # plotly.js is shared per output DIRECTORY (plan-offline-html-exports
+    # Phase C): many matrix HTMLs can be emitted per run, so one library
+    # copy per folder replaces the per-file CDN tag; inline fallback when
+    # plotly is unavailable.
+    try:
+        import plotly as _plotly_mod
+        _plotly_lib = (Path(_plotly_mod.__file__).parent
+                       / 'package_data' / 'plotly.min.js')
+        _plotly_target = (Path(filename).resolve().parent
+                          / 'plotly.min.js')
+        if not _plotly_target.exists():
+            _plotly_target.parent.mkdir(parents=True, exist_ok=True)
+            _plotly_target.write_bytes(_plotly_lib.read_bytes())
+        plotly_tag = '<script src="plotly.min.js"></script>'
+    except Exception as _plotly_err:  # pragma: no cover - degrade to CDN
+        import sys as _sys
+        print(f'[vispath plotly] shared plotly.min.js unavailable, using '
+              f'CDN fallback: {type(_plotly_err).__name__}: {_plotly_err}',
+              file=_sys.stderr)
+        plotly_tag = ('<script src="https://cdn.plot.ly/'
+                      'plotly-2.35.2.min.js"></script>')
     html_content = f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <title>{html_escape(title)}</title>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    {plotly_tag}
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;

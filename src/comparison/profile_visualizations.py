@@ -28,6 +28,23 @@ import warnings
 # Suppress matplotlib warnings about too many figures
 warnings.filterwarnings("ignore", message="More than 20 figures have been opened")
 
+
+def _inline_plotly() -> str:
+    """plotly.js as an inline ``<script>`` block (plan-offline-html-exports
+    Phase C): read from the installed plotly.py's package_data so the
+    library is version-matched to the figure producer and the HTML works
+    offline; CDN tag when plotly is unavailable. Also removes this
+    module's historical unpinned ``plotly-latest`` reference."""
+    try:
+        from vendored_assets import inline_plotly as _inline
+    except ImportError:  # pragma: no cover - direct package imports
+        try:
+            from src.vendored_assets import inline_plotly as _inline
+        except ImportError:
+            return ('<script src="https://cdn.plot.ly/'
+                    'plotly-2.35.2.min.js"></script>')
+    return _inline()
+
 # Set non-interactive backend before importing pyplot to prevent display issues
 import matplotlib
 matplotlib.use('Agg')
@@ -745,7 +762,7 @@ class ProfileVisualizer:
 <html>
 <head>
     <title>{title}</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+{_inline_plotly()}
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1032,7 +1049,7 @@ class ProfileVisualizer:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+{_inline_plotly()}
     <style>
         :root {{
             --primary-color: #1a237e;

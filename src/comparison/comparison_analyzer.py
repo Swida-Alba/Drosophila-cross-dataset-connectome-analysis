@@ -36,6 +36,24 @@ try:
 except ImportError:  # pragma: no cover - direct package imports
     from flywire_ids import is_fafb_dataset, is_local_connectome_dataset
 
+
+def _inline_vis_network() -> str:
+    """vis-network as an inline ``<script>`` block (plan-offline-html-exports
+    Phase C): read from the vendored ``src/assets/vis-network.min.js`` so
+    the conserved-path networks work offline; CDN tag when the helper or
+    asset is unavailable."""
+    try:
+        from vendored_assets import inline_vis_network as _inline
+    except ImportError:  # pragma: no cover - direct package imports
+        try:
+            from src.vendored_assets import (
+                inline_vis_network as _inline)
+        except ImportError:
+            return ('<script src="https://unpkg.com/vis-network/standalone/'
+                    'umd/vis-network.min.js"></script>')
+    return _inline()
+
+
 from .dataset_config import DatasetConfig
 from .comparison_parameters import ComparisonParameters
 from .label_mapper import LabelMapper
@@ -11229,7 +11247,7 @@ class ComparisonAnalyzer:
 <html>
 <head>
     <title>{title}</title>
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    {_inline_vis_network()}
     <style>
         body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
         h1 {{ color: #2563eb; }}
@@ -11377,7 +11395,7 @@ class ComparisonAnalyzer:
 <html>
 <head>
     <title>{title}</title>
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    {_inline_vis_network()}
     <style>
         body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
         h1 {{ color: #2563eb; }}

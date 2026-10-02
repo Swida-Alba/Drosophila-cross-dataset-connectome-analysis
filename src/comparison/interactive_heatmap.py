@@ -2,6 +2,22 @@ import os
 import json
 import numpy as np
 
+
+def _inline_plotly() -> str:
+    """plotly.js inline from the installed plotly.py package
+    (plan-offline-html-exports Phase C); CDN tag when plotly is
+    unavailable. Replaces this module's historical unpinned
+    ``plotly-latest`` reference."""
+    try:
+        from vendored_assets import inline_plotly as _inline
+    except ImportError:  # pragma: no cover - direct package imports
+        try:
+            from src.vendored_assets import inline_plotly as _inline
+        except ImportError:
+            return ('<script src="https://cdn.plot.ly/'
+                    'plotly-2.35.2.min.js"></script>')
+    return _inline()
+
 def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True, fontsize=12, verbose=True,
                                  color_scale=None, zmin=None, zmax=None):
     """
@@ -130,7 +146,7 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
 <head>
     <meta charset="utf-8">
     <title>{title}</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    {_inline_plotly()}
     <style>
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
         .main-container {{ max-width: 1800px; margin: 0 auto; }}
