@@ -558,7 +558,6 @@ def build_viz(rows: Sequence[dict], inter_counts: Counter,
         'nrows': max(col_seen.values()) if col_seen else 1,
         'nodes': nodes,
         'edges': edges,
-        'paths': paths,
     }
 
 
@@ -2239,7 +2238,6 @@ REPORT_JS = r"""
         tbody.appendChild(gr);
         rows.forEach(function(row, i) {
           var tr = elt('tr');
-          tr.dataset.i = rowPaths.length;
           tr.dataset.path = row.path;
           tr.appendChild(elt('td', null, i + 1));
           if (union) { tr.appendChild(elt('td', null, row.pair)); }
@@ -2275,7 +2273,6 @@ REPORT_JS = r"""
         + (pairs.length > 1 ? ', union re-ranked by min weight within each length' : '')
         + '). Hover a row to highlight its route in the network below.';
       card.appendChild(note);
-      card.dataset.rowPaths = JSON.stringify(rowPaths);
       return card;
     },
 
