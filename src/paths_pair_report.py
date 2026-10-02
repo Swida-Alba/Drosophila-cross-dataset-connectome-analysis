@@ -249,6 +249,31 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             provenance[match.group(1)] = match.group(2).strip()
         if provenance:
             meta['provenance'] = provenance
+    if 'provenance' not in meta and (run_dir / 'dataset_data').is_dir():
+        # Cross-dataset run root: no root-level parameters.txt/provenance
+        # block — aggregate the per-delegate blocks so the report can show
+        # one applied-threshold row per delegate.
+        delegate_prov: Dict[str, Dict[str, str]] = {}
+        line_re = re.compile(
+            r'^(' + '|'.join(PROVENANCE_KEYS) + r'):\s*(.+)$', re.MULTILINE)
+        for params_path in sorted(
+                (run_dir / 'dataset_data').glob('*/*/parameters.txt')):
+            unit_id = re.sub(
+                r'^dataset_data/', '',
+                params_path.relative_to(run_dir).as_posix()).replace(
+                    '/parameters.txt', '')
+            try:
+                delegate_text = params_path.read_text(
+                    encoding='utf-8', errors='replace')
+            except OSError:
+                continue
+            parsed: Dict[str, str] = {}
+            for match in line_re.finditer(delegate_text):
+                parsed[match.group(1)] = match.group(2).strip()
+            if parsed:
+                delegate_prov[unit_id] = parsed
+        if delegate_prov:
+            meta['delegate_provenance'] = delegate_prov
     manifest = run_dir / 'run_manifest.json'
     if manifest.exists():
         try:
@@ -1025,10 +1050,17 @@ def _esc(value: Any) -> str:
 def _render_provenance_card(run: dict) -> str:
     """Applied-threshold / budget provenance, marking explicitly what the
     run actually used — the pathfinding counterpart of the cross-dataset
-    report's 'Applied Thresholds & Bottleneck Provenance' section."""
+    report's 'Applied Thresholds & Bottleneck Provenance' section.
+
+    Cross-dataset run roots have no root-level provenance block; there the
+    card renders the per-delegate provenance aggregated by
+    ``_sniff_metadata`` (one applied-threshold row per delegate)."""
     prov = (run.get('meta') or {}).get('provenance')
-    if not prov:
+    delegate_prov = (run.get('meta') or {}).get('delegate_provenance') or {}
+    if not prov and not delegate_prov:
         return ''
+    if not prov:
+        return _render_delegate_provenance_table(delegate_prov)
     rows = []
 
     def field(label, key, badge=False, badge_cls='badge-info'):
@@ -1088,6 +1120,46 @@ def _render_provenance_card(run: dict) -> str:
         'actually used (it can differ from the requested one when the '
         'StrongestFirst path budget or the Edge Budget bit — the output '
         'equals a complete run at the canonical tau).</p></div>')
+
+
+def _render_delegate_provenance_table(delegate_prov: dict) -> str:
+    """Per-delegate applied-threshold table for cross-dataset run roots
+    (round 9b): one row per delegate, aggregated by ``_sniff_metadata``."""
+    rows = []
+    for unit_id, prov in sorted(delegate_prov.items()):
+        bitten = prov.get('strongest_first_budget_bitten', '')
+        bitten_cls = ('badge-danger' if bitten.lower() == 'true'
+                      else 'badge-success')
+        complete = prov.get('paths_complete', '')
+        complete_cls = ('badge-success' if complete.lower() == 'true'
+                        else 'badge-warning')
+        applied = prov.get('applied_threshold', '—')
+        applied_source = prov.get('applied_threshold_source', '')
+        rows.append(
+            f'<tr><td>{_esc(unit_id)}</td>'
+            f'<td>{_esc(prov.get("requested_threshold", "—"))}</td>'
+            f'<td><span class="badge badge-warning">{_esc(applied)}</span></td>'
+            f'<td{_applied_title_attr(applied_source)}>'
+            f'{_esc(applied_source or "—")}</td>'
+            f'<td><span class="badge {bitten_cls}">{_esc(bitten or "—")}</span></td>'
+            f'<td>{_esc(prov.get("strongest_first_tau", "—"))}</td>'
+            f'<td><span class="badge {complete_cls}">{_esc(complete or "—")}</span></td>'
+            f'</tr>')
+    return (
+        '<div class="card"><h3>⚙️ Applied thresholds (per delegate)</h3>'
+        '<div class="sticky-table-container"><table><thead><tr>'
+        '<th>Unit</th><th>Requested</th><th>Applied</th><th>Source</th>'
+        '<th>SF budget bitten</th><th>Tau</th><th>Paths complete</th>'
+        '</tr></thead><tbody>' + ''.join(rows) +
+        '</tbody></table></div>'
+        '<p class="cap-note">One row per cross-dataset delegate, from each '
+        'delegate\u2019s own parameters.txt provenance block — the '
+        'applied threshold is what that delegate actually used.</p></div>')
+
+
+def _applied_title_attr(source: str) -> str:
+    return (f' title="{_html.escape(source, quote=True)}"'
+            if source else '')
 
 
 def _render_overview(payload: dict, run_dir: Path,

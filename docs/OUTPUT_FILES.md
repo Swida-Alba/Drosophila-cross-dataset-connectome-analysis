@@ -230,7 +230,12 @@ the report's `Generated:` timestamp.
     in the Network card, a tab per path length alongside the merged view —
     multi-selections render one UNION pane), and an interactive
     layered network coloring shared (blue) vs unique (gray) intermediates),
-    and **Data** (unit rollup + artifact links). Caps are viewport-only —
+    and **Data** (unit rollup + artifact links). An **applied-threshold
+    &amp; budget provenance card** marks explicitly what the run used
+    (applied vs requested threshold, StrongestFirst budget/tau, Edge
+    Budget landing/floor, W\*, paths_complete) — single-dataset runs from
+    their provenance block, cross-dataset roots aggregated per delegate.
+    Caps are viewport-only —
     top-10 paths per (pair, length), 50 global-matrix pairs, 60
     global-network edges — and every capped view
     states its cap and links to the lossless CSVs below. Ranking is

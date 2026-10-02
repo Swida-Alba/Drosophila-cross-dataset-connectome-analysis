@@ -127,6 +127,21 @@ def cross_run(tmp_path) -> Path:
         {"bodyId": 6, "type": "S", "isInPath": True},
     ]).to_csv(run / "dataset_data" / "dsB" / "minsyn_3" / "source_neurons.csv",
               index=False)
+    # per-delegate provenance blocks (round 9b: aggregated on the root card)
+    (run / "dataset_data" / "dsA" / "minsyn_3" / "parameters.txt").write_text(
+        "requested_threshold:           3\n"
+        "applied_threshold:             5\n"
+        "applied_threshold_source:      edge_budget\n"
+        "strongest_first_budget_bitten: False\n"
+        "strongest_first_tau:           5\n"
+        "paths_complete:                True\n", encoding="utf-8")
+    (run / "dataset_data" / "dsB" / "minsyn_3" / "parameters.txt").write_text(
+        "requested_threshold:           3\n"
+        "applied_threshold:             3\n"
+        "applied_threshold_source:      requested\n"
+        "strongest_first_budget_bitten: True\n"
+        "strongest_first_tau:           3\n"
+        "paths_complete:                False\n", encoding="utf-8")
     return run
 
 
@@ -505,6 +520,29 @@ def test_global_pair_matrix_bodyid_coverage_columns(cross_run):
     assert "Source coverage" in text and "Target coverage" in text
     assert "Coverage</th>" not in text          # old unit-coverage column gone
     assert 'title="dsA/minsyn_3: 2/3 / 2/2; dsB/minsyn_3: 1/1 / —"' in text
+
+
+def test_provenance_aggregated_per_delegate_on_cross_root(cross_run):
+    """Round 9b: cross-dataset roots aggregate the per-delegate provenance
+    blocks into one applied-threshold table; each delegate also carries its
+    own parameters.txt so nested reports show their own card."""
+    report = generate_paths_pair_report(cross_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    delegate_prov = payload["run"]["meta"]["delegate_provenance"]
+    assert delegate_prov["dsA/minsyn_3"]["applied_threshold"] == "5"
+    assert delegate_prov["dsA/minsyn_3"]["applied_threshold_source"] == (
+        "edge_budget")
+    assert delegate_prov["dsB/minsyn_3"]["applied_threshold"] == "3"
+    # the applied-thresholds-per-delegate table renders on the root
+    assert "Applied thresholds (per delegate)" in text
+    assert "edge_budget" in text
+    # nested delegate reports still show their own single-run card
+    nested = (cross_run / "dataset_data" / "dsA" / "minsyn_3" / REPORT_NAME
+              ).read_text(encoding="utf-8")
+    assert "Applied threshold" in nested
+    # the old single-run card (root provenance) does not render on the root
+    assert "Threshold actually used" not in text
 
 
 def test_provenance_card_marks_applied_threshold(tmp_path):
