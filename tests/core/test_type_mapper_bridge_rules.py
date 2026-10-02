@@ -296,12 +296,46 @@ def test_hemi_fafb_derives_through_two_crosswalk_linkers():
 
     best = preferred_bridge_chain(chains, HEMI, FAFB)
     linkers = standardize_bridge(best, HEMI, FAFB)
+    # Crosswalk linkers carry the physical cell token on EVERY position —
+    # middle hops included (2026-10-02 seam fix; same rule as the terminal
+    # §pooling fix 2026-09-07): the hT linker names the MCNS rows'
+    # hemibrainType cell content 'H1', not the intermediate type 'M1' the
+    # route lands on.
     assert [(l['column'], l['value']) for l in linkers] == [
-        ('hemibrainType', 'M1'), ('flywireType', 'F1')]
+        ('hemibrainType', 'H1'), ('flywireType', 'F1')]
 
     info = bridge_linker_text(chains, HEMI, FAFB, 'F1')
     assert {e['column'] for e in info['entries']} == {
         'hemibrainType', 'flywireType'}
+
+
+def test_middle_crosswalk_linker_carries_the_cell_token():
+    """Full-map composed routes turn a leg-terminal crosswalk hop into a
+    MIDDLE hop at the leg seam; the middle branch must apply the same
+    column-class rule as the terminal branch (§pooling fix 2026-09-07).
+
+    MCNS rows typed 5thsLNv_LNd6 carry flywireType 's-LNv_a,LNd_a', so the
+    seam linker pools 's-LNv_a' — pooling the landed type name
+    '5thsLNv_LNd6' matched zero rows and read the whole route as
+    unsupported ('target-side linker rows had no bodyIds')."""
+    from comparison.cross_dataset_type_mapper import standardize_bridge
+
+    chain = [
+        {'dataset': FAFB, 'column': 'type', 'value': '5th-LNv'},
+        {'dataset': FAFB, 'column': 'additional_type(s)',
+         'value': 's-LNv_a', 'via': '5th-LNv'},
+        {'dataset': MCNS, 'column': 'flywireType',
+         'value': '5thsLNv_LNd6', 'via': 's-LNv_a'},
+        {'dataset': MCNS, 'column': 'release_alias',
+         'value': '5thsLNv_LNd6'},
+    ]
+    linkers = standardize_bridge(chain, FAFB, MCNS)
+    by_column = {l['column']: l['value'] for l in linkers
+                 if l['kind'] == 'linker'}
+    assert by_column['flywireType'] == 's-LNv_a'
+    # Annotation-column middle hops keep ``value`` — the cell token lives
+    # there, while ``via`` is the row's own type (the APDN3/CL125 case).
+    assert by_column['additional_type(s)'] == 's-LNv_a'
 
 
 # ---------------------------------------------------------------------------
