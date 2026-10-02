@@ -259,9 +259,11 @@ maps in memory. The store is an audit/reproducibility surface, not an
 input: runs never reuse another run's store.
 
 *   **`connections/connections_L{d}.parquet`**: the finalized per-reverse-
-    layer union edge frames exactly as fetched (columns
-    `bodyId_pre`, `bodyId_post`, `weight`, `roi`, type/instance/nt/custom-
-    group label columns, `conn_layer`). One file per `conn_layer`; the
+    layer union edge frames exactly as fetched (always `bodyId_pre`,
+    `bodyId_post`, `weight`, `conn_layer`, plus whichever of `roi` /
+    type / instance / nt / custom-group / ratio columns that layer's
+    fetch produced — per-layer schemas can differ and are preserved
+    verbatim). One file per `conn_layer`; the
     per-layer granularity is deliberate — the pathfinding graph sums
     duplicate `(pre, post)` rows across layers, so collapsing the files
     would change reported path bottlenecks.

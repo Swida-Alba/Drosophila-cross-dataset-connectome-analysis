@@ -38,6 +38,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -225,6 +226,14 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
     ``finalize_store_discovery``).
     """
     store_dir = Path(store_dir)
+    # Store scoping (plan §4): the store is valid only for THIS run's
+    # discovery. A rerun into the same folder (the ``saveas`` scripting
+    # pattern) must never mix labels from an earlier, deeper run — a
+    # stale ``node_distances_L4`` chunk beside a fresh ``L2`` one would
+    # silently overwrite the fresh distances on read (the chunk files
+    # merge per key, later layer wins). Wipe and rebuild.
+    if store_dir.exists():
+        shutil.rmtree(store_dir)
     (store_dir / NODE_DISTANCES_DIR).mkdir(parents=True, exist_ok=True)
     (store_dir / DAG_EDGES_DIR).mkdir(parents=True, exist_ok=True)
     (store_dir / CONNECTIONS_DIR).mkdir(parents=True, exist_ok=True)
@@ -614,19 +623,23 @@ def finalize_store_discovery(store_dir, meta, source_ID):
         if not all_connections:
             all_connections = [pl.DataFrame()]
 
-    # Filtered reverse layers: layer 0 = targets, layer d = nodes labeled
-    # at depth d (any target), both intersected with the valid node set.
+    # Filtered reverse layers: one slot per discovery iteration exactly
+    # like the monolithic reverse_layers list (layer 0 = targets, layer
+    # d = nodes labeled at depth d for any target; a depth whose fetch
+    # produced no NEW labels yields an empty slot, not a missing one).
+    # Backward mode has no positional consumer today, but the return
+    # contract stays byte-compatible with the monolithic shape.
     layer_neurons = [set(meta['target_bodyIds']) & valid_nodes]
     label_files = _label_files(store_dir, NODE_DISTANCES_DIR)
+    by_dist = {}
     if label_files:
         frame = pl.scan_parquet([str(p) for p in label_files]).select(
             ['node', 'dist']).collect()
-        for dist in sorted(frame['dist'].unique().to_list()):
-            nodes = set(
+        for dist in frame['dist'].unique().to_list():
+            by_dist[int(dist)] = set(
                 frame.filter(pl.col('dist') == dist)['node'].to_list())
-            layer_neurons.append(nodes & valid_nodes)
-    for _ in range(meta['layer_count'] - len(layer_neurons)):
-        layer_neurons.append(set())
+    for depth in range(1, meta['layer_count']):
+        layer_neurons.append(by_dist.get(depth, set()) & valid_nodes)
 
     return {
         'all_connections': all_connections,

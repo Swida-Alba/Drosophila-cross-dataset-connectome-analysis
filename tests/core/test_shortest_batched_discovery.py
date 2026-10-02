@@ -215,7 +215,7 @@ def test_payload_mode_refuses_budget():
             ['T1'], ['S1'], 4, budget=5, payload=True))
 
 
-def test_drain_is_the_enumerator_semsantics():
+def test_drain_is_the_enumerator_semantics():
     """The shared drain produces the exact tau tie-drain set: biting keeps
     every tie at the achieved tau and drops strictly weaker paths."""
     G = _unit_graph()
@@ -233,8 +233,13 @@ def test_drain_is_the_enumerator_semsantics():
     tau = stats['tau']
     expected = [p for b in sorted(by_bottleneck, reverse=True)
                 if b >= tau for p in by_bottleneck[b]]
-    assert bitten == expected[:len(bitten)] or len(bitten) == len(expected)
-    assert stats['budget_bitten'] is (stats['strongest_dropped'] is not None)
+    assert bitten == expected
+    assert stats['emitted'] == len(bitten) == len(expected)
+    assert tau == min(by_bottleneck) or tau > min(by_bottleneck)
+    assert stats['budget_bitten'] is (
+        stats['strongest_dropped'] is not None)
+    if stats['strongest_dropped'] is not None:
+        assert stats['strongest_dropped'] < tau
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +433,44 @@ def test_pipeline_type_paths_equal(monkeypatch, tmp_path, synth_types):
     assert not any(
         row[0].startswith('TS1->') and row[0].endswith('->TT2')
         and row[7] == 2 for row in batch.iter_rows())
+
+
+def test_saveas_rerun_wipes_stale_store(monkeypatch, tmp_path, synth_types):
+    """Store scoping (plan §4): rerunning into the SAME saveas folder
+    must never mix labels from the earlier, deeper run. A stale
+    node_distances chunk from run 1 used to survive run 2 and silently
+    overwrite the fresh distances on read (later layer wins per key),
+    dropping the rerun's paths; the store is wiped at discovery start."""
+    def _run(depth):
+        coana._FINDALLPATH_GRAPH_CACHE.clear()
+        fc, _, _ = _make_fc(monkeypatch, tmp_path / f'd{depth}', budget=None)
+        fc.max_interlayer = depth
+        fc.saveas = 'rerun'
+        fc.save_folder = str(tmp_path / 'shared')
+        fc.FindShortestPath()
+        return fc
+
+    deep = _run(3)
+    store = os.path.join(deep.allpath_folder, 'shortest_discovery_store')
+    deep_files = sorted(
+        os.listdir(os.path.join(store, 'node_distances')))
+
+    shallow_rerun = _run(1)
+    # same folder, and the stale deep-layer chunks are gone
+    assert shallow_rerun.allpath_folder == deep.allpath_folder
+    assert sorted(os.listdir(
+        os.path.join(store, 'node_distances'))) != deep_files
+    meta = load_store_meta(store)
+    label_files = sorted(os.listdir(
+        os.path.join(store, 'node_distances')))
+    max_layer = max(
+        int(name.split('_L')[1].split('_')[0]) for name in label_files)
+    assert max_layer <= meta['layer_count'] - 1
+
+    # the rerun's paths equal a fresh-folder shallow run's paths
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+    fresh, _, _ = _make_fc(monkeypatch, tmp_path / 'fresh', budget=None)
+    fresh.max_interlayer = 1
+    fresh.FindShortestPath()
+    assert pl.read_csv(_paths_csv(shallow_rerun)).rows() == \
+        pl.read_csv(_paths_csv(fresh)).rows()

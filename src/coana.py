@@ -13258,6 +13258,16 @@ class FindNeuronConnection:
     def _discover_shortest_backward(self, source_ID, target_ID, max_hops):
         """Discover a shortest-path graph backward from target bodyIds.
 
+        LEGACY monolithic path: this method holds every target's
+        frontier/seen/distance/DAG state resident simultaneously and is
+        selected when ``discovery_batch_budget=0`` and
+        ``target_batch_size=0``. The default batched route
+        (``shortest_discovery_store.run_union_layer_discovery`` +
+        ``finalize_store_discovery``) is behaviorally identical — same
+        fetch sequence, labeling rules, early stops, completeness
+        semantics, and return shape — but streams per-target labels into
+        the run's ``shortest_discovery_store/`` parquet store instead.
+
         Each target owns a reverse BFS frontier.  The frontier is expanded
         through incoming edges until all requested source bodyIds have been
         seen for that target or ``max_hops`` is reached.  This avoids fetching
@@ -15012,6 +15022,20 @@ class FindNeuronConnection:
           source-oriented ``connections.parquet``); only unproven posts are
           queried online, and their rows are persisted with a completeness
           marker for later runs.
+        - Batched discovery (default ON; plan-shortest-batched-discovery):
+          with many broad targets, holding every target's BFS maps resident
+          scales memory with targets x union frontier x depth (a 242-target
+          depth-5 run was killed at ~450 GB RSS, 2026-10-02). With
+          ``discovery_batch_budget`` > 0 (default 2,000,000; 0 = legacy
+          single pass), discovery streams every target's distance labels
+          into the run-local ``shortest_discovery_store/`` folder and
+          enumeration runs per batch of targets whose summed distance
+          states stay under the budget — results are identical either way
+          (the realized composition is exported as
+          ``shortest_discovery_diagnostics.batching``).
+          ``target_batch_size`` > 0 is a simpler fixed-size alternative.
+          The store is wiped at discovery start, so a rerun into the same
+          ``saveas`` folder never mixes labels from an earlier run.
         - Depth: ``max_interlayer`` is an EXACT explored-graph bound: paths
           are capped at ``max_interlayer + 1`` edges (0 = direct connections
           only). A returned path is shortest within the explored,
