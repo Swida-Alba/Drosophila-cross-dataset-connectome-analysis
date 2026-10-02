@@ -2009,6 +2009,56 @@ class FindNeuronConnection:
                 )
         return df
 
+    def _sort_connection_export(self, frame):
+        """Deterministic order for every exported connection table.
+
+        Enrichment aggregations and their totals joins follow polars'
+        thread scheduling, so the frames' row order varies run-to-run —
+        every exporter therefore sorts on a TOTAL key before writing:
+        conn_layer first when the frame is multi-layer, then
+        traversal_probability / weight descending, then the endpoint
+        columns (bodyId pair + roi for bodyId tables, where a pair can
+        carry several roi rows; custom-group or type pair otherwise).
+        Stable kind / maintain_order pins any residual ties. Accepts
+        polars and pandas frames; returns the frame unchanged when empty
+        or None. This is the single shared implementation behind the
+        FindPath / FindNetwork / pathfinding-materialization export
+        sorts (byte-reproducibility fix, 2026-10-02).
+        """
+        if frame is None:
+            return frame
+        if isinstance(frame, pl.DataFrame):
+            if frame.is_empty() or 'weight' not in frame.columns:
+                return frame
+            keys, desc = [], []
+        else:
+            if getattr(frame, 'empty', True) or 'weight' not in frame.columns:
+                return frame
+            keys, desc = [], []
+        if 'conn_layer' in frame.columns:
+            keys.append('conn_layer')
+            desc.append(False)
+        if 'traversal_probability' in frame.columns:
+            keys.append('traversal_probability')
+            desc.append(True)
+        keys.append('weight')
+        desc.append(True)
+        if 'bodyId_pre' in frame.columns:
+            keys.extend(['bodyId_pre', 'bodyId_post'])
+            desc.extend([False, False])
+            if 'roi' in frame.columns:
+                keys.append('roi')
+                desc.append(False)
+        elif 'custom_group_pre' in frame.columns:
+            keys.extend(['custom_group_pre', 'custom_group_post'])
+            desc.extend([False, False])
+        else:
+            keys.extend(['type_pre', 'type_post'])
+            desc.extend([False, False])
+        if isinstance(frame, pl.DataFrame):
+            return frame.sort(keys, descending=desc, maintain_order=True)
+        return frame.sort_values(by=keys, ascending=desc, kind='stable')
+
     def _ensure_ratio_prob_columns(self, df, pre_col: str, post_col: str):
         """Ensure connection_ratio and traversal_probability exist and are numeric."""
         if df is None:
@@ -12936,6 +12986,14 @@ class FindNeuronConnection:
 
         # --- Save connection tables (no path files, no matrices) ---
         self._progress(4, 5, 'Saving network data')
+        # Deterministic export order: the enrichment aggregation/join
+        # order follows polars thread scheduling — sort on total keys so
+        # repeated runs are byte-identical (shared helper, see
+        # _sort_connection_export).
+        conn_type = self._sort_connection_export(conn_type)
+        conn_df = self._sort_connection_export(conn_df)
+        if conn_group is not None and len(conn_group) > 0:
+            conn_group = self._sort_connection_export(conn_group)
         self._save_df_to_csv_polars(conn_type, os.path.join(details_folder, 'connection_type.csv'))
         if not self.skip_bodyId:
             self._save_df_to_csv_polars(conn_df, os.path.join(details_folder, 'connection_info_bodyId.csv'))
@@ -14171,26 +14229,17 @@ class FindNeuronConnection:
              neuron_layers = [self.source_df['bodyId'].unique()]
             
         if not conn_inpath.empty:
-            # Stable + TOTAL sort keys: (conn_layer, traversal_probability,
-            # weight) alone leaves ties broken by pandas' unstable
-            # quicksort over an input order that the polars join scheduling
-            # varies run-to-run — the exported connection tables and the
-            # matrices that pivot from them were not byte-reproducible.
-            # The endpoint columns make the key unique per row; the stable
-            # kind pins the rest.
-            conn_inpath = conn_inpath.sort_values(
-                by=['conn_layer', 'traversal_probability', 'weight',
-                    'bodyId_pre', 'bodyId_post'],
-                ascending=[True, False, False, True, True],
-                kind='stable')
+            # _ensure_ratio_prob_columns joins the incoming-weight totals,
+            # which reorders rows nondeterministically — run it BEFORE the
+            # export sorts so the sorts are the last operation (same
+            # pattern as _materialize_paths). The sorts themselves use the
+            # shared total-key stable helper (see _sort_connection_export).
+            conn_types = self._ensure_ratio_prob_columns(
+                conn_types, 'type_pre', 'type_post')
+            conn_inpath = self._sort_connection_export(conn_inpath)
             conn_inpath = conn_inpath.reset_index(drop=True)
-            conn_types = conn_types.sort_values(
-                by=['conn_layer', 'traversal_probability', 'weight',
-                    'type_pre', 'type_post'],
-                ascending=[True, False, False, True, True],
-                kind='stable')
+            conn_types = self._sort_connection_export(conn_types)
             conn_types = conn_types.reset_index(drop=True)
-            conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
         else:
             print("Warning: No paths found connecting source to target.")
 
@@ -17598,28 +17647,15 @@ class FindNeuronConnection:
         else:
             self._vprint('  ⚠ No targets found in paths', level='full')
         
-        # Sort the combined connection data (only if non-empty). The
-        # endpoint columns make the sort keys TOTAL (a layer's rows are
-        # unique per endpoint pair — plus roi for the bodyId table, where
-        # a pair can carry several roi rows) and maintain_order pins the
-        # rest — without them, ties broke on the join-scheduling-dependent
-        # input order and the exported connection tables / matrices /
-        # visualizations were not byte-reproducible run-to-run.
+        # Sort the combined connection data (only if non-empty) with the
+        # shared total-key stable helper — without it, ties broke on the
+        # join-scheduling-dependent input order and the exported
+        # connection tables / matrices / visualizations were not
+        # byte-reproducible run-to-run (see _sort_connection_export).
         if not conn_inpath.is_empty():
-            bi_keys = ['conn_layer', 'traversal_probability', 'weight',
-                       'bodyId_pre', 'bodyId_post']
-            bi_desc = [False, True, True, False, False]
-            if 'roi' in conn_inpath.columns:
-                bi_keys.append('roi')
-                bi_desc.append(False)
-            conn_inpath = conn_inpath.sort(
-                bi_keys, descending=bi_desc, maintain_order=True)
+            conn_inpath = self._sort_connection_export(conn_inpath)
         if not conn_types.is_empty():
-            conn_types = conn_types.sort(
-                ['conn_layer', 'traversal_probability', 'weight',
-                 'type_pre', 'type_post'],
-                descending=[False, True, True, False, False],
-                maintain_order=True)
+            conn_types = self._sort_connection_export(conn_types)
 
         totalweight_df = pl.DataFrame(list(weight_layers.items()), schema={'conn_layer': pl.Utf8, 'weight': pl.Int64}, orient="row")
         if not totalweight_df.is_empty():
@@ -18171,32 +18207,25 @@ class FindNeuronConnection:
             conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
             # _ensure_ratio_prob_columns joins the incoming-weight totals,
             # which reorders rows nondeterministically — re-apply the
-            # TOTAL-KEY stable sort so the export (and everything pivoted
-            # from it) stays byte-reproducible.
+            # shared total-key stable sort so the export (and everything
+            # pivoted from it) stays byte-reproducible.
             if not conn_types.is_empty():
-                conn_types = conn_types.sort(
-                    ['conn_layer', 'traversal_probability', 'weight',
-                     'type_pre', 'type_post'],
-                    descending=[False, True, True, False, False],
-                    maintain_order=True)
+                conn_types = self._sort_connection_export(conn_types)
             self._save_df_to_csv_polars(conn_types, os.path.join(csv_folder, 'connection_type.csv'), index=True)
             
             if conn_groups is not None and not conn_groups.is_empty():
                 # print("    - connection_custom_groups.csv", flush=True)
                 self._save_df_to_csv_polars(conn_groups, os.path.join(csv_folder, 'connection_custom_groups.csv'), index=True)
             
-            # Save matrices (use global aggregation); same total-key sort
-            # as the connection table so the pivot orders are stable.
+            # Save matrices (use global aggregation); same shared total-key
+            # sort as the connection table so the pivot orders are stable.
             if conn_types_global is not None and not (
                     hasattr(conn_types_global, 'is_empty')
                     and conn_types_global.is_empty()) and not (
                     hasattr(conn_types_global, 'empty')
                     and conn_types_global.empty):
-                conn_types_global = conn_types_global.sort(
-                    ['traversal_probability', 'weight', 'type_pre',
-                     'type_post'],
-                    descending=[True, True, False, False],
-                    maintain_order=True)
+                conn_types_global = self._sort_connection_export(
+                    conn_types_global)
             self._save_matrices_to_csv(conn_types_global, csv_folder, level='type')
         else:
             output_excel_name = os.path.join(self.allpath_folder, self.source_fname + '_to_' + self.target_fname + '_allpaths_info.xlsx')

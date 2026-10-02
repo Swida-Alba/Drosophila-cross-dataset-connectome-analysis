@@ -252,3 +252,20 @@ class TestFindNetwork:
         events = [ln.strip() for ln in capsys.readouterr().out.splitlines()
                   if "[DROCAT][progress]" in ln]
         assert events == ["[DROCAT][progress] 2/5 Fetching mutual direct connections"]
+
+    def test_connection_table_byte_reproducible(self, monkeypatch, tmp_path):
+        """Determinism pin: two runs of the same query export a
+        byte-identical connection table (the shared total-key stable
+        sort, _sort_connection_export, must stay wired before the
+        writes)."""
+        edges = [("S", "A", 10), ("A", "S", 8), ("S", "B", 6),
+                 ("A", "B", 7), ("B", "A", 5)]
+        contents = []
+        for run in ("a", "b"):
+            fc, _, _, _, _ = _make_network_fc(
+                monkeypatch, tmp_path / run, edges, ["S", "A", "B"])
+            fc.FindNetwork()
+            path = os.path.join(fc.network_folder, "data_details",
+                                "connection_type.csv")
+            contents.append(open(path, "rb").read())
+        assert contents[0] == contents[1]

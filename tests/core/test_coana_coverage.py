@@ -2690,3 +2690,25 @@ class TestFindAllPathReciprocal:
         folder = Path(fc.allpath_folder)
         assert (folder / "all_attributes.json").exists()
         coana.clear_findallpath_cache()
+
+
+class TestFindPathDeterminism:
+    """Determinism pin: two runs of the same query export a byte-identical
+    type-level connection table (the shared total-key stable sort,
+    _sort_connection_export, applied AFTER _ensure_ratio_prob_columns —
+    the totals join reorders rows, so the sort must be the last
+    operation before the write)."""
+
+    CHAIN = [("S", "A", 10), ("A", "B", 8), ("B", "T", 6),
+             ("S", "B", 9), ("A", "T", 4)]
+    TYPES = {"S": "TS", "A": "TA", "B": "TB", "T": "TT"}
+
+    def test_connection_table_byte_reproducible(self, monkeypatch, tmp_path):
+        contents = []
+        for run in ("a", "b"):
+            fc, _ = _make_path_fc(
+                monkeypatch, tmp_path / run, self.CHAIN, self.TYPES)
+            fc.FindPath()
+            path = Path(fc.path_folder) / "data_details" / "connection_type.csv"
+            contents.append(path.read_bytes())
+        assert contents[0] == contents[1]
