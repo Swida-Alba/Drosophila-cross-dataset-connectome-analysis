@@ -8,7 +8,18 @@ const cytoscape = require(process.argv[2] + '/node_modules/cytoscape');
 const fs = require('fs');
 
 const htmlPath = process.argv[3] || '/tmp/vispath-test/network_test.html';
-const html = fs.readFileSync(htmlPath, 'utf8');
+const html = (() => {
+    // Offline-embedded documents carry the vendored libraries inline;
+    // common function names (e.g. dagre's `undo`) would shadow the
+    // page's own during extraction.  Keep only the app's script block —
+    // the one holding the elements JSON.
+    const whole = fs.readFileSync(htmlPath, 'utf8');
+    const blocks = whole.match(/<script[^>]*>[\s\S]*?<\/script>/g) || [];
+    const own = blocks.filter(b => b.includes('const elements = {'));
+    if (own.length !== 1)
+        throw new Error('app script block not found in ' + htmlPath);
+    return own[0];
+})();
 
 // Extract a top-level function declaration with balanced braces.
 function extractFunction(name, source) {

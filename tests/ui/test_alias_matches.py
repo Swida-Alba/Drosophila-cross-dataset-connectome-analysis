@@ -766,7 +766,12 @@ def test_linker_html_carries_column_colors(tmp_path):
     assert result and out.exists()
 
     html = out.read_text()
-    match = re.search(r"nodes:\s*(\[.*?\])\s*,\s*\n\s*edges:", html, re.S)
+    # Anchor on the renderer's own `const elements = {` assignment — the
+    # offline-embedded vendor JS also contains `nodes:` tokens, and an
+    # unanchored regex parses minified library code instead of the graph.
+    match = re.search(
+        r"const elements = \{\s*nodes:\s*(\[.*?\])\s*,\s*edges:",
+        html, re.S)
     assert match, "elements JSON not found in the linker HTML"
     nodes = json.loads(match.group(1))
     by_role = {}
@@ -787,10 +792,16 @@ def test_linker_html_carries_column_colors(tmp_path):
     assert set(by_role.get("source", [])) == {"#2563eb"}   # MCNS group color
     assert set(by_role.get("target", [])) == {"#16a34a"}   # FAFB group color
     # bridge COLUMN names are never abbreviated (only dataset names use
-    # the 4-char abbreviations)
+    # the 4-char abbreviations).  The no-abbreviation check reads the
+    # app's OWN payload — header/legend markup plus the elements JSON —
+    # because the offline-embedded vendor JS coincidentally contains such
+    # substrings (e.g. CoSE's TILING_PADDING).
     for column in ("flywireType", "additional_type(s)"):
         assert column in html
-    assert "FLYW" not in html and "ADDI" not in html
+    app_block = re.search(r"const elements = \{.*?\};", html, re.S).group(0)
+    app_visible = re.sub(r"<script.*?</script>", "", html, flags=re.S)
+    scope = app_visible + app_block
+    assert "FLYW" not in scope and "ADDI" not in scope
 
 
 def test_caps_are_display_only():

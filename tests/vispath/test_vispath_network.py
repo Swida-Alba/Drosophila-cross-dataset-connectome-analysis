@@ -2080,14 +2080,20 @@ def _render_bidir_html(output_path, **kwargs):
 
 
 def _elements_of(html_path):
-    """Parse the embedded elements JSON out of a generated network HTML."""
+    """Parse the embedded elements JSON out of a generated network HTML.
+
+    The extraction anchors on the renderer's own ``const elements = {``
+    assignment: since the offline-embedding change the document carries
+    the vendored libraries inline, and an unanchored ``nodes:``/``edges:``
+    regex matches inside that minified JS first.
+    """
     html = Path(html_path).read_text(encoding="utf-8")
-    m = re.search(r"edges:\s*(\[.*?\])\s*\n\s*\};", html, re.S)
-    assert m, "edges JSON not found"
-    m_nodes = re.search(r"nodes:\s*(\[.*?\]),\s*\n\s*edges:", html, re.S)
-    assert m_nodes, "nodes JSON not found"
+    m = re.search(
+        r"const elements = \{\s*nodes:\s*(\[.*?\])\s*,\s*edges:\s*(\[.*?\])"
+        r"\s*\};", html, re.S)
+    assert m, "elements JSON not found"
     import json
-    return (json.loads(m_nodes.group(1)), json.loads(m.group(1)),
+    return (json.loads(m.group(1)), json.loads(m.group(2)),
             Path(html_path).read_text(encoding="utf-8"))
 
 
