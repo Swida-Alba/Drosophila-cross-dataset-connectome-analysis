@@ -96,7 +96,8 @@ Every UI run (and any folder, via the CLI) writes a per-source-target-pair
 HTML report (`path_report.html`) plus two lossless breakdown CSVs
 (`paths_pair_breakdown/pair_breakdown_paths.csv`,
 `pair_breakdown_intermediates.csv`) INTO the run folder — Overview /
-Global / Pair Explorer (Source+Target multi-selects; capped
+Global / Pair Explorer (Source+Target multi-selects rendering one UNION
+  pane; capped
 top-10-per-length table, interactive layered network coloring shared vs
 unique intermediates) / Data. The runner's post-run hook generates it
 before the Output Files panel scans, so the files appear as native run

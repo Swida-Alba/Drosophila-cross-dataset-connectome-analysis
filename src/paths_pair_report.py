@@ -7,21 +7,36 @@ Complete Paths, Shortest Paths, or the per-dataset ``minsyn_<N>/`` delegates
 inside a cross-dataset run) and writes, additively into the run folder:
 
 * ``paths_pair_breakdown/pair_breakdown_paths.csv`` — one row per path,
-  uncapped, with the pair/rank columns the HTML caps reference.
+  uncapped, with pair/rank columns, the pair's source/target bodyId
+  coverage (``n/N`` from the run's enrollment files), and everything the
+  HTML caps reference.
 * ``paths_pair_breakdown/pair_breakdown_intermediates.csv`` — one row per
   (pair, intermediate): how many paths use it, ``shared`` (>=2 paths of the
   same pair) vs ``unique`` (exactly 1), earliest hop position.
-* ``path_report.html`` — self-contained zero-CDN report in the
-  cross-dataset report's visual language (house CSS classes, tabbed router
-  from ``comparison/report_tabbed.py``). Four pages: Overview / Global
-  (cross-dataset-analysis-style run-wide presentations: per-unit stats,
-  the pair × unit path-count matrix, unit-coverage histogram, and a
-  top-edges global route network) / Pair Explorer (two selection boxes —
-  Source and Target — render one pair pane on demand) / Data. Each pair
-  pane carries a per-pair paths presence matrix (paths x units, house
-  presence-table conventions), the capped per-length top-10 table, and an
-  inline-SVG layered DAG coloring shared (blue) vs unique (gray)
-  intermediates.
+* ``path_report.html`` — self-contained report in the cross-dataset
+  report's visual language (house CSS classes, tabbed router in the style
+  of ``comparison/report_tabbed.py``; the vis-network library is vendored
+  and inlined, so the interactive networks work offline — a static layered
+  SVG renders if the library ever fails). Four pages:
+
+  - **Overview** — run summary, hops histogram, pair table, artifact links.
+  - **Global** — per-unit stats, the pair x unit path-count matrix (with
+    hop-range tooltips), a pairs-by-unit-coverage histogram, and a global
+    route network of the most-traversed edges.
+  - **Pair Explorer** — Source and Target multi-selects render ONE pane
+    for the selection: a single pair gets its own pane, several pairs get
+    the UNION (one merged top-paths table with a Pair column and one
+    merged layered network). Each network card has a tab strip — "All"
+    plus one tab per path length in the drawn set — rebuilding the graph
+    from only that length's rows. Rows carry the pair's source/target
+    bodyId coverage; intermediates are colored shared (blue, >=2 paths of
+    the pair) vs unique (gray, exactly 1).
+  - **Data** — unit rollup (with per-delegate report links on
+    cross-dataset runs), breakdown CSVs, paths tables, run artifacts, and
+    run-level vispath/conserved-view links.
+
+  Cross-dataset runs additionally write a single-unit copy of the report
+  into every ``dataset_data/<dataset>/<delegate>/`` folder.
 
 Capping is viewport-only: every capped view states its cap and links to the
 uncapped CSV beside the report. Ranking is bottleneck-first
@@ -2292,7 +2307,7 @@ def generate_paths_pair_report(
     the run folder; every other file is left untouched. Returns the
     report path.
     """
-    run_dir = Path(run_dir)
+    run_dir = Path(run_dir).resolve()
     if not run_dir.is_dir():
         raise NotADirectoryError(f'run folder not found: {run_dir}')
     say = log or (lambda *a, **k: None)

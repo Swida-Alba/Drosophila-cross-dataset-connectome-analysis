@@ -224,11 +224,13 @@ the report's `Generated:` timestamp.
     matrix — a pairs-by-unit-coverage histogram, and an interactive global
     route network of the top 60 edges by traversal count), **Pair
     Explorer** (Source and Target selects render one pair pane: paths ×
-    capped top-paths table with per-path bodyId coverage, and an interactive
+    capped top-paths table (with Source/Target bodyId coverage columns and,
+    in the Network card, a tab per path length alongside the merged view —
+    multi-selections render one UNION pane), and an interactive
     layered network coloring shared (blue) vs unique (gray) intermediates),
     and **Data** (unit rollup + artifact links). Caps are viewport-only —
-    top-10 paths per (pair, length), 50 presence-matrix rows per pair, 50
-    global-matrix pairs, 60 global-network edges — and every capped view
+    top-10 paths per (pair, length), 50 global-matrix pairs, 60
+    global-network edges — and every capped view
     states its cap and links to the lossless CSVs below. Ranking is
     bottleneck-first (`min_weight` desc, `path_prob` desc, path asc).
     Shared = intermediate on ≥2 paths of the same pair, unique = exactly 1
@@ -237,7 +239,12 @@ the report's `Generated:` timestamp.
 *   **`paths_pair_breakdown/pair_breakdown_paths.csv`**: One row per path,
     uncapped — columns `dataset`, `threshold`, `unit`, `source`, `target`,
     `pair`, `rank_in_pair_length`, `path`, `weights`, `probabilities`,
-    `ratios`, `min_weight`, `path_prob`, `length`, `paths_in_pair`.
+    `ratios`, `min_weight`, `path_prob`, `length`,
+    `source_bodyid_coverage`, `target_bodyid_coverage`, `paths_in_pair`
+    (the coverage columns are the pair's bodyId `n/N` — source: `isInPath`
+    / enrolled from `source_neurons.csv`; target: reached (`Checked`) /
+    resolved from `target_neurons.csv`; empty when those files are
+    missing).
 *   **`paths_pair_breakdown/pair_breakdown_intermediates.csv`**: One row
     per (pair, intermediate) — `dataset`, `threshold`, `unit`, `source`,
     `target`, `intermediate`, `n_paths_using`, `classification`
