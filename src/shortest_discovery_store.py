@@ -44,10 +44,11 @@ from pathlib import Path
 
 import polars as pl
 
-from vispath_pkg.fast_graph_core import (
-    FastGraph,
-    merge_shortest_batch_emissions,
-)
+# FastGraph / the shared drain are imported INSIDE batched_shortest_paths:
+# coana imports this module unconditionally at import time, and the
+# lazy-import contract (test_coana_imports_without_vispath_subprocess)
+# requires coana to stay importable when the vispath-subproject is absent —
+# enumeration is the only place the graph engine is actually needed.
 
 # Pinned defaults (plan §0.4; user-approved 2026-10-02).
 DEFAULT_DISCOVERY_BATCH_BUDGET = 2_000_000
@@ -763,6 +764,13 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
     batches = compose_batches(
         targets, per_target_states, budget=batch_states, fixed_size=fixed_size)
     fc._shortest_batch_records = batch_records(batches, per_target_states)
+
+    # Deferred import: see the module header (coana's lazy-import
+    # contract without the vispath subproject).
+    from vispath_pkg.fast_graph_core import (
+        FastGraph,
+        merge_shortest_batch_emissions,
+    )
 
     weight_frame = None
     emissions = []
