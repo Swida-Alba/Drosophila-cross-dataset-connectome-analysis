@@ -83,6 +83,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install node for the vispath harness tests
+        # The vispath Node harnesses (history/bidir/...) exercise the
+        # exported HTML's JS; ubuntu-latest ships node, but pinning keeps
+        # the runner matching the local version the harnesses pass on.
+        # Their pytest fixture npm-installs cytoscape into a temp prefix
+        # and skips gracefully if that fails.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install project (editable, core + ui deps)
         # the ui extra (nicegui) is required for tests/ui COLLECTION; the
         # first runner run failed collecting 25 ui files without it.
@@ -94,6 +103,11 @@ jobs:
       - name: Curated offline slice
         # Files whose fixtures are synthetic (tmp_path/monkeypatch): the
         # 2026-09-25 audit-fix regressions plus always-fast neighbors.
+        # tests/vispath joined 2026-10-02: its regex/harness checks of the
+        # offline-embedded HTML are fully offline-capable yet sat outside
+        # CI, which let the aecbe5e embedding break 15 of them unnoticed.
+        # (tests/ui/test_alias_matches.py stays OUT: it requires the local
+        # neuron indexes and skips wholesale on a dataless runner.)
         run: >
           python -m pytest tests/core/test_path_node_parsing.py
           tests/core/test_audit_fixes.py
@@ -104,4 +118,5 @@ jobs:
           tests/core/test_neuronbridge_finder_coverage.py
           tests/core/test_cached_neuron_search.py
           tests/core/test_search_query_performance.py
+          tests/vispath
           -q -p no:cacheprovider
