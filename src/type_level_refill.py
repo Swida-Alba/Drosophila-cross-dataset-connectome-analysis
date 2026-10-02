@@ -114,6 +114,12 @@ def read_run_provenance(run_dir) -> dict:
             f'{run_dir}: no parameters.txt — not a pathfinding run folder '
             f'(or an unsupported layout).')
     text = txt.read_text(encoding='utf-8', errors='replace')
+    m = re.search(r'^weight basis:\s*(\S+)', text, re.MULTILINE)
+    if m and m.group(1).strip().lower().startswith('connection_ratio'):
+        raise TypeLevelRefillError(
+            f'{run_dir}: weight basis {m.group(1)} — the type-level '
+            f'refill is synapse-budget recovery and does not apply to '
+            f'ratio-basis runs.')
     prov: Dict[str, str] = {}
     for key in _PROVENANCE_KEYS:
         matches = re.findall(rf'^{key}:\s*(.+)$', text, re.MULTILINE)

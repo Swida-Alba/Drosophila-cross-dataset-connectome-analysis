@@ -15594,6 +15594,11 @@ class FindNeuronConnection:
         (same pattern as the shortest store-retention hook)."""
         if not getattr(self, 'auto_type_level_refill', True):
             return False
+        if getattr(self, 'weight_basis', 'synapse') != 'synapse':
+            # Ratio-basis runs are outside the refill's semantics (it is
+            # synapse-budget recovery); dormant until the weight_basis
+            # field exists (plan-connection-ratio-pathfinding §16.1).
+            return False
         run_dir = getattr(self, 'allpath_folder', None)
         if not run_dir or not os.path.isdir(run_dir):
             return False

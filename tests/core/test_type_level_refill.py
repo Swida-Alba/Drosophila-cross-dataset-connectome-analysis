@@ -36,6 +36,7 @@ from tests.core.test_pathfinding import _make_pipeline_fc  # noqa: E402
 from type_level_refill import (  # noqa: E402
     TypeLevelRefillError,
     compute_type_level_refill,
+    read_run_provenance,
 )
 
 TYPE_MAP = {
@@ -709,6 +710,50 @@ def test_auto_hook_complete_run_silent(staged_runs):
     notes = run_dir / 'user_warning_notes.txt'
     if notes.exists():
         assert 'type-level refill' not in notes.read_text(encoding='utf-8')
+
+
+# ---------------------------------------------------------------------------
+# 9b. Ratio-basis guard (plan-connection-ratio-pathfinding §16.1): the
+# refill never fires for weight_basis='connection_ratio' runs, in-process
+# or post-hoc. Dormant until the Phase-2 field exists.
+# ---------------------------------------------------------------------------
+def test_auto_hook_skips_ratio_basis(tmp_path):
+    with universe_types() as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=EDGES, max_interlayer=MAX_INTERLAYER,
+            min_synapse=ASKED, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        fc.target_df = fc.target_df.assign(
+            Checked=[True] * len(fc.target_df))
+        fc.graph_edge_limit_bodyid = 7
+        fc.max_paths_bodyid = 0
+        fc.parameter_dict.update({
+            'min synapse number': str(ASKED), 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': str(MAX_INTERLAYER),
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.weight_basis = 'connection_ratio'
+        fc._refill_edges_override = list(EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+        fc.FindAllPath()
+        run_dir = Path(fc.allpath_folder)
+    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+
+
+def test_read_run_provenance_refuses_ratio_basis(tmp_path):
+    run_dir = tmp_path / 'ratio_run'
+    run_dir.mkdir()
+    (run_dir / 'parameters.txt').write_text(
+        'min synapse number: 1\n'
+        'weight basis: connection_ratio (bodyId)\n'
+        'requested_threshold: 0.05\n'
+        'applied_threshold: 0.05\n',
+        encoding='utf-8')
+    with pytest.raises(TypeLevelRefillError, match='weight basis'):
+        read_run_provenance(run_dir)
 
 
 # ---------------------------------------------------------------------------
