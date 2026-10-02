@@ -143,6 +143,7 @@ py-modules = [
     "coana",
     "codex_downloader",
     "connection_map",
+    "connection_ratio_paths",
     "fafb_bundle",
     "fafb_utils",
     "flylight_downloader",
