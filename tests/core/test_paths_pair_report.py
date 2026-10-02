@@ -341,7 +341,8 @@ def test_embedded_rows_are_in_csv(single_run):
     csv = pd.read_csv(
         single_run / OUTPUT_DIR_NAME / PATHS_CSV_NAME, dtype={"path": str},
         keep_default_na=False)  # the root unit's empty unit id stays ''
-    assert "bodyid_coverage" in csv.columns
+    assert "source_bodyid_coverage" in csv.columns
+    assert "target_bodyid_coverage" in csv.columns
     for pair in payload["pairs"]:
         sub = csv[(csv["source"] == pair["source"])
                   & (csv["target"] == pair["target"])
@@ -351,57 +352,50 @@ def test_embedded_rows_are_in_csv(single_run):
                 hit = sub[sub["path"] == row["path"]]
                 assert len(hit) >= 1, f"{row['path']} missing from CSV"
                 assert int(hit.iloc[0]["rank_in_pair_length"]) == row["rank"]
-                # coverage string embedded == CSV column (per-node counts)
-                assert str(hit.iloc[0]["bodyid_coverage"]) == (row["cov"] or "")
+                # the two coverage columns embedded == CSV (pair-level n/N)
+                assert (str(hit.iloc[0]["source_bodyid_coverage"])
+                        == (row["scov"] or ""))
+                assert (str(hit.iloc[0]["target_bodyid_coverage"])
+                        == (row["tcov"] or ""))
 
 
-def test_bodyid_coverage_support_counts(tmp_path):
-    """Round 8 item 8: per-node bodyId support counts from
-    neurons_included.csv (no exact tier in default runs)."""
+def test_bodyid_coverage_source_target_n_over_n(tmp_path):
+    """Round-8b item 1: coverage = bodyId-level n/N for source (isInPath /
+    enrolled, from source_neurons.csv) and target (Checked / resolved, from
+    target_neurons.csv) — two columns, per pair."""
     run = tmp_path / "find-paths-complete_FAFB_S_to_T_L2w3_20260101_000000"
     _write_csv(run, [_row("S->M->T", 30), _row("S->N->M->T", 20)])
-    details = run / "data_details"
-    details.mkdir()
     pd.DataFrame([
-        {"group": "source", "bodyId": 1, "type": "S", "instance": "s1",
-         "nt_type": "ACH"},
-        {"group": "inter", "bodyId": 2, "type": "M", "instance": "m1",
-         "nt_type": "ACH"},
-        {"group": "inter", "bodyId": 3, "type": "M", "instance": "m2",
-         "nt_type": "ACH"},
-        {"group": "inter", "bodyId": 5, "type": "N", "instance": "n1",
-         "nt_type": "ACH"},
-        {"group": "target", "bodyId": 4, "type": "T", "instance": "t1",
-         "nt_type": "ACH"},
-    ]).to_csv(details / "neurons_included.csv", index=False)
+        {"bodyId": 1, "type": "S", "isInPath": True},
+        {"bodyId": 2, "type": "S", "isInPath": False},
+        {"bodyId": 3, "type": "S", "isInPath": True},
+    ]).to_csv(run / "source_neurons.csv", index=False)
+    pd.DataFrame([
+        {"bodyId": 4, "type": "T", "Checked": True},
+        {"bodyId": 5, "type": "T", "Checked": True},
+        {"bodyId": 6, "type": "T", "Checked": False},
+    ]).to_csv(run / "target_neurons.csv", index=False)
     report = generate_paths_pair_report(run, log=None)
     payload = _payload(report.read_text(encoding="utf-8"))
     pair = payload["pairs"][0]
-    rows = {r["path"]: r["cov"] for g in pair["table"]["groups"]
-            for r in g["rows"]}
-    assert rows["S->M->T"] == "1·2·1"
-    assert rows["S->N->M->T"] == "1·1·2·1"
+    for g in pair["table"]["groups"]:
+        for row in g["rows"]:
+            assert row["scov"] == "2/3"
+            assert row["tcov"] == "2/3"
     csv = pd.read_csv(run / OUTPUT_DIR_NAME / PATHS_CSV_NAME,
                       keep_default_na=False)
-    cov = dict(zip(csv["path"], csv["bodyid_coverage"]))
-    assert cov["S->M->T"] == "1·2·1"
+    assert (csv["source_bodyid_coverage"] == "2/3").all()
+    assert (csv["target_bodyid_coverage"] == "2/3").all()
 
 
-def test_bodyid_coverage_exact_tier(tmp_path):
-    """When a bodyId paths table exists, coverage becomes the exact
-    bodyId-path count for the type projection."""
+def test_bodyid_coverage_missing_files(tmp_path):
     run = tmp_path / "find-paths-complete_FAFB_S_to_T_L2w3_20260101_000000"
-    _write_csv(run, [_row("S->M->T", 30), _row("S->N->M->T", 20)])
-    pd.DataFrame([
-        {"path": "b1->b2->b4", "path_types": "S->M->T"},
-        {"path": "b1->b3->b4", "path_types": "S->M->T"},
-    ]).to_csv(run / "S_to_T_allpaths_bodyId_paths.csv", index=False)
+    _write_csv(run, [_row("S->T", 4)])
     report = generate_paths_pair_report(run, log=None)
     payload = _payload(report.read_text(encoding="utf-8"))
-    rows = {r["path"]: r["cov"] for g in payload["pairs"][0]["table"]["groups"]
-            for r in g["rows"]}
-    assert rows["S->M->T"] == "2"        # exact count
-    assert rows["S->N->M->T"] == ""      # no bodyId path realizes it
+    for g in payload["pairs"][0]["table"]["groups"]:
+        for row in g["rows"]:
+            assert row["scov"] == "" and row["tcov"] == ""
 
 
 def test_no_presence_matrix_in_payload_and_pane(single_run):

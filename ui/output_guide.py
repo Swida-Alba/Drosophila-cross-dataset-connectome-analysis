@@ -161,12 +161,16 @@ COLUMN_GLOSSARY = {
                             "path_prob desc, path asc.", "integer"),
     "paths_in_pair": ("Total paths found for this (unit, source, target) pair "
                       "— the denominator of every capped view.", "integer"),
-    "bodyid_coverage": ("Per-node bodyId counts along the path joined by '·' "
-                        "(from data_details/neurons_included.csv — a "
-                        "multiplicity support, not a path count). An exact "
-                        "bodyId-path count appears instead when the run "
-                        "includes a bodyId paths table (Skip BodyId off). "
-                        "Empty when no bodyId-level data is available.", "text"),
+    "source_bodyid_coverage": ("bodyId-level n/N for the pair's SOURCE type: "
+                               "bodyIds on found paths (isInPath) / all "
+                               "enrolled bodyIds of the type, from "
+                               "source_neurons.csv. Empty when the file is "
+                               "missing.", "text"),
+    "target_bodyid_coverage": ("bodyId-level n/N for the pair's TARGET type: "
+                               "bodyIds reached (Checked) / all resolved "
+                               "bodyIds of the type, from "
+                               "target_neurons.csv. Empty when the file is "
+                               "missing.", "text"),
     "intermediate": ("Intermediate (non-source, non-target) node on a path.", "text"),
     "n_paths_using": ("How many paths of the pair pass through this "
                       "intermediate.", "integer"),
@@ -975,8 +979,8 @@ _PATHFINDING_FILES = [
      "preview": True,
      "preview_title": "Pair breakdown (per path)",
      "columns": ["unit", "source", "target", "rank_in_pair_length", "path",
-                 "min_weight", "length", "bodyid_coverage",
-                 "paths_in_pair"]},
+                 "min_weight", "length", "source_bodyid_coverage",
+                 "target_bodyid_coverage", "paths_in_pair"]},
     {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
      "description": "Pair-report breakdown, one row per (pair, intermediate): "
                     "shared (>=2 paths of the pair) vs unique (exactly 1), "
@@ -1739,7 +1743,8 @@ TOOL_GUIDE_SPECS = {
              "preview": True,
              "preview_title": "Pair breakdown (per path)",
              "columns": ["unit", "source", "target", "rank_in_pair_length",
-                         "path", "min_weight", "length", "bodyid_coverage",
+                         "path", "min_weight", "length",
+                         "source_bodyid_coverage", "target_bodyid_coverage",
                          "paths_in_pair"]},
             {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
              "description": "Per (pair, intermediate) breakdown: shared "

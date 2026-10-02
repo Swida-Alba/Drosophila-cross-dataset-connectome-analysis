@@ -257,16 +257,19 @@ def _rank_sort(frame: pd.DataFrame, rank_by: str) -> pd.DataFrame:
 
 def build_unit_breakdown(
     frame: pd.DataFrame, rank_by: str,
-    support: Optional[Dict[str, int]] = None,
-    exact_counts: Optional[Dict[str, int]] = None,
+    source_cov: Optional[Dict[str, str]] = None,
+    target_cov: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[dict], List[dict], Dict[Tuple[str, str], dict]]:
     """Per-pair breakdown of one unit.
 
     Returns (path rows, intermediate rows, pair stats keyed
     ``(source, target)``). Rank is bottleneck-first within (pair, length);
     shared/unique classification is over the pair's FULL path set. Each
-    path row carries its ``bodyid_coverage`` (round-8 item 8).
+    path row carries its pair's ``source_cov``/``target_cov`` bodyId
+    n/N strings (round-8b item 1).
     """
+    source_cov = source_cov or {}
+    target_cov = target_cov or {}
     frame = frame.copy()
     frame['_path_key'] = frame['path']
     ordered = _rank_sort(frame, rank_by)
@@ -302,8 +305,8 @@ def build_unit_breakdown(
                     'min_weight': row['min_weight'],
                     'path_prob': row['path_prob'],
                     'length': int(length),
-                    'bodyid_coverage': _coverage_string(
-                        str(row['path']), support, exact_counts),
+                    'source_bodyid_coverage': source_cov.get(source, ''),
+                    'target_bodyid_coverage': target_cov.get(target, ''),
                 })
         stats = {
             'paths': len(pair_rows),
@@ -354,56 +357,40 @@ def _weight_list(weights: str) -> Optional[List[float]]:
 
 
 # ---------------------------------------------------------------------------
-# bodyId coverage (round 8, user item 2)
+# bodyId coverage (round 8b, user item 1: n/N for source and target only)
 # ---------------------------------------------------------------------------
 
-def load_bodyid_support(folder: Path) -> Optional[Dict[str, int]]:
-    """Per-type bodyId counts from ``data_details/neurons_included.csv``
-    (present in every pathfinding run). ``None`` when the file is
-    missing/unreadable."""
-    path = Path(folder) / 'data_details' / 'neurons_included.csv'
-    if not path.exists():
-        return None
-    try:
-        frame = pd.read_csv(path, usecols=['type'])
-        return frame['type'].value_counts().to_dict()
-    except Exception:  # noqa: BLE001 - coverage is best-effort
-        return None
-
-
-def load_exact_bodyid_counts(folder: Path) -> Optional[Dict[str, int]]:
-    """Exact bodyId-path counts per type-path projection, from a
-    ``*_allpaths_bodyId_paths.csv`` (written only when Skip BodyId is
-    off — no such file exists in default runs). ``None`` when absent or
-    on any schema surprise."""
-    matches = sorted(Path(folder).rglob('*_allpaths_bodyId_paths.csv'))
-    if not matches:
-        return None
-    try:
-        frame = pd.read_csv(matches[0], dtype=str)
-        column = 'path_types' if 'path_types' in frame.columns else 'path'
-        counts: Counter = Counter()
-        for value in frame[column].dropna():
-            counts['->'.join(str(value).split('->'))] += 1
-        return dict(counts)
-    except Exception:  # noqa: BLE001 - exact tier is optional
-        return None
-
-
-def _coverage_string(path: str, support: Optional[Dict[str, int]],
-                     exact: Optional[Dict[str, int]]) -> str:
-    """BodyId coverage for one type-level path (round-8 item 8).
-
-    Exact count when a bodyId paths table backs the run; otherwise the
-    node-wise bodyId support counts joined by ``·`` — a multiplicity
-    indicator, never claimed to be a path count. Empty when no
-    bodyId-level data is available."""
-    if exact is not None:
-        value = exact.get(path)
-        return str(value) if value is not None else ''
-    if support is None:
-        return ''
-    return '·'.join(str(support.get(node, 0)) for node in path.split('->'))
+def _load_enrollment_coverage(
+        folder: Path) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Per-type bodyId coverage ``n/N`` for the pair pane (round-8b
+    item 1): source = bodyIds with ``isInPath`` / all enrolled bodyIds of
+    the type (``source_neurons.csv``); target = bodyIds reached
+    (``Checked``) / all resolved bodyIds of the type
+    (``target_neurons.csv``). Missing files yield empty strings."""
+    folder = Path(folder)
+    source_cov: Dict[str, str] = {}
+    target_cov: Dict[str, str] = {}
+    src_path = folder / 'source_neurons.csv'
+    if src_path.exists():
+        try:
+            frame = pd.read_csv(src_path, usecols=['type', 'isInPath'])
+            grouped = frame.groupby('type')['isInPath']
+            for type_name, values in grouped:
+                flags = values.fillna(False).astype(str).str.lower() == 'true'
+                source_cov[str(type_name)] = f'{int(flags.sum())}/{len(flags)}'
+        except Exception:  # noqa: BLE001 - coverage is best-effort
+            pass
+    tgt_path = folder / 'target_neurons.csv'
+    if tgt_path.exists():
+        try:
+            frame = pd.read_csv(tgt_path, usecols=['type', 'Checked'])
+            grouped = frame.groupby('type')['Checked']
+            for type_name, values in grouped:
+                flags = values.fillna(False).astype(str).str.lower() == 'true'
+                target_cov[str(type_name)] = f'{int(flags.sum())}/{len(flags)}'
+        except Exception:  # noqa: BLE001 - coverage is best-effort
+            pass
+    return source_cov, target_cov
 
 
 def _root_display_label(run_dir: Path, meta: Dict[str, Any],
@@ -757,7 +744,8 @@ def build_payload(
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
     'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
-    'min_weight', 'path_prob', 'length', 'bodyid_coverage', 'paths_in_pair',
+    'min_weight', 'path_prob', 'length', 'source_bodyid_coverage',
+    'target_bodyid_coverage', 'paths_in_pair',
 ]
 
 INTERMEDIATES_COLUMNS = [
@@ -1559,6 +1547,80 @@ REPORT_JS = r"""
     return { svg: svg, edgeEls: edgeEls };
   }
 
+  // Round-8b item 2: merge the selected pairs' per-pair viz payloads into
+  // ONE union layout — nodes keyed by id (source col 0, target last col,
+  // intermediates at their minimum drawn column), edges summed, rows
+  // first-seen over the union table's row order so row-hover stays aligned.
+  function mergeViz(pairs, rowPaths) {
+    var ncols = 2;
+    pairs.forEach(function(p) { ncols = Math.max(ncols, p.viz.ncols); });
+    var info = {};
+    pairs.forEach(function(p) {
+      p.viz.nodes.forEach(function(n) {
+        var rec = info[n.id] = info[n.id] ||
+          { minCol: ncols - 2, pairCount: 0, sharedInAny: false,
+            isSource: false, isTarget: false };
+        if (n.cls === 'source') { rec.isSource = true; }
+        else if (n.cls === 'target') { rec.isTarget = true; }
+        else {
+          rec.minCol = Math.min(rec.minCol, n.col);
+          if (n.cls === 'shared') { rec.sharedInAny = true; }
+        }
+        rec.pairCount += 1;
+      });
+    });
+    var colOf = {}, rowOf = {}, colSeen = {};
+    Object.keys(info).forEach(function(id) {
+      var rec = info[id];
+      if (rec.isSource) { colOf[id] = 0; }
+      else if (rec.isTarget) { colOf[id] = ncols - 1; }
+      else { colOf[id] = Math.min(rec.minCol, ncols - 2); }
+    });
+    rowPaths.forEach(function(path) {
+      path.split('->').forEach(function(node) {
+        var col = colOf[node];
+        if (rowOf[node] === undefined) {
+          rowOf[node] = colSeen[col] || 0;
+          colSeen[col] = (colSeen[col] || 0) + 1;
+        }
+      });
+    });
+    var edgeAgg = {};
+    pairs.forEach(function(p) {
+      p.viz.edges.forEach(function(e) {
+        var key = e.f + '->' + e.t;
+        var rec = edgeAgg[key] = edgeAgg[key] || { f: e.f, t: e.t, c: 0, w: 0 };
+        rec.c += e.c; rec.w += (e.w || 0);
+      });
+    });
+    var drawn_shared = 0, drawn_unique = 0;
+    var nodes = Object.keys(info).map(function(id) {
+      var rec = info[id];
+      var cls;
+      if (rec.isSource && rec.isTarget) { cls = 'both'; }
+      else if (rec.isSource) { cls = 'source'; }
+      else if (rec.isTarget) { cls = 'target'; }
+      else {
+        cls = (rec.sharedInAny || rec.pairCount >= 2) ? 'shared' : 'unique';
+        if (cls === 'shared') { drawn_shared += 1; } else { drawn_unique += 1; }
+      }
+      var label = id.length <= 18 ? id : id.slice(0, 17) + '…';
+      return { id: id, label: label, cls: cls, col: colOf[id],
+        row: rowOf[id] !== undefined ? rowOf[id] : 0,
+        title: id + ' — drawn in ' + rec.pairCount + ' of '
+          + pairs.length + ' selected pairs' };
+    });
+    return {
+      ncols: ncols,
+      nrows: Math.max(1, Math.max.apply(null, [1].concat(
+        Object.keys(colSeen).map(function(c) { return colSeen[c]; })))),
+      nodes: nodes,
+      edges: Object.keys(edgeAgg).map(function(k) { return edgeAgg[k]; }),
+      drawn_shared: drawn_shared,
+      drawn_unique: drawn_unique,
+    };
+  }
+
   // ---- global network (Global tab) ----
   var GlobalNet = {
     render: function() {
@@ -1698,10 +1760,14 @@ REPORT_JS = r"""
       pane.innerHTML = '';
       var pairs = this.currentPairs();
       if (!pairs || pairs.length === 0) { return; }
-      pairs.forEach(function(p, i) {
-        if (i > 0) { pane.appendChild(elt('hr')); }
-        pane.appendChild(Explorer.buildPane(p));
-      });
+      // Round-8b item 2: a multi-selection renders ONE pane whose table
+      // and network are the UNION of the selected pairs — not standalone
+      // sections.
+      if (pairs.length === 1) {
+        pane.appendChild(this.buildPane(pairs[0]));
+      } else {
+        pane.appendChild(this.buildUnionPane(pairs));
+      }
       setTimeout(flushNetworks, 0);
     },
 
@@ -1726,11 +1792,19 @@ REPORT_JS = r"""
       }
       pane.appendChild(head);
 
-      // capped table
-      pane.appendChild(this.renderCappedTable(p));
-
-      // network
-      pane.appendChild(this.renderViz(p));
+      // capped table + network (single pair: table/viz from its payload)
+      pane.appendChild(this.renderCappedTable([p]));
+      var rowPaths = [];
+      p.table.groups.forEach(function(g) {
+        g.rows.forEach(function(r) { rowPaths.push(r.path); });
+      });
+      pane.appendChild(this.renderVizCard(p.viz, rowPaths, {
+        netId: p.id,
+        caption: 'Drawn: the capped top-paths set (' + p.drawn_shared
+          + ' shared / ' + p.drawn_unique + ' unique intermediates drawn). '
+          + 'Classification from the full pair path set: ' + p.shared
+          + ' shared / ' + p.unique + ' unique. Edge width scales within '
+          + 'the drawn set.'}));
 
       // links
       var foot = elt('p', 'cap-note');
@@ -1753,31 +1827,124 @@ REPORT_JS = r"""
       return pane;
     },
 
-    renderCappedTable: function(p) {
+    // Round-8b item 2: ONE pane for a multi-selection — the table and the
+    // network are the UNION of the selected pairs.
+    buildUnionPane: function(pairs) {
+      var pane = elt('div');
+      var head = elt('div', 'card');
+      head.appendChild(elt('h3', null,
+        pairs.length + ' selected pairs — union'));
+      var badges = elt('div', 'pair-head-badges');
+      var totalPaths = 0;
+      pairs.forEach(function(p) { totalPaths += p.paths_total; });
+      badges.appendChild(badge(totalPaths + ' paths', 'badge-info'));
+      badges.appendChild(badge(pairs.length + ' pairs', 'badge-info'));
+      var totShared = 0, totUnique = 0;
+      pairs.forEach(function(p) { totShared += p.shared; totUnique += p.unique; });
+      badges.appendChild(badge(totShared + ' shared · ' + totUnique
+        + ' unique intermediates (full sets)', 'badge-success'));
+      head.appendChild(badges);
+      var names = pairs.map(function(p) { return p.source + '→' + p.target; });
+      head.appendChild(elt('p', 'cap-note', names.slice(0, 8).join(', ')
+        + (names.length > 8 ? ' … (+' + (names.length - 8) + ' more)' : '')));
+      pane.appendChild(head);
+
+      var merged = mergeViz(pairs, this.unionRowPaths(pairs));
+      var rowPaths = this.unionRowPaths(pairs);
+      pane.appendChild(this.renderCappedTable(pairs));
+      pane.appendChild(this.renderVizCard(merged, rowPaths, {
+        netId: 'union',
+        caption: 'Drawn: the UNION of the selected pairs\u2019 capped paths ('
+          + merged.drawn_shared + ' shared / ' + merged.drawn_unique
+          + ' unique intermediates drawn; shared = on \u22652 drawn paths or '
+          + 'shared within any selected pair). Edge counts and widths are '
+          + 'merged across pairs.'}));
+
+      var foot = elt('p', 'cap-note');
+      foot.appendChild(document.createTextNode('Full list: '));
+      var a = elt('a', null, 'pair_breakdown_paths.csv');
+      a.href = 'paths_pair_breakdown/pair_breakdown_paths.csv';
+      a.target = '_blank';
+      foot.appendChild(a);
+      foot.appendChild(document.createTextNode(' — filter '));
+      var filterText = 'pair in (' + names.slice(0, 6).join(', ')
+        + (names.length > 6 ? ', …' : '') + ')';
+      foot.appendChild(elt('span', 'code',
+        filterText.replace(/→/g, '->')));
+      foot.appendChild(document.createTextNode(' and '));
+      foot.appendChild(elt('span', 'code',
+        'unit = ' + (UNIT_LABEL[pairs[0].unit] || pairs[0].unit)));
+      pane.appendChild(foot);
+      return pane;
+    },
+
+    // The union table's row order: grouped by length ascending, then
+    // bottleneck (min_weight) desc across the whole selection.
+    unionRowPaths: function(pairs) {
+      var all = [];
+      pairs.forEach(function(p) {
+        p.table.groups.forEach(function(g) {
+          g.rows.forEach(function(r) { all.push(r); });
+        });
+      });
+      all.sort(function(a, b) {
+        return a.len - b.len || b.mw - a.mw || (a.path < b.path ? -1 : 1);
+      });
+      return all.map(function(r) { return r.path; });
+    },
+
+    // Round 8b: one builder for 1..N pairs. With N>1 the table is the
+    // UNION — rows from every selected pair (Pair column added), grouped
+    // by length ascending, re-ranked by min_weight desc within each
+    // length; caps stay per (pair, length).
+    renderCappedTable: function(pairs) {
       var card = elt('div', 'card');
-      card.appendChild(elt('h3', null, 'Top paths per length'));
+      card.appendChild(elt('h3', null, pairs.length > 1
+        ? 'Top paths per length (union)' : 'Top paths per length'));
+      var groupsByLen = {};
+      pairs.forEach(function(p) {
+        p.table.groups.forEach(function(g) {
+          var bucket = groupsByLen[g.len] = groupsByLen[g.len] || [];
+          g.rows.forEach(function(r) {
+            bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
+              path: r.path, len: g.len, mw: r.mw, pp: r.pp,
+              weights: r.weights, scov: r.scov, tcov: r.tcov,
+              total: g.total});
+          });
+        });
+      });
+      var lengths = Object.keys(groupsByLen).map(Number).sort(function(a, b) {
+        return a - b; });
       var wrap = elt('div', 'sticky-table-container');
       var table = elt('table');
       var thead = elt('thead');
       var hr = elt('tr');
-      ['#', 'Path', 'Len', 'Min weight', 'Path prob', 'Weights',
-       'BodyId coverage'].forEach(function(t) {
+      ['#', 'Pair', 'Path', 'Len', 'Min weight', 'Path prob', 'Weights',
+       'Source bIds', 'Target bIds'].forEach(function(t) {
         hr.appendChild(elt('th', null, t)); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = elt('tbody');
-      var self = this;
-      var rowIdx = 0;
-      p.table.groups.forEach(function(group) {
+      var rowPaths = [];
+      lengths.forEach(function(len) {
+        var rows = groupsByLen[len].slice().sort(function(a, b) {
+          return (b.mw || 0) - (a.mw || 0) || (a.path < b.path ? -1 : 1); });
+        var totals = {};
+        rows.forEach(function(r) {
+          totals[r.pair] = Math.max(totals[r.pair] || 0, r.total); });
         var gr = elt('tr', 'group-row');
-        var gtd = elt('td', null, group.len + ' hops — top ' + group.rows.length
-          + ' of ' + group.total);
-        gtd.colSpan = 7;
+        var gtd = elt('td', null, len + ' hops — ' + rows.length
+          + ' shown (' + (pairs.length > 1 ? 'union, top '
+            + DATA.run.top_per_length + ' per pair' : 'top ' + rows.length)
+          + ' of ' + rows.reduce(function(acc, r) {
+            return acc + r.total; }, 0) + ')');
+        gtd.colSpan = 9;
         gr.appendChild(gtd);
         tbody.appendChild(gr);
-        group.rows.forEach(function(row) {
+        rows.forEach(function(row, i) {
           var tr = elt('tr');
-          tr.dataset.i = rowIdx;
-          tr.appendChild(elt('td', null, row.rank));
+          tr.dataset.i = rowPaths.length;
+          tr.appendChild(elt('td', null, i + 1));
+          if (pairs.length > 1) { tr.appendChild(elt('td', null, row.pair)); }
           var pathTd = elt('td');
           pathTd.appendChild(elt('strong', null, row.path));
           tr.appendChild(pathTd);
@@ -1785,35 +1952,45 @@ REPORT_JS = r"""
           tr.appendChild(elt('td', null, fmt(row.mw)));
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
-          var covTd = elt('td', null, row.cov || '—');
-          covTd.title = 'Per-node bodyId counts along the path (·-joined); '
-            + 'an exact bodyId-path count appears as a single number when '
-            + 'the run includes a bodyId paths table.';
-          tr.appendChild(covTd);
+          var scovTd = elt('td', null, row.scov || '—');
+          scovTd.title = 'Source bodyIds on paths (isInPath) / enrolled — '
+            + 'from source_neurons.csv';
+          tr.appendChild(scovTd);
+          var tcovTd = elt('td', null, row.tcov || '—');
+          tcovTd.title = 'Target bodyIds reached (Checked) / resolved — '
+            + 'from target_neurons.csv';
+          tr.appendChild(tcovTd);
           tbody.appendChild(tr);
-          rowIdx += 1;
+          rowPaths.push(row.path);
         });
       });
       table.appendChild(tbody);
       wrap.appendChild(table);
       card.appendChild(wrap);
+      var totalShown = rowPaths.length;
+      var totalAll = 0;
+      pairs.forEach(function(p) { totalAll += p.paths_total; });
       var note = elt('p', 'cap-note');
-      note.textContent = 'Showing ' + rowIdx + ' of ' + p.paths_total
-        + ' paths (top-' + DATA.run.top_per_length + ' per length, rank by '
-        + DATA.run.rank_by + '). Hover a row to highlight its route in the '
-        + 'network below.';
+      note.textContent = 'Showing ' + totalShown + ' of ' + totalAll
+        + ' paths (top-' + DATA.run.top_per_length + ' per pair and length, '
+        + 'rank by ' + DATA.run.rank_by
+        + (pairs.length > 1 ? ', union re-ranked by min weight within each length' : '')
+        + '). Hover a row to highlight its route in the network below.';
       card.appendChild(note);
+      card.dataset.rowPaths = JSON.stringify(rowPaths);
       return card;
     },
 
-    renderViz: function(p) {
+    renderVizCard: function(viz, rowPaths, opts) {
       var card = elt('div', 'card');
       card.appendChild(elt('h3', null, 'Network'));
-      var viz = p.viz;
       var legend = elt('div', 'legend');
-      [['#ef4444', 'source'], ['#8b5cf6', 'target'],
-       ['#2563eb', 'shared intermediate (≥2 paths)'],
-       ['#94a3b8', 'unique intermediate (1 path)']].forEach(function(item) {
+      var items = [['#ef4444', 'source'], ['#8b5cf6', 'target']];
+      var hasBoth = viz.nodes.some(function(n) { return n.cls === 'both'; });
+      if (hasBoth) { items.push(['#14b8a6', 'source & target']); }
+      items.push(['#2563eb', 'shared intermediate (≥2 paths)'],
+        ['#94a3b8', 'unique intermediate (1 path)']);
+      items.forEach(function(item) {
         var span = elt('span');
         var chip = elt('span', 'chip');
         chip.style.background = item[0];
@@ -1823,28 +2000,28 @@ REPORT_JS = r"""
       });
       card.appendChild(legend);
 
+      var built = makeSvg(viz);
+      var svg = built.svg;
+      var edgeEls = built.edgeEls;
       var svgWrap = elt('div');
-      svgWrap.appendChild(makeSvg(viz).svg);
+      svgWrap.appendChild(svg);
       card.appendChild(svgWrap);
       var netWrap = elt('div', 'network-container');
-      netWrap.id = 'net-' + p.id;
+      netWrap.id = 'net-' + opts.netId;
       card.appendChild(netWrap);
-      PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: viz });
+      PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: viz,
+        hier: viz === (DATA.global && DATA.global.network) });
       var caption = elt('p', 'cap-note');
-      caption.textContent = 'Drawn: the capped top-paths set (' + p.drawn_shared
-        + ' shared / ' + p.drawn_unique + ' unique intermediates drawn). '
-        + 'Classification from the full pair path set: ' + p.shared + ' shared / '
-        + p.unique + ' unique. Edge width ∝ drawn-path count.';
+      caption.textContent = opts.caption;
       card.appendChild(caption);
 
-      // row-hover → highlight that path's edges
+      // row-hover → highlight that path's edges (keys from the row path)
       setTimeout(function() {
         var pane = document.getElementById('pair-pane');
         if (!pane) { return; }
         pane.querySelectorAll('tr[data-i]').forEach(function(tr) {
-          var i = Number(tr.dataset.i);
-          var ids = viz.paths[i];
-          if (!ids) { return; }
+          var ids = (rowPaths[Number(tr.dataset.i)] || '').split('->');
+          if (ids.length < 2) { return; }
           var keys = [];
           for (var k = 0; k + 1 < ids.length; k++) {
             keys.push(ids[k] + '->' + ids[k + 1]);
@@ -1924,11 +2101,14 @@ def _build_unit_drawn(
 def _attach_table_groups(
     frame: pd.DataFrame, rank_by: str, top_per_length: int,
     pairs: List[dict],
-    support: Optional[Dict[str, int]] = None,
-    exact_counts: Optional[Dict[str, int]] = None,
+    source_cov: Optional[Dict[str, str]] = None,
+    target_cov: Optional[Dict[str, str]] = None,
 ) -> None:
     """Fill each pair entry's capped table groups (ranked rows per length),
-    each row carrying its ``cov`` bodyId-coverage string (round-8 item 8)."""
+    each row carrying its pair's ``scov``/``tcov`` bodyId n/N strings
+    (round-8b item 1)."""
+    source_cov = source_cov or {}
+    target_cov = target_cov or {}
     work = frame.copy()
     work['_path_key'] = work['path']
     ordered = _rank_sort(work, rank_by)
@@ -1946,7 +2126,8 @@ def _attach_table_groups(
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
-                    'cov': _coverage_string(str(row['path']), support, exact_counts),
+                    'scov': source_cov.get(source, ''),
+                    'tcov': target_cov.get(target, ''),
                 })
             groups.append({'len': int(length), 'total': len(length_group),
                            'rows': rows})
@@ -2005,18 +2186,17 @@ def generate_paths_pair_report(
     unit_inter_counts: Dict[str, Dict[Tuple[str, str], Counter]] = {}
     unit_inter_minhop: Dict[str, Dict[Tuple[str, str], Dict[str, int]]] = {}
     unit_drawn: Dict[str, Dict[Tuple[str, str], List[dict]]] = {}
-    unit_support: Dict[str, Optional[Dict[str, int]]] = {}
-    unit_exact: Dict[str, Optional[Dict[str, int]]] = {}
+    unit_source_cov: Dict[str, Dict[str, str]] = {}
+    unit_target_cov: Dict[str, Dict[str, str]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
         frames[unit.unit_id] = frame
-        support = load_bodyid_support(unit.folder)
-        exact = load_exact_bodyid_counts(unit.folder)
-        unit_support[unit.unit_id] = support
-        unit_exact[unit.unit_id] = exact
+        source_cov, target_cov = _load_enrollment_coverage(unit.folder)
+        unit_source_cov[unit.unit_id] = source_cov
+        unit_target_cov[unit.unit_id] = target_cov
         path_rows, inter_rows, pair_stats = build_unit_breakdown(
-            frame, rank_by, support=support, exact_counts=exact)
+            frame, rank_by, source_cov=source_cov, target_cov=target_cov)
         unit_path_rows[unit.unit_id] = path_rows
         unit_inter_rows[unit.unit_id] = inter_rows
         unit_pair_stats[unit.unit_id] = pair_stats
@@ -2044,7 +2224,7 @@ def generate_paths_pair_report(
         unit_pair_stats, unit_drawn, top_per_length, rank_by,
         vispath_links=vispath_links)
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
-                               unit_support, unit_exact)
+                               unit_source_cov, unit_target_cov)
     payload['global'] = build_global(units, frames, global_pairs, global_edges)
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
@@ -2090,8 +2270,8 @@ def generate_paths_pair_report(
 def _attach_table_groups_multi(
     units: Sequence[Unit], frames: Dict[str, pd.DataFrame],
     payload: dict, rank_by: str, top_per_length: int,
-    unit_support: Optional[Dict[str, Optional[Dict[str, int]]]] = None,
-    unit_exact: Optional[Dict[str, Optional[Dict[str, int]]]] = None,
+    unit_source_cov: Optional[Dict[str, Dict[str, str]]] = None,
+    unit_target_cov: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -2101,5 +2281,5 @@ def _attach_table_groups_multi(
         if entries:
             _attach_table_groups(
                 frames[unit.unit_id], rank_by, top_per_length, entries,
-                support=(unit_support or {}).get(unit.unit_id),
-                exact_counts=(unit_exact or {}).get(unit.unit_id))
+                source_cov=(unit_source_cov or {}).get(unit.unit_id),
+                target_cov=(unit_target_cov or {}).get(unit.unit_id))
