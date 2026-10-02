@@ -158,13 +158,16 @@ py-modules = [
     "neuronbridge_finder",
     "neuronbridge_output_policy",
     "neuronbridge_query_expansion",
+    "paths_pair_report",
     "roi_screening",
     "roi_sensitive_segmentation",
+    "shortest_discovery_store",
     "skeleton_provenance",
     "skeleton_simplification",
     "statvis",
     "storage_inventory",
     "synapse_cache",
+    "vendored_assets",
     "visualization_options",
     "visualize_skeleton",
 ]
@@ -179,7 +182,8 @@ namespaces = false
 # to import from src/ modules
 
 [tool.setuptools.package-data]
-"*" = ["*.json", "*.csv", "*.md"]
+"*" = ["*.json", "*.csv", "*.md", "*.js"]
+"assets" = ["VERSIONS.md", "*.js", "cytoscape/*.js"]
 
 [tool.black]
 line-length = 100
