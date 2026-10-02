@@ -736,6 +736,16 @@ def standardize_bridge(chain, source_dataset: str,
     linkers are ``kind: 'linker'`` and at most two per known pair (one
     crosswalk + one annotation). Hops outside the pair registry are
     flagged ``indirect``.
+
+    A linker node's ``value`` is the physical CELL TOKEN at every hop
+    position: crosswalk/BANC-label/release hops record the landed type
+    name in the hop's ``value`` and the cell content in ``via`` (omitted
+    when the two agree), so the standardizer pools ``via or value`` for
+    those columns — the terminal branch since the 2026-09-07 pooling
+    fix, the middle branch since 2026-10-02 (full-map composed routes
+    turn a leg's terminal hop into a MIDDLE hop at the seam).
+    Annotation-column hops are the mirror image — their ``value`` IS the
+    cell token and ``via`` the row's own type — and keep ``value``.
     """
     # A bridge can be traversed in either direction.  The registry describes
     # the physical linker columns for the pair, so use its mirror when the

@@ -583,6 +583,21 @@ name while the cell carries the foreign token (MCNS rows typed
 arrival name emptied the target pool and blanked the coverage of rows
 like `5th-LNv → 5thsLNv_LNd6`. Post-fix all 44 circadian pairs pool.
 
+Seam fix (2026-10-02): the cell-content rule now applies at EVERY hop
+position. Full-map composed routes turn a leg's terminal hop into a
+MIDDLE hop of the concatenated chain, and the middle branch of
+`standardize_bridge` had kept pooling the landed type name — the
+`male-cns:v0.9 release_alias` routes of exactly the pairs above read as
+`unsupported — target-side linker rows had no bodyIds` for this reason.
+Middle hops on crosswalk/BANC-label/release columns pool `via or value`;
+annotation-column middle hops keep `value` (their cell token — `via` is
+the row's own type, the FAFB `APDN3`/MCNS `CL125` reverse case).
+Evidence tiers are token-independent, so chain ORDER did not move;
+selected pools and curated-mode exports are byte-stable, and only the
+wrongly-dropped alternatives returned (real-data round: 23 unsupported
+attempts → 0; `valid_bridge_count`, the `all_valid_*` unions and the
+linker HTML's alternative pools now carry them).
+
 `granularity` ("n to m") remains a compatibility summary, while the pool
 now carries independent `source_coverage` and `target_coverage` strings
 (`covered <pool> of <endpoint type total> (<pct>)` — the shared
@@ -840,7 +855,12 @@ eight distinct source neurons.
   pairings. The UI requests the `extended=True` export, which adds the
   selected bridge, mapping status, selected rank, valid-chain count,
   raw/canonical selected linker values, unsupported attempts,
-  selected/all-valid pool totals and IDs, coverage overlap, and scope. The
+  selected/all-valid pool totals and IDs, coverage overlap, and scope.
+  `selected_linker_values` carries the physical cell token at every hop
+  position (see the pool/seam fixes above), and `unsupported_attempts`
+  lists per-rank reasons for candidate chains that pooled no endpoint
+  evidence — empty on healthy exports, since the 2026-10-02 seam fix
+  removed the false positives full-map composed chains produced.  The
   default 20-column form remains available for existing programmatic callers.
 - **Bridge-support pass-through** (mapper boundary, user 2026-09-14):
   the row-based bodyId-level evidence each bridge resolves — BANC label
