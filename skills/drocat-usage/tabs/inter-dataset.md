@@ -84,12 +84,12 @@ python skills/drocat-usage/scripts/run_direct.py \
 
 - Per-dataset comparison tables (CSV/XLSX), threshold summaries, report, and
   conserved-path HTML views.
-- Post-hoc pair report: `scripts/PathsPairReport.py <run_dir>` treats each
-  `dataset_data/<dataset>/minsyn_<N>/` delegate as a unit and writes
-  `path_report.html` + `paths_pair_breakdown/*.csv` at the run root — the
-  Global tab's pair × unit matrix and coverage histogram give the run-wide
-  view next to `comparison_report.html` (see tabs/find-path.md "Pair
-  report").
+- Pair report: written automatically at the run root when the run
+  completes (`path_report.html` + `paths_pair_breakdown/*.csv`); each
+  `dataset_data/<dataset>/minsyn_<N>/` delegate becomes a unit — the
+  Global tab's pair × unit matrix and coverage histogram give the
+  run-wide view next to `comparison_report.html` (see tabs/find-path.md
+  "Pair report").
 
 ## Report layout
 

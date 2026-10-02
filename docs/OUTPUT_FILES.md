@@ -202,15 +202,17 @@ Written when `find_reciprocal=True`:
 *   **`reciprocal_type_network.html`** / **`reciprocal_type_heatmap.html`**: Reciprocal visualizations
 *   **`parameters.csv`**: Reciprocal-analysis parameters
 
-#### Pair Report (`path_report.html`, `paths_pair_breakdown/`) — post-hoc
+#### Pair Report (`path_report.html`, `paths_pair_breakdown/`)
 
-Not written by the run itself: `scripts/PathsPairReport.py` (CLI over
-`src/paths_pair_report.py`) generates these INTO an existing run folder, for
-Complete Paths, Shortest Paths, and cross-dataset runs alike (each
-`dataset_data/<dataset>/minsyn_<N>/` delegate becomes a "unit"; unit labels
-are the raw folder names, e.g. `minsyn_5_applied_floor`; skipped delegates
-hold no paths table and are ignored). Re-running overwrites only these
-files, byte-identically modulo the report's `Generated:` timestamp.
+Written automatically at the end of every UI pathfinding run (Complete
+Paths, Shortest Paths, and cross-dataset runs alike) by the runner's
+post-run hook, and on demand for existing folders via
+`scripts/PathsPairReport.py` (CLI over `src/paths_pair_report.py`). Each
+`dataset_data/<dataset>/minsyn_<N>/` delegate of a cross-dataset run
+becomes a "unit"; unit labels are the raw folder names, e.g.
+`minsyn_5_applied_floor`; skipped delegates hold no paths table and are
+ignored. Re-running overwrites only these files, byte-identically modulo
+the report's `Generated:` timestamp.
 
 *   **`path_report.html`**: Self-contained per-source-target-pair report
     (house cross-dataset styling; the vis-network library is **vendored**

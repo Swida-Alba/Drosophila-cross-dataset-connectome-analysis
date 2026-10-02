@@ -73,9 +73,9 @@ python skills/drocat-usage/scripts/run_direct.py \
   threshold/bottleneck provenance block as Complete Paths (`parameters.txt`,
   `all_attributes.json`, `data_details/parameters.csv`) and
   `data_details/untyped_dropped_records.csv` when untyped rows were dropped.
-- Post-hoc pair report: `scripts/PathsPairReport.py <run_dir>` writes
-  `path_report.html` + `paths_pair_breakdown/*.csv` into the run folder
-  (see tabs/find-path.md "Pair report"). Shortest is minimum-hop per
+- Pair report: written automatically when the run completes
+  (`path_report.html` + `paths_pair_breakdown/*.csv` in the run folder;
+  see tabs/find-path.md "Pair report"). Shortest is minimum-hop per
   bodyId pair, so a TYPE-level pair can still span several lengths — the
   per-length cap applies normally.
 

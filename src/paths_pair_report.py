@@ -1846,6 +1846,16 @@ def _generated_stamp() -> str:
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
+def has_paths_tables(run_dir) -> bool:
+    """True when any ``*_allpaths_type.csv`` paths table exists under
+    *run_dir* (the only hard requirement of the generator). Cheap
+    pre-check so callers can skip non-pathfinding runs."""
+    try:
+        return any(Path(run_dir).rglob(f'*{PATHS_SUFFIX}'))
+    except OSError:
+        return False
+
+
 def generate_paths_pair_report(
     run_dir, top_per_length: int = DEFAULT_TOP_PER_LENGTH,
     matrix_rows: int = DEFAULT_MATRIX_ROWS,
@@ -1938,28 +1948,3 @@ def _attach_table_groups_multi(
         if entries:
             _attach_table_groups(
                 frames[unit.unit_id], rank_by, top_per_length, entries)
-
-
-class PathsPairReportTool:
-    """UI-facing wrapper for the ``ui/runner.py`` TOOL_REGISTRY entry
-    ``paths_pair_report``: the constructor takes no arguments (the runner
-    instantiates the class), every knob rides the ``generate`` method
-    params."""
-
-    def __init__(self, **_ignored) -> None:
-        pass
-
-    def generate(
-        self, run_dir,
-        top_per_length: int = DEFAULT_TOP_PER_LENGTH,
-        matrix_rows: int = DEFAULT_MATRIX_ROWS,
-        rank_by: str = 'min_weight',
-        global_pairs: int = DEFAULT_GLOBAL_PAIRS,
-        global_edges: int = DEFAULT_GLOBAL_EDGES,
-        **_ignored,
-    ) -> str:
-        """Generate the pair report into *run_dir*; returns the report path."""
-        return str(generate_paths_pair_report(
-            run_dir, top_per_length=top_per_length, matrix_rows=matrix_rows,
-            rank_by=rank_by, global_pairs=global_pairs,
-            global_edges=global_edges))

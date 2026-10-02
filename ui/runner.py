@@ -325,18 +325,9 @@ TOOL_REGISTRY: Dict[str, dict] = {
         "class": None, "var": None, "init_method": None,
         "methods": {"run": ""},  # dispatched to _generate_tmvev_script by name
     },
-    # Post-hoc generator: writes path_report.html + paths_pair_breakdown/
-    # INTO an existing pathfinding run folder (plan-paths-pair-report §7).
-    "paths_pair_report": {
-        "label": "Paths Pair Report",
-        "import": "from paths_pair_report import PathsPairReportTool",
-        "class": "PathsPairReportTool",
-        "var": "pair_report",
-        "init_method": None,
-        "methods": {
-            "generate": "pair_report.generate(**method_params)",
-        },
-    },
+    # NOTE: the pair report is NOT a registry tool — it is generated
+    # automatically after every pathfinding run by
+    # _maybe_generate_pair_report (see the post-run hook in run()).
 }
 
 
@@ -351,6 +342,40 @@ def _format_params(params: dict) -> str:
     for key, value in params.items():
         lines.append(f"    {key}={_format_value(value)},")
     return "\n".join(lines)
+
+
+def _maybe_generate_pair_report(scan_dir, log, progress) -> None:
+    """Post-run hook: generate the per-pair paths report into *scan_dir*
+    when it holds pathfinding outputs (plan-paths-pair-report §7, round 6:
+    embedded in the run flow instead of a standalone button). Applies to
+    Complete Paths, Shortest Paths, and cross-dataset runs; skips
+    everything else silently. Never raises — a report failure must not
+    fail the run."""
+    try:
+        from src.paths_pair_report import (
+            generate_paths_pair_report,
+            has_paths_tables,
+        )
+    except ImportError:  # pragma: no cover - direct src/ execution
+        try:
+            from paths_pair_report import (
+                generate_paths_pair_report,
+                has_paths_tables,
+            )
+        except ImportError:
+            return
+    try:
+        if not scan_dir or not has_paths_tables(scan_dir):
+            return
+        progress("pair-report", "Generating pair report")
+        log("Generating paths pair report...", "system")
+        generate_paths_pair_report(scan_dir, log=lambda *args, **kwargs: None)
+        log("Pair report written: path_report.html", "system")
+    except Exception as exc:  # noqa: BLE001 - reporting must never fail the run
+        try:
+            log(f"Pair report generation skipped: {exc}", "warning")
+        except Exception:
+            pass
 
 
 class ScriptRunner:
@@ -557,6 +582,15 @@ class ScriptRunner:
                 )
                 if guide_path:
                     _log(f"Run guide written: {guide_path.name}", "system")
+
+            # Embed the per-pair paths report into pathfinding runs
+            # (plan-paths-pair-report §7 round 6: part of the run flow, not
+            # a standalone button). Written before the file scan so
+            # path_report.html + paths_pair_breakdown/ appear in the Output
+            # Files panel like native run outputs. Never fails the run.
+            if returncode == 0 and not self._cancelled and scan_dir:
+                _maybe_generate_pair_report(
+                    scan_dir, _log, _progress)
 
             files = self._scan_output_files(scan_dir) if scan_dir else []
 
