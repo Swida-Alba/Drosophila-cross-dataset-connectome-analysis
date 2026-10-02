@@ -274,6 +274,27 @@ def create_find_shortest_tab():
                     # Fix C: the lossy bodyId edge limit is deprecated and
                     # ignored — shortest paths are always complete.
 
+                with param_grid(3):
+                    # plan-shortest-batched-discovery: discovery memory for
+                    # many broad targets is bounded per enumeration batch.
+                    discovery_batch_budget = number_input(
+                        "Discovery Batch Budget", 2_000_000, 0, 100_000_000,
+                        hint="Shortest-mode memory control: discovery labels "
+                             "stream to shortest_discovery_store/ and "
+                             "enumeration runs per batch of targets whose "
+                             "combined BFS distance states stay under this "
+                             "budget. Discovery memory otherwise grows with "
+                             "targets x frontier x depth. 0 = single batch "
+                             "(legacy behavior). Results are identical "
+                             "either way.",
+                    )
+                    target_batch_size = number_input(
+                        "Targets per Batch", 0, 0, 100_000,
+                        hint="Simple alternative to the batch budget: fixed "
+                             "number of targets per enumeration batch. "
+                             "0 = use the Discovery Batch Budget instead.",
+                    )
+
                 search_columns = select_input(
                     "Search Columns", SEARCH_COLUMNS, get_user_default("search_columns"),
                     hint="Which columns to search when resolving neuron names. "
@@ -384,6 +405,10 @@ def create_find_shortest_tab():
             # Fix C/D: shortest mode is never floored — the Edge Budget
             # does not apply here.
             "graph_edge_limit_bodyid": 0,
+            # plan-shortest-batched-discovery: batched discovery +
+            # budgeted enumeration (0 = legacy monolithic path).
+            "discovery_batch_budget": int(discovery_batch_budget.value) or 0,
+            "target_batch_size": int(target_batch_size.value) or 0,
             # Shortest Paths no longer exposes the early network preview in
             # the UI; keep the backend behavior explicitly disabled.
             "visualize_before_reconstruct": False,

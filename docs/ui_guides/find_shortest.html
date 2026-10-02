@@ -97,6 +97,8 @@
     <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
     <tr><td>Show Figure</td><td>off</td><td>Open the interactive figures in the browser as they are generated</td></tr>
     <tr><td>Edge Budget</td><td>not applicable</td><td>Shortest mode is never floored (the tab omits the Edge Budget control and always sends 0) — flooring would raise the threshold and can inflate shortest distances</td></tr>
+    <tr><td>Discovery Batch Budget</td><td>2,000,000</td><td>Advanced (memory control, <code>discovery_batch_budget</code>): discovery labels stream to <code>shortest_discovery_store/</code> and enumeration runs per batch of targets whose combined BFS distance states stay under this budget. <code>0</code> = single batch (legacy behavior). Results are identical either way; see the memory note below</td></tr>
+    <tr><td>Targets per Batch</td><td>0</td><td>Advanced (<code>target_batch_size</code>): fixed number of targets per enumeration batch instead of the state budget; <code>0</code> = use the Discovery Batch Budget</td></tr>
     <tr><td>Visualization Edge Limit</td><td>500</td><td>Maximum edges drawn in each network/Sankey/heatmap visualization; does not alter shortest-path discovery</td></tr>
     <tr><td>Filter By</td><td>bodyId</td><td>bodyId or type aggregation</td></tr>
     <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
@@ -156,6 +158,22 @@
     sends 0; API callers passing <code>graph_edge_limit_bodyid</code> still get
     the full un-floored graph here because the setting is ignored. The <b>Max Paths (BodyId)</b> input is the
     knob that bounds this mode.
+  </div>
+
+  <div class="callout tip">
+    <b>Memory sizing (Discovery Batch Budget).</b> Discovery memory for
+    many broad targets otherwise grows with <b>targets × union frontier ×
+    depth</b> — a measured 2026-10-02 run (242 circadian targets at depth
+    5, ~450 GB RSS) is why batching is the default: labels stream to
+    <code>shortest_discovery_store/</code> and enumeration holds at most
+    one batch of targets (bounded by the state budget). The <b>Path
+    Budget bounds only the result</b> (emitted paths) and the <b>Edge
+    Budget never applies here</b> — neither controls discovery memory.
+    Deep runs with a single broad target remain depth-bound: lower Max
+    Intermediate Layers or raise Min Synapse Count. Results are identical
+    with or without batching (the run folder's
+    <code>shortest_discovery_diagnostics.batching</code> records the
+    realized composition).
   </div>
 
   <h2>Applied threshold &amp; bottleneck provenance</h2>
@@ -233,7 +251,8 @@
   <div class="callout tip">
     <b>Pair report (automatic):</b> the run writes
     <code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>
-    into its folder when it completes — per-pair presence matrices, capped
+    into its folder when it completes — capped top-paths tables with
+    bodyId coverage,
     top-paths tables, and interactive offline networks. Shortest is
     minimum-hop per bodyId pair, so a type-level pair can still span
     several lengths; the per-length cap applies normally (the report

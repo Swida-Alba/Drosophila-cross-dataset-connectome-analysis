@@ -63,7 +63,6 @@ INTERMEDIATES_CSV_NAME = 'pair_breakdown_intermediates.csv'
 PATHS_SUFFIX = '_allpaths_type.csv'
 
 DEFAULT_TOP_PER_LENGTH = 10
-DEFAULT_MATRIX_ROWS = 50
 DEFAULT_GLOBAL_EDGES = 60
 DEFAULT_GLOBAL_PAIRS = 50
 RANK_KEYS = ('min_weight', 'path_prob', 'length')
@@ -258,12 +257,15 @@ def _rank_sort(frame: pd.DataFrame, rank_by: str) -> pd.DataFrame:
 
 def build_unit_breakdown(
     frame: pd.DataFrame, rank_by: str,
+    support: Optional[Dict[str, int]] = None,
+    exact_counts: Optional[Dict[str, int]] = None,
 ) -> Tuple[List[dict], List[dict], Dict[Tuple[str, str], dict]]:
     """Per-pair breakdown of one unit.
 
     Returns (path rows, intermediate rows, pair stats keyed
     ``(source, target)``). Rank is bottleneck-first within (pair, length);
-    shared/unique classification is over the pair's FULL path set.
+    shared/unique classification is over the pair's FULL path set. Each
+    path row carries its ``bodyid_coverage`` (round-8 item 8).
     """
     frame = frame.copy()
     frame['_path_key'] = frame['path']
@@ -300,6 +302,8 @@ def build_unit_breakdown(
                     'min_weight': row['min_weight'],
                     'path_prob': row['path_prob'],
                     'length': int(length),
+                    'bodyid_coverage': _coverage_string(
+                        str(row['path']), support, exact_counts),
                 })
         stats = {
             'paths': len(pair_rows),
@@ -349,49 +353,75 @@ def _weight_list(weights: str) -> Optional[List[float]]:
     return None
 
 
-def build_presence_matrix(
-    source: str, target: str, units: Sequence[Unit],
-    frames: Dict[str, pd.DataFrame], matrix_rows: int,
-) -> dict:
-    """Paths x units presence matrix for one (source, target) name pair.
+# ---------------------------------------------------------------------------
+# bodyId coverage (round 8, user item 2)
+# ---------------------------------------------------------------------------
 
-    Rows are the union of exact path keys across all units; cells carry the
-    unit's ``min_weight``. Sorted conservation desc, then max weight desc,
-    then path asc (the house presence-table ordering), capped to
-    *matrix_rows* with the total kept for the cap note.
-    """
-    union: Dict[str, Dict[str, Optional[float]]] = {}
-    for unit in units:
-        frame = frames[unit.unit_id]
-        sub = frame[(frame['_source'] == source) & (frame['_target'] == target)]
-        for _, row in sub.iterrows():
-            path = str(row['path'])
-            union.setdefault(path, {})[unit.unit_id] = (
-                None if pd.isna(row['min_weight']) else float(row['min_weight']))
+def load_bodyid_support(folder: Path) -> Optional[Dict[str, int]]:
+    """Per-type bodyId counts from ``data_details/neurons_included.csv``
+    (present in every pathfinding run). ``None`` when the file is
+    missing/unreadable."""
+    path = Path(folder) / 'data_details' / 'neurons_included.csv'
+    if not path.exists():
+        return None
+    try:
+        frame = pd.read_csv(path, usecols=['type'])
+        return frame['type'].value_counts().to_dict()
+    except Exception:  # noqa: BLE001 - coverage is best-effort
+        return None
 
-    rows = []
-    for path, cells in union.items():
-        present = [u for u in cells if cells[u] is not None]
-        weights = [cells[u] for u in present]
-        rows.append({
-            'path': path,
-            'len': len(path.split('->')) - 1,
-            'cells': {u: cells.get(u) for u in (x.unit_id for x in units)},
-            'cons': len(present),
-            'max_weight': max(weights) if weights else float('-inf'),
-        })
-    rows.sort(key=lambda r: (-r['cons'], -r['max_weight'], r['path']))
-    shown = rows[:matrix_rows]
-    return {
-        'units': [u.unit_id for u in units],
-        'total': len(rows),
-        'shown': len(shown),
-        'rows': [
-            {'path': r['path'], 'len': r['len'], 'cons': r['cons'],
-             'cells': r['cells']}
-            for r in shown
-        ],
-    }
+
+def load_exact_bodyid_counts(folder: Path) -> Optional[Dict[str, int]]:
+    """Exact bodyId-path counts per type-path projection, from a
+    ``*_allpaths_bodyId_paths.csv`` (written only when Skip BodyId is
+    off — no such file exists in default runs). ``None`` when absent or
+    on any schema surprise."""
+    matches = sorted(Path(folder).rglob('*_allpaths_bodyId_paths.csv'))
+    if not matches:
+        return None
+    try:
+        frame = pd.read_csv(matches[0], dtype=str)
+        column = 'path_types' if 'path_types' in frame.columns else 'path'
+        counts: Counter = Counter()
+        for value in frame[column].dropna():
+            counts['->'.join(str(value).split('->'))] += 1
+        return dict(counts)
+    except Exception:  # noqa: BLE001 - exact tier is optional
+        return None
+
+
+def _coverage_string(path: str, support: Optional[Dict[str, int]],
+                     exact: Optional[Dict[str, int]]) -> str:
+    """BodyId coverage for one type-level path (round-8 item 8).
+
+    Exact count when a bodyId paths table backs the run; otherwise the
+    node-wise bodyId support counts joined by ``·`` — a multiplicity
+    indicator, never claimed to be a path count. Empty when no
+    bodyId-level data is available."""
+    if exact is not None:
+        value = exact.get(path)
+        return str(value) if value is not None else ''
+    if support is None:
+        return ''
+    return '·'.join(str(support.get(node, 0)) for node in path.split('->'))
+
+
+def _root_display_label(run_dir: Path, meta: Dict[str, Any],
+                        fallback: str) -> str:
+    """Informative label for a report's own run-root unit — '(run root)'
+    is retired (round-8 item 5). Single-dataset runs label by dataset +
+    min synapse; nested delegate reports fall back to their folder name
+    (e.g. ``minsyn_3``) or the dataset alone; the run name is the last
+    resort."""
+    dataset = str(meta.get('dataset') or '').strip()
+    min_syn = str(meta.get('min_synapse') or '').strip()
+    if dataset and min_syn and min_syn not in ('0', 'None'):
+        return f'{dataset} · min synapse {min_syn}'
+    if dataset:
+        return dataset
+    if run_dir.name.startswith('minsyn_'):
+        return run_dir.name
+    return fallback or run_dir.name
 
 
 def build_viz(rows: Sequence[dict], inter_counts: Counter,
@@ -481,7 +511,7 @@ def build_viz(rows: Sequence[dict], inter_counts: Counter,
 def build_pair_entry(
     unit: Unit, source: str, target: str, stats: dict,
     inter_counts: Counter, inter_minhop: Dict[str, int],
-    drawn_rows: Sequence[dict], mt_key: str,
+    drawn_rows: Sequence[dict],
 ) -> dict:
     lengths = stats['lengths']
     drawn_nodes = {n for row in drawn_rows for n in str(row['path']).split('->')}
@@ -505,7 +535,6 @@ def build_pair_entry(
         'unique': stats['unique'],
         'drawn_shared': drawn_shared,
         'drawn_unique': drawn_unique,
-        'mt': mt_key,
         'viz': build_viz(drawn_rows, inter_counts, inter_minhop),
     }
 
@@ -545,14 +574,26 @@ def build_global(
         })
 
     pair_cells: Dict[Tuple[str, str], Dict[str, int]] = {}
+    pair_len_range: Dict[Tuple[str, str], List[int]] = {}
+    pair_unit_range: Dict[Tuple[str, str], Dict[str, str]] = defaultdict(dict)
     for unit in units:
         frame = frames[unit.unit_id]
         for (source, target), count in (
                 frame.groupby(['_source', '_target']).size().items()):
             pair_cells.setdefault((source, target), {})[unit.unit_id] = int(count)
+        lengths_by_pair = frame.groupby(['_source', '_target'])['_length']
+        for (source, target), lengths in lengths_by_pair:
+            lo, hi = int(lengths.min()), int(lengths.max())
+            span = pair_len_range.setdefault((source, target), [lo, hi])
+            span[0], span[1] = min(span[0], lo), max(span[1], hi)
+            pair_unit_range[(source, target)][unit.unit_id] = (
+                f'{lo}–{hi}' if lo != hi else f'{lo}')
     matrix_rows = [
         {'source': s, 'target': t, 'cells': cells, 'total': sum(cells.values()),
-         'cons': len(cells)}
+         'cons': len(cells),
+         'length_range': (f'{pair_len_range[(s, t)][0]}–{pair_len_range[(s, t)][1]}'
+                          if (s, t) in pair_len_range else '—'),
+         'ranges': pair_unit_range.get((s, t), {})}
         for (s, t), cells in pair_cells.items()
     ]
     matrix_rows.sort(key=lambda r: (-r['cons'], -r['total'], r['source'], r['target']))
@@ -651,33 +692,21 @@ def build_payload(
     unit_inter_minhop: Dict[str, Dict[Tuple[str, str], Dict[str, int]]],
     unit_pair_stats: Dict[str, Dict[Tuple[str, str], dict]],
     unit_drawn: Dict[str, Dict[Tuple[str, str], List[dict]]],
-    top_per_length: int, matrix_rows: int, rank_by: str,
+    top_per_length: int, rank_by: str,
+    vispath_links: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON payload the page renders on demand."""
-    matrices: Dict[str, dict] = {}
-    mt_keys: Dict[Tuple[str, str], str] = {}
     pairs: List[dict] = []
 
     for unit in units:
         for (source, target), stats in sorted(
                 unit_pair_stats[unit.unit_id].items(),
                 key=lambda item: (-item[1]['paths'], item[0])):
-            if (source, target) not in mt_keys:
-                slug = _query_report_slug(f'{source}__{target}')
-                base, mt_key = slug, slug
-                counter = 2
-                while mt_key in matrices:
-                    mt_key = f'{base}_{counter}'
-                    counter += 1
-                mt_keys[(source, target)] = mt_key
-                matrices[mt_key] = build_presence_matrix(
-                    source, target, units, frames, matrix_rows)
             counts = unit_inter[unit.unit_id][(source, target)]
             minhop = unit_inter_minhop[unit.unit_id][(source, target)]
             entry = build_pair_entry(
                 unit, source, target, stats, counts, minhop,
-                unit_drawn[unit.unit_id][(source, target)],
-                mt_keys[(source, target)])
+                unit_drawn[unit.unit_id][(source, target)])
             pairs.append(entry)
 
     # unique ids for deep links
@@ -708,8 +737,8 @@ def build_payload(
             in ('true', '1', 'yes'),
             'meta': {k: v for k, v in meta.items() if v is not None},
             'top_per_length': top_per_length,
-            'matrix_rows': matrix_rows,
             'rank_by': rank_by,
+            'vispath': vispath_links or [],
             'units': [
                 {'id': u.unit_id, 'label': u.label, 'dataset': u.dataset,
                  'threshold': u.threshold}
@@ -717,7 +746,6 @@ def build_payload(
             ],
         },
         'histogram': dict(sorted(length_counts.items())),
-        'matrices': matrices,
         'pairs': pairs,
     }
 
@@ -729,7 +757,7 @@ def build_payload(
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
     'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
-    'min_weight', 'path_prob', 'length', 'paths_in_pair',
+    'min_weight', 'path_prob', 'length', 'bodyid_coverage', 'paths_in_pair',
 ]
 
 INTERMEDIATES_COLUMNS = [
@@ -776,6 +804,31 @@ def write_breakdown_csvs(
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
+
+def _discover_vispath_links(run_dir: Path) -> List[Dict[str, str]]:
+    """Relative links to the run's run-level network views (round-8 item
+    1): vispath Network / Sankey / Heatmap HTMLs at the run root or under
+    ``visualization/``, and cross-dataset conserved-path networks.
+    Returned with display labels; missing files are simply absent."""
+    links: List[Dict[str, str]] = []
+    patterns = (
+        ('Network_*.html', '🕸️ vispath network'),
+        ('Sankey_*.html', '🌊 vispath Sankey'),
+        ('Heatmap_*.html', '🔥 vispath heatmap'),
+        ('conserved_paths/conserved_network_*_network.html',
+         '🕸️ conserved-path network'),
+    )
+    seen = set()
+    for sub in (run_dir, run_dir / 'visualization'):
+        for pattern, label in patterns:
+            for match in sorted(sub.glob(pattern)):
+                rel = match.relative_to(run_dir).as_posix()
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                links.append({'href': rel, 'label': label})
+    return links
+
 
 def _link_if_exists(path: Path, base_dir: Path, label: Optional[str] = None) -> str:
     """House ``_make_link`` convention: '-' when the target is missing."""
@@ -1016,9 +1069,8 @@ def _render_overview(payload: dict, run_dir: Path,
             + f'<p style="color:var(--secondary-color);font-size:0.9em;">'
             f'{_esc(_meta_summary(run))}</p>'
             f'<p class="cap-note">Caps: top-{run["top_per_length"]} paths per '
-            f'(pair, length) · top-{run["matrix_rows"]} presence-matrix rows per '
-            f'pair · rank by {_esc(run["rank_by"])}. Every capped view links to '
-            f'the uncapped CSV beside this report.</p></div>'
+            f'(pair, length) · rank by {_esc(run["rank_by"])}. Every capped '
+            f'view links to the uncapped CSV beside this report.</p></div>'
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
             + hist_html + pair_table + artifacts)
 
@@ -1078,10 +1130,51 @@ def _render_data_tab(payload: dict, run_dir: Path) -> str:
             continue
         rel = os.path.relpath(csv_path, run_dir).replace(os.sep, '/')
         csv_links.append(f'<a href="{_esc(rel)}" target="_blank">{_esc(unit["label"])}</a>')
-    links_html = (
+    paths_card = (
         '<div class="card"><h3>Paths tables</h3><p style="font-size:0.9em;">'
         + ' · '.join(csv_links) + '</p></div>') if csv_links else ''
-    return table + links_html
+
+    breakdown_card = (
+        '<div class="card"><h3>Breakdown CSVs (lossless)</h3>'
+        '<p style="font-size:0.9em;">'
+        '<a href="paths_pair_breakdown/pair_breakdown_paths.csv" target="_blank">'
+        'pair_breakdown_paths.csv</a> — one row per path with pair, rank, '
+        'weights and bodyid_coverage · '
+        '<a href="paths_pair_breakdown/pair_breakdown_intermediates.csv" '
+        'target="_blank">pair_breakdown_intermediates.csv</a> — shared/unique '
+        'per (pair, intermediate)</p></div>')
+
+    artifact_names = [
+        'parameters.txt', 'all_attributes.json', 'parameters.json',
+        'run_manifest.json', 'effective_thresholds.json',
+        'source_neurons.csv', 'target_neurons.csv',
+        'comparison_report.html', 'comparison_report.txt',
+        'user_warning_notes.txt',
+        'comparison_results/pathfinding_provenance.csv',
+        'comparison_results/path_count_comparison.csv',
+    ]
+    artifact_links = []
+    for name in artifact_names:
+        link = _link_if_exists(run_dir / name, run_dir, name)
+        if link != '-':
+            artifact_links.append(link)
+    artifacts_card = (
+        '<div class="card"><h3>Run artifacts</h3><p style="font-size:0.9em;">'
+        + ' · '.join(artifact_links) + '</p></div>') if artifact_links else ''
+
+    vispath_links = []
+    for item in run.get('vispath', []):
+        vispath_links.append(
+            f'<a href="{_esc(item["href"])}" target="_blank">'
+            f'{_esc(item["label"])}</a>')
+    vispath_card = (
+        '<div class="card"><h3>vispath views (run-level)</h3>'
+        '<p style="font-size:0.9em;">' + ' · '.join(vispath_links) + '</p>'
+        '<p class="cap-note">The vispath visualizations cover the whole run; '
+        'per-pair layered maps live in the Pair Explorer.</p></div>'
+    ) if vispath_links else ''
+
+    return table + breakdown_card + paths_card + artifacts_card + vispath_card
 
 
 def _render_global_tab(payload: dict) -> str:
@@ -1123,8 +1216,12 @@ def _render_global_tab(payload: dict) -> str:
         cells = []
         for unit_id in matrix['units']:
             count = row['cells'].get(unit_id)
-            cells.append('<td>—</td>' if count is None
-                         else f'<td><strong>{count:,}</strong></td>')
+            if count is None:
+                cells.append('<td>—</td>')
+            else:
+                unit_range = (row.get('ranges') or {}).get(unit_id)
+                title = (f' title="hops {unit_range}"' if unit_range else '')
+                cells.append(f'<td{title}><strong>{count:,}</strong></td>')
         badge_cls = ('badge-success' if row['cons'] == n_units
                      else 'badge-warning' if row['cons'] > 1 else 'badge-danger')
         matrix_rows.append(
@@ -1132,18 +1229,19 @@ def _render_global_tab(payload: dict) -> str:
             f'<strong>{_esc(row["target"])}</strong></td>'
             + ''.join(cells)
             + f'<td><span class="badge {badge_cls}">{row["cons"]}/{n_units}</span></td>'
+            f'<td>{_esc(row.get("length_range", "—"))}</td>'
             f'<td>{row["total"]:,}</td></tr>')
     matrix_card = (
         '<div class="card"><h3>Pair × unit path counts</h3>'
         '<p style="color:var(--secondary-color);font-size:0.9em;">The global '
         'analog of the cross-dataset path presence matrix: pairs (matched by '
-        'name across units) as rows, units as columns, cells = path counts. '
-        'Sorted by unit coverage, then total paths. The per-pair presence '
-        'matrices live in the Pair Explorer.</p>'
+        'name across units) as rows, units as columns, cells = path counts '
+        '(hover for the hop range within that unit). Sorted by unit '
+        'coverage, then total paths.</p>'
         f'<div class="{container_cls}"><table><thead><tr>'
         '<th class="matrix-first-col">Pair</th>'
         + ''.join(f'<th>{_esc(unit_labels.get(u, u))}</th>' for u in matrix['units'])
-        + '<th>Coverage</th><th>Total</th></tr></thead><tbody>'
+        + '<th>Coverage</th><th>Lengths</th><th>Total</th></tr></thead><tbody>'
         + ''.join(matrix_rows) + '</tbody></table></div>')
     if matrix['shown'] < matrix['total_pairs']:
         matrix_card += (
@@ -1207,15 +1305,17 @@ def _render_explorer_template(run: dict) -> str:
     if multi:
         unit_select = ('<label>Unit<select id="sel-unit"></select></label>')
     return (
-        '<div class="card"><h3>Select a pair</h3>'
+        '<div class="card"><h3>Select pairs</h3>'
         '<div class="select-row">'
         + unit_select +
-        '<label>Source<select id="sel-source"></select></label>'
-        '<label>Target<select id="sel-target"></select></label>'
+        '<label>Source<select id="sel-source" multiple size="6"></select></label>'
+        '<label>Target<select id="sel-target" multiple size="6"></select></label>'
         '</div>'
-        '<p class="cap-note">The source and target selections define the '
-        'indexed pair pane below — no per-pair tabs, so any number of '
-        'types/groups stays navigable.</p></div>'
+        '<p class="cap-note">Ctrl/Cmd-click (shift-click for ranges) to '
+        'select several sources and/or targets — the pane renders every '
+        'selected source × target combination that exists in the unit, '
+        'stacked. No per-pair tabs, so any number of types/groups stays '
+        'navigable.</p></div>'
         '<div id="pair-pane"></div>')
 
 
@@ -1400,6 +1500,9 @@ REPORT_JS = r"""
     });
 
     var edgeEls = {};
+    var maxC = 1;
+    viz.edges.forEach(function(e) { if (e.c > maxC) { maxC = e.c; } });
+    var maxLog = Math.log2(1 + maxC);
     viz.edges.forEach(function(e) {
       var from = pos[e.f], to = pos[e.t];
       var x1 = from.x + NW, y1 = from.y + NH / 2;
@@ -1419,7 +1522,10 @@ REPORT_JS = r"""
       var pathEl = document.createElementNS(NS, 'path');
       pathEl.setAttribute('d', d);
       pathEl.setAttribute('class', 'edge');
-      pathEl.setAttribute('stroke-width', 1 + 2 * Math.log2(e.c));
+      // round-8 item 2: normalize within the drawn set (1..6 px) so a
+      // 9,000-count edge no longer renders at 27 px next to a 1,000-count one
+      pathEl.setAttribute('stroke-width',
+        1 + 5 * Math.log2(1 + e.c) / maxLog);
       var title = document.createElementNS(NS, 'title');
       title.textContent = e.c + ' paths'
         + (e.w ? ' · Σw = ' + fmt(e.w) : '');
@@ -1514,30 +1620,45 @@ REPORT_JS = r"""
       var names = Object.keys(agg).sort(function(a, b) {
         return agg[b] - agg[a] || (a < b ? -1 : 1); });
       var sel = this.sourceSel;
+      var previous = this.selectedValues(sel);
       sel.innerHTML = '';
-      var self = this;
       names.forEach(function(name) {
         var opt = document.createElement('option');
         opt.value = name; opt.textContent = name + ' (' + agg[name] + ' paths)';
+        if (previous.indexOf(name) !== -1) { opt.selected = true; }
         sel.appendChild(opt);
       });
+      if (sel.selectedOptions.length === 0 && sel.options.length > 0) {
+        sel.options[0].selected = true;  // never leave the explorer empty
+      }
       this.fillTargets();
     },
     fillTargets: function() {
       var unit = this.currentUnit();
-      var source = this.sourceSel.value;
-      var targets = (this.byUnit[unit] || []).filter(function(p) {
-        return p.source === source; });
-      targets.sort(function(a, b) { return b.paths_total - a.paths_total; });
+      var sources = this.selectedValues(this.sourceSel);
+      var wanted = {};
+      sources.forEach(function(s) { wanted[s] = true; });
+      var agg = {};
+      (this.byUnit[unit] || []).forEach(function(p) {
+        if (wanted[p.source]) {
+          agg[p.target] = (agg[p.target] || 0) + p.paths_total;
+        }
+      });
+      var names = Object.keys(agg).sort(function(a, b) {
+        return agg[b] - agg[a] || (a < b ? -1 : 1); });
       var sel = this.targetSel;
+      var previous = this.selectedValues(sel);
       sel.innerHTML = '';
-      var self = this;
-      targets.forEach(function(p) {
+      names.forEach(function(name) {
         var opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = p.target + ' (' + p.paths_total + ' paths)';
+        opt.value = name;
+        opt.textContent = name + ' (' + agg[name] + ' paths)';
+        if (previous.indexOf(name) !== -1) { opt.selected = true; }
         sel.appendChild(opt);
       });
+      if (sel.selectedOptions.length === 0 && sel.options.length > 0) {
+        sel.options[0].selected = true;  // never leave the explorer empty
+      }
       this.render();
     },
     setPair: function(pairId) {
@@ -1547,23 +1668,45 @@ REPORT_JS = r"""
       this.fillSources();
       this.sourceSel.value = pair.source;
       this.fillTargets();
-      this.targetSel.value = pairId;
+      this.targetSel.value = pair.target;
       this.render();
     },
     selectPair: function(pairId) { this.setPair(pairId); },
-    currentPair: function() {
-      var id = this.targetSel.value;
-      return DATA.pairs.filter(function(p) { return p.id === id; })[0];
+    selectedValues: function(sel) {
+      return Array.prototype.slice.call(sel.selectedOptions).map(function(o) {
+        return o.value; });
+    },
+    currentPairs: function() {
+      var unit = this.currentUnit();
+      var sources = this.selectedValues(this.sourceSel);
+      var targets = this.selectedValues(this.targetSel);
+      var wanted = {};
+      sources.forEach(function(s) { wanted[s] = true; });
+      var out = [];
+      (this.byUnit[unit] || []).forEach(function(p) {
+        if (wanted[p.source] && targets.indexOf(p.target) !== -1) {
+          out.push(p);
+        }
+      });
+      out.sort(function(a, b) { return b.paths_total - a.paths_total; });
+      return out;
     },
 
     render: function() {
       var pane = document.getElementById('pair-pane');
       if (!pane) { return; }
       pane.innerHTML = '';
-      var p = this.currentPair();
-      if (!p) { return; }
-      var matrix = DATA.matrices[p.mt];
+      var pairs = this.currentPairs();
+      if (!pairs || pairs.length === 0) { return; }
+      pairs.forEach(function(p, i) {
+        if (i > 0) { pane.appendChild(elt('hr')); }
+        pane.appendChild(Explorer.buildPane(p));
+      });
+      setTimeout(flushNetworks, 0);
+    },
 
+    buildPane: function(p) {
+      var pane = elt('div');
       // header
       var head = elt('div', 'card');
       var title = elt('h3', null, p.source + ' → ' + p.target);
@@ -1573,6 +1716,7 @@ REPORT_JS = r"""
       badges.appendChild(badge(p.n_lengths + ' lengths (' + p.length_range + ')', 'badge-info'));
       badges.appendChild(badge(p.shared + ' shared · ' + p.unique + ' unique intermediates', 'badge-success'));
       badges.appendChild(badge('unit: ' + UNIT_LABEL[p.unit], 'badge-warning'));
+      head.appendChild(badges);
       if (DATA.run.shortest) {
         head.appendChild(elt('p', 'cap-note',
           'Shortest mode: only the minimum-hop paths per bodyId pair (ties '
@@ -1580,11 +1724,7 @@ REPORT_JS = r"""
           + 'the per-length top-' + DATA.run.top_per_length
           + ' cap applies normally.'));
       }
-      head.appendChild(badges);
       pane.appendChild(head);
-
-      // presence matrix
-      pane.appendChild(this.renderMatrix(p, matrix));
 
       // capped table
       pane.appendChild(this.renderCappedTable(p));
@@ -1602,58 +1742,15 @@ REPORT_JS = r"""
       foot.appendChild(document.createTextNode(' — filter '));
       foot.appendChild(elt('span', 'code', 'pair = ' + p.source + '->' + p.target));
       foot.appendChild(document.createTextNode(' and '));
-      foot.appendChild(elt('span', 'code', 'unit = ' + p.unit));
-      pane.appendChild(foot);
-      setTimeout(flushNetworks, 0);
-    },
-
-    renderMatrix: function(p, matrix) {
-      var card = elt('div', 'card');
-      card.appendChild(elt('h3', null, 'Paths presence matrix'));
-      var wrap = elt('div', 'sticky-table-container');
-      var table = elt('table');
-      var thead = elt('thead');
-      var hr = elt('tr');
-      ['Path', 'Len'].forEach(function(t) { hr.appendChild(elt('th', null, t)); });
-      matrix.units.forEach(function(uid) {
-        hr.appendChild(elt('th', null, UNIT_LABEL[uid] || uid)); });
-      hr.appendChild(elt('th', null, 'Conservation'));
-      thead.appendChild(hr); table.appendChild(thead);
-      var tbody = elt('tbody');
-      var nUnits = matrix.units.length;
-      matrix.rows.forEach(function(row) {
-        var tr = elt('tr');
-        var td = elt('td');
-        var strong = elt('strong', null, row.path);
-        td.appendChild(strong); tr.appendChild(td);
-        tr.appendChild(elt('td', null, row.len));
-        matrix.units.forEach(function(uid) {
-          var w = row.cells[uid];
-          var cell = elt('td');
-          if (w === null || w === undefined) {
-            cell.appendChild(elt('span', 'presence-cross', '❌'));
-          } else {
-            cell.appendChild(elt('span', 'presence-check', '✔️'));
-            cell.appendChild(document.createTextNode(' ' + fmt(w)));
-          }
-          tr.appendChild(cell);
-        });
-        var cons = elt('td');
-        var cls = row.cons === nUnits ? 'badge-success'
-          : (row.cons > 1 ? 'badge-warning' : 'badge-danger');
-        cons.appendChild(badge(row.cons + '/' + nUnits, cls));
-        tr.appendChild(cons);
-        tbody.appendChild(tr);
+      foot.appendChild(elt('span', 'code', 'unit = ' + (UNIT_LABEL[p.unit] || p.unit)));
+      (DATA.run.vispath || []).forEach(function(item) {
+        foot.appendChild(document.createTextNode(' · '));
+        var v = elt('a', null, item.label);
+        v.href = item.href; v.target = '_blank';
+        foot.appendChild(v);
       });
-      table.appendChild(tbody);
-      wrap.appendChild(table);
-      card.appendChild(wrap);
-      var note = elt('p', 'cap-note');
-      note.textContent = 'Showing ' + matrix.shown + ' of ' + matrix.total
-        + ' paths (conservation-first). The full list is in '
-        + 'pair_breakdown_paths.csv — lossless.';
-      card.appendChild(note);
-      return card;
+      pane.appendChild(foot);
+      return pane;
     },
 
     renderCappedTable: function(p) {
@@ -1663,7 +1760,8 @@ REPORT_JS = r"""
       var table = elt('table');
       var thead = elt('thead');
       var hr = elt('tr');
-      ['#', 'Path', 'Len', 'Min weight', 'Path prob', 'Weights'].forEach(function(t) {
+      ['#', 'Path', 'Len', 'Min weight', 'Path prob', 'Weights',
+       'BodyId coverage'].forEach(function(t) {
         hr.appendChild(elt('th', null, t)); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = elt('tbody');
@@ -1673,7 +1771,7 @@ REPORT_JS = r"""
         var gr = elt('tr', 'group-row');
         var gtd = elt('td', null, group.len + ' hops — top ' + group.rows.length
           + ' of ' + group.total);
-        gtd.colSpan = 6;
+        gtd.colSpan = 7;
         gr.appendChild(gtd);
         tbody.appendChild(gr);
         group.rows.forEach(function(row) {
@@ -1687,6 +1785,11 @@ REPORT_JS = r"""
           tr.appendChild(elt('td', null, fmt(row.mw)));
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
+          var covTd = elt('td', null, row.cov || '—');
+          covTd.title = 'Per-node bodyId counts along the path (·-joined); '
+            + 'an exact bodyId-path count appears as a single number when '
+            + 'the run includes a bodyId paths table.';
+          tr.appendChild(covTd);
           tbody.appendChild(tr);
           rowIdx += 1;
         });
@@ -1821,8 +1924,11 @@ def _build_unit_drawn(
 def _attach_table_groups(
     frame: pd.DataFrame, rank_by: str, top_per_length: int,
     pairs: List[dict],
+    support: Optional[Dict[str, int]] = None,
+    exact_counts: Optional[Dict[str, int]] = None,
 ) -> None:
-    """Fill each pair entry's capped table groups (ranked rows per length)."""
+    """Fill each pair entry's capped table groups (ranked rows per length),
+    each row carrying its ``cov`` bodyId-coverage string (round-8 item 8)."""
     work = frame.copy()
     work['_path_key'] = work['path']
     ordered = _rank_sort(work, rank_by)
@@ -1840,6 +1946,7 @@ def _attach_table_groups(
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
+                    'cov': _coverage_string(str(row['path']), support, exact_counts),
                 })
             groups.append({'len': int(length), 'total': len(length_group),
                            'rows': rows})
@@ -1864,15 +1971,14 @@ def has_paths_tables(run_dir) -> bool:
 
 def generate_paths_pair_report(
     run_dir, top_per_length: int = DEFAULT_TOP_PER_LENGTH,
-    matrix_rows: int = DEFAULT_MATRIX_ROWS,
     rank_by: str = 'min_weight', log=None,
     global_pairs: int = DEFAULT_GLOBAL_PAIRS,
     global_edges: int = DEFAULT_GLOBAL_EDGES,
 ) -> Path:
     """Generate the pair report + breakdown CSVs for one run folder.
 
-    Writes ONLY ``paths_pair_report.html`` and ``paths_pair_breakdown/``
-    into the run folder; every other file is left untouched. Returns the
+    Writes ONLY ``path_report.html`` and ``paths_pair_breakdown/`` into
+    the run folder; every other file is left untouched. Returns the
     report path.
     """
     run_dir = Path(run_dir)
@@ -1880,10 +1986,16 @@ def generate_paths_pair_report(
         raise NotADirectoryError(f'run folder not found: {run_dir}')
     say = log or (lambda *a, **k: None)
 
+    meta = _sniff_metadata(run_dir)
     units = discover_units(run_dir)
     if not units:
         raise FileNotFoundError(
             f'no *_allpaths_type.csv paths table found under {run_dir}')
+    # "(run root)" is retired: the report's own root unit gets an
+    # informative dataset/threshold label (round-8 item 5).
+    for unit in units:
+        if not unit.unit_id:
+            unit.label = _root_display_label(run_dir, meta, run_kind(run_dir.name))
     say(f'.units: {len(units)}')
 
     frames: Dict[str, pd.DataFrame] = {}
@@ -1893,11 +2005,18 @@ def generate_paths_pair_report(
     unit_inter_counts: Dict[str, Dict[Tuple[str, str], Counter]] = {}
     unit_inter_minhop: Dict[str, Dict[Tuple[str, str], Dict[str, int]]] = {}
     unit_drawn: Dict[str, Dict[Tuple[str, str], List[dict]]] = {}
+    unit_support: Dict[str, Optional[Dict[str, int]]] = {}
+    unit_exact: Dict[str, Optional[Dict[str, int]]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
         frames[unit.unit_id] = frame
-        path_rows, inter_rows, pair_stats = build_unit_breakdown(frame, rank_by)
+        support = load_bodyid_support(unit.folder)
+        exact = load_exact_bodyid_counts(unit.folder)
+        unit_support[unit.unit_id] = support
+        unit_exact[unit.unit_id] = exact
+        path_rows, inter_rows, pair_stats = build_unit_breakdown(
+            frame, rank_by, support=support, exact_counts=exact)
         unit_path_rows[unit.unit_id] = path_rows
         unit_inter_rows[unit.unit_id] = inter_rows
         unit_pair_stats[unit.unit_id] = pair_stats
@@ -1918,11 +2037,14 @@ def generate_paths_pair_report(
     breakdown_paths = write_breakdown_csvs(
         out_dir, units, unit_path_rows, unit_inter_rows, unit_pair_stats)
 
+    vispath_links = _discover_vispath_links(run_dir)
     payload = build_payload(
-        run_dir.name, run_kind(run_dir.name), _sniff_metadata(run_dir),
+        run_dir.name, run_kind(run_dir.name), meta,
         units, frames, unit_inter_counts, unit_inter_minhop,
-        unit_pair_stats, unit_drawn, top_per_length, matrix_rows, rank_by)
-    _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length)
+        unit_pair_stats, unit_drawn, top_per_length, rank_by,
+        vispath_links=vispath_links)
+    _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
+                               unit_support, unit_exact)
     payload['global'] = build_global(units, frames, global_pairs, global_edges)
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
@@ -1941,7 +2063,7 @@ def generate_paths_pair_report(
             try:
                 nested_reports.append(generate_paths_pair_report(
                     unit.folder, top_per_length=top_per_length,
-                    matrix_rows=matrix_rows, rank_by=rank_by,
+                    rank_by=rank_by,
                     global_pairs=global_pairs, global_edges=global_edges,
                     log=None))
             except Exception as exc:  # noqa: BLE001 - best-effort extras
@@ -1968,6 +2090,8 @@ def generate_paths_pair_report(
 def _attach_table_groups_multi(
     units: Sequence[Unit], frames: Dict[str, pd.DataFrame],
     payload: dict, rank_by: str, top_per_length: int,
+    unit_support: Optional[Dict[str, Optional[Dict[str, int]]]] = None,
+    unit_exact: Optional[Dict[str, Optional[Dict[str, int]]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -1976,4 +2100,6 @@ def _attach_table_groups_multi(
         entries = by_unit[unit.unit_id]
         if entries:
             _attach_table_groups(
-                frames[unit.unit_id], rank_by, top_per_length, entries)
+                frames[unit.unit_id], rank_by, top_per_length, entries,
+                support=(unit_support or {}).get(unit.unit_id),
+                exact_counts=(unit_exact or {}).get(unit.unit_id))

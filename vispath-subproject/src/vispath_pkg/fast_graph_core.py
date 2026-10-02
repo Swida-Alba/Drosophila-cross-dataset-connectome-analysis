@@ -135,6 +135,74 @@ class LineProgress:
         self._last_len = len(msg) - 1  # line length without the \r
 
 
+def drain_shortest_merge(merged, budget, stats=None):
+    """Apply the StrongestFirst budget + tau tie-drain to a merged stream.
+
+    ``merged`` is an iterable of ``(bottleneck, path, target)`` tuples in
+    DESCENDING bottleneck order (the merged per-target streams of
+    ``FastGraph.find_paths_shortest_strongest_first``, or the outer merge
+    of several batch emissions). Emits ``path`` for each item; once
+    ``budget`` paths are out, every remaining tie at the achieved
+    bottleneck tau is drained and the first strictly-weaker item records
+    ``strongest_dropped``. This is the single shared implementation of the
+    shortest-mode budget semantics — the monolithic enumerator and the
+    batched-discovery pipeline both route through it, so their
+    ``stats`` (``emitted`` / ``tau`` / ``budget_bitten`` /
+    ``strongest_dropped`` / ``per_target``) are produced identically.
+
+    A generator: stats are finalized when the stream is exhausted (same
+    contract as the enumerator's in-place drain).
+    """
+    emitted = 0
+    tau = None
+    tau_open = False
+    strongest_dropped = None
+    per_target = {}
+    for bottleneck, path, target in merged:
+        if tau_open and bottleneck < tau:
+            # Everything left across all streams is strictly weaker:
+            # the first sub-tau item in the merged (descending) order
+            # is the strongest dropped path (w2).
+            strongest_dropped = bottleneck
+            break
+        yield path
+        emitted += 1
+        per_target[target] = per_target.get(target, 0) + 1
+        tau = bottleneck
+        if budget is not None and emitted >= budget:
+            tau_open = True
+    if stats is not None:
+        stats['emitted'] = emitted
+        stats['tau'] = tau
+        stats['budget_bitten'] = bool(budget is not None and tau_open
+                                      and strongest_dropped is not None)
+        stats['strongest_dropped'] = strongest_dropped
+        stats['per_target'] = per_target
+
+
+def merge_shortest_batch_emissions(batch_emissions, budget=None, stats=None):
+    """Merge per-batch shortest emissions into the global emission order.
+
+    Each entry of ``batch_emissions`` is a list of
+    ``(bottleneck, path, target)`` tuples produced by
+    ``find_paths_shortest_strongest_first(..., budget=None, payload=True)``
+    on one discovery batch's standalone graph (each list is already in
+    descending-bottleneck order). The lists are ``heapq.merge``-ed in batch
+    order and the global ``budget`` is applied exactly once via
+    ``drain_shortest_merge``.
+
+    Equivalence contract (plan-shortest-batched-discovery §3.B): batches
+    must be CONTIGUOUS runs of ``sorted(targets, key=str)`` — the
+    enumerator's own stream order — so this nested merge reproduces the
+    flat monolithic tie-breaking exactly. Do not rely on merge stability
+    as an undocumented given: the pipeline's equivalence tests pin it with
+    ties across batch boundaries.
+    """
+    import heapq
+    merged = heapq.merge(*batch_emissions, key=lambda item: -item[0])
+    yield from drain_shortest_merge(merged, budget, stats)
+
+
 class FastGraph:
     """
     A lightweight directed graph implementation for visualization.
@@ -1398,7 +1466,8 @@ class FastGraph:
     def find_paths_shortest_strongest_first(self, targets, sources, cutoff=None,
                                             budget=None, stats=None,
                                             target_cutoffs=None, verbose=False,
-                                            target_distances=None):
+                                            target_distances=None,
+                                            payload=False):
         """Budgeted best-first enumeration of MINIMUM-HOP paths (§7.2).
 
         For every target ``t``: one backward BFS gives ``dist_t`` (hops to
@@ -1427,6 +1496,15 @@ class FastGraph:
         ``budget_bitten``, ``strongest_dropped`` and ``per_target``
         ({target: emitted}).
 
+        ``payload=True`` (batched-discovery composition mode) yields the
+        raw ``(bottleneck, path, target)`` tuples of the merged stream in
+        descending-bottleneck order WITHOUT applying the budget drain —
+        ``budget`` must be None. ``merge_shortest_batch_emissions`` then
+        merges several such payload lists (one per discovery batch) and
+        applies the global drain once, reproducing the monolithic
+        emission order (batches must be contiguous runs of
+        ``sorted(targets, key=str)``).
+
         Memory note: the merge keeps every per-target stream (BFS dist +
         DAG maximin DP) alive simultaneously — state is bounded by
         ``hop_cap`` per target and is modest for the depth-explosion
@@ -1446,9 +1524,21 @@ class FastGraph:
         source_list = [s for s in dict.fromkeys(sources) if s in self.adj]
         if not target_set or not source_list:
             return
-        radj = self._ensure_radj()
-        adj = self.adj
         target_distances = target_distances or {}
+
+        def _seed_for(target):
+            if not target_distances:
+                return None
+            return (target_distances.get(target)
+                    or target_distances.get(str(target)))
+
+        # The reverse index feeds only the fresh per-target BFS; when every
+        # target is seeded from discovery distances it is dead weight
+        # (O(V + E) on the whole graph) — skip it.
+        radj = None
+        if any(_seed_for(target) is None for target in target_set):
+            radj = self._ensure_radj()
+        adj = self.adj
 
         def target_stream(target, hop_cap, seeded_dist=None):
             """All min-hop paths to ``target``, descending bottleneck."""
@@ -1545,38 +1635,20 @@ class FastGraph:
                     configured = target_cutoffs.get(str(target))
                 if configured is not None:
                     hop_cap = max(0, int(configured))
-            seeded = None
-            if target_distances:
-                seeded = (target_distances.get(target)
-                          or target_distances.get(str(target)))
-            streams.append(target_stream(target, hop_cap, seeded_dist=seeded))
+            streams.append(target_stream(
+                target, hop_cap, seeded_dist=_seed_for(target)))
 
-        emitted = 0
-        tau = None
-        tau_open = False
-        strongest_dropped = None
-        per_target = {}
-        for bottleneck, path, target in heapq.merge(
-                *streams, key=lambda item: -item[0]):
-            if tau_open and bottleneck < tau:
-                # Everything left across all streams is strictly weaker:
-                # the first sub-tau item in the merged (descending) order
-                # is the strongest dropped path (w2).
-                strongest_dropped = bottleneck
-                break
-            yield path
-            emitted += 1
-            per_target[target] = per_target.get(target, 0) + 1
-            tau = bottleneck
-            if budget is not None and emitted >= budget:
-                tau_open = True
-        if stats is not None:
-            stats['emitted'] = emitted
-            stats['tau'] = tau
-            stats['budget_bitten'] = bool(budget is not None and tau_open
-                                          and strongest_dropped is not None)
-            stats['strongest_dropped'] = strongest_dropped
-            stats['per_target'] = per_target
+        merged = heapq.merge(*streams, key=lambda item: -item[0])
+        if payload:
+            if budget is not None:
+                raise ValueError(
+                    'payload mode yields the undrained merged stream; '
+                    'budget must be None (apply it once on the outer '
+                    'merge via drain_shortest_merge / '
+                    'merge_shortest_batch_emissions)')
+            yield from merged
+            return
+        yield from drain_shortest_merge(merged, budget, stats)
 
     def find_paths_bidirectional_bfs(self, sources, targets, cutoff, verbose=False):
         """

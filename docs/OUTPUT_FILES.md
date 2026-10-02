@@ -224,7 +224,7 @@ the report's `Generated:` timestamp.
     matrix — a pairs-by-unit-coverage histogram, and an interactive global
     route network of the top 60 edges by traversal count), **Pair
     Explorer** (Source and Target selects render one pair pane: paths ×
-    units presence matrix, the capped top-paths table, and an interactive
+    capped top-paths table with per-path bodyId coverage, and an interactive
     layered network coloring shared (blue) vs unique (gray) intermediates),
     and **Data** (unit rollup + artifact links). Caps are viewport-only —
     top-10 paths per (pair, length), 50 presence-matrix rows per pair, 50
@@ -248,6 +248,46 @@ the report's `Generated:` timestamp.
     is browsable standalone beside the delegate's `parameters.txt` and
     `all_attributes.json`; the run-root report's Data tab links every
     delegate report.
+
+#### Shortest-Mode Discovery Store (`shortest_discovery_store/`)
+
+Shortest Paths runs with discovery batching (the default;
+`discovery_batch_budget` = 2,000,000 BFS distance states per enumeration
+batch, `0` = legacy single-batch behavior) stream the target-rooted
+discovery into a run-local store instead of holding every target's BFS
+maps in memory. The store is an audit/reproducibility surface, not an
+input: runs never reuse another run's store.
+
+*   **`connections/connections_L{d}.parquet`**: the finalized per-reverse-
+    layer union edge frames exactly as fetched (columns
+    `bodyId_pre`, `bodyId_post`, `weight`, `roi`, type/instance/nt/custom-
+    group label columns, `conn_layer`). One file per `conn_layer`; the
+    per-layer granularity is deliberate — the pathfinding graph sums
+    duplicate `(pre, post)` rows across layers, so collapsing the files
+    would change reported path bottlenecks.
+*   **`node_distances/node_distances_L{d}_c{k}.parquet`**: per-target BFS
+    distance labels `(target, node, dist)` streamed at discovery time
+    (`0` = the target itself); enumeration rehydrates these per batch.
+*   **`dag_edges/dag_edges_L{d}_c{k}.parquet`**: per-target shortest-DAG
+    candidate edges `(target, bodyId_pre, bodyId_post)` recorded at scan
+    time (`dist[pre] == dist[post] + 1`).
+*   **`pairs.parquet`**: every reachable `(source, target)` bodyId pair
+    with the pair's own shortest distance.
+*   **`meta.json`**: store manifest — dataset, hop bound, query tokens,
+    completeness census (`discovery_complete`, frontier sizes), per-target
+    distance-state counts, the full edge-filter configuration the rows are
+    valid for, and (after enumeration) the realized batch composition
+    (`shortest_discovery_diagnostics.batching` in
+    `all_attributes.json` mirrors it: knob values, batch count, per-batch
+    target counts and state sums).
+
+Discovery memory note: the batched path bounds enumeration memory by the
+batch budget; Phase-A discovery memory scales with the union graph ×
+depth, not × target count. Neither existing budget bounds discovery
+memory: the Path Budget (`max_paths_bodyid`) bounds only the emitted
+result, and the Edge Budget never applies in shortest mode. Deep runs
+with a single broad target remain depth-bound — lower Max Intermediate
+Layers or raise Min Synapse Count for those.
 
 > ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio`, `traversal_probability`, and filtering thresholds.
 >

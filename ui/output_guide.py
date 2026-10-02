@@ -161,6 +161,12 @@ COLUMN_GLOSSARY = {
                             "path_prob desc, path asc.", "integer"),
     "paths_in_pair": ("Total paths found for this (unit, source, target) pair "
                       "— the denominator of every capped view.", "integer"),
+    "bodyid_coverage": ("Per-node bodyId counts along the path joined by '·' "
+                        "(from data_details/neurons_included.csv — a "
+                        "multiplicity support, not a path count). An exact "
+                        "bodyId-path count appears instead when the run "
+                        "includes a bodyId paths table (Skip BodyId off). "
+                        "Empty when no bodyId-level data is available.", "text"),
     "intermediate": ("Intermediate (non-source, non-target) node on a path.", "text"),
     "n_paths_using": ("How many paths of the pair pass through this "
                       "intermediate.", "integer"),
@@ -176,6 +182,8 @@ COLUMN_GLOSSARY = {
     "nt_type": ("Predicted neurotransmitter type (ACh, GABA, glutamate, ...).", "text"),
     "nt_types": ("Neurotransmitter types along the path.", "text"),
     "conn_layer": ("Layer transition label of the connection, e.g. '0->1'.", "text"),
+    "node": ("Neuron body id the shortest-discovery label describes.", "integer or text"),
+    "dist": ("BFS distance in hops to the row's target (0 = the target itself).", "integer"),
     "probability": ("Edge traversal probability.", "0-1"),
     # --- Enrollment / status flags --------------------------------------------
     "isInPath": ("Whether the source neuron participates in at least one found path.", "boolean"),
@@ -967,7 +975,8 @@ _PATHFINDING_FILES = [
      "preview": True,
      "preview_title": "Pair breakdown (per path)",
      "columns": ["unit", "source", "target", "rank_in_pair_length", "path",
-                 "min_weight", "length", "paths_in_pair"]},
+                 "min_weight", "length", "bodyid_coverage",
+                 "paths_in_pair"]},
     {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
      "description": "Pair-report breakdown, one row per (pair, intermediate): "
                     "shared (>=2 paths of the pair) vs unique (exactly 1), "
@@ -976,6 +985,37 @@ _PATHFINDING_FILES = [
      "preview_title": "Pair breakdown (intermediates)",
      "columns": ["unit", "source", "target", "intermediate", "n_paths_using",
                  "classification", "min_hop_position"]},
+    # Shortest-mode batched discovery store (plan-shortest-batched-discovery):
+    # written when discovery batching is active (default on for Shortest
+    # Paths); like the pair-report entries above, these surface in the run
+    # guide only when the files exist.
+    {"pattern": "shortest_discovery_store/connections/*.parquet",
+     "description": "Discovery store: the finalized per-reverse-layer "
+                    "union edge frames exactly as fetched (one file per "
+                    "conn_layer). The per-layer granularity is what the "
+                    "graph's cross-layer weight sums are built from — "
+                    "keep the files if you want the run to stay "
+                    "auditable.",
+     "columns": ["bodyId_pre", "bodyId_post", "weight", "conn_layer"]},
+    {"pattern": "shortest_discovery_store/node_distances/*.parquet",
+     "description": "Discovery store: per-target BFS distance labels "
+                    "streamed during discovery (one row per target x "
+                    "node). Enumeration rehydrates these per batch.",
+     "columns": ["target", "node", "dist"]},
+    {"pattern": "shortest_discovery_store/dag_edges/*.parquet",
+     "description": "Discovery store: per-target shortest-DAG candidate "
+                    "edges recorded at scan time "
+                    "(dist[pre] == dist[post] + 1).",
+     "columns": ["target", "bodyId_pre", "bodyId_post"]},
+    {"pattern": "shortest_discovery_store/pairs.parquet",
+     "description": "Discovery store: every reachable (source, target) "
+                    "bodyId pair with its own shortest distance.",
+     "columns": ["source", "target", "dist"]},
+    {"pattern": "shortest_discovery_store/meta.json",
+     "description": "Discovery store manifest: query tokens, hop bound, "
+                    "completeness census, per-target distance-state "
+                    "counts, edge-filter configuration, and (after "
+                    "enumeration) the realized batch composition."},
 ]
 
 # Reusable pathfinding explanation, rendered by all three run-guide formats
@@ -1689,9 +1729,9 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "path_report.html",
              "description": "Per-source-target-pair HTML report, written "
                             "automatically after the run: Overview / Global "
-                            "/ Pair Explorer / Data pages with per-pair "
-                            "presence matrices and offline interactive "
-                            "networks."},
+                            "/ Pair Explorer / Data pages with capped "
+                            "top-paths tables (bodyId coverage per path) "
+                            "and offline interactive networks."},
             {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
              "description": "Lossless per-path breakdown written with "
                             "path_report.html: rank within (pair, length), "
@@ -1699,7 +1739,8 @@ TOOL_GUIDE_SPECS = {
              "preview": True,
              "preview_title": "Pair breakdown (per path)",
              "columns": ["unit", "source", "target", "rank_in_pair_length",
-                         "path", "min_weight", "length", "paths_in_pair"]},
+                         "path", "min_weight", "length", "bodyid_coverage",
+                         "paths_in_pair"]},
             {"pattern": "paths_pair_breakdown/pair_breakdown_intermediates.csv",
              "description": "Per (pair, intermediate) breakdown: shared "
                             "(>=2 paths of the pair) vs unique (exactly 1), "

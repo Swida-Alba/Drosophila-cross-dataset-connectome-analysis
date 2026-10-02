@@ -3,7 +3,7 @@
 # HTML report + breakdown CSVs INTO the run folder (additive only).
 #
 #   python scripts/PathsPairReport.py <run_dir> [<run_dir> ...]
-#           [--top-per-length 10] [--matrix-rows 50]
+#           [--top-per-length 10] [--global-edges 60]
 #           [--rank-by min_weight|path_prob|length]
 import argparse
 import sys
@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from paths_pair_report import (  # noqa: E402
     DEFAULT_GLOBAL_EDGES,
     DEFAULT_GLOBAL_PAIRS,
-    DEFAULT_MATRIX_ROWS,
     DEFAULT_TOP_PER_LENGTH,
     RANK_KEYS,
     generate_paths_pair_report,
@@ -42,10 +41,6 @@ def main(argv=None) -> int:
         '--top-per-length', type=int, default=DEFAULT_TOP_PER_LENGTH,
         help=f'Capped table: top-N paths per (pair, length). '
              f'Default {DEFAULT_TOP_PER_LENGTH}.')
-    parser.add_argument(
-        '--matrix-rows', type=int, default=DEFAULT_MATRIX_ROWS,
-        help=f'Presence matrix rows shown per pair. '
-             f'Default {DEFAULT_MATRIX_ROWS}.')
     parser.add_argument(
         '--global-pairs', type=int, default=DEFAULT_GLOBAL_PAIRS,
         help=f'Global tab: pairs shown in the pair x unit matrix. '
@@ -90,7 +85,6 @@ def main(argv=None) -> int:
                 report = generate_paths_pair_report(
                     run_dir,
                     top_per_length=args.top_per_length,
-                    matrix_rows=args.matrix_rows,
                     rank_by=args.rank_by,
                     global_pairs=args.global_pairs,
                     global_edges=args.global_edges,

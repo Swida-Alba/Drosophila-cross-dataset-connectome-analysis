@@ -33,6 +33,8 @@ fc = FindNeuronConnection(
     filter_by="bodyId",
     graph_edge_limit_bodyid=0,     # Edge Budget NEVER applies in shortest mode (graph never floored)
     max_paths_bodyid=0,            # Max Paths: path-output budget; auto -> 1M StrongestFirst budget (tau reported when it bites)
+    discovery_batch_budget=2_000_000,  # memory control: per-batch BFS distance states; 0 = legacy single batch (results identical)
+    target_batch_size=0,           # alternative: fixed targets per batch; 0 = use discovery_batch_budget
     visualize_before_reconstruct=False,
     search_columns="auto",              # "auto" | "type" | "instance" | "bodyId"
     network_layout="distributed",
@@ -92,6 +94,19 @@ python skills/drocat-usage/scripts/run_direct.py \
 - Budgets: the StrongestFirst path budget (`max_paths_bodyid`) may bite and is
   reported as tau in the provenance block; the Edge Budget never applies —
   shortest mode is never floored.
+- **Batched discovery** (default on; `discovery_batch_budget=2_000_000`,
+  `0` = legacy single batch): discovery memory for many broad targets would
+  otherwise scale with targets × union frontier × depth (a 242-target depth-5
+  run was killed at ~450 GB RSS, 2026-10-02). Labels stream to
+  `shortest_discovery_store/` (connections per `conn_layer`,
+  `node_distances`, `dag_edges`, `pairs.parquet`, `meta.json` — keep for
+  auditability; runs never reuse a foreign store) and enumeration runs per
+  batch of targets bounded by the state budget. Results are identical to the
+  legacy path; the realized composition is in
+  `shortest_discovery_diagnostics.batching` (all_attributes.json). The Path
+  Budget bounds only the result; the Edge Budget never applies here. A
+  single broad target at deep L is still depth-bound — lower
+  `max_interlayer` or raise `min_synapse_num` for those.
 - `min_ratio` and `min_traversal_probability` remain available as readout
   columns for compatibility, but their filters are disabled in Shortest Paths;
   they do not appear as `r[]p[]` filename notes.

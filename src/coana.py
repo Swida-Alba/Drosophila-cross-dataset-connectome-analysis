@@ -120,6 +120,29 @@ except ImportError:  # wheel install without the subproject: analysis
 
 from connection_map import ThresholdedConnectionMap
 
+# Shortest-path batched discovery (plan-shortest-batched-discovery): the
+# union-layer store writer + budgeted batch enumeration. Import failure is
+# fatal only when batching is actually enabled (the legacy path must keep
+# working in minimal installs).
+try:
+    from .shortest_discovery_store import (
+        DEFAULT_DISCOVERY_BATCH_BUDGET,
+        STORE_FOLDER_NAME,
+        batched_shortest_paths,
+        finalize_store_discovery,
+        resolve_batching,
+        run_union_layer_discovery,
+    )
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    from shortest_discovery_store import (  # noqa: E402
+        DEFAULT_DISCOVERY_BATCH_BUDGET,
+        STORE_FOLDER_NAME,
+        batched_shortest_paths,
+        finalize_store_discovery,
+        resolve_batching,
+        run_union_layer_discovery,
+    )
+
 try:
     from .utils.naming_utils import canonical_dataset_name
 except ImportError:  # pragma: no cover - src laid bare on sys.path
@@ -3130,6 +3153,31 @@ class FindNeuronConnection:
     to this field; an explicit True/False argument always wins. The
     run's user_warning_notes entry reports whether the enrichment actually
     executed, not just what the field requested.
+    '''
+
+    discovery_batch_budget: int = 2_000_000
+    '''
+    Shortest-path mode only (plan-shortest-batched-discovery): discovery
+    state budget per enumeration batch, in summed per-target BFS distance
+    states. The target-rooted backward discovery streams every target's
+    labels into the run-folder store ``shortest_discovery_store/`` and
+    enumeration runs per batch of targets on standalone graphs seeded from
+    the store, so resident memory no longer scales with the number of
+    broad targets (measured 2026-10-02: a 242-target depth-5 run was
+    killed at ~450 GB RSS; the batched path bounds the per-batch
+    distance-state count instead). 0 disables batching entirely (legacy
+    monolithic path). A single target whose own state count exceeds the
+    budget still becomes its own batch — the budget composes batches, it
+    never splits a target. Default 2,000,000.
+    '''
+
+    target_batch_size: int = 0
+    '''
+    Shortest-path mode only: alternative to ``discovery_batch_budget``
+    that composes enumeration batches with exactly this many targets
+    (0 = ignore; batching then follows ``discovery_batch_budget``).
+    Batches are contiguous runs of the enumerator's sorted target order,
+    so results are identical to the monolithic path either way.
     '''
 
     separate_hemispheres: bool = False
@@ -13717,6 +13765,15 @@ class FindNeuronConnection:
                 'specified depth, use Complete Paths.'
             )
         if getattr(self, '_shortest_scope_limited', False):
+            _batch_note = ''
+            _batching = (getattr(self, 'shortest_discovery_diagnostics', {})
+                         or {}).get('batching')
+            if _batching and _batching.get('batch_count'):
+                _batch_note = (
+                    f' Discovery ran in {_batching["batch_count"]} '
+                    'target batch(es) (batched enumeration; results are '
+                    'identical to a single-batch run).'
+                )
             notes.append(
                 '- [shortest explored-graph scope] Reported shortest paths are '
                 'shortest only within the explored, threshold-filtered bodyId '
@@ -13724,7 +13781,7 @@ class FindNeuronConnection:
                 'layers is only a solution under the current graph and is not '
                 'proven globally shortest. Increase Max Intermediate Layers '
                 'for a deeper search, or use Complete Paths under the desired '
-                'depth.'
+                'depth.' + _batch_note
             )
         if getattr(self, 'separate_hemispheres', False):
             notes.append(
@@ -16179,9 +16236,61 @@ class FindNeuronConnection:
                     level='full',
                 )
 
-            backward_result = self._discover_shortest_backward(
-                source_ID, target_ID, self.max_interlayer + 1
-            )
+            # Batched discovery (plan-shortest-batched-discovery): the
+            # union-layer store path streams every target's labels to
+            # shortest_discovery_store/ and finalizes the per-target
+            # valid-edge pass one target at a time; the legacy path holds
+            # all per-target maps resident. Both return the same shape.
+            batched_active, batch_budget, batch_fixed = resolve_batching(
+                self)
+            self._shortest_store_dir = None
+            self._shortest_store_meta = None
+            if batched_active:
+                store_dir = os.path.join(
+                    self.allpath_folder, STORE_FOLDER_NAME)
+                self._vprint(
+                    'Batched discovery: streaming per-target labels to '
+                    f'{STORE_FOLDER_NAME}/ (enumeration budget '
+                    f'{batch_budget:,} distance states'
+                    + (f', {batch_fixed} targets per batch'
+                       if batch_fixed else '') + ').',
+                    level='full',
+                )
+                store_meta = run_union_layer_discovery(
+                    self, source_ID, target_ID, self.max_interlayer + 1,
+                    store_dir,
+                )
+                backward_result = finalize_store_discovery(
+                    store_dir, store_meta, source_ID)
+                backward_result['store_dir'] = store_dir
+                backward_result['store_meta'] = store_meta
+                self._shortest_store_dir = store_dir
+                self._shortest_store_meta = store_meta
+                # Same diagnostics keys as the monolithic path (dag
+                # census from the finalization pass), plus the batching
+                # section the run guide cites.
+                self._shortest_discovery_diagnostics = {
+                    'reverse_layers_fetched': store_meta['layer_count'] - 1,
+                    'frontier_sizes': store_meta['frontier_sizes'],
+                    'targets_found': len(store_meta['targets_found']),
+                    'per_target_distance_states':
+                        store_meta['per_target_distance_states'],
+                    'dag_nodes': backward_result['dag_nodes'],
+                    'dag_edges': backward_result['dag_edges'],
+                    'discovery_complete':
+                        store_meta['discovery_complete'],
+                    'cache_stats': dict(
+                        getattr(self, '_shortest_cache_stats', {})),
+                    'batching': {
+                        'discovery_batch_budget': batch_budget,
+                        'target_batch_size': batch_fixed,
+                        'store_folder': STORE_FOLDER_NAME,
+                    },
+                }
+            else:
+                backward_result = self._discover_shortest_backward(
+                    source_ID, target_ID, self.max_interlayer + 1
+                )
             all_connections = backward_result['all_connections']
             all_connections_filtered = all_connections
             layer_neurons = backward_result['layer_neurons']
@@ -16196,9 +16305,14 @@ class FindNeuronConnection:
             self._shortest_target_hop_limits = dict(
                 backward_result['target_hop_limits']
             )
-            self._shortest_target_distances = dict(
-                backward_result['distances_by_target']
-            )
+            if 'distances_by_target' in backward_result:
+                self._shortest_target_distances = dict(
+                    backward_result['distances_by_target']
+                )
+            else:
+                # Batched path: distance maps are rehydrated per
+                # enumeration batch from the store, never all at once.
+                self._shortest_target_distances = None
             self._shortest_targets_found = backward_result['targets_found']
             # Discovery diagnostics -> run metadata (public: exported by
             # _run_export_attributes).
@@ -16763,19 +16877,35 @@ class FindNeuronConnection:
                              f'capped at {self.max_interlayer + 1} edges)...',
                              level='full')
 
-            path_gen = G.find_paths_shortest_strongest_first(
-                targets_found, source_ID,
-                self.max_interlayer + 1,
-                budget=sf_budget_short,
-                stats=strongest_first_stats,
-                target_cutoffs=getattr(
-                    self, '_shortest_target_hop_limits', {}
-                ),
-                # F-PERF-06 fix: seed each target's distance map from the
-                # discovery BFS instead of re-running a reverse BFS here.
-                target_distances=getattr(
-                    self, '_shortest_target_distances', None),
-            )
+            if getattr(self, '_shortest_store_dir', None):
+                # Batched enumeration (plan-shortest-batched-discovery
+                # §3.B): per-batch standalone graphs seeded from the
+                # store, merged in batch order, global budget/tau drain
+                # applied exactly once by the shared drain helper.
+                _, batch_budget, batch_fixed = resolve_batching(self)
+                path_gen = batched_shortest_paths(
+                    self, self._shortest_store_dir,
+                    self._shortest_store_meta, source_ID,
+                    self.max_interlayer + 1,
+                    budget=sf_budget_short,
+                    stats=strongest_first_stats,
+                    batch_states=batch_budget, fixed_size=batch_fixed,
+                )
+            else:
+                path_gen = G.find_paths_shortest_strongest_first(
+                    targets_found, source_ID,
+                    self.max_interlayer + 1,
+                    budget=sf_budget_short,
+                    stats=strongest_first_stats,
+                    target_cutoffs=getattr(
+                        self, '_shortest_target_hop_limits', {}
+                    ),
+                    # F-PERF-06 fix: seed each target's distance map from
+                    # the discovery BFS instead of re-running a reverse
+                    # BFS here.
+                    target_distances=getattr(
+                        self, '_shortest_target_distances', None),
+                )
         
         elif use_strongest_first:
             # Budgeted best-first on the path bottleneck (widest-path
@@ -16868,6 +16998,16 @@ class FindNeuronConnection:
 
             all_paths = list(path_iter)
             if path_mode == 'shortest':
+                if getattr(self, '_shortest_store_dir', None):
+                    # Batched enumeration finished: fold the realized batch
+                    # composition (per-batch target counts / state sums)
+                    # into the exported diagnostics (plan §3.B).
+                    batching = self.shortest_discovery_diagnostics.setdefault(
+                        'batching', {})
+                    batching['batch_count'] = len(
+                        getattr(self, '_shortest_batch_records', []))
+                    batching['batches'] = getattr(
+                        self, '_shortest_batch_records', [])
                 # F-PERF-08 fix: the enumerator already emits exactly the
                 # per-pair minimum-hop sets (discovery-seeded distances +
                 # per-target DAG), so the former second filtering pass

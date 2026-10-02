@@ -21,7 +21,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from paths_pair_report import (  # noqa: E402
-    DEFAULT_MATRIX_ROWS,
     DEFAULT_TOP_PER_LENGTH,
     INTERMEDIATES_CSV_NAME,
     OUTPUT_DIR_NAME,
@@ -332,7 +331,7 @@ def test_regeneration_is_additive_and_byte_stable(single_run):
 
 
 # ---------------------------------------------------------------------------
-# (e)/(f) CSV<->HTML consistency, presence-matrix join
+# (e)/(f) CSV<->HTML consistency, bodyId coverage (round 8)
 # ---------------------------------------------------------------------------
 
 def test_embedded_rows_are_in_csv(single_run):
@@ -342,6 +341,7 @@ def test_embedded_rows_are_in_csv(single_run):
     csv = pd.read_csv(
         single_run / OUTPUT_DIR_NAME / PATHS_CSV_NAME, dtype={"path": str},
         keep_default_na=False)  # the root unit's empty unit id stays ''
+    assert "bodyid_coverage" in csv.columns
     for pair in payload["pairs"]:
         sub = csv[(csv["source"] == pair["source"])
                   & (csv["target"] == pair["target"])
@@ -351,32 +351,152 @@ def test_embedded_rows_are_in_csv(single_run):
                 hit = sub[sub["path"] == row["path"]]
                 assert len(hit) >= 1, f"{row['path']} missing from CSV"
                 assert int(hit.iloc[0]["rank_in_pair_length"]) == row["rank"]
-        matrix = payload["matrices"][pair["mt"]]
-        assert matrix["shown"] <= DEFAULT_MATRIX_ROWS
-        assert matrix["shown"] <= matrix["total"]
-        allowed = set(csv[(csv["source"] == pair["source"])
-                          & (csv["target"] == pair["target"])]["path"])
-        for row in matrix["rows"]:
-            assert row["path"] in allowed
+                # coverage string embedded == CSV column (per-node counts)
+                assert str(hit.iloc[0]["bodyid_coverage"]) == (row["cov"] or "")
 
 
-def test_presence_matrix_cross_unit_join(cross_run):
-    report = generate_paths_pair_report(cross_run, log=None)
+def test_bodyid_coverage_support_counts(tmp_path):
+    """Round 8 item 8: per-node bodyId support counts from
+    neurons_included.csv (no exact tier in default runs)."""
+    run = tmp_path / "find-paths-complete_FAFB_S_to_T_L2w3_20260101_000000"
+    _write_csv(run, [_row("S->M->T", 30), _row("S->N->M->T", 20)])
+    details = run / "data_details"
+    details.mkdir()
+    pd.DataFrame([
+        {"group": "source", "bodyId": 1, "type": "S", "instance": "s1",
+         "nt_type": "ACH"},
+        {"group": "inter", "bodyId": 2, "type": "M", "instance": "m1",
+         "nt_type": "ACH"},
+        {"group": "inter", "bodyId": 3, "type": "M", "instance": "m2",
+         "nt_type": "ACH"},
+        {"group": "inter", "bodyId": 5, "type": "N", "instance": "n1",
+         "nt_type": "ACH"},
+        {"group": "target", "bodyId": 4, "type": "T", "instance": "t1",
+         "nt_type": "ACH"},
+    ]).to_csv(details / "neurons_included.csv", index=False)
+    report = generate_paths_pair_report(run, log=None)
     payload = _payload(report.read_text(encoding="utf-8"))
-    pair = next(p for p in payload["pairs"]
-                if (p["source"], p["target"]) == ("S", "T"))
-    matrix = payload["matrices"][pair["mt"]]
-    assert matrix["units"] == [
-        "dsA/minsyn_3", "dsA/minsyn_5_applied_floor", "dsB/minsyn_3"]
-    by_path = {row["path"]: row for row in matrix["rows"]}
-    assert by_path["S->X->T"]["cons"] == 2   # dsA/minsyn_3 + dsB/minsyn_3
-    assert by_path["S->X->T"]["cells"]["dsB/minsyn_3"] == 12
-    assert by_path["S->X->T"]["cells"]["dsA/minsyn_5_applied_floor"] is None
-    assert by_path["S->Y->T"]["cons"] == 2   # dsA/minsyn_3 + applied_floor
-    assert by_path["S->Z->T"]["cons"] == 1
-    # conservation-first, then max-weight desc: X (2, max 12) before Y (2, 8)
-    order = [row["path"] for row in matrix["rows"]]
-    assert order.index("S->X->T") < order.index("S->Y->T") < order.index("S->Z->T")
+    pair = payload["pairs"][0]
+    rows = {r["path"]: r["cov"] for g in pair["table"]["groups"]
+            for r in g["rows"]}
+    assert rows["S->M->T"] == "1·2·1"
+    assert rows["S->N->M->T"] == "1·1·2·1"
+    csv = pd.read_csv(run / OUTPUT_DIR_NAME / PATHS_CSV_NAME,
+                      keep_default_na=False)
+    cov = dict(zip(csv["path"], csv["bodyid_coverage"]))
+    assert cov["S->M->T"] == "1·2·1"
+
+
+def test_bodyid_coverage_exact_tier(tmp_path):
+    """When a bodyId paths table exists, coverage becomes the exact
+    bodyId-path count for the type projection."""
+    run = tmp_path / "find-paths-complete_FAFB_S_to_T_L2w3_20260101_000000"
+    _write_csv(run, [_row("S->M->T", 30), _row("S->N->M->T", 20)])
+    pd.DataFrame([
+        {"path": "b1->b2->b4", "path_types": "S->M->T"},
+        {"path": "b1->b3->b4", "path_types": "S->M->T"},
+    ]).to_csv(run / "S_to_T_allpaths_bodyId_paths.csv", index=False)
+    report = generate_paths_pair_report(run, log=None)
+    payload = _payload(report.read_text(encoding="utf-8"))
+    rows = {r["path"]: r["cov"] for g in payload["pairs"][0]["table"]["groups"]
+            for r in g["rows"]}
+    assert rows["S->M->T"] == "2"        # exact count
+    assert rows["S->N->M->T"] == ""      # no bodyId path realizes it
+
+
+def test_no_presence_matrix_in_payload_and_pane(single_run):
+    """Round 8 item 1: the per-pair presence matrix is gone; the pane keeps
+    the top-paths-per-length table."""
+    report = generate_paths_pair_report(single_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    assert "matrices" not in payload
+    assert "renderMatrix" not in text
+    assert "Paths presence matrix" not in text
+    assert "Top paths per length" in text
+    # the single-dataset global tab keeps the pair × unit matrix
+    assert "pair_matrix" in payload["global"]
+
+
+def test_informative_unit_labels(single_run):
+    """Round 8 item 5: '(run root)' is retired for dataset/threshold labels."""
+    (single_run / "parameters.txt").write_text(
+        "min synapse number:            3\n"
+        "dataset:                       flywire_FAFB_v783\n", encoding="utf-8")
+    report = generate_paths_pair_report(single_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    assert "(run root)" not in text
+    assert payload["run"]["units"][0]["label"] == (
+        "flywire_FAFB_v783 · min synapse 3")
+
+
+def test_unit_label_fallback_to_folder_name(tmp_path):
+    run = tmp_path / "minsyn_5"   # nested-delegate style: no parameters.txt
+    _write_csv(run, [_row("A->B", 4)], name="A_to_B_allpaths_type.csv")
+    report = generate_paths_pair_report(run, log=None)
+    payload = _payload(report.read_text(encoding="utf-8"))
+    assert payload["run"]["units"][0]["label"] == "minsyn_5"
+
+
+def test_vispath_links_in_payload_and_pane(tmp_path):
+    run = tmp_path / "find-paths-complete_FAFB_A_to_B_L1w3_20260101_000000"
+    _write_csv(run, [_row("A->B", 4)])
+    (run / "visualization").mkdir()
+    (run / "visualization" / "Network_run.html").write_text(
+        "<html></html>", encoding="utf-8")
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    assert payload["run"]["vispath"] == [
+        {"href": "visualization/Network_run.html", "label": "🕸️ vispath network"}]
+    # the pair footer renders the link from the payload
+    assert "item.href" in text and "vispath network" in text
+
+
+def test_multi_select_template_and_explorer(single_run):
+    """Round 8 item 3: source/target selects are multiple; the explorer
+    renders the cross product of the selections."""
+    report = generate_paths_pair_report(single_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert 'id="sel-source" multiple' in text
+    assert 'id="sel-target" multiple' in text
+    assert "selectedOptions" in text
+    assert "currentPairs" in text      # cross-product renderer
+    assert "Ctrl/Cmd-click" in text
+
+
+def test_global_pair_matrix_has_hop_ranges(cross_run):
+    """Round 8 item 6: pair × unit table carries a Lengths column
+    (min–max across units) with per-unit hop-range tooltips."""
+    report = generate_paths_pair_report(cross_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    rows = {(r["source"], r["target"]): r
+            for r in payload["global"]["pair_matrix"]["rows"]}
+    # every path in the fixture is 2 hops; the per-unit range collapses to "2"
+    assert rows[("S", "T")]["length_range"] == "2–2"
+    assert rows[("S", "T")]["ranges"]["dsA/minsyn_3"] == "2"
+    assert "<th>Lengths</th>" in text
+    assert 'title="hops 2"' in text
+
+
+def test_data_tab_rebuilt(single_run):
+    """Round 8 item 4: the Data tab carries breakdown CSVs, artifacts, and
+    vispath sections (not just one bare link)."""
+    (single_run / "parameters.txt").write_text(
+        "min synapse number:            3\n", encoding="utf-8")
+    report = generate_paths_pair_report(single_run, log=None)
+    text = report.read_text(encoding="utf-8")
+    data_tab = re.search(
+        r'<template id="tpl-data">(.*?)</template>', text, re.DOTALL).group(1)
+    assert "Breakdown CSVs (lossless)" in data_tab
+    assert "Run artifacts" in data_tab
+    assert "parameters.txt" in data_tab
+    # every href in the data tab resolves
+    run_dir = single_run
+    for h in re.findall(r'href="([^"#]+)"', data_tab):
+        assert (run_dir / h.split("#")[0]).exists(), h
 
 
 def test_cross_run_writes_nested_per_delegate_reports(cross_run):
