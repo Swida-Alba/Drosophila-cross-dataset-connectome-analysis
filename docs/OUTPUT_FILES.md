@@ -164,9 +164,9 @@ fields remain decimal-valued.
 *   **`{source}_to_{target}_allpaths_group_excluded.csv`**: Group-level paths excluded by the filters (group queries only)
 
 #### Visualizations (`visualization/`)
-*   **`Network_{folder}.html`**: Interactive network graph of the found paths
-*   **`Heatmap_{folder}.html`**: Connection weight heatmap
-*   **`Sankey_{folder}.html`**: Sankey flow diagram of the pathways
+*   **`Network_{folder}.html`**: Interactive network graph of the found paths — the cytoscape/dagre libraries are **vendored and inlined**, so it works fully offline
+*   **`Heatmap_{folder}.html`**: Connection weight heatmap (plotly inlined — offline)
+*   **`Sankey_{folder}.html`**: Sankey flow diagram of the pathways (plotly inlined — offline)
 *   **`visualization_data/{folder}_data_connections.csv` / `{folder}_data_original_paths.csv`**: Data backing the HTML files (connections columns: `source`, `target`, `weight`, `ratio`, `probability`, `nt_type`)
 *   **`visualization_data/{folder}_data_connMatrix_weight.csv` / `_connMatrix_ratio.csv` / `_connMatrix_prob.csv` / `_connMatrix_nt_type.csv`**: Long-form connection matrices backing the HTML views
 *   **`visualization_data/type_paths_visualized.csv`**: Written only when the Visualization Edge Limit (`edgeN_limit`) actually trims — the exact path rows the rendered (edge-limited) network represents
@@ -665,7 +665,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 ### Key Output Files
 
 #### Main Reports
-*   **`comparison_report.html`**: Comprehensive interactive HTML report. Standard and Custom combination runs use the same report sections; Custom runs repeat them for every query row and retain query-keyed provenance, networks, matrices, conservation, overlap, and statistics.
+*   **`comparison_report.html`**: Comprehensive interactive HTML report. Standard and Custom combination runs use the same report sections; Custom runs repeat them for every query row and retain query-keyed provenance, networks, matrices, conservation, overlap, and statistics. The plotly and vis-network libraries are inlined, so the report (and the `conserved_paths/` network pages) work fully offline.
 *   **`comparison_report.txt`**: Plain text summary
 *   **`parameters.json`**: JSON dump of all `ComparisonParameters` (metadata, datasets, resolved source/target groups, thresholds, algorithm and feature flags), plus the pathfinding provenance field list, definitions of `tau` and `applied_threshold`, and the `auto_type_mapping_*` block (mapper requested/active, source, version, load error, per-status resolution counts on the `unique_type_resolutions` basis, the partner-occurrence metric, and `raw_fallback_used`)
 *   **`effective_thresholds.json`**: Run-root notice consumed by the UI and exported UserGuide. Standard mode contains same-threshold query rows; combination mode also contains a `queries`/`combinations` block whose rows preserve `query_id`, the requested threshold map, and one applied-threshold provenance row per dataset. The provenance includes canonical `applied_threshold`, source, StrongestFirst budget/tau, Edge Budget `w0`/`w1`, path bottlenecks `w2`/`W*`, and `paths_complete`. In **edge mode** the compared data is exactly `weight >= requested`, so each dataset's row reports `applied_threshold = requested` with tau/budget fields null; the tau/budget numbers of the side-effect path runs (run for output consistency only) are preserved under each row's `side_path_run` block rather than masquerading as the edge filter's provenance.
