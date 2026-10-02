@@ -128,7 +128,9 @@ exported path tables.
     *   `path_prob`: Overall path probability
     *   `min_ratio`: Smallest edge connection ratio
     *   `length`: Number of hops
-    *   `nt_types`: Neurotransmitter types along the path
+    *   `nt_types`: Neurotransmitter types along the path — one entry per
+        hop, positionally aligned; an empty entry marks a hop whose
+        connection has no NT annotation
 *   **`all_attributes.json`**: Serialized run attributes — includes the
     applied-threshold provenance block described under Run Metadata.
 *   **`{source}_to_{target}_allpaths_group.csv`**: Group-level path table
@@ -1625,7 +1627,7 @@ setting (useful for scripts and tests).
 | `path_prob`    | Overall path probability                        |
 | `min_ratio`    | Smallest edge connection ratio                  |
 | `length`       | Number of hops                                  |
-| `nt_types`     | Neurotransmitter types along the path           |
+| `nt_types`     | Neurotransmitter types along the path (one entry per hop; empty entry = no annotation) |
 
 ### Similarity Metric Columns
 

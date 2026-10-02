@@ -138,6 +138,13 @@ paths_df = pd.DataFrame({
 })
 ```
 
+> **Per-hop alignment**: the `nt_types` list is read **positionally**, one
+> entry per hop. A hop with no NT annotation must occupy an **empty slot**
+> (`''`) so later hops' NT cannot shift onto the wrong edge — e.g.
+> `['', 'ACH']` for a 2-hop path whose first connection is unannotated.
+> The DROCAT producer (statvis) emits exactly this format; lists shorter
+> than the hop count (legacy runs) render the missing tail as unknown.
+
 ---
 
 ## Custom Groups

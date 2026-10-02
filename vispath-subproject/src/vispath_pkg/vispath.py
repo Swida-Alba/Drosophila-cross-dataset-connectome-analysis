@@ -277,6 +277,32 @@ def get_nt_color(nt_type, opacity=0.6):
     return f'rgba({r}, {g}, {b}, {opacity})'
 
 
+def normalize_nt_value(value):
+    """Normalize one per-hop NT entry from a path row: blank/NaN -> None.
+
+    The producer (statvis) serializes null hops as empty slots in the
+    nt_types list so positions stay aligned with the path's hops; the
+    consumer must read those slots as "no annotation", never as a value
+    that could win the per-edge mode election.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def mode_ignoring_blank(series):
+    """Most frequent non-blank value of a per-edge NT group; None when
+    every value is blank/NaN (unknown must never win an election)."""
+    valid = series.dropna()
+    valid = valid[valid.astype(str).str.strip() != '']
+    if valid.empty:
+        return None
+    return valid.mode().iloc[0]
+
+
 class VisualizePath:
     """
     A class for visualizing neural pathways from CSV/Excel files.
@@ -2463,18 +2489,21 @@ class VisualizePath:
         has_ratios = 'connection_ratios' in self.path_df.columns
         has_probs = 'traversal_probabilities' in self.path_df.columns
         has_nt = 'nt_types' in self.path_df.columns
-        
+        short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
+
         for idx, row in self.path_df.iterrows():
             path_block = row['path_block']
             weights = self._safe_eval_list(row['weights'])
-            
+
             # Optional columns - only if they exist
             ratios = self._safe_eval_list(row.get('connection_ratios', [])) if has_ratios else []
             probs = self._safe_eval_list(row.get('traversal_probabilities', [])) if has_probs else []
             nt_types = self._safe_eval_list(row.get('nt_types', [])) if has_nt else []
-            
+
             # Parse path
             nodes = self._parse_path_block(path_block)
+            if has_nt and nt_types and len(nt_types) != len(nodes) - 1:
+                short_nt_rows += 1
             
             # Create connections for each hop
             for i in range(len(nodes) - 1):
@@ -2483,7 +2512,7 @@ class VisualizePath:
                 weight = weights[i] if i < len(weights) else 0
                 ratio = ratios[i] if i < len(ratios) else np.nan
                 prob = probs[i] if i < len(probs) else np.nan
-                nt = nt_types[i] if i < len(nt_types) else None
+                nt = normalize_nt_value(nt_types[i]) if i < len(nt_types) else None
                 
                 conn_data = {
                     'source': source,
@@ -2501,6 +2530,15 @@ class VisualizePath:
                     
                 connections.append(conn_data)
         
+        if short_nt_rows:
+            # Pre-fix producers dropped null NT entries from the per-hop
+            # list (Polars list.join skips nulls), shifting every later
+            # hop's NT onto the wrong edge — aMe12 edges rendered GLUT
+            # although the connection table says ACH.
+            self._vprint('\033[33mWarning: {} path row(s) carry an nt_types list shorter than their '
+                         'hop count — per-hop NT may be shifted; regenerate the run with the fixed '
+                         'producer to restore correct alignment.\033[0m'.format(short_nt_rows))
+
         # Create DataFrame
         conn_df = pd.DataFrame(connections)
 
@@ -2525,8 +2563,9 @@ class VisualizePath:
             if has_probs:
                 agg_dict['probability'] = 'mean'
             if has_nt:
-                # Use mode (most frequent) for categorical data like nt_type
-                agg_dict['nt_type'] = lambda x: x.mode().iloc[0] if not x.mode().empty else None
+                # Use mode (most frequent) for categorical data like nt_type;
+                # blank slots (unannotated hops) must never win the election
+                agg_dict['nt_type'] = mode_ignoring_blank
 
             conn_df = conn_df.groupby(['source', 'target'], as_index=False).agg(agg_dict)
 
@@ -2802,7 +2841,7 @@ class VisualizePath:
                 weight = weights[i] if i < len(weights) else 0
                 ratio = ratios[i] if i < len(ratios) else 0
                 prob = probs[i] if i < len(probs) else 0
-                nt = nt_types[i] if i < len(nt_types) else None
+                nt = normalize_nt_value(nt_types[i]) if i < len(nt_types) else None
 
                 if edge_key not in edge_data:
                     edge_data[edge_key] = {'weight': weight, 'ratio': ratio, 'prob': prob, 'nt': nt}

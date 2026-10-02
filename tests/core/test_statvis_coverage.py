@@ -4,6 +4,7 @@ All tests are hermetic: synthetic in-memory DataFrames, monkeypatched
 loaders, and file I/O restricted to pytest tmp_path.  No network access,
 no reads from datasets/ or cache/.
 """
+import ast
 import os
 import sys
 from pathlib import Path
@@ -665,6 +666,29 @@ class TestStreamingPipeline:
         assert df["length"].to_list() == [2]
         assert df["nt_types"].to_list() == ['["ACH", "GABA"]']
         assert excl.is_empty()
+
+    def test_process_batch_polars_null_nt_keeps_hop_slot(self):
+        """A hop with no NT annotation must keep its (empty) slot in the
+        serialized nt_types list: vispath reads the list POSITIONALLY, one
+        entry per hop, and Polars list.join silently drops null entries —
+        the shortened list shifted every later hop's NT onto the wrong
+        edge (cholinergic aMe12 edges rendered GLUT/GABA)."""
+        conn = pd.DataFrame({
+            "type_pre": ["R", "A", "B"],
+            "type_post": ["A", "B", "C"],
+            "weight": [10, 4, 6],
+            "traversal_probability": [0.5, 0.8, 0.9],
+            "connection_ratio": [0.4, 0.2, 0.3],
+            "nt_type": [None, "ACH", "GLUT"],  # R->A unannotated (photoreceptor-style)
+        })
+        df_conn = sv.prepare_connection_data(conn, "type")
+        df, _ = sv.process_batch_polars([["R", "A", "B", "C"]], df_conn, "type")
+        assert df.height == 1
+        hops = len(df["path"][0].split("->")) - 1
+        nt_list = ast.literal_eval(df["nt_types"][0])
+        assert hops == 3
+        assert len(nt_list) == hops            # one slot per hop, nulls kept
+        assert nt_list == ["", "ACH", "GLUT"]  # positions preserved
 
     def test_process_batch_keyword_and_label_map(self):
         df_conn = sv.prepare_connection_data(self._conn_df(), "type")

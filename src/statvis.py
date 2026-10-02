@@ -8042,9 +8042,16 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
     
     # Add nt_types formatting if available - use quoted strings for proper parsing
     if 'nt_types' in df_final.columns:
-        # Format as ["ACH", "GABA"] so ast.literal_eval can parse it
+        # Format as ["ACH", "GABA"] so ast.literal_eval can parse it.
+        # Nulls MUST be kept as empty slots (""), never dropped: vispath
+        # reads this list POSITIONALLY, one entry per hop, and
+        # Expr.list.join silently skips null entries by default — the
+        # shortened list shifted every later hop's NT onto the wrong edge
+        # (cholinergic aMe12 edges rendered as GLUT/GABA downstream).
         list_format_cols.append(
-            (pl.lit('["') + pl.col('nt_types').list.eval(pl.element().cast(pl.Utf8)).list.join('", "') + pl.lit('"]')).alias('nt_types')
+            (pl.lit('["') + pl.col('nt_types').list.eval(
+                pl.element().cast(pl.Utf8).fill_null("")
+            ).list.join('", "') + pl.lit('"]')).alias('nt_types')
         )
     
     df_final = df_final.with_columns(list_format_cols)

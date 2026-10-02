@@ -2656,6 +2656,62 @@ class TestArrowColorConsistencyAndAssignRow:
         assert "flex: 1 1 0; width: auto; min-width: 70px; text-overflow: ellipsis;" in html
 
 
+class TestNtTypesHopAlignment:
+    """Per-hop nt_types lists are read POSITIONALLY (one entry per hop):
+    a null-annotated hop must occupy an empty slot so later hops' NT
+    cannot slide onto the wrong edge — cholinergic aMe12 edges rendered
+    GLUT/GABA when the producer dropped null entries from the list."""
+
+    @staticmethod
+    def _vp(tmp_path, df):
+        return VisualizePath(
+            path_file=df,
+            output_folder=str(tmp_path),
+            showfig=False,
+            verbose=False,
+            network_layout="dagre",
+        )
+
+    def test_blank_slot_keeps_hop_alignment(self, tmp_path):
+        df = pd.DataFrame({
+            "path_block": ["R->A->B->C"],
+            "weights": [[10, 4, 6]],
+            "nt_types": ['["", "ACH", "GLUT"]'],
+        })
+        conn_df, _G = self._vp(tmp_path, df).build_network()
+        nt = {(r.source, r.target): r.nt_type for r in conn_df.itertuples()}
+        assert nt[("R", "A")] is None          # unannotated hop stays unknown
+        assert nt[("A", "B")] == "ACH"         # each hop keeps its own value
+        assert nt[("B", "C")] == "GLUT"
+
+    def test_mode_election_ignores_blank_slots(self, tmp_path):
+        # same edge reached by three paths — two unannotated, one ACh:
+        # the blank slots must never win the per-edge mode election
+        df = pd.DataFrame({
+            "path_block": ["R->A->B", "S->A->B", "T->A->B"],
+            "weights": [[10, 4], [8, 5], [6, 7]],
+            "nt_types": ['["", ""]', '["", ""]', '["", "ACH"]'],
+        })
+        conn_df, _G = self._vp(tmp_path, df).build_network()
+        nt = {(r.source, r.target): r.nt_type for r in conn_df.itertuples()}
+        assert nt[("A", "B")] == "ACH"
+
+    def test_legacy_short_list_tolerated(self, tmp_path):
+        # pre-fix CSV: 3 hops but only one entry (nulls dropped, shifted).
+        # Unfixable retroactively — the reader must not crash and must
+        # fill the missing tail with unknown.
+        df = pd.DataFrame({
+            "path_block": ["R->A->B->C"],
+            "weights": [[10, 4, 6]],
+            "nt_types": ['["ACH"]'],
+        })
+        conn_df, _G = self._vp(tmp_path, df).build_network()
+        nt = {(r.source, r.target): r.nt_type for r in conn_df.itertuples()}
+        assert nt[("R", "A")] == "ACH"   # legacy shift accepted as-is
+        assert nt[("A", "B")] is None
+        assert nt[("B", "C")] is None
+
+
 class TestReciprocalModeSwitch:
     """The Reciprocal Edges ribbon: a 3-way Straight/Curved/Merged switch
     that operates at RUNTIME on annotated pair halves (both halves are
