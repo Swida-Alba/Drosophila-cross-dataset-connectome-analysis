@@ -25,7 +25,10 @@ for p in (PROJECT_ROOT, SRC, PROJECT_ROOT / 'vispath-subproject' / 'src',
 
 from test_type_level_refill import universe_types          # noqa: E402
 from tests.core.test_pathfinding import _make_pipeline_fc  # noqa: E402
-from connection_ratio_paths import find_ratio_paths        # noqa: E402
+from connection_ratio_paths import (                     # noqa: E402
+    compute_incoming_totals,
+    find_ratio_paths,
+)
 from coana import _findallpath_cache_key                   # noqa: E402
 
 INT_EDGES = [
@@ -140,22 +143,6 @@ def test_ratio_run_artifacts(tmp_path):
     assert '[ratio definition]' not in notes
     # the type-level refill never fires on a ratio run (§16.1 guard)
     assert not (run_dir / 'data_details' / 'type_level_refill').exists()
-
-
-def test_shortest_refuses_ratio_basis(tmp_path):
-    with universe_types(INT_TYPES) as shim:
-        fc, _c, _l = _make_pipeline_fc(
-            shim, tmp_path, edges=INT_EDGES, max_interlayer=3,
-            min_synapse=1, source_ids=tuple(SOURCES),
-            target_ids=tuple(TARGETS))
-        fc.skip_bodyId = False
-        if 'Checked' not in fc.target_df.columns:
-            fc.target_df = fc.target_df.assign(
-                Checked=[True] * len(fc.target_df))
-        fc.weight_basis = 'connection_ratio'
-        fc.min_ratio = 0.2
-        with pytest.raises(ValueError, match='not supported in Shortest'):
-            fc.FindShortestPath()
 
 
 def test_ratio_bad_threshold_refused(tmp_path):
@@ -349,3 +336,138 @@ def test_ratio_type_ratios_clear_threshold(tmp_path):
     ratio = src_mid.connection_ratio.iloc[0]
     involved_den = src_mid.weight.sum() / ratio
     assert involved_den == pytest.approx(145.0, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 9. Phase 3: shortest-mode ratio lane
+# ---------------------------------------------------------------------------
+def _true_totals_frame(posts, min_weight=1, **_kwargs):
+    totals = compute_incoming_totals(INT_EDGES)
+    rows = [(str(p), totals.get(str(p), 0.0)) for p in posts]
+    return pd.DataFrame(rows, columns=['bodyId_post',
+                                       'total_incoming_weight'])
+
+
+def test_shortest_ratio_lane(tmp_path):
+    """Phase 3: FindShortestPath runs the ratio lane. The harness's
+    backward-fetch stub bypasses the production fetch-level ratio filter,
+    so this test runs the monolithic path and stubs the F9 global totals
+    (what real runs read from the connection cache)."""
+    import pandas as _pd
+
+    types = dict(INT_TYPES)
+    for i in range(1, 8):
+        types[f'bg{i}'] = 'BG'   # fetched by the backward stub
+    with universe_types(types) as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=INT_EDGES, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        if 'Checked' not in fc.target_df.columns:
+            fc.target_df = fc.target_df.assign(
+                Checked=[True] * len(fc.target_df))
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.2
+        fc.discovery_batch_budget = 0     # monolithic path (the store path
+        fc.target_batch_size = 0          # filters at the real fetch)
+        fc._fetch_total_incoming_weight = _true_totals_frame
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': '3',
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.FindShortestPath()
+        run_dir = Path(fc.allpath_folder)
+    assert '_L3r0_2_' in run_dir.name
+    paths = _pd.read_csv(
+        next(run_dir.glob('*_allpaths_bodyId_paths.csv')))
+    assert len(paths) > 0
+    bottlenecks = [(_true_bn(r.path), r.path) for r in paths.itertuples()]
+    below = [b for b in bottlenecks if b[0] < 0.2]
+    assert not below, below
+    # shortest semantics: every emitted path is hop-minimal for its pair
+    # (spot-check one known pair: S1 -> T1 via C is the 2-hop shortest)
+    assert any(r.path == 'S1->C->T1' for r in paths.itertuples())
+    text = (run_dir / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'weight basis' in text
+
+
+# ---------------------------------------------------------------------------
+# 10. Phase 3: replay with float ratio tiers
+# ---------------------------------------------------------------------------
+def test_ratio_replay_float_tiers(tmp_path):
+    """FindAllPathMultiThreshold under the ratio lane: float tiers, slice
+    materialization set-equal to fresh per-threshold runs, canonical
+    collapse on a t0 budget bite, and r-suffix folder restamping."""
+    import pandas as _pd
+
+    def _make(shim, root):
+        fc, _c, _l = _make_pipeline_fc(
+            shim, root, edges=INT_EDGES, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        if 'Checked' not in fc.target_df.columns:
+            fc.target_df = fc.target_df.assign(
+                Checked=[True] * len(fc.target_df))
+        fc.weight_basis = 'connection_ratio'
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': '3',
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        return fc
+
+    types = dict(INT_TYPES)
+    for i in range(1, 8):
+        types[f'bg{i}'] = 'BG'
+    with universe_types(types) as shim:
+        fc = _make(shim, tmp_path / 'replay')
+        fc.min_ratio = 0.1
+        results = fc.FindAllPathMultiThreshold([0.1, 0.2, 0.3])
+    root = Path(fc.allpath_folder).parent
+    folders = sorted(root.glob('find-paths-complete_*'))
+    names = [f.name for f in folders]
+    # float r-suffix folders only (no minsyn_, no int collapse)
+    assert all('_L3r' in n for n in names), names
+    assert not any('minsyn' in n for n in names)
+    # t0 collapsed onto its canonical (budget bit at t0=0.1)
+    assert results[0.1]['skipped'] and results[0.1]['duplicate_of'] is not None
+    canon = results[0.1]['duplicate_of']
+    assert isinstance(canon, float) and canon > 0.1
+    # slices set-equal to fresh per-threshold runs
+    for t_r in (canon, 0.2, 0.3):
+        with universe_types(types) as shim:
+            ffc = _make(shim, tmp_path / f'fresh_{t_r}')
+            ffc.min_ratio = t_r
+            ffc.FindAllPath()
+        fresh = Path(ffc.allpath_folder)
+        want = {r.path for r in _pd.read_csv(
+            next(fresh.glob('*_allpaths_bodyId_paths.csv'))).itertuples()}
+        dec = str(t_r).replace('.', '_')
+        match = [f for f in folders if f'r{dec}_' in f.name]
+        assert match, (t_r, names)
+        got = {r.path for r in _pd.read_csv(
+            next(match[0].glob('*_allpaths_bodyId_paths.csv'))).itertuples()}
+        assert got == want, (t_r, got ^ want)
+    # per-slice provenance carries the replayed_from line + basis
+    text = (match[0] / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'weight basis' in text and 'replayed_from' in text
+
+
+def test_ratio_replay_refuses_bad_tiers(tmp_path):
+    types = dict(INT_TYPES)
+    for i in range(1, 8):
+        types[f'bg{i}'] = 'BG'
+    with universe_types(types) as shim:
+        fc, _c, _l = _make_pipeline_fc(
+            shim, tmp_path, edges=INT_EDGES, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.1
+        with pytest.raises(ValueError, match='floats in'):
+            fc.FindAllPathMultiThreshold([0.1, 5])

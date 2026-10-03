@@ -8814,6 +8814,55 @@ class FindNeuronConnection:
                 f'  ⚠️ Could not persist the incoming cache: {exc}',
                 level='full')
 
+    def _ratio_lane_threshold(self):
+        """The active ratio-lane threshold, or None outside the lane
+        (threshold-at-fetch is the production semantics — the 'all' mode
+        filters at the forward fetch, shortest at this backward fetch)."""
+        if getattr(self, 'weight_basis', 'synapse') != 'connection_ratio':
+            return None
+        t_r = float(getattr(self, 'min_ratio', 0.0) or 0.0)
+        return t_r if 0.0 < t_r <= 1.0 else None
+
+    def _filter_frame_by_ratio_threshold(self, frame, t_r):
+        """Drop rows whose connection ratio (weight / all-post incoming at
+        min_weight=1, the F9 denominator) sits below ``t_r``. Works on
+        polars and pandas frames; totals come from the in-process F9
+        fetch with the merged-frame fallback."""
+        import polars as _pl
+        if frame is None:
+            return frame
+        is_polars = hasattr(frame, 'iter_rows')
+        work = frame if is_polars else _pl.from_pandas(frame)
+        if work.is_empty():
+            return frame
+        posts = sorted(set(work['bodyId_post'].cast(_pl.Utf8).to_list()))
+        totals = {}
+        try:
+            totals_pd = self._fetch_total_incoming_weight(posts, 1)
+            if len(totals_pd):
+                totals = {str(r.bodyId_post): float(r.total_incoming_weight)
+                          for r in totals_pd.itertuples()}
+        except Exception:
+            totals = {}
+        if not totals:
+            totals = {str(r[0]): float(r[1]) for r in
+                      work.group_by(
+                          _pl.col('bodyId_post').cast(_pl.Utf8)
+                      ).agg(_pl.col('weight').sum()).iter_rows()}
+            if getattr(self, '_warn_notes', None) is not None:
+                self._warn_notes.append(
+                    '- [weight basis] shortest fetch built ratios on '
+                    'fetched-frame totals (F9 offline fallback).')
+        lut = _pl.DataFrame(
+            {'bodyId_post': list(totals),
+             'total_incoming': [totals[k] for k in totals]})
+        kept = (work.with_columns(_pl.col('bodyId_post').cast(_pl.Utf8))
+                .join(lut, on='bodyId_post', how='left')
+                .filter(_pl.col('weight').cast(_pl.Float64)
+                        / _pl.col('total_incoming') >= t_r)
+                .drop('total_incoming'))
+        return kept if is_polars else kept.to_pandas()
+
     def _fetch_path_connections_backward(self, downstream_bodyIds,
                                          source_bodyIds=None):
         """Fetch one target-rooted layer by querying incoming connections.
@@ -8831,6 +8880,7 @@ class FindNeuronConnection:
         requested_posts = {str(value) for value in downstream_bodyIds}
         if not requested_posts:
             return self._empty_path_connection_frame()
+        _t_r = self._ratio_lane_threshold()
 
         use_cache = getattr(self, 'use_cache', False)
         cache_stats = getattr(self, '_shortest_cache_stats', None)
@@ -8948,6 +8998,8 @@ class FindNeuronConnection:
             combined = combined.drop_duplicates(
                 subset=dedupe_columns, keep='last'
             )
+        if _t_r is not None:
+            combined = self._filter_frame_by_ratio_threshold(combined, _t_r)
         return self._finalize_path_connection_frame(combined)
     
     def _fetch_api_connections(self, uncached_upstream, downstream_bodyIds):
@@ -13325,8 +13377,8 @@ class FindNeuronConnection:
         # column (weight / all-post incoming at min_weight=1, the same
         # in-process call the readout uses) BEFORE the Edge Budget so the
         # fit, the graph build and the exports all share one definition.
-        if path_mode == 'all' and getattr(
-                self, 'weight_basis', 'synapse') == 'connection_ratio':
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            # Both modes (Phase 3: shortest included): attach + threshold.
             conn_layers = self._attach_weight_ratio_columns(conn_layers)
         # Fix D (Edge Budget): a lossy weight floor caps the enumeration
         # cone when it still exceeds the budget after the lossless
@@ -15432,7 +15484,9 @@ class FindNeuronConnection:
             'layer_neurons': [set(layer) for layer in layer_neurons],
             'targets_found': list(targets_found),
             'source_ID': list(source_ID),
-            'threshold': self.min_synapse_num,
+            'threshold': (float(self.min_ratio) if getattr(
+                self, 'weight_basis', 'synapse') == 'connection_ratio'
+                else self.min_synapse_num),
             'tau': tau,
             'budget_bitten': bool(budget_bitten),
             'strongest_first_budget': int(
@@ -15471,7 +15525,21 @@ class FindNeuronConnection:
         write that folder's run attributes/parameters files."""
         import re
         base = self.allpath_folder or self.save_folder
-        new_base = re.sub(r'minsyn_\d+(?=/|$)', f'minsyn_{threshold}', base)
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            _dec = (str(float(threshold)).replace('-', 'neg')
+                                         .replace('.', '_'))
+            _m = re.search(
+                r'(_L\d+)r[\dneg]+(?:_[\dneg]+)*?'
+                r'(?=_\d{8}_\d{6}(?:/|$)|/|$)', base)
+            if _m is None:
+                raise ValueError(
+                    f'cannot restamp ratio threshold into folder name '
+                    f'{base!r}')
+            new_base = (base[:_m.start()] + _m.group(1)
+                        + 'r' + _dec + base[_m.end():])
+        else:
+            new_base = re.sub(r'minsyn_\d+(?=/|$)',
+                              f'minsyn_{threshold}', base)
         os.makedirs(new_base, exist_ok=True)
         self.save_folder = new_base
         self.allpath_folder = new_base
@@ -15841,10 +15909,10 @@ class FindNeuronConnection:
         if not getattr(self, 'auto_type_level_refill', True):
             return False
         if getattr(self, 'weight_basis', 'synapse') != 'synapse':
-            # Ratio-basis runs are outside the refill's semantics (it is
-            # synapse-budget recovery); dormant until the weight_basis
-            # field exists (plan-connection-ratio-pathfinding §16.1).
-            return False
+            # Phase 3: ratio-basis runs DO refill now (ratio-budget
+            # recovery, synapse-mass weights in the records; the module
+            # parses the float thresholds itself).
+            pass
         run_dir = getattr(self, 'allpath_folder', None)
         if not run_dir or not os.path.isdir(run_dir):
             return False
@@ -15862,17 +15930,21 @@ class FindNeuronConnection:
             # records, no note, no enumeration cost.
             prov = read_run_provenance(run_dir)
 
-            def _as_int(value):
+            _ratio = str(prov.get('weight_basis', '')) \
+                == 'connection_ratio'
+
+            def _as_thr(value):
                 try:
-                    return int(float(str(value)))
+                    v = float(str(value))
+                    return v if _ratio else int(v)
                 except (TypeError, ValueError):
                     return None
-            asked = _as_int(prov.get('requested_threshold'))
-            replayed = _as_int(prov.get('replayed_from'))
+            asked = _as_thr(prov.get('requested_threshold'))
+            replayed = _as_thr(prov.get('replayed_from'))
             if replayed is not None and asked is not None \
                     and replayed < asked:
                 asked = replayed
-            applied = _as_int(prov.get('applied_threshold'))
+            applied = _as_thr(prov.get('applied_threshold'))
             if applied is None or asked is None or applied <= asked:
                 return False
 
@@ -16071,7 +16143,17 @@ class FindNeuronConnection:
         capture was declined (budget exceeded / capture failure) and the
         caller should enumerate remaining thresholds individually.
         """
-        thresholds = sorted({int(t) for t in thresholds})
+        _ratio_replay = getattr(
+            self, 'weight_basis', 'synapse') == 'connection_ratio'
+        if _ratio_replay:
+            for t in thresholds:
+                if not (0.0 < float(t) <= 1.0):
+                    raise ValueError(
+                        'ratio-basis replay thresholds must be floats in '
+                        f'(0, 1] — got {t!r}')
+            thresholds = sorted({float(t) for t in thresholds})
+        else:
+            thresholds = sorted({int(t) for t in thresholds})
         if not thresholds:
             raise ValueError(
                 'FindAllPathMultiThreshold requires at least one threshold')
@@ -16081,9 +16163,13 @@ class FindNeuronConnection:
         # (per-slice thresholds, StrongestFirst unification, auto budget),
         # and a later call on the same instance must not inherit leftovers.
         _restore_min_syn = self.min_synapse_num
+        _restore_min_ratio = getattr(self, 'min_ratio', 0.0)
         _restore_budget = self.max_paths_bodyid
         _restore_pathfinding = getattr(self, 'pathfinding', None)
-        self.min_synapse_num = t0
+        if _ratio_replay:
+            self.min_ratio = t0    # min_synapse_num stays 1 (entry gate)
+        else:
+            self.min_synapse_num = t0
         # Directive: unify the pipeline — the replay orchestrator ALWAYS
         # enumerates via the StrongestFirst core (the bottleneck-sorted
         # τ-prefix array its slices are cut from only exists there), with
@@ -16142,12 +16228,14 @@ class FindNeuronConnection:
         if capture is None:
             results['_fallback'] = True
             self.min_synapse_num = _restore_min_syn
+            self.min_ratio = _restore_min_ratio
             self.max_paths_bodyid = _restore_budget
             self.pathfinding = _restore_pathfinding
             return results
 
         if len(thresholds) == 1:
             self.min_synapse_num = _restore_min_syn
+            self.min_ratio = _restore_min_ratio
             self.max_paths_bodyid = _restore_budget
             self.pathfinding = _restore_pathfinding
             return results
@@ -16193,10 +16281,13 @@ class FindNeuronConnection:
             self.strongest_first_cutoff = tau
             self.strongest_first_budget_bitten = (
                 not paths_complete and t0_bitten)
+            _cap_canon = capture.get('tau_canonical')
             self.tau_canonical = (
-                int(capture.get('tau_canonical'))
-                if (not paths_complete and capture.get('tau_canonical') is not None)
-                else (int(tau) if tau is not None else None)
+                (int(_cap_canon) if not _ratio_replay else float(_cap_canon))
+                if (not paths_complete and _cap_canon is not None)
+                else ((int(tau) if not _ratio_replay else
+                       (float(tau) if tau is not None else None))
+                      if tau is not None else None)
             )
             self.strongest_dropped_bottleneck = (
                 capture.get('strongest_dropped_bottleneck')
@@ -16230,13 +16321,24 @@ class FindNeuronConnection:
                     if neuron_id not in real_layer_map_bodyId:
                         real_layer_map_bodyId[neuron_id] = layer_idx
 
-            self.min_synapse_num = t
-            filtered_tables = []
-            for tbl in capture['all_connections']:
-                if tbl is None or tbl.is_empty():
-                    filtered_tables.append(tbl)
-                else:
-                    filtered_tables.append(tbl.filter(pl.col('weight') >= t))
+            if _ratio_replay:
+                self.min_ratio = t
+                filtered_tables = []
+                for tbl in capture['all_connections']:
+                    if tbl is None or tbl.is_empty():
+                        filtered_tables.append(tbl)
+                    else:
+                        filtered_tables.append(tbl.filter(
+                            pl.col('weight_ratio') >= t))
+            else:
+                self.min_synapse_num = t
+                filtered_tables = []
+                for tbl in capture['all_connections']:
+                    if tbl is None or tbl.is_empty():
+                        filtered_tables.append(tbl)
+                    else:
+                        filtered_tables.append(tbl.filter(
+                            pl.col('weight') >= t))
 
             self._replay_output_folder_for_threshold(t, capture['threshold'])
             self._materialize_paths(
@@ -16257,7 +16359,9 @@ class FindNeuronConnection:
                 find_reciprocal=find_reciprocal,
                 forward_only=forward_only,
             )
-            self._persist_slice_density_meta(t, slice_wstar, len(all_paths))
+            if not _ratio_replay:
+                self._persist_slice_density_meta(
+                    t, slice_wstar, len(all_paths))
             # Phase 2 refill hook: the slice folder's provenance was
             # finalized by _replay_output_folder_for_threshold +
             # _materialize_paths; generate the refill records for this
@@ -16277,26 +16381,30 @@ class FindNeuronConnection:
                 'replayed': True,
                 'skipped': False,
                 'duplicate_of': None,
-                'applied_folder': int(t),
+                'applied_folder': (float(t) if _ratio_replay else int(t)),
                 'tau_canonical': self.tau_canonical,
                 'strongest_dropped_bottleneck': self.strongest_dropped_bottleneck,
                 'edge_budget': capture.get('edge_budget'),
                 # Per-slice binding: the t0 graph floor only changes THIS
                 # slice's output when w0 > t. Below the floor (W4) the
                 # analyzer re-enumerates; at/above it the floor is inert.
-                'edge_budget_applied': bool(
-                    floor_w0 is not None and int(floor_w0) > int(t)),
+                'edge_budget_applied': _floor_binds(floor_w0, t),
                 'edge_budget_landing': (
                     capture.get('edge_budget_landing')
-                    if (floor_w0 is not None and int(floor_w0) > int(t))
-                    else None),
+                    if _floor_binds(floor_w0, t) else None),
                 'edge_weight_floor': capture.get('edge_weight_floor'),
                 'strongest_retained_bottleneck': capture.get(
                     'strongest_retained_bottleneck'),
                 'graph_pruning_record': dict(
                     capture.get('graph_pruning_record') or {}),
             }
-        
+
+        def _floor_binds(w0, t):
+            if w0 is None:
+                return False
+            return (float(w0) > float(t)) if _ratio_replay \
+                else (int(w0) > int(t))
+
         # F5 (tau-folder discipline): folders exist only for REAL
         # thresholds — the canonical tau folder (w2 + 1 when the budget
         # bit; freshly materialized with canonical denominators when it is
@@ -16305,9 +16413,14 @@ class FindNeuronConnection:
         # folder; the analyzer aliases their frames to the canonical
         # folder.
         eff_tau = t0_tau
-        tau_int = int(round(eff_tau)) if eff_tau is not None else None
-        canon_int = int(round(capture.get('tau_canonical') or eff_tau)) \
-            if eff_tau is not None else None
+        if _ratio_replay:
+            tau_int = float(eff_tau) if eff_tau is not None else None
+            canon_int = (float(capture.get('tau_canonical') or eff_tau)
+                         if eff_tau is not None else None)
+        else:
+            tau_int = int(round(eff_tau)) if eff_tau is not None else None
+            canon_int = int(round(capture.get('tau_canonical') or eff_tau)) \
+                if eff_tau is not None else None
         floor_w0 = capture.get('edge_weight_floor')
         if canon_int is not None and canon_int > t0 \
                 and canon_int not in thresholds:
@@ -16358,12 +16471,10 @@ class FindNeuronConnection:
                     'edge_budget': capture.get('edge_budget'),
                     # Per-slice: t >= w0 here (the W4 branch handled t < w0),
                     # so the floor is inert for this slice.
-                    'edge_budget_applied': bool(
-                        floor_w0 is not None and int(floor_w0) > int(t)),
+                    'edge_budget_applied': _floor_binds(floor_w0, t),
                     'edge_budget_landing': (
                         capture.get('edge_budget_landing')
-                        if (floor_w0 is not None and int(floor_w0) > int(t))
-                        else None),
+                        if _floor_binds(floor_w0, t) else None),
                     'edge_weight_floor': capture.get('edge_weight_floor'),
                     'strongest_retained_bottleneck': capture.get(
                         'strongest_retained_bottleneck'),
@@ -16409,11 +16520,13 @@ class FindNeuronConnection:
             shutil.rmtree(t0_folder, ignore_errors=True)
             self._vprint(
                 f'   Threshold collapse: input t={t0} ran at effective tau '
-                f'= {eff_tau:g} — output materialized as minsyn_{canon_int}; '
-                f'the intermediate minsyn_{t0} folder was removed.',
+                f'= {eff_tau:g} — output materialized as threshold '
+                f'{canon_int}; the intermediate threshold-{t0} folder was '
+                f'removed.',
                 level='always')
 
         self.min_synapse_num = _restore_min_syn
+        self.min_ratio = _restore_min_ratio
         self.max_paths_bodyid = _restore_budget
         self.pathfinding = _restore_pathfinding
         return results
@@ -16498,10 +16611,6 @@ class FindNeuronConnection:
         _ratio_basis = getattr(self, 'weight_basis', 'synapse') \
             == 'connection_ratio'
         if _ratio_basis:
-            if path_mode == 'shortest':
-                raise ValueError(
-                    "weight_basis='connection_ratio' is not supported in "
-                    'Shortest Paths (Phase 3) — use Find All Path.')
             if not (0.0 < float(self.min_ratio or 0.0) <= 1.0):
                 raise ValueError(
                     'weight_basis=\'connection_ratio\' requires min_ratio '
@@ -17272,7 +17381,22 @@ class FindNeuronConnection:
         # exist, only when the flag is on. Endpoints are classified against
         # the curated neuron table (typed / untyped / debris) so the curve
         # can apply the run's drop_untyped policy and always ignore debris.
-        if getattr(self, 'capture_density', False) and path_mode == 'all':
+        _density_ratio_skip = False
+        if (getattr(self, 'capture_density', False) and path_mode == 'all'
+                and getattr(self, 'weight_basis',
+                            'synapse') == 'connection_ratio'):
+            # Ratio lane: density artifacts stay synapse-only (int32 edge
+            # arrays + w_start>=3 semantics; the float variant lands with
+            # auto-mode float grids — Phase 3 remainder). capture_density
+            # is an auto-threshold concern and auto is refused under the
+            # ratio basis, so nothing downstream misses them.
+            _density_ratio_skip = True
+            self._warn_notes.append(
+                '- [weight basis] density capture skipped: threshold-'
+                'density artifacts are synapse-weight based and stay '
+                'unavailable in ratio mode for now.')
+        if (getattr(self, 'capture_density', False) and path_mode == 'all'
+                and not _density_ratio_skip):
             import numpy as _np
             _w_parts = []
             _cls_parts = []
@@ -17314,7 +17438,7 @@ class FindNeuronConnection:
         # bottlenecks/order/tau ratio-based; exports stay dual-basis
         # (statvis derives its columns from the connection frames, not the
         # graph). Stash the cone for the ratio_synapse_map disclosure.
-        _ratio_lane = (path_mode == 'all' and getattr(
+        _ratio_lane = (getattr(
             self, 'weight_basis', 'synapse') == 'connection_ratio')
         _weight_col = 'weight_ratio' if _ratio_lane else 'weight'
         if _ratio_lane:
@@ -17730,8 +17854,25 @@ class FindNeuronConnection:
                 # minimal (canonical) one. The LANDING tau stays the
                 # collapse/skip bound.
                 self.strongest_dropped_bottleneck = _dropped
-                self.tau_canonical = (int(_dropped) + 1
-                                      if _dropped is not None else int(tau))
+                if getattr(self, 'weight_basis',
+                           'synapse') == 'connection_ratio':
+                    # Ratio lane: the canonical tier is the weakest
+                    # distinct ratio tier strictly above w2 (the float
+                    # analog of w2+1) from the run's own cone ladder.
+                    _cone = getattr(self, '_ratio_cone_edges', None)
+                    _tiers = (sorted(set(_cone['weight_ratio'].to_list()))
+                              if _cone is not None and _cone.height else [])
+                    _above = ([t for t in _tiers
+                               if _dropped is not None and t > _dropped]
+                              if _dropped is not None else [])
+                    self.tau_canonical = (
+                        _above[0] if _above
+                        else (_dropped if _dropped is not None
+                              else tau))
+                else:
+                    self.tau_canonical = (int(_dropped) + 1
+                                          if _dropped is not None
+                                          else int(tau))
                 gap_txt = (
                     f', strongest dropped path bottleneck w2 = {_dropped:g}'
                     f' — every threshold in [{self.tau_canonical}, {tau:g}] '
@@ -17790,6 +17931,13 @@ class FindNeuronConnection:
         if path_mode == 'all' and path_bottlenecks and getattr(
                 self, 'capture_replay', False):
             try:
+                if getattr(self, 'weight_basis',
+                           'synapse') == 'connection_ratio':
+                    # Ratio replay: the captured discovery tables must
+                    # carry weight_ratio for the per-slice filters —
+                    # attach once from the t0 run's own F9 totals.
+                    all_connections = self._attach_weight_ratio_columns(
+                        all_connections)
                 self._replay_capture = self._encode_replay_capture(
                     all_paths, path_bottlenecks, all_connections,
                     layer_neurons, targets_found, source_ID,

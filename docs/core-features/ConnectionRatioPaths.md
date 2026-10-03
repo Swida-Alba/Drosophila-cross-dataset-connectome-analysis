@@ -89,3 +89,37 @@ dual-basis exports, pair-report support) is planned in the plan file's
 permanently disabled for ratio runs (its semantics are synapse-budget
 recovery). Related: `TypeLevelRefill.md`, `ConnectionRatio_Filter.md`,
 `PathFinding_Methods.md`.
+
+
+## Phase 3 (2026-10-03)
+
+The in-pipeline lane now covers everything Phase 1-2 deferred except the
+float density/alignment grids:
+
+- **Shortest Paths** runs the ratio lane (threshold applied at the
+  target-rooted backward fetch, ratio bottlenecks in the per-pair
+  min-hop enumeration, r-suffix folders, float provenance). The
+  batched/store discovery path filters at the fetch; the monolithic path
+  filters at the shared frame attach.
+- **Multi-threshold replay** accepts float ratio tiers
+  (`FindAllPathMultiThreshold([0.001, 0.002, 0.005])`): float
+  normalization, per-slice `weight_ratio` filters, float canonical-tau
+  (the weakest distinct ratio tier above w2 — NOT `int(w2)+1`, which
+  would collapse every sub-1 ratio to 1), `L{d}r{t}` slice folders,
+  float `replayed_from` gates, and float threshold-collapse discipline.
+  Verified against fresh per-threshold runs (set equality incl. the
+  canonical collapse folder).
+- **Type-level refill** runs for ratio-basis budget-bitten runs: float
+  threshold parsing, ratio-weighted re-enumeration, SYNPASE-mass refill
+  records (dual-basis), the table-reproduction anchor intact. Refills
+  fire for ordinary and most replay-slice ratio folders; a canonical
+  collapse folder whose stamps say complete (while its set is a drained
+  subset) refuses honestly at the anchor — stamping those slices with
+  the t0 bite state is the one open Phase-3 item.
+- **Density capture** is skipped under the ratio basis with an explicit
+  note (int32 synapse arrays + `w_start>=3` semantics; the float variant
+  lands together with float auto/alignment grids — still deferred).
+- Still deferred: float threshold-alignment/auto-mode grids (cross-
+  dataset Auto stays synapse-only under ratio), float density artifacts,
+  ratio-basis shortest-mode replay (shortest is never replayable in any
+  basis).

@@ -4011,11 +4011,6 @@ class ComparisonAnalyzer:
             fnc.FindShortestPath(find_reciprocal=self.parameters.find_reciprocal)
             return None
         try:
-            if self.parameters.weight_basis == 'connection_ratio':
-                raise ValueError(
-                    'Cross-dataset replay is synapse-only for now (Phase 3 '
-                    'of plan-connection-ratio-pathfinding) — disable '
-                    'replay_paths for connection-ratio thresholds.')
             results = fnc.FindAllPathMultiThreshold(
                 thresholds,
                 find_reciprocal=self.parameters.find_reciprocal,

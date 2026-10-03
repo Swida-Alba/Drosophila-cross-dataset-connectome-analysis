@@ -713,11 +713,12 @@ def test_auto_hook_complete_run_silent(staged_runs):
 
 
 # ---------------------------------------------------------------------------
-# 9b. Ratio-basis guard (plan-connection-ratio-pathfinding §16.1): the
-# refill never fires for weight_basis='connection_ratio' runs, in-process
-# or post-hoc. Dormant until the Phase-2 field exists.
+# 9b. Ratio-basis support (Phase 3): the refill runs for
+# weight_basis='connection_ratio' runs with FLOAT thresholds; the records
+# carry synapse-mass recovery weights and the anchor still reproduces the
+# exported table.
 # ---------------------------------------------------------------------------
-def test_auto_hook_skips_ratio_basis(tmp_path):
+def test_auto_hook_ratio_basis_refills(tmp_path):
     with universe_types() as shim:
         fc, _calls, _logs = _make_pipeline_fc(
             shim, tmp_path, edges=EDGES, max_interlayer=MAX_INTERLAYER,
@@ -729,7 +730,7 @@ def test_auto_hook_skips_ratio_basis(tmp_path):
         fc.graph_edge_limit_bodyid = 7
         fc.max_paths_bodyid = 0
         fc.parameter_dict.update({
-            'min synapse number': str(ASKED), 'filter by': 'bodyId',
+            'min synapse number': '1', 'filter by': 'bodyId',
             'exclude intra-type connections': 'False',
             'max interlayer': str(MAX_INTERLAYER),
             'separate hemispheres': 'False', 'hemisphere filter': 'both',
@@ -741,10 +742,23 @@ def test_auto_hook_skips_ratio_basis(tmp_path):
             'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
         fc.FindAllPath()
         run_dir = Path(fc.allpath_folder)
-    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+    out = run_dir / 'data_details' / 'type_level_refill'
+    prov = out / 'refill_provenance.json'
+    if prov.exists():      # a ratio budget raised applied > asked
+        import json as _json
+        rec = _json.loads(prov.read_text(encoding='utf-8'))
+        assert rec.get('table_reproduced') is True
+        assert rec.get('requested_threshold') == 0.2
+        rows = pd.read_csv(out / 'refill_type_pairs.csv')
+        assert (rows['refill_weight'] >= 0).all()   # synapse masses
+    # either way the hook no longer refuses ratio runs outright
+    notes = run_dir / 'user_warning_notes.txt'
+    if notes.exists():
+        assert 'does not apply to ratio-basis' not in notes.read_text(
+            encoding='utf-8')
 
 
-def test_read_run_provenance_refuses_ratio_basis(tmp_path):
+def test_read_run_provenance_parses_ratio_basis(tmp_path):
     run_dir = tmp_path / 'ratio_run'
     run_dir.mkdir()
     (run_dir / 'parameters.txt').write_text(
@@ -753,8 +767,9 @@ def test_read_run_provenance_refuses_ratio_basis(tmp_path):
         'requested_threshold: 0.05\n'
         'applied_threshold: 0.05\n',
         encoding='utf-8')
-    with pytest.raises(TypeLevelRefillError, match='weight basis'):
-        read_run_provenance(run_dir)
+    prov = read_run_provenance(run_dir)
+    assert prov['weight_basis'] == 'connection_ratio'
+    assert prov['requested_threshold'] == '0.05'  # parsed, not refused
 
 
 # ---------------------------------------------------------------------------

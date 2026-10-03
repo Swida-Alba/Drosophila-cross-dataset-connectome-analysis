@@ -120,3 +120,8 @@ python skills/drocat-usage/scripts/run_direct.py \
   columns for compatibility, but their filters are disabled in Shortest Paths;
   they do not appear as `r[]p[]` filename notes.
 - This is also the engine behind `inter_dataset`'s `path_mode="shortest"`.
+
+
+## Connection-ratio basis
+
+Shortest Paths supports `weight_basis='connection_ratio'` (Phase 3): the ratio threshold applies at the target-rooted discovery, per-pair min-hop paths rank by ratio bottleneck, folders use the `L{d}r{t}` suffix. Multi-threshold replay remains 'all'-mode only (as in synapse basis).

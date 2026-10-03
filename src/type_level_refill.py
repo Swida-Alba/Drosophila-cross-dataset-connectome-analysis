@@ -90,6 +90,16 @@ def _parse_scalar(raw: Optional[str]):
     return raw
 
 
+def _parse_float(raw: Optional[str]) -> Optional[float]:
+    raw = _parse_scalar(raw)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_int(raw: Optional[str]) -> Optional[int]:
     raw = _parse_scalar(raw)
     if raw is None:
@@ -115,12 +125,9 @@ def read_run_provenance(run_dir) -> dict:
             f'(or an unsupported layout).')
     text = txt.read_text(encoding='utf-8', errors='replace')
     m = re.search(r'^weight basis:\s*(\S+)', text, re.MULTILINE)
-    if m and m.group(1).strip().lower().startswith('connection_ratio'):
-        raise TypeLevelRefillError(
-            f'{run_dir}: weight basis {m.group(1)} — the type-level '
-            f'refill is synapse-budget recovery and does not apply to '
-            f'ratio-basis runs.')
     prov: Dict[str, str] = {}
+    if m and m.group(1).strip().lower().startswith('connection_ratio'):
+        prov['weight_basis'] = 'connection_ratio'
     for key in _PROVENANCE_KEYS:
         matches = re.findall(rf'^{key}:\s*(.+)$', text, re.MULTILINE)
         values = {_parse_scalar(m) for m in matches}
@@ -603,21 +610,34 @@ def compute_type_level_refill(
             f'{run_dir}: parameters.txt lacks a readable max interlayer.')
     bound += 1
 
-    asked = _parse_int(prov.get('requested_threshold'))
+    ratio_mode = str(prov.get('weight_basis', '')) == 'connection_ratio'
+    # The edge source may be a one-pass STREAM (the in-pipeline hook); the
+    # ratio lane iterates it twice (denominator pre-pass + induced build)
+    # and the anchor/denominator loops iterate it again — materialize
+    # non-sequence sources once (the hook's own docstring says single
+    # pass, no 20M-row materialization — the ratio lane trades that for
+    # correctness; ~20M triples ≈ 2-3 GB, inside the replay-capture
+    # budget class the pipeline already accepts).
+    if not isinstance(edges, (list, tuple)):
+        edges = list(edges)
+    _parse_thr = _parse_float if ratio_mode else _parse_int
+    asked = _parse_thr(prov.get('requested_threshold'))
     if asked is None:
-        asked = _parse_int(prov.get('min_synapse'))
+        asked = _parse_thr(prov.get('min connection ratio')
+                           if ratio_mode
+                           else prov.get('min_synapse'))
     if asked is None:
         raise TypeLevelRefillError(
             f'{run_dir}: parameters.txt lacks requested_threshold.')
     # Replay canon folders stamp requested_threshold with the CANONICAL
     # value; the orchestrating request's true asked threshold rides on
     # the replayed_from line (validated in the exploration round).
-    replayed_from = _parse_int(prov.get('replayed_from'))
+    replayed_from = _parse_thr(prov.get('replayed_from'))
     if replayed_from is not None and replayed_from < asked:
         asked = replayed_from
-    applied = _parse_int(prov.get('applied_threshold'))
+    applied = _parse_thr(prov.get('applied_threshold'))
     applied = applied if applied is not None else asked
-    w0 = _parse_int(prov.get('edge_weight_floor'))
+    w0 = _parse_thr(prov.get('edge_weight_floor'))
     budget_n = _parse_int(prov.get('strongest_first_budget'))
     bitten = prov.get('strongest_first_budget_bitten', 'False') == 'True'
     exclude_intra = prov.get(
@@ -687,19 +707,36 @@ def compute_type_level_refill(
         e_pref = e_u
     else:
         # -- node set U + induced edges at the asked threshold (single
-        # pass over the edge source — it may be a streamed 20M-row table)
+        # pass over the edge source — it may be a streamed 20M-row table).
+        # Ratio lane (Phase 3): the enumeration weights are the F9
+        # connection ratios (computed here — connection_ratio_paths
+        # imports this module, so no reverse import); the SYNPASE masses
+        # ride along in syn_of for the anchor + refill aggregates (the
+        # exported table's weight column stays synapse mass).
         e_u: List[Tuple[str, str, float]] = []
+        syn_of: Dict[Tuple[str, str], float] = defaultdict(float)
+        post_totals: Dict[str, float] = defaultdict(float)
+        if ratio_mode:
+            for u, v, w in edges:
+                post_totals[str(v)] += float(w)
         non_involved_excluded = 0
         for u, v, w in edges:
             u, v = str(u), str(v)
-            if w < asked:
+            if ratio_mode:
+                w = float(w)
+                denom = post_totals.get(v, 0.0)
+                w_thr = (w / denom) if denom > 0 else 0.0
+                syn_of[(u, v)] += w
+            else:
+                w_thr = w
+            if w_thr < asked:
                 continue
             if u not in node_set or v not in node_set:
                 non_involved_excluded += 1
                 continue
             if exclude_intra and type_map.get(u) == type_map.get(v):
                 continue
-            e_u.append((u, v, w))
+            e_u.append((u, v, w_thr))
         e_pref, prefilter_dropped = hop_prefilter(
             e_u, sources, targets, bound)
 
@@ -722,9 +759,11 @@ def compute_type_level_refill(
 
     # -- anchor: the re-derived cut must reproduce the exported table
     edge_weight = {(u, v): w for (u, v, w) in e_pref}
+    _anchor_w = (lambda uv: syn_of.get(uv, edge_weight[uv])) \
+        if ratio_mode else (lambda uv: edge_weight[uv])
     rederived: Dict[Tuple[str, str], float] = defaultdict(float)
     for (u, v), meta in cut_info.items():
-        rederived[(type_map[u], type_map[v])] += meta['w']
+        rederived[(type_map[u], type_map[v])] += _anchor_w((u, v))
     mismatch = {
         f'{k[0]}->{k[1]}': (int(rederived.get(k, 0)), int(v))
         for k, v in emitted.items()
@@ -758,18 +797,25 @@ def compute_type_level_refill(
             if w0 is not None and meta['w'] >= w0:
                 boundary.append((u, v, meta['w']))
 
-    # -- per-type-pair aggregation + threshold-free F9 ratios
+    # -- per-type-pair aggregation + threshold-free F9 ratios.
+    # Ratio lane: refill_weight is SYNPASE recovery mass (syn_of), the
+    # per-edge pair ratio IS the enumeration weight, and body_in still
+    # comes from the natural-weight edge source.
     totals: Dict[Tuple[str, str], float] = defaultdict(float)
     for (u, v), meta in refill_edges.items():
-        totals[(type_map[u], type_map[v])] += meta['w']
+        totals[(type_map[u], type_map[v])] += (
+            syn_of.get((u, v), meta['w']) if ratio_mode else meta['w'])
     body_in: Dict[str, float] = defaultdict(float)
     for (u, v, w) in edges:               # all-post denominators (min_weight=1)
-        body_in[str(u)] += w
+        body_in[str(u)] += float(w)
     pair_ratio = {}
     for (u, v) in list(refill_edges) + list(cut_info):
-        denom = body_in.get(v, 0.0)
-        pair_ratio[(u, v)] = (
-            edge_weight[(u, v)] / denom if denom > 0 else None)
+        if ratio_mode:
+            pair_ratio[(u, v)] = edge_weight[(u, v)]
+        else:
+            denom = body_in.get(v, 0.0)
+            pair_ratio[(u, v)] = (
+                edge_weight[(u, v)] / denom if denom > 0 else None)
 
     def _pair_prob(uv):
         r = pair_ratio.get(uv)

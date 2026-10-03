@@ -136,3 +136,8 @@ at depth 5) can exceed it — the provenance then carries
 `refill_truncated: true` and the refill is an honest partial set. Raise
 the guard for a full refill; the cut enumeration that reproduces the
 exported table is never guarded.
+
+
+## Ratio-basis runs (Phase 3)
+
+`weight_basis='connection_ratio'` runs refill like synapse runs: thresholds parse as FLOATS, the re-enumeration runs on ratio weights, and the records carry SYNPASE recovery masses (dual-basis: `refill_weight` is synapse mass, `refilled_connection_ratio` the F9 ratio). Streamed edge sources are materialized once (the ratio lane needs two passes). The post-hoc CLI works on ratio run folders unchanged.
