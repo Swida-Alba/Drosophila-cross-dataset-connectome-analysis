@@ -418,6 +418,16 @@ def _fmt_num(value) -> str:
         return str(value)
 
 
+def _ratio_list(ratios: str) -> Optional[List[float]]:
+    try:
+        parsed = json.loads(ratios)
+        if isinstance(parsed, list):
+            return [float(v) for v in parsed]
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _weight_list(weights: str) -> Optional[List[float]]:
     try:
         parsed = json.loads(weights)
@@ -510,6 +520,11 @@ def build_viz(rows: Sequence[dict], inter_counts: Counter,
 
     edge_count: Counter = Counter()
     edge_weight: Dict[Tuple[str, str], float] = defaultdict(float)
+    # round-8 item: per-edge ratio mass (sum of hop_ratio * hop_weight) —
+    # the weight-weighted mean ratio pairs naturally with the summed
+    # synapse weight in the hover label.
+    edge_ratio_mass: Dict[Tuple[str, str], float] = defaultdict(float)
+    edge_ratio_count: Counter = Counter()
     paths: List[List[str]] = []
 
     for row in rows:
@@ -530,10 +545,18 @@ def build_viz(rows: Sequence[dict], inter_counts: Counter,
                 place(node, col, cls,
                       f'{node} — {cls} · {count} path'
                       f'{"s" if count != 1 else ""} · earliest hop {col}')
+        hop_ratios = _ratio_list(str(row.get('ratios', '')))
         for index, (a, b) in enumerate(zip(ids, ids[1:])):
             edge_count[(a, b)] += 1
-            if hop_weights is not None and index < len(hop_weights):
-                edge_weight[(a, b)] += hop_weights[index]
+            hop_w = (hop_weights[index]
+                     if hop_weights is not None and index < len(hop_weights)
+                     else None)
+            if hop_w is not None:
+                edge_weight[(a, b)] += hop_w
+            if hop_ratios is not None and index < len(hop_ratios):
+                edge_ratio_mass[(a, b)] += (
+                    hop_ratios[index] * (hop_w if hop_w else 1.0))
+                edge_ratio_count[(a, b)] += 1
 
     # stable within-column rows: first-seen order over the drawn paths
     col_seen: Dict[int, int] = defaultdict(int)
@@ -557,9 +580,12 @@ def build_viz(rows: Sequence[dict], inter_counts: Counter,
     edges = []
     for (a, b), count in sorted(edge_count.items()):
         weight = edge_weight.get((a, b))
+        mass = edge_ratio_mass.get((a, b))
         edges.append({
             'f': a, 't': b, 'c': count,
             'w': round(weight, 1) if weight else 0.0,
+            'rw': (mass if mass is not None else None),
+            'r': (mass / weight if mass is not None and weight else None),
         })
 
     return {
@@ -1663,7 +1689,10 @@ REPORT_JS = r"""
     }));
     var edges = new vis.DataSet(viz.edges.map(function(e) {
       return { from: e.f, to: e.t,
-        title: e.c + ' paths' + (e.w ? ' · Σw = ' + fmt(e.w) : ''),
+        title: e.c + ' paths' + (e.w ? ' · Σw = ' + fmt(e.w) : '')
+          + (function() { var r = (e.rw && e.w) ? e.rw / e.w : e.r;
+              return (r != null && isFinite(r))
+                ? ' · mean ratio = ' + fmt(r) : ''; })(),
         width: 1 + 2 * Math.log2(e.c),
         color: { color: '#64748b', highlight: '#2563eb', hover: '#2563eb' },
         arrows: { to: { enabled: true, scaleFactor: 0.4 } },
@@ -1777,7 +1806,10 @@ REPORT_JS = r"""
         1 + 5 * Math.log2(1 + e.c) / maxLog);
       var title = document.createElementNS(NS, 'title');
       title.textContent = e.c + ' paths'
-        + (e.w ? ' · Σw = ' + fmt(e.w) : '');
+        + (e.w ? ' · Σw = ' + fmt(e.w) : '')
+        + (function() { var r = (e.rw && e.w) ? e.rw / e.w : e.r;
+            return (r != null && isFinite(r))
+              ? ' · mean ratio = ' + fmt(r) : ''; })();
       pathEl.appendChild(title);
       svg.appendChild(pathEl);
       edgeEls[e.f + '->' + e.t] = pathEl;
@@ -1850,8 +1882,9 @@ REPORT_JS = r"""
     pairs.forEach(function(p) {
       p.viz.edges.forEach(function(e) {
         var key = e.f + '->' + e.t;
-        var rec = edgeAgg[key] = edgeAgg[key] || { f: e.f, t: e.t, c: 0, w: 0 };
-        rec.c += e.c; rec.w += (e.w || 0);
+        var rec = edgeAgg[key] = edgeAgg[key]
+          || { f: e.f, t: e.t, c: 0, w: 0, rw: 0 };
+        rec.c += e.c; rec.w += (e.w || 0); rec.rw += (e.rw || 0);
       });
     });
     var drawn_shared = 0, drawn_unique = 0;
@@ -2476,6 +2509,7 @@ def _build_unit_drawn(
                 rows.append({
                     'path': str(row['path']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
+                    'ratios': '' if pd.isna(row.get('ratios')) else str(row['ratios']),
                     'min_weight': row['min_weight'],
                     'path_prob': row['path_prob'],
                     'rank': 0,
