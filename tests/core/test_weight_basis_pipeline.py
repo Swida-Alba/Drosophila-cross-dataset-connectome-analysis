@@ -307,3 +307,45 @@ def test_real_fafb_ratio_pipeline(tmp_path):
     assert param('paths_complete') == 'True'
     assert (run_dir / 'data_details' / 'ratio_synapse_map.csv').exists()
     assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+
+
+# ---------------------------------------------------------------------------
+# 8. Mediant guarantee end-to-end: type-level ratios clear t_r when every
+#    bodyId pair does (per-pair INVOLVED-post denominators, §2 stage 8)
+# ---------------------------------------------------------------------------
+def test_ratio_type_ratios_clear_threshold(tmp_path):
+    edges = INT_EDGES + [('bgx', 'bg8', 50)]   # bg8: typed MID, but no
+    types = dict(INT_TYPES)                     # path ever emits into it
+    types['bg8'] = 'MID'
+    types['bgx'] = 'BG'
+    with universe_types(types) as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=edges, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        if 'Checked' not in fc.target_df.columns:
+            fc.target_df = fc.target_df.assign(
+                Checked=[True] * len(fc.target_df))
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.2
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': '3',
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.FindAllPath()
+        run_dir = Path(fc.allpath_folder)
+    ct = pd.read_csv(run_dir / 'data_details' / 'connection_type.csv')
+    assert len(ct) > 0
+    offenders = ct[ct.connection_ratio < 0.2][
+        ['type_pre', 'type_post', 'weight', 'connection_ratio']]
+    assert offenders.empty, (
+        f'type-level ratios below t_r (mediant violated):\n{offenders}')
+    # the uninvolved member (bg8, 50 incoming) excluded: SRC->MID stays
+    # the involved denominator (90+55=145 pre-bg8; with bg8 it would be 195)
+    src_mid = ct[(ct.type_pre == 'SRC') & (ct.type_post == 'MID')]
+    ratio = src_mid.connection_ratio.iloc[0]
+    involved_den = src_mid.weight.sum() / ratio
+    assert involved_den == pytest.approx(145.0, rel=1e-9)

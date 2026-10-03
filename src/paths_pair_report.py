@@ -2247,7 +2247,8 @@ REPORT_JS = r"""
           g.rows.forEach(function(r) {
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
               path: r.path, len: g.len, mw: r.mw, pp: r.pp,
-              weights: r.weights, scov: r.scov, tcov: r.tcov,
+              weights: r.weights, ratios: r.ratios,
+              scov: r.scov, tcov: r.tcov,
               total: g.total});
           });
         });
@@ -2265,6 +2266,7 @@ REPORT_JS = r"""
       var headers = ['#'];
       if (union) { headers.push('Pair'); }
       headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
+                   'Ratios',
         'Source coverage', 'Target coverage');
       headers.forEach(function(t) {
         hr.appendChild(elt('th', null, t)); });
@@ -2296,6 +2298,7 @@ REPORT_JS = r"""
           tr.appendChild(elt('td', null, fmt(row.mw)));
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
+          tr.appendChild(elt('td', null, row.ratios));
           var scovTd = elt('td', null, row.scov || '—');
           scovTd.title = 'Source bodyIds on paths (isInPath) / enrolled — '
             + 'from source_neurons.csv';
@@ -2509,6 +2512,7 @@ def _attach_table_groups(
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
+                    'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),
                     'scov': source_cov.get(source, ''),
                     'tcov': target_cov.get(target, ''),
                 })

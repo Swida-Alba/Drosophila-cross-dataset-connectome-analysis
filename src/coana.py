@@ -14172,6 +14172,62 @@ class FindNeuronConnection:
         if getattr(vp, 'edge_limit_trimmed', False):
             self._edgeN_limit_reached = True
 
+    def _recompute_ratio_lane_type_ratios(self, conn_types, conn_inpath):
+        """Ratio lane (§2 stage 8, user-ratified 10-03): the type-level
+        connection_ratio must only include the bodyIds involved in the
+        PAIR. With every bodyId pair clearing t_r, the mediant inequality
+        (n_i/m_i >= k for all i  =>  sum n_i / sum m_i >= k) then
+        guarantees the aggregate also clears the threshold; the
+        full-type denominator drags it below via zero-numerator members
+        (e.g. FAFB MTe06: all 18 members typed, but a pair touching only
+        some of them divides by all 4,319 incoming synapses).
+        Denominators come from the run's own F9 totals; pairs with no
+        bodyId rows keep their existing readout. Handles pandas and
+        polars frames; returns ``conn_types`` unchanged for synapse
+        runs."""
+        if getattr(self, 'weight_basis', 'synapse') != 'connection_ratio':
+            return conn_types
+        totals = getattr(self, '_ratio_lane_totals', None) or {}
+        if not totals:
+            return conn_types
+        import polars as _pl
+
+        def _recompute_pd(ct_pd, ci_pd):
+            if ct_pd.empty or ci_pd.empty:
+                return ct_pd
+            ci = ci_pd.copy()
+            for col in ('type_pre', 'type_post', 'bodyId_post'):
+                ci[col] = ci[col].astype(str)
+            grouped = ci.groupby(['type_pre', 'type_post'])
+            pair_ratio = (grouped['weight'].sum()
+                          / grouped['bodyId_post'].apply(
+                              lambda seq: sum(totals.get(p, 0.0)
+                                              for p in set(seq))))
+            keys = list(zip(ct_pd['type_pre'].astype(str),
+                            ct_pd['type_post'].astype(str)))
+            mapped = pd.Series([pair_ratio.get(k) for k in keys],
+                               index=ct_pd.index)
+            keep = mapped.notna() & (mapped != 0) & np.isfinite(mapped)
+            ct_pd.loc[keep, 'connection_ratio'] = mapped[keep]
+            if 'traversal_probability' in ct_pd.columns:
+                ct_pd['traversal_probability'] = (
+                    ct_pd['connection_ratio'] / 0.3).clip(upper=1.0)
+            if 'block_probability' in ct_pd.columns:
+                ct_pd['block_probability'] = 1 - ct_pd[
+                    'traversal_probability']
+            return ct_pd
+
+        if isinstance(conn_types, pd.DataFrame):
+            return _recompute_pd(conn_types, conn_inpath)
+        if isinstance(conn_types, _pl.DataFrame) and conn_types.height:
+            ci_pd = (conn_inpath.to_pandas()
+                     if isinstance(conn_inpath, _pl.DataFrame)
+                     else conn_inpath)
+            ct_pd = _recompute_pd(conn_types.to_pandas(), ci_pd)
+            return _pl.from_pandas(ct_pd).with_columns(
+                _pl.col('connection_ratio').cast(_pl.Float64))
+        return conn_types
+
     def FindPath(self, find_bodyId_path=None):
         '''Find path between source and target neurons, adapted from FindInterClusterConnection.ipynb'''
         # skip_bodyId=True implies skipping the bodyId-level path analysis
@@ -14411,6 +14467,8 @@ class FindNeuronConnection:
             # shared total-key stable helper (see _sort_connection_export).
             conn_types = self._ensure_ratio_prob_columns(
                 conn_types, 'type_pre', 'type_post')
+            conn_types = self._recompute_ratio_lane_type_ratios(
+                conn_types, conn_inpath)
             conn_inpath = self._sort_connection_export(conn_inpath)
             conn_inpath = conn_inpath.reset_index(drop=True)
             conn_types = self._sort_connection_export(conn_types)
@@ -18656,6 +18714,8 @@ class FindNeuronConnection:
             
             # print("    - connection_type.csv", flush=True)
             conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
+            conn_types = self._recompute_ratio_lane_type_ratios(
+                conn_types, conn_inpath)
             # _ensure_ratio_prob_columns joins the incoming-weight totals,
             # which reorders rows nondeterministically — re-apply the
             # shared total-key stable sort so the export (and everything

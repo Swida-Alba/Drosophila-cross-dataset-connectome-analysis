@@ -509,23 +509,37 @@ def test_hemi_guard_matches_reference_implementation():
 # 7. Type readouts: MASS recompute (§2 stage 8), never a fold
 # ---------------------------------------------------------------------------
 def test_type_ratio_is_mass_recompute_not_weighted_mean():
-    rec = run_frac()
+    """§2 stage 8 (user-ratified 10-03): per-pair INVOLVED-post
+    denominators — the mediant inequality guarantees the aggregate
+    clears t_r when every bodyId pair does."""
+    # B3 is a THIRD MID member whose incoming (X->B3, 10) never receives
+    # a SRC edge: it must NOT count toward the SRC->MID denominator
+    # (the pre-fix full-type denominator would have been 95+10=105).
+    edges = FRAC_EDGES + [('X', 'B3', 10)]
+    m = dict(FRAC_TYPED_MAP)
+    m['B3'] = 'MID'
+    rec = find_ratio_paths(edges, FRAC_SOURCES, FRAC_TARGETS,
+                           min_ratio=0.1, max_interlayer=FRAC_BOUND,
+                           type_map=m, drop_untyped=True)
     rows = {(r['type_pre'], r['type_post']): r for r in rec['type_pairs']}
-    # MID->INNER: emitted A->C (6) + B->C (2) = mass 8. INNER's type
-    # total counts TYPED members only (D is untyped, contributes no
-    # mass — the pipeline's type totals are built from the type map),
-    # so the denominator is C's 8 -> mass ratio 8/8 = 1.0. The
+    # MID->INNER: emitted A->C (6) + B->C (2) = mass 8 over the single
+    # involved INNER post C (total 8; D untyped drops out) -> 1.0. The
     # synapse-weighted mean of the pair ratios would be
     # (0.75*6 + 0.25*2)/8 = 0.625 — a DIFFERENT number: the pin.
     row = rows[('MID', 'INNER')]
     assert row['synapse_mass'] == 8.0
+    assert row['involved_posts'] == 1
     assert row['total_incoming_type'] == 8.0
     assert row['connection_ratio'] == pytest.approx(1.0, rel=1e-12)
     assert row['connection_ratio'] != pytest.approx(0.625)
     # SRC->MID: emitted mass 10+3+27 = 40 (S2->A sits below t_r) over
-    # MID totals 65+30 = 95
-    assert rows[('SRC', 'MID')]['connection_ratio'] == pytest.approx(
-        40 / 95, rel=1e-12)
+    # the INVOLVED MID posts {A, B} = 65+30 = 95 — B3's 10 excluded
+    src_row = rows[('SRC', 'MID')]
+    assert src_row['involved_posts'] == 2
+    assert src_row['total_incoming_type'] == 95.0
+    assert src_row['connection_ratio'] == pytest.approx(40 / 95, rel=1e-12)
+    # mediant guarantee: with t_r = 0.1 every aggregate clears t_r
+    assert all(r['connection_ratio'] >= 0.1 for r in rec['type_pairs'])
 
 
 def test_traversal_probability_folds():

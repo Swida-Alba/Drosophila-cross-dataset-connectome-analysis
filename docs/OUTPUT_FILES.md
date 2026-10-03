@@ -1616,7 +1616,7 @@ setting (useful for scripts and tests).
 | Column                  | Description                     | Calculation                                                                                      |
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `weight`                | Synapse count                   | Raw count from dataset                                                                           |
-| `connection_ratio`      | Fraction of post-synaptic input | `weight / post_total` ([details](core-features/ScoreCalculation_Guide.md#connection-ratio))      |
+| `connection_ratio`      | Fraction of post-synaptic input | `weight / post_total` ([details](core-features/ScoreCalculation_Guide.md#connection-ratio)); ratio-basis type tables use the pair's INVOLVED-post denominator (see ConnectionRatioPaths.md)      |
 | `traversal_probability` | Signal transmission probability | `min(1.0, ratio × 3)` ([details](core-features/ScoreCalculation_Guide.md#traversal-probability)) |
 | `block_probability`     | Signal blocking probability     | `1 - traversal_probability`                                                                      |
 | `nt_type`               | Neurotransmitter type           | ACH, GABA, GLUT, etc.                                                                            |

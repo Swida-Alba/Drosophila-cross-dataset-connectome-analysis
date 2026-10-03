@@ -4909,9 +4909,12 @@ class VisualizePath:
             weight_disp = _fmt_weight(weight)
             tooltip_parts = [f"Weight: {weight_disp} {self.edge_weight_label}"]
             if not np.isnan(ratio):
-                tooltip_parts.append(f"Ratio: {ratio:.3f}")
+                # 4 significant figures: connection-ratio thresholds live
+                # as low as ~5e-4 on real data, where a fixed .3f would
+                # render 0.000.
+                tooltip_parts.append(f"Ratio: {ratio:.4g}")
             if not np.isnan(prob):
-                tooltip_parts.append(f"Probability: {prob:.3f}")
+                tooltip_parts.append(f"Probability: {prob:.4g}")
             if nt_type:
                 tooltip_parts.append(f"NT: {nt_type}")
             if self.edge_labels and (source, target) in self.edge_labels:
