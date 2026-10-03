@@ -63,6 +63,7 @@ const FUNCTIONS = [
     // surface controls
     'toggleLabels', 'toggleEdgeWeightLabels', 'effectiveEdgeLabelColor',
     'setReciprocalMode', 'applyReciprocalMode', 'syncReciprocalControls',
+    'setEdgeRouteMode', 'applyEdgeRouteMode', 'syncEdgeRouteControls',
     'applyBackground', 'applyLabelFontColor', 'extractColorHex',
     // groups
     'groupMembers', 'groupLabel', 'groupDefaultFor', 'legendChip', 'refreshLegend',
@@ -119,6 +120,7 @@ function buildScope(cy) {
         function flushPendingNudge() {}
         let pendingStyle = null;
         let reciprocalMode = 'straight';
+        let edgeRouteMode = 'flow';
         function queueStyleHistory(label) {}
         function flushPendingStyle() {}
         let straightReciprocalEdgesEnabled = false;

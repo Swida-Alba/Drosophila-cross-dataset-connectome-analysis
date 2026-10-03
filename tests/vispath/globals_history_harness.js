@@ -53,6 +53,7 @@ const FUNCTIONS = [
     'reapplyDeadEndHiding', 'reapplyOrphanHiding',
     'updateSelectionChip', 'historyIcon',
     'refreshEdgeStyles', 'clearEdgeEndpointOverrides', 'applyStraightEdgeStyle',
+    'vpBowAroundObstructions', 'vpNodeHalfSizes', 'vpRimDistance', 'vpPointInsideNode',
 ];
 
 // NOTE: sources come from the project's own generated HTML (trusted,
@@ -77,6 +78,7 @@ function buildScope(cy) {
         let reciprocalMode = 'straight';
         function applyReciprocalMode(m) { reciprocalMode = m; }
         function syncReciprocalControls() {}
+        let edgeRouteMode = 'flow';
         let pendingNudge = null;
         function flushPendingNudge() {}
         let pendingStyle = null;

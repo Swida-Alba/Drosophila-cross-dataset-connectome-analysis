@@ -6265,6 +6265,18 @@ class VisualizePath:
                 </div>
             </div>
             </div>
+            <div class="vp-ribbon-group" id="edgeRouteControls">
+            <label class="vp-group-title">Edge Route</label>
+            <div class="vp-spinner-row">
+                <!-- 2-way route switch for single (non-reciprocal) edges:
+                     Straight keeps the raw center line even through nodes;
+                     Flow bows an edge around any node it would cut. -->
+                <div style="display: inline-flex; border: 1px solid var(--vp-border); border-radius: 4px; overflow: hidden;">
+                    <button type="button" id="edgeRouteStraight" onclick="setEdgeRouteMode('straight')" title="Edges always straight; may pass behind nodes" style="padding: 4px 8px; font-size: 11px; border: none; background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Straight</button>
+                    <button type="button" id="edgeRouteFlow" onclick="setEdgeRouteMode('flow')" title="Edges bow around nodes they would otherwise cut through" style="padding: 4px 8px; font-size: 11px; border: none; border-left: 1px solid var(--vp-border); background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Flow</button>
+                </div>
+            </div>
+            </div>
             <div class="vp-ribbon-group" style="width: 258px;">
             <label class="vp-group-title">Background & Font color</label>
             <div style="display: flex; gap: 8px; align-items: center;">
@@ -6467,9 +6479,9 @@ class VisualizePath:
                             </div>
                             <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
                                 <span>W&nbsp;(px)</span>
-                                <input type="number" id="selGeomSize" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected node (squares: also sets height)">
+                                <input type="number" id="selGeomSize" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected node (independent of height; the 🔗 button locks the aspect ratio)">
                                 <span>H&nbsp;(px)</span>
-                                <input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Height in pixels of the selected node (squares: kept equal to width)">
+                                <input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Height in pixels of the selected node (independent of width; empty = keep the current height)">
                             </div>
                             <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
                                 <span>Label&nbsp;px</span>
@@ -6958,6 +6970,12 @@ class VisualizePath:
         // edge).  merge_reciprocal_edges picks the initial mode; the
         // Reciprocal Edges ribbon switches it live.
         let reciprocalMode = '{'merged' if self.merge_reciprocal_edges else ('straight' if self.straight_reciprocal_edges else 'curved')}';
+        // Edge route mode for non-reciprocal edges: 'straight' draws every
+        // no-parallel edge as a straight center line even when it passes
+        // behind unrelated nodes; 'flow' re-routes such edges as a bezier
+        // bowing around the obstruction (the Edge Route ribbon switches
+        // it live; 'flow' is the default).
+        let edgeRouteMode = 'flow';
         const highlightColor = '{self.highlight_color}';
         const highlightOpacity = {self.highlight_opacity};
         const defaultReciprocalOffset = 5;
@@ -7389,6 +7407,7 @@ class VisualizePath:
         // already initialized), but the merge itself touches globals
         // declared further down (TDZ) — defer it like the other late init.
         syncReciprocalControls();
+        syncEdgeRouteControls();
         setTimeout(() => {{
             applyReciprocalMode(reciprocalMode);
             refreshEdgeStyles(false);
@@ -8892,6 +8911,9 @@ class VisualizePath:
                     enabled: reciprocalMode === 'straight',
                     offset: reciprocalOffset
                 }},
+                edgeRoute: {{
+                    mode: edgeRouteMode
+                }},
                 filter: {{
                     inputValue: document.getElementById('ignoreEdgesInput')?.value || '',
                     ignoredValues: Array.from(ignoredEdges),
@@ -9092,6 +9114,11 @@ class VisualizePath:
                         refreshEdgeStyles(false);
                     }}
                     syncReciprocalControls();
+                }}
+
+                // --- edge route mode (straight | flow) ---
+                if (state.edgeRoute && state.edgeRoute.mode !== undefined) {{
+                    applyEdgeRouteMode(state.edgeRoute.mode);
                 }}
 
                 // --- edge weight labels + label position ---
@@ -9724,6 +9751,106 @@ class VisualizePath:
             edge.removeStyle('control-point-weights');
         }}
 
+        /* Edge routing: an edge whose straight center line cuts through an
+           UNRELATED visible node gets its middle hidden behind that node —
+           the surviving fragments read as a broken or biased duplicate of
+           whichever real edge runs through the same corridor (a vertical
+           reciprocal pair next to a hub's through-edge shows this as a
+           double-headed arrow with a parallel stray line).  When the clip
+           test fires, the edge is re-drawn as a bezier that bows around
+           the obstruction: the smallest sideways bow of the two sides whose
+           sampled curve misses every visible non-endpoint node. */
+        function vpNodeHalfSizes(node) {{
+            const fallback =
+                parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
+            return [(node.numericStyle('width') || fallback) / 2,
+                    (node.numericStyle('height') || fallback) / 2];
+        }}
+        function vpRimDistance(node, wx, wy) {{
+            const [hw, hh] = vpNodeHalfSizes(node);
+            const len = Math.hypot(wx, wy) || 1;
+            const adx = Math.abs(wx) / len || 1e-6;
+            const ady = Math.abs(wy) / len || 1e-6;
+            if ((node.style('shape') || 'ellipse') === 'ellipse') {{
+                return (hw * hh) / Math.hypot(hh * adx, hw * ady);
+            }}
+            return Math.min(hw / adx, hh / ady);
+        }}
+        function vpPointInsideNode(x, y, node) {{
+            const [hw, hh] = vpNodeHalfSizes(node);
+            const dx = x - node.position().x, dy = y - node.position().y;
+            if ((node.style('shape') || 'ellipse') === 'ellipse') {{
+                return (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1;
+            }}
+            return Math.abs(dx) <= hw && Math.abs(dy) <= hh;
+        }}
+        function vpBowAroundObstructions(edge) {{
+            const src = edge.source(), tgt = edge.target();
+            const sx = src.position().x, sy = src.position().y;
+            const tx = tgt.position().x, ty = tgt.position().y;
+            const dx = tx - sx, dy = ty - sy;
+            const len = Math.hypot(dx, dy);
+            if (len < 1) {{ return false; }}
+            const ux = dx / len, uy = dy / len;
+            // Cytoscape's vectorNormInverse for the source->target vector
+            // (dx, dy) is (-dy, dx)/len — findMidptPtsEtc places a bezier
+            // control point at midpoint + distance x that normal, so the
+            // sampler below must use the same basis or the validated bow
+            // renders mirrored (still clipping the node).
+            const px = -uy, py = ux;
+            let deepest = null;
+            cy.nodes().forEach(n => {{
+                if (n === src || n === tgt) {{ return; }}
+                if (n.hasClass('hidden') || n.hasClass('filtered')) {{ return; }}
+                const rx = n.position().x - sx, ry = n.position().y - sy;
+                const t = rx * ux + ry * uy;
+                const rimAlong = vpRimDistance(n, ux, uy);
+                if (t < -rimAlong || t > len + rimAlong) {{ return; }}
+                const d = rx * px + ry * py;
+                const pen = vpRimDistance(n, px, py) - Math.abs(d);
+                if (pen > 0.5 && (!deepest || pen > deepest.pen)) {{
+                    deepest = {{ pen: pen, side: d >= 0 ? 1 : -1 }};
+                }}
+            }});
+            if (!deepest) {{ return false; }}
+            if (2 * (deepest.pen + 8) > 1.5 * len) {{ return false; }}
+            const signs = [-deepest.side, deepest.side];
+            for (const sign of signs) {{
+                for (const grow of [1, 1.6]) {{
+                    const cp = sign * 2 * (deepest.pen + 8) * grow;
+                    if (Math.abs(cp) > 3 * len) {{ continue; }}
+                    const cxm = (sx + tx) / 2 + px * cp;
+                    const cym = (sy + ty) / 2 + py * cp;
+                    let clear = true;
+                    for (let i = 1; i < 24 && clear; i++) {{
+                        const t = i / 24;
+                        const bx = (1 - t) * (1 - t) * sx + 2 * t * (1 - t) * cxm + t * t * tx;
+                        const by = (1 - t) * (1 - t) * sy + 2 * t * (1 - t) * cym + t * t * ty;
+                        for (const n of cy.nodes()) {{
+                            if (n === src || n === tgt ||
+                                n.hasClass('hidden') || n.hasClass('filtered')) {{ continue; }}
+                            if (vpPointInsideNode(bx, by, n)) {{ clear = false; break; }}
+                        }}
+                    }}
+                    if (clear) {{
+                        /* unbundled-bezier, NOT bundled bezier: a lone
+                           visible half of a reciprocal pair renders through
+                           cytoscape's odd-middle rule (parallelEdges()
+                           drops the display:none reverse, the group size
+                           goes odd, and findStraightEdgePoints annihilates
+                           control-point-distances for the middle edge).
+                           Unbundled-bezier takes the multibezier branch,
+                           which applies the distance verbatim. */
+                        edge.style('curve-style', 'unbundled-bezier');
+                        edge.style('control-point-distances', [cp]);
+                        edge.style('control-point-weights', [0.5]);
+                        return true;
+                    }}
+                }}
+            }}
+            return false;
+        }}
+
         function refreshEdgeStyles(showStatus) {{
             const shouldShowStatus = (showStatus === undefined) ? true : showStatus;
             const offsetMagnitude = Math.max(0, parseFloat(reciprocalOffset) || 0);  // Keep reciprocal edges parallel but separated
@@ -9796,6 +9923,12 @@ class VisualizePath:
                 if (!hasVisibleParallel) {{
                     clearEdgeEndpointOverrides(edge);
                     applyStraightEdgeStyle(edge);
+                    // 'flow' re-routes edges that would cut through an
+                    // unrelated node (see vpBowAroundObstructions);
+                    // 'straight' keeps the raw center line. The straight
+                    // style above has already cleared any bow styles from
+                    // a previous flow pass.
+                    if (edgeRouteMode === 'flow') {{ vpBowAroundObstructions(edge); }}
                     return;
                 }}
 
@@ -10048,6 +10181,36 @@ class VisualizePath:
             refreshEdgeStyles(false);
             syncReciprocalControls();
             updateHoverInfo('✓ Reciprocal edges: ' + mode);
+        }}
+
+        // Edge Route mode (straight | flow): switches whether single edges
+        // bow around obstructing nodes or keep the raw straight line.
+        // refreshEdgeStyles reads edgeRouteMode on every pass, so the mode
+        // swap only needs a re-style + button sync.
+        function syncEdgeRouteControls() {{
+            const pair = [['edgeRouteStraight', 'straight'], ['edgeRouteFlow', 'flow']];
+            pair.forEach(([id, mode]) => {{
+                const btn = document.getElementById(id);
+                if (!btn) {{ return; }}
+                const active = edgeRouteMode === mode;
+                btn.style.background = active ? '#2196f3' : 'var(--vp-bg, #fff)';
+                btn.style.color = active ? '#fff' : 'inherit';
+            }});
+        }}
+        function applyEdgeRouteMode(mode) {{
+            if (mode !== 'straight' && mode !== 'flow') {{ return; }}
+            edgeRouteMode = mode;
+            refreshEdgeStyles(false);
+            syncEdgeRouteControls();
+        }}
+        function setEdgeRouteMode(mode) {{
+            if (edgeRouteMode === mode) {{
+                syncEdgeRouteControls();
+                return;
+            }}
+            pushHistory('Edge route: ' + mode);
+            applyEdgeRouteMode(mode);
+            updateHoverInfo('✓ Edge route: ' + mode);
         }}
 
 
@@ -11579,13 +11742,14 @@ class VisualizePath:
                 const newX = parseFloat(document.getElementById('selGeomX').value);
                 const newY = parseFloat(document.getElementById('selGeomY').value);
                 const newWidth = parseFloat(document.getElementById('selGeomSize').value);
-                // Independent height: rectangles (round/sharp squares) can be
-                // non-square; an empty Height field keeps the node square by
-                // following the width, which also preserves the old behavior.
+                // Independent height: an empty Height field keeps each
+                // node's CURRENT height (NaN disables the H resize); it
+                // must not silently follow W, or a cleared/mixed selection
+                // gets its heights clobbered by a width edit.
                 let newHeight;
                 const heightRaw = document.getElementById('selGeomHeight').value;
                 newHeight = (heightRaw === '' || heightRaw === null)
-                    ? newWidth : parseFloat(heightRaw);
+                    ? NaN : parseFloat(heightRaw);
                 // Aspect-ratio lock: W drives H from the ratio the selection
                 // had when the lock went on (the H field is disabled while
                 // locked, so W is the only driving dimension).
@@ -11630,16 +11794,18 @@ class VisualizePath:
                 if (wantResize) {{
                     cy.batch(() => {{
                         nodes.forEach(n => {{
+                            // W and H are fully independent for EVERY shape
+                            // (ellipse axes, round/sharp squares, diamond…).
+                            // A square node must stay editable to a
+                            // non-square: the old "circle coupling" (a
+                            // currently-square node snapping the other
+                            // dimension back) locked round/sharp squares at
+                            // their initial 40x40 forever. Proportional
+                            // scaling is the explicit 🔗 aspect lock;
+                            // perfect circles are the explicit Circle shape.
                             const ownW = n.numericStyle('width'), ownH = n.numericStyle('height');
-                            let w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : ownW;
-                            let h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : ownH;
-                            // circle coupling: a currently-circular node
-                            // stays circular when only one dimension is
-                            // edited (both fields edited = user override)
-                            if (Math.abs(ownW - ownH) < 0.5) {{
-                                if (w !== ownW && h === ownH) h = w;
-                                else if (h !== ownH && w === ownW) w = h;
-                            }}
+                            const w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : ownW;
+                            const h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : ownH;
                             n.style({{ 'width': w + 'px', 'height': h + 'px' }});
                         }});
                     }});
