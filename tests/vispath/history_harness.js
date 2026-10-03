@@ -125,6 +125,7 @@ function buildScope(cy) {
             return el;
         }
         const document = {
+            activeElement: null,
             getElementById: function (id) { return els[id] || makeEl(id); },
             createElement: function (tag) {
                 return { tag: tag, textContent: '', disabled: false, value: '', options: [] };
@@ -149,6 +150,7 @@ function buildScope(cy) {
             getDeadEndsHidden: () => deadEndsHidden,
             getOrphansHidden: () => orphansHidden,
             getSelfLoopsHidden: () => selfLoopsHidden,
+            setActiveElement: (el) => { document.activeElement = el; },
         };
     `;
 
@@ -407,6 +409,87 @@ function check(name, got, expected) {
     api.updateAlignButtons();
     api.syncSelectedGeometryInputs(cy.getElementById('A'));
     check('node geometry group shown with selection', api.getEl('geomNodeGroup').style.display, 'block');
+}
+
+// Test K2: edge-align modes ('left'|'right'|'top'|'bottom') align the
+// selection's bounding-box EDGES (PowerPoint style), each node keeping
+// its own size; 'h'/'v' keep the historical mean behavior (Test K).
+// Nodes get explicit DIFFERENT sizes so edge vs center semantics are
+// distinguishable. undo() RECREATES all elements (restoreState removes
+// and re-adds), so every post-undo read re-resolves through cy.
+{
+    const cy = buildGraph({ A: 'intermediate', B: 'intermediate', C: 'intermediate' }, []);
+    const api = buildScope(cy);
+    const sel3 = () => ['A', 'B', 'C'].forEach(id => cy.getElementById(id).select());
+    const geom = (id, dim) => cy.getElementById(id).numericStyle(dim);
+    const xs = () => ['A', 'B', 'C'].map(id => cy.getElementById(id).position().x);
+    const ys = () => ['A', 'B', 'C'].map(id => cy.getElementById(id).position().y);
+    cy.getElementById('A').style({ width: '40px', height: '20px' });
+    cy.getElementById('B').style({ width: '60px', height: '30px' });
+    cy.getElementById('C').style({ width: '20px', height: '40px' });
+    cy.getElementById('A').position({ x: 0, y: 0 });
+    cy.getElementById('B').position({ x: 100, y: 60 });
+    cy.getElementById('C').position({ x: 200, y: 120 });
+    sel3();
+    // left edges: A -20, B 70, C 190 -> min -20; x = extreme + w/2
+    api.alignSelectedNodes('left');
+    check('left edges equal', ['A', 'B', 'C'].map(id => cy.getElementById(id).position().x - geom(id, 'width') / 2), [-20, -20, -20]);
+    check('left: Y untouched', ys(), [0, 60, 120]);
+    check('left edge align recorded', api.getUndoStack()[0].label, 'Align nodes');
+    api.undo();
+    check('undo restores left', xs(), [0, 100, 200]);
+    // bottom edges: A 10, B 75, C 140 -> max 140; y = extreme - h/2
+    sel3();
+    api.alignSelectedNodes('bottom');
+    check('bottom edges equal', ['A', 'B', 'C'].map(id => cy.getElementById(id).position().y + geom(id, 'height') / 2), [140, 140, 140]);
+    check('bottom: X untouched', xs(), [0, 100, 200]);
+    api.undo();
+    // top edges: A -10, B 45, C 100 -> min -10
+    sel3();
+    api.alignSelectedNodes('top');
+    check('top edges equal', ['A', 'B', 'C'].map(id => cy.getElementById(id).position().y - geom(id, 'height') / 2), [-10, -10, -10]);
+    api.undo();
+    // right edges: A 20, B 130, C 210 -> max 210
+    sel3();
+    api.alignSelectedNodes('right');
+    check('right edges equal', ['A', 'B', 'C'].map(id => cy.getElementById(id).position().x + geom(id, 'width') / 2), [210, 210, 210]);
+    api.undo();
+    check('undo restores right', xs(), [0, 100, 200]);
+    // gating: the new buttons follow the 2+-node rule like Align H/V
+    cy.$(':selected').unselect();
+    api.updateAlignButtons();
+    ['alignLeftBtn', 'alignRightBtn', 'alignTopBtn', 'alignBottomBtn'].forEach(id => {
+        check(id + ' dim when empty', api.getEl(id).style.opacity, '0.4');
+    });
+    cy.getElementById('A').select();
+    cy.getElementById('B').select();
+    api.updateAlignButtons();
+    ['alignLeftBtn', 'alignRightBtn', 'alignTopBtn', 'alignBottomBtn'].forEach(id => {
+        check(id + ' lit at 2+ nodes', api.getEl(id).style.opacity, '1');
+    });
+}
+
+// Test K3: caret guard — syncSelectedGeometryInputs must not overwrite
+// the value of the geometry field the user is currently editing (the
+// live oninput apply used to reset the caret mid-typing).
+{
+    const cy = buildGraph({ A: 'intermediate' }, []);
+    const api = buildScope(cy);
+    const A = cy.getElementById('A');
+    A.style({ width: '77px', height: '55px' });
+    A.position({ x: 12, y: 34 });
+    A.select();
+    const xField = api.getEl('selGeomX');
+    const wField = api.getEl('selGeomSize');
+    xField.value = '999-in-progress';
+    wField.value = '888-in-progress';
+    api.setActiveElement(wField);
+    api.syncSelectedGeometryInputs(A);
+    check('focused W field untouched', wField.value, '888-in-progress');
+    check('unfocused X field resynced', xField.value, 12);
+    api.setActiveElement(null);
+    api.syncSelectedGeometryInputs(A);
+    check('W field resyncs after blur', wField.value, 77);
 }
 
 // ===== Test L: computed (non-bypass) style entries are NOT snapshotted =====

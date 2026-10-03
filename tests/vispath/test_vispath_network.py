@@ -235,16 +235,23 @@ class TestGeneratedHtmlStructure:
         # geometry inputs: X/Y/size for nodes, width for edges
         for elem_id in ('selGeomX', 'selGeomY', 'selGeomSize', 'selGeomWidth',
                         'geomNodeGroup', 'geomEdgeGroup',
-                        'alignHBtn', 'alignVBtn'):
+                        'alignHBtn', 'alignVBtn',
+                        'alignLeftBtn', 'alignRightBtn', 'alignTopBtn', 'alignBottomBtn'):
             assert f'id="{elem_id}"' in html, f'missing element {elem_id}'
         # the panel is fully live: the geometry inputs apply on input
         assert html.count('oninput="applySelectedGeometry()"') >= 5
         assert 'onclick="alignSelectedNodes(\'h\')"' in html
         assert 'onclick="alignSelectedNodes(\'v\')"' in html
+        # PowerPoint-style bounding-box edge alignment
+        for axis in ('left', 'right', 'top', 'bottom'):
+            assert f"onclick=\"alignSelectedNodes('{axis}')\"" in html, f'missing edge-align button {axis}'
         assert "function applySelectedGeometry" in js
         assert "function alignSelectedNodes" in js
         assert "function syncSelectedGeometryInputs" in js
         assert "function updateAlignButtons" in js
+        # caret guard: the live-applying geometry fields must never be
+        # value-overwritten while the user is editing them
+        assert "document.activeElement !== f" in js
         # selection sync hooks: tap fills the inputs, dragfree refreshes
         # them after a manual drag, clearSelection resets the rows
         assert "syncSelectedGeometryInputs(element)" in js
@@ -2439,10 +2446,12 @@ class TestEditModeHandlersAndGeometry:
         # panel carries separate W/H inputs for nodes
         assert 'id="selGeomSize"' in html and 'id="selGeomHeight"' in html
         # selection sync fills BOTH from the element's actual style
-        assert "hField.value = Math.round(primary.numericStyle('height'));" in js
+        # (setFieldValue skips the field the user is editing — caret guard)
+        assert "setFieldValue('selGeomHeight', Math.round(primary.numericStyle('height')))" in js
+        assert "setFieldValue('selGeomSize', Math.round(primary.numericStyle('width')))" in js
         # apply writes width and height independently (w/h resolved per node)
         assert "'width': w + 'px', 'height': h + 'px'" in js
-        # empty Height follows the width (square-preserving default)
+        # empty Height keeps the current height (independent-dimension default)
         assert "newHeight = (heightRaw === '' || heightRaw === null)" in js
 
 

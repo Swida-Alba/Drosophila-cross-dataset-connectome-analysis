@@ -6567,6 +6567,13 @@ class VisualizePath:
                             <button class="btn" id="distHBtn" onclick="distributeSelectedNodes('h')" title="Distribute selected nodes evenly along X (first and last keep their positions; needs 3+ nodes; a Gap value switches to fixed spacing)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Dist H</button>
                             <button class="btn" id="distVBtn" onclick="distributeSelectedNodes('v')" title="Distribute selected nodes evenly along Y (first and last keep their positions; needs 3+ nodes; a Gap value switches to fixed spacing)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇕ Dist V</button>
                         </div>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px;">
+                            <!-- Bounding-box edge alignment, PowerPoint/Illustrator style -->
+                            <button class="btn" id="alignLeftBtn" onclick="alignSelectedNodes('left')" title="Align the left edges of the selected nodes (PowerPoint-style edge alignment)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇤ Left</button>
+                            <button class="btn" id="alignRightBtn" onclick="alignSelectedNodes('right')" title="Align the right edges of the selected nodes (PowerPoint-style edge alignment)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">Right ⇥</button>
+                            <button class="btn" id="alignTopBtn" onclick="alignSelectedNodes('top')" title="Align the top edges of the selected nodes (PowerPoint-style edge alignment)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⬆ Top</button>
+                            <button class="btn" id="alignBottomBtn" onclick="alignSelectedNodes('bottom')" title="Align the bottom edges of the selected nodes (PowerPoint-style edge alignment)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⬇ Bottom</button>
+                        </div>
                         <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 6px; font-size: 10px; color: #555;">
                             <span>Gap&nbsp;(px)</span>
                             <input type="number" id="distGapInput" min="1" step="1" placeholder="even" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Fixed center-to-center spacing for the Dist buttons; empty = even spacing between the two extreme nodes">
@@ -10392,8 +10399,12 @@ class VisualizePath:
                 .style('shape', shapeName)
                 .update();
             // Circle: a perfect circle has width == height — equalize every
-            // node whose dimensions are unequal (max wins, larger stays)
-            if (shape === 'circle') {{
+            // node whose dimensions are unequal (max wins, larger stays).
+            // SKIPPED while restoring: undo/redo/layout-restore re-run this
+            // with the captured global shape, and the equalize would stomp
+            // the per-node geometry the snapshot is busy restoring (a
+            // non-square node snapped back to square on every undo).
+            if (shape === 'circle' && !restoringHistoryState) {{
                 cy.nodes().forEach(n => {{
                     const w = n.numericStyle('width'), h = n.numericStyle('height');
                     if (w > 0 && h > 0 && Math.abs(w - h) > 0.5) {{
@@ -11592,6 +11603,19 @@ class VisualizePath:
         function syncSelectedGeometryInputs(primary) {{
             const nodeGroup = document.getElementById('geomNodeGroup');
             const edgeGroup = document.getElementById('geomEdgeGroup');
+            // Value writes must not clobber a field the user is editing:
+            // the geometry inputs apply live on every keystroke and this
+            // sync runs at the end of every apply, so an unconditional
+            // write reset the caret mid-typing (number inputs drop it to
+            // the start whenever the assigned text differs — trailing
+            // dots, rounding). The focused field stays authoritative; it
+            // re-syncs on the next selection change / blur.
+            const setFieldValue = (id, v) => {{
+                const f = document.getElementById(id);
+                if (!f) {{ return; }}
+                f.placeholder = '';
+                if (document.activeElement !== f) {{ f.value = v; }}
+            }};
             if (!primary) {{
                 if (nodeGroup) nodeGroup.style.display = 'none';
                 if (edgeGroup) edgeGroup.style.display = 'none';
@@ -11600,25 +11624,21 @@ class VisualizePath:
                 if (edgeGroup) edgeGroup.style.display = 'none';
                 const selNodes = primary.selected() ? cy.$('node:selected') : primary;
                 const pos = primary.position();
-                document.getElementById('selGeomX').value = Math.round(pos.x * 10) / 10;
-                document.getElementById('selGeomY').value = Math.round(pos.y * 10) / 10;
+                setFieldValue('selGeomX', Math.round(pos.x * 10) / 10);
+                setFieldValue('selGeomY', Math.round(pos.y * 10) / 10);
                 const widths = new Set(selNodes.map(n => n.numericStyle('width')));
                 const heights = new Set(selNodes.map(n => n.numericStyle('height')));
-                const wField = document.getElementById('selGeomSize');
-                const hField = document.getElementById('selGeomHeight');
                 if (widths.size > 1) {{
-                    wField.value = '';
-                    wField.placeholder = 'mixed';
+                    setFieldValue('selGeomSize', '');
+                    document.getElementById('selGeomSize').placeholder = 'mixed';
                 }} else {{
-                    wField.placeholder = '';
-                    wField.value = Math.round(primary.numericStyle('width'));
+                    setFieldValue('selGeomSize', Math.round(primary.numericStyle('width')));
                 }}
                 if (heights.size > 1) {{
-                    hField.value = '';
-                    hField.placeholder = 'mixed';
+                    setFieldValue('selGeomHeight', '');
+                    document.getElementById('selGeomHeight').placeholder = 'mixed';
                 }} else {{
-                    hField.placeholder = '';
-                    hField.value = Math.round(primary.numericStyle('height'));
+                    setFieldValue('selGeomHeight', Math.round(primary.numericStyle('height')));
                 }}
                 // Outline controls seed from the primary node's ACTUAL
                 // border (style/color/opacity/width)
@@ -11635,7 +11655,7 @@ class VisualizePath:
                 // Label font size seeds from the primary node; a font-size
                 // BYPASS shows its px value, otherwise the global slider
                 const labelField = document.getElementById('selNodeFontSize');
-                if (labelField) {{
+                if (labelField && document.activeElement !== labelField) {{
                     labelField.value = hasBypass(primary, 'font-size')
                         ? Math.round(parseFloat(primary.style('font-size')))
                         : Math.round(parseFloat(document.getElementById('fontSizeSlider')?.value || 12));
@@ -11659,13 +11679,11 @@ class VisualizePath:
                 if (edgeGroup) edgeGroup.style.display = 'block';
                 const selEdges = primary.selected() ? cy.$('edge:selected') : primary;
                 const widths = new Set(selEdges.map(e => e.numericStyle('width')));
-                const wField = document.getElementById('selGeomWidth');
                 if (widths.size > 1) {{
-                    wField.value = '';
-                    wField.placeholder = 'mixed';
+                    setFieldValue('selGeomWidth', '');
+                    document.getElementById('selGeomWidth').placeholder = 'mixed';
                 }} else {{
-                    wField.placeholder = '';
-                    wField.value = Math.round(primary.numericStyle('width') * 10) / 10;
+                    setFieldValue('selGeomWidth', Math.round(primary.numericStyle('width') * 10) / 10);
                 }}
                 // Line style controls seed from the primary edge's base
                 // appearance (the color/alpha the recolor paths read back)
@@ -11699,7 +11717,8 @@ class VisualizePath:
         function updateAlignButtons() {{
             const selectedNodeCount = cy.$('node:selected').length;
             const enabled = selectedNodeCount >= 2;
-            ['alignHBtn', 'alignVBtn'].forEach(id => {{
+            ['alignHBtn', 'alignVBtn', 'alignLeftBtn', 'alignRightBtn',
+             'alignTopBtn', 'alignBottomBtn'].forEach(id => {{
                 const btn = document.getElementById(id);
                 if (btn) btn.style.opacity = enabled ? '1' : '0.4';
             }});
@@ -11842,21 +11861,48 @@ class VisualizePath:
                 return;
             }}
             pushHistory('Align nodes');
-            const coord = (axis === 'h') ? 'y' : 'x';
-            let sum = 0;
-            nodes.forEach(n => {{ sum += n.position()[coord]; }});
-            const mean = sum / nodes.length;
+            // Edge modes ('left'|'right'|'top'|'bottom') align the
+            // selection's bounding-box EDGES, PowerPoint/Illustrator
+            // style: every node's own rendered box edge lands on the
+            // selection's extreme edge, the perpendicular axis is
+            // untouched. 'h'/'v' keep the historical mean-center
+            // behavior (pinned by the history harness).
+            const edgeMode = (axis === 'left' || axis === 'right' ||
+                              axis === 'top' || axis === 'bottom');
+            const coord = (axis === 'h' || axis === 'top' || axis === 'bottom') ? 'y' : 'x';
+            let target = null;
+            if (edgeMode) {{
+                const minSide = (axis === 'left' || axis === 'top');
+                nodes.forEach(n => {{
+                    const half = ((coord === 'x' ? n.numericStyle('width') : n.numericStyle('height')) || 0) / 2;
+                    const c = n.position()[coord];
+                    const edge = minSide ? c - half : c + half;
+                    target = (target === null) ? edge
+                        : (minSide ? Math.min(target, edge) : Math.max(target, edge));
+                }});
+            }} else {{
+                let sum = 0;
+                nodes.forEach(n => {{ sum += n.position()[coord]; }});
+                target = sum / nodes.length;
+            }}
             cy.batch(() => {{
                 nodes.forEach(n => {{
                     const p = n.position();
-                    n.position(coord === 'x' ? {{ x: mean, y: p.y }} : {{ x: p.x, y: mean }});
+                    let v = target;
+                    if (edgeMode) {{
+                        const half = ((coord === 'x' ? n.numericStyle('width') : n.numericStyle('height')) || 0) / 2;
+                        v = (axis === 'left' || axis === 'top') ? target + half : target - half;
+                    }}
+                    n.position(coord === 'x' ? {{ x: v, y: p.y }} : {{ x: p.x, y: v }});
                 }});
             }});
             refreshEdgeStyles(false);
             const primary = (selectedElement && selectedElement.selected()) ? selectedElement : nodes[0];
             syncSelectedGeometryInputs(primary);
-            updateHoverInfo('✓ Aligned ' + nodes.length + ' nodes ' +
-                (axis === 'h' ? 'horizontally (same Y)' : 'vertically (same X)'));
+            const desc = edgeMode
+                ? ('to the ' + axis + ' edge')
+                : (axis === 'h' ? 'horizontally (same Y)' : 'vertically (same X)');
+            updateHoverInfo('✓ Aligned ' + nodes.length + ' nodes ' + desc);
         }}
 
         // Distribute the selected nodes EVENLY along one axis: order by the
