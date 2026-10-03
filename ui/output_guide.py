@@ -1135,7 +1135,9 @@ _PATHFINDING_EXPLANATION = [
         ],
         "table": None,
         "pipeline": [
-            "requested threshold (Min Synapse Count)",
+            "requested threshold (Min Synapse Count, or the Min "
+            "Connection Ratio on weight-basis='connection_ratio' runs — "
+            "the stage is identical, the units change)",
             "lossless hop/dead-end pruning (never changes which paths exist)",
             "optional Edge Budget floor w0 ('all' mode only — a graph "
             "budget, exactly equivalent to raising the threshold)",
@@ -1150,7 +1152,10 @@ _PATHFINDING_EXPLANATION = [
         "heading": "Threshold & bottleneck vocabulary",
         "paragraphs": [
             "The bottleneck of a path is its MINIMUM edge weight — the "
-            "weakest link. All budgeted outputs are strength-bounded path "
+            "weakest link (synapse count by default; the F9 connection "
+            "ratio on weight_basis='connection_ratio' runs, where the "
+            "allpaths min_ratio column IS the bottleneck). All budgeted "
+            "outputs are strength-bounded path "
             "sets: the StrongestFirst enumerator emits intact paths in "
             "descending bottleneck order, so a budgeted result is exactly "
             "'all intact paths with bottleneck >= τ', never an arbitrary "
@@ -1202,7 +1207,9 @@ _PATHFINDING_EXPLANATION = [
             "landing τ and excludes everything weaker than w2. "
             "applied_threshold collapses both mechanisms into the single "
             "number that matters for interpretation.",
-            "Read applied_threshold as the EQUIVALENT Min Synapse Count: a "
+            "Read applied_threshold as the EQUIVALENT threshold — the Min "
+            "Synapse Count, or the min connection ratio on "
+            "weight-basis='connection_ratio' runs: a "
             "complete run at that threshold produces exactly this path "
             "set. τ alone is only the landing/collapse bound — when the "
             "budget bite leaves a gap in the bottleneck distribution, "

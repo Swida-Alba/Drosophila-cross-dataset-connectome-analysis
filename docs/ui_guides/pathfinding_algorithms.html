@@ -37,6 +37,8 @@ budget — both numbers are reported). Without a budget bite the emitted
 set is identical to the complete enumerators, and the run reports its
 <strong>natural tau</strong> — the weakest emitted path's bottleneck
 ("every threshold up to this value yields this identical set").</p>
+<p><strong>Threshold basis</strong>: on <code>weight_basis='connection_ratio'</code> runs the edge weight is the F9 connection ratio (synapses / the post neuron's total incoming at min_weight=1) — the threshold, Edge Budget tiers and StrongestFirst bottlenecks are in ratio units; every synapse column is unchanged. See <code>docs/core-features/ConnectionRatioPaths.md</code>.</p>
+
 <p>Two lossless prunes (hop-budget edge pruning, iterated to a fixpoint,
 + dead-end node pruning) shrink the cone before enumeration. A lossy
 <strong>Edge Budget</strong> (<code>graph_edge_limit_bodyid</code>,

@@ -1293,7 +1293,10 @@ def fit_edge_budget(conn_layers, budget, sources, targets, bound,
                     pre_col='bodyId_pre', post_col='bodyId_post',
                     vprint=None, warn_notes=None, max_probes=8):
     """Budget-fit search (§7.4): the weakest weight tier whose lossless-
-    closed cone fits ``budget``.
+    closed cone fits ``budget``.  Synapse-basis contract (integer tiers,
+    landing w1+1); the connection-ratio basis uses
+    ``connection_ratio_paths.fit_edge_budget_ratio`` (float tiers, weakest
+    distinct tier above w1).
 
     Refines the one-shot Fix D landing (``apply_edge_budget_floor``): that
     landing floors at ``w0 = w1 + 1`` — excluding the boundary-tie mass —
@@ -3120,13 +3123,13 @@ class FindNeuronConnection:
     
     min_ratio: float = 0.0
     '''
-    Minimum connection ratio (weight/post) for APIs that explicitly apply
-    ratio filtering, such as direct connection queries.  In the shared
-    FindAllPath/FindShortestPath pipeline this value is retained for
-    compatibility and exported as a readout definition; it does not filter
-    the pathfinding graph.  The ratio is calculated as w_ij / W_j, where w_ij
-    is the number of synapses from neuron i to neuron j and W_j is the total
-    number of post-synaptic sites of neuron j.
+    Minimum connection ratio (weight/post).  Under the default synapse
+    basis this is retained for compatibility and exported as a readout
+    definition — it does not filter the pathfinding graph (F9).  Under
+    ``weight_basis='connection_ratio'`` it IS the pathfinding threshold
+    (0 < min_ratio <= 1; the graph's edge weights become the F9
+    connection ratios w_ij / W_j, all-post incoming at min_weight=1).
+    See docs/core-features/ConnectionRatioPaths.md.
     '''
     
     min_traversal_probability: float = 0.0
@@ -3141,8 +3144,9 @@ class FindNeuronConnection:
     filter_by: str = 'bodyId'
     '''
     Level at which to apply the active connection filters.  The shared
-    FindAllPath/FindShortestPath pipeline applies only min_synapse_num here;
-    min_ratio and min_traversal_probability remain readout columns there.
+    FindAllPath/FindShortestPath pipeline applies the active threshold
+    (min_synapse_num, or min_ratio under the connection-ratio basis) here;
+    the other knob remains a readout column.
     Direct and legacy connection APIs may still use the ratio/probability
     filters.\n
     - 'bodyId': Filter at individual neuron (bodyId) level (default)\n
@@ -14308,6 +14312,20 @@ class FindNeuronConnection:
             members = getattr(self, '_ratio_lane_type_members', None) or {}
             type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
                          for label, bids in members.items()}
+            # Prefer the DATASET-WIDE type masses (the enrichment's own
+            # F9 type fetch): the frame membership misses never-fetched
+            # members, whose incoming mass still belongs to the type.
+            try:
+                _gt = self._fetch_total_incoming_weight_by_type(
+                    sorted({str(r) for r in ct_pd['type_post']
+                            if pd.notna(r)}), 1)
+                if _gt is not None and len(_gt):
+                    for _row in _gt.itertuples():
+                        if _row.total_incoming_weight > 0:
+                            type_mass[str(_row.type_post)] = float(
+                                _row.total_incoming_weight)
+            except Exception:
+                pass
             pair_num = grouped['weight'].sum()
             pair_involved = grouped['bodyId_post'].apply(lambda x: set(x))
             keys = list(zip(ct_pd['type_pre'].astype(str),

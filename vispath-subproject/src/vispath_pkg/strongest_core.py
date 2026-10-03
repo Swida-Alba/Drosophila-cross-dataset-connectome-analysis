@@ -16,6 +16,10 @@ Consumers:
 
 Pure functions only — no graph-object or I/O dependencies — so the
 enumeration and display layers can share it without coupling.
+
+Edge-weight semantics are per-run: synapse counts in the default basis,
+F9 connection ratios under weight_basis='connection_ratio' — the
+bottleneck/ranking logic itself is basis-agnostic (float-safe).
 """
 from __future__ import annotations
 

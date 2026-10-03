@@ -110,6 +110,8 @@
     (edges with <code>weight ≥ Min Synapse Count</code>). Ratios use the
     global total incoming weight so the denominator reflects the whole
     dataset, not just the query:</p>
+<p><strong>Threshold basis</strong>: on <code>weight_basis='connection_ratio'</code> runs the edge weight is the F9 connection ratio (synapses / the post neuron's total incoming at min_weight=1) — the threshold, Edge Budget tiers and StrongestFirst bottlenecks are in ratio units; every synapse column is unchanged. See <code>docs/core-features/ConnectionRatioPaths.md</code>.</p>
+
   <table>
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
     <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>

@@ -357,7 +357,8 @@ class ComparisonAnalyzer:
     # ------------------------------------------------------------------
 
     _PATH_PROVENANCE_KEYS = (
-        'threshold_scope', 'requested_threshold', 'applied_threshold',
+        'threshold_scope', 'weight_basis', 'requested_threshold',
+        'applied_threshold',
         'applied_threshold_source', 'strongest_first_budget',
         'strongest_first_budget_bitten', 'strongest_first_tau',
         'tau_canonical', 'strongest_dropped_bottleneck', 'edge_budget',
@@ -408,6 +409,23 @@ class ComparisonAnalyzer:
         if strongest_retained is None:
             strongest_retained = pruning_record.get('strongest_retained')
 
+        _ratio_state = (getattr(parameters, 'weight_basis', 'synapse')
+                        == 'connection_ratio')
+        if _ratio_state and isinstance(requested, float) \
+                and not float(requested).is_integer():
+            # Ratio runs: the float mirror already lives in the delegate
+            # state (the pipeline stamps ratio_threshold_provenance);
+            # the int contract below would truncate sub-1 tiers to 0.
+            prov = dict(state)
+            prov.setdefault(
+                'requested_threshold', requested)
+            prov.setdefault('applied_threshold', requested)
+            prov.setdefault('applied_threshold_source', 'requested')
+            prov.setdefault('strongest_first_budget_bitten',
+                            budget_bitten)
+            prov.setdefault('paths_complete', not budget_bitten)
+            prov['weight_basis'] = 'connection_ratio'
+            return prov
         prov = applied_threshold_provenance(
             requested_threshold=requested,
             strongest_first_tau=strongest_tau,
@@ -421,6 +439,10 @@ class ComparisonAnalyzer:
             edge_budget=edge_budget,
             strongest_retained_bottleneck=strongest_retained,
         )
+        # Ratio-basis marker for the exported table (the shared contract
+        # function stays int-locked; ratio runs carry float thresholds).
+        prov['weight_basis'] = getattr(
+            parameters, 'weight_basis', 'synapse')
         # A pre-provenance cache may contain only the already-computed
         # applied value/source. Preserve that explicit legacy result when
         # there is not enough mechanism state to recompute it; new and full
@@ -3176,6 +3198,8 @@ class ComparisonAnalyzer:
                 datasets_out[ds] = {
                     'input': thresholds,
                     'effective': effective,
+                    'weight_basis': getattr(
+                        self.parameters, 'weight_basis', 'synapse'),
                     'skipped': skipped,
                     'applied_folder': mapping,
                     'tau': tau_seen,

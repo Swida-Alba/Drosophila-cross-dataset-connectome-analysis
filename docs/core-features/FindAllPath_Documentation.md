@@ -213,3 +213,8 @@ landing tau), `tau_canonical`, `strongest_dropped_bottleneck` (w2),
   - Number of paths to analyze
 - Memory usage scales with the number of paths found
 - Excel file size can be large for complex networks with many paths
+
+
+## Connection-ratio basis
+
+`weight_basis='connection_ratio'` swaps the edge-weight basis to the F9 connection ratio (synapses / the post neuron's all-post incoming mass at min_weight=1): `min_ratio` becomes the threshold (0 < t ≤ 1), the Edge Budget floors at float ratio tiers, and StrongestFirst bottlenecks are min-ratio (the allpaths `min_ratio` column). Synapse columns are unchanged everywhere; see `ConnectionRatioPaths.md`. Multi-threshold replay accepts float tiers; Shortest Paths supports the basis; the type-level refill covers ratio budgets.
