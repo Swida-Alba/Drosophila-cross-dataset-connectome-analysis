@@ -339,16 +339,19 @@ def fit_edge_budget_ratio(cone: pl.DataFrame, budget, sources, targets,
         stats['probe_trace'].append((tier, len(closed)))
         return len(closed)
 
-    # Float landing: weakest tier strictly above w1 (production:
-    # next(w for w in sorted(distinct) if w >= w1 + 1)).
+    # Production w1 (coana fit_edge_budget: ``kth = total - budget`` on
+    # the ascending partition) = the budget-th LARGEST weight — the
+    # budget line, with ~budget rows at or above it.
     ordered = sorted((r for _u, _v, r in triples), reverse=True)
-    w1 = ordered[len(ordered) - budget - 1]
+    w1 = ordered[budget - 1]
+    stats['budget_line'] = w1
+    # Float landing: the weakest distinct tier STRICTLY above w1
+    # (production: next(w for w in sorted(distinct) if w >= w1 + 1)).
     landing_idx = None
     for i in range(len(tiers) - 1, -1, -1):   # tiers desc: weakest first
         if tiers[i] > w1:
             landing_idx = i
-        else:
-            break
+            break                            # FIRST hit = weakest above w1
     stats['landing'] = tiers[landing_idx] if landing_idx is not None else None
 
     best_idx, lo, hi = None, None, None
@@ -568,11 +571,13 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         rec['type_pairs'] = []
         rec['provenance'] = ratio_threshold_provenance(
             t_r, edge_weight_floor=budget_stats.get('floor'),
-            edge_budget_landing=budget_stats.get('landing'),
+            edge_budget_landing=budget_stats.get('budget_line'),
             edge_budget=edge_budget,
             distinct_tiers=[])
         rec['ratio_to_synapse'] = _empty_cone_disclosure(
-            frame, sources, targets, max_interlayer, t_r, discovery)
+            frame, sources, targets, max_interlayer, t_r, discovery,
+            type_map=type_map, drop_untyped=drop_untyped,
+            exclude_intra_type=exclude_intra_type, hemi_filter=hemi_filter)
         return rec
 
     triples = list(zip(cone[_PRE].to_list(), cone[_POST].to_list(),
@@ -608,7 +613,7 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         strongest_dropped_bottleneck=enum_stats.get('strongest_dropped'),
         strongest_retained_bottleneck=w_star,
         edge_weight_floor=budget_stats.get('floor'),
-        edge_budget_landing=budget_stats.get('landing'),
+        edge_budget_landing=budget_stats.get('budget_line'),
         edge_budget=edge_budget,
         distinct_tiers=sorted({r for _u, _v, r in triples}))
 
@@ -700,23 +705,27 @@ def _ratio_to_synapse(cone: pl.DataFrame, totals, t_r: float
                       ) -> Dict[str, object]:
     """The ratio->synapse mapping disclosure (§13.2): kept-edge synapse
     range, per-post implied cutoff stats, no-op-post count, and a capped
-    per-post table."""
+    per-post table (one group_by pass — never a per-post filter scan)."""
     kept_syn = cone['weight'].to_list()
-    posts = sorted(set(cone[_POST].to_list()))
+    per_post = (cone.group_by(_POST)
+                .agg([pl.len().alias('kept_in_edges'),
+                      pl.col('weight').min().alias('kept_syn_min'),
+                      pl.col('weight').max().alias('kept_syn_max')])
+                .to_dicts())
     rows = []
     noop = 0
-    for v in posts:
+    for entry in per_post:
+        v = entry[_POST]
         total = totals.get(v, 0.0)
         cut = _implied_cutoff(t_r, total)
         if t_r * total < 1.0:
             noop += 1
-        kept = cone.filter(pl.col(_POST) == v)
         rows.append({
             'bodyId_post': v, 'total_incoming': total,
             'implied_syn_cutoff': cut,
-            'kept_in_edges': kept.height,
-            'kept_syn_min': float(kept['weight'].min()),
-            'kept_syn_max': float(kept['weight'].max()),
+            'kept_in_edges': entry['kept_in_edges'],
+            'kept_syn_min': entry['kept_syn_min'],
+            'kept_syn_max': entry['kept_syn_max'],
         })
     rows.sort(key=lambda r: (-r['total_incoming'], r['bodyId_post']))
     cutoffs = [r['implied_syn_cutoff'] for r in rows]
@@ -733,15 +742,21 @@ def _ratio_to_synapse(cone: pl.DataFrame, totals, t_r: float
     }
 
 
-def _empty_cone_disclosure(frame, sources, targets, bound, t_r, discovery
+def _empty_cone_disclosure(frame, sources, targets, bound, t_r, discovery,
+                           *, type_map=None, drop_untyped: bool = True,
+                           exclude_intra_type: bool = False,
+                           hemi_filter: str = 'both'
                            ) -> Dict[str, object]:
     """§17: an empty cone is a STATUS, not a refusal — disclose the
-    binding ceiling + the t_r=0 cone size + the compounding note."""
+    binding ceiling + the t_r=0 cone size (under the run's OWN guards,
+    so the count is the guarded upper bound) + the compounding note."""
     note = ('ratio thresholds compound per hop: every hop must clear '
             't_r, so viable thresholds sit far below single-hop ratio '
             'quantiles (plan §18 D-6)')
     zero, _stats = discover_cone(
-        frame, sources, targets, bound, 0.0)
+        frame, sources, targets, bound, 0.0, type_map=type_map,
+        drop_untyped=drop_untyped, exclude_intra_type=exclude_intra_type,
+        hemi_filter=hemi_filter)
     return {
         'note': note,
         'cone_edges_at_zero_threshold': zero.height,
@@ -811,6 +826,7 @@ def compute_connection_ratio_paths(*, connections, sources, targets,
         max_probes=max_probes)
     rec['dataset'] = dataset
     rec['type_map'] = type_map
+    rec['separate_hemispheres'] = bool(separate_hemispheres)
     rec['source_note'] = source_note
     if out_dir is not None or run_dir is not None:
         out = Path(out_dir) if out_dir is not None else _sibling_out_dir(

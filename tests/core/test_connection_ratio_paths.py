@@ -35,6 +35,7 @@ from connection_ratio_paths import (  # noqa: E402
     _implied_cutoff,
     compute_connection_ratio_paths,
     compute_incoming_totals,
+    derive_label_paths,
     discover_cone,
     fit_edge_budget_ratio,
     find_ratio_paths,
@@ -310,6 +311,56 @@ def test_budget_fit_exact_or_stronger():
         checked += 1
         assert stats['floor'] == exact or stats['floor'] > exact
     assert checked >= 5
+
+
+def test_budget_fit_landing_and_budget_line():
+    """Review-round regression: production w1 = the budget-th LARGEST
+    weight (coana kth = total - budget ascending); the float landing =
+    the weakest distinct tier STRICTLY above w1 and is the FIRST probe."""
+    frame, _t = _frame(INT_EDGES)
+    cone, _ = discover_cone(frame, INT_SOURCES, INT_TARGETS, INT_BOUND,
+                            0.2, type_map=None)
+    budget = 9
+    desc = sorted(cone['ratio'].to_list(), reverse=True)
+    exp_w1 = desc[budget - 1]                     # budget-th largest
+    tiers = sorted(set(desc))
+    exp_landing = min(t for t in tiers if t > exp_w1)
+    _kept, stats = fit_edge_budget_ratio(
+        cone, budget, INT_SOURCES, INT_TARGETS, INT_BOUND)
+    assert stats['budget_line'] == pytest.approx(exp_w1)
+    assert stats['landing'] == pytest.approx(exp_landing)
+    assert stats['probe_trace'][0][0] == pytest.approx(exp_landing)
+    # provenance mirrors production: edge_budget_landing == w1 (the
+    # budget-line tier), NOT the probe-start landing
+    rec = find_ratio_paths(
+        INT_EDGES, INT_SOURCES, INT_TARGETS, min_ratio=0.2,
+        max_interlayer=INT_BOUND, edge_budget=budget, type_map=None,
+        drop_untyped=False)
+    assert rec['provenance']['edge_budget_landing'] == pytest.approx(exp_w1)
+    assert rec['provenance']['edge_weight_floor'] is not None
+
+
+def test_derive_label_paths_rule():
+    """§1.6: unique sequences, source/target anchored, every consecutive
+    label pair present in the kept label-edge set; sorted output."""
+    paths = [(0.5, ('S1', 'A', 'T1')), (0.4, ('S2', 'B', 'T1')),
+             (0.3, ('S1', 'A', 'T1'))]              # duplicate sequence
+    label = {'S1': 'SRC', 'S2': 'SRC2', 'A': 'MID', 'B': 'MID',
+             'T1': 'SINK'}
+    kept = {('SRC', 'MID'), ('MID', 'SINK'), ('SRC2', 'MID')}
+    out = derive_label_paths(paths, lambda n: label[n], ['SRC', 'SRC2'],
+                             ['SINK'], kept)
+    # duplicate sequence deduped; sorted lexicographically
+    assert out == [['SRC', 'MID', 'SINK'], ['SRC2', 'MID', 'SINK']]
+    # anchored rejection: target label not queried
+    out2 = derive_label_paths(paths, lambda n: label[n], ['SRC'], ['X'],
+                              kept)
+    assert out2 == []
+    # edge-consistency rejection: a required label pair missing
+    kept_missing = {('SRC', 'MID')}
+    out3 = derive_label_paths(paths, lambda n: label[n], ['SRC', 'SRC2'],
+                              ['SINK'], kept_missing)
+    assert out3 == []
 
 
 def test_budget_fit_skipped_when_cone_fits():
