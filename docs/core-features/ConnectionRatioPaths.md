@@ -116,10 +116,16 @@ float density/alignment grids:
   collapse folder whose stamps say complete (while its set is a drained
   subset) refuses honestly at the anchor — stamping those slices with
   the t0 bite state is the one open Phase-3 item.
-- **Density capture** is skipped under the ratio basis with an explicit
-  note (int32 synapse arrays + `w_start>=3` semantics; the float variant
-  lands together with float auto/alignment grids — still deferred).
-- Still deferred: float threshold-alignment/auto-mode grids (cross-
-  dataset Auto stays synapse-only under ratio), float density artifacts,
-  ratio-basis shortest-mode replay (shortest is never replayable in any
-  basis).
+- **Density capture + auto-mode alignment run on float ratio tiers**
+  (implemented 2026-10-04): the density arrays are float64 F9 ratios
+  (`weight_axis: per_connection_ratio`, `weight_basis` in the meta),
+  `w_start` is the applied ratio threshold (no synapse floor of 3),
+  curve grids are the distinct ratio tiers (≤48, deterministically
+  thinned), the alignment prober searches the distinct-tier ladder
+  instead of the integer grid, and cross-dataset AUTO mode works under
+  the ratio basis (bootstrap at the float floor, vertical spine over
+  the window intersection, density-matched horizontal rows when the
+  bands intersect). Synapse captures are byte-identical to before (all
+  casts are value-preserving: integral floats render as ints).
+- Still deferred: ratio-basis shortest-mode replay (shortest is never
+  replayable in any basis).

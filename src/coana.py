@@ -15743,10 +15743,13 @@ class FindNeuronConnection:
                 except Exception:
                     pass
             os.makedirs(density_dir, exist_ok=True)
+            _ratio_density = (getattr(
+                self, 'weight_basis', 'synapse') == 'connection_ratio')
+            _ew_dtype = np.float64 if _ratio_density else np.int32
             bns = np.asarray(path_bottlenecks, dtype=np.float64)
             ew = getattr(self, '_density_edge_weights', None)
-            ew = (np.asarray([], dtype=np.int32) if ew is None
-                  else np.asarray(ew, dtype=np.int32))
+            ew = (np.asarray([], dtype=_ew_dtype) if ew is None
+                  else np.asarray(ew, dtype=_ew_dtype))
             cls = getattr(self, '_density_edge_cls', None)
             np.save(os.path.join(density_dir,
                                  'density_path_bottlenecks.npy'), bns)
@@ -15755,15 +15758,23 @@ class FindNeuronConnection:
             if cls is not None:
                 np.savez_compressed(
                     os.path.join(density_dir, 'density_edges.npz'),
-                    weight=ew.astype(np.int32), cls=cls.astype(np.int8))
+                    weight=ew.astype(_ew_dtype), cls=cls.astype(np.int8))
 
             prov = getattr(self, '_last_provenance', None) or {}
             applied = prov.get('applied_threshold')
-            try:
-                applied = int(applied) if applied is not None else None
-            except (TypeError, ValueError):
-                applied = None
-            w_start = max(3, applied) if applied is not None else 3
+            if _ratio_density:
+                try:
+                    applied = (float(applied)
+                               if applied is not None else None)
+                except (TypeError, ValueError):
+                    applied = None
+            else:
+                try:
+                    applied = int(applied) if applied is not None else None
+                except (TypeError, ValueError):
+                    applied = None
+            w_start = (applied if _ratio_density
+                       else max(3, applied) if applied is not None else 3)
             w_star_measured = float(bns.max()) if bns.size else None
             stored = prov.get('strongest_retained_bottleneck')
             mismatch = False
@@ -15775,8 +15786,12 @@ class FindNeuronConnection:
             tau_canon = prov.get('tau_canonical')
             path_complete_from = w_start
             if tau_canon is not None:
+                _tc = float(tau_canon)
                 path_complete_from = max(
-                    w_start, int(round(float(tau_canon))))
+                    w_start,
+                    _tc if (_ratio_density or _tc.is_integer())
+                    else _tc) if _ratio_density else max(
+                        w_start, int(round(_tc)))
             n_nodes = getattr(self, '_density_n_nodes', None)
             # Node classes against the curated table (debris ids are absent
             # from it and are NEVER counted in any denominator).
@@ -15820,7 +15835,11 @@ class FindNeuronConnection:
                 'denominator': (
                     'typed_nodes_in_searched_graph' if annotated_known
                     else 'searched_graph_nodes'),
-                'weight_axis': 'per_connection',
+                'weight_axis': (
+                    'per_connection_ratio' if _ratio_density
+                    else 'per_connection'),
+                'weight_basis': (
+                    'connection_ratio' if _ratio_density else 'synapse'),
                 'requested_threshold': prov.get('requested_threshold'),
                 'max_interlayer': getattr(self, 'max_interlayer', None),
                 'graph_edge_limit_bodyid': getattr(
@@ -15849,11 +15868,18 @@ class FindNeuronConnection:
             return
         try:
             import json as _json
-            applied = int(t) if t is not None else None
-            base_applied = max(3, applied) if applied is not None else None
+            _ratio_slice = (getattr(
+                self, 'weight_basis', 'synapse') == 'connection_ratio')
+            applied = (float(t) if _ratio_slice else int(t)) \
+                if t is not None else None
+            base_applied = ((applied if _ratio_slice
+                             else max(3, applied))
+                            if applied is not None else None)
             meta = {
                 'applied': applied,
                 'w_start': base_applied,
+                'weight_basis': (
+                    'connection_ratio' if _ratio_slice else 'synapse'),
                 'w_star_measured': (
                     float(w_star_measured)
                     if w_star_measured is not None else None),
@@ -17469,22 +17495,14 @@ class FindNeuronConnection:
         # exist, only when the flag is on. Endpoints are classified against
         # the curated neuron table (typed / untyped / debris) so the curve
         # can apply the run's drop_untyped policy and always ignore debris.
-        _density_ratio_skip = False
-        if (getattr(self, 'capture_density', False) and path_mode == 'all'
-                and getattr(self, 'weight_basis',
-                            'synapse') == 'connection_ratio'):
-            # Ratio lane: density artifacts stay synapse-only (int32 edge
-            # arrays + w_start>=3 semantics; the float variant lands with
-            # auto-mode float grids — Phase 3 remainder). capture_density
-            # is an auto-threshold concern and auto is refused under the
-            # ratio basis, so nothing downstream misses them.
-            _density_ratio_skip = True
-            self._warn_notes.append(
-                '- [weight basis] density capture skipped: threshold-'
-                'density artifacts are synapse-weight based and stay '
-                'unavailable in ratio mode for now.')
-        if (getattr(self, 'capture_density', False) and path_mode == 'all'
-                and not _density_ratio_skip):
+        if (getattr(self, 'capture_density', False) and path_mode == 'all'):
+            # Ratio lane: the density arrays carry the F9 weight_ratio
+            # (float) instead of int32 synapse counts — the curves,
+            # windows and auto-mode alignment all operate on float tiers
+            # (plan §Phase-3 remainder, implemented with threshold_density
+            # basis-awareness).
+            _density_ratio = (getattr(
+                self, 'weight_basis', 'synapse') == 'connection_ratio')
             import numpy as _np
             _w_parts = []
             _cls_parts = []
@@ -17499,7 +17517,10 @@ class FindNeuronConnection:
                 _pre = [str(_v) for _v in _frame['bodyId_pre'].to_list()]
                 _post = [str(_v) for _v in _frame['bodyId_post'].to_list()]
                 _w_parts.append(_np.asarray(
-                    _frame['weight'].to_numpy(), dtype=_np.int32))
+                    (_frame['weight_ratio'].to_numpy()
+                     if (_density_ratio and 'weight_ratio' in _frame.columns)
+                     else _frame['weight'].to_numpy()),
+                    dtype=_np.float64 if _density_ratio else _np.int32))
                 if _annot_known:
                     _cls_parts.append(classify_cone_edges(
                         _pre, _post, _table_ids, _typed_ids))

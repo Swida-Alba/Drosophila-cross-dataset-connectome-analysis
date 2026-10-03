@@ -386,3 +386,68 @@ def test_suggest_combination_rows_flags_out_of_tolerance():
     rows = suggest_combination_rows(best, 'mcns', ['mcns', 'banc'])
     assert len(rows) == 1
     assert rows[0]['aligned_within_tolerance'] is False
+
+
+# ---------------------------------------------------------------------------
+# Ratio-basis float tier grid (plan Phase-3 remainder)
+# ---------------------------------------------------------------------------
+class TestRatioTierGrid:
+    def _ratio_prober(self):
+        import pandas as pd
+        rows = []
+        for i, (pre, post, w) in enumerate([
+                ('A', 'B', 0.050), ('A', 'C', 0.020), ('B', 'C', 0.010),
+                ('C', 'D', 0.004), ('D', 'E', 0.0012), ('A', 'D', 0.030)]):
+            rows.append({'type_pre': pre, 'type_post': post, 'weight': w})
+        return EdgeDensityProber(pd.DataFrame(rows))
+
+    def test_float_extract_uses_tier_grid(self):
+        p = self._ratio_prober()
+        assert not p._integral
+        grid = p._grid(cap=30)
+        assert all(isinstance(t, float) for t in grid)
+        assert set(grid) == {0.0012, 0.004, 0.010, 0.020, 0.030, 0.050}
+
+    def test_count_on_floats(self):
+        p = self._ratio_prober()
+        assert p.count(0.001) == 6
+        assert p.count(0.010) == 4
+        assert p.count(0.020) == 3
+        assert p.count(0.050) == 1
+
+    def test_best_match_float(self):
+        p = self._ratio_prober()
+        r = p.best_match(anchor_count=3, cap=30)
+        assert r['best_t'] is not None
+        assert r['match_status'] in ('exact', 'within_tolerance')
+        assert p.count(r['best_t']) == 3
+
+    def test_match_interval_on_tiers(self):
+        p = self._ratio_prober()
+        lo, hi = p.match_interval(6, cap=30)
+        assert lo == hi == 0.0012
+
+    def test_synapse_extract_unchanged(self):
+        import pandas as pd
+        df = pd.DataFrame([
+            {'type_pre': 'A', 'type_post': 'B', 'weight': 10},
+            {'type_pre': 'A', 'type_post': 'C', 'weight': 5},
+        ])
+        p = EdgeDensityProber(df)
+        assert p._integral
+        assert p._grid(30) == list(range(1, 31))
+        r = p.best_match(2)
+        assert r['best_t'] in (3, 4, 5)   # plateau of count==2
+        assert r['match_status'] == 'exact'
+
+    def test_suggest_rows_float_thresholds(self):
+        import pandas as pd
+        df = pd.DataFrame([
+            {'reference_dataset': 'A', 'target_dataset': 'B',
+             'anchor_threshold': 0.010, 'best_t': 0.004,
+             'match_kind': 'anchor', 'count_distance': 0.0},
+        ])
+        from comparison.threshold_alignment import \
+            suggest_combination_rows as _scr
+        rows = _scr(df, 'A', ['A', 'B'])
+        assert rows and rows[0]['thresholds'] == {'A': 0.010, 'B': 0.004}

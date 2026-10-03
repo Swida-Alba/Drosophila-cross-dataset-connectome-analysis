@@ -918,3 +918,70 @@ def test_untyped_drop_note_names_the_query_cell_the_csv_uses(tmp_path):
     # field separator still yields the whole id list as its last field.
     assert lines[0].split('; ')[-1] == (
         'query_id=threshold=3;aligned_density=1.6)')
+
+
+# ---------------------------------------------------------------------------
+# Ratio-basis float variants (plan Phase-3 remainder)
+# ---------------------------------------------------------------------------
+class TestRatioBasisFloatLadders:
+    def _ratio_meta(self, applied, w_star, w_start=None):
+        return {
+            'weight_basis': 'connection_ratio',
+            'applied': applied,
+            'w_start': w_start,
+            'w_star_measured': w_star,
+        }
+
+    def test_ratio_window_is_float_and_unfloored(self):
+        from comparison.threshold_density import dataset_window
+        lo, hi = dataset_window(self._ratio_meta(0.001, 0.05))
+        assert lo == 0.001            # no synapse floor of 3
+        assert hi == 0.05
+
+    def test_synapse_window_stays_integer(self):
+        from comparison.threshold_density import dataset_window
+        lo, hi = dataset_window({'applied': 3, 'w_star_measured': 30})
+        assert (lo, hi) == (3, 30) and isinstance(lo, int)
+
+    def test_ratio_vertical_ladder_floats(self):
+        from comparison.threshold_density import align_vertical
+        windows = {'A': (0.001, 0.02), 'B': (0.002, 0.05)}
+        ladder = align_vertical(windows, K=4)
+        assert all(isinstance(t, float) for t in ladder)
+        assert ladder[0] == 0.002 and ladder[-1] == 0.02  # floor/ceiling
+        assert all(0.002 <= t <= 0.02 for t in ladder)
+
+    def test_synapse_vertical_ladder_unchanged(self):
+        from comparison.threshold_density import align_vertical
+        ladder = align_vertical({'A': (3, 30), 'B': (5, 30)}, K=4)
+        assert all(isinstance(t, int) for t in ladder)
+        assert ladder[0] == 5 and ladder[-1] == 30
+
+    def test_ratio_density_curve_float_grid(self):
+        import numpy as np
+        from comparison.threshold_density import density_curve
+        ew = np.array([0.050, 0.020, 0.010, 0.004, 0.0012])
+        grid = [0.0012, 0.004, 0.010, 0.020, 0.050]
+        c = density_curve([], ew, grid)
+        assert c['edge_count'].tolist() == [5, 4, 3, 2, 1]
+
+    def test_ratio_horizontal_inverts_to_tiers(self):
+        from comparison.threshold_density import align_horizontal
+        curves = {
+            'A': {'thresholds': [0.001, 0.004, 0.010, 0.020],
+                  'density': [1.0, 0.8, 0.5, 0.2]},
+            'B': {'thresholds': [0.002, 0.005, 0.012, 0.030],
+                  'density': [0.9, 0.7, 0.45, 0.1]},
+        }
+        rows = align_horizontal(curves, levels=2, normalizer='raw')
+        assert rows
+        for r in rows:
+            for ds, t in r['thresholds'].items():
+                assert isinstance(t, float) or (
+                    isinstance(t, int) and float(t).is_integer())
+                assert t in curves[ds]['thresholds']
+
+    def test_ratio_vertical_rows_carry_floats(self):
+        from comparison.threshold_density import vertical_rows
+        rows = vertical_rows([0.001, 0.004], ['A', 'B'])
+        assert rows[0]['thresholds'] == {'A': 0.001, 'B': 0.001}

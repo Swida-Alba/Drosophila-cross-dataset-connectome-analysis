@@ -1875,12 +1875,10 @@ class ComparisonAnalyzer:
         # engine unchanged.
         if (mode != 'edge'
                 and getattr(self.parameters, 'threshold_mode', '') == 'auto'
-                and self.parameters.path_mode == 'all'
-                # Auto's density/bootstrap machinery is synapse-locked;
-                # ratio mode runs the requested float tiers as-is
-                # (Phase 3 lifts this).
-                and getattr(self.parameters, 'weight_basis',
-                            'synapse') == 'synapse'):
+                and self.parameters.path_mode == 'all'):
+            # Ratio basis: the bootstrap floors/curves/ladders are float
+            # (threshold_density basis-awareness); delegates replay float
+            # tiers.
             if not self._bootstrap_auto_mode():
                 self._log("Auto threshold mode: bootstrap unavailable — "
                           "running the requested thresholds as-is.")
@@ -2512,12 +2510,20 @@ class ComparisonAnalyzer:
                 if value is None:
                     value = attrs.get('min_synapse_num')
                 if value is not None:
-                    return int(value)
+                    v = float(value)
+                    return int(v) if v.is_integer() else v
             except Exception:
                 pass
         name = os.path.basename(folder)
-        suffix = name[len('minsyn_'):].split('_')[0]
-        return int(suffix) if suffix.isdigit() else None
+        for prefix in ('minsyn_', 'minratio_'):
+            if name.startswith(prefix):
+                suffix = name[len(prefix):].split('_')[0]
+                try:
+                    v = float(suffix.replace('neg', '-'))
+                    return int(v) if v.is_integer() else v
+                except ValueError:
+                    return None
+        return None
 
     def _write_skipped_marker(self, dataset: str, requested: int,
                               applied_by_requested: Dict) -> None:
@@ -2943,7 +2949,8 @@ class ComparisonAnalyzer:
             folder = self._applied_state_for(dataset, requested)[0]
         if folder is None:
             folder = requested
-        return int(folder)
+        v = float(folder)
+        return int(v) if v.is_integer() else v
 
     def get_applied_thresholds(self, dataset: str) -> List[int]:
         """Distinct materialized (applied) thresholds for one dataset."""
@@ -2951,7 +2958,8 @@ class ComparisonAnalyzer:
         for t in self.parameters.get_thresholds_for_dataset(dataset):
             value = self.get_applied_folder(dataset, t)
             if value is not None:
-                applied.append(int(value))
+                v = float(value)
+                applied.append(int(v) if v.is_integer() else v)
         return sorted(set(applied))
 
     def get_threshold_view(self, dataset: str, requested: int) -> Dict[str, Any]:
@@ -7725,6 +7733,8 @@ class ComparisonAnalyzer:
                 continue
             lo, hi = dataset_window(meta)
             windows[ds] = (lo, hi)
+            _ratio_curve = str(
+                meta.get('weight_basis', '')) == 'connection_ratio'
             if cls is not None and len(cls) == len(ew):
                 if drop_untyped:
                     ew_used = ew[cls == _CLS_TYPED]
@@ -7742,7 +7752,25 @@ class ComparisonAnalyzer:
             meta = dict(meta)
             meta['curve_n'] = n_denom
             meta['basis'] = basis
-            if hi is None or hi < lo:
+            if _ratio_curve:
+                # Float (ratio) captures: the tier ladder is the DISTINCT
+                # positive edge-ratio values in [lo, hi], thinned
+                # deterministically to <= 48 tiers (curve resolution for
+                # the horizontal inversion; synapse integer grids are
+                # untouched below).
+                import numpy as _np
+                _tiers = _np.unique(ew_used[_np.isfinite(ew_used)
+                                            & (ew_used >= float(lo))
+                                            & (ew_used <= float(hi))])
+                if _tiers.size == 0:
+                    t_grid = [float(lo)]
+                elif _tiers.size <= 48:
+                    t_grid = [float(t) for t in _tiers]
+                else:
+                    _idx = _np.unique(_np.linspace(
+                        0, _tiers.size - 1, 49).round().astype(int))
+                    t_grid = [float(_tiers[i]) for i in _idx]
+            elif hi is None or hi < lo:
                 t_grid = [int(lo)]
             else:
                 t_grid = list(range(int(lo), int(hi) + 1))
@@ -7755,7 +7783,11 @@ class ComparisonAnalyzer:
             meta['n_edges_active_basis'] = int(curve['edge_count'][0])
             metas[ds] = meta
             curves[ds] = {
-                'thresholds': [int(t) for t in curve['t_grid']],
+                # Synapse grids stay integers (byte-identical exports);
+                # ratio tiers stay exact floats.
+                'thresholds': [int(t) if float(t).is_integer()
+                               else float(t)
+                               for t in curve['t_grid']],
                 'path_count': [int(c) for c in curve['path_count']],
                 'edge_count': [int(c) for c in curve['edge_count']],
                 'density': [float(d) for d in dens],
@@ -7790,14 +7822,18 @@ class ComparisonAnalyzer:
             if sorted(str(ds) for ds in thresholds) != \
                     sorted(str(ds) for ds in expected):
                 return
+            def _tv(v):
+                v = float(v)
+                return int(v) if v.is_integer() else v
+
             key = tuple(sorted(
-                (ds, int(v)) for ds, v in thresholds.items()))
+                (ds, _tv(v)) for ds, v in thresholds.items()))
             if key in seen:
                 # Identical to an earlier row (e.g. a horizontal level that
                 # rounds onto a vertical point): emit once, tag both ( §4.6).
                 for existing in rows:
                     if tuple(sorted(
-                            (ds, int(v)) for ds, v in
+                            (ds, _tv(v)) for ds, v in
                             existing['thresholds'].items())) == key:
                         origins = set(
                             (existing.get('mode') or '').split('+'))
@@ -7936,11 +7972,15 @@ class ComparisonAnalyzer:
             # with freshly generated ids would break every per-query join,
             # so reuse the installed id/label whenever the threshold cell
             # matches, and never re-install during export.
+            def _tv(v):
+                v = float(v)
+                return int(v) if v.is_integer() else v
+
             installed = {}
             if getattr(self.parameters, 'threshold_auto', False):
                 for q in (self.parameters.threshold_combinations or []):
                     installed[tuple(sorted(
-                        (ds, int(v))
+                        (ds, _tv(v))
                         for ds, v in (q.get('thresholds') or {}).items()))] = (
                         str(q.get('id')), str(q.get('label')))
             # B7 fallback ids for not-installed rows (same scheme as the
@@ -7957,12 +7997,12 @@ class ComparisonAnalyzer:
                 lvl_c = r['level_continuous']
                 lvl_n = r['level_normalized']
                 cell_key = tuple(sorted(
-                    (ds, int(v)) for ds, v in r['thresholds'].items()))
+                    (ds, _tv(v)) for ds, v in r['thresholds'].items()))
                 if cell_key in installed:
                     row_id, row_label = installed[cell_key]
                 else:
                     if r.get('mode') == 'vertical':
-                        base = (f"threshold={int(lvl_c)}"
+                        base = (f"threshold={_tv(lvl_c)}"
                                 if lvl_c is not None
                                 else f"vertical_{i:03d}")
                     else:
@@ -7995,8 +8035,11 @@ class ComparisonAnalyzer:
                     row['partial_datasets'] = ', '.join(
                         r['partial_datasets'])
                 for ds in order:
-                    row[ds] = (int(r['thresholds'][ds])
-                               if ds in r['thresholds'] else None)
+                    row[ds] = (
+                        (int(r['thresholds'][ds])
+                         if float(r['thresholds'][ds]).is_integer()
+                         else float(r['thresholds'][ds]))
+                        if ds in r['thresholds'] else None)
                 # Achieved per-dataset density at the chosen integer
                 # threshold: a level maps to a plateau, and coarse curves
                 # (e.g. BANC) can overshoot the level on quantization —
@@ -8008,7 +8051,9 @@ class ComparisonAnalyzer:
                         curve = curves.get(ds) or {}
                         dens = dict(zip(curve.get('thresholds') or [],
                                         curve.get('density') or []))
-                        achieved[ds] = dens.get(int(ds_t))
+                        achieved[ds] = dens.get(
+                            int(ds_t) if float(ds_t).is_integer()
+                            else float(ds_t))
                     if achieved and all(
                             v is not None for v in achieved.values()):
                         for ds, dens_v in achieved.items():
@@ -8202,8 +8247,23 @@ class ComparisonAnalyzer:
         """
         from .threshold_density import align_horizontal, align_vertical
         datasets = self.parameters.get_dataset_names()
-        base = [int(t) for t in (self.parameters.thresholds or [])] or [3]
-        boot_t = max(1, min(base))
+        _ratio_auto = (getattr(
+            self.parameters, 'weight_basis', 'synapse')
+            == 'connection_ratio')
+
+        def _thr(v):
+            v = float(v)
+            return int(v) if v.is_integer() else v
+
+        if _ratio_auto:
+            base = ([_thr(t) for t in
+                     (self.parameters.thresholds or [])]
+                    or [0.001])
+        else:
+            base = [int(t) for t in
+                    (self.parameters.thresholds or [])] or [3]
+        boot_t = (max(1e-12, min(base)) if _ratio_auto
+                  else max(1, min(base)))
         self._log(f"Auto threshold mode: bootstrap enumeration at t={boot_t} "
                   f"for {len(datasets)} dataset(s)")
         saved_thresholds = list(self.parameters.thresholds)
@@ -8282,7 +8342,7 @@ class ComparisonAnalyzer:
 
         def _ds_txt(thresholds):
             return ', '.join(
-                f"{nick_by_ds.get(ds, ds)} {int(thresholds[ds])}"
+                f"{nick_by_ds.get(ds, ds)} {float(thresholds[ds]):g}"
                 for ds in order)
 
         rows = []
@@ -8301,10 +8361,14 @@ class ComparisonAnalyzer:
             return base if count == 0 else f"{base}_{count + 1}"
 
         for r in align_vertical(windows, K=5):
-            v_id = _unique_id(f'threshold={r}')
+            _r_txt = (f'{int(r)}' if float(r).is_integer()
+                      else f'{float(r):g}')
+            v_id = _unique_id(f'threshold={_r_txt}')
             rows.append({'id': v_id, 'label': v_id,
                          'row_mode': 'vertical',
-                         'thresholds': {ds: int(r) for ds in order}})
+                         'thresholds': {ds: (int(r) if float(r).is_integer()
+                                             else float(r))
+                                        for ds in order}})
         # Density-matched rows need every dataset's curve: a row built without
         # one would silently omit a column while its label still promises the
         # full dataset set (and the schedule validator rejects a row missing a

@@ -88,6 +88,14 @@ class EdgeDensityProber:
         }
         self.pair_max = grouped.to_numpy(dtype=float)
         self.pair_max.sort()
+        # Float (ratio) extracts search the DISTINCT-TIER ladder — the
+        # exact float analog of the integer grid; integral (synapse)
+        # extracts keep the historical range(1, cap+1) path untouched.
+        self._integral = bool(
+            self.pair_max.size == 0
+            or np.all(self.pair_max == np.round(self.pair_max)))
+        tiers = np.unique(self.pair_max[self.pair_max > 0])
+        self._tiers = tiers
 
     @property
     def total_pairs(self) -> int:
@@ -110,7 +118,19 @@ class EdgeDensityProber:
         """Per-pair max weights for pairs present at threshold t."""
         return {pair: w for pair, w in self.pair_weights.items() if w >= t}
 
-    def match_interval(self, target_count: int, cap: int = 30) -> Tuple[int, int]:
+    def _grid(self, cap: int = 30):
+        """The searchable threshold grid: the integer ladder for synapse
+        extracts, the distinct positive tiers (<= cap many, thinned
+        deterministically) for float ratio extracts."""
+        if self._integral:
+            return list(range(1, max(int(cap), 1) + 1))
+        if self._tiers.size <= max(int(cap), 1):
+            return [float(t) for t in self._tiers]
+        idx = np.unique(np.linspace(
+            0, self._tiers.size - 1, max(int(cap), 1) + 1).round().astype(int))
+        return [float(self._tiers[i]) for i in idx]
+
+    def match_interval(self, target_count: int, cap: int = 30):
         """Threshold interval [lo, hi] whose count equals ``target_count``.
 
         On a plateau many thresholds share one count; returning the whole
@@ -120,19 +140,22 @@ class EdgeDensityProber:
         """
         if self.total_pairs == 0:
             return (0, 0)
-        cap = max(int(cap), 1)
+        grid = self._grid(cap)
         best_t, best_count = None, None
-        for t in range(1, cap + 1):
+        for t in grid:
             c = self.count(t)
             if best_count is None or abs(c - target_count) < abs(
                     best_count - target_count):
                 best_t, best_count = t, c
         lo = hi = best_t if best_t is not None else 0
         if best_count == target_count:
-            while lo > 1 and self.count(lo - 1) == target_count:
-                lo -= 1
-            while hi < cap and self.count(hi + 1) == target_count:
-                hi += 1
+            i_lo, i_hi = grid.index(best_t), grid.index(best_t)
+            while i_lo > 0 and self.count(grid[i_lo - 1]) == target_count:
+                i_lo -= 1
+            while (i_hi < len(grid) - 1
+                   and self.count(grid[i_hi + 1]) == target_count):
+                i_hi += 1
+            lo, hi = grid[i_lo], grid[i_hi]
         return (lo, hi)
 
     def best_match(self, anchor_count: int, cap: int = 30,
@@ -157,29 +180,29 @@ class EdgeDensityProber:
         if self.total_pairs == 0:
             return result
 
-        grid = range(1, max(int(cap), 1) + 1)
-        # Bisection: largest t with count(t) >= anchor_count (count is
+        grid = self._grid(cap)
+        # Bisection: largest grid t with count(t) >= anchor_count (count is
         # monotone non-increasing). The crossover point is then refined by
         # evaluating the ±neighbor_radius neighborhood for near-ties.
-        lo_t, hi_t = 1, int(cap)
-        # binary search over t for the crossover
-        while lo_t < hi_t:
-            mid = (lo_t + hi_t + 1) // 2
-            if self.count(mid) >= anchor_count:
-                lo_t = mid
+        i_lo, i_hi = 0, len(grid) - 1
+        while i_lo < i_hi:
+            mid = (i_lo + i_hi + 1) // 2
+            if self.count(grid[mid]) >= anchor_count:
+                i_lo = mid
             else:
-                hi_t = mid - 1
-        candidates = {lo_t}
-        for delta in range(1, neighbor_radius + 1):
-            candidates.add(lo_t - delta)
-            candidates.add(lo_t + delta)
+                i_hi = mid - 1
+        candidates = {grid[i_lo]}
+        for delta in range(1, max(int(neighbor_radius), 0) + 1):
+            for j in (i_lo - delta, i_lo + delta):
+                if 0 <= j < len(grid):
+                    candidates.add(grid[j])
         best_t, best_dist, best_count = None, None, 0
-        for t in sorted(c for c in candidates if c in grid):
+        for t in sorted(candidates):
             c = self.count(t)
             d = abs(c - anchor_count)
             if best_dist is None or d < best_dist:
                 best_t, best_dist, best_count = t, d, c
-        max_count = self.count(1)
+        max_count = self.count(grid[0])
         # No threshold in range can reach the anchor's density: report the
         # shortfall honestly instead of fabricating best_t=1.
         if anchor_count > max_count:
@@ -228,8 +251,12 @@ def suggest_combination_rows(
         df = df[df['match_kind'] == 'anchor']
     rows: List[Dict] = []
     seen_signatures = set()
+    def _thr(v):
+        v = float(v)
+        return int(v) if v.is_integer() else v
+
     anchors = sorted({
-        (int(r['anchor_threshold']))
+        _thr(r['anchor_threshold'])
         for _, r in df.iterrows()
         if r.get('reference_dataset') == reference_dataset
         and r.get('best_t') is not None
@@ -237,14 +264,14 @@ def suggest_combination_rows(
     index = 1
     for anchor in anchors:
         sub = df[(df['reference_dataset'] == reference_dataset)
-                 & (df['anchor_threshold'] == anchor)
+                 & (df['anchor_threshold'].astype(float) == float(anchor))
                  & (df['best_t'].notna())]
-        cell = {reference_dataset: int(anchor)}
+        cell = {reference_dataset: _thr(anchor)}
         distances = []
         for _, r in sub.iterrows():
             target = r.get('target_dataset')
             if target in dataset_order and target not in cell:
-                cell[target] = int(r['best_t'])
+                cell[target] = _thr(r['best_t'])
                 if r.get('count_distance') is not None:
                     distances.append(float(r['count_distance']))
         if set(cell.keys()) != set(dataset_order):

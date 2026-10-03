@@ -342,4 +342,4 @@ writes both files.
 
 ## Connection-ratio thresholds (v1)
 
-Threshold Basis = Connection ratio accepts FLOAT standard/combination tiers (0<t≤1); delegate folders use the `minratio_{decimal}` grammar; Auto and replay stay synapse-only (Phase 3). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets.
+Threshold Basis = Connection ratio accepts FLOAT tiers (0<t≤1) in Standard, Combinations AND Auto; delegate folders use the `minratio_{decimal}` grammar; Auto's density bootstrap/alignment runs on the float ratio tiers (float64 arrays, distinct-tier ladders). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets.

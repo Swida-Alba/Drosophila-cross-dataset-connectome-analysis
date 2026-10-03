@@ -925,10 +925,28 @@ class ComparisonParameters:
         return self._cached_timestamp
 
     @staticmethod
-    def _coerce_threshold_value(value: Any, field_name: str) -> int:
-        """Coerce one threshold value and reject ambiguous/non-positive input."""
+    def _coerce_threshold_value(value: Any, field_name: str,
+                                ratio_basis: bool = False):
+        """Coerce one threshold value and reject ambiguous/non-positive input.
+
+        Ratio basis: floats in (0, 1] (F9 connection-ratio tiers) are
+        valid thresholds; integers remain integers so synapse runs are
+        byte-identical."""
         if isinstance(value, bool) or value is None:
-            raise ValueError(f"{field_name} must contain positive integers")
+            raise ValueError(f"{field_name} must contain positive thresholds")
+        if ratio_basis:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{field_name} must contain numeric thresholds; "
+                    f"got {value!r}"
+                ) from exc
+            if not (0.0 < parsed <= 1.0):
+                raise ValueError(
+                    f"ratio-basis {field_name} must be in (0, 1]; "
+                    f"got {value!r}")
+            return int(parsed) if parsed == int(parsed) else parsed
         try:
             parsed = int(value)
         except (TypeError, ValueError) as exc:
@@ -949,18 +967,21 @@ class ComparisonParameters:
         return parsed
 
     @classmethod
-    def _clean_threshold_list(cls, values: Any, field_name: str) -> List[int]:
+    def _clean_threshold_list(cls, values: Any, field_name: str,
+                             ratio_basis: bool = False) -> List:
         """Normalize a user/API threshold list without changing row meaning."""
         if values is None:
             return []
         if isinstance(values, (str, bytes)):
             values = [part for part in str(values).replace(',', ' ').split() if part]
         try:
-            return sorted({
-                cls._coerce_threshold_value(value, field_name)
+            coerced = {
+                cls._coerce_threshold_value(value, field_name,
+                                           ratio_basis=ratio_basis)
                 for value in values
                 if value is not None and str(value).strip() != ''
-            })
+            }
+            return sorted(coerced)
         except TypeError as exc:
             raise ValueError(f"{field_name} must be a list of thresholds") from exc
 
@@ -1010,7 +1031,9 @@ class ComparisonParameters:
         if self.dataset_thresholds:
             self.threshold_mode = 'legacy_vertical'
             self._global_thresholds = self._clean_threshold_list(
-                self.thresholds, 'thresholds')
+                self.thresholds, 'thresholds',
+                ratio_basis=(getattr(self, 'weight_basis', 'synapse')
+                             == 'connection_ratio'))
             normalized: Dict[str, List[int]] = {}
             known = set(known_order)
             for ds, values in self.dataset_thresholds.items():
@@ -1039,7 +1062,9 @@ class ComparisonParameters:
                 f"threshold_mode must be one of {sorted(valid_modes)}, got: {mode}"
             )
         self.threshold_mode = mode
-        self.thresholds = self._clean_threshold_list(self.thresholds, 'thresholds')
+        _rb = getattr(self, 'weight_basis', 'synapse') == 'connection_ratio'
+        self.thresholds = self._clean_threshold_list(
+            self.thresholds, 'thresholds', ratio_basis=_rb)
 
         if mode == 'standard':
             if self.threshold_combinations:
@@ -1061,7 +1086,9 @@ class ComparisonParameters:
                 )
             self.threshold_combinations = None
             self.thresholds = self._clean_threshold_list(
-                self.thresholds, 'thresholds')
+                self.thresholds, 'thresholds',
+                ratio_basis=(getattr(self, 'weight_basis', 'synapse')
+                             == 'connection_ratio'))
             return
 
         rows = self.threshold_combinations or []
@@ -1100,6 +1127,8 @@ class ComparisonParameters:
                 ds: self._coerce_threshold_value(
                     raw_values[ds],
                     f"threshold_combinations row {index} [{ds}]",
+                    ratio_basis=(getattr(self, 'weight_basis', 'synapse')
+                                 == 'connection_ratio'),
                 )
                 for ds in dataset_order
             }
@@ -1270,8 +1299,11 @@ class ComparisonParameters:
         only when ``dataset_thresholds`` was supplied by an older caller.
         """
         if self.threshold_mode in ('combinations', 'auto'):
+            def _tv(v):
+                v = float(v)
+                return int(v) if v.is_integer() else v
             return sorted({
-                int(row['thresholds'][dataset])
+                _tv(row['thresholds'][dataset])
                 for row in (self.threshold_combinations or [])
                 if dataset in row.get('thresholds', {})
             }) or (list(self.thresholds)

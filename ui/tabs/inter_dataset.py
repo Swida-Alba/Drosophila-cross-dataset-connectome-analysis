@@ -125,8 +125,8 @@ def create_inter_dataset_tab():
                          "threshold for every delegate. Connection ratio: "
                          "FLOAT min-connection-ratio tiers (a fraction of "
                          "each post neuron's total input — comparable "
-                         "across datasets). Ratio mode disables Auto and "
-                         "replay for now.",
+                         "across datasets). Auto and replay run on "
+                         "float ratio tiers.",
                 )
             # Auto is the default mode: it measures each dataset's own
             # threshold window from one bootstrap run and emits BOTH the
@@ -425,12 +425,6 @@ def create_inter_dataset_tab():
                         )
                     return mode, sorted(set(values)) or [3], None
                 ratio_mode = (threshold_basis.value == "Connection ratio")
-                if ratio_mode and mode == "auto":
-                    raise ValueError(
-                        "Auto threshold mode is synapse-only for now — "
-                        "switch to Standard or Combinations with float "
-                        "ratio thresholds."
-                    )
                 if mode == "standard":
                     try:
                         if ratio_mode:

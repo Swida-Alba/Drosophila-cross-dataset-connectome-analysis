@@ -18,6 +18,13 @@ Units (locked by the plan, §3.4 / §4.3):
   threshold — a frozen cone; ``t > applied`` is a filter over it, NOT a
   re-pruned cone (§4.5b item 2).
 
+Ratio basis (plan-connection-ratio-pathfinding Phase-3 remainder): when
+the capture's meta carries ``weight_basis: connection_ratio`` the edge
+arrays are F9 connection ratios (float), ``w_start`` is the applied
+ratio threshold (no synapse floor of 3), and the ladders/inversions
+operate on FLOAT tiers — every cast below is value-preserving (ints
+stay ints for synapse captures, so existing exports are unchanged).
+
 Both curves are counts of ``weight >= t`` over the persisted arrays:
 ``E(t)`` = bodyId edges (primary) and the enumerated path count
 (diagnostic, hub-inflated — never drives alignment).
@@ -82,18 +89,33 @@ def dataset_window(meta: Optional[Dict]) -> Tuple[int, Optional[int]]:
     no window (no paths).
     """
     meta = meta or {}
-    applied = meta.get('applied')
-    try:
-        applied = int(applied) if applied is not None else None
-    except (TypeError, ValueError):
-        applied = None
-    w_start = int(meta.get('w_start')) if meta.get('w_start') is not None \
-        else (max(_WEIGHT_FLOOR, applied) if applied is not None
-              else _WEIGHT_FLOOR)
+    ratio = str(meta.get('weight_basis', '')) == 'connection_ratio'
+
+    def _thr(value):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v if (ratio or v.is_integer()) else v
+
+    def _cast(value):
+        v = _thr(value)
+        if v is None:
+            return None
+        return float(v) if ratio else int(v)
+
+    applied = _cast(meta.get('applied'))
+    w_start_raw = _cast(meta.get('w_start'))
+    if w_start_raw is not None:
+        w_start = w_start_raw
+    elif applied is not None:
+        w_start = applied if ratio else max(_WEIGHT_FLOOR, applied)
+    else:
+        w_start = 1e-12 if ratio else _WEIGHT_FLOOR
     w_star = meta.get('w_star_measured')
     if w_star is None or (isinstance(w_star, float) and not np.isfinite(w_star)):
         return w_start, None
-    return w_start, int(round(float(w_star)))
+    return w_start, _cast(w_star)
 
 
 def density_denominator(meta: Optional[Dict],
@@ -163,25 +185,39 @@ def align_vertical(windows: Dict[str, Tuple[int, Optional[int]]],
     §4.6). Empty when the windows do not intersect.
     """
     los, his = [], []
+    float_mode = False
     for _ds, (lo, hi) in (windows or {}).items():
         if lo is None or hi is None:
             continue
-        los.append(int(lo))
-        his.append(int(hi))
+        if isinstance(lo, float) and not float(lo).is_integer():
+            float_mode = True
+        if isinstance(hi, float) and not float(hi).is_integer():
+            float_mode = True
+        los.append(lo)
+        his.append(hi)
     if not los or not his:
         return []
+
+    def _snap(v):
+        # synapse captures stay integers (byte-identical ladders); ratio
+        # tiers stay exact floats.
+        if float_mode or (isinstance(v, float) and not v.is_integer()):
+            return float(v)
+        return int(v)
+
     w_floor = max(los)
     w_ceiling = min(his)
     if w_ceiling < w_floor:
         return []
     if w_ceiling == w_floor:
-        return [int(w_floor)]
+        return [_snap(w_floor)]
     delta = w_ceiling - w_floor
-    grid = {int(w_floor), int(w_ceiling)}
+    grid = {_snap(w_floor), _snap(w_ceiling)}
     for n in range(1, max(int(K), 0) + 1):
-        grid.add(int(round(w_floor + (0.5 ** n) * delta)))
+        point = w_floor + (0.5 ** n) * delta
+        grid.add(float(point) if float_mode else int(round(point)))
     ordered = sorted(grid)
-    # Rounding can collapse points; keep at most K+2 distinct integers while
+    # Rounding can collapse points; keep at most K+2 distinct tiers while
     # always retaining both endpoints (§4.6).
     if len(ordered) > K + 2:
         keep = {ordered[0], ordered[-1]}
@@ -200,7 +236,7 @@ def _invert_density(thresholds: Sequence[int],
     (uniform low bias, documented in the axis/notes). Clamped internally to
     the curve's own domain.
     """
-    ts = np.asarray(list(thresholds))
+    ts = np.asarray(list(thresholds), dtype=np.float64)
     dens = np.asarray(list(density), dtype=np.float64)
     valid = np.isfinite(dens)
     if ts.size == 0 or not valid.any() or not np.isfinite(level):
@@ -212,10 +248,13 @@ def _invert_density(thresholds: Sequence[int],
     # dens <= level  <=>  first index with -dens >= -level.
     idx = int(np.searchsorted(-dens_s, -float(level), side='left'))
     if idx <= 0:
-        return int(ts_s[0])
-    if idx >= ts_s.size:
-        return int(ts_s[-1])
-    return int(ts_s[idx])
+        point = float(ts_s[0])
+    elif idx >= ts_s.size:
+        point = float(ts_s[-1])
+    else:
+        point = float(ts_s[idx])
+    # Synapse grids stay integers; ratio tiers stay exact.
+    return int(point) if point.is_integer() else point
 
 
 def align_horizontal(curves: Dict[str, Dict], levels: int = 4,
@@ -266,13 +305,13 @@ def align_horizontal(curves: Dict[str, Dict], levels: int = 4,
         cell = {}
         clamped = False
         for ds in dataset_order:
-            ts = np.asarray(usable[ds]['thresholds'])
+            ts = np.asarray(usable[ds]['thresholds'], dtype=float)
             dens = np.asarray(usable[ds]['density'], dtype=float)
             finite = np.isfinite(dens)
             if not finite.any():
                 continue
-            t_lo = int(np.min(ts[finite]))
-            t_hi = int(np.max(ts[finite]))
+            t_lo = float(np.min(ts[finite]))
+            t_hi = float(np.max(ts[finite]))
             t = _invert_density(usable[ds]['thresholds'],
                                 usable[ds]['density'], level)
             if t is None:
@@ -281,7 +320,7 @@ def align_horizontal(curves: Dict[str, Dict], levels: int = 4,
                 t, clamped = t_lo, True
             elif t > t_hi:
                 t, clamped = t_hi, True
-            cell[ds] = int(t)
+            cell[ds] = int(t) if float(t).is_integer() else float(t)
         if len(cell) != len(dataset_order):
             continue
         signature = tuple((ds, cell[ds]) for ds in dataset_order)
@@ -310,11 +349,12 @@ def vertical_rows(ladder: Iterable[int],
     """
     rows = []
     for t in ladder or []:
+        value = int(t) if float(t).is_integer() else float(t)
         rows.append({
             'mode': 'vertical',
             'level_continuous': float(t),
             'level_normalized': None,
-            'thresholds': {ds: int(t) for ds in dataset_order},
+            'thresholds': {ds: value for ds in dataset_order},
             'clamped': False,
             'degenerate': False,
         })
