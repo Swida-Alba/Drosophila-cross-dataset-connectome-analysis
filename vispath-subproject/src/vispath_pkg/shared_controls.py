@@ -248,8 +248,319 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
     }
 }
 
+/* Office-safe rewrite of the cytoscape-svg output. PowerPoint's
+   "Convert to Shape" (and the Word/Outlook SVG importers) are the most
+   conservative consumers the exported file ever meets, so the SVG is
+   normalized into the subset they handle faithfully:
+
+   1. Arrowhead underlays: cytoscape paints every translucent arrowhead
+      over an opaque WHITE twin triangle (a canvas paint trick so the
+      edge line cannot show through the translucent arrow). Once
+      converted to shapes those twins are real geometry: one invisible
+      white dart per arrow that surfaces as a white chunk cutting the
+      edge on any non-white slide or after the shapes are recolored.
+      Each (opaque backing, translucent top) twin pair with identical
+      path data is collapsed into ONE opaque arrow whose fill is the
+      exact composite — pixel-identical, no helper shapes.
+   2. rgb() functional colors become #rrggbb; path numbers are
+      re-emitted in fixed-point, rounded to 3 decimals (exponent forms
+      and 15-digit floats are where lenient canvas consumers and strict
+      shape importers diverge).
+   3. paint-order is dropped (Office ignores it; document order already
+      matches the canvas paint order) and the serializer's empty
+      trailing restore <g> is removed.
+   4. Edge fusion + stroke-to-geometry: every edge's shaft and arrowheads
+      are wrapped in one group, the shaft's stroke becomes a filled
+      outline polygon (never degenerate — the stroke width inflates both
+      axes, which <line> boxes cannot do for near-vertical/horizontal
+      shafts and PowerPoint then renders the stroke displaced from the
+      correctly-positioned frame), and each arrowhead stays a simple
+      single-subpath triangle (multi-subpath merged paths misplace their
+      subpath origins in the converted frame). No <line>, no multi-subpath
+      paths, nothing for the converter to misplace.
+   5. A viewBox is added when missing so scaling stays unambiguous.
+   6. Two global groups close it out: all geometry under id="shapes" and
+      all node labels under id="texts" (PowerPoint converts each <g> to a
+      group, so both sets stay selectable as units).
+   Labels stay real <text> (they convert into editable text boxes). */
+function sanitizeSvgForOffice(svgText) {
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    } catch (err) { return svgText; }
+    if (!doc || !doc.documentElement || doc.querySelector('parsererror')) { return svgText; }
+    const root = doc.documentElement;
+
+    function parseColor(value) {
+        if (!value) { return null; }
+        let m = value.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+        if (m) { return [+m[1], +m[2], +m[3]]; }
+        m = value.match(/^#([0-9a-f]{6})$/i);
+        if (m) { return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)]; }
+        return null;
+    }
+    function toHex(rgb) {
+        return '#' + rgb.map(function (c) {
+            return Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0');
+        }).join('');
+    }
+
+    // 1. Collapse (opaque backing, translucent top) twin pairs: the top
+    //    fill becomes the exact composite over the backing color, the
+    //    backing is removed. Only same-`d` adjacent pairs qualify, so a
+    //    legitimately white-filled shape is never touched.
+    const paths = Array.prototype.slice.call(root.querySelectorAll('path'));
+    const removed = [];
+    for (let i = 0; i < paths.length - 1; i++) {
+        const backing = paths[i], top = paths[i + 1];
+        if (!backing.parentNode || backing.getAttribute('d') !== top.getAttribute('d')) { continue; }
+        const backFill = parseColor(backing.getAttribute('fill'));
+        const topFill = parseColor(top.getAttribute('fill'));
+        if (!backFill || !topFill) { continue; }
+        const backOp = backing.getAttribute('fill-opacity') === null ? 1 : parseFloat(backing.getAttribute('fill-opacity'));
+        const topOp = top.getAttribute('fill-opacity') === null ? 1 : parseFloat(top.getAttribute('fill-opacity'));
+        if (!isFinite(backOp) || !isFinite(topOp) || backOp !== 1 || topOp >= 1) { continue; }
+        const blended = topFill.map(function (c, k) { return backFill[k] * (1 - topOp) + c * topOp; });
+        top.setAttribute('fill', toHex(blended));
+        top.setAttribute('fill-opacity', '1');
+        removed.push(backing);
+    }
+    removed.forEach(function (el) { el.parentNode.removeChild(el); });
+
+    // 2. rgb() -> #rrggbb on paint attributes.
+    ['fill', 'stroke', 'stop-color', 'flood-color'].forEach(function (attr) {
+        root.querySelectorAll('[' + attr + ']').forEach(function (el) {
+            const rgb = parseColor(el.getAttribute(attr));
+            if (rgb) { el.setAttribute(attr, toHex(rgb)); }
+        });
+    });
+
+    // 3. Fixed-point path data (3 decimals, no exponent forms).
+    const numRe = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+    root.querySelectorAll('path').forEach(function (el) {
+        const d = el.getAttribute('d');
+        if (!d) { return; }
+        el.setAttribute('d', d.replace(numRe, function (n) {
+            const v = parseFloat(n);
+            return (Math.round(v * 1000) / 1000).toString();
+        }));
+    });
+
+    // 4. paint-order carries no information Office honors.
+    root.querySelectorAll('[paint-order]').forEach(function (el) { el.removeAttribute('paint-order'); });
+
+    // 5. Empty groups (the serializer's trailing restore artifact).
+    root.querySelectorAll('g').forEach(function (g) {
+        if (!g.firstElementChild) { g.parentNode.removeChild(g); }
+    });
+
+    // 6. Edge fusion + stroke-to-geometry. PowerPoint's converter turns
+    //    every path into its own shape and has two failure modes this
+    //    export must not feed it: <line> elements whose extent is
+    //    degenerate (a near-vertical shaft's box width rounds to ~0;
+    //    PowerPoint clamps the box and then renders the stroke displaced
+    //    from the shape's correct position), and multi-subpath merged
+    //    paths (the rewritten subpath origins mismatch — content offset
+    //    inside a correctly-positioned frame). Every edge therefore
+    //    becomes ONE group of simple single-subpath closed polygons: the
+    //    shaft's stroke is converted to a filled outline polygon
+    //    (composited opaque over the background; never degenerate, the
+    //    stroke width inflates both axes), and each arrowhead stays its
+    //    own triangle. Rendering is unchanged.
+    const allPaths = Array.prototype.slice.call(root.querySelectorAll('path'));
+    const bgRect = root.querySelector('rect');
+    const bgFill = (bgRect && bgRect.getAttribute('fill')) || '#ffffff';
+    function vpIsArrowTri(p) {
+        const d = p.getAttribute('d') || '';
+        if (!/Z\s*$/.test(d)) { return false; }
+        if (p.getAttribute('fill') === 'none' || p.getAttribute('fill') === null) { return false; }
+        if (p.getAttribute('stroke') !== 'none') { return false; }
+        return (d.match(/-?\d+(?:\.\d+)?/g) || []).length === 6;   // M + 2x L = 3 points
+    }
+    // Parse a stroked open shaft into a sample polyline. Handles the two
+    // forms cytoscape-svg emits: "M x y L x y" and "M x y L|Q ... " paths
+    // (quadratics are flattened). Returns null for anything else (dashed
+    // shafts stay stroked — dashes cannot become fill geometry).
+    function vpShaftSamples(p) {
+        if (p.getAttribute('fill') !== 'none') { return null; }
+        if (p.getAttribute('stroke-dasharray')) { return null; }
+        const d = p.getAttribute('d') || '';
+        const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+        if (nums.length < 4 || nums.length % 2) { return null; }
+        const cmds = d.match(/[MLQ]/g) || [];
+        if (cmds[0] !== 'M') { return null; }
+        const pts = [{ x: nums[0], y: nums[1] }];
+        let ci = 1, ni = 2, ok = true;
+        for (let c = 1; c < cmds.length && ok; c++) {
+            if (cmds[c] === 'L') {
+                if (ni + 1 >= nums.length + 1) { ok = false; break; }
+                pts.push({ x: nums[ni], y: nums[ni + 1] }); ni += 2;
+            } else if (cmds[c] === 'Q') {
+                const cx = nums[ni], cy2 = nums[ni + 1], ex = nums[ni + 2], ey = nums[ni + 3];
+                ni += 4;
+                const p0 = pts[pts.length - 1];
+                for (let s = 1; s <= 12; s++) {
+                    const u = s / 12, v = 1 - u;
+                    pts.push({ x: v * v * p0.x + 2 * u * v * cx + u * u * ex,
+                               y: v * v * p0.y + 2 * u * v * cy2 + u * u * ey });
+                }
+            } else { ok = false; }
+            void ci;
+        }
+        if (!ok || pts.length < 2) { return null; }
+        const w = parseFloat(p.getAttribute('stroke-width'));
+        return { pts: pts, width: isFinite(w) && w > 0 ? w : 1,
+                 color: p.getAttribute('stroke'),
+                 opacity: p.getAttribute('stroke-opacity') === null ? 1 : parseFloat(p.getAttribute('stroke-opacity')) };
+    }
+    function vpR3(v) { return (Math.round(v * 1000) / 1000).toString(); }
+    // Closed outline polygon of the sampled shaft, inflated by w/2 on
+    // both sides (interior vertices use averaged segment normals).
+    function vpOutlinePoly(info) {
+        const pts = info.pts, hw = info.width / 2;
+        const left = [], right = [];
+        for (let i = 0; i < pts.length; i++) {
+            const prev = pts[Math.max(0, i - 1)], next = pts[Math.min(pts.length - 1, i + 1)];
+            let sx = next.x - prev.x, sy = next.y - prev.y;
+            const sl = Math.hypot(sx, sy) || 1;
+            sx /= sl; sy /= sl;
+            left.push({ x: pts[i].x + (-sy) * hw, y: pts[i].y + sx * hw });
+            right.push({ x: pts[i].x - (-sy) * hw, y: pts[i].y - sx * hw });
+        }
+        const ring = left.concat(right.reverse());
+        return 'M' + ring.map(function (q) { return vpR3(q.x) + ' ' + vpR3(q.y); }).join(' L ') + ' Z';
+    }
+    let vi = 0;
+    while (vi < allPaths.length) {
+        const p = allPaths[vi];
+        const isShaft = p.parentNode && p.getAttribute('fill') === 'none';
+        const shaft = isShaft ? vpShaftSamples(p) : null;
+        const arrows = [];
+        let vj = vi + 1;
+        while (vj < allPaths.length && arrows.length < 2 && vpIsArrowTri(allPaths[vj])) {
+            arrows.push(allPaths[vj]); vj++;
+        }
+        if (shaft && arrows.length > 0) {
+            const g = doc.createElementNS('http://www.w3.org/2000/svg', 'g');
+            g.setAttribute('data-vp-edge', '1');   // the global-grouping pass keeps this group indivisible
+            p.parentNode.insertBefore(g, p);
+            // shaft: stroke converted to a filled outline (base = background)
+            const base = parseColor(shaft.color) || parseColor(bgFill) || [0, 0, 0];
+            const bgc = parseColor(bgFill) || [255, 255, 255];
+            const op = isFinite(shaft.opacity) ? shaft.opacity : 1;
+            const blended = base.map(function (c, k) { return bgc[k] * (1 - op) + c * op; });
+            const outline = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+            outline.setAttribute('fill', toHex(blended));
+            outline.setAttribute('fill-opacity', '1');
+            outline.setAttribute('stroke', 'none');
+            outline.setAttribute('d', vpOutlinePoly(shaft));
+            g.appendChild(outline);
+            p.parentNode.removeChild(p);
+            arrows.forEach(function (aa) { g.appendChild(aa); });   // own triangles, single-subpath
+            vi = vj;
+        } else {
+            vi++;
+        }
+    }
+
+    // 7. viewBox from width/height when missing.
+    if (!root.getAttribute('viewBox') && root.getAttribute('width') && root.getAttribute('height')) {
+        const w = parseFloat(root.getAttribute('width'));
+        const h = parseFloat(root.getAttribute('height'));
+        if (isFinite(w) && isFinite(h)) { root.setAttribute('viewBox', '0 0 ' + w + ' ' + h); }
+    }
+
+    // 8. Two global groups: all geometry under id="shapes", all node
+    //    labels under id="texts". The serializer nests save/restore groups
+    //    whose translate transforms vary per draw phase (nodes can even
+    //    land outside the outer wrapper), so elements are collected with
+    //    their CUMULATIVE transform and each distinct context becomes a
+    //    transform-carrying subgroup inside its global group — rendering
+    //    is unchanged. PowerPoint maps <g> to groups: the converted slide
+    //    carries every shape in one group and every text box in another.
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const IDENT = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+    function vpParseTf(t) {
+        if (!t) { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; }
+        let m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+        const re = /(translate|scale|matrix)\s*\(([^)]*)\)/g;
+        let hit;
+        while ((hit = re.exec(t)) !== null) {
+            const args = hit[2].split(/[\s,]+/).map(Number);
+            const n = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+            if (hit[1] === 'translate') { n.e = args[0] || 0; n.f = args[1] || 0; }
+            else if (hit[1] === 'scale') { n.a = args[0]; n.d = args.length > 1 ? args[1] : args[0]; }
+            else if (hit[1] === 'matrix') { n.a = args[0]; n.b = args[1]; n.c = args[2]; n.d = args[3]; n.e = args[4]; n.f = args[5]; }
+            m = {
+                a: m.a * n.a + m.c * n.b, b: m.b * n.a + m.d * n.b,
+                c: m.a * n.c + m.c * n.d, d: m.b * n.c + m.d * n.d,
+                e: m.a * n.e + m.c * n.f + m.e, f: m.b * n.e + m.d * n.f + m.f
+            };
+        }
+        return m;
+    }
+    function vpTfKey(m) {
+        return [m.a, m.b, m.c, m.d, m.e, m.f].map(function (v) { return Math.round(v * 1e6) / 1e6; }).join(',');
+    }
+    function vpTfAttr(m) {
+        const idn = m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && m.e === 0 && m.f === 0;
+        return idn ? null : 'matrix(' + [m.a, m.b, m.c, m.d, m.e, m.f].map(function (v) { return Math.round(v * 1e6) / 1e6; }).join(' ') + ')';
+    }
+    const buckets = new Map();   // tfKey -> { tf, shapes: [], texts: [] }
+    function vpBucket(tf) {
+        const key = vpTfKey(tf);
+        if (!buckets.has(key)) { buckets.set(key, { tf: tf, shapes: [], texts: [] }); }
+        return buckets.get(key);
+    }
+    (function vpCollect(el, tf) {
+        Array.prototype.slice.call(el.children).forEach(function (k) {
+            if (k.tagName === 'g') {
+                if (k.getAttribute('data-vp-edge')) { vpBucket(tf).shapes.push(k); return; }
+                vpCollect(k, (function () {
+                    const outer = vpParseTf(k.getAttribute('transform'));
+                    return {
+                        a: tf.a * outer.a + tf.c * outer.b, b: tf.b * outer.a + tf.d * outer.b,
+                        c: tf.a * outer.c + tf.c * outer.d, d: tf.b * outer.c + tf.d * outer.d,
+                        e: tf.a * outer.e + tf.c * outer.f + tf.e,
+                        f: tf.b * outer.e + tf.d * outer.f + tf.f
+                    };
+                })());
+                return;
+            }
+            if (k.tagName === 'defs') { return; }
+            (k.tagName === 'text' ? vpBucket(tf).texts : vpBucket(tf).shapes).push(k);
+        });
+    })(root, IDENT);
+    if (buckets.size > 0) {
+        const shapeG = doc.createElementNS(SVGNS, 'g');
+        shapeG.setAttribute('id', 'shapes');
+        const textG = doc.createElementNS(SVGNS, 'g');
+        textG.setAttribute('id', 'texts');
+        buckets.forEach(function (bucket) {
+            const tAttr = vpTfAttr(bucket.tf);
+            [['shapes', shapeG, bucket.shapes], ['texts', textG, bucket.texts]].forEach(function (pair) {
+                const items = pair[2];
+                if (!items.length) { return; }
+                if (!tAttr) { items.forEach(function (el) { pair[1].appendChild(el); }); return; }
+                const sub = doc.createElementNS(SVGNS, 'g');
+                sub.setAttribute('transform', tAttr);
+                items.forEach(function (el) { sub.appendChild(el); });
+                pair[1].appendChild(sub);
+            });
+        });
+        Array.prototype.slice.call(root.children).forEach(function (k) {
+            if (k !== shapeG && k !== textG) { root.removeChild(k); }
+        });
+        root.appendChild(shapeG);
+        if (textG.children.length) { root.appendChild(textG); }
+    }
+
+    return new XMLSerializer().serializeToString(root);
+}
+
 /* Cytoscape export backend (network). Honors the current background so
-   the exported image matches the visible canvas (PPT-safe). */
+   the exported image matches the visible canvas, then normalizes the
+   SVG for Office/PPT shape conversion. */
 function exportCytoscapeToImage(cyObj, format, filename, scale, bg) {
     try {
         if (format === 'png') {
@@ -259,7 +570,7 @@ function exportCytoscapeToImage(cyObj, format, filename, scale, bg) {
         } else if (format === 'svg') {
             const opts = { full: true };
             if (bg) { opts.bg = bg; }
-            const blob = new Blob([cyObj.svg(opts)], { type: 'image/svg+xml' });
+            const blob = new Blob([sanitizeSvgForOffice(cyObj.svg(opts))], { type: 'image/svg+xml' });
             downloadBlob(blob, filename);
         }
         console.log(format.toUpperCase() + ' exported (' + (format === 'png' ? scale + 'x' : 'native size') + ').');
