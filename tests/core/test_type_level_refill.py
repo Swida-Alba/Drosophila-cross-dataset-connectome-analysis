@@ -97,7 +97,13 @@ def universe_types(types=None):
     via the shim is undone on exit."""
     original = dict(_tp._PIPELINE_TYPES)
     original_client = coana.FindNeuronConnection._ensure_neuprint_client
-    _tp._PIPELINE_TYPES = dict(types or TYPE_MAP)
+    # Mutate IN PLACE, never replace: other test modules hold the dict
+    # object via ``from tests.core.test_pathfinding import
+    # _PIPELINE_TYPES`` — a replacement object breaks their fixtures
+    # (caught by the Phase-3 review round: shortest-batched tests failed
+    # with KeyError 'S3' after any later-sorted universe test ran).
+    _tp._PIPELINE_TYPES.clear()
+    _tp._PIPELINE_TYPES.update(types or TYPE_MAP)
     coana.FindNeuronConnection._ensure_neuprint_client = lambda self: None
     coana._FINDALLPATH_GRAPH_CACHE.clear()
     shim = _ShimMonkey()
@@ -105,7 +111,8 @@ def universe_types(types=None):
         yield shim
     finally:
         shim.undo()
-        _tp._PIPELINE_TYPES = original
+        _tp._PIPELINE_TYPES.clear()
+        _tp._PIPELINE_TYPES.update(original)
         coana.FindNeuronConnection._ensure_neuprint_client = original_client
         coana._FINDALLPATH_GRAPH_CACHE.clear()
 

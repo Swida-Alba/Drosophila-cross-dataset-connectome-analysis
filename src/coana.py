@@ -1510,13 +1510,18 @@ def fit_edge_budget(conn_layers, budget, sources, targets, bound,
 
 
 def _format_provenance_value(value):
-    """Human-readable parameters.txt rendering for a provenance value."""
+    """Human-readable parameters.txt rendering for a provenance value.
+
+    Floats render with ``repr`` (shortest roundtrip-exact form): ratio
+    tiers are arbitrary float64 divisions, and a ``%g`` stamp loses
+    digits the post-hoc consumers parse back (the refill's cut
+    re-derivation would exclude boundary edges at the floor tier)."""
     if value is None:
         return 'n/a'
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, float):
-        return f'{value:g}'
+        return repr(value)
     return str(value)
 
 
@@ -15625,10 +15630,12 @@ class FindNeuronConnection:
             f.write(f'path_mode:{" " * 21}all\n')
             prov = getattr(self, '_last_provenance', None) or {}
             tau = prov.get('strongest_first_tau')
-            tau_str = f'{tau:g}' if tau is not None else 'not reached'
+            tau_str = (repr(tau) if isinstance(tau, float)
+                       else f'{tau:g}' if tau is not None else 'not reached')
             f.write(f'applied_tau (min path bottleneck):{" " * 4}{tau_str}\n')
             floor = prov.get('edge_weight_floor')
-            floor_str = (f'{floor:g}' if floor is not None
+            floor_str = (repr(floor) if isinstance(floor, float)
+                         else f'{floor:g}' if floor is not None
                          else 'not applied')
             f.write(f'edge_weight_floor:{" " * 18}{floor_str}\n')
             f.write(f'replayed_from:{" " * 17}{base_threshold}\n')
@@ -16155,11 +16162,14 @@ class FindNeuronConnection:
                     # Backward-compatible aliases (pre-provenance readers
                     # grep these two lines).
                     tau = prov.get('strongest_first_tau')
-                    tau_str = f'{tau:g}' if tau is not None else 'not reached'
+                    tau_str = (repr(tau) if isinstance(tau, float)
+                               else f'{tau:g}' if tau is not None
+                               else 'not reached')
                     f.write(f'applied_tau (min path bottleneck):'
                             f'{" " * 4}{tau_str}\n')
                     floor = prov.get('edge_weight_floor')
-                    floor_str = (f'{floor:g}' if floor is not None
+                    floor_str = (repr(floor) if isinstance(floor, float)
+                                 else f'{floor:g}' if floor is not None
                                  else 'not applied')
                     f.write(f'edge_weight_floor:{" " * 18}{floor_str}\n')
                 for line in extra_lines:

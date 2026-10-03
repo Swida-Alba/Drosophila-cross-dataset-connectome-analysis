@@ -633,8 +633,10 @@ def compute_type_level_refill(
     # value; the orchestrating request's true asked threshold rides on
     # the replayed_from line (validated in the exploration round).
     replayed_from = _parse_thr(prov.get('replayed_from'))
+    slice_tier = None
     if replayed_from is not None and replayed_from < asked:
-        asked = replayed_from
+        slice_tier = asked          # the folder's own stamped tier
+        asked = replayed_from       # the orchestrating request
     applied = _parse_thr(prov.get('applied_threshold'))
     applied = applied if applied is not None else asked
     w0 = _parse_thr(prov.get('edge_weight_floor'))
@@ -680,27 +682,47 @@ def compute_type_level_refill(
     involved = {p for pair in emitted for p in pair}
     node_set = {str(b) for b, t in type_map.items() if t in involved}
 
+    syn_of: Dict[Tuple[str, str], float] = defaultdict(float)
     if is_shortest:
         # -- Phase 3: structure from the run's discovery store; `edges`
         # is only the F9 denominator source. Per-pair weights are the
         # per-layer sums (the exported table counts cross-layer
-        # multiplicity exactly this way).
+        # multiplicity exactly this way). Ratio lane: the store's
+        # SYNPASE weights are converted to F9 ratios (w / all-post
+        # incoming from the edge source) so the re-enumeration orders
+        # and drains exactly like the ratio run did; the per-layer
+        # synapse masses ride along in syn_of for the anchor.
+        layer_weights = store['layer_weights']
+        if ratio_mode:
+            post_tot: Dict[str, float] = defaultdict(float)
+            for _u, _v, _w in edges:
+                post_tot[str(_v)] += float(_w)
+            converted = []
+            for _layer, weights in layer_weights:
+                conv_layer = {}
+                for (u, v), w in weights.items():
+                    denom = post_tot.get(v, 0.0)
+                    conv_layer[(u, v)] = (
+                        float(w) / denom if denom > 0 else 0.0)
+                    syn_of[(u, v)] += float(w)   # multiplicity preserved
+                converted.append((_layer, conv_layer))
+            layer_weights = converted
         estar, ask_stats = _enumerate_shortest(
-            store['layer_weights'], node_set, sources, store['targets'],
+            layer_weights, node_set, sources, store['targets'],
             bound, path_budget, store['distances'], store['hop_limits'])
         refill_truncated = bool(ask_stats.get('budget_bitten'))
         _paths_asked = None
         cut_threshold = asked          # the edge budget never floors here
         cut_info, cut_stats = _enumerate_shortest(
-            store['layer_weights'], node_set, sources, store['targets'],
+            layer_weights, node_set, sources, store['targets'],
             bound, (budget_n if bitten else None),
             store['distances'], store['hop_limits'])
         e_u = []
-        for _layer, weights in store['layer_weights']:
+        for _layer, weights in layer_weights:
             e_u.extend((u, v, w) for (u, v), w in weights.items()
                        if u in node_set and v in node_set)
         non_involved_excluded = sum(
-            1 for _layer, weights in store['layer_weights']
+            1 for _layer, weights in layer_weights
             for (u, v) in weights
             if u not in node_set or v not in node_set)
         prefilter_dropped = 0
@@ -714,7 +736,8 @@ def compute_type_level_refill(
         # ride along in syn_of for the anchor + refill aggregates (the
         # exported table's weight column stays synapse mass).
         e_u: List[Tuple[str, str, float]] = []
-        syn_of: Dict[Tuple[str, str], float] = defaultdict(float)
+        # syn_of was declared above the mode branch (the shortest branch
+        # fills it with per-layer multiplicity; the all-mode branch here)
         post_totals: Dict[str, float] = defaultdict(float)
         if ratio_mode:
             for u, v, w in edges:
@@ -746,7 +769,14 @@ def compute_type_level_refill(
             e_pref, sources, targets, bound, budget=path_budget)
         refill_truncated = bool(ask_stats.get('budget_bitten'))
 
-        # -- re-derive the emitted set at the run's effective cut
+        # -- re-derive the emitted set at the run's effective cut.
+        # Replay slices (review round): the folder's set is the t0
+        # DRAINED prefix further cut at its own tier — the stamps say
+        # complete (bitten False) because the slice is complete AT its
+        # tier, so the budget must come from the t0 stamp, and the
+        # enumerated prefix is then restricted to bottleneck >= the
+        # slice tier (identical for the canon folder, where the tier
+        # sits at/below the drain tau).
         cut_threshold = max(asked, w0 or asked)
         if cut_threshold > asked:
             e_cut = [(u, v, w) for (u, v, w) in e_pref
@@ -755,7 +785,23 @@ def compute_type_level_refill(
             e_cut = e_pref
         _cut_paths, cut_info, cut_stats = _enumerate_paths(
             e_cut, sources, targets, bound,
-            budget=(budget_n if bitten else None))
+            budget=(budget_n if (bitten or slice_tier is not None)
+                    else None))
+        if slice_tier is not None and _cut_paths:
+            kept = [(bn, nodes) for bn, nodes in _cut_paths
+                    if bn >= slice_tier]
+            if len(kept) != len(_cut_paths):
+                _w_cut = {(u, v): w for (u, v, w) in e_cut}
+                _trav = defaultdict(int)
+                _hops = defaultdict(set)
+                for bn, nodes in kept:
+                    for i in range(len(nodes) - 1):
+                        key = (nodes[i], nodes[i + 1])
+                        _trav[key] += 1
+                        _hops[key].add(i)
+                cut_info = {k: {'w': _w_cut[k], 'traversals': _trav[k],
+                                'hops': sorted(_hops[k])}
+                            for k in _trav}
 
     # -- anchor: the re-derived cut must reproduce the exported table
     edge_weight = {(u, v): w for (u, v, w) in e_pref}

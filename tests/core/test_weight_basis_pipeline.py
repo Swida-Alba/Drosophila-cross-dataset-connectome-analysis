@@ -198,7 +198,8 @@ def test_ratio_edge_budget_floor(tmp_path):
     prov_txt = (floored / 'parameters.txt').read_text(encoding='utf-8')
     floor = float(_param(prov_txt, 'edge_weight_floor'))
     assert floor > 0.2 and floor <= 0.45
-    assert f'{floor:g}' == _param(prov_txt, 'edge_weight_floor')
+    # roundtrip-exact stamp (review round): repr, not %g
+    assert repr(floor) == _param(prov_txt, 'edge_weight_floor')
     got = {(_true_bn(r.path), tuple(r.path.split('->')))
            for r in _paths_frame(floored).itertuples()}
     _fc2, at_floor = _run(tmp_path, 'at_floor', basis='connection_ratio',
@@ -477,3 +478,115 @@ def test_ratio_replay_refuses_bad_tiers(tmp_path):
         fc.min_ratio = 0.1
         with pytest.raises(ValueError, match='floats in'):
             fc.FindAllPathMultiThreshold([0.1, 5])
+
+
+# ---------------------------------------------------------------------------
+# 11. Phase-3 review round: precision roundtrip + shortest ratio refill
+# ---------------------------------------------------------------------------
+def test_ratio_floor_stamp_roundtrips_exactly(tmp_path):
+    """The %g provenance stamp rounded float ratio tiers to 6 sig figs —
+    the refill's cut re-derivation would then exclude boundary edges at
+    the floor tier, and the alias/parameter_dict lines could disagree
+    (the parser refuses contradictions). repr() roundtrips exactly."""
+    from coana import _format_provenance_value
+    tier = 0.0011933174224343676
+    assert float(_format_provenance_value(tier)) == tier
+    assert _format_provenance_value(0.2) == '0.2'
+    assert _format_provenance_value(3) == '3'       # ints untouched
+    assert _format_provenance_value(None) == 'n/a'
+
+
+def test_shortest_ratio_run_refill(tmp_path):
+    """Shortest + ratio + a StrongestFirst bite: the hook's refill
+    re-enumerates the STORE with converted ratio weights (same order/
+    drain as the run) and the anchor reproduces the exported table."""
+    types = dict(INT_TYPES)
+    for i in range(1, 8):
+        types[f'bg{i}'] = 'BG'
+    with universe_types(types) as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=INT_EDGES, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        if 'Checked' not in fc.target_df.columns:
+            fc.target_df = fc.target_df.assign(
+                Checked=[True] * len(fc.target_df))
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.2
+        fc.max_paths_bodyid = 3          # force the bite
+        fc._fetch_total_incoming_weight = _true_totals_frame
+        fc._refill_edges_override = list(INT_EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame(
+            {'bodyId': list(types), 'type': list(types.values())})
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': '3',
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.FindShortestPath()
+        run_dir = Path(fc.allpath_folder)
+    out = run_dir / 'data_details' / 'type_level_refill'
+    prov = out / 'refill_provenance.json'
+    assert prov.exists(), 'the ratio bite must trigger the refill'
+    import json as _json
+    rec = _json.loads(prov.read_text(encoding='utf-8'))
+    assert rec.get('table_reproduced') is True
+    assert rec.get('requested_threshold') == 0.2
+
+
+def test_ratio_replay_slice_refill(tmp_path):
+    """Review round: replay SLICES (not just canon) must refill — the
+    slice stamps complete/bitten-False while its set is the t0 drained
+    prefix cut at its tier; the module now inherits the t0 budget and
+    restricts to bottleneck >= the slice tier."""
+    import json as _json
+
+    types = dict(INT_TYPES)
+    for i in range(1, 8):
+        types[f'bg{i}'] = 'BG'
+    types['bg9'] = 'INNER'
+    edges9 = INT_EDGES + [('D', 'bg9', 45), ('bg9', 'T2', 45)]
+
+    def _make(shim, root):
+        fc, _c, _l = _make_pipeline_fc(
+            shim, root, edges=edges9, max_interlayer=3,
+            min_synapse=1, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        if 'Checked' not in fc.target_df.columns:
+            fc.target_df = fc.target_df.assign(
+                Checked=[True] * len(fc.target_df))
+        fc.weight_basis = 'connection_ratio'
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': '3',
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        return fc
+
+    def _totals9(posts, min_weight=1, **_kw):
+        totals = compute_incoming_totals(edges9)
+        return pd.DataFrame(
+            [(str(p), totals.get(str(p), 0.0)) for p in posts],
+            columns=['bodyId_post', 'total_incoming_weight'])
+
+    with universe_types(types) as shim:
+        fc = _make(shim, tmp_path / 'replay')
+        fc.min_ratio = 0.1
+        fc.max_paths_bodyid = 5            # bite at t0 → slices are
+        fc._fetch_total_incoming_weight = _totals9   # F9-global parity
+        fc._refill_edges_override = list(  # drained prefixes
+            edges9)
+        fc._refill_neuron_frame_override = pd.DataFrame(
+            {'bodyId': list(types), 'type': list(types.values())})
+        fc.FindAllPathMultiThreshold([0.1, 0.3])
+    root = Path(fc.allpath_folder).parent
+    refills = list(root.glob(
+        '*/data_details/type_level_refill/refill_provenance.json'))
+    assert refills, 'at least one replay folder must refill under the bite'
+    for rj in refills:
+        rec = _json.loads(rj.read_text(encoding='utf-8'))
+        assert rec.get('table_reproduced') is True, rj.parent.parent.parent
