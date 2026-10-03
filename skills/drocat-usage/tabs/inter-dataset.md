@@ -338,3 +338,8 @@ writes both files.
   nothing is merged — the custom label mapper is the inclusion path.
 - Use `parallel=True` with a bounded `max_workers` for many datasets; start with
   `skip_bodyId=True` and `max_interlayer=2`.
+
+
+## Connection-ratio thresholds (v1)
+
+Threshold Basis = Connection ratio accepts FLOAT standard/combination tiers (0<t≤1); delegate folders use the `minratio_{decimal}` grammar; Auto and replay stay synapse-only (Phase 3). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets.

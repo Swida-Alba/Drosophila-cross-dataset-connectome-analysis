@@ -111,7 +111,7 @@ the explored, threshold-filtered graph; see `user_warning_notes.txt`.
 `find-paths-complete_{ABBREV}_{source}_to_{target}_L{max_interlayer}w{min_weight}_{ts}/`
 (`find-paths-shortest_...` for the shortest-path mode.)
 
-Example: `find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/`
+Example: `find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/` (ratio-basis runs: `..._L2r0_0005_...` — `r{min connection ratio}`, see `ConnectionRatioPaths.md`)
 
 Ratio and traversal-probability filters are disabled for both pathfinding
 tabs, so their former `r...p...` annotations are not included in path-run
@@ -159,6 +159,7 @@ fields remain decimal-valued.
 *   **`parameters.csv`**: Parameters of the run (`parameter`, `value` rows; carries the same applied-threshold provenance block as `parameters.txt`)
 *   **`connection_info_bodyId.csv`**: BodyId-level edge table (only when `skip_bodyId=False`)
 *   **`hemisphere_unconserved_edges.csv`**: Edges removed by hemisphere-unconserved-edge filtering (only when that filter is active)
+*   **`ratio_synapse_map.csv`** (ratio-basis runs only): the per-neuron synapse cutoffs the min-connection-ratio threshold implies — `implied_syn_cutoff = max(1, ceil(t_r × total_incoming))` per post, plus kept-edge synapse ranges. In ratio runs the allpaths `min_ratio` column IS the run's strength definition (the ratio bottleneck StrongestFirst ordered and τ cut on); thresholds/τ/w0 in the provenance block are ratio units, synapse columns unchanged.
 *   **`untyped_dropped_records.csv`**: Connection rows removed by the **Drop Untyped Neurons** filter (`drop_untyped`, default on; applied in both Complete and Shortest Paths after label enrichment and before graph construction, so an untyped neuron can never be an intermediate node of a returned path or visualization). Written only when rows were actually dropped. Columns: `dataset`, `threshold`, `conn_layer`, then the connection columns present (`bodyId_pre`, `bodyId_post`, `type_pre`, `type_post`, `weight`, `roi`, `instance_pre`, `instance_post`, `nt_type`, `custom_group_*`, `connection_ratio`, `traversal_probability`, `synapse`), plus a final `untyped_side` (`pre` | `post` | `pre+post`). An untyped label is one that is empty after strip, one of the Unknown/None/NaN sentinels (case-insensitive), or all-digit (numeric bodyId fallback) — the same predicate Cross-Dataset Comparison uses. Note: an untyped source/target can remain enrolled in `source_neurons.csv` / `target_neurons.csv` while its incident edges were removed.
     **BANC caveat:** the BANC meta table contains ~70,000 `Unknown`-type rows plus numeric-fallback labels, so with the default `drop_untyped=True` a BANC run can drop a very large share of its connections (in the 2026-09-12 Windows test, `ORN_DA1 -> DA1_lPN` dropped 320,191 connections touching 293,547 neurons). Check `untyped_dropped_records.csv` and the `[untyped dropped]` entry in `user_warning_notes.txt`; turn **Drop Untyped Neurons** off (or pass `drop_untyped=False`) to keep untyped neurons in the network.
 *   **`connection_custom_groups.csv`**: Custom query-group definitions (only when custom groups are used)

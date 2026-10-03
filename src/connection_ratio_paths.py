@@ -514,9 +514,11 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
                      max_probes: int = DEFAULT_MAX_PROBES) -> Dict[str, object]:
     """Run the ratio-basis lane (plan §2). ``edges`` = the FULL-dataset
     connection table (polars/pandas frame or (pre, post, syn_w) triples)
-    at natural weights. Returns the result record: status, paths, edges,
-    type_pairs (mass-recomputed), provenance, ratio_to_synapse
-    disclosure, discovery + budget stats."""
+    at natural weights. ``max_interlayer`` uses the PRODUCTION meaning
+    (intermediate layers; the enumeration hop bound is
+    ``max_interlayer + 1``, coana's StrongestFirst cutoff). Returns the
+    result record: status, paths, edges, type_pairs (mass-recomputed),
+    provenance, ratio_to_synapse disclosure, discovery + budget stats."""
     t_r = float(min_ratio)
     if not (0.0 < t_r <= 1.0):
         raise ConnectionRatioPathError(
@@ -530,6 +532,10 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         raise ConnectionRatioPathError(
             f"aggregate_method must be product/average/ratio — got "
             f"{aggregate_method!r}.")
+    # Production parity: max_interlayer counts INTERMEDIATE layers; the
+    # enumerator cutoff (coana find_paths_strongest_first wiring) is
+    # max_interlayer + 1 hops.
+    bound = int(max_interlayer) + 1
 
     frame = _as_frame(edges)
     nodes = set(frame[_PRE].to_list()) | set(frame[_POST].to_list())
@@ -541,14 +547,14 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
 
     frame, totals = prepare_ratio_frame(frame)
     cone, discovery = discover_cone(
-        frame, sources, targets, max_interlayer, t_r,
+        frame, sources, targets, bound, t_r,
         type_map=type_map, drop_untyped=drop_untyped,
         exclude_intra_type=exclude_intra_type, hemi_filter=hemi_filter)
 
     budget_stats: Dict[str, object] = {'applied': False}
     if cone.height and edge_budget:
         cone, budget_stats = fit_edge_budget_ratio(
-            cone, edge_budget, sources, targets, max_interlayer,
+            cone, edge_budget, sources, targets, bound,
             max_probes=max_probes)
 
     rec: Dict[str, object] = {
@@ -575,7 +581,7 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
             edge_budget=edge_budget,
             distinct_tiers=[])
         rec['ratio_to_synapse'] = _empty_cone_disclosure(
-            frame, sources, targets, max_interlayer, t_r, discovery,
+            frame, sources, targets, bound, t_r, discovery,
             type_map=type_map, drop_untyped=drop_untyped,
             exclude_intra_type=exclude_intra_type, hemi_filter=hemi_filter)
         return rec
@@ -586,7 +592,7 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
                zip(triples, cone['weight'].to_list())}
     ratio_map = {(u, v): r for u, v, r in triples}
     enum_paths, info, enum_stats = _enumerate_paths(
-        triples, sources, targets, int(max_interlayer),
+        triples, sources, targets, bound,
         budget=int(path_budget) if path_budget else None)
 
     paths_out = []

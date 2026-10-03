@@ -20,7 +20,10 @@ def applied_threshold_provenance(
     edge_budget=None,
     strongest_retained_bottleneck=None,
 ):
-    """Canonical threshold/bottleneck provenance for one pathfinding run.
+    """Canonical threshold/bottleneck provenance for one pathfinding run
+    (SYNAPSE basis — int units; ratio-basis runs use
+    ``connection_ratio_paths.ratio_threshold_provenance``, the float
+    mirror with identical key names).
 
     Single source for the applied-threshold contract shared by
     parameters.txt, all_attributes.json, data_details/parameters.csv,

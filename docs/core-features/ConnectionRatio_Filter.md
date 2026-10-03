@@ -106,6 +106,17 @@ Connections are filtered if they fail **any** of these criteria:
 
 **All three filters are applied as edge-level filters** before pathfinding.
 
+> **Update (2026-10-03):** for *pathfinding* runs this doc's filter
+> description is historical — F9 (2026-09-05) made `connection_ratio` /
+> `traversal_probability` readout columns there (the filter mechanics
+> survive in the shared fetch layer used by direct-connection queries).
+> The ratio returned to pathfinding in a stronger form: as a WEIGHT
+> BASIS — see `ConnectionRatioPaths.md` (`weight_basis=
+> 'connection_ratio'`): the threshold, Edge Budget tiers and
+> StrongestFirst bottlenecks themselves run in ratio units. The
+> 0.01-0.1 tables below are direct-connection-era guidance; real-data
+> pathfinding tiers sit far lower (~5e-4..2e-3 on FAFB).
+
 ## Data Output
 
 ### Saved Columns

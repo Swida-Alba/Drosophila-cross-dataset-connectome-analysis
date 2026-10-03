@@ -40,6 +40,22 @@ NO_WARNINGS_TEXT = "No warnings were recorded for this run."
 # =============================================================================
 
 COLUMN_GLOSSARY = {
+    # ratio-lane disclosure file (plan-connection-ratio-pathfinding §13.2)
+    'bodyId_post': ('Post-synaptic bodyId of a ratio-lane cone edge.',
+                    'string'),
+    'total_incoming': ('ALL-post incoming synapse mass of the post '
+                       'neuron at min_weight=1 (the F9 threshold-free '
+                       'denominator).', 'number'),
+    'implied_syn_cutoff': ('Per-neuron synapse cutoff the ratio threshold '
+                           'implies: max(1, ceil(t_r x total_incoming)) — '
+                           'a sub-synapse cutoff would admit every edge.',
+                           'integer'),
+    'kept_in_edges': ('Cone edges into this post neuron that survived '
+                      'the ratio threshold.', 'integer'),
+    'kept_syn_min': ('Weakest kept-edge synapse count into this post '
+                     'neuron.', 'number'),
+    'kept_syn_max': ('Strongest kept-edge synapse count into this post '
+                     'neuron.', 'number'),
     # --- Identifiers ---------------------------------------------------------
     "bodyId": ("Unique numeric neuron identifier.", "integer"),
     "queried_type": ("Neuron type as entered in the comparison query (one row per queried type).", "text"),
@@ -1065,6 +1081,16 @@ _PATHFINDING_FILES = [
     # whose applied threshold exceeded the asked threshold. Like the
     # pair-report entries above, these surface in the run guide only when
     # the files exist.
+    {"pattern": "data_details/ratio_synapse_map.csv",
+     "description": "Ratio-basis runs only: the per-neuron synapse cutoffs "
+                    "the min-connection-ratio threshold implies — "
+                    "`implied_syn_cutoff = max(1, ceil(t_r * "
+                    "total_incoming))` per post, plus kept-edge synapse "
+                    "ranges. A sub-synapse cutoff would admit every edge "
+                    "into that neuron; those no-op posts are counted in "
+                    "ratio_provenance.json.",
+     "columns": ["bodyId_post", "total_incoming", "implied_syn_cutoff",
+                 "kept_in_edges", "kept_syn_min", "kept_syn_max"]},
     {"pattern": "data_details/type_level_refill/refill_type_pairs.csv",
      "description": "Refill summary, one row per EMITTED type pair (zeros "
                     "included): emitted vs refill weight, the refilled "
@@ -3531,7 +3557,7 @@ def _key_params(params: dict) -> list:
         "sourceNeurons", "targetNeurons", "source_neurons", "target_neurons",
         "source", "query", "line_names", "lines", "line_name",
         "threshold_mode", "threshold_dataset_order", "threshold_combinations",
-        "min_synapse_num", "min_synapse_threshold", "min_ratio",
+        "weight_basis", "min_synapse_num", "min_synapse_threshold", "min_ratio",
         "min_traversal_probability", "max_interlayer", "thresholds",
         "graph_edge_limit_bodyid", "max_paths_bodyid", "drop_untyped",
         "edgeN_limit",

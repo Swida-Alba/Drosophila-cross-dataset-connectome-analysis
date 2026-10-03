@@ -37,6 +37,17 @@ if TYPE_CHECKING:
     from .label_mapper import LabelMapper
 
 
+def threshold_folder_token(value, weight_basis: str = 'synapse') -> str:
+    """Folder token for one threshold value: ``minsyn_{int}`` (synapse
+    basis) or ``minratio_{decimal}`` (ratio basis, '.'→'_', '-'→'neg' —
+    the coana folder-decimal convention). Module-level so duck-typed
+    parameter stand-ins (tests) need no method surface."""
+    if weight_basis == 'connection_ratio':
+        return ('minratio_'
+                + str(float(value)).replace('-', 'neg').replace('.', '_'))
+    return f'minsyn_{int(value)}'
+
+
 @dataclass
 class ComparisonParameters:
     """
@@ -190,6 +201,12 @@ class ComparisonParameters:
     """
 
     threshold_mode: str = 'standard'
+    weight_basis: str = 'synapse'
+    # 'synapse' (default): delegates run standard min_synapse_num
+    # thresholds. 'connection_ratio' (plan-connection-ratio-pathfinding
+    # §15.3): delegates run the ratio lane — the threshold list is float
+    # min-connection-ratio tiers, folders use the minratio_ grammar, and
+    # auto mode / replay stay synapse-only (Phase 3).
     """Threshold query mode: ``'standard'``, ``'combinations'`` or ``'auto'``.
 
     Standard mode expands each scalar in ``thresholds`` to one query shared by
@@ -1792,7 +1809,13 @@ class ComparisonParameters:
             # Wrap in single group
             return [neurons]
     
-    def get_dataset_output_path(self, dataset: str, threshold: int) -> str:
+    def _threshold_token(self, value) -> str:
+        """Folder token for one threshold value (see
+        :func:`threshold_folder_token`)."""
+        return threshold_folder_token(
+            value, getattr(self, 'weight_basis', 'synapse'))
+
+    def get_dataset_output_path(self, dataset: str, threshold) -> str:
         """
         Get output path for a specific dataset and threshold.
 
@@ -1812,10 +1835,16 @@ class ComparisonParameters:
         """
         safe_name = self._sanitize_name(dataset)
         lookup = getattr(self, '_applied_folder_lookup', None) or {}
-        folder_name = lookup.get((dataset, int(threshold)))
+        key = (float(threshold)
+               if getattr(self, 'weight_basis', 'synapse')
+               == 'connection_ratio' else int(threshold))
+        folder_name = lookup.get((dataset, key))
         if folder_name:
             return os.path.join(self.dataset_data_path, safe_name, folder_name)
-        return os.path.join(self.dataset_data_path, safe_name, f'minsyn_{threshold}')
+        return os.path.join(self.dataset_data_path, safe_name,
+                            threshold_folder_token(
+                                threshold,
+                                getattr(self, "weight_basis", "synapse")))
 
     def set_applied_folder_lookup(self, dataset: str, threshold: int,
                                   folder_name: str) -> None:
@@ -1842,22 +1871,28 @@ class ComparisonParameters:
         """
         applied = int(applied)
         if is_floor:
-            return f'minsyn_{applied}_applied_floor'
-        return f'minsyn_{applied}'
+            return (threshold_folder_token(
+                applied, getattr(self, "weight_basis", "synapse"))
+                + '_applied_floor')
+        return threshold_folder_token(
+            applied, getattr(self, "weight_basis", "synapse"))
 
     def applied_folder_name_candidates(self, value: int) -> list:
         """Legacy/current folder names that may hold an applied threshold."""
-        value = int(value)
+        token = threshold_folder_token(
+            value, getattr(self, "weight_basis", "synapse"))
         return [
-            f'minsyn_{value}',
-            f'minsyn_{value}_applied_floor',
-            f'minsyn_{value}_equal_applied_floor',
+            token,
+            token + '_applied_floor',
+            token + '_equal_applied_floor',
         ]
 
     def skipped_folder_name(self, requested: int) -> str:
         """Marker folder name for a requested threshold with no materialized
         output of its own."""
-        return f'minsyn_{int(requested)}_skipped'
+        return threshold_folder_token(
+            requested, getattr(self, "weight_basis", "synapse")
+            ) + '_skipped'
 
     def get_applied_output_path(self, dataset: str, applied: int,
                                 requested_thresholds) -> str:
@@ -2021,6 +2056,7 @@ class ComparisonParameters:
             # Internal analysis settings
             'analysis_settings': {
                 'min_ratio': self._min_ratio,
+                'weight_basis': self.weight_basis,
                 'min_prob': self._min_prob,
                 'output_format': self._output_format,
                 'allow_single_dataset': self.allow_single_dataset,

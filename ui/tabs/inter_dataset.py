@@ -118,6 +118,16 @@ def create_inter_dataset_tab():
                          "and a high unreachable number (e.g. 99) gives an effectively "
                          "unlimited search.",
                 )
+                threshold_basis = select_input(
+                    "Threshold Basis", ["Synapse count", "Connection ratio"],
+                    "Synapse count",
+                    hint="Synapse count: the same integer min-synapse "
+                         "threshold for every delegate. Connection ratio: "
+                         "FLOAT min-connection-ratio tiers (a fraction of "
+                         "each post neuron's total input — comparable "
+                         "across datasets). Ratio mode disables Auto and "
+                         "replay for now.",
+                )
             # Auto is the default mode: it measures each dataset's own
             # threshold window from one bootstrap run and emits BOTH the
             # per-threshold (vertical) and density-matched (horizontal)
@@ -414,19 +424,43 @@ def create_inter_dataset_tab():
                             "dataset overlap)."
                         )
                     return mode, sorted(set(values)) or [3], None
+                ratio_mode = (threshold_basis.value == "Connection ratio")
+                if ratio_mode and mode == "auto":
+                    raise ValueError(
+                        "Auto threshold mode is synapse-only for now — "
+                        "switch to Standard or Combinations with float "
+                        "ratio thresholds."
+                    )
                 if mode == "standard":
                     try:
-                        values = [
-                            int(value)
-                            for item in thresholds_input.get_value()[1]
-                            for value in str(item).replace(" ", "").split(",")
-                            if value
-                        ]
+                        if ratio_mode:
+                            values = [
+                                float(value)
+                                for item in thresholds_input.get_value()[1]
+                                for value in
+                                str(item).replace(" ", "").split(",")
+                                if value
+                            ]
+                        else:
+                            values = [
+                                int(value)
+                                for item in thresholds_input.get_value()[1]
+                                for value in
+                                str(item).replace(" ", "").split(",")
+                                if value
+                            ]
                     except (TypeError, ValueError) as exc:
                         raise ValueError(
-                            "Invalid thresholds format. Use positive integers."
+                            "Invalid thresholds format. Use positive "
+                            "integers (or floats in ratio mode)."
                         ) from exc
-                    if not values or any(value <= 0 for value in values):
+                    if ratio_mode:
+                        if not values or any(
+                                not (0 < v <= 1) for v in values):
+                            raise ValueError(
+                                "Ratio thresholds must be floats in "
+                                "(0, 1] — e.g. 0.0005, 0.001.")
+                    elif not values or any(value <= 0 for value in values):
                         raise ValueError(
                             "Please enter at least one positive synapse "
                             "threshold."
@@ -452,13 +486,20 @@ def create_inter_dataset_tab():
                                 f"for {dataset}."
                             )
                         try:
-                            value = int(raw_value)
+                            value = (float(raw_value)
+                                     if ratio_mode else int(raw_value))
                         except (TypeError, ValueError) as exc:
                             raise ValueError(
                                 f"Combination {index} has an invalid threshold "
                                 f"for {dataset}: {raw_value!r}."
                             ) from exc
-                        if value <= 0:
+                        if ratio_mode:
+                            if not (0 < value <= 1):
+                                raise ValueError(
+                                    f"Combination {index} ratio threshold "
+                                    f"for {dataset} must be in (0, 1]."
+                                )
+                        elif value <= 0:
                             raise ValueError(
                                 f"Combination {index} threshold for {dataset} "
                                 "must be positive."
@@ -725,8 +766,14 @@ def create_inter_dataset_tab():
             "threshold_dataset_order": list(datasets),
             "threshold_combinations": threshold_combinations,
             "density_normalizer": "per_node",
-            "replay_paths": replay_paths.value,
-            "auto_extend_thresholds": auto_extend_thresholds.value,
+            "weight_basis": ("connection_ratio"
+                             if threshold_basis.value == "Connection ratio"
+                             else "synapse"),
+            "replay_paths": (False if threshold_basis.value
+                             == "Connection ratio" else replay_paths.value),
+            "auto_extend_thresholds": (
+                False if threshold_basis.value == "Connection ratio"
+                else auto_extend_thresholds.value),
             "drop_untyped": drop_untyped.value,
             "top_edges": int(top_edges.value),
             # Fix D: the Edge Budget (lossy floor above the N-th strongest

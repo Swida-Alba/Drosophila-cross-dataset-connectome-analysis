@@ -146,3 +146,8 @@ python scripts/PathsPairReport.py <run_dir> [--top-per-length 10] \
 - Empty `sourceNeurons`/`targetNeurons` have special meaning in the backend; state
   the intended scope before using them.
 - Keep the UI closed and `showfig=False` until the output is validated.
+
+
+## Threshold basis (connection-ratio mode)
+
+The Threshold Basis selector swaps the edge-weight basis: *Synapse count* (default) or *Connection ratio* (`weight_basis='connection_ratio'`). Ratio mode sends `min_ratio` as THE threshold (float, 0<t≤1; real-data viable values ~5e-4..2e-3), forces the synapse floor to 1, ranks paths by ratio bottleneck (the exported `min_ratio` column), and writes `data_details/ratio_synapse_map.csv`. See `docs/core-features/ConnectionRatioPaths.md`.

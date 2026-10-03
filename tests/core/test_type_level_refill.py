@@ -735,6 +735,7 @@ def test_auto_hook_skips_ratio_basis(tmp_path):
             'separate hemispheres': 'False', 'hemisphere filter': 'both',
             'aggregate method': 'product'})
         fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.2   # a valid ratio tier (the entry gate refuses 0)
         fc._refill_edges_override = list(EDGES)
         fc._refill_neuron_frame_override = pd.DataFrame({
             'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})

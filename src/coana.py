@@ -622,6 +622,7 @@ def _findallpath_cache_key(
     exclude_intra_type_connections: bool,
     drop_untyped: bool = True,
     hemisphere_filter: str = 'both',
+    weight_basis: str = 'synapse',
 ) -> str:
     """
     Build the FindAllPath graph-cache key.
@@ -634,7 +635,10 @@ def _findallpath_cache_key(
     right edge filter runs at fetch time even when hemisphere-aware
     splitting is off) — and the untyped-neuron drop). Otherwise a later
     run with different filters would silently reuse a graph built under
-    different filter conditions.
+    different filter conditions. ``weight_basis`` segments the ratio lane
+    from synapse entries (the stored graphs are pre-threshold at fetch
+    floor, so the universes coincide, but the entry bookkeeping stays
+    per-basis; plan-connection-ratio-pathfinding §16.2).
 
     ``max_interlayer=None`` (FindShortestPath) omits the depth from the
     key, but note that shortest mode never READS or WRITES this cache at
@@ -648,7 +652,7 @@ def _findallpath_cache_key(
     filters = (
         f"{filter_by}|{min_ratio}|{min_traversal_probability}|"
         f"{int(bool(exclude_intra_type_connections))}|"
-        f"{int(bool(drop_untyped))}"
+        f"{int(bool(drop_untyped))}|basis-{weight_basis}"
     )
     depth_part = f"{max_interlayer}_" if max_interlayer is not None else ""
     return (
@@ -3140,6 +3144,23 @@ class FindNeuronConnection:
     - 'type': Filter at aggregated type-to-type level after grouping connections by type\n
     When 'type' is used, connections between neurons of the same type are merged first,\n
     then filters are applied to the aggregated weights
+    '''
+
+    weight_basis: str = 'synapse'
+    '''
+    Edge-weight basis for the FindAllPath pipeline ('all' mode only).
+    - 'synapse' (default): unchanged production semantics — min_synapse_num
+      thresholds edges, the Edge Budget floors at synapse tiers and
+      StrongestFirst bottlenecks are synapse counts.
+    - 'connection_ratio': the ratio lane (plan-connection-ratio-pathfinding
+      §16.2) — the graph's edge weight becomes the bodyId-level connection
+      ratio (weight / ALL-POST incoming at min_weight=1, the F9 readout
+      definition): min_ratio IS the threshold (not zeroed at entry),
+      min_synapse_num is forced to 1, the Edge Budget floors at ratio
+      tiers and bottlenecks are min-ratio. Every export keeps its synapse
+      columns (dual-basis); the allpaths `min_ratio` column IS the run's
+      strength definition. Shortest mode refuses this basis. See
+      docs/core-features/ConnectionRatioPaths.md.
     '''
     
     aggregate_method: str = 'product'
@@ -13300,51 +13321,191 @@ class FindNeuronConnection:
         # the applied-threshold provenance block.
         self.strongest_retained_bottleneck = prune_stats.get(
             'strongest_retained')
+        # Ratio lane (§16.2 switch points 2-4): attach the F9 weight_ratio
+        # column (weight / all-post incoming at min_weight=1, the same
+        # in-process call the readout uses) BEFORE the Edge Budget so the
+        # fit, the graph build and the exports all share one definition.
+        if path_mode == 'all' and getattr(
+                self, 'weight_basis', 'synapse') == 'connection_ratio':
+            conn_layers = self._attach_weight_ratio_columns(conn_layers)
         # Fix D (Edge Budget): a lossy weight floor caps the enumeration
         # cone when it still exceeds the budget after the lossless
         # prunes. The budget-fit search floors at the weakest tier whose
         # closed cone fits the cap ('all' mode only — shortest mode is
         # never floored, Fix C scope) and reports the boundary honestly.
         if path_mode == 'all' and self.graph_edge_limit_bodyid:
-            conn_layers, floor_stats = fit_edge_budget(
-                conn_layers, self.graph_edge_limit_bodyid,
-                sources, targets, self.max_interlayer + 1,
-                vprint=self._vprint, warn_notes=self._warn_notes,
-            )
-            if floor_stats.get('applied'):
-                self.edge_weight_floor = floor_stats.get('floor')
-                self.edge_budget_landing = floor_stats.get('landing')
-                # W* after the floor: the widest path of the floored cone.
-                self.strongest_retained_bottleneck = floor_stats.get(
-                    'strongest_retained')
-                self.graph_pruning_record = {
-                    'lossless': False,
-                    'stage': 'edge_budget_fit',
-                    'edge_budget': self.graph_edge_limit_bodyid,
-                    'floor_weight': floor_stats.get('floor'),
-                    'next_tier_weight': floor_stats.get('landing'),
-                    'edges_before': floor_stats.get('edges_before'),
-                    'edges_after': floor_stats.get('edges_after'),
-                    'residual_slack': floor_stats.get('residual_slack'),
-                    'budget_fully_used': floor_stats.get(
-                        'budget_fully_used'),
-                    'probes': floor_stats.get('probes'),
-                    'truncated': floor_stats.get('truncated'),
-                    'search_seconds': floor_stats.get('search_seconds'),
-                    'probe_trace': floor_stats.get('probe_trace'),
-                }
-            elif floor_stats.get('floor_skipped'):
-                self.graph_pruning_record = {
-                    'lossless': True,
-                    'stage': 'edge_budget_fit',
-                    'floor_skipped': True,
-                    'edge_budget': self.graph_edge_limit_bodyid,
-                    'edges_before': floor_stats.get('edges_before'),
-                }
+            if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+                conn_layers, floor_stats = self._fit_edge_budget_ratio_lane(
+                    conn_layers, self.graph_edge_limit_bodyid,
+                    sources, targets, self.max_interlayer + 1,
+                )
+                if floor_stats.get('applied'):
+                    self.edge_weight_floor = floor_stats.get('floor')
+                    # Production w1 semantics: the budget-line tier.
+                    self.edge_budget_landing = floor_stats.get('budget_line')
+                    self.strongest_retained_bottleneck = floor_stats.get(
+                        'strongest_retained')
+                    self.graph_pruning_record = {
+                        'lossless': False,
+                        'stage': 'edge_budget_fit',
+                        'weight_basis': 'connection_ratio',
+                        'edge_budget': self.graph_edge_limit_bodyid,
+                        'floor_weight': floor_stats.get('floor'),
+                        'next_tier_weight': floor_stats.get('landing'),
+                        'budget_line': floor_stats.get('budget_line'),
+                        'edges_before': floor_stats.get('edges_before'),
+                        'edges_after': floor_stats.get('edges_after'),
+                        'probes': floor_stats.get('probes'),
+                        'truncated': floor_stats.get('truncated'),
+                        'probe_trace': floor_stats.get('probe_trace'),
+                    }
+                    self._warn_notes.append(
+                        '- [edge budget, ratio lane] floored at ratio tier '
+                        f"{floor_stats.get('floor'):g} (probes "
+                        f"{floor_stats.get('probes')}, truncated "
+                        f"{floor_stats.get('truncated')}) — a floored run "
+                        'is exactly a complete run at that ratio tier; '
+                        'see data_details/ratio_synapse_map.csv.')
+                elif floor_stats.get('floor_skipped'):
+                    self.graph_pruning_record = {
+                        'lossless': True,
+                        'stage': 'edge_budget_fit',
+                        'weight_basis': 'connection_ratio',
+                        'floor_skipped': True,
+                        'edge_budget': self.graph_edge_limit_bodyid,
+                        'edges_before': floor_stats.get('edges_before'),
+                    }
+            else:
+                conn_layers, floor_stats = fit_edge_budget(
+                    conn_layers, self.graph_edge_limit_bodyid,
+                    sources, targets, self.max_interlayer + 1,
+                    vprint=self._vprint, warn_notes=self._warn_notes,
+                )
+                if floor_stats.get('applied'):
+                    self.edge_weight_floor = floor_stats.get('floor')
+                    self.edge_budget_landing = floor_stats.get('landing')
+                    # W* after the floor: the widest path of the floored cone.
+                    self.strongest_retained_bottleneck = floor_stats.get(
+                        'strongest_retained')
+                    self.graph_pruning_record = {
+                        'lossless': False,
+                        'stage': 'edge_budget_fit',
+                        'edge_budget': self.graph_edge_limit_bodyid,
+                        'floor_weight': floor_stats.get('floor'),
+                        'next_tier_weight': floor_stats.get('landing'),
+                        'edges_before': floor_stats.get('edges_before'),
+                        'edges_after': floor_stats.get('edges_after'),
+                        'residual_slack': floor_stats.get('residual_slack'),
+                        'budget_fully_used': floor_stats.get(
+                            'budget_fully_used'),
+                        'probes': floor_stats.get('probes'),
+                        'truncated': floor_stats.get('truncated'),
+                        'search_seconds': floor_stats.get('search_seconds'),
+                        'probe_trace': floor_stats.get('probe_trace'),
+                    }
+                elif floor_stats.get('floor_skipped'):
+                    self.graph_pruning_record = {
+                        'lossless': True,
+                        'stage': 'edge_budget_fit',
+                        'floor_skipped': True,
+                        'edge_budget': self.graph_edge_limit_bodyid,
+                        'edges_before': floor_stats.get('edges_before'),
+                    }
         return [
             c for c in conn_layers
             if not (c.is_empty() if hasattr(c, 'is_empty') else c.empty)
         ]
+
+    def _attach_weight_ratio_columns(self, conn_layers):
+        """Ratio lane switch point 2 (§16.2): join the F9 all-post
+        denominator onto every layer table and add ``weight_ratio`` —
+        the same division the exports' connection_ratio readout uses, so
+        graph weights ≡ readout columns by construction. The global
+        fetch is authoritative; the merged-frame totals are the offline
+        last resort (mirroring the F9 readout fallback, disclosed)."""
+        import polars as _pl
+        frames = []
+        for table in conn_layers:
+            if not (table.is_empty() if hasattr(table, 'is_empty')
+                    else table.empty):
+                frames.append(table if hasattr(table, 'iter_rows')
+                              else _pl.from_pandas(table))
+        merged = (_pl.concat(frames)
+                  .group_by(['bodyId_pre', 'bodyId_post'])
+                  .agg(_pl.col('weight').sum())
+                  .with_columns(_pl.col('bodyId_pre').cast(_pl.Utf8),
+                                _pl.col('bodyId_post').cast(_pl.Utf8)))
+        posts = sorted(set(merged['bodyId_post'].to_list()))
+        totals = {}
+        try:
+            totals_pd = self._fetch_total_incoming_weight(posts, 1)
+            if len(totals_pd):
+                totals = {str(r.bodyId_post): float(r.total_incoming_weight)
+                          for r in totals_pd.itertuples()}
+        except Exception:
+            totals = {}
+        if not totals:
+            totals = {
+                str(r[0]): float(r[1])
+                for r in merged.group_by('bodyId_post').agg(
+                    _pl.col('weight').sum()).iter_rows()}
+            self._warn_notes.append(
+                '- [weight basis] global all-post denominators unavailable '
+                '— weight_ratio built on the fetched-frame totals (the F9 '
+                'offline fallback; denominators may be understated).')
+        self._ratio_lane_totals = totals
+        lut = _pl.DataFrame(
+            {'bodyId_post': list(totals),
+             'total_incoming': [totals[k] for k in totals]})
+        t_r = float(getattr(self, 'min_ratio', 0.0) or 0.0)
+        out = []
+        dropped = 0
+        for table in frames:
+            with_ratio = (
+                table.with_columns(_pl.col('bodyId_post').cast(_pl.Utf8))
+                .join(lut, on='bodyId_post', how='left')
+                .with_columns(
+                    (_pl.col('weight').cast(_pl.Float64)
+                     / _pl.col('total_incoming')).alias('weight_ratio'))
+                .drop('total_incoming'))
+            before = with_ratio.height
+            kept = with_ratio.filter(_pl.col('weight_ratio') >= t_r)
+            dropped += before - kept.height
+            out.append(kept)
+        if dropped:
+            self._vprint(
+                f'  Ratio threshold: {dropped:,} edges below '
+                f'weight_ratio {t_r:g} were dropped.', level='always')
+        return out
+
+    def _fit_edge_budget_ratio_lane(self, conn_layers, budget, sources,
+                                    targets, bound):
+        """Ratio lane switch point 4 (§16.2): the float-tier Edge Budget
+        fit (connection_ratio_paths.fit_edge_budget_ratio) on the merged
+        cone; a floored lane filters every layer table at the floor tier.
+        Probes mirror production's single-pass hop closure."""
+        import polars as _pl
+        from connection_ratio_paths import fit_edge_budget_ratio
+        frames = [
+            t if hasattr(t, 'iter_rows') else _pl.from_pandas(t)
+            for t in conn_layers
+            if not (t.is_empty() if hasattr(t, 'is_empty') else t.empty)]
+        merged = (_pl.concat(frames)
+                  .group_by(['bodyId_pre', 'bodyId_post'])
+                  .agg([_pl.col('weight').sum(),
+                        _pl.col('weight_ratio').first()])
+                  .with_columns(_pl.col('bodyId_pre').cast(_pl.Utf8),
+                                _pl.col('bodyId_post').cast(_pl.Utf8)))
+        cone = merged.rename({'weight_ratio': 'ratio'})
+        kept, stats = fit_edge_budget_ratio(
+            cone, budget, sources, targets, bound)
+        floor = stats.get('floor')
+        if stats.get('applied') and floor is not None:
+            out = []
+            for table in frames:
+                out.append(table.filter(_pl.col('weight_ratio') >= floor))
+            return out, stats
+        return frames, stats
 
     def _discover_shortest_backward(self, source_ID, target_ID, max_hops):
         """Discover a shortest-path graph backward from target bodyIds.
@@ -15519,20 +15680,47 @@ class FindNeuronConnection:
             effective_edge_budget = getattr(
                 self, 'graph_edge_limit_bodyid', None)
         sf_budget = self.max_paths_bodyid if self.max_paths_bodyid else 1000000
-        prov = applied_threshold_provenance(
-            requested_threshold=self.min_synapse_num,
-            strongest_first_tau=getattr(self, 'strongest_first_cutoff', None),
-            strongest_first_budget_bitten=getattr(
-                self, 'strongest_first_budget_bitten', False),
-            strongest_dropped_bottleneck=getattr(
-                self, 'strongest_dropped_bottleneck', None),
-            tau_canonical=getattr(self, 'tau_canonical', None),
-            edge_weight_floor=getattr(self, 'edge_weight_floor', None),
-            edge_budget_landing=getattr(self, 'edge_budget_landing', None),
-            edge_budget=effective_edge_budget,
-            strongest_retained_bottleneck=getattr(
-                self, 'strongest_retained_bottleneck', None),
-        )
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            # Ratio lane (§16.2 switch point 7): the float-unit provenance
+            # mirror — identical key names, ratio units; the int-locked
+            # production function cannot represent them.
+            from connection_ratio_paths import ratio_threshold_provenance
+            cone = getattr(self, '_ratio_cone_edges', None)
+            tiers = (sorted(set(cone['weight_ratio'].to_list()))
+                     if cone is not None and cone.height else [])
+            prov = ratio_threshold_provenance(
+                float(self.min_ratio),
+                strongest_first_tau=getattr(
+                    self, 'strongest_first_cutoff', None),
+                strongest_first_budget_bitten=getattr(
+                    self, 'strongest_first_budget_bitten', False),
+                strongest_dropped_bottleneck=getattr(
+                    self, 'strongest_dropped_bottleneck', None),
+                strongest_retained_bottleneck=getattr(
+                    self, 'strongest_retained_bottleneck', None),
+                edge_weight_floor=getattr(self, 'edge_weight_floor', None),
+                edge_budget_landing=getattr(
+                    self, 'edge_budget_landing', None),
+                edge_budget=effective_edge_budget,
+                distinct_tiers=tiers,
+            )
+        else:
+            prov = applied_threshold_provenance(
+                requested_threshold=self.min_synapse_num,
+                strongest_first_tau=getattr(
+                    self, 'strongest_first_cutoff', None),
+                strongest_first_budget_bitten=getattr(
+                    self, 'strongest_first_budget_bitten', False),
+                strongest_dropped_bottleneck=getattr(
+                    self, 'strongest_dropped_bottleneck', None),
+                tau_canonical=getattr(self, 'tau_canonical', None),
+                edge_weight_floor=getattr(self, 'edge_weight_floor', None),
+                edge_budget_landing=getattr(
+                    self, 'edge_budget_landing', None),
+                edge_budget=effective_edge_budget,
+                strongest_retained_bottleneck=getattr(
+                    self, 'strongest_retained_bottleneck', None),
+            )
         prov['strongest_first_budget'] = int(sf_budget)
 
         # Public instance attributes -> all_attributes.json export.
@@ -16246,20 +16434,57 @@ class FindNeuronConnection:
         # computed against the all-post denominator, not filter knobs.
         # Zeroing them (a) skips every legacy filter branch and (b) keeps
         # the graph-cache key stable regardless of saved user values.
-        if getattr(self, 'min_ratio', 0) or getattr(
-                self, 'min_traversal_probability', 0):
-            self._vprint(
-                'ℹ️  Min Connection Ratio / Min Traversal Prob. filters are '
-                'disabled (ratio is a readout column) — the saved values '
-                'are ignored.', level='always')
-        self.min_ratio = 0.0
-        self.min_traversal_probability = 0.0
-        self._warn_notes.append(
-            '- [ratio definition] connection_ratio = weight / ALL-POST '
-            'incoming weight of the target (threshold-free, all sources '
-            'in the dataset); traversal_probability = ratio / 0.3 (capped '
-            'at 1). Ratio and probability are readout columns — they no '
-            'longer filter the pathfinding graph.')
+        # Phase-2 ratio lane (§16.2): under weight_basis='connection_ratio'
+        # min_ratio IS the threshold and is NOT zeroed; only the probability
+        # knob stays neutered.
+        _ratio_basis = getattr(self, 'weight_basis', 'synapse') \
+            == 'connection_ratio'
+        if _ratio_basis:
+            if path_mode == 'shortest':
+                raise ValueError(
+                    "weight_basis='connection_ratio' is not supported in "
+                    'Shortest Paths (Phase 3) — use Find All Path.')
+            if not (0.0 < float(self.min_ratio or 0.0) <= 1.0):
+                raise ValueError(
+                    'weight_basis=\'connection_ratio\' requires min_ratio '
+                    f'in (0, 1] — got {self.min_ratio!r}.')
+            if int(self.min_synapse_num) != 1:
+                self._vprint(
+                    'ℹ️  Ratio basis: min_synapse_num is forced to 1 (the '
+                    'ratio threshold governs the cone); the saved synapse '
+                    'value is ignored.', level='always')
+                self.min_synapse_num = 1
+            if getattr(self, 'min_traversal_probability', 0):
+                self._vprint(
+                    'ℹ️  Min Traversal Prob. filters are disabled (ratio is '
+                    'a readout column) — the saved value is ignored.',
+                    level='always')
+            self.min_traversal_probability = 0.0
+            self.parameter_dict['weight basis'] = 'connection_ratio (bodyId)'
+            self.parameter_dict['min connection ratio'] = str(self.min_ratio)
+            self._warn_notes.append(
+                '- [weight basis] connection_ratio (bodyId level): edge '
+                'weight = synapses / ALL-POST incoming weight of the post '
+                'neuron (F9 threshold-free denominator). Threshold, Edge '
+                'Budget tiers and StrongestFirst bottlenecks are in RATIO '
+                'units this run; synapse counts remain in every export '
+                'column (see data_details/ratio_synapse_map.csv for the '
+                'per-neuron synapse cutoffs this threshold implies).')
+        else:
+            if getattr(self, 'min_ratio', 0) or getattr(
+                    self, 'min_traversal_probability', 0):
+                self._vprint(
+                    'ℹ️  Min Connection Ratio / Min Traversal Prob. filters '
+                    'are disabled (ratio is a readout column) — the saved '
+                    'values are ignored.', level='always')
+            self.min_ratio = 0.0
+            self.min_traversal_probability = 0.0
+            self._warn_notes.append(
+                '- [ratio definition] connection_ratio = weight / ALL-POST '
+                'incoming weight of the target (threshold-free, all sources '
+                'in the dataset); traversal_probability = ratio / 0.3 '
+                '(capped at 1). Ratio and probability are readout columns '
+                '— they no longer filter the pathfinding graph.')
         
         # Check if source or target dataframes are empty
         if self.source_df.empty:
@@ -16307,7 +16532,13 @@ class FindNeuronConnection:
         # Depth label for the folder name (always an exact bound now).
         depth_label = f'L{self.max_interlayer}'
         folder_prefix = 'find-paths-shortest' if path_mode == 'shortest' else 'find-paths-complete'
-        param_suffix = f"_{depth_label}w{self.min_synapse_num}"
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            # Ratio lane: the r-suffix grammar replaces the w part (§13.3).
+            param_suffix = (
+                f"_{depth_label}"
+                f"r{_format_decimal_for_folder(float(self.min_ratio))}")
+        else:
+            param_suffix = f"_{depth_label}w{self.min_synapse_num}"
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         param_suffix += f"_{timestamp}"
         
@@ -16386,6 +16617,7 @@ class FindNeuronConnection:
             drop_untyped=getattr(self, 'drop_untyped', True),
             hemisphere_filter=str(getattr(self, 'hemisphere_filter', 'both')
                                   or 'both'),
+            weight_basis=str(getattr(self, 'weight_basis', 'synapse')),
         )
         
         # Shortest mode now owns a target-rooted discovery direction.  Do not
@@ -17020,8 +17252,30 @@ class FindNeuronConnection:
             self._density_typed_ids = _typed_ids
             self._density_node_ids = _node_ids
             self._density_n_nodes = len(_node_ids)
+        # Ratio lane switch point 3 (§16.2): ONE weight-column swap makes
+        # bottlenecks/order/tau ratio-based; exports stay dual-basis
+        # (statvis derives its columns from the connection frames, not the
+        # graph). Stash the cone for the ratio_synapse_map disclosure.
+        _ratio_lane = (path_mode == 'all' and getattr(
+            self, 'weight_basis', 'synapse') == 'connection_ratio')
+        _weight_col = 'weight_ratio' if _ratio_lane else 'weight'
+        if _ratio_lane:
+            import polars as _pl_ratio
+            _cone_parts = []
+            for _frame in graph_frames:
+                if _frame is None or (
+                        _frame.is_empty() if hasattr(_frame, 'is_empty')
+                        else len(_frame) == 0):
+                    continue
+                _cone_parts.append(_frame.select(
+                    ['bodyId_pre', 'bodyId_post', 'weight', 'weight_ratio']))
+            self._ratio_cone_edges = (
+                _pl_ratio.concat(_cone_parts).unique(
+                    subset=['bodyId_pre', 'bodyId_post'], keep='first')
+                if _cone_parts else None)
         for _frame in graph_frames:
-            G.build_from_dataframe(_frame, 'bodyId_pre', 'bodyId_post', 'weight',
+            G.build_from_dataframe(_frame, 'bodyId_pre', 'bodyId_post',
+                                   _weight_col,
                                    store_edge_attrs=False)
         del graph_frames
         gc.collect()
@@ -18670,6 +18924,29 @@ class FindNeuronConnection:
         output_path_type_csv = os.path.join(self.allpath_folder, self.source_fname+'_to_'+self.target_fname+'_allpaths_type.csv')
         details_folder = os.path.join(self.allpath_folder, 'data_details')
         os.makedirs(details_folder, exist_ok=True)
+        # Ratio lane (§13.2): the per-neuron synapse cutoffs the ratio
+        # threshold implies, from the run's own (post-floor) cone + the
+        # F9 totals the weight_ratio column was built with.
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            try:
+                from connection_ratio_paths import _ratio_to_synapse
+                _cone = getattr(self, '_ratio_cone_edges', None)
+                if _cone is not None and _cone.height:
+                    _disc = _ratio_to_synapse(
+                        _cone, getattr(self, '_ratio_lane_totals', {}),
+                        float(self.min_ratio))
+                    pd.DataFrame(
+                        _disc['posts_capped_detail'],
+                        columns=['bodyId_post', 'total_incoming',
+                                 'implied_syn_cutoff', 'kept_in_edges',
+                                 'kept_syn_min', 'kept_syn_max']
+                    ).to_csv(os.path.join(
+                        details_folder, 'ratio_synapse_map.csv'),
+                        index=False)
+            except Exception as _exc:   # disclosure never breaks the run
+                self._warn_notes.append(
+                    f'- [weight basis] ratio_synapse_map.csv not written '
+                    f'({_exc!r}).')
         output_path_type_excluded_csv = os.path.join(details_folder, self.source_fname+'_to_'+self.target_fname+'_allpaths_type_excluded.csv')
         
         total_type_paths = 0

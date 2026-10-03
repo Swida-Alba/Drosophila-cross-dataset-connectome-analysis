@@ -80,7 +80,7 @@ PATHS_SUFFIX = '_allpaths_type.csv'
 DEFAULT_TOP_PER_LENGTH = 10
 DEFAULT_GLOBAL_EDGES = 60
 DEFAULT_GLOBAL_PAIRS = 50
-RANK_KEYS = ('min_weight', 'path_prob', 'length')
+RANK_KEYS = ('min_weight', 'min_ratio', 'path_prob', 'length')
 
 # Folders that never hold a paths table unit (viz/analysis sidecars).
 SKIP_DIRS = {
@@ -147,6 +147,9 @@ class Unit:
 
 def _threshold_of(unit_id: str) -> str:
     match = re.search(r'minsyn_(\d+)', unit_id)
+    if match:
+        return match.group(1)
+    match = re.search(r'minratio_([0-9neg_]+)', unit_id)
     return match.group(1) if match else ''
 
 
@@ -230,6 +233,8 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             text = ''
         for key, pattern in (
             ('min_synapse', r'min synapse number:\s*([^\s]+)'),
+            ('min_ratio', r'min connection ratio:\s*([^\s]+)'),
+            ('weight_basis', r'weight basis:\s*([^\s]+)'),
             ('max_interlayer', r'max interlayer:\s*([^\s]+)'),
             ('dataset', r'^dataset:\s*([^\s]+)'),
             ('filter_by', r'filter by:\s*([^\s]+)'),
@@ -469,6 +474,10 @@ def _root_display_label(run_dir: Path, meta: Dict[str, Any],
     resort."""
     dataset = str(meta.get('dataset') or '').strip()
     min_syn = str(meta.get('min_synapse') or '').strip()
+    if str(meta.get('weight_basis') or '').startswith('connection_ratio'):
+        min_r = str(meta.get('min_ratio') or '').strip()
+        if dataset and min_r:
+            return f'{dataset} · min ratio {min_r}'
     if dataset and min_syn and min_syn not in ('0', 'None'):
         return f'{dataset} · min synapse {min_syn}'
     if dataset:
@@ -1087,6 +1096,15 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
         else:
             rows.append(f'<tr><td>{_esc(label)}</td><td>{_esc(value)}</td></tr>')
 
+    meta_all = run.get('meta') or {}
+    if str(meta_all.get('weight_basis') or '').startswith(
+            'connection_ratio'):
+        rows.append(
+            '<tr><td>Weight basis</td>'
+            '<td><span class="badge badge-info">connection_ratio '
+            '(bodyId)</span> — thresholds, τ, w0/w1 and W* are in ratio '
+            'units; synapse counts remain in every table '
+            'column.</td></tr>')
     applied = prov.get('applied_threshold')
     source = prov.get('applied_threshold_source')
     if applied is not None:
@@ -1428,7 +1446,7 @@ def _render_global_tab(payload: dict) -> str:
         '</tbody></table></div>'
         '<p class="cap-note">Weights are per-path bottlenecks (min_weight); '
         'P90 is the 90th percentile. Min synapse thresholds make these '
-        'non-comparable across units — compare shapes, not levels.</p></div>')
+        'non-comparable across units — compare shapes, not levels. Ratio-basis units (minratio_ folders) ARE cross-dataset comparable: the threshold is a fraction of each post neuron\'s total input.</p></div>')
 
     matrix = glob['pair_matrix']
     n_units = len(matrix['units'])
@@ -2533,6 +2551,12 @@ def generate_paths_pair_report(
     say = log or (lambda *a, **k: None)
 
     meta = _sniff_metadata(run_dir)
+    if (rank_by == 'min_weight'
+            and str(meta.get('weight_basis') or '')
+            .startswith('connection_ratio')):
+        # Ratio-basis run: min_ratio IS the strength definition (the
+        # value StrongestFirst ordered and tau cut on).
+        rank_by = 'min_ratio'
     units = discover_units(run_dir)
     if not units:
         raise FileNotFoundError(

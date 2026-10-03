@@ -188,7 +188,8 @@ def test_cone_loses_no_path_vs_bruteforce():
     emitted (lossless closure + full enumeration)."""
     guarded = [(u, v, w) for u, v, w in FRAC_EDGES
                if u in FRAC_TYPED_MAP and v in FRAC_TYPED_MAP]
-    ref = brute_paths(guarded, FRAC_SOURCES, FRAC_TARGETS, FRAC_BOUND)
+    ref = brute_paths(guarded, FRAC_SOURCES, FRAC_TARGETS,
+                      FRAC_BOUND + 1)
     rec = run_frac(min_ratio=1e-9)          # keep every guarded edge
     got = {tuple(p['nodes']) for p in rec['paths']}
     assert got == {path for _bn, path in ref}
@@ -198,10 +199,10 @@ def test_cone_loses_no_path_vs_bruteforce():
 # 3. Integer-ratio parity (§18 D-3 keystone)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize('t_r,budget,expected_n,expected_tau,bitten', [
-    (0.2, None, 11, 0.2, False),
-    (0.2, 3, 4, 0.3, True),
-    (0.2, 7, 8, 0.25, True),
-    (0.3, 5, 4, 0.3, False),
+    (0.2, None, 15, 0.2, False),
+    (0.2, 3, 3, 0.35, True),
+    (0.2, 7, 8, 0.3, True),
+    (0.3, 5, 8, 0.3, False),
 ])
 def test_integer_ratio_parity(t_r, budget, expected_n, expected_tau, bitten):
     rec = find_ratio_paths(
@@ -209,7 +210,8 @@ def test_integer_ratio_parity(t_r, budget, expected_n, expected_tau, bitten):
         max_interlayer=INT_BOUND, path_budget=budget or 1_000_000,
         type_map=None, drop_untyped=False)
     ref, _info, ref_stats = production_reference(
-        INT_EDGES, INT_SOURCES, INT_TARGETS, INT_BOUND, t_r, budget=budget)
+        INT_EDGES, INT_SOURCES, INT_TARGETS, INT_BOUND + 1, t_r,
+        budget=budget)
     got = [(p['ratio_bottleneck'], tuple(p['nodes'])) for p in rec['paths']]
     assert got == ref                                    # set + ORDER
     assert len(rec['paths']) == expected_n
@@ -229,7 +231,7 @@ def test_unbounded_equals_bruteforce_dfs():
     totals = compute_incoming_totals(INT_EDGES)
     bf = brute_paths([(u, v, w / totals[v]) for u, v, w in INT_EDGES
                       if w / totals[v] >= 0.2],
-                     INT_SOURCES, INT_TARGETS, INT_BOUND)
+                     INT_SOURCES, INT_TARGETS, INT_BOUND + 1)
     assert {(p['ratio_bottleneck'], tuple(p['nodes']))
             for p in rec['paths']} == set(bf)
 
@@ -795,7 +797,7 @@ def test_real_fafb_smoke():
                            max_interlayer=2, path_budget=1_000_000,
                            drop_untyped=False)
     assert rec['status'] == 'ok'
-    assert len(rec['paths']) == 3            # exploration E6 measured 3
+    assert len(rec['paths']) == 1219         # bound = max_interlayer+1
     # §7.6: every emitted edge's ratio == an INDEPENDENTLY recomputed
     # full-table all-post denominator (the F9 invariant on real data).
     df = pl.read_parquet(

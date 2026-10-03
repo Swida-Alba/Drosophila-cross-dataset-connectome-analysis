@@ -595,7 +595,7 @@ class ComparisonAnalyzer:
                     dataset_name, threshold)
             except Exception:
                 applied = None
-            if applied is not None and int(applied) != int(threshold):
+            if applied is not None and float(applied) != float(threshold):
                 stats = getattr(self, '_untyped_drop_stats', {}).get(
                     (dataset_name, int(applied))) or {}
         edge_meta = {k: meta.get(k) for k in (
@@ -806,10 +806,10 @@ class ComparisonAnalyzer:
         try:
             combos = getattr(self.parameters, 'threshold_combinations', None)
             if combos:
-                return {int(v) for q in combos
+                return {float(v) for q in combos
                         for v in (q.get('thresholds') or {}).values()}
             thresholds = getattr(self.parameters, 'thresholds', None)
-            return {int(t) for t in (thresholds or [])} or None
+            return {float(t) for t in (thresholds or [])} or None
         except Exception:
             return None
 
@@ -930,7 +930,8 @@ class ComparisonAnalyzer:
         summaries: Dict[str, Dict] = {}
         for dataset, threshold in thresholds.items():
             summary_path = os.path.join(
-                self._resolve_dataset_output_path(dataset, int(threshold)),
+                self._resolve_dataset_output_path(
+                    dataset, float(threshold)),
                 'hemisphere_symmetry',
                 'symmetry_summary.json'
             )
@@ -1357,9 +1358,13 @@ class ComparisonAnalyzer:
             custom_source_name=custom_source_name,
             custom_target_name=custom_target_name,
             max_interlayer=max_interlayer,
-            min_synapse_num=threshold,
+            min_synapse_num=(1 if self.parameters.weight_basis
+                             == 'connection_ratio' else threshold),
             min_traversal_probability=0,  # Use 0 to match FindPath.py - default 0.001 can miss weak but important edges
-            min_ratio=0,
+            min_ratio=(float(threshold)
+                       if self.parameters.weight_basis == 'connection_ratio'
+                       else 0),
+            weight_basis=self.parameters.weight_basis,
             dataset=dataset_name,
             # Redirect output to comparison folder structure
             saveas=fnc_output_path,  # Absolute path - overrides data_folder
@@ -1848,7 +1853,12 @@ class ComparisonAnalyzer:
         # engine unchanged.
         if (mode != 'edge'
                 and getattr(self.parameters, 'threshold_mode', '') == 'auto'
-                and self.parameters.path_mode == 'all'):
+                and self.parameters.path_mode == 'all'
+                # Auto's density/bootstrap machinery is synapse-locked;
+                # ratio mode runs the requested float tiers as-is
+                # (Phase 3 lifts this).
+                and getattr(self.parameters, 'weight_basis',
+                            'synapse') == 'synapse'):
             if not self._bootstrap_auto_mode():
                 self._log("Auto threshold mode: bootstrap unavailable — "
                           "running the requested thresholds as-is.")
@@ -1879,7 +1889,7 @@ class ComparisonAnalyzer:
         try:
             with open(meta_path, 'r', encoding='utf-8') as f:
                 raw = json.load(f)
-            return {int(k): v for k, v in raw.items()}
+            return {float(k): v for k, v in raw.items()}
         except Exception as e:
             self._log(f"Warning: could not load threshold meta for "
                       f"{dataset_name}: {e}")
@@ -1957,8 +1967,12 @@ class ComparisonAnalyzer:
             ]
         return [
             {
-                'id': f'threshold_{int(threshold)}',
-                'label': f'N={int(threshold)}',
+                'id': f'threshold_{threshold:g}'
+                      if isinstance(threshold, float) else
+                      f'threshold_{int(threshold)}',
+                'label': (f'N={threshold:g}'
+                          if isinstance(threshold, float) else
+                          f'N={int(threshold)}'),
                 'thresholds': {dataset: int(threshold) for dataset in datasets},
             }
             for threshold in (getattr(self.parameters, 'thresholds', []) or [])
@@ -2232,6 +2246,12 @@ class ComparisonAnalyzer:
         return self.parameters.get_dataset_output_path(dataset, threshold)
 
     def _reconcile_applied_folders(self) -> None:
+        if getattr(self.parameters, 'weight_basis',
+                   'synapse') == 'connection_ratio':
+            # Ratio v1: folders stay at their plain minratio_{t} names —
+            # the applied-floor aliasing grammar stays synapse-only until
+            # the float-tier variant (Phase 3).
+            return
         """Rename materialized folders to the applied grammar, create
         ``_skipped`` markers for pruned thresholds, and write the
         per-dataset APPLIED_THRESHOLDS.md note.
@@ -3943,9 +3963,13 @@ class ComparisonAnalyzer:
             custom_source_name=custom_source_name,
             custom_target_name=custom_target_name,
             max_interlayer=max_interlayer,
-            min_synapse_num=threshold,
+            min_synapse_num=(1 if self.parameters.weight_basis
+                             == 'connection_ratio' else threshold),
             min_traversal_probability=0,
-            min_ratio=0,
+            min_ratio=(float(threshold)
+                       if self.parameters.weight_basis == 'connection_ratio'
+                       else 0),
+            weight_basis=self.parameters.weight_basis,
             dataset=dataset_name,
             saveas=fnc_output_path,
             verbose_mode=verbose_mode,
@@ -3987,6 +4011,11 @@ class ComparisonAnalyzer:
             fnc.FindShortestPath(find_reciprocal=self.parameters.find_reciprocal)
             return None
         try:
+            if self.parameters.weight_basis == 'connection_ratio':
+                raise ValueError(
+                    'Cross-dataset replay is synapse-only for now (Phase 3 '
+                    'of plan-connection-ratio-pathfinding) — disable '
+                    'replay_paths for connection-ratio thresholds.')
             results = fnc.FindAllPathMultiThreshold(
                 thresholds,
                 find_reciprocal=self.parameters.find_reciprocal,

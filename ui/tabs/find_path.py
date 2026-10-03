@@ -86,6 +86,17 @@ def create_find_path_tab():
         with ui.card().classes("w-full drocat-card").props('id="card-findpath-core"'):
             section_header("Core Parameters", "tune")
             with param_grid(3):
+                threshold_basis = select_input(
+                    "Threshold Basis", ["Synapse count", "Connection ratio"],
+                    default=("Connection ratio"
+                             if get_user_default("threshold_basis")
+                             == "connection_ratio" else "Synapse count"),
+                    hint="Which edge-weight basis thresholds the graph: raw "
+                         "synapse counts, or the connection ratio "
+                         "(synapses / all-post incoming weight of the post "
+                         "neuron — comparable across datasets). Ratio mode "
+                         "rank paths by their weakest fractional input.",
+                )
                 max_interlayer = number_input(
                     "Max Intermediate Layers", get_user_default("max_interlayer"), 0, None,
                     hint="Maximum number of intermediate neuron layers between source and target. Higher = more paths but slower.",
@@ -94,6 +105,16 @@ def create_find_path_tab():
                     "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
                     hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
                 )
+                min_ratio_threshold = number_input(
+                    "Min Connection Ratio (threshold)", 0.0005, 0, 1, 0.0001,
+                    hint="Ratio-mode threshold: keep edges carrying at least "
+                         "this fraction of the post neuron's TOTAL input "
+                         "(F9 all-post denominator). Real-data viable values "
+                         "sit ~5e-4..2e-3 — far below the legacy "
+                         "direct-connection tables. data_details/"
+                         "ratio_synapse_map.csv shows the per-neuron synapse "
+                         "cutoffs this implies.",
+                ).set_visibility(False)
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -102,6 +123,14 @@ def create_find_path_tab():
                          "output; a single complete path may still exceed it to "
                          "stay intact.",
                 )
+
+            def _sync_threshold_basis():
+                ratio_mode = threshold_basis.value == "Connection ratio"
+                min_synapse.set_visibility(not ratio_mode)
+                min_ratio_threshold.set_visibility(ratio_mode)
+
+            threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
+            _sync_threshold_basis()
             interlayer_warning = ui.label(
                 "⚠️ Layers ≥ 4: the path count grows combinatorially (branching^depth) — "
                 "reconstruction can take hours and produce billions of paths. Raise "
@@ -331,14 +360,19 @@ def create_find_path_tab():
         # Parse keyword filter (chips are already individual keywords)
         keywords = [str(k) for k in keyword_filter.get_value()[1]] or ['None']
 
+        ratio_mode = threshold_basis.value == "Connection ratio"
         constructor_params = {
             "dataset": dataset.value,
             "sourceNeurons": sources,
             "targetNeurons": targets,
             "output_dir": output_dir.value,
-            "min_synapse_num": int(min_synapse.value),
-            # F9: ratio/probability filters are disabled — hidden UI, sent 0.
-            "min_ratio": 0.0,
+            "weight_basis": "connection_ratio" if ratio_mode else "synapse",
+            # Ratio mode: the ratio IS the threshold (backend forces the
+            # synapse floor to 1); synapse mode: F9 — ratio/probability
+            # filters are disabled, hidden UI, sent 0.
+            "min_synapse_num": 1 if ratio_mode else int(min_synapse.value),
+            "min_ratio": (float(min_ratio_threshold.value) if ratio_mode
+                          else 0.0),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),
             "filter_by": filter_by.value,
