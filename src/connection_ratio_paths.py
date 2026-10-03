@@ -654,18 +654,21 @@ def _traversal_probability(ratio: float) -> float:
 
 def _type_pair_readouts(info, syn_map, type_map, totals,
                         aggregate_method) -> List[Dict[str, object]]:
-    """Mass-recomputed type-pair readouts (§2 stage 8, user-ratified
-    10-03): emitted synapse mass / the INVOLVED posts' all-post incoming
-    mass — the denominator sums only the post bodyIds that actually
-    receive this pair's emitted edges (never a fold of bodyId ratios,
-    and never the full-type mass). With every bodyId pair clearing t_r,
-    the mediant inequality (n_i/m_i >= k for all i => sum n_i/sum m_i >=
-    k) guarantees the aggregate clears t_r too; a full-type denominator
-    would drag it below via zero-numerator members. Traversal
-    probability folds by aggregate_method (product/average over the
-    pair channels; 'ratio' = min(mass ratio / 0.3, 1))."""
+    """Mass-recomputed type-pair readouts (§2 stage 8, REVISED round-9
+    user directive): emitted synapse mass / the type's FULL-membership
+    all-post incoming mass — aggregating every type bodyId avoids the
+    single-connection artifact (high ratios resting on one low-mass
+    member). The ``involved_posts``/``type_coverage`` columns carry the
+    support (n/N) so low-coverage pairs are visible. Traversal
+    probability folds by aggregate_method (product/average over the pair
+    channels; 'ratio' = min(mass ratio / 0.3, 1))."""
     if not type_map:
         return []
+    members: Dict[str, set] = defaultdict(set)
+    for bid, label in type_map.items():
+        members[label].add(bid)
+    type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
+                 for label, bids in members.items()}
 
     agg: Dict[Tuple[str, str], Dict[str, object]] = {}
     for (u, v), _e in info.items():
@@ -689,16 +692,19 @@ def _type_pair_readouts(info, syn_map, type_map, totals,
     rows = []
     for pair in sorted(agg):
         slot = agg[pair]
-        # INVOLVED-posts denominator (the mediant guarantee above)
-        denom = sum(totals.get(b, 0.0) for b in slot['involved_posts'])
+        # FULL-type denominator (round-9): every member's mass counts.
+        denom = type_mass.get(pair[1], 0.0)
         mass_ratio = (slot['synapse_mass'] / denom) if denom > 0 else None
         fold = _type_probability(slot['pair_prob_weights'],
                                  aggregate_method, mass_ratio)
+        total_n = len(members.get(pair[1], ()))
         rows.append({
             'type_pre': pair[0], 'type_post': pair[1],
             'bodyid_pairs': slot['bodyid_pairs'],
             'synapse_mass': slot['synapse_mass'],
             'involved_posts': len(slot['involved_posts']),
+            'type_coverage': (f"{len(slot['involved_posts'])}/{total_n}"
+                              if total_n else None),
             'total_incoming_type': denom,
             'connection_ratio': mass_ratio,
             'traversal_probability': fold,
@@ -861,8 +867,8 @@ _OUTPUT_COLUMNS_EDGES = [
     'traversal_probability', 'traversals', 'hops']
 _OUTPUT_COLUMNS_TYPE_PAIRS = [
     'type_pre', 'type_post', 'bodyid_pairs', 'synapse_mass',
-    'involved_posts', 'total_incoming_type', 'connection_ratio',
-    'traversal_probability']
+    'involved_posts', 'type_coverage', 'total_incoming_type',
+    'connection_ratio', 'traversal_probability']
 _SYNAPSE_MAP_COLUMNS = [
     'bodyId_post', 'total_incoming', 'implied_syn_cutoff', 'kept_in_edges',
     'kept_syn_min', 'kept_syn_max']

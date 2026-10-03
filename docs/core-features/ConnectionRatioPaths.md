@@ -31,7 +31,7 @@ inherited from the same code path synapse runs use.
 | Edge Budget | floors at the weakest ratio tier whose hop-closed cone fits the cap (gallop/bisect, ≤8 probes default; a floored lane ≡ an unfloored lane at that tier) |
 | StrongestFirst | bottleneck = min ratio; budget drains all ties at τ; default budget 1,000,000 |
 | Admission guards | `drop_untyped` DEFAULT ON (untyped neurons never intermediates; an untyped ENROLLED source/target keeps enrollment, loses its edges), `exclude_intra_type` DEFAULT OFF |
-| Type-level ratio | **mass recompute over the pair's INVOLVED posts**: emitted synapse mass ÷ the all-post incoming mass of exactly the post bodyIds receiving this pair's emitted edges — never a fold of bodyId ratios, and never the full-type mass. With every bodyId pair clearing t_r, the mediant inequality (n_i/m_i ≥ k ⇒ Σn_i/Σm_i ≥ k) guarantees the aggregate clears t_r too; a full-type denominator would drag it below via zero-numerator members |
+| Type-level ratio | **full-type mass recompute (round-9)**: emitted synapse mass ÷ the post TYPE's total all-post incoming mass over its full membership — aggregating every type bodyId avoids single-connection artifacts (a high ratio resting on one low-mass member). The per-pair `type_coverage` column (involved members / total members, n/N) and the per-node coverage lists on the type paths expose low-support pairs |
 | W\* | the P1 measured ceiling: max ratio bottleneck over emitted paths |
 | Empty cone | STATUS `no_paths` with a disclosure — not a refusal: ratio thresholds compound per hop, so high `t_r` legitimately yields empty cones on hub-targeted enrollments |
 

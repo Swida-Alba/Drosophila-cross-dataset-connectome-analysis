@@ -13505,6 +13505,43 @@ class FindNeuronConnection:
                 '- [weight basis] global all-post denominators unavailable '
                 '— weight_ratio built on the fetched-frame totals (the F9 '
                 'offline fallback; denominators may be understated).')
+        # Type membership within the run's fetched universe (round-9:
+        # full-type ratio denominators + the coverage N map). Frames that
+        # already carry type columns (cache-served runs) are read
+        # directly; otherwise one neuron-table lookup resolves the
+        # fetched ids (the same source the enrichment uses).
+        from collections import defaultdict as _dd
+        members = _dd(set)
+        have_type_cols = any('type_pre' in t.columns for t in frames)
+        if have_type_cols:
+            for table in frames:
+                for col_pre, col_post in (
+                        ('type_pre', 'bodyId_pre'),
+                        ('type_post', 'bodyId_post')):
+                    if col_pre in table.columns:
+                        pairs = list(zip(
+                            table[col_pre].cast(_pl.Utf8).to_list(),
+                            table[col_post].cast(_pl.Utf8).to_list()))
+                        for label, bid in pairs:
+                            if label is not None and str(label).strip():
+                                members[str(label)].add(bid)
+        else:
+            _ids = sorted({b for t in frames for b in
+                           list(t[_PRE].cast(_pl.Utf8).to_list())
+                           + list(t[_POST].cast(_pl.Utf8).to_list())})
+            try:
+                _nt = self._fetch_neurons_local_or_api(
+                    _ids, columns=['bodyId', 'type'])
+                if _nt is not None and len(_nt):
+                    for _bid, _label in zip(
+                            _nt['bodyId'].astype(str),
+                            _nt['type'].astype(str)):
+                        if _label and _label.strip():
+                            members[_label].add(_bid)
+            except Exception:
+                pass
+        self._ratio_lane_type_members = {
+            k: set(v) for k, v in members.items()}
         self._ratio_lane_totals = totals
         lut = _pl.DataFrame(
             {'bodyId_post': list(totals),
@@ -13919,6 +13956,21 @@ class FindNeuronConnection:
         return out
 
     @staticmethod
+    def _type_path_position_bodyids(all_paths, node_label):
+        """Per type-sequence, per POSITION: the distinct bodyIds that
+        realize that sequence at that position (round-9: the n of the
+        per-node coverage lists '[n1/N1, n2/N2, ...]')."""
+        cov = {}
+        for p in all_paths:
+            seq = tuple(node_label(n) for n in p)
+            slot = cov.get(seq)
+            if slot is None:
+                slot = cov[seq] = [set() for _ in seq]
+            for i, n in enumerate(p):
+                slot[i].add(n)
+        return cov
+
+    @staticmethod
     def _keep_shortest_bodyid_paths(all_paths):
         """Keep shortest paths independently for every bodyId source-target pair.
 
@@ -14225,18 +14277,15 @@ class FindNeuronConnection:
             self._edgeN_limit_reached = True
 
     def _recompute_ratio_lane_type_ratios(self, conn_types, conn_inpath):
-        """Ratio lane (§2 stage 8, user-ratified 10-03): the type-level
-        connection_ratio must only include the bodyIds involved in the
-        PAIR. With every bodyId pair clearing t_r, the mediant inequality
-        (n_i/m_i >= k for all i  =>  sum n_i / sum m_i >= k) then
-        guarantees the aggregate also clears the threshold; the
-        full-type denominator drags it below via zero-numerator members
-        (e.g. FAFB MTe06: all 18 members typed, but a pair touching only
-        some of them divides by all 4,319 incoming synapses).
-        Denominators come from the run's own F9 totals; pairs with no
-        bodyId rows keep their existing readout. Handles pandas and
-        polars frames; returns ``conn_types`` unchanged for synapse
-        runs."""
+        """Ratio lane (§2 stage 8, REVISED round-9 user directive): the
+        type-level connection_ratio aggregates ALL type bodyIds — the
+        numerator is the pair's emitted synapse mass, the denominator the
+        type's TOTAL all-post incoming mass over its full membership.
+        This avoids the mirror artifact of involved-only denominators
+        (high ratios resting on a single low-mass member); the coverage
+        that exposes low-support pairs is carried by the new
+        ``type_coverage`` column (involved members / total members,
+        'n/N') and by the per-node coverage lists on the type paths."""
         if getattr(self, 'weight_basis', 'synapse') != 'connection_ratio':
             return conn_types
         totals = getattr(self, '_ratio_lane_totals', None) or {}
@@ -14251,16 +14300,27 @@ class FindNeuronConnection:
             for col in ('type_pre', 'type_post', 'bodyId_post'):
                 ci[col] = ci[col].astype(str)
             grouped = ci.groupby(['type_pre', 'type_post'])
-            pair_ratio = (grouped['weight'].sum()
-                          / grouped['bodyId_post'].apply(
-                              lambda seq: sum(totals.get(p, 0.0)
-                                              for p in set(seq))))
+            members = getattr(self, '_ratio_lane_type_members', None) or {}
+            type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
+                         for label, bids in members.items()}
+            pair_num = grouped['weight'].sum()
+            pair_involved = grouped['bodyId_post'].apply(lambda x: set(x))
             keys = list(zip(ct_pd['type_pre'].astype(str),
                             ct_pd['type_post'].astype(str)))
-            mapped = pd.Series([pair_ratio.get(k) for k in keys],
+            ratio_lut, cov_lut = {}, {}
+            for key in set(keys):
+                mass = type_mass.get(key[1])
+                if mass and mass > 0:
+                    ratio_lut[key] = pair_num.get(key, 0.0) / mass
+                    total_n = len(members.get(key[1], ()))
+                    involved_n = len(pair_involved.get(key, ()))
+                    cov_lut[key] = (f'{involved_n}/{total_n}'
+                                    if total_n else None)
+            mapped = pd.Series([ratio_lut.get(k) for k in keys],
                                index=ct_pd.index)
             keep = mapped.notna() & (mapped != 0) & np.isfinite(mapped)
             ct_pd.loc[keep, 'connection_ratio'] = mapped[keep]
+            ct_pd['type_coverage'] = [cov_lut.get(k) for k in keys]
             if 'traversal_probability' in ct_pd.columns:
                 ct_pd['traversal_probability'] = (
                     ct_pd['connection_ratio'] / 0.3).clip(upper=1.0)
@@ -19171,6 +19231,20 @@ class FindNeuronConnection:
             source_types, target_types,
             verbose=(self.verbose_mode in ['simple', 'full']),
         )
+        # Round-9 user item: per-node bodyId coverage on the type paths.
+        # n = distinct bodyIds realizing the sequence at that position;
+        # N = the type's membership in the run's discovered network.
+        _pos_cov = self._type_path_position_bodyids(
+            all_paths, _node_type_label)
+        from collections import defaultdict as _dd_cov
+        _type_n = _dd_cov(int)
+        _network_ids = set()
+        for _p in all_paths:
+            _network_ids.update(str(_n) for _n in _p)
+        for layer_set in (layer_neurons or []):
+            _network_ids.update(str(_n) for _n in layer_set)
+        for _bid in _network_ids:
+            _type_n[str(_node_type_label(_bid))] += 1
         self._vprint(f'  Derived {len(type_paths_to_save):,} unique type-level paths '
                      f'from {len(all_paths):,} bodyId paths', level='full')
 
@@ -19207,7 +19281,29 @@ class FindNeuronConnection:
             try:
                 # Read back, sort, and save using Polars
                 df_paths = pl.read_csv(output_path_type_csv)
-                
+
+                # Round-9: per-node bodyId coverage '[n1/N1, n2/N2, ...]'
+                # beside the ratios column (n from the derivation pass,
+                # N = the type's network membership).
+                try:
+                    _cov_vals = []
+                    for _path_str in df_paths['path'].to_list():
+                        _seq = tuple(str(_path_str).split('->'))
+                        _slot = _pos_cov.get(_seq)
+                        if _slot:
+                            _cov_vals.append('[' + ', '.join(
+                                f'{len(_slot[i])}/{_type_n.get(label, 0)}'
+                                for i, label in enumerate(_seq)) + ']')
+                        else:
+                            _cov_vals.append('')
+                    df_paths = df_paths.with_columns(
+                        pl.Series('coverage', _cov_vals,
+                                  dtype=pl.Utf8))
+                except Exception as _cov_exc:
+                    self._warn_notes.append(
+                        f'- [type coverage] per-node bodyId coverage column '
+                        f'not written ({_cov_exc!r}).')
+
                 sort_cols = []
                 descending = []
                 

@@ -532,14 +532,15 @@ def test_type_ratio_is_mass_recompute_not_weighted_mean():
     assert row['total_incoming_type'] == 8.0
     assert row['connection_ratio'] == pytest.approx(1.0, rel=1e-12)
     assert row['connection_ratio'] != pytest.approx(0.625)
-    # SRC->MID: emitted mass 10+3+27 = 40 (S2->A sits below t_r) over
-    # the INVOLVED MID posts {A, B} = 65+30 = 95 — B3's 10 excluded
+    # SRC->MID (round-9 full-type): mass 40 over ALL MID members
+    # A(65) + B(30) + B3(10) = 105 — B3 counts now (single-connection
+    # robustness), and the coverage column exposes the 2/3 support.
     src_row = rows[('SRC', 'MID')]
     assert src_row['involved_posts'] == 2
-    assert src_row['total_incoming_type'] == 95.0
-    assert src_row['connection_ratio'] == pytest.approx(40 / 95, rel=1e-12)
-    # mediant guarantee: with t_r = 0.1 every aggregate clears t_r
-    assert all(r['connection_ratio'] >= 0.1 for r in rec['type_pairs'])
+    assert src_row['type_coverage'] == '2/3'
+    assert src_row['total_incoming_type'] == 105.0
+    assert src_row['connection_ratio'] == pytest.approx(
+        40 / 105, rel=1e-12)
 
 
 def test_traversal_probability_folds():

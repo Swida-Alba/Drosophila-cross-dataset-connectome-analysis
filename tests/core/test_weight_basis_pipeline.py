@@ -301,10 +301,13 @@ def test_real_fafb_ratio_pipeline(tmp_path):
 #    bodyId pair does (per-pair INVOLVED-post denominators, §2 stage 8)
 # ---------------------------------------------------------------------------
 def test_ratio_type_ratios_clear_threshold(tmp_path):
-    edges = INT_EDGES + [('bgx', 'bg8', 50)]   # bg8: typed MID, but no
-    types = dict(INT_TYPES)                     # path ever emits into it
+    # bg8: typed MID, ON PATHS as an intermediate (D->bg8->T2 keeps it
+    # in the discovered universe + F9 totals) but never the POST of a
+    # SRC edge — the low-coverage member the full-type denominator must
+    # count: MID mass 100+100+45 = 245, numerator unchanged 145.
+    edges = INT_EDGES + [('D', 'bg8', 45), ('bg8', 'T2', 45)]
+    types = dict(INT_TYPES)
     types['bg8'] = 'MID'
-    types['bgx'] = 'BG'
     with universe_types(types) as shim:
         fc, _calls, _logs = _make_pipeline_fc(
             shim, tmp_path, edges=edges, max_interlayer=3,
@@ -326,16 +329,19 @@ def test_ratio_type_ratios_clear_threshold(tmp_path):
         run_dir = Path(fc.allpath_folder)
     ct = pd.read_csv(run_dir / 'data_details' / 'connection_type.csv')
     assert len(ct) > 0
-    offenders = ct[ct.connection_ratio < 0.2][
-        ['type_pre', 'type_post', 'weight', 'connection_ratio']]
-    assert offenders.empty, (
-        f'type-level ratios below t_r (mediant violated):\n{offenders}')
-    # the uninvolved member (bg8, 50 incoming) excluded: SRC->MID stays
-    # the involved denominator (90+55=145 pre-bg8; with bg8 it would be 195)
+    # round-9: FULL-type denominators over the run's universe. The
+    # harness has no connection cache, so the totals are the fetched-
+    # frame fallback: MID mass = A(90, bg1 unfetched) + B(55) + bg8(45)
+    # = 190 — bg8 counts (single-connection robustness) though no SRC
+    # edge reaches it: SRC->MID = 145/190, coverage 2/3. Real runs use
+    # the true dataset totals via the F9 global fetch.
     src_mid = ct[(ct.type_pre == 'SRC') & (ct.type_post == 'MID')]
-    ratio = src_mid.connection_ratio.iloc[0]
-    involved_den = src_mid.weight.sum() / ratio
-    assert involved_den == pytest.approx(145.0, rel=1e-9)
+    assert src_mid.connection_ratio.iloc[0] == pytest.approx(
+        145 / 190, rel=1e-9)
+    cov = src_mid.type_coverage.iloc[0]
+    assert cov == '2/3', cov
+    # coverage is present on every ratio-run type-pair row
+    assert ct.type_coverage.notna().all()
 
 
 # ---------------------------------------------------------------------------

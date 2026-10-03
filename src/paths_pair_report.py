@@ -315,6 +315,10 @@ def load_unit_paths(csv_path: Path) -> pd.DataFrame:
         df['path_prob'] = float('nan')
     if 'weights' not in df.columns:
         df['weights'] = ''
+    if 'ratios' not in df.columns:
+        df['ratios'] = ''
+    if 'coverage' not in df.columns:
+        df['coverage'] = ''
     df['min_weight'] = pd.to_numeric(df['min_weight'], errors='coerce')
     df['path_prob'] = pd.to_numeric(df['path_prob'], errors='coerce')
     return df
@@ -365,6 +369,7 @@ def build_unit_breakdown(
                         inter_minhop[key][node] = hop
                 probabilities = row.get('probabilities', '')
                 ratios = row.get('ratios', '')
+                coverage = row.get('coverage', '')
                 pair_rows.append({
                     'source': source,
                     'target': target,
@@ -374,6 +379,7 @@ def build_unit_breakdown(
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     'probabilities': '' if pd.isna(probabilities) else str(probabilities),
                     'ratios': '' if pd.isna(ratios) else str(ratios),
+                    'coverage': '' if pd.isna(coverage) else str(coverage),
                     'min_weight': row['min_weight'],
                     'path_prob': row['path_prob'],
                     'length': int(length),
@@ -864,8 +870,8 @@ def build_payload(
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
     'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
-    'min_weight', 'path_prob', 'length', 'source_bodyid_coverage',
-    'target_bodyid_coverage', 'paths_in_pair',
+    'coverage', 'min_weight', 'path_prob', 'length',
+    'source_bodyid_coverage', 'target_bodyid_coverage', 'paths_in_pair',
 ]
 
 INTERMEDIATES_COLUMNS = [
@@ -2281,7 +2287,7 @@ REPORT_JS = r"""
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
               path: r.path, len: g.len, mw: r.mw, pp: r.pp,
               weights: r.weights, ratios: r.ratios,
-              scov: r.scov, tcov: r.tcov,
+              coverage: r.coverage, scov: r.scov, tcov: r.tcov,
               total: g.total});
           });
         });
@@ -2299,7 +2305,7 @@ REPORT_JS = r"""
       var headers = ['#'];
       if (union) { headers.push('Pair'); }
       headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
-                   'Ratios',
+                   'Ratios', 'Coverage',
         'Source coverage', 'Target coverage');
       headers.forEach(function(t) {
         hr.appendChild(elt('th', null, t)); });
@@ -2332,6 +2338,11 @@ REPORT_JS = r"""
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
           tr.appendChild(elt('td', null, row.ratios));
+          var covTd = elt('td', null, row.coverage || '');
+          covTd.title = 'Per-node bodyId coverage: distinct bodyIds on '
+            + 'the emitted paths at that position / the type\'s members '
+            + 'in the run\'s discovered network.';
+          tr.appendChild(covTd);
           var scovTd = elt('td', null, row.scov || '—');
           scovTd.title = 'Source bodyIds on paths (isInPath) / enrolled — '
             + 'from source_neurons.csv';
@@ -2547,6 +2558,8 @@ def _attach_table_groups(
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),
+                    'coverage': ('' if pd.isna(row.get('coverage'))
+                                 else str(row['coverage'])),
                     'scov': source_cov.get(source, ''),
                     'tcov': target_cov.get(target, ''),
                 })
