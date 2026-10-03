@@ -15787,11 +15787,10 @@ class FindNeuronConnection:
             path_complete_from = w_start
             if tau_canon is not None:
                 _tc = float(tau_canon)
-                path_complete_from = max(
-                    w_start,
-                    _tc if (_ratio_density or _tc.is_integer())
-                    else _tc) if _ratio_density else max(
-                        w_start, int(round(_tc)))
+                if _ratio_density:
+                    path_complete_from = max(w_start, _tc)
+                else:
+                    path_complete_from = max(w_start, int(round(_tc)))
             n_nodes = getattr(self, '_density_n_nodes', None)
             # Node classes against the curated table (debris ids are absent
             # from it and are NEVER counted in any denominator).
@@ -16473,9 +16472,8 @@ class FindNeuronConnection:
                 find_reciprocal=find_reciprocal,
                 forward_only=forward_only,
             )
-            if not _ratio_replay:
-                self._persist_slice_density_meta(
-                    t, slice_wstar, len(all_paths))
+            self._persist_slice_density_meta(
+                t, slice_wstar, len(all_paths))
             # Phase 2 refill hook: the slice folder's provenance was
             # finalized by _replay_output_folder_for_threshold +
             # _materialize_paths; generate the refill records for this

@@ -91,18 +91,12 @@ def dataset_window(meta: Optional[Dict]) -> Tuple[int, Optional[int]]:
     meta = meta or {}
     ratio = str(meta.get('weight_basis', '')) == 'connection_ratio'
 
-    def _thr(value):
+    def _cast(value):
         try:
             v = float(value)
         except (TypeError, ValueError):
             return None
-        return v if (ratio or v.is_integer()) else v
-
-    def _cast(value):
-        v = _thr(value)
-        if v is None:
-            return None
-        return float(v) if ratio else int(v)
+        return v if ratio else int(v)
 
     applied = _cast(meta.get('applied'))
     w_start_raw = _cast(meta.get('w_start'))
