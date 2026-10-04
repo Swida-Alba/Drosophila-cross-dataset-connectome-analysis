@@ -949,6 +949,31 @@ class TestTypePathRealizedWeightsAndMembershipN:
             [["a", "b"]], label.get, {})
         assert out[("A", "B")] is None
 
+    def test_realized_ratio_readout_realized_shares(self):
+        # Round-11: hop ratio = realized mass / the post type's
+        # full-membership mass (the SAME denominator the pair-level
+        # recompute uses); probability = min(1, r/0.3); product; min.
+        out = coana.FindNeuronConnection._realized_ratio_readout(
+            [41.0, 40.0], ("R8", "R7", "aMe6a"),
+            {"R7": 66293.0, "aMe6a": 2181.0})
+        ratios, probs, pp, mr = out
+        assert abs(ratios[0] - 41.0 / 66293.0) < 1e-15
+        assert abs(ratios[1] - 40.0 / 2181.0) < 1e-15
+        assert probs == [min(1.0, ratios[0] / 0.3),
+                         min(1.0, ratios[1] / 0.3)]
+        assert abs(pp - probs[0] * probs[1]) < 1e-18
+        assert mr == ratios[0]  # 41/66293 << 40/2181
+
+    def test_realized_ratio_readout_missing_mass_yields_none(self):
+        # Unknown post-type mass (or unrealized weights) keeps the
+        # pair-level join values — never a fabricated share.
+        assert coana.FindNeuronConnection._realized_ratio_readout(
+            None, ("A", "B"), {"B": 100.0}) is None
+        assert coana.FindNeuronConnection._realized_ratio_readout(
+            [5.0], ("A", "B"), {}) is None
+        assert coana.FindNeuronConnection._realized_ratio_readout(
+            [5.0], ("A", "B"), {"B": 0.0}) is None
+
     def test_network_type_membership_counts_union(self):
         # N = bodyIds on emitted paths ∪ discovery layers, counted per
         # final type label (duplicates collapse).

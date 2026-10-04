@@ -123,10 +123,10 @@ exported path tables.
 #### Main Data Files
 *   **`{source}_to_{target}_allpaths_type.csv`**: The primary path table (type-level when `skip_bodyId=True`, the UI default). Columns:
     *   `path`: Path as a type sequence (e.g. `aMe12 → SMP238 → PPL101`)
-    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios. `weights` is the **realized** synapse mass of each hop (round-10): the distinct bodyId edges backing that exact hop at that path position — the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total (that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). `ratios` stays pair-level (the pair's kept mass ÷ the post type's full-membership incoming mass), so it does not depend on which bodyIds realize the path
+    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios — all **realized** (round-10/11): `weights` is the distinct bodyId edges' mass backing that exact hop at that path position (the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total — that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). In **ratio runs** `ratios`/`probabilities`/`min_ratio`/`path_prob` are also realized-scope: hop ratio = the hop's realized mass ÷ the post type's full-membership incoming mass (the same denominator the pair-level recompute uses), probability = min(1, ratio/0.3). In synapse runs `ratios`/`probabilities` stay pair-level readouts
     *   `min_weight`: Smallest realized hop weight along the path
-    *   `path_prob`: Overall path probability
-    *   `min_ratio`: Smallest edge connection ratio (pair-level; in ratio runs it is a type mass share and can fall below the applied bodyId-level `t_r`)
+    *   `path_prob`: Overall path probability (product of per-hop probabilities)
+    *   `min_ratio`: Smallest edge connection ratio (realized in ratio runs; a mass share that can fall below the applied bodyId-level `t_r`)
     *   `length`: Number of hops
     *   `nt_types`: Neurotransmitter types along the path — one entry per
         hop, positionally aligned; an empty entry marks a hop whose

@@ -14126,6 +14126,32 @@ class FindNeuronConnection:
         return out
 
     @staticmethod
+    def _realized_ratio_readout(realized_weights, seq_labels, type_mass):
+        """Ratio-lane path readout from REALIZED support (round-11): hop
+        ratio = the hop's realized synapse mass / the post type's
+        full-membership incoming mass (the SAME denominator the pair-level
+        recompute uses — only the numerator is scoped to the edges backing
+        this exact sequence at this position); probability = min(1,
+        ratio/0.3) (the ratio lane's PROB_RATIO_SCALE); path_prob = the
+        product; min_ratio = the weakest hop. Returns None when any hop's
+        post-type mass is unknown — the caller then keeps the pair-level
+        join values for that path."""
+        if realized_weights is None or not seq_labels:
+            return None
+        ratios, probs = [], []
+        for w, post in zip(realized_weights, seq_labels[1:]):
+            m = (type_mass or {}).get(post)
+            if not m or m <= 0:
+                return None
+            r = float(w) / m
+            ratios.append(r)
+            probs.append(min(1.0, r / 0.3))
+        path_prob = 1.0
+        for p in probs:
+            path_prob *= p
+        return ratios, probs, path_prob, (min(ratios) if ratios else None)
+
+    @staticmethod
     def _network_type_membership_counts(all_paths, layer_neurons, node_label):
         """N of the per-node coverage lists: the type's membership in the
         run's discovered network (bodyIds on emitted paths ∪ the discovery
@@ -14514,6 +14540,10 @@ class FindNeuronConnection:
                                 _row.total_incoming_weight)
             except Exception:
                 pass
+            # Stash for the realized path-ratio patch (round-11): the
+            # per-hop Ratios on the type paths divide the hop's REALIZED
+            # mass by the same type_mass the pair-level recompute used.
+            self._ratio_lane_type_mass = dict(type_mass)
             pair_num = grouped['weight'].sum()
             pair_involved = grouped['bodyId_post'].apply(lambda x: set(x))
             keys = list(zip(ct_pd['type_pre'].astype(str),
@@ -16965,8 +16995,10 @@ class FindNeuronConnection:
                 'incoming mass (pair-level, aggregated over all conn '
                 'layers); type_coverage = involved members / the full type '
                 'population (the same N as the per-node coverage lists); '
-                'per-hop Weights on type paths = the realized synapse mass '
-                'at that hop\'s position.')
+                'per-hop Weights AND Ratios on type paths = the REALIZED '
+                'support at that hop\'s position (the bodyId edges backing '
+                'that exact sequence there — ratios divide their mass by '
+                'the post type\'s full-membership incoming mass).')
         else:
             if getattr(self, 'min_ratio', 0) or getattr(
                     self, 'min_traversal_probability', 0):
@@ -19699,15 +19731,26 @@ class FindNeuronConnection:
                         f'- [type coverage] per-node bodyId coverage column '
                         f'not written ({_cov_exc!r}).')
 
-                # Round-10: re-scope per-hop Weights to the realized edges
-                # at each hop's position. The streaming join stamps every
-                # hop with the pair's mass summed across ALL conn layers —
-                # a pair connecting at several depths showed its
+                # Round-10/11: re-scope the per-hop columns to the realized
+                # edges at each hop's position. The streaming join stamps
+                # every hop with the pair's mass summed across ALL conn
+                # layers — a pair connecting at several depths showed its
                 # cross-depth total on EVERY hop (e.g. 328 on a hop whose
-                # position carries 168). min_weight follows the realized
-                # hops; Ratios/min_ratio stay pair-level by design (§2
-                # stage 8 mass recompute).
+                # position carries 168). Weights/min_weight (both bases)
+                # become the realized masses; under the connection_ratio
+                # basis the per-hop Ratios/Min ratio/Path prob become the
+                # REALIZED shares (realized mass / the post type's
+                # full-membership incoming mass — the same denominator as
+                # the pair-level recompute, only the numerator is scoped to
+                # this sequence's backing edges), so a 1-bodyId-realized
+                # hop no longer claims the pair's full share. Pair-level
+                # ratios/coverage remain the conn-table truth in
+                # data_details/connection_type.csv.
                 _weights_changed_paths = 0
+                _ratio_lane_now = (getattr(self, 'weight_basis', 'synapse')
+                                   == 'connection_ratio')
+                _type_mass = (getattr(self, '_ratio_lane_type_mass', None)
+                              or {}) if _ratio_lane_now else {}
                 try:
                     def _fmt_w(x):
                         return (str(int(x)) if float(x).is_integer()
@@ -19716,10 +19759,25 @@ class FindNeuronConnection:
                     def _patch_weights(df):
                         nonlocal _weights_changed_paths
                         new_w, new_mw = [], []
-                        for _path_str, _old_w, _old_mw in zip(
-                                df['path'].to_list(),
-                                df['weights'].to_list(),
-                                df['min_weight'].to_list()):
+                        new_r = new_p = new_mr = new_pp = None
+                        if _ratio_lane_now:
+                            new_r, new_p, new_mr, new_pp = [], [], [], []
+                            _rows = zip(df['path'].to_list(),
+                                        df['weights'].to_list(),
+                                        df['min_weight'].to_list(),
+                                        df['ratios'].to_list(),
+                                        df['probabilities'].to_list(),
+                                        df['min_ratio'].to_list(),
+                                        df['path_prob'].to_list())
+                        else:
+                            _n_none = [None] * df.height
+                            _rows = zip(df['path'].to_list(),
+                                        df['weights'].to_list(),
+                                        df['min_weight'].to_list(),
+                                        _n_none, _n_none, _n_none,
+                                        _n_none)
+                        for (_path_str, _old_w, _old_mw, _old_r, _old_p,
+                             _old_mr, _old_pp) in _rows:
                             _seq = tuple(str(_path_str).split('->'))
                             _rw = _realized_w.get(_seq)
                             try:
@@ -19728,8 +19786,9 @@ class FindNeuronConnection:
                                        else None)
                             except (ValueError, SyntaxError):
                                 _ow = None
-                            if (_rw is not None and _ow is not None
-                                    and len(_rw) == len(_ow)):
+                            _ok = (_rw is not None and _ow is not None
+                                   and len(_rw) == len(_ow))
+                            if _ok:
                                 new_w.append('[' + ', '.join(
                                     _fmt_w(w) for w in _rw) + ']')
                                 new_mw.append(min(_rw))
@@ -19740,10 +19799,30 @@ class FindNeuronConnection:
                                 new_w.append(
                                     _old_w if _old_w is not None else '')
                                 new_mw.append(_old_mw)
+                            if _ratio_lane_now:
+                                _rr = (self._realized_ratio_readout(
+                                    _rw if _ok else None, _seq, _type_mass))
+                                if _rr is not None:
+                                    ratios_, probs_, pp_, mr_ = _rr
+                                    new_r.append('[' + ', '.join(
+                                        repr(v) for v in ratios_) + ']')
+                                    new_p.append('[' + ', '.join(
+                                        repr(v) for v in probs_) + ']')
+                                    new_pp.append(pp_)
+                                    new_mr.append(mr_)
+                                else:
+                                    new_r.append(_old_r
+                                                 if _old_r is not None
+                                                 else '')
+                                    new_p.append(_old_p
+                                                 if _old_p is not None
+                                                 else '')
+                                    new_pp.append(_old_pp)
+                                    new_mr.append(_old_mr)
                         _mw_all_int = all(
                             float(v).is_integer()
                             for v in new_mw if v is not None)
-                        return df.with_columns([
+                        cols = [
                             pl.Series('weights', new_w, dtype=pl.Utf8),
                             pl.Series(
                                 'min_weight',
@@ -19751,7 +19830,18 @@ class FindNeuronConnection:
                                  else v for v in new_mw],
                                 dtype=(pl.Int64 if _mw_all_int
                                        else pl.Float64)),
-                        ])
+                        ]
+                        if _ratio_lane_now:
+                            cols += [
+                                pl.Series('ratios', new_r, dtype=pl.Utf8),
+                                pl.Series('probabilities', new_p,
+                                          dtype=pl.Utf8),
+                                pl.Series('min_ratio', new_mr,
+                                          dtype=pl.Float64),
+                                pl.Series('path_prob', new_pp,
+                                          dtype=pl.Float64),
+                            ]
+                        return df.with_columns(cols)
 
                     df_paths = _patch_weights(df_paths)
                     if (os.path.exists(output_path_type_excluded_csv)
@@ -19766,7 +19856,7 @@ class FindNeuronConnection:
                         f'- [type-path weights] realized per-hop weights '
                         f'not applied ({_w_exc!r}).')
                 if _weights_changed_paths:
-                    self._warn_notes.append(
+                    _w_note = (
                         f'- [type-path weights] {_weights_changed_paths:,} '
                         'type paths have per-hop Weights below the pair\'s '
                         'total mass: Weights/min_weight count only the '
@@ -19776,6 +19866,14 @@ class FindNeuronConnection:
                         'depths. Cross-depth pair totals remain in '
                         'data_details/connection_type.csv (weight summed '
                         'over conn_layer) and in the type matrices.')
+                    if _ratio_lane_now:
+                        _w_note += (
+                            ' Per-hop Ratios/Min ratio/Path prob are the '
+                            'REALIZED shares (realized mass / the post '
+                            'type\'s full-membership incoming mass); '
+                            'pair-level ratios and type_coverage remain '
+                            'in data_details/connection_type.csv.')
+                    self._warn_notes.append(_w_note)
 
                 sort_cols = []
                 descending = []

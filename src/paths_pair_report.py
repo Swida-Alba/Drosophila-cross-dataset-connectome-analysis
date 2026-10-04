@@ -1295,15 +1295,18 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
             'units; synapse counts remain in every table '
             'column.</td></tr>')
         rows.append(
-            '<tr><td>Two scopes</td><td>Ratios / Min ratio are '
-            '<strong>pair-level</strong> mass shares (the pair\u2019s kept '
-            'synapse mass ÷ the post type\u2019s full-membership incoming '
-            'mass, aggregated over all conn layers); Weights / Coverage are '
-            '<strong>path-level</strong> realized support (the distinct '
-            'bodyId edges behind that hop at that position). The applied '
-            'threshold acts per bodyId edge — the type-level min_ratio can '
-            'fall below it (see ratio_synapse_map.csv for the implied '
-            'per-neuron synapse cutoffs).</td></tr>')
+            '<tr><td>Two scopes</td><td>Weights, Ratios and Coverage on '
+            'the path rows are <strong>path-level realized support</strong>: '
+            'the distinct bodyId edges backing each hop at that exact '
+            'position (ratios divide their mass by the post type\u2019s '
+            'full-membership incoming mass), so every number is backed by '
+            'the same edges as the coverage n. '
+            '<strong>Pair-level</strong> readouts — the pair\u2019s total '
+            'mass share and involved-members coverage — remain in '
+            'data_details/connection_type.csv. The applied threshold acts '
+            'per bodyId edge — the type-level min_ratio can fall below it '
+            '(see ratio_synapse_map.csv for the implied per-neuron synapse '
+            'cutoffs).</td></tr>')
     applied = prov.get('applied_threshold')
     source = prov.get('applied_threshold_source')
     if applied is not None:
@@ -2547,14 +2550,20 @@ REPORT_JS = r"""
         'Weights': 'Per-hop realized synapse mass: the distinct bodyId '
           + 'edges backing each hop at that position — the same edges '
           + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
-        'Ratios': 'Per-hop type-PAIR mass share: the pair\u2019s kept '
-          + 'synapse mass / the post type\u2019s full-membership incoming '
-          + 'mass. Pair-level over all conn layers — it does not depend '
-          + 'on which bodyIds realize this path.',
+        'Ratios': ratioRun
+          ? 'Per-hop REALIZED share: the mass of the bodyId edges backing '
+            + 'that hop at that position / the post type\u2019s '
+            + 'full-membership incoming mass — the same edges behind '
+            + 'Weights and the Coverage n. Pair-level shares remain in '
+            + 'data_details/connection_type.csv.'
+          : 'Per-hop type-PAIR mass share: the pair\u2019s kept synapse '
+            + 'mass / the post type\u2019s full-membership incoming mass. '
+            + 'Pair-level over all conn layers — it does not depend on '
+            + 'which bodyIds realize this path.',
         'Coverage': 'Per-node coverage: distinct bodyIds realizing this '
           + 'exact sequence at that position / the type\u2019s population '
           + 'in the run\u2019s discovered network.',
-        'Min ratio': 'Weakest per-hop pair mass share on this path (this '
+        'Min ratio': 'Weakest per-hop realized share on this path (this '
           + 'run\u2019s ranking key).'
       };
       headers.forEach(function(t) {
