@@ -1165,3 +1165,91 @@ def test_bootstrap_ratio_float_dedup_keeps_distinct_rows(monkeypatch):
     for q in queries:
         for v in q['thresholds'].values():
             assert isinstance(v, float) and 0 < v <= 1
+
+
+def test_ratio_density_loader_and_curves_roundtrip(tmp_path):
+    """REGRESSION (real-run audit 2026-10-04): the artifact loader read
+    density_edges.npz as int32 — under the ratio basis every sub-1 tier
+    truncated to 0, the curve grids collapsed to one point, edge counts
+    and densities read 0, and AUTO's horizontal rows silently vanished
+    (only the window-driven vertical spine survived). The loader must
+    follow the capture's weight_basis, and the curves/CSV must carry the
+    float tiers."""
+    import json
+    import os
+    import numpy as np
+    from comparison.comparison_parameters import ComparisonParameters
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+
+    params = ComparisonParameters(
+        datasets=['ds_a', 'ds_b'], source_neurons=['x'], target_neurons=['y'],
+        thresholds=[0.01], threshold_mode='standard',
+        threshold_dataset_order=['ds_a', 'ds_b'],
+        weight_basis='connection_ratio',
+        output_folder=str(tmp_path), drop_untyped=True, verbose=False)
+
+    per_ds = {
+        'ds_a': ([0.0105, 0.03],
+                 ([0.010, 0.012, 0.02, 0.05], [0, 0, 1, 2]),
+                 {'weight_basis': 'connection_ratio', 'applied': 0.01,
+                  'w_start': 0.01, 'w_star_measured': 0.03,
+                  'n_nodes': 10, 'n_nodes_typed': 4, 'n_nodes_untyped': 2,
+                  'n_nodes_debris': 1, 'n_annotated_nodes': 4,
+                  'denominator': 'typed_nodes_in_searched_graph',
+                  'path_complete_from': 0.01, 'n_paths': 2, 'n_edges': 4,
+                  'budget_bitten': False, 'paths_complete': True}),
+        'ds_b': ([0.011, 0.02],
+                 ([0.011, 0.015, 0.025], [0, 0, 0]),
+                 {'weight_basis': 'connection_ratio', 'applied': 0.01,
+                  'w_start': 0.01, 'w_star_measured': 0.02,
+                  'n_nodes': 8, 'n_nodes_typed': 5, 'n_nodes_untyped': 0,
+                  'n_nodes_debris': 0, 'n_annotated_nodes': 5,
+                  'denominator': 'typed_nodes_in_searched_graph',
+                  'path_complete_from': 0.01, 'n_paths': 2, 'n_edges': 3,
+                  'budget_bitten': False, 'paths_complete': True}),
+    }
+    for ds, (bns, (w, cls), meta) in per_ds.items():
+        d = os.path.join(params.dataset_data_path,
+                         params._sanitize_name(ds), '_density')
+        os.makedirs(d, exist_ok=True)
+        np.save(os.path.join(d, 'density_path_bottlenecks.npy'),
+                np.asarray(bns, dtype=float))
+        np.savez_compressed(
+            os.path.join(d, 'density_edges.npz'),
+            weight=np.asarray(w, dtype=np.float64),
+            cls=np.asarray(cls, dtype=np.int8))
+        json.dump(meta, open(os.path.join(d, 'density_meta.json'), 'w'))
+
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+
+    # Loader dtype follows the capture's basis.
+    _meta, _bns, ew_a, _cls = analyzer._load_density_artifacts('ds_a')
+    assert ew_a.dtype == np.float64 and ew_a.min() > 0
+
+    curves, windows, metas = analyzer._build_density_curves()
+    for ds in ('ds_a', 'ds_b'):
+        c = curves[ds]
+        # The distinct-tier ladder survived — NOT the int-collapsed
+        # single point [0].
+        assert len(c['thresholds']) >= 2
+        assert all(isinstance(t, float) and t > 0 for t in c['thresholds'])
+        assert c['edge_count'][0] > 0          # typed edges at w_start
+        assert c['density'][0] > 0
+    assert metas['ds_a']['n_edges_active_basis'] == 2   # 2 typed edges
+
+    rows = analyzer._density_aligned_rows(curves, windows, metas)
+    modes = {r.get('mode') for r in rows}
+    assert 'vertical' in modes
+    # With real curves the density-matched horizontal rows must appear
+    # (the int32 loader produced zero curves and dropped them all).
+    assert any('horizontal' in (m or '') for m in modes), modes
+
+    # The exported CSV keeps the float tiers verbatim.
+    cr = os.path.join(params.full_output_path, 'comparison_results')
+    os.makedirs(cr, exist_ok=True)
+    analyzer._export_density_alignment(cr)
+    cur = pd.read_csv(os.path.join(cr, 'density_curves.csv'))
+    a_rows = cur[cur.dataset == 'ds_a']
+    assert (a_rows.threshold > 0).all()
+    assert set(a_rows.threshold.round(6)) >= {0.010, 0.012}
+    assert (a_rows.edge_count > 0).any()

@@ -355,13 +355,23 @@ class DataLoader:
         
         thresholds = []
         for d in os.listdir(dataset_path):
+            # Ratio-basis runs materialize `minratio_{decimal}` folders
+            # ('.'→'_', '-'→'neg'); their tiers are floats.
             if d.startswith('minsyn_'):
                 try:
-                    threshold = int(d.replace('minsyn_', ''))
-                    thresholds.append(threshold)
+                    thresholds.append(int(d.replace('minsyn_', '')))
                 except ValueError:
                     pass
-        
+            elif d.startswith('minratio_'):
+                try:
+                    value = float(
+                        d.replace('minratio_', '').replace('_', '.')
+                        .replace('neg', '-'))
+                    thresholds.append(
+                        int(value) if value.is_integer() else value)
+                except ValueError:
+                    pass
+
         return sorted(thresholds)
     
     def get_summary(self) -> Dict[str, Any]:

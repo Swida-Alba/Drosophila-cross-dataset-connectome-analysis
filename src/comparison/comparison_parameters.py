@@ -94,7 +94,8 @@ class ComparisonParameters:
         max_interlayer (int): Maximum number of intermediate hops for path finding.
             Default: 2. Shared across ALL datasets for fair comparison.
             
-        thresholds (List[int]): Minimum synapse count cutoffs for filtering.
+        thresholds: Comparison thresholds — Min Synapse Count ints
+            (synapse basis) or float connection-ratio tiers (ratio basis).
             Default: [1, 3, 5, 10, 20]. Results generated at each threshold level.
             
         source_labels (str | List[str]): Custom label(s) for source neuron group(s)
@@ -200,7 +201,8 @@ class ComparisonParameters:
     neuron count, so a high bound is never reached in practice."""
     
     # Analysis settings
-    thresholds: List[int] = field(default_factory=lambda: [1, 3, 5, 10, 20])
+    thresholds: List[Union[int, float]] = field(
+        default_factory=lambda: [1, 3, 5, 10, 20])
     """Comparison thresholds (plan §4).
 
     Synapse basis: Min Synapse Count values (ints). Ratio basis
@@ -249,7 +251,7 @@ class ComparisonParameters:
     threshold_dataset_order: Optional[List[str]] = None
     """Stable dataset-column order used by advanced threshold combinations."""
 
-    dataset_thresholds: Optional[Dict[str, List[int]]] = None
+    dataset_thresholds: Optional[Dict[str, List[Union[int, float]]]] = None
     """Deprecated legacy vertical threshold schedules.
 
     This field is accepted only to read older saved configurations.  New UI
@@ -1050,7 +1052,7 @@ class ComparisonParameters:
                 self.thresholds, 'thresholds',
                 ratio_basis=(getattr(self, 'weight_basis', 'synapse')
                              == 'connection_ratio'))
-            normalized: Dict[str, List[int]] = {}
+            normalized: Dict[str, List[Union[int, float]]] = {}
             known = set(known_order)
             for ds, values in self.dataset_thresholds.items():
                 if ds not in known:
@@ -1234,7 +1236,7 @@ class ComparisonParameters:
             for threshold in self.thresholds
         ]
 
-    def get_unique_threshold_jobs(self) -> List[Tuple[str, int]]:
+    def get_unique_threshold_jobs(self) -> List[Tuple[str, Union[int, float]]]:
         """Return deduplicated raw jobs required by the threshold queries."""
         jobs = {
             (dataset, threshold_cell_value(query['thresholds'][dataset]))
@@ -1312,7 +1314,7 @@ class ComparisonParameters:
         self.threshold_auto = True
         self._normalize_threshold_configuration()
 
-    def get_thresholds_for_dataset(self, dataset: str) -> List[int]:
+    def get_thresholds_for_dataset(self, dataset: str) -> List[Union[int, float]]:
         """Return the derived raw-run schedule for one dataset.
 
         In combination mode this is the unique set of cell values used by
@@ -1882,7 +1884,7 @@ class ComparisonParameters:
         
         Args:
             dataset: Dataset identifier
-            threshold: Synapse threshold
+            threshold: Synapse count or float ratio tier
             
         Returns:
             Path to dataset/threshold output folder

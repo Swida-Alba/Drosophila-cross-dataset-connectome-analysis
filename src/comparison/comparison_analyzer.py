@@ -647,6 +647,12 @@ class ComparisonAnalyzer:
             'threshold_scope': (
                 'query' if getattr(parameters, 'threshold_mode', 'standard')
                 == 'combinations' else 'scalar'),
+            # The basis stamp promised for pathfinding_provenance.csv
+            # (2c96994): the row builder must carry it explicitly or the
+            # column never reaches the CSV/manifest frames.
+            'weight_basis': prov.get(
+                'weight_basis',
+                getattr(parameters, 'weight_basis', 'synapse')),
             'requested_threshold': prov['requested_threshold'],
             'applied_threshold': prov['applied_threshold'],
             'applied_threshold_source': prov['applied_threshold_source'],
@@ -2968,7 +2974,7 @@ class ComparisonAnalyzer:
         v = float(folder)
         return int(v) if v.is_integer() else v
 
-    def get_applied_thresholds(self, dataset: str) -> List[int]:
+    def get_applied_thresholds(self, dataset: str) -> List[Union[int, float]]:
         """Distinct materialized (applied) thresholds for one dataset."""
         applied = []
         for t in self.parameters.get_thresholds_for_dataset(dataset):
@@ -2978,8 +2984,10 @@ class ComparisonAnalyzer:
                 applied.append(int(v) if v.is_integer() else v)
         return sorted(set(applied))
 
-    def get_threshold_view(self, dataset: str, requested: int) -> Dict[str, Any]:
-        """Resolved view for one (dataset, requested) cell."""
+    def get_threshold_view(self, dataset: str,
+                            requested: Union[int, float]) -> Dict[str, Any]:
+        """Resolved view for one (dataset, requested) cell (the threshold
+        is an int synapse count or an exact float ratio tier)."""
         meta = self._path_run_meta.get((dataset, requested), {}) or {}
         applied, pruned, floor, source = self._applied_state_for(
             dataset, requested)
@@ -3660,6 +3668,16 @@ class ComparisonAnalyzer:
         # (own key + folder) run through the same replay batch; Feature G
         # skipping applies between the points as usual.
         if (self.parameters.auto_extend_thresholds
+                and getattr(self.parameters, 'weight_basis', 'synapse')
+                == 'connection_ratio'):
+            # The F7 ladder multiplies an INTEGER tau_ref (k × τ); under
+            # the ratio basis every sub-1 tier rounds to 0 and the ladder
+            # is meaningless. Refuse honestly instead of degrading by luck.
+            self._log(
+                "F7 auto-extension is synapse-only — the integer k × τ "
+                "ladder is not applied under the connection-ratio basis.",
+                level='warn')
+        elif (self.parameters.auto_extend_thresholds
                 and self.parameters.threshold_mode != 'combinations'
                 and self.parameters.path_mode == 'all'
                 and self.parameters.replay_paths):
@@ -6732,7 +6750,7 @@ class ComparisonAnalyzer:
             )
 
             for dataset in dataset_names:
-                threshold = int(threshold_map[dataset])
+                threshold = threshold_cell_value(threshold_map[dataset])
                 df = self.raw_results.get(dataset, {}).get(
                     threshold, pd.DataFrame())
                 if not df.empty:
@@ -7706,14 +7724,20 @@ class ComparisonAnalyzer:
                 bns = (np.load(bns_path) if os.path.exists(bns_path)
                        else np.array([], dtype=np.float64))
                 cls = None
+                # Ratio captures persist float64 ratios (every sub-1 tier
+                # would truncate to 0 under int32); synapse captures stay
+                # int32 (byte-identical).
+                _ew_dtype = (np.float64
+                             if str(meta.get('weight_basis', ''))
+                             == 'connection_ratio' else np.int32)
                 if os.path.exists(npz_path):
                     # The classified npz is the authoritative capture.
                     with np.load(npz_path) as z:
-                        ew = np.asarray(z['weight'], dtype=np.int32)
+                        ew = np.asarray(z['weight'], dtype=_ew_dtype)
                         cls = z['cls']
                 else:
                     ew = (np.load(ew_path) if os.path.exists(ew_path)
-                          else np.array([], dtype=np.int32))
+                          else np.array([], dtype=_ew_dtype))
             except Exception:
                 continue
             return meta, bns, ew, cls
@@ -7911,11 +7935,11 @@ class ComparisonAnalyzer:
                 continue
             meta = metas.get(ds, {})
             lo, hi = windows.get(ds, (None, None))
-            materialized = set(int(t) for t in self.get_applied_thresholds(ds))
+            materialized = set(self.get_applied_thresholds(ds))
             for i, t in enumerate(curve['thresholds']):
                 rows.append({
                     'dataset': ds,
-                    'threshold': int(t),
+                    'threshold': threshold_cell_value(t),
                     'path_count': curve['path_count'][i],
                     'edge_count': curve['edge_count'][i],
                     'density': (round(curve['density'][i], 6)
@@ -7928,7 +7952,8 @@ class ComparisonAnalyzer:
                     'w_start': lo,
                     'w_star_measured': hi,
                     'path_complete_from': meta.get('path_complete_from'),
-                    'is_materialized': bool(int(t) in materialized),
+                    'is_materialized': bool(
+                        threshold_cell_value(t) in materialized),
                 })
         if rows:
             density_curves_df = pd.DataFrame(rows)
@@ -8152,8 +8177,11 @@ class ComparisonAnalyzer:
         order = list(self.parameters.get_dataset_names())
         blocks = []
         # Per-run summary + window table.
+        _basis_txt = ('min connection ratio'
+                      if getattr(self.parameters, 'weight_basis', 'synapse')
+                      == 'connection_ratio' else 'Min Synapse Count')
         lines = ['- [auto threshold] density-aligned mode: measured per-dataset '
-                 'windows (Min Synapse Count) and the aligned rows:']
+                 f'windows ({_basis_txt}) and the aligned rows:']
         for ds in order:
             meta = metas.get(ds)
             if meta is None:

@@ -3409,10 +3409,12 @@ class FindNeuronConnection:
     FindAllPath ('all' mode), persist the query-scoped density arrays for
     this (dataset, query) into ``dataset_data/{dataset}/_density/`` —
 
-      - ``density_edges.npz`` (int32 cone weights at the floor threshold +
-        int8 endpoint classes: typed / untyped / debris, classified against
-        the curated neuron table with ``is_untyped_type_label``),
-      - ``density_edge_weights.npy`` (int32, all-class weights — same order
+      - ``density_edges.npz`` (cone weights at the floor threshold —
+        int32 synapse counts, or float64 F9 ratios under the
+        connection-ratio basis — plus int8 endpoint classes: typed /
+        untyped / debris, classified against the curated neuron table
+        with ``is_untyped_type_label``),
+      - ``density_edge_weights.npy`` (all-class weights, same dtype/order
         as the npz),
       - ``density_path_bottlenecks.npy`` (float64, one entry per enumerated
         bodyId path: its min edge weight),
@@ -15614,12 +15616,20 @@ class FindNeuronConnection:
             _m = re.search(
                 r'(_L\d+)r[\dneg]+(?:_[\dneg]+)*?'
                 r'(?=_\d{8}_\d{6}(?:/|$)|/|$)', base)
-            if _m is None:
-                raise ValueError(
-                    f'cannot restamp ratio threshold into folder name '
-                    f'{base!r}')
-            new_base = (base[:_m.start()] + _m.group(1)
-                        + 'r' + _dec + base[_m.end():])
+            if _m is not None:
+                # Standalone-run grammar: L{d}r{t} folder suffix.
+                new_base = (base[:_m.start()] + _m.group(1)
+                            + 'r' + _dec + base[_m.end():])
+            else:
+                # Cross-dataset delegate grammar: minratio_{decimal}
+                # (the comparison tool's folder builder).
+                new_base, _n = re.subn(
+                    r'minratio_[0-9neg_]+(?=/|$)',
+                    f'minratio_{_dec}', base, count=1)
+                if _n == 0:
+                    raise ValueError(
+                        f'cannot restamp ratio threshold into folder name '
+                        f'{base!r}')
         else:
             new_base = re.sub(r'minsyn_\d+(?=/|$)',
                               f'minsyn_{threshold}', base)

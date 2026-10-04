@@ -320,6 +320,13 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
     mapper = getattr(analyzer.parameters, '_auto_type_mapper', None)
     snapshot = getattr(analyzer, '_mapper_snapshot', None)
     requested_map = query.get('thresholds') or {}
+    # The below-threshold / not-recruited split compares raw SYNAPSE edge
+    # weights against the applied threshold — meaningless under the
+    # connection-ratio basis (the frame's weight column is a synapse count,
+    # the tier is a per-post fraction). Degrade the absence diagnosis
+    # honestly instead of truncating tiers to 0 and mislabeling statuses.
+    ratio_basis = (getattr(analyzer.parameters, 'weight_basis', 'synapse')
+                   == 'connection_ratio')
 
     coverage: Dict[Tuple[str, str], TypeCoverageEntry] = {}
 
@@ -458,12 +465,16 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
                     f'max edge weight from {partners} {weight} '
                     f'< threshold {applied_int}')
 
-            if overall_max is None or applied_int is None:
+            if ratio_basis or overall_max is None or applied_int is None:
                 coverage[(type_name, dataset)] = TypeCoverageEntry(
                     type=type_name, dataset=dataset, present=False,
                     resolved_type=resolved_display,
                     status=STATUS_RESOLVED_ABSENT,
-                    detail=('diagnosis unavailable (no connection cache '
+                    detail=('below-threshold diagnosis compares synapse '
+                            'edge weights and stays unavailable under '
+                            'the connection-ratio basis'
+                            if ratio_basis else
+                            'diagnosis unavailable (no connection cache '
                             'or searched-graph list)'),
                 )
             elif overall_max < 0:

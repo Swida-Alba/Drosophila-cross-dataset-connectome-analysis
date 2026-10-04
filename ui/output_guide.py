@@ -347,17 +347,23 @@ COLUMN_GLOSSARY = {
     "anchor": ("Anchor type name the mapping row was resolved from.", "text"),
     "same name": ("The dataset uses the identical type name (no mapping needed).", "boolean"),
     # --- Cross-dataset comparison ------------------------------------------------
-    "threshold": ("Minimum synapse threshold applied (ASKED value — see "
-                  "applied_threshold for the real cutoff in effect).", "integer"),
-    "requested_threshold": ("The user-entered Min Synapse Count before any "
-                            "budget effect.", "integer"),
+    "threshold": ("Minimum threshold applied (ASKED value — synapse count, "
+                  "or the min connection ratio on weight-basis='connection_ratio' "
+                  "runs; see applied_threshold for the real cutoff in "
+                  "effect).", "number"),
+    "requested_threshold": ("The user-entered threshold before any budget "
+                            "effect (Min Synapse Count; float min connection "
+                            "ratio on weight-basis='connection_ratio' runs).",
+                            "number"),
     "applied_threshold": ("The CANONICAL (minimal) threshold that reproduces "
-                          "this run's output: w2 + 1 for a budget-bitten run "
-                          "(w2 = strongest dropped path bottleneck — every "
-                          "threshold in [w2+1, τ] yields the identical set), "
-                          "else the asked threshold for complete runs (whose "
-                          "natural τ equals it). See applied_threshold_source "
-                          "for which mechanism(s) set it.", "integer"),
+                          "this run's output: w2 + 1 for a budget-bitten synapse "
+                          "run (w2 = strongest dropped path bottleneck — every "
+                          "threshold in (w2, τ] yields the identical set; the "
+                          "weakest distinct ratio tier above w2 on "
+                          "connection-ratio runs), else the asked threshold for "
+                          "complete runs (whose natural τ equals it). See "
+                          "applied_threshold_source for which mechanism(s) set "
+                          "it.", "number"),
     "applied_threshold_source": ("Which mechanism(s) determined "
                                  "applied_threshold: 'requested' (no budget "
                                  "bit), 'strongest_first_budget', "
@@ -374,9 +380,10 @@ COLUMN_GLOSSARY = {
                             "the τ column).", "number"),
     "tau_canonical": ("The minimal threshold that reproduces this run's "
                       "materialized path set: w2 + 1 when a budget bite left "
-                      "a gap in [w2+1, τ]; the natural τ otherwise. "
-                      "Distinct from the landing τ, which is only the "
-                      "collapse bound.", "integer"),
+                      "a gap in (w2, τ] on synapse runs (the weakest distinct "
+                      "ratio tier above w2 on connection-ratio runs); the "
+                      "natural τ otherwise. Distinct from the landing τ, "
+                      "which is only the collapse bound.", "number"),
     "strongest_dropped": ("w2 — the strongest path bottleneck NOT in the "
                           "output (budget-bitten runs): lowering the threshold "
                           "to w2 or below admits new paths; any value in "
@@ -1213,8 +1220,9 @@ _PATHFINDING_EXPLANATION = [
             "complete run at that threshold produces exactly this path "
             "set. τ alone is only the landing/collapse bound — when the "
             "budget bite leaves a gap in the bottleneck distribution, "
-            "every threshold in [w2+1, τ] yields the identical set and "
-            "w2+1 (tau_canonical) is the minimal one.",
+            "every threshold in (w2, τ] yields the identical set and the minimal "
+            "one is tau_canonical (w2+1 on synapse runs; the weakest "
+            "distinct ratio tier above w2 on connection-ratio runs).",
         ],
         "table": [
             ["Run state", "applied_threshold", "τ", "Reading"],

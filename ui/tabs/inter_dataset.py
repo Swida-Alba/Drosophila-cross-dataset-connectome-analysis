@@ -628,7 +628,9 @@ def create_inter_dataset_tab():
                     hint="F7: when a run's effective tau collapses asked thresholds, extend "
                          "each dataset with k × τ_ref points (τ_ref = max per-dataset tau) "
                          "while ≤ 2× the max asked threshold — the schedule is global, so "
-                         "the expanded points stay shared across datasets. Default off; "
+                         "the expanded points stay shared across datasets. Synapse basis "
+                         "only: the integer k × τ ladder is not applied under the "
+                         "connection-ratio basis. Default off; "
                          "suggested by the banner on collapse.",
                 )
                 drop_untyped = checkbox_input(
@@ -763,8 +765,11 @@ def create_inter_dataset_tab():
             "weight_basis": ("connection_ratio"
                              if threshold_basis.value == "Connection ratio"
                              else "synapse"),
-            "replay_paths": (False if threshold_basis.value
-                             == "Connection ratio" else replay_paths.value),
+            # Ratio replay is fully supported (float tiers since Phase 3) —
+            # pass the checkbox through. The F7 integer k × τ ladder has no
+            # float-tier analog, so auto-extension stays off under the ratio
+            # basis (disclosed in the checkbox hint).
+            "replay_paths": replay_paths.value,
             "auto_extend_thresholds": (
                 False if threshold_basis.value == "Connection ratio"
                 else auto_extend_thresholds.value),

@@ -93,8 +93,7 @@ recovery). Related: `TypeLevelRefill.md`, `ConnectionRatio_Filter.md`,
 
 ## Phase 3 (2026-10-03)
 
-The in-pipeline lane now covers everything Phase 1-2 deferred except the
-float density/alignment grids:
+The in-pipeline lane now covers everything Phase 1-3 planned:
 
 - **Shortest Paths** runs the ratio lane (threshold applied at the
   target-rooted backward fetch, ratio bottlenecks in the per-pair
@@ -108,7 +107,8 @@ float density/alignment grids:
   would collapse every sub-1 ratio to 1), `L{d}r{t}` slice folders,
   float `replayed_from` gates, and float threshold-collapse discipline.
   Verified against fresh per-threshold runs (set equality incl. the
-  canonical collapse folder).
+  canonical collapse folder). In the Cross-Dataset tool, the Replay
+  Paths checkbox applies under the ratio basis too.
 - **Type-level refill** runs for ratio-basis budget-bitten runs: float
   threshold parsing, ratio-weighted re-enumeration, SYNPASE-mass refill
   records (dual-basis), the table-reproduction anchor intact. Refills
@@ -127,5 +127,17 @@ float density/alignment grids:
   the window intersection, density-matched horizontal rows when the
   bands intersect). Synapse captures are byte-identical to before (all
   casts are value-preserving: integral floats render as ints).
+- **The query/export identity layer is float-preserving** (audit round
+  2026-10-04): query rows, raw-run jobs, threshold views, the
+  `threshold_combinations.csv` manifest (incl. `raw_run_key` in the
+  `minratio_{decimal}` grammar), comparison points, and the HTML
+  report's provenance/chart cells all carry exact float tiers — an
+  earlier `int()` in that chain truncated every sub-1 tier to 0 in the
+  exported views while the run itself was correct. Two honest
+  degradations remain by design: the union type-coverage
+  below-threshold/not-recruited diagnosis (a synapse-weight compare)
+  reports "unavailable under the connection-ratio basis" instead of
+  guessing, and F7 auto-extension (the integer k × τ ladder) is
+  synapse-only.
 - Still deferred: ratio-basis shortest-mode replay (shortest is never
   replayable in any basis).
