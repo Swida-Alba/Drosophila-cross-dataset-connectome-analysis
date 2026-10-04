@@ -311,6 +311,8 @@ def load_unit_paths(csv_path: Path) -> pd.DataFrame:
     df['_length'] = nodes.str.len() - 1
     if 'min_weight' not in df.columns:
         df['min_weight'] = float('nan')
+    if 'min_ratio' not in df.columns:
+        df['min_ratio'] = float('nan')
     if 'path_prob' not in df.columns:
         df['path_prob'] = float('nan')
     if 'weights' not in df.columns:
@@ -320,6 +322,7 @@ def load_unit_paths(csv_path: Path) -> pd.DataFrame:
     if 'coverage' not in df.columns:
         df['coverage'] = ''
     df['min_weight'] = pd.to_numeric(df['min_weight'], errors='coerce')
+    df['min_ratio'] = pd.to_numeric(df['min_ratio'], errors='coerce')
     df['path_prob'] = pd.to_numeric(df['path_prob'], errors='coerce')
     return df
 
@@ -390,6 +393,7 @@ def build_unit_breakdown(
                     'ratios': '' if pd.isna(ratios) else str(ratios),
                     'coverage': '' if pd.isna(coverage) else str(coverage),
                     'min_weight': row['min_weight'],
+                    'min_ratio': row.get('min_ratio'),
                     'path_prob': row['path_prob'],
                     'length': int(length),
                     'source_bodyid_coverage': (
@@ -1023,7 +1027,7 @@ def build_payload(
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
     'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
-    'coverage', 'min_weight', 'path_prob', 'length',
+    'coverage', 'min_weight', 'min_ratio', 'path_prob', 'length',
     'source_bodyid_coverage', 'target_bodyid_coverage', 'paths_in_pair',
 ]
 
@@ -1290,6 +1294,16 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
             '(bodyId)</span> — thresholds, τ, w0/w1 and W* are in ratio '
             'units; synapse counts remain in every table '
             'column.</td></tr>')
+        rows.append(
+            '<tr><td>Two scopes</td><td>Ratios / Min ratio are '
+            '<strong>pair-level</strong> mass shares (the pair\u2019s kept '
+            'synapse mass ÷ the post type\u2019s full-membership incoming '
+            'mass, aggregated over all conn layers); Weights / Coverage are '
+            '<strong>path-level</strong> realized support (the distinct '
+            'bodyId edges behind that hop at that position). The applied '
+            'threshold acts per bodyId edge — the type-level min_ratio can '
+            'fall below it (see ratio_synapse_map.csv for the implied '
+            'per-neuron synapse cutoffs).</td></tr>')
     applied = prov.get('applied_threshold')
     source = prov.get('applied_threshold_source')
     if applied is not None:
@@ -2497,7 +2511,7 @@ REPORT_JS = r"""
           var bucket = groupsByLen[g.len] = groupsByLen[g.len] || [];
           g.rows.forEach(function(r) {
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
-              path: r.path, len: g.len, mw: r.mw, pp: r.pp,
+              path: r.path, len: g.len, mw: r.mw, mr: r.mr, pp: r.pp,
               weights: r.weights, ratios: r.ratios,
               coverage: r.coverage, scov: r.scov, tcov: r.tcov,
               total: g.total});
@@ -2510,6 +2524,10 @@ REPORT_JS = r"""
       // and data cells must always agree (a 9-wide header over 8-wide rows
       // shifted every cell one column left).
       var union = pairs.length > 1;
+      // Round-10: ratio-basis runs rank (and union re-rank) by min_ratio;
+      // the Min ratio column exists exactly there, keeping header/cell
+      // agreement the same way.
+      var ratioRun = DATA.run.rank_by === 'min_ratio';
       var wrap = elt('div', 'sticky-table-container');
       var table = elt('table');
       var thead = elt('thead');
@@ -2517,17 +2535,41 @@ REPORT_JS = r"""
       var headers = ['#'];
       if (union) { headers.push('Pair'); }
       headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
-                   'Ratios', 'Coverage',
-        'Source coverage', 'Target coverage');
+                   'Ratios', 'Coverage');
+      if (ratioRun) { headers.push('Min ratio'); }
+      headers.push('Source coverage', 'Target coverage');
+      // Round-10 scope labels: Weights/Coverage describe the realized
+      // per-position support; Ratios is the pair-level mass share —
+      // different universes that must not be read as one.
+      var headerTitles = {
+        'Min weight': 'Weakest hop of this path — the realized synapse '
+          + 'mass of that hop (distinct bodyId edges at that position).',
+        'Weights': 'Per-hop realized synapse mass: the distinct bodyId '
+          + 'edges backing each hop at that position — the same edges '
+          + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
+        'Ratios': 'Per-hop type-PAIR mass share: the pair\u2019s kept '
+          + 'synapse mass / the post type\u2019s full-membership incoming '
+          + 'mass. Pair-level over all conn layers — it does not depend '
+          + 'on which bodyIds realize this path.',
+        'Coverage': 'Per-node coverage: distinct bodyIds realizing this '
+          + 'exact sequence at that position / the type\u2019s population '
+          + 'in the run\u2019s discovered network.',
+        'Min ratio': 'Weakest per-hop pair mass share on this path (this '
+          + 'run\u2019s ranking key).'
+      };
       headers.forEach(function(t) {
-        hr.appendChild(elt('th', null, t)); });
+        var th = elt('th', null, t);
+        if (headerTitles[t]) { th.title = headerTitles[t]; }
+        hr.appendChild(th); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = elt('tbody');
       var rowPaths = [];
       var colSpan = headers.length;
       lengths.forEach(function(len) {
         var rows = groupsByLen[len].slice().sort(function(a, b) {
-          return (b.mw || 0) - (a.mw || 0) || (a.path < b.path ? -1 : 1); });
+          var ka = ratioRun ? (a.mr || 0) : (a.mw || 0);
+          var kb = ratioRun ? (b.mr || 0) : (b.mw || 0);
+          return kb - ka || (a.path < b.path ? -1 : 1); });
         var gr = elt('tr', 'group-row');
         var gtd = elt('td', null, len + ' hops — ' + rows.length
           + ' shown (' + (union ? 'union, top '
@@ -2547,6 +2589,7 @@ REPORT_JS = r"""
           tr.appendChild(pathTd);
           tr.appendChild(elt('td', null, row.len));
           tr.appendChild(elt('td', null, fmt(row.mw)));
+          if (ratioRun) { tr.appendChild(elt('td', null, fmt(row.mr))); }
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
           tr.appendChild(elt('td', null, row.ratios));
@@ -2580,7 +2623,10 @@ REPORT_JS = r"""
       note.textContent = 'Showing ' + totalShown + ' of ' + totalAll
         + ' paths (top-' + DATA.run.top_per_length + ' per pair and length, '
         + 'rank by ' + DATA.run.rank_by
-        + (pairs.length > 1 ? ', union re-ranked by min weight within each length' : '')
+        + (pairs.length > 1
+           ? ', union re-ranked by '
+             + (ratioRun ? 'min ratio' : 'min weight')
+             + ' within each length' : '')
         + '). Hover a row to highlight its route in the network below.';
       card.appendChild(note);
       return card;
@@ -2780,6 +2826,8 @@ def _attach_table_groups(
                     'path': str(row['path']),
                     'len': int(length),
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
+                    'mr': (None if pd.isna(row.get('min_ratio'))
+                           else float(row['min_ratio'])),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),

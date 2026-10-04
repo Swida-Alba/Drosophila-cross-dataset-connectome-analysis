@@ -123,10 +123,10 @@ exported path tables.
 #### Main Data Files
 *   **`{source}_to_{target}_allpaths_type.csv`**: The primary path table (type-level when `skip_bodyId=True`, the UI default). Columns:
     *   `path`: Path as a type sequence (e.g. `aMe12 → SMP238 → PPL101`)
-    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios
-    *   `min_weight`: Smallest edge weight along the path
+    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios. `weights` is the **realized** synapse mass of each hop (round-10): the distinct bodyId edges backing that exact hop at that path position — the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total (that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). `ratios` stays pair-level (the pair's kept mass ÷ the post type's full-membership incoming mass), so it does not depend on which bodyIds realize the path
+    *   `min_weight`: Smallest realized hop weight along the path
     *   `path_prob`: Overall path probability
-    *   `min_ratio`: Smallest edge connection ratio
+    *   `min_ratio`: Smallest edge connection ratio (pair-level; in ratio runs it is a type mass share and can fall below the applied bodyId-level `t_r`)
     *   `length`: Number of hops
     *   `nt_types`: Neurotransmitter types along the path — one entry per
         hop, positionally aligned; an empty entry marks a hop whose
@@ -255,8 +255,12 @@ the report's `Generated:` timestamp.
 *   **`paths_pair_breakdown/pair_breakdown_paths.csv`**: One row per path,
     uncapped — columns `dataset`, `threshold`, `unit`, `source`, `target`,
     `pair`, `rank_in_pair_length`, `path`, `weights`, `probabilities`,
-    `ratios`, `min_weight`, `path_prob`, `length`,
+    `ratios`, `min_weight`, `min_ratio`, `path_prob`, `length`,
     `source_bodyid_coverage`, `target_bodyid_coverage`, `paths_in_pair`
+    (round-10: the Explorer table shows a Min-ratio column and the union
+    pane re-ranks by it whenever the run ranks by `min_ratio`; Weights /
+    Coverage headers carry scope tooltips — weights are realized per-hop
+    mass, ratios are pair-level mass shares)
     (the coverage columns are PER PATH — the first/last entries of the
     row's own per-node `coverage` list: distinct bodyIds realizing THAT
     path / the type's run members; rows without a coverage list fall
