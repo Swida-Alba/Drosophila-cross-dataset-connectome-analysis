@@ -2218,6 +2218,111 @@ class FindNeuronConnection:
             df['traversal_probability'] = (df['connection_ratio'] / 0.3).clip(upper=1.0)
         return df
 
+    def _attach_ratio_adj_columns(self, df, pre_col: str, post_col: str):
+        """``connection_ratio_adj`` — the threshold-CONDITIONED input share:
+        weight / the post's total incoming mass counting only edges at or
+        above the run's Min Synapse Count (round-12 user directive).
+
+        The plain ``connection_ratio`` stays threshold-free (F9: its
+        denominator is the all-post incoming mass at min_weight=1, so it
+        never jumps when the query threshold changes). The adjusted
+        denominator answers the other question — "of the input this post
+        actually receives ABOVE the detection threshold, what fraction is
+        this connection" — so it is always >= the plain ratio and moves
+        with the threshold by design.
+
+        Skipped (no column emitted) when the threshold is 1: the adjusted
+        denominator degenerates to the threshold-free one — e.g. every
+        connection_ratio-basis run, whose entry gate forces min synapse
+        to 1. Works at both levels: ``post_col='bodyId_post'`` fetches
+        per-neuron totals, ``'type_post'`` per-type totals (summed over
+        the type's members); the in-frame group sum is the last-resort
+        fallback, understating the denominator exactly like the F9
+        fallback does."""
+        if df is None:
+            return df
+        thr = int(getattr(self, 'min_synapse_num', 1) or 1)
+        if thr <= 1:
+            return df
+        try:
+            import polars as pl
+            if isinstance(df, pl.DataFrame):
+                if df.is_empty() or 'weight' not in df.columns:
+                    return df
+                posts = sorted({str(p) for p in
+                                df[post_col].drop_nulls().unique().to_list()})
+                totals = None
+                try:
+                    if post_col == 'type_post':
+                        totals = (self._fetch_total_incoming_weight_by_type(
+                            posts, thr) if posts else None)
+                    else:
+                        totals = (self._fetch_total_incoming_weight(
+                            posts, thr) if posts else None)
+                except Exception:
+                    totals = None
+                if totals is not None and len(totals):
+                    key = ('type_post' if post_col == 'type_post'
+                           else 'bodyId_post')
+                    totals_pl = pl.from_pandas(totals).with_columns(
+                        pl.col(key).cast(pl.Utf8))
+                    df = df.with_columns(pl.col(post_col).cast(pl.Utf8))
+                    df = df.join(totals_pl.rename({key: post_col}),
+                                 on=post_col, how='left')
+                    df = df.with_columns(
+                        pl.when(pl.col('total_incoming_weight') > 0)
+                        .then(pl.col('weight')
+                              / pl.col('total_incoming_weight'))
+                        .otherwise(None)
+                        .alias('connection_ratio_adj')
+                    ).drop('total_incoming_weight')
+                else:
+                    totals_gp = df.group_by(post_col).agg(
+                        pl.col('weight').sum().alias('_adj_total'))
+                    df = df.join(totals_gp, on=post_col, how='left')
+                    df = df.with_columns(
+                        pl.when(pl.col('_adj_total') > 0)
+                        .then(pl.col('weight') / pl.col('_adj_total'))
+                        .otherwise(None)
+                        .alias('connection_ratio_adj')
+                    ).drop('_adj_total')
+                return df
+        except Exception:
+            pass
+
+        # Pandas fallback
+        if not isinstance(df, pd.DataFrame) and hasattr(df, 'to_pandas'):
+            try:
+                df = df.to_pandas()
+            except Exception:
+                return df
+        if hasattr(df, 'empty') and df.empty:
+            return df
+        if 'weight' not in df.columns:
+            return df
+        posts = sorted({str(p) for p in df[post_col].dropna().unique()})
+        totals = None
+        try:
+            if post_col == 'type_post':
+                totals = (self._fetch_total_incoming_weight_by_type(
+                    posts, thr) if posts else None)
+            else:
+                totals = (self._fetch_total_incoming_weight(
+                    posts, thr) if posts else None)
+        except Exception:
+            totals = None
+        if totals is not None and len(totals):
+            key = ('type_post' if post_col == 'type_post'
+                   else 'bodyId_post')
+            adj_den = df[post_col].astype(str).map(
+                totals.set_index(key)['total_incoming_weight']
+            ).replace(0, np.nan)
+        else:
+            adj_den = df.groupby(post_col)['weight'].transform('sum')
+            adj_den = adj_den.replace(0, np.nan)
+        df['connection_ratio_adj'] = df['weight'] / adj_den
+        return df
+
     def _apply_hemisphere_suffix_to_conn_df(self, conn_df: pd.DataFrame) -> pd.DataFrame:
         if conn_df is None or conn_df.empty:
             return conn_df
@@ -14823,6 +14928,8 @@ class FindNeuronConnection:
                 conn_types, 'type_pre', 'type_post')
             conn_types = self._recompute_ratio_lane_type_ratios(
                 conn_types, conn_inpath)
+            conn_types = self._attach_ratio_adj_columns(
+                conn_types, 'type_pre', 'type_post')
             conn_inpath = self._sort_connection_export(conn_inpath)
             conn_inpath = conn_inpath.reset_index(drop=True)
             conn_types = self._sort_connection_export(conn_types)
@@ -16998,7 +17105,10 @@ class FindNeuronConnection:
                 'per-hop Weights AND Ratios on type paths = the REALIZED '
                 'support at that hop\'s position (the bodyId edges backing '
                 'that exact sequence there — ratios divide their mass by '
-                'the post type\'s full-membership incoming mass).')
+                'the post type\'s full-membership incoming mass). '
+                'connection_ratio_adj is not emitted this run: the ratio '
+                'basis forces Min Synapse Count to 1, where the adjusted '
+                'denominator IS the threshold-free one.')
         else:
             if getattr(self, 'min_ratio', 0) or getattr(
                     self, 'min_traversal_probability', 0):
@@ -17008,12 +17118,20 @@ class FindNeuronConnection:
                     'values are ignored.', level='always')
             self.min_ratio = 0.0
             self.min_traversal_probability = 0.0
-            self._warn_notes.append(
+            _rd_note = (
                 '- [ratio definition] connection_ratio = weight / ALL-POST '
                 'incoming weight of the target (threshold-free, all sources '
                 'in the dataset); traversal_probability = ratio / 0.3 '
                 '(capped at 1). Ratio and probability are readout columns '
                 '— they no longer filter the pathfinding graph.')
+            if int(getattr(self, 'min_synapse_num', 1) or 1) > 1:
+                _rd_note += (
+                    ' connection_ratio_adj (threshold-conditioned share) = '
+                    'weight / incoming weight counting only edges at or '
+                    'above the Min Synapse Count — always >= '
+                    'connection_ratio, and it moves with the threshold by '
+                    'design.')
+            self._warn_notes.append(_rd_note)
         
         # Check if source or target dataframes are empty
         if self.source_df.empty:
@@ -19350,6 +19468,10 @@ class FindNeuronConnection:
             conn_types, 'type_pre', 'type_post')
         conn_types = self._recompute_ratio_lane_type_ratios(
             conn_types, conn_inpath, total_n_map=type_membership_n)
+        # Round-12: the threshold-conditioned share (min_synapse>=2 runs
+        # only — at 1 the adjusted denominator IS the F9 one).
+        conn_types = self._attach_ratio_adj_columns(
+            conn_types, 'type_pre', 'type_post')
 
         # Determine if using CSV or Excel based on output_format or data size
         EXCEL_ROW_LIMIT = 1_048_576
@@ -19451,7 +19573,12 @@ class FindNeuronConnection:
         # Save bodyId-level data
         if not self.skip_bodyId:
             self._vprint(f'Saving bodyId-level allpaths data (rows: {len(conn_inpath):,})...', level='full')
-            
+
+            # Round-12: the threshold-conditioned per-connection share on
+            # the bodyId table too (no-op at min_synapse <= 1).
+            conn_inpath = self._attach_ratio_adj_columns(
+                conn_inpath, 'bodyId_pre', 'bodyId_post')
+
             # Recalculate use_csv for bodyId data
             use_csv = (self.output_format == 'csv') or (len(conn_inpath) >= EXCEL_ROW_LIMIT * 0.9)
             

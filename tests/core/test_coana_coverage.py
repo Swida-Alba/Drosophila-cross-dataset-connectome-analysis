@@ -974,6 +974,109 @@ class TestTypePathRealizedWeightsAndMembershipN:
         assert coana.FindNeuronConnection._realized_ratio_readout(
             [5.0], ("A", "B"), {"B": 0.0}) is None
 
+
+class TestRatioAdjColumns:
+    """Round-12: connection_ratio_adj — the threshold-CONDITIONED share
+    (denominator counts only edges at/above the run's Min Synapse
+    Count), at both type and bodyId levels."""
+
+    @staticmethod
+    def _tot_frame(rows, key):
+        return pd.DataFrame({
+            key: [r[0] for r in rows],
+            'total_incoming_weight': [float(r[1]) for r in rows],
+        })
+
+    def test_type_level_uses_threshold_totals(self):
+        fc, _ = make_fc(min_synapse_num=3)
+        # threshold-conditioned type totals: TT receives 50 above thr 3
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame(
+                [('TT', 50)], 'type_post'))
+        df = pd.DataFrame({
+            'type_pre': ['TA', 'TB'], 'type_post': ['TT', 'TT'],
+            'weight': [10, 5],
+            'connection_ratio': [0.1, 0.05],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert abs(out['connection_ratio_adj'].iloc[0] - 10 / 50) < 1e-12
+        assert abs(out['connection_ratio_adj'].iloc[1] - 5 / 50) < 1e-12
+        # the min_weight argument is the run's threshold, not 1
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: (
+                self._tot_frame([('TT', 50)], 'type_post')
+                if min_weight == 3 else pd.DataFrame()))
+        out2 = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert abs(out2['connection_ratio_adj'].iloc[0] - 10 / 50) < 1e-12
+
+    def test_bodyid_level_uses_threshold_totals(self):
+        fc, _ = make_fc(min_synapse_num=3)
+        fc._fetch_total_incoming_weight = (
+            lambda posts, min_weight: self._tot_frame(
+                [('42', 25)], 'bodyId_post'))
+        df = pd.DataFrame({
+            'bodyId_pre': ['1'], 'bodyId_post': ['42'], 'weight': [5],
+        })
+        out = fc._attach_ratio_adj_columns(
+            df, 'bodyId_pre', 'bodyId_post')
+        assert abs(out['connection_ratio_adj'].iloc[0] - 5 / 25) < 1e-12
+
+    def test_skip_at_threshold_one(self):
+        # thr 1: the adjusted denominator IS the F9 one — no column.
+        fc, _ = make_fc(min_synapse_num=1)
+        df = pd.DataFrame({
+            'type_pre': ['TA'], 'type_post': ['TT'], 'weight': [10],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert 'connection_ratio_adj' not in out.columns
+        # ratio basis forces min synapse 1 — same skip
+        fc2, _ = make_fc(min_synapse_num=1, weight_basis='connection_ratio')
+        out2 = fc2._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert 'connection_ratio_adj' not in out2.columns
+
+    def test_inframe_fallback_when_fetch_fails(self):
+        fc, _ = make_fc(min_synapse_num=3)
+
+        def _boom(*a, **k):
+            raise RuntimeError('offline')
+        fc._fetch_total_incoming_weight_by_type = _boom
+        df = pd.DataFrame({
+            'type_pre': ['TA', 'TB', 'TC'], 'type_post': ['TT', 'TT', 'TS'],
+            'weight': [10, 5, 7],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        # in-frame totals: TT 15, TS 7
+        assert abs(out['connection_ratio_adj'].iloc[0] - 10 / 15) < 1e-12
+        assert abs(out['connection_ratio_adj'].iloc[1] - 5 / 15) < 1e-12
+        assert abs(out['connection_ratio_adj'].iloc[2] - 1.0) < 1e-12
+
+    def test_invariant_adj_ge_plain(self):
+        # the adjusted denominator counts a SUBSET of edges, so
+        # adj >= plain holds row-wise (equal only when nothing is cut).
+        fc, _ = make_fc(min_synapse_num=3)
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame(
+                [('TT', 60 if min_weight == 3 else 100)], 'type_post'))
+        df = pd.DataFrame({
+            'type_pre': ['TA'], 'type_post': ['TT'], 'weight': [10],
+            'connection_ratio': [10 / 100],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert (out['connection_ratio_adj']
+                >= out['connection_ratio']).all()
+
+    def test_polars_branch(self):
+        fc, _ = make_fc(min_synapse_num=3)
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame(
+                [('TT', 50)], 'type_post'))
+        df = pl.DataFrame({
+            'type_pre': ['TA'], 'type_post': ['TT'], 'weight': [10],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert isinstance(out, pl.DataFrame)
+        assert abs(out['connection_ratio_adj'][0] - 0.2) < 1e-12
+
     def test_network_type_membership_counts_union(self):
         # N = bodyIds on emitted paths ∪ discovery layers, counted per
         # final type label (duplicates collapse).
