@@ -1075,6 +1075,25 @@ class TestRatioAdjColumns:
         assert (out['connection_ratio_adj']
                 >= out['connection_ratio']).all()
 
+    def test_ratio_basis_reuses_recompute_mass(self):
+        # Round-14: under the ratio basis at Min Synapse 1 the adj column
+        # must equal connection_ratio BY CONSTRUCTION — even when a fresh
+        # by-type fetch would disagree (the recompute settled on its
+        # frame-membership fallback; a real hemibrain delegate hit this).
+        fc, _ = make_fc(min_synapse_num=1,
+                        weight_basis='connection_ratio')
+        fc._ratio_lane_type_mass = {'TT': 100.0}
+
+        def _flaky(types, min_weight):
+            raise RuntimeError('transient fetch failure')
+        fc._fetch_total_incoming_weight_by_type = _flaky
+        df = pd.DataFrame({
+            'type_pre': ['TA'], 'type_post': ['TT'], 'weight': [10],
+            'connection_ratio': [0.1],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert abs(out['connection_ratio_adj'].iloc[0] - 0.1) < 1e-12
+
     def test_polars_branch(self):
         fc, _ = make_fc(min_synapse_num=3)
         fc._fetch_total_incoming_weight_by_type = (

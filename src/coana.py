@@ -2244,23 +2244,41 @@ class FindNeuronConnection:
         if df is None:
             return df
         thr = max(1, int(getattr(self, 'min_synapse_num', 1) or 1))
+        # Round-14: under the ratio basis at Min Synapse 1 the adjusted
+        # denominator IS the plain one — COPY the plain column so adj ==
+        # connection_ratio BY CONSTRUCTION, row for row (a fresh fetch
+        # can disagree with the settled plain ratios: on a real
+        # hemibrain delegate the mass recompute missed 20 post types and
+        # left their enrichment-era ratios in place, which the adj
+        # fetch-side denominators then contradicted). At thr > 1
+        # (ratio+AND) the conditioned fetch below is the meaningful
+        # denominator and stays.
+        _copy_plain = (post_col == 'type_post' and thr <= 1
+                       and getattr(self, 'weight_basis', 'synapse')
+                       == 'connection_ratio')
         try:
             import polars as pl
             if isinstance(df, pl.DataFrame):
                 if df.is_empty() or 'weight' not in df.columns:
                     return df
+                if _copy_plain and 'connection_ratio' in df.columns:
+                    return df.with_columns(
+                        pl.col('connection_ratio')
+                        .cast(pl.Float64)
+                        .alias('connection_ratio_adj'))
                 posts = sorted({str(p) for p in
                                 df[post_col].drop_nulls().unique().to_list()})
                 totals = None
-                try:
-                    if post_col == 'type_post':
-                        totals = (self._fetch_total_incoming_weight_by_type(
-                            posts, thr) if posts else None)
-                    else:
-                        totals = (self._fetch_total_incoming_weight(
-                            posts, thr) if posts else None)
-                except Exception:
-                    totals = None
+                if totals is None:
+                    try:
+                        if post_col == 'type_post':
+                            totals = (self._fetch_total_incoming_weight_by_type(
+                                posts, thr) if posts else None)
+                        else:
+                            totals = (self._fetch_total_incoming_weight(
+                                posts, thr) if posts else None)
+                    except Exception:
+                        totals = None
                 if totals is not None and len(totals):
                     key = ('type_post' if post_col == 'type_post'
                            else 'bodyId_post')
@@ -2300,17 +2318,23 @@ class FindNeuronConnection:
             return df
         if 'weight' not in df.columns:
             return df
+        if _copy_plain and 'connection_ratio' in df.columns:
+            df = df.copy()
+            df['connection_ratio_adj'] = pd.to_numeric(
+                df['connection_ratio'], errors='coerce')
+            return df
         posts = sorted({str(p) for p in df[post_col].dropna().unique()})
         totals = None
-        try:
-            if post_col == 'type_post':
-                totals = (self._fetch_total_incoming_weight_by_type(
-                    posts, thr) if posts else None)
-            else:
-                totals = (self._fetch_total_incoming_weight(
-                    posts, thr) if posts else None)
-        except Exception:
-            totals = None
+        if totals is None:
+            try:
+                if post_col == 'type_post':
+                    totals = (self._fetch_total_incoming_weight_by_type(
+                        posts, thr) if posts else None)
+                else:
+                    totals = (self._fetch_total_incoming_weight(
+                        posts, thr) if posts else None)
+            except Exception:
+                totals = None
         if totals is not None and len(totals):
             key = ('type_post' if post_col == 'type_post'
                    else 'bodyId_post')
@@ -13577,17 +13601,41 @@ class FindNeuronConnection:
                  else tbl)
                 for tbl in conn_layers
             ]
+        # Round-14 (user-approved): under AND the retained-strength story
+        # is TWO-DIMENSIONAL — the synapse bound is meaningful on BOTH
+        # bases (it is a live threshold), so report it for ratio+AND too
+        # and append the explicit two-line note below.
+        _and_both_live = (
+            str(getattr(self, 'threshold_combination', 'or')
+                or 'or').strip().lower() == 'and'
+            and int(getattr(self, 'min_synapse_num', 1) or 1) > 1
+            and 0.0 < float(getattr(self, 'min_ratio', 0.0) or 0.0) <= 1.0)
         conn_layers, prune_stats = prune_layers_hop_budget(
             conn_layers, sources, targets, self.max_interlayer + 1,
             vprint=self._vprint, warn_notes=self._warn_notes,
             label='bodyId',
             # Round-10: the pruning bound is synapse-unit (computed on the
             # raw weight column before the ratio attach below) — do not
-            # report it as if it were the run's ratio-unit strength.
+            # report it as if it were the run's ratio-unit strength
+            # (round-14 exception: ratio+AND keeps the synapse threshold
+            # live, so the synapse-side ceiling IS meaningful there).
             report_bottleneck_bound=(
                 getattr(self, 'weight_basis', 'synapse')
-                != 'connection_ratio'),
+                != 'connection_ratio' or _and_both_live),
         )
+        if (_and_both_live
+                and prune_stats.get('strongest_retained') is not None
+                and prune_stats.get('rows_dropped')):
+            self._warn_notes.append(
+                '- [threshold combination] retained-strength bound is '
+                'two-dimensional this run: the pruning bound above is the '
+                'SYNPASE-side ceiling (at most '
+                f'{prune_stats["strongest_retained"]:g} synapses); every '
+                'retained path also clears the ratio co-threshold on '
+                f'every hop (>= {float(self.min_ratio):g}), whose measured '
+                'ceiling rides parameters.txt '
+                '(strongest_retained_bottleneck, ratio units) on '
+                "ratio-basis runs.")
         # Explicit pruning record (report-fixes concern 1): the stats ride
         # on the instance so all_attributes.json and the run guide carry
         # the lossless-reduction numbers for every materialized folder.

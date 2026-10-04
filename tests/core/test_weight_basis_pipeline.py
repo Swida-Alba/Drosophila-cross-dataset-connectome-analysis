@@ -608,8 +608,10 @@ def test_ratio_replay_slice_refill(tmp_path):
 AND_EDGES = [
     ('S1', 'M', 60), ('S1', 'X', 60),
     ('M', 'T1', 40), ('X', 'T1', 27),
+    ('S1', 'W', 40),   # dead branch: pruned by the lossless hop closure
 ]
-AND_TYPES = {'S1': 'SRC', 'M': 'MID', 'X': 'MID', 'T1': 'SINK'}
+AND_TYPES = {'S1': 'SRC', 'M': 'MID', 'X': 'MID', 'T1': 'SINK',
+             'W': 'DEAD'}
 AND_SOURCES = ['S1']
 AND_TARGETS = ['T1']
 
@@ -646,6 +648,10 @@ def test_and_mode_drops_edges_failing_either_threshold(tmp_path):
     assert 'and (synapse count + connection ratio)' in params
     notes = (and_dir / 'user_warning_notes.txt').read_text(encoding='utf-8')
     assert '[threshold combination] AND' in notes
+    # Round-14: the retained-strength bound is explicitly two-dimensional
+    assert ('retained-strength bound is two-dimensional' in notes
+            and 'SYNPASE-side ceiling' in notes
+            and 'bottleneck is at most' in notes)
 
 
 def test_and_mode_ratio_basis_keeps_synapse_floor(tmp_path):
@@ -659,6 +665,12 @@ def test_and_mode_ratio_basis_keeps_synapse_floor(tmp_path):
     assert _and_paths(and_dir) == {('S1', 'M', 'T1')}
     # folder token carries BOTH tiers under AND
     assert 'w30r0_2' in and_dir.name
+    # Round-14: ratio+AND reports the synapse-side pruning bound TOO
+    # (the synapse threshold is live) plus the two-dimensional note.
+    notes_a = (and_dir / 'user_warning_notes.txt').read_text(
+        encoding='utf-8')
+    assert 'bottleneck is at most' in notes_a
+    assert 'retained-strength bound is two-dimensional' in notes_a
     params = (and_dir / 'parameters.txt').read_text(encoding='utf-8')
     assert 'threshold combination' in params
 
