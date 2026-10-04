@@ -205,6 +205,7 @@ def clear_caches() -> None:
     _NEURON_TABLE_CACHE.clear()
     _CONNECTION_CACHE.clear()
     _IN_GRAPH_CACHE.clear()
+    _POST_TOTALS_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -547,11 +548,10 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
                     f'max edge weight from {partners} {weight} '
                     f'< threshold {applied_int}')
 
-            def _ratio_detail(hit, partners: str, below: bool) -> str:
+            def _ratio_detail(hit, partners: str) -> str:
                 r, w, total = hit
-                rel = '<' if below else '>='
                 return (f'max connection ratio from {partners} '
-                        f'{r:.4g} {rel} threshold {applied_tier:.4g} '
+                        f'{r:.4g} < threshold {applied_tier:.4g} '
                         f'(strongest leg {w:g}/{total:g} syn)')
 
             if ratio_basis:
@@ -577,7 +577,7 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
                     if src_r[0] < applied_tier:
                         entry_status, entry_detail = (
                             STATUS_BELOW_THRESHOLD,
-                            _ratio_detail(src_r, 'path sources', True))
+                            _ratio_detail(src_r, 'path sources'))
                     else:
                         entry_status, entry_detail = (
                             STATUS_NOT_RECRUITED,
@@ -595,7 +595,7 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
                         resolved_type=resolved_display,
                         status=STATUS_BELOW_THRESHOLD,
                         detail=_ratio_detail(
-                            overall_r, 'searched-graph partners', True))
+                            overall_r, 'searched-graph partners'))
                 else:
                     coverage[(type_name, dataset)] = TypeCoverageEntry(
                         type=type_name, dataset=dataset, present=False,
