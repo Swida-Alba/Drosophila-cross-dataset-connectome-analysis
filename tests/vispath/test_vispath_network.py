@@ -315,6 +315,27 @@ class TestGeneratedHtmlStructure:
         clear_fn = _extract_js_function(js, "clearSelection")
         assert "resetSelectionPanelUI()" in clear_fn
 
+    def test_no_auto_fit_on_load(self, network_html):
+        """The viewer must never rescale the view on its own: no layout run
+        (initial or user-triggered) auto-fits, no on-load cy.fit() exists.
+        The page opens at 100% zoom; a SAVED layout's zoom/pan is restored
+        explicitly by the auto-restore, and ⛶ Fit / import toast Fits are
+        the only remaining fits."""
+        js = _script_text(network_html)
+        # every layout config is forced to fit:false at the single choke point
+        # (cytoscape layouts default fit:true, which re-scaled on every open)
+        config_fn = _extract_js_function(js, "getLayoutConfig")
+        assert "config.fit = false" in config_fn
+        # no bare on-load fit calls (init, hemisphere layout, hemisphere restore)
+        assert "cy.fit();" not in js
+        # the explicit fits survive: ⛶ Fit button, graph-import fit, and the
+        # two toast Fit actions after a layout import
+        assert "cy.fit(visible, 80)" in js
+        assert js.count("cy.fit(null, 50)") == 3
+        # restoring a SAVED view (user state, not auto-scaling) stays intact
+        assert "cy.zoom(state.zoom)" in js
+        assert "cy.pan(state.pan)" in js
+
     def test_snapshots_are_complete_deep_copies(self, network_html):
         js = _script_text(network_html)
         # data()/position() return live references in Cytoscape; snapshots

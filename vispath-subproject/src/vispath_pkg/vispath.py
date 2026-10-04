@@ -7028,7 +7028,7 @@ class VisualizePath:
             const configs = {{
                 'mapping': {{
                     name: 'preset',             // Positions precomputed by hop layer
-                    fit: true,
+                    fit: false,                 // never auto-scale (forced below as well)
                     animate: false,
                     padding: 50
                 }},
@@ -7119,8 +7119,14 @@ class VisualizePath:
                     minNodeSpacing: 50
                 }}
             }};
-            
-            return configs[layoutName] || configs['dagre'];
+
+            // The viewer never moves the zoom on its own. Layouts default to
+            // fit:true (and 'mapping' set it explicitly), which re-scaled the
+            // view on every open and every user-triggered re-layout; the
+            // ⛶ Fit button (and the import toasts) are the explicit fits.
+            const config = configs[layoutName] || configs['dagre'];
+            config.fit = false;
+            return config;
         }}
         
         // Set the layout selector to show the current layout
@@ -7353,10 +7359,9 @@ class VisualizePath:
                         }}
                     }});
                 }});
-                
-                cy.fit();
+                // no auto-fit: the viewer never rescales the view (⛶ Fit is explicit)
             }};
-            
+
             // Bind the event BEFORE running the layout to ensure we catch layoutstop
             layout.one('layoutstop', positionNodesAfterLayout);
             layout.run();
@@ -7379,7 +7384,7 @@ class VisualizePath:
                     if (node.length) node.position(originalHemispherePositions[id]);
                 }});
             }});
-            cy.fit();
+            // no auto-fit: the viewer never rescales the view (⛶ Fit is explicit)
         }}
 
         function toggleHemisphereMirror() {{
@@ -7410,7 +7415,9 @@ class VisualizePath:
         
         // Fix for click position drift - ensure Cytoscape canvas is properly sized
         cy.resize();
-        cy.fit();
+        // no auto-fit on load: the page opens at 100% zoom — a saved layout's
+        // zoom/pan is restored explicitly by the auto-restore below, and the
+        // ⛶ Fit button is the way to frame the graph on demand
 
         // Initial reciprocal mode: DOM sync is safe here (its variables are
         // already initialized), but the merge itself touches globals
@@ -14262,8 +14269,7 @@ class VisualizePath:
             'border-opacity': 1
         }}).update();
         
-        // Initial fit and apply opacity
-        cy.fit(null, 50);
+        // Apply initial opacity (the view is NOT auto-fitted — see above)
         applyInitialOpacity();
         initializeEdgeBaseStyles();
         initializeLogBaseVisibility();
