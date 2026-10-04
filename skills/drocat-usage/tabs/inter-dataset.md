@@ -40,7 +40,8 @@ params = ComparisonParameters(
     # ],
     # Auto (default in the UI; needs >= 2 datasets and path mode 'all';
     # threshold chips are optional — an empty box uses the bootstrap floor
-    # and entered chips raise the floor to the lowest chip) measures each
+    # (Min Synapse Count 3 synapse basis; ratio tier 0.001 connection-ratio
+    # basis) and entered chips raise the floor to the lowest chip) measures each
     # dataset's window from one bootstrap
     # enumeration and installs BOTH the per-threshold (vertical) and the
     # density-matched (horizontal) aligned rows:

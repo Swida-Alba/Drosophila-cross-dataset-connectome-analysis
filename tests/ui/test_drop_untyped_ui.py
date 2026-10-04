@@ -114,7 +114,8 @@ def test_inter_dataset_threshold_editor_uses_query_rows_in_core_parameters():
     assert '("standard", "Standard")' in source
     assert '("combinations", "Custom combination")' in source
     assert '"outline no-caps"' in source
-    assert 'return mode, sorted(set(values)) or [3], None' in source
+    assert ('[0.001] if ratio_mode else [3]' in source
+            and 'sorted(set(values))' in source)
     assert '"min-height: 3rem; font-size: 1.0rem; font-weight: 700;"' in source
     assert 'icon="delete_outline"' in source
     assert "Custom combination requires at least two selected" in source

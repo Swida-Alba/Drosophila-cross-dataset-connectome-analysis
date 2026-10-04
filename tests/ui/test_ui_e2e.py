@@ -397,7 +397,9 @@ class TestRunner:
             el for el in inter_client.elements.values()
             if "drocat-full-row-control" in getattr(el, "_classes", [])
         ]
-        assert len(full_row_controls) == 1
+        # The threshold chips editor spans the full row; under the
+        # connection-ratio basis a second (hidden) twin editor exists.
+        assert len(full_row_controls) == 2
         ancestor = full_row_controls[0]
         ancestor_ids = []
         while ancestor is not None:

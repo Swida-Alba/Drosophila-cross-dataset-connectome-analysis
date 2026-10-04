@@ -151,7 +151,7 @@ def create_inter_dataset_tab():
                     )
                     threshold_mode_buttons[_mode] = _button
 
-            thresholds_input = neuron_list_input(
+            thresholds_synapse = neuron_list_input(
                 label="Synapse Thresholds",
                 initial=[3, 5, 10],
                 unit_label="threshold",
@@ -159,14 +159,49 @@ def create_inter_dataset_tab():
                 show_upload=False,
                 hint="List of min synapse thresholds to analyze. "
                      "Type one threshold per chip (e.g. 3, 5, 10), or keep the defaults.",
-            ).classes("w-full drocat-full-row-control")
+            ).classes("w-full drocat-full-row-control").props(
+                'data-threshold-editor="synapse"')
+
+            # Ratio twin of the chip editor (find_path's basis-selector
+            # pattern): the Threshold Basis selection swaps which editor is
+            # visible, so each basis keeps its own valid defaults and units —
+            # a synapse default like 3 is an invalid ratio tier (> 1).
+            thresholds_ratio = neuron_list_input(
+                label="Connection-Ratio Thresholds",
+                initial=[0.001, 0.005],
+                unit_label="tier",
+                show_filter=False,
+                show_upload=False,
+                hint="FLOAT min-connection-ratio tiers in (0, 1] — e.g. "
+                     "0.0005, 0.001, 0.005. Each tier is a fraction of the "
+                     "post neuron's TOTAL input (F9), comparable across "
+                     "datasets. One tier per chip.",
+            ).classes("w-full drocat-full-row-control").props(
+                'data-threshold-editor="ratio"')
+            thresholds_ratio.set_visibility(False)
+
+            def _thresholds_input():
+                """The chip editor for the ACTIVE threshold basis."""
+                return (thresholds_ratio
+                        if threshold_basis.value == "Connection ratio"
+                        else thresholds_synapse)
+
+            def _apply_threshold_input_visibility():
+                """Chips belong to Standard mode only; which editor shows
+                follows the Threshold Basis (the two concerns compose)."""
+                chips_visible = (
+                    threshold_mode_value["value"] not in (
+                        "auto", "combinations"))
+                ratio = threshold_basis.value == "Connection ratio"
+                thresholds_synapse.set_visibility(chips_visible and not ratio)
+                thresholds_ratio.set_visibility(chips_visible and ratio)
 
             standard_threshold_hint = ui.label(
                 "Standard mode: each chip is one comparison query shared by all selected datasets."
             ).classes("text-xs opacity-60 w-full")
             auto_threshold_hint = ui.label(
-                "Auto: one bootstrap pathfinding run per dataset (floor = Min "
-                "Synapse Count 3) measures each dataset's own threshold window "
+                "Auto: one bootstrap pathfinding run per dataset measures "
+                "each dataset's own threshold window "
                 "[w_start, w_star_measured] from its searched graph, then emits "
                 "BOTH comparisons — per-threshold rows (vertical: one identical "
                 "threshold for every dataset, the like-for-like spine) and "
@@ -175,6 +210,32 @@ def create_inter_dataset_tab():
                 "No threshold chips needed."
             ).classes("text-xs opacity-60 w-full")
             auto_threshold_hint.set_visibility(False)
+
+            def _sync_threshold_hint_texts():
+                """The auto-mode floor line names the active basis (the
+                bootstrap floor is 0.001 under the connection ratio)."""
+                ratio = threshold_basis.value == "Connection ratio"
+                floor = ("min connection ratio tier 0.001" if ratio
+                         else "Min Synapse Count 3")
+                auto_threshold_hint.set_text(
+                    f"Auto: one bootstrap pathfinding run per dataset "
+                    f"(floor = {floor}) measures "
+                    "each dataset's own threshold window "
+                    "[w_start, w_star_measured] from its searched graph, "
+                    "then emits "
+                    "BOTH comparisons — per-threshold rows (vertical: one "
+                    "identical threshold for every dataset, the "
+                    "like-for-like spine) and "
+                    "density-matched rows (horizontal: thresholds chosen "
+                    "per dataset to equalize E(t)/N, the density-matched "
+                    "envelope). No threshold chips needed.")
+
+            def _sync_threshold_basis():
+                _apply_threshold_input_visibility()
+                _sync_threshold_hint_texts()
+
+            threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
+            _sync_threshold_hint_texts()
             combination_panel = ui.column().classes("w-full gap-2")
             combination_rows = [
                 {"id": "combo_001", "label": "Combination 1", "values": {}}
@@ -209,7 +270,7 @@ def create_inter_dataset_tab():
                 # The first time Custom combination mode is opened, make a usable row
                 # from the first standard threshold. Newly selected datasets
                 # in an existing table intentionally remain blank.
-                default_values = thresholds_input.get_value()[1]
+                default_values = _thresholds_input().get_value()[1]
                 default_value = (
                     str(default_values[0]) if default_values else ""
                 )
@@ -362,9 +423,10 @@ def create_inter_dataset_tab():
                 advanced = mode == "combinations"
                 is_auto = mode == "auto"
                 # Auto mode needs no threshold chips (the bootstrap floor
-                # defaults to 3), so the chip editor only belongs to the
-                # Standard and Custom combination modes.
-                thresholds_input.set_visibility(not advanced and not is_auto)
+                # defaults to Min Synapse Count 3 / ratio tier 0.001), so
+                # the chip editors only belong to Standard and Custom
+                # combination modes; which editor shows follows the basis.
+                _apply_threshold_input_visibility()
                 standard_threshold_hint.set_visibility(
                     not advanced and not is_auto)
                 auto_threshold_hint.set_visibility(is_auto)
@@ -388,27 +450,42 @@ def create_inter_dataset_tab():
                 )
             datasets_select.on_value_change(_rebuild_combination_table)
             _sync_threshold_mode()
+            # Test/drive handle: the basis × mode editor visibility swap
+            # (the mode buttons themselves are not programmatically
+            # clickable in headless Client builds).
+            thresholds_synapse.set_threshold_mode = _set_threshold_mode
+            thresholds_synapse.apply_threshold_input_visibility = (
+                _apply_threshold_input_visibility)
 
             def _collect_threshold_configuration():
                 """Return the canonical threshold payload for the active mode."""
                 selected = _combination_datasets()
                 mode = threshold_mode_value["value"]
+                ratio_mode = (threshold_basis.value == "Connection ratio")
                 if mode == "auto":
                     # Auto mode never requires threshold chips: an empty box
-                    # is valid and the bootstrap floor defaults to 3. Chips,
-                    # when present, raise the floor to the lowest chip.
+                    # is valid and the bootstrap floor defaults to Min
+                    # Synapse Count 3 (synapse basis) or the ratio tier
+                    # 0.001 (ratio basis — 3 would be an invalid tier there).
+                    # Chips, when present, raise the floor to the lowest chip.
                     try:
                         values = [
-                            int(value)
-                            for item in thresholds_input.get_value()[1]
+                            (float(value) if ratio_mode else int(value))
+                            for item in _thresholds_input().get_value()[1]
                             for value in str(item).replace(" ", "").split(",")
                             if value
                         ]
                     except (TypeError, ValueError) as exc:
                         raise ValueError(
-                            "Invalid thresholds format. Use positive integers."
+                            "Invalid thresholds format. Use positive "
+                            "integers (or floats in (0, 1] in ratio mode)."
                         ) from exc
-                    if any(value <= 0 for value in values):
+                    if ratio_mode and any(
+                            not (0 < value <= 1) for value in values):
+                        raise ValueError(
+                            "Ratio thresholds must be floats in (0, 1] — "
+                            "e.g. 0.0005, 0.001.")
+                    if not ratio_mode and any(value <= 0 for value in values):
                         raise ValueError(
                             "Synapse thresholds must be positive integers."
                         )
@@ -423,14 +500,14 @@ def create_inter_dataset_tab():
                             "datasets (it derives thresholds from cross-"
                             "dataset overlap)."
                         )
-                    return mode, sorted(set(values)) or [3], None
-                ratio_mode = (threshold_basis.value == "Connection ratio")
+                    return mode, sorted(set(values)) or (
+                        [0.001] if ratio_mode else [3]), None
                 if mode == "standard":
                     try:
                         if ratio_mode:
                             values = [
                                 float(value)
-                                for item in thresholds_input.get_value()[1]
+                                for item in _thresholds_input().get_value()[1]
                                 for value in
                                 str(item).replace(" ", "").split(",")
                                 if value
@@ -438,7 +515,7 @@ def create_inter_dataset_tab():
                         else:
                             values = [
                                 int(value)
-                                for item in thresholds_input.get_value()[1]
+                                for item in _thresholds_input().get_value()[1]
                                 for value in
                                 str(item).replace(" ", "").split(",")
                                 if value
