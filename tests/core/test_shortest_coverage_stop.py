@@ -299,3 +299,43 @@ def test_inter_dataset_payload_gates_coverage_under_shortest():
     assert "if path_mode.value == 'shortest' else None" in src
     # shortest-gated enable/disable
     assert 'shortest_source_coverage.set_enabled(_is_shortest)' in src
+
+
+# ---------------------------------------------------------------------------
+# Review-round regressions (2026-10-04)
+# ---------------------------------------------------------------------------
+
+def test_empty_enrollment_never_satisfies_fraction():
+    """Missing enrollment frames + a fraction/Full requirement is
+    UNVERIFIABLE — the stop must never fire (a vacuous met here would
+    collapse the search to layer 1). Any falls back to >=1 reached."""
+    from shortest_discovery_store import (
+        coverage_stop_met, resolve_coverage_stop)
+
+    fc = type('X', (), {'shortest_source_coverage': None,
+                        'shortest_target_coverage': 0.5,
+                        'source_df': None, 'target_df': None})()
+    cfg = resolve_coverage_stop(fc)
+    assert cfg['target'] == 0.5 and cfg['target_types'] == {}
+    met, _ = coverage_stop_met(cfg, set(), set())
+    assert met is False
+    met, _ = coverage_stop_met(cfg, {'s1'}, {'t1'})
+    assert met is False  # unverifiable — still no stop
+
+    fc_any = type('X', (), {'shortest_source_coverage': 0.0,
+                            'shortest_target_coverage': None,
+                            'source_df': None, 'target_df': None})()
+    cfg_any = resolve_coverage_stop(fc_any)
+    assert coverage_stop_met(cfg_any, {'s1'}, {'t1'})[0] is True
+    assert coverage_stop_met(cfg_any, set(), set())[0] is False
+
+
+def test_bool_knob_refused(monkeypatch, tmp_path, synth_types):
+    """bool is a float subclass (True == 1.0 == Full) — silently coercing
+    a mistyped flag to Full would collapse the search scope."""
+    from shortest_discovery_store import resolve_coverage_stop
+    fc = type('X', (), {'shortest_source_coverage': True,
+                        'shortest_target_coverage': None,
+                        'source_df': None, 'target_df': None})()
+    with pytest.raises(ValueError):
+        resolve_coverage_stop(fc)

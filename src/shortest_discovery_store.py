@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import gc
 import json
-import os
 import shutil
 import time
 from pathlib import Path
@@ -116,6 +115,12 @@ def resolve_coverage_stop(fc):
     def _req(value, name):
         if value is None:
             return None
+        if isinstance(value, bool):
+            # bool is a float subclass (True == 1.0 == Full) — refuse
+            # silently-coerced flags like every other threshold knob.
+            raise ValueError(
+                f'{name} must be None, 0.0 (any) or a fraction in (0, 1]; '
+                f'got {value!r}')
         try:
             value = float(value)
         except (TypeError, ValueError):
@@ -184,9 +189,12 @@ def coverage_stop_met(config, reached_sources, reached_targets):
             if hit < required:
                 met = False
         if not type_map and req is not None:
-            # No type information at all (bodyId-only enrollment): fall
-            # back to pooled coverage so the knob still means something.
-            met = bool(reached) if req == 0.0 else met
+            # No enrollment information at all (missing frames): an
+            # Any requirement falls back to "at least one bodyId
+            # reached"; a fraction/Full requirement is UNVERIFIABLE and
+            # must never satisfy the stop (refuse-on-doubt — a vacuous
+            # met here would collapse the search to layer 1).
+            met = bool(reached) if req == 0.0 else False
         return met, achieved
 
     source_met, source_ach = _side(
