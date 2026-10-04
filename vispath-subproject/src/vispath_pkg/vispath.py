@@ -6616,7 +6616,7 @@ class VisualizePath:
                         <label id="groupColorLabel">Color:</label>
                         <div class="color-input-group">
                             <input type="color" id="groupColor" value="{self.node_color[0]}" title="Color to apply to the chosen group">
-                            <input type="text" id="groupColorText" value="{self.node_color[0]}" readonly title="Group color in hex">
+                            <input type="text" id="groupColorText" value="{self.node_color[0]}" title="Group color as hex — type a value (# optional) and it applies to the group immediately">
                         </div>
                     </div>
                     <div class="color-group">
@@ -6626,10 +6626,12 @@ class VisualizePath:
                             <span class="alpha-value" id="groupOpacityValue">100%</span>
                         </div>
                     </div>
-                    <button class="apply-btn" onclick="applyGroupColor()" title="Apply the chosen color and opacity to every element in the group">Apply to Group</button>
+                    <button class="apply-btn" onclick="applyGroupColor()" title="Apply the chosen color and opacity to every element in the group (color also applies live from the picker/hex box; this button additionally commits the opacity)">Apply to Group</button>
                     <div style="font-size: 10px; color: var(--vp-text-2); margin-top: 8px; line-height: 1.3;">
                         💡 Use dropdown to select which group to edit.<br>
-                        Changes apply to all elements in the group.
+                        Color applies to ALL members immediately (picker or typed
+                        hex), selected nodes included; the button commits the
+                        opacity too.
                     </div>
                 </div>
                 
@@ -9609,11 +9611,7 @@ class VisualizePath:
         cy.on('select unselect', 'node, edge', function(evt) {{
             const selected = cy.$(':selected');
             if (selected.length === 0) {{
-                syncSelectedGeometryInputs(null);
-                // the group dropdown resets too — otherwise the previous
-                // node's group lingers after everything is deselected
-                syncAssignSelectToSelection();
-                updateSelectionChip();
+                resetSelectionPanelUI();
                 return;
             }}
 
@@ -9623,6 +9621,22 @@ class VisualizePath:
             let primary = selectedElement;
             if (!primary || !primary.selected()) {{
                 primary = (evt.target && evt.target.selected()) ? evt.target : selected[0];
+            }}
+            // EVERY selection path shows the panel — box selection fires no
+            // tap on any element, so visibility must not depend on the tap
+            // handler (it used to, leaving a box selection with no
+            // position/size panel at all).
+            const panel = document.getElementById('individualControls');
+            if (panel) panel.style.display = 'block';
+            // The tap handler and selectGroup write richer info text and mark
+            // the chip live; only fill the generic summary while the
+            // placeholder is still up (box selection right after load/clear).
+            const selectedInfo = document.getElementById('selectedInfo');
+            if (selectedInfo && selectedInfo.dataset.live !== '1') {{
+                const count = getSelectionCount();
+                selectedInfo.innerHTML =
+                    '<strong>Multi-Selection:</strong><br>' +
+                    count.nodes + ' node(s), ' + count.edges + ' edge(s)';
             }}
             syncSelectedGeometryInputs(primary);
             // Same ordering race as the geometry rows: the tap handler
@@ -10723,9 +10737,7 @@ class VisualizePath:
         }}
 
         // Update color text fields when color picker changes
-        document.getElementById('groupColor').addEventListener('input', function(e) {{
-            document.getElementById('groupColorText').value = e.target.value;
-        }});
+        // (the group pair is wired two-way via bindHexPair below)
         document.getElementById('individualColor').addEventListener('input', function(e) {{
             document.getElementById('individualColorText').value = e.target.value;
             if (document.getElementById('individualControls').style.display !== 'none') {{
@@ -10853,8 +10865,12 @@ class VisualizePath:
         const customGroups = {{}};
 
         // ===== NODE GROUP MEMBERSHIP =====
+        // Data-side comparison, NOT a selector string: group names are
+        // user-editable, so a quote/backslash in a name must not be able to
+        // throw a selector syntax error or silently miss members.
         function groupMembers(name) {{
-            return cy.nodes('[assigned_group = "' + name + '"]');
+            const want = String(name);
+            return cy.nodes().filter(n => String(n.data('assigned_group')) === want);
         }}
 
         // Backfill nodes imported from older exports that lack the field.
@@ -11082,9 +11098,17 @@ class VisualizePath:
                 }}
             }}
             
-            // Update color picker with current group's default/saved color
-            document.getElementById('groupColor').value = defaults.color;
-            document.getElementById('groupColorText').value = defaults.color;
+            // Update color picker with current group's default/saved color.
+            // type="color" silently rejects anything that is not exactly
+            // #rrggbb — normalize (#rgb expanded, lowercased) so the swatch
+            // never goes stale while the text field keeps the authored value.
+            const rawColor = String(defaults.color || '');
+            const shortHex = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(rawColor);
+            const swatchColor = shortHex
+                ? '#' + (shortHex[1] + shortHex[1] + shortHex[2] + shortHex[2] + shortHex[3] + shortHex[3]).toLowerCase()
+                : (rawColor.startsWith('#') ? rawColor.toLowerCase() : rawColor);
+            document.getElementById('groupColor').value = swatchColor;
+            document.getElementById('groupColorText').value = rawColor;
             document.getElementById('groupOpacity').value = defaults.opacity;
             document.getElementById('groupOpacityValue').textContent = defaults.opacity + '%';
             
@@ -11108,11 +11132,14 @@ class VisualizePath:
             
             console.log('Applying color to group:', group, color, opacity);
             
+            // Every member is recolored — a current selection is inspection
+            // state, not an exclusion list. Skipping selected nodes made the
+            // button look dead after Assign/"Select group" (which leave the
+            // group selected) or partial when a single member was unselected.
             const applyNodeGroupColor = (name) => {{
                 groupMembers(name).forEach(node => {{
-                    if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                    }}
+                    node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                    node.data('customColor', false);  // group-derived now, like Reset All Colors
                 }});
                 groupDefaults[name] = {{ color: color, opacity: opacity * 100 }};
             }};
@@ -11132,9 +11159,8 @@ class VisualizePath:
                 }});
                 memberGroups.forEach(name => {{
                     groupMembers(name).forEach(node => {{
-                        if (!node.selected()) {{
-                            node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                        }}
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                        node.data('customColor', false);
                     }});
                     if (customGroups[name]) {{
                         customGroups[name].color = color;
@@ -11150,39 +11176,38 @@ class VisualizePath:
             if (extraGroup) applyNodeGroupColor(group);
             if (group === 'unassigned') {{
                 groupMembers('').forEach(node => {{
-                    if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                    }}
+                    node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                    node.data('customColor', false);
                 }});
                 groupDefaults.unassigned = {{ color: color, opacity: opacity * 100 }};
             }}
             if (group === 'hemi_left') {{
                 cy.nodes().filter('[hemisphere = "L"]').forEach(node => {{
-                    if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                    }}
+                    node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                    node.data('customColor', false);
                 }});
                 groupDefaults.hemisphere_left = {{ color: color, opacity: opacity * 100 }};
             }}
             if (group === 'hemi_right') {{
                 cy.nodes().filter('[hemisphere = "R"]').forEach(node => {{
-                    if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                    }}
+                    node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                    node.data('customColor', false);
                 }});
                 groupDefaults.hemisphere_right = {{ color: color, opacity: opacity * 100 }};
             }}
             if (group === 'hemi_unknown') {{
                 cy.nodes().filter('[hemisphere = "U"]').forEach(node => {{
-                    if (!node.selected()) {{
-                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                    }}
+                    node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                    node.data('customColor', false);
                 }});
                 groupDefaults.hemisphere_unknown = {{ color: color, opacity: opacity * 100 }};
             }}
+            // Edges: a selection is not an exclusion either, but search/path
+            // HIGHLIGHTS keep their appearance (their look is restorable from
+            // the __baseColor/__baseOpacity keys a recolor would clobber).
             if (group === 'positive_edges' || group === 'all_edges') {{
                 cy.edges().filter('[is_negative = 0]').forEach(edge => {{
-                    if (!edge.selected() && !edge.hasClass('highlighted')) {{
+                    if (!edge.hasClass('highlighted')) {{
                         setEdgeBaseAppearance(edge, color, opacity, true);
                     }}
                 }});
@@ -11190,18 +11215,18 @@ class VisualizePath:
             }}
             if (group === 'negative_edges' || group === 'all_edges') {{
                 cy.edges().filter('[is_negative = 1]').forEach(edge => {{
-                    if (!edge.selected() && !edge.hasClass('highlighted')) {{
+                    if (!edge.hasClass('highlighted')) {{
                         setEdgeBaseAppearance(edge, color, opacity, true);
                     }}
                 }});
                 groupDefaults.negative_edges = {{ color: color, opacity: opacity * 100 }};
             }}
-            
+
             // Handle NT edge groups (prefixed with 'nt_')
             if (group.startsWith('nt_')) {{
                 const ntType = group.replace('nt_', '');
                 cy.edges().filter(`[nt_type = "${{ntType}}"]`).forEach(edge => {{
-                    if (!edge.selected() && !edge.hasClass('highlighted')) {{
+                    if (!edge.hasClass('highlighted')) {{
                         setEdgeBaseAppearance(edge, color, opacity, true);
                     }}
                 }});
@@ -11215,9 +11240,8 @@ class VisualizePath:
                 const groupName = group.replace('custom_', '');
                 if (customGroups[groupName]) {{
                     groupMembers(groupName).forEach(node => {{
-                        if (!node.selected()) {{
-                            node.style({{ 'background-color': color, 'background-opacity': opacity }});
-                        }}
+                        node.style({{ 'background-color': color, 'background-opacity': opacity }});
+                        node.data('customColor', false);
                     }});
                     customGroups[groupName].color = color;
                     customGroups[groupName].opacity = opacity * 100;
@@ -11275,9 +11299,10 @@ class VisualizePath:
             
             // Update selection info
             const selectionCount = getSelectionCount();
-            document.getElementById('selectedInfo').innerHTML = 
+            document.getElementById('selectedInfo').innerHTML =
                 `<strong>Group Selected:</strong><br>` +
                 `${{selectionCount.nodes}} node(s), ${{selectionCount.edges}} edge(s)`;
+            document.getElementById('selectedInfo').dataset.live = '1';
             document.getElementById('individualControls').style.display = 'block';
         }}
 
@@ -11507,6 +11532,9 @@ class VisualizePath:
             document.getElementById('individualColorText').value = currentColor;
             document.getElementById('individualOpacity').value = currentOpacity;
             document.getElementById('individualOpacityValue').textContent = currentOpacity + '%';
+            // the tap text is the richest summary — the select/unselect
+            // resync must not overwrite it with the generic one
+            document.getElementById('selectedInfo').dataset.live = '1';
             document.getElementById('individualControls').style.display = 'block';
             syncAssignSelectToSelection();
             // Populate the size/position inputs for the tapped element
@@ -11574,15 +11602,32 @@ class VisualizePath:
             
         }}
 
+        // Shared UI tail for "nothing selected": reset the info placeholder
+        // and hide the individual-controls panel. Used by clearSelection AND
+        // by the select/unselect resync — a deselect can arrive without
+        // clearSelection (ctrl-click, programmatic unselect).
+        function resetSelectionPanelUI() {{
+            selectedElement = null;
+            const selectedInfo = document.getElementById('selectedInfo');
+            if (selectedInfo) {{
+                selectedInfo.innerHTML =
+                    'Click on a node or edge to customize its color<br>' +
+                    '<em>Hold Shift to select multiple elements</em>';
+                selectedInfo.dataset.live = '0';
+            }}
+            const panel = document.getElementById('individualControls');
+            if (panel) panel.style.display = 'none';
+            syncSelectedGeometryInputs(null);
+            // the group dropdown resets too — otherwise the previous
+            // node's group lingers after everything is deselected
+            syncAssignSelectToSelection();
+            updateSelectionChip();
+        }}
+
         // Clear selection (all selected elements)
         function clearSelection() {{
             cy.$(':selected').unselect();  // Deselect all elements
-            selectedElement = null;
-            document.getElementById('selectedInfo').innerHTML = 
-                'Click on a node or edge to customize its color<br>' +
-                '<em>Hold Shift to select multiple elements</em>';
-            document.getElementById('individualControls').style.display = 'none';
-            syncSelectedGeometryInputs(null);
+            resetSelectionPanelUI();
         }}
 
         // ===== GEOMETRY EDITING (precise size / position) =====
@@ -12542,6 +12587,13 @@ class VisualizePath:
             v => applyEdgeLineStyle({{ color: v }}));
         bindHexPair('individualColor', 'individualColorText',
             v => applyIndividualColor(true));
+        // Group pair applies LIVE like the per-node box (bindHexPair syncs
+        // the swatch before the callback, and applyGroupColor reads the
+        // swatch): both picker drags and typed hex recolor the whole group
+        // with the current opacity. The button stays as the explicit commit
+        // — it is also the only path that applies the group OPACITY spinner.
+        bindHexPair('groupColor', 'groupColorText',
+            () => applyGroupColor());
 
         // EDGE LINE style group: pattern + color + alpha for the selected
         // edges.  Color rides the edge's base appearance (line + BOTH
@@ -12799,6 +12851,7 @@ class VisualizePath:
                 if (selectedElement === node) {{
                     document.getElementById('selectedInfo').innerHTML =
                         `<strong>Node:</strong> ${{escapeHtml(newLabel)}} (${{escapeHtml(newType)}})`;
+                    document.getElementById('selectedInfo').dataset.live = '1';
                     const appliedColor = extractColorHex(node.style('background-color')) || newColor;
                     document.getElementById('individualColor').value = appliedColor;
                     document.getElementById('individualColorText').value = appliedColor;

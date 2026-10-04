@@ -122,6 +122,23 @@ def _script_text(network_html):
     return "\n".join(scripts)
 
 
+def _extract_js_function(js, name):
+    """Extract a ``function name(...) {{ ... }}`` source span (brace-balanced)
+    from the generated page script — same approach as the Node harnesses."""
+    marker = f"function {name}("
+    start = js.index(marker)
+    open_brace = js.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[start:i + 1]
+    raise AssertionError(f"unbalanced braces extracting {name}")
+
+
 def _ensure_node_with_cytoscape(node_cache):
     """Return the node executable, installing headless Cytoscape into a
     pytest-owned temporary directory once. Skips when node/npm or network
@@ -280,8 +297,23 @@ class TestGeneratedHtmlStructure:
         end = js.index("        });", start) + len("        });")
         selection_handler = js[start:end]
         assert "const selected = cy.$(':selected')" in selection_handler
-        assert "syncSelectedGeometryInputs(null)" in selection_handler
+        # the empty tail delegates to the shared reset, which hides the
+        # panel, resets the placeholder and clears the geometry rows
+        assert "resetSelectionPanelUI()" in selection_handler
+        reset_fn = _extract_js_function(js, "resetSelectionPanelUI")
+        assert "syncSelectedGeometryInputs(null)" in reset_fn
         assert "syncSelectedGeometryInputs(primary)" in selection_handler
+        # Box selection fires NO tap on any element, so the panel's
+        # visibility must live here — visibility that depends on the tap
+        # handler left box-selected elements with no position/size panel.
+        assert "panel.style.display = 'block'" in selection_handler
+        assert "selectedInfo.dataset.live !== '1'" in selection_handler
+        # the empty tail is the shared reset (also used by clearSelection),
+        # so a deselect through any path clears the panel and placeholder
+        assert "resetSelectionPanelUI()" in selection_handler
+        assert "function resetSelectionPanelUI" in js
+        clear_fn = _extract_js_function(js, "clearSelection")
+        assert "resetSelectionPanelUI()" in clear_fn
 
     def test_snapshots_are_complete_deep_copies(self, network_html):
         js = _script_text(network_html)
@@ -1213,6 +1245,40 @@ class TestGroupMembership:
         assert 'cy.nodes().filter(\'[node_type = "target"]\')' not in js
         assert '[node_type = "\' + group' not in js
 
+    def test_apply_to_group_full_coverage_and_live_hex(self, network_html):
+        """Apply to Group recolors EVERY member — a current selection is
+        inspection state, not an exclusion list (the old selected-skip made
+        the button skip exactly the nodes the user had selected via tap,
+        Assign or 'Select group'). The group hex box is editable and
+        live-bound like the per-node box, and membership lookup survives
+        quotes in group names."""
+        html = network_html.read_text(encoding="utf-8")
+        js = _script_text(network_html)
+        apply_fn = _extract_js_function(js, "applyGroupColor")
+        # no selected-skip for nodes; edges keep only the highlight protection
+        assert "!node.selected()" not in apply_fn
+        assert "!edge.selected()" not in apply_fn
+        assert "!edge.hasClass('highlighted')" in apply_fn
+        # the customized marker is cleared so group-derived colors don't
+        # masquerade as per-node custom colors (matches Reset All Colors)
+        assert "node.data('customColor', false)" in apply_fn
+        # membership lookup is data-side — a quote/backslash in a group name
+        # can no longer build a broken selector
+        members_fn = _extract_js_function(js, "groupMembers")
+        assert "String(n.data('assigned_group'))" in members_fn
+        assert "cy.nodes('[assigned_group =" not in js
+        # the group hex text box is editable (no readonly) and two-way bound
+        m = re.search(r'<input type="text" id="groupColorText"[^>]*>', html)
+        assert m, "groupColorText input missing"
+        assert "readonly" not in m.group(0)
+        assert "bindHexPair('groupColor', 'groupColorText'" in js
+        # the old one-way mirror listener is gone (bindHexPair covers it)
+        assert "getElementById('groupColor').addEventListener" not in js
+        # the dropdown seeding normalizes so type="color" can't silently
+        # reject a default and leave a stale swatch
+        controls_fn = _extract_js_function(js, "updateGroupControls")
+        assert "shortHex" in controls_fn
+
     def test_dynamic_legend_and_assign_row(self, network_html):
         html = network_html.read_text(encoding="utf-8")
         js = _script_text(network_html)
@@ -1297,6 +1363,22 @@ class TestHistoryLogicNode:
             f"history harness failed:\n{res.stdout}\n{res.stderr}"
         )
         assert "ALL HISTORY TESTS PASSED" in res.stdout
+
+
+class TestGroupColorNode:
+    """'Apply to Group' executed in Node with headless Cytoscape, using the
+    REAL groupMembers/applyGroupColor/setEdgeBaseAppearance extracted from
+    the generated HTML: every member is recolored (a current selection is
+    NOT an exclusion list), edge highlights stay protected, and group names
+    containing quotes cannot break membership lookup."""
+
+    def test_all_group_color_scenarios(self, network_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "group_color_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"group-color harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL GROUP-COLOR TESTS PASSED" in res.stdout
 
 
 class TestGlobalStyleHistoryNode:
