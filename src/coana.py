@@ -9053,8 +9053,9 @@ class FindNeuronConnection:
                       ).agg(_pl.col('weight').sum()).iter_rows()}
             if getattr(self, '_warn_notes', None) is not None:
                 self._warn_notes.append(
-                    '- [weight basis] shortest fetch built ratios on '
-                    'fetched-frame totals (F9 offline fallback).')
+                    '- [weight basis] a ratio filter was built on '
+                    'fetched-frame totals (F9 offline fallback — the '
+                    'denominator may be understated).')
         lut = _pl.DataFrame(
             {'bodyId_post': list(totals),
              'total_incoming': [totals[k] for k in totals]})
@@ -17175,10 +17176,16 @@ class FindNeuronConnection:
                     'are disabled (ratio is a readout column) — the saved '
                     'values are ignored.', level='always')
             if _keep_ratio:
+                if not (0.0 < float(self.min_ratio) <= 1.0):
+                    raise ValueError(
+                        "threshold_combination='and' requires min_ratio in "
+                        f'(0, 1] — got {self.min_ratio!r}.')
                 self._vprint(
                     f'ℹ️  Threshold combination AND: min connection ratio '
                     f'{self.min_ratio:g} co-thresholds the graph with Min '
                     'Synapse Count (an edge must pass BOTH).', level='always')
+                self.parameter_dict['min connection ratio'] = str(
+                    self.min_ratio)
                 self.min_traversal_probability = 0.0
             else:
                 self.min_ratio = 0.0

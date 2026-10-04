@@ -844,3 +844,86 @@ def test_shortest_mode_refill(tmp_path):
     rec_c = compute_type_level_refill(
         run_c, edges=EDGES, type_map=TYPE_MAP, write=False)
     assert rec_c['status'] == 'no_refill_needed'
+
+
+# ---------------------------------------------------------------------------
+# 13. Round-13: the refill honors the AND co-threshold (both bases)
+# ---------------------------------------------------------------------------
+def _make_and_run(tmp_path, name, *, basis, min_synapse, min_ratio,
+                  path_budget):
+    """A budget-BITTEN run under threshold_combination='and' whose refill
+    must reproduce the dual admission rule (an edge failing either gate
+    never enters the refill universe)."""
+    with universe_types(TYPE_MAP) as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path / name, edges=EDGES, max_interlayer=MAX_INTERLAYER,
+            min_synapse=min_synapse, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        fc.target_df = fc.target_df.assign(
+            Checked=[True] * len(fc.target_df))
+        fc.max_paths_bodyid = path_budget
+        fc.weight_basis = basis
+        fc.threshold_combination = 'and'
+        fc.min_ratio = min_ratio
+        fc.parameter_dict.update({
+            'min synapse number': str(min_synapse), 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': str(MAX_INTERLAYER),
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc._refill_edges_override = list(EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+        fc.FindAllPath()
+        return Path(fc.allpath_folder)
+
+
+def test_refill_ratio_basis_and_honors_synapse_floor(tmp_path):
+    # Ratio basis + AND (syn floor 2 + ratio tier): the refill's induced
+    # universe must ALSO drop sub-floor edges — without the round-13 fix
+    # the anchor refused (the cut re-derivation saw edges the run never
+    # had).
+    run_dir = _make_and_run(tmp_path, 'and_ratio_bite',
+                            basis='connection_ratio', min_synapse=2,
+                            min_ratio=0.02, path_budget=1)
+    out = run_dir / 'data_details' / 'type_level_refill'
+    prov = out / 'refill_provenance.json'
+    assert prov.exists(), 'a bitten and-mode run must refill'
+    import json as _json
+    rec = _json.loads(prov.read_text(encoding='utf-8'))
+    assert rec.get('table_reproduced') is True
+    assert rec.get('requested_threshold') == 0.02
+
+
+def test_refill_synapse_basis_and_honors_ratio_tier(tmp_path):
+    # Synapse basis + AND: the ratio co-threshold shapes the run and the
+    # refill alike; parameters.txt carries the tier.
+    run_dir = _make_and_run(tmp_path, 'and_syn_bite',
+                            basis='synapse', min_synapse=2,
+                            min_ratio=0.02, path_budget=1)
+    params = (run_dir / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'min connection ratio' in params
+    assert 'threshold combination' in params
+    out = run_dir / 'data_details' / 'type_level_refill'
+    prov = out / 'refill_provenance.json'
+    if prov.exists():
+        import json as _json
+        rec = _json.loads(prov.read_text(encoding='utf-8'))
+        assert rec.get('table_reproduced') is True
+
+
+def test_and_mode_bad_ratio_refused(tmp_path):
+    import pytest as _pytest
+    import coana as _coana
+    fc = object.__new__(_coana.FindNeuronConnection)
+    fc._vprint = lambda *a, **k: None
+    fc._warn_notes = []
+    fc.weight_basis = 'synapse'
+    fc.threshold_combination = 'and'
+    fc.min_ratio = 2.0
+    fc.min_traversal_probability = 0.0
+    fc.min_synapse_num = 3
+    fc.parameter_dict = {}
+    with _pytest.raises(ValueError, match='min_ratio in'):
+        fc.FindAllPath(forward_only=True)

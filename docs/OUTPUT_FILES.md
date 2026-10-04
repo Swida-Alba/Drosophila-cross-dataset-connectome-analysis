@@ -111,12 +111,14 @@ the explored, threshold-filtered graph; see `user_warning_notes.txt`.
 `find-paths-complete_{ABBREV}_{source}_to_{target}_L{max_interlayer}w{min_weight}_{ts}/`
 (`find-paths-shortest_...` for the shortest-path mode.)
 
-Example: `find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/` (ratio-basis runs: `..._L2r0_0005_...` — `r{min connection ratio}`, see `ConnectionRatioPaths.md`)
+Example: `find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/` (ratio-basis runs: `..._L2r0_0005_...` — `r{min connection ratio}`, see `ConnectionRatioPaths.md`; Combine Thresholds = Both (AND) runs carry BOTH tiers: `..._L2w3r0_002_...`)
 
 Ratio and traversal-probability filters are disabled for both pathfinding
 tabs, so their former `r...p...` annotations are not included in path-run
 folder names. The ratio/probability columns remain readout data in the
-exported path tables.
+exported path tables — except under Combine Thresholds = Both (AND), where
+the Min Connection Ratio co-thresholds the graph together with Min Synapse
+Count (round-13; both knobs visible in the UI when AND is selected).
 
 ### Key Output Files
 

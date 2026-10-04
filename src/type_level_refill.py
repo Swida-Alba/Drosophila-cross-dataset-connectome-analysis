@@ -144,6 +144,16 @@ def read_run_provenance(run_dir) -> dict:
     m = re.search(r'^min synapse number:\s*(\S+)', text, re.MULTILINE)
     if m:
         prov['min_synapse'] = _parse_int(m.group(1))
+    # Round-13 AND mode: the co-threshold values ride parameters.txt so
+    # the refill can reproduce the run's DUAL admission rule (an edge the
+    # run never saw must not enter the refill universe — the anchor
+    # would otherwise refuse, or worse, quietly disagree).
+    m = re.search(r'^min connection ratio:\s*(\S+)', text, re.MULTILINE)
+    if m:
+        prov['min connection ratio'] = _parse_scalar(m.group(1))
+    m = re.search(r'^threshold combination:\s*(.+)$', text, re.MULTILINE)
+    if m:
+        prov['threshold_combination'] = _parse_scalar(m.group(1))
     m = re.search(r'^filter by:\s*(\S+)', text, re.MULTILINE)
     if m:
         prov['filter_by'] = _parse_scalar(m.group(1))
@@ -693,6 +703,28 @@ def compute_type_level_refill(
         # and drains exactly like the ratio run did; the per-layer
         # synapse masses ride along in syn_of for the anchor.
         layer_weights = store['layer_weights']
+        # Round-13 AND mode: the store's edges must respect the run's
+        # co-threshold too (ratio basis + AND -> synapse floor; synapse
+        # basis + AND -> ratio tier), exactly like the all-mode pass.
+        _and_mode = str(prov.get('threshold_combination',
+                                 '')).strip().lower().startswith('and')
+        if _and_mode:
+            _and_floor = (prov.get('min_synapse') if ratio_mode else None)
+            _and_tier = (_parse_float(prov.get('min connection ratio'))
+                         if not ratio_mode else None)
+            _and_tot: Dict[str, float] = defaultdict(float)
+            if _and_tier:
+                for _u, _v, _w in edges:
+                    _and_tot[str(_v)] += float(_w)
+            layer_weights = [
+                (_layer,
+                 {(u, v): w for (u, v), w in weights.items()
+                  if not (_and_floor is not None and float(w) < _and_floor)
+                  and not (_and_tier is not None and (
+                      _and_tot.get(v, 0.0) <= 0
+                      or float(w) / _and_tot[v] < _and_tier))})
+                for _layer, weights in layer_weights
+            ]
         if ratio_mode:
             post_tot: Dict[str, float] = defaultdict(float)
             for _u, _v, _w in edges:
@@ -743,14 +775,34 @@ def compute_type_level_refill(
             for u, v, w in edges:
                 post_totals[str(v)] += float(w)
         non_involved_excluded = 0
+        # Round-13 AND mode: reproduce the run's DUAL admission rule in
+        # the induced universe. ratio basis + AND -> the synapse floor;
+        # synapse basis + AND -> the ratio co-threshold (F9 denominators
+        # from the same edge source).
+        _and_mode = str(prov.get('threshold_combination',
+                                 '')).strip().lower().startswith('and')
+        and_syn_floor = (prov.get('min_synapse')
+                         if (_and_mode and ratio_mode) else None)
+        and_ratio_tier = (_parse_float(prov.get('min connection ratio'))
+                          if (_and_mode and not ratio_mode) else None)
+        and_post_totals: Dict[str, float] = defaultdict(float)
+        if and_ratio_tier:
+            for _u, _v, _w in edges:
+                and_post_totals[str(_v)] += float(_w)
         for u, v, w in edges:
             u, v = str(u), str(v)
             if ratio_mode:
                 w = float(w)
+                if and_syn_floor is not None and w < and_syn_floor:
+                    continue
                 denom = post_totals.get(v, 0.0)
                 w_thr = (w / denom) if denom > 0 else 0.0
                 syn_of[(u, v)] += w
             else:
+                if and_ratio_tier:
+                    _denom = and_post_totals.get(v, 0.0)
+                    if _denom <= 0 or (float(w) / _denom) < and_ratio_tier:
+                        continue
                 w_thr = w
             if w_thr < asked:
                 continue
