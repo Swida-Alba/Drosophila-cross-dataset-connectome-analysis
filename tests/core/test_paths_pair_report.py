@@ -36,7 +36,7 @@ from paths_pair_report import (  # noqa: E402
 
 CSV_COLUMNS = [
     "path", "weights", "probabilities", "ratios", "min_weight",
-    "path_prob", "min_ratio", "length", "nt_types",
+    "path_prob", "min_ratio", "length", "nt_types", "coverage",
 ]
 
 
@@ -516,10 +516,22 @@ def test_global_pair_matrix_bodyid_coverage_columns(cross_run):
     # primary unit = most paths (dsA/minsyn_3, 2 paths) → its enrollment n/N
     assert row["scov"] == "2/3" and row["tcov"] == "2/2"
     # dsB has no target_neurons.csv → target coverage unknown (—)
-    assert row["cov_detail"]["dsB/minsyn_3"] == "1/1 / —"
+    # cov_detail values carry an internal scope tag ([pair]/[type]);
+    # the rendered badges/hovers strip it.
+    assert row["cov_detail"]["dsB/minsyn_3"] == "1/1 / — [type]"
     assert "Source coverage" in text and "Target coverage" in text
     assert "Coverage</th>" not in text          # old unit-coverage column gone
-    assert 'title="dsA/minsyn_3: 2/3 / 2/2; dsB/minsyn_3: 1/1 / —"' in text
+    # The fixture writes type-level paths only → the pair values fall
+    # back to the type query-scope coverage, scope-labeled in the hover.
+    assert row["cov_scope"] == "type"
+    assert ('title="dsA/minsyn_3: 2/3 / 2/2; '
+            'dsA/minsyn_5_applied_floor: — / —; '
+            'dsB/minsyn_3: 1/1 / — '
+            '— type query-scope (run skipped bodyId output)"' in text)
+    # Query-scope coverage totals render per unit.
+    units = payload["global"]["units"]
+    assert units[0]["src_cov"] == [2, 3]  # JSON list from the payload
+    assert "Query bodyId coverage" in text
 
 
 def test_provenance_aggregated_per_delegate_on_cross_root(cross_run):
@@ -761,3 +773,97 @@ def test_meta_summary_is_escaped_once(tmp_path):
     text = report.read_text(encoding="utf-8")
     assert "MCN&#x27;S" in text
     assert "&amp;#x27;" not in text
+
+
+# ---------------------------------------------------------------------------
+# Per-path / per-pair / query-scope bodyId coverage (2026-10-04): rows
+# carry the FIRST/LAST entries of their own per-node coverage list; pair
+# stats and the Global matrix count DISTINCT endpoint bodyIds per pair
+# when bodyId-level output exists (else the type query-scope value,
+# scope-labeled); the Global tab gains query-scope totals.
+# ---------------------------------------------------------------------------
+def _write_enrollment_csv(folder, rows, name):
+    """source/target_neurons.csv (NOT the paths-table column schema)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(folder / name, index=False)
+
+
+def test_pair_exact_coverage_when_bodyid_paths_exist(tmp_path):
+    run = tmp_path / "find-paths-complete_FAFB_S_to_T_L2w3_20260101_000000"
+    rows = [
+        _row("S->M1->T", 10),
+        _row("S->M2->T", 8),
+    ]
+    rows[0]["coverage"] = "[1/2, 1/1, 1/3]"
+    rows[1]["coverage"] = "[2/2, 1/1, 2/3]"
+    _write_csv(run, rows)
+    # bodyId-level paths: three distinct source bodyIds realize the
+    # pair (1 -> path A, 2 and 3 -> path B); one target bodyId.
+    _write_csv(
+        run,
+        [
+            {"path": "1->10->20", "weights": "[10, 10]",
+             "probabilities": "[1, 1]", "ratios": "[1, 1]",
+             "min_weight": 10, "path_prob": 1.0, "length": 2},
+            {"path": "2->10->20", "weights": "[8, 8]",
+             "probabilities": "[1, 1]", "ratios": "[1, 1]",
+             "min_weight": 8, "path_prob": 1.0, "length": 2},
+            {"path": "3->11->20", "weights": "[8, 8]",
+             "probabilities": "[1, 1]", "ratios": "[1, 1]",
+             "min_weight": 8, "path_prob": 1.0, "length": 2},
+        ],
+        name=f"{run.name}_allpaths_bodyId_paths.csv",
+    )
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "S", "isInPath": True},
+        {"bodyId": 2, "type": "S", "isInPath": True},
+        {"bodyId": 3, "type": "S", "isInPath": False},
+        {"bodyId": 4, "type": "S", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "T", "Checked": True},
+        {"bodyId": 21, "type": "T", "Checked": False},
+        {"bodyId": 22, "type": "T", "Checked": False},
+    ], "target_neurons.csv")
+    from paths_pair_report import (
+        build_unit_breakdown, load_unit_paths, _load_pair_bodyid_coverage,
+        _load_query_coverage,
+    )
+    frame = load_unit_paths(run / f"{run.name}_allpaths_type.csv")
+    pair_bodyid = _load_pair_bodyid_coverage(run)
+    assert pair_bodyid[("S", "T")] == (3, 1)  # distinct endpoints per pair
+    path_rows, _, pair_stats = build_unit_breakdown(
+        frame, "min_weight", pair_bodyid=pair_bodyid,
+        source_cov={"S": "2/4"}, target_cov={"T": "1/3"})
+    stats = pair_stats[("S", "T")]
+    assert stats["scov"] == "3/4" and stats["tcov"] == "1/3"
+    assert stats["cov_scope"] == "pair"
+    # per-path rows: first/last coverage entries, NOT the pair value
+    assert path_rows[0]["source_bodyid_coverage"] == "1/2"
+    assert path_rows[1]["source_bodyid_coverage"] == "2/2"
+    query = _load_query_coverage(run)
+    assert query["source"] == (2, 4) and query["target"] == (1, 3)
+
+
+def test_query_coverage_card_and_unit_columns(tmp_path):
+    """Full-report rendering on a run WITH enrollment CSVs (and per-pair
+    bodyId output): the Global tab carries the query-scope card and the
+    Units table's two coverage columns."""
+    run = tmp_path / "find-paths-complete_FAFB_S2_to_T2_L2w3_20260101_000000"
+    rows = [_row("S2->M->T2", 10)]
+    rows[0]["coverage"] = "[1/2, 1/1, 1/3]"
+    _write_csv(run, rows)
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "S2", "isInPath": True},
+        {"bodyId": 2, "type": "S2", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "T2", "Checked": True},
+        {"bodyId": 21, "type": "T2", "Checked": False},
+    ], "target_neurons.csv")
+    from paths_pair_report import generate_paths_pair_report
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Query bodyId coverage" in text
+    assert "sources 1/2" in text and "targets 1/2" in text
+    assert "Src on paths</th>" in text and "Tgt reached</th>" in text

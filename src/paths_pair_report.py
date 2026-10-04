@@ -335,17 +335,25 @@ def build_unit_breakdown(
     frame: pd.DataFrame, rank_by: str,
     source_cov: Optional[Dict[str, str]] = None,
     target_cov: Optional[Dict[str, str]] = None,
+    pair_bodyid: Optional[Dict[Tuple[str, str], Tuple[int, int]]] = None,
 ) -> Tuple[List[dict], List[dict], Dict[Tuple[str, str], dict]]:
     """Per-pair breakdown of one unit.
 
     Returns (path rows, intermediate rows, pair stats keyed
     ``(source, target)``). Rank is bottleneck-first within (pair, length);
-    shared/unique classification is over the pair's FULL path set. Each
-    path row carries its pair's ``source_cov``/``target_cov`` bodyId
-    n/N strings (round-8b item 1).
+    shared/unique classification is over the pair's FULL path set.
+
+    Coverage is counted PER PATH and PER PAIR (2026-10-04): each path
+    row carries the FIRST/LAST entries of its own per-node coverage list
+    (distinct bodyIds realizing that path), and each pair stat carries
+    the pair's DISTINCT endpoint bodyIds when bodyId-level output exists
+    (``pair_bodyid``); without it the pair falls back to the type's
+    query-scope value with ``cov_scope='type'`` (exact pairs say
+    ``'pair'``).
     """
     source_cov = source_cov or {}
     target_cov = target_cov or {}
+    pair_bodyid = pair_bodyid or {}
     frame = frame.copy()
     frame['_path_key'] = frame['path']
     ordered = _rank_sort(frame, rank_by)
@@ -370,6 +378,7 @@ def build_unit_breakdown(
                 probabilities = row.get('probabilities', '')
                 ratios = row.get('ratios', '')
                 coverage = row.get('coverage', '')
+                path_scov, path_tcov = _path_end_coverage(coverage)
                 pair_rows.append({
                     'source': source,
                     'target': target,
@@ -383,14 +392,30 @@ def build_unit_breakdown(
                     'min_weight': row['min_weight'],
                     'path_prob': row['path_prob'],
                     'length': int(length),
-                    'source_bodyid_coverage': source_cov.get(source, ''),
-                    'target_bodyid_coverage': target_cov.get(target, ''),
+                    'source_bodyid_coverage': (
+                        path_scov or source_cov.get(source, '')),
+                    'target_bodyid_coverage': (
+                        path_tcov or target_cov.get(target, '')),
                 })
+        exact = pair_bodyid.get((source, target))
+        if exact is not None:
+            stats_scov = (f'{exact[0]}/{_cov_denominator(source_cov.get(source))}'
+                          if _cov_denominator(source_cov.get(source)) else '')
+            stats_tcov = (f'{exact[1]}/{_cov_denominator(target_cov.get(target))}'
+                          if _cov_denominator(target_cov.get(target)) else '')
+            cov_scope = 'pair'
+        else:
+            stats_scov = source_cov.get(source, '')
+            stats_tcov = target_cov.get(target, '')
+            cov_scope = 'type'
         stats = {
             'paths': len(pair_rows),
             'lengths': dict(sorted(lengths.items())),
             'shared': sum(1 for v in inter_counts[(source, target)].values() if v >= 2),
             'unique': sum(1 for v in inter_counts[(source, target)].values() if v == 1),
+            'scov': stats_scov,
+            'tcov': stats_tcov,
+            'cov_scope': cov_scope,
         }
         pair_stats[(source, target)] = stats
         path_rows.extend(pair_rows)
@@ -479,6 +504,98 @@ def _load_enrollment_coverage(
         except Exception:  # noqa: BLE001 - coverage is best-effort
             pass
     return source_cov, target_cov
+
+
+_COV_ELEMENT_RE = re.compile(r'(\d+)\s*/\s*(\d+)')
+
+
+def _path_end_coverage(coverage_value):
+    """Per-path source/target bodyId coverage: the FIRST and LAST ``n/N``
+    entries of the row's per-node coverage list (round 9) — distinct
+    bodyIds realizing THIS path at its endpoints / the type's members in
+    the run. ``(None, None)`` when the row carries no coverage list."""
+    text = '' if coverage_value is None else str(coverage_value)
+    entries = _COV_ELEMENT_RE.findall(text)
+    if not entries:
+        return None, None
+    return (f'{entries[0][0]}/{entries[0][1]}',
+            f'{entries[-1][0]}/{entries[-1][1]}')
+
+
+def _cov_denominator(n_over_n: str) -> str:
+    """The ``N`` of an ``n/N`` coverage string ('' when unparseable)."""
+    m = _COV_ELEMENT_RE.search(str(n_over_n or ''))
+    return m.group(2) if m else ''
+
+
+def _load_query_coverage(folder) -> Dict[str, Tuple[int, int]]:
+    """Query-scope bodyId coverage totals for one unit: source = bodyIds
+    with ``isInPath`` / all enrolled; target = bodyIds ``Checked`` / all
+    resolved. Best-effort — missing files simply omit the side."""
+    folder = Path(folder)
+    out: Dict[str, Tuple[int, int]] = {}
+    try:
+        frame = pd.read_csv(folder / 'source_neurons.csv',
+                            usecols=['isInPath'])
+        flags = (frame['isInPath'].fillna(False).astype(str).str.lower()
+                 == 'true')
+        out['source'] = (int(flags.sum()), len(flags))
+    except Exception:  # noqa: BLE001 - coverage is best-effort
+        pass
+    try:
+        frame = pd.read_csv(folder / 'target_neurons.csv',
+                            usecols=['Checked'])
+        flags = (frame['Checked'].fillna(False).astype(str).str.lower()
+                 == 'true')
+        out['target'] = (int(flags.sum()), len(flags))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _load_pair_bodyid_coverage(folder):
+    """Distinct endpoint bodyIds per (source type, target type) pair,
+    counted over the bodyId-level paths table (per-path, per-pair).
+
+    Returns ``{}`` when the run skipped bodyId-level output
+    (``skip_bodyId``) — pair-scope coverage then falls back to the
+    type's query-scope value, labeled as such."""
+    folder = Path(folder)
+    bid_path = next(iter(sorted(folder.glob(
+        '*_allpaths_bodyId_paths.csv'))), None)
+    if bid_path is None:
+        return {}
+    try:
+        frame = pd.read_csv(bid_path, usecols=['path'])
+    except Exception:  # noqa: BLE001
+        return {}
+    type_maps = {}
+    for side, fname in (('src', 'source_neurons.csv'),
+                        ('tgt', 'target_neurons.csv')):
+        try:
+            f = pd.read_csv(folder / fname, usecols=['bodyId', 'type'])
+            type_maps[side] = {
+                str(b): str(t)
+                for b, t in zip(f['bodyId'], f['type'])
+            }
+        except Exception:  # noqa: BLE001
+            type_maps[side] = {}
+    if not type_maps.get('src') or not type_maps.get('tgt'):
+        return {}
+    src_ids = defaultdict(set)
+    tgt_ids = defaultdict(set)
+    for chain in frame['path'].astype(str):
+        nodes = chain.split('->')
+        if len(nodes) < 2:
+            continue
+        source = type_maps['src'].get(nodes[0])
+        target = type_maps['tgt'].get(nodes[-1])
+        if source is None or target is None:
+            continue
+        src_ids[(source, target)].add(nodes[0])
+        tgt_ids[(source, target)].add(nodes[-1])
+    return {key: (len(src_ids[key]), len(tgt_ids[key]))
+            for key in src_ids}
 
 
 def _root_display_label(run_dir: Path, meta: Dict[str, Any],
@@ -627,6 +744,9 @@ def build_pair_entry(
                          if lengths else '—'),
         'shared': stats['shared'],
         'unique': stats['unique'],
+        'scov': stats.get('scov', ''),
+        'tcov': stats.get('tcov', ''),
+        'cov_scope': stats.get('cov_scope', 'type'),
         'drawn_shared': drawn_shared,
         'drawn_unique': drawn_unique,
         'viz': build_viz(drawn_rows, inter_counts, inter_minhop),
@@ -638,6 +758,9 @@ def build_global(
     global_pairs: int, global_edges: int,
     unit_source_cov: Optional[Dict[str, Dict[str, str]]] = None,
     unit_target_cov: Optional[Dict[str, Dict[str, str]]] = None,
+    unit_pair_cov: Optional[Dict[str, Dict[Tuple[str, str],
+                                           Tuple[str, str]]]] = None,
+    unit_query_cov: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
 ) -> dict:
     """Run-wide (global) presentations, in the spirit of the cross-dataset
     report's summary sections: per-unit stats, the pair x unit path-count
@@ -667,6 +790,12 @@ def build_global(
             'median_weight': float(weights.median()) if len(weights) else None,
             'p90_weight': float(weights.quantile(0.9)) if len(weights) else None,
             'max_weight': float(weights.max()) if len(weights) else None,
+            # Query-scope bodyId coverage (over the whole query's
+            # enrollment — distinct from the per-pair / per-path numbers).
+            'src_cov': (unit_query_cov or {}).get(unit.unit_id, {}).get(
+                'source'),
+            'tgt_cov': (unit_query_cov or {}).get(unit.unit_id, {}).get(
+                'target'),
         })
 
     pair_cells: Dict[Tuple[str, str], Dict[str, int]] = {}
@@ -675,15 +804,18 @@ def build_global(
     pair_cov_detail: Dict[Tuple[str, str], Dict[str, str]] = defaultdict(dict)
     for unit in units:
         frame = frames[unit.unit_id]
-        src_cov = (unit_source_cov or {}).get(unit.unit_id) or {}
-        tgt_cov = (unit_target_cov or {}).get(unit.unit_id) or {}
+        pair_cov = (unit_pair_cov or {}).get(unit.unit_id) or {}
         for (source, target), count in (
                 frame.groupby(['_source', '_target']).size().items()):
             pair_cells.setdefault((source, target), {})[unit.unit_id] = int(count)
-            # per-unit bodyId coverage detail (source n/N · target n/N)
-            if source in src_cov or target in tgt_cov:
+            # per-unit bodyId coverage detail (source n/N · target n/N),
+            # PER PAIR when bodyId-level output exists (else the type's
+            # query-scope value).
+            exact = pair_cov.get((source, target))
+            if exact is not None:
                 pair_cov_detail[(source, target)][unit.unit_id] = (
-                    f'{src_cov.get(source, "—")} / {tgt_cov.get(target, "—")}')
+                    f'{exact[0] or "—"} / {exact[1] or "—"}'
+                    f' [{exact[2]}]')
         lengths_by_pair = frame.groupby(['_source', '_target'])['_length']
         for (source, target), lengths in lengths_by_pair:
             lo, hi = int(lengths.min()), int(lengths.max())
@@ -708,7 +840,13 @@ def build_global(
         if detail:
             primary = max(detail, key=lambda u: pair_cells[key].get(u, 0))
             scov, _, tcov = detail[primary].partition(' / ')
-            row['scov'], row['tcov'] = scov, tcov
+            row['scov'] = scov.rsplit(' [', 1)[0]
+            row['tcov'] = tcov.rsplit(' [', 1)[0]
+            # Scope label: 'pair' = distinct bodyIds counted over this
+            # pair's own paths (bodyId-level output present); 'type' =
+            # the type's query-scope fallback (skip_bodyId runs).
+            row['cov_scope'] = (
+                'pair' if detail[primary].endswith('[pair]') else 'type')
     matrix_rows.sort(key=lambda r: (-r['cons'], -r['total'], r['source'], r['target']))
     cons_hist = Counter(r['cons'] for r in matrix_rows)
     pair_matrix = {
@@ -1275,12 +1413,18 @@ def _render_overview(payload: dict, run_dir: Path,
     unit_labels = {u['id']: u['label'] for u in run['units']}
     rows = []
     for pair in sorted(pairs, key=lambda p: (-p['paths_total'], p['source'], p['target'])):
+        cov_scope_title = (
+            'title="distinct endpoint bodyIds over this pair'+"'"+'s paths"'
+            if pair.get('cov_scope') == 'pair'
+            else 'title="type query-scope (run skipped bodyId output)"')
         rows.append(
             f'<tr data-pair="{_esc(pair["id"])}">'
             f'<td>{_esc(unit_labels.get(pair["unit"], pair["unit"]))}</td>'
             f'<td><strong>{_esc(pair["source"])}</strong></td>'
             f'<td><strong>{_esc(pair["target"])}</strong></td>'
             f'<td>{pair["paths_total"]:,}</td>'
+            f'<td {cov_scope_title}>{_esc(pair.get("scov") or "—")}</td>'
+            f'<td {cov_scope_title}>{_esc(pair.get("tcov") or "—")}</td>'
             f'<td>{pair["n_lengths"]} ({_esc(pair["length_range"])})</td>'
             f'<td>{pair["shared"]:,} shared · {pair["unique"]:,} unique</td>'
             f'<td><a href="#" onclick="TAB.gotoPair(\'{_esc(pair["id"])}\');'
@@ -1290,10 +1434,14 @@ def _render_overview(payload: dict, run_dir: Path,
         pair_table = (
             '<div class="card"><h3>Pairs</h3>'
             '<p style="color:var(--secondary-color);font-size:0.9em;">Sorted by '
-            'path count. “Open” jumps to the Pair Explorer with the source and '
-            'target selects set.</p>'
+            'path count. Src/Tgt coverage is counted per pair (distinct '
+            "endpoint bodyIds over the pair's own paths; hover says when "
+            'a run skipped bodyId output and the type query-scope value '
+            'is shown instead). “Open” jumps to the Pair Explorer with '
+            'the source and target selects set.</p>'
             '<div class="sticky-table-container"><table><thead><tr>'
             '<th>Unit</th><th>Source</th><th>Target</th><th>Paths</th>'
+            '<th>Src on paths</th><th>Tgt reached</th>'
             '<th>Lengths</th><th>Intermediates</th><th></th>'
             '</tr></thead><tbody>' + ''.join(rows) +
             '</tbody></table></div></div>')
@@ -1460,6 +1608,13 @@ def _render_global_tab(payload: dict) -> str:
     run = payload['run']
     unit_labels = {u['id']: u['label'] for u in run['units']}
 
+    def _cov_cell(pair_tuple, title):
+        if not pair_tuple:
+            return '<td>—</td>'
+        n, total = pair_tuple
+        pct = (f' ({100.0 * n / total:.1f}%)' if total else '')
+        return f'<td title="{title}">{n:,}/{total:,}{pct}</td>'
+
     unit_rows = []
     for unit in glob['units']:
         unit_rows.append(
@@ -1468,18 +1623,53 @@ def _render_global_tab(payload: dict) -> str:
             f'<td>{unit["sources"]}</td><td>{unit["targets"]}</td>'
             f'<td>{_fmt_num(unit["median_weight"])}</td>'
             f'<td>{_fmt_num(unit["p90_weight"])}</td>'
-            f'<td>{_fmt_num(unit["max_weight"])}</td></tr>')
+            f'<td>{_fmt_num(unit["max_weight"])}</td>'
+            + _cov_cell(unit.get('src_cov'),
+                        'Query-scope: source bodyIds on any path (isInPath)'
+                        ' / all enrolled bodyIds of the query')
+            + _cov_cell(unit.get('tgt_cov'),
+                        'Query-scope: target bodyIds reached (Checked) /'
+                        ' all resolved bodyIds of the query')
+            + '</tr>')
+    query_cov_lines = []
+    for unit in glob['units']:
+        parts = [_esc(unit['label'])]
+        if unit.get('src_cov'):
+            n, total = unit['src_cov']
+            pct = f' ({100.0 * n / total:.1f}%)' if total else ''
+            parts.append(f'sources {n:,}/{total:,}{pct}')
+        if unit.get('tgt_cov'):
+            n, total = unit['tgt_cov']
+            pct = f' ({100.0 * n / total:.1f}%)' if total else ''
+            parts.append(f'targets {n:,}/{total:,}{pct}')
+        if len(parts) > 1:
+            query_cov_lines.append(
+                '<div>· ' + ' — '.join(parts) + '</div>')
+    query_cov_card = (
+        '<div class="card"><h3>Query bodyId coverage</h3>'
+        + (''.join(query_cov_lines) if query_cov_lines
+           else '<p class="cap-note">Enrollment files unavailable.</p>')
+        + '<p class="cap-note">Query-scope: source = bodyIds on ANY path '
+          '(isInPath) / all enrolled; target = bodyIds reached (Checked) / '
+          'all resolved — over the whole query. The Pair × unit matrix '
+          'below and the Pair Explorer carry the per-pair and per-path '
+          'numbers (per-pair distinct counting needs bodyId-level output; '
+          "skip_bodyId runs show the type's query-scope value there, "
+          'labeled in the hover).</p></div>') if query_cov_lines else ''
     units_card = (
         '<div class="card"><h3>Units</h3>'
         '<div class="sticky-table-container"><table><thead><tr>'
         '<th>Unit</th><th>Paths</th><th>Pairs</th><th>Sources</th>'
         '<th>Targets</th><th>Median min-weight</th><th>P90</th><th>Max</th>'
+        '<th title="Query-scope: on any path / enrolled">Src on paths</th>'
+        '<th title="Query-scope: reached / resolved">Tgt reached</th>'
         '</tr></thead><tbody>' + ''.join(unit_rows) +
         '</tbody></table></div>'
         '<p class="cap-note">Weights are per-path bottlenecks (min_weight); '
         'P90 is the 90th percentile. Min synapse thresholds make these '
         'non-comparable across units — compare shapes, not levels. Ratio-basis units (minratio_ folders) ARE cross-dataset comparable: the threshold is a fraction of each post neuron\'s total input.</p></div>')
 
+    units_card = query_cov_card + units_card
     matrix = glob['pair_matrix']
     n_units = len(matrix['units'])
     # short matrices render full-height so no rows hide behind a scroll cut
@@ -1499,8 +1689,13 @@ def _render_global_tab(payload: dict) -> str:
         detail = row.get('cov_detail') or {}
         cov_title = ''
         if detail:
+            scope = ('per-pair distinct bodyIds'
+                     if row.get('cov_scope') == 'pair'
+                     else 'type query-scope (run skipped bodyId output)')
             cov_title = ' title="' + _esc(
-                '; '.join(f'{u}: {v}' for u, v in sorted(detail.items()))) + '"'
+                '; '.join(f'{u}: {v.rsplit(" [", 1)[0]}'
+                          for u, v in sorted(detail.items()))
+                + f' — {scope}') + '"'
         matrix_rows.append(
             f'<tr><td class="matrix-first-col"><strong>{_esc(row["source"])}</strong> → '
             f'<strong>{_esc(row["target"])}</strong></td>'
@@ -1515,9 +1710,11 @@ def _render_global_tab(payload: dict) -> str:
         'analog of the cross-dataset path presence matrix: pairs (matched by '
         'name across units) as rows, units as columns, cells = path counts '
         '(hover for the hop range within that unit). Sorted by unit '
-        'coverage, then total paths. Source/Target coverage are the '
-        'pair\u2019s bodyId n/N — the same values as the Pair Explorer '
-        '(hover for per-unit detail on cross-dataset runs).</p>'
+        'coverage, then total paths. Source/Target coverage are counted '
+        'PER PAIR — distinct endpoint bodyIds over that pair\u2019s own '
+        'paths (requires bodyId-level output; runs that skipped it show '
+        'the type\u2019s query-scope value — hover says which). Per-path '
+        'numbers are on the Pair Explorer rows.</p>'
         f'<div class="{container_cls}"><table><thead><tr>'
         '<th class="matrix-first-col">Pair</th>'
         + ''.join(f'<th>{_esc(unit_labels.get(u, u))}</th>' for u in matrix['units'])
@@ -2344,12 +2541,15 @@ REPORT_JS = r"""
             + 'in the run\'s discovered network.';
           tr.appendChild(covTd);
           var scovTd = elt('td', null, row.scov || '—');
-          scovTd.title = 'Source bodyIds on paths (isInPath) / enrolled — '
-            + 'from source_neurons.csv';
+          scovTd.title = 'PER PATH: distinct source bodyIds realizing '
+            + 'this exact path / the source type\'s members in the run '
+            + '(first entry of the coverage list; pair-scope value when '
+            + 'the row has no list)';
           tr.appendChild(scovTd);
           var tcovTd = elt('td', null, row.tcov || '—');
-          tcovTd.title = 'Target bodyIds reached (Checked) / resolved — '
-            + 'from target_neurons.csv';
+          tcovTd.title = 'PER PATH: distinct target bodyIds realizing '
+            + 'this exact path / the target type\'s members in the run '
+            + '(last entry of the coverage list)';
           tr.appendChild(tcovTd);
           tbody.appendChild(tr);
           rowPaths.push(row.path);
@@ -2534,22 +2734,32 @@ def _attach_table_groups(
     pairs: List[dict],
     source_cov: Optional[Dict[str, str]] = None,
     target_cov: Optional[Dict[str, str]] = None,
+    pair_cov: Optional[Dict[Tuple[str, str], Tuple[str, str]]] = None,
 ) -> None:
     """Fill each pair entry's capped table groups (ranked rows per length),
-    each row carrying its pair's ``scov``/``tcov`` bodyId n/N strings
-    (round-8b item 1)."""
+    each row carrying PER-PATH ``scov``/``tcov`` bodyId n/N strings — the
+    first/last entries of the row's own per-node coverage list (distinct
+    bodyIds realizing THAT path), falling back to the pair's coverage
+    when a row has no list."""
     source_cov = source_cov or {}
     target_cov = target_cov or {}
+    pair_cov = pair_cov or {}
     work = frame.copy()
     work['_path_key'] = work['path']
     ordered = _rank_sort(work, rank_by)
     by_pair: Dict[Tuple[str, str], dict] = {}
     for (source, target), group in ordered.groupby(['_source', '_target'], sort=True):
+        pair_entry = pair_cov.get(
+            (source, target),
+            (source_cov.get(source, ''), target_cov.get(target, '')))
+        pair_scov, pair_tcov = pair_entry[0], pair_entry[1]
         groups = []
         for length, length_group in group.groupby('_length', sort=True):
             take = length_group.head(top_per_length)
             rows = []
             for rank, (_, row) in enumerate(take.iterrows(), start=1):
+                path_scov, path_tcov = _path_end_coverage(
+                    row.get('coverage'))
                 rows.append({
                     'rank': rank,
                     'path': str(row['path']),
@@ -2560,8 +2770,8 @@ def _attach_table_groups(
                     'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),
                     'coverage': ('' if pd.isna(row.get('coverage'))
                                  else str(row['coverage'])),
-                    'scov': source_cov.get(source, ''),
-                    'tcov': target_cov.get(target, ''),
+                    'scov': path_scov or pair_scov,
+                    'tcov': path_tcov or pair_tcov,
                 })
             groups.append({'len': int(length), 'total': len(length_group),
                            'rows': rows})
@@ -2628,6 +2838,8 @@ def generate_paths_pair_report(
     unit_drawn: Dict[str, Dict[Tuple[str, str], List[dict]]] = {}
     unit_source_cov: Dict[str, Dict[str, str]] = {}
     unit_target_cov: Dict[str, Dict[str, str]] = {}
+    unit_pair_cov: Dict[str, Dict[Tuple[str, str], Tuple[str, str]]] = {}
+    unit_query_cov: Dict[str, Dict[str, Tuple[int, int]]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
@@ -2635,8 +2847,16 @@ def generate_paths_pair_report(
         source_cov, target_cov = _load_enrollment_coverage(unit.folder)
         unit_source_cov[unit.unit_id] = source_cov
         unit_target_cov[unit.unit_id] = target_cov
+        unit_query_cov[unit.unit_id] = _load_query_coverage(unit.folder)
+        pair_bodyid = _load_pair_bodyid_coverage(unit.folder)
         path_rows, inter_rows, pair_stats = build_unit_breakdown(
-            frame, rank_by, source_cov=source_cov, target_cov=target_cov)
+            frame, rank_by, source_cov=source_cov, target_cov=target_cov,
+            pair_bodyid=pair_bodyid)
+        unit_pair_cov[unit.unit_id] = {
+            key: (stats.get('scov', ''), stats.get('tcov', ''),
+                  stats.get('cov_scope', 'type'))
+            for key, stats in pair_stats.items()
+        }
         unit_path_rows[unit.unit_id] = path_rows
         unit_inter_rows[unit.unit_id] = inter_rows
         unit_pair_stats[unit.unit_id] = pair_stats
@@ -2667,7 +2887,8 @@ def generate_paths_pair_report(
                                unit_source_cov, unit_target_cov)
     payload['global'] = build_global(
         units, frames, global_pairs, global_edges,
-        unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov)
+        unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov,
+        unit_pair_cov=unit_pair_cov, unit_query_cov=unit_query_cov)
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
 
@@ -2714,6 +2935,8 @@ def _attach_table_groups_multi(
     payload: dict, rank_by: str, top_per_length: int,
     unit_source_cov: Optional[Dict[str, Dict[str, str]]] = None,
     unit_target_cov: Optional[Dict[str, Dict[str, str]]] = None,
+    unit_pair_cov: Optional[Dict[str, Dict[Tuple[str, str],
+                                           Tuple[str, str]]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -2724,4 +2947,5 @@ def _attach_table_groups_multi(
             _attach_table_groups(
                 frames[unit.unit_id], rank_by, top_per_length, entries,
                 source_cov=(unit_source_cov or {}).get(unit.unit_id),
-                target_cov=(unit_target_cov or {}).get(unit.unit_id))
+                target_cov=(unit_target_cov or {}).get(unit.unit_id),
+                pair_cov=(unit_pair_cov or {}).get(unit.unit_id))

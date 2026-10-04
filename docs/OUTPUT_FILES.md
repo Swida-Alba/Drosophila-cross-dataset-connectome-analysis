@@ -249,10 +249,17 @@ the report's `Generated:` timestamp.
     `pair`, `rank_in_pair_length`, `path`, `weights`, `probabilities`,
     `ratios`, `min_weight`, `path_prob`, `length`,
     `source_bodyid_coverage`, `target_bodyid_coverage`, `paths_in_pair`
-    (the coverage columns are the pair's bodyId `n/N` — source: `isInPath`
-    / enrolled from `source_neurons.csv`; target: reached (`Checked`) /
-    resolved from `target_neurons.csv`; empty when those files are
-    missing).
+    (the coverage columns are PER PATH — the first/last entries of the
+    row's own per-node `coverage` list: distinct bodyIds realizing THAT
+    path / the type's run members; rows without a coverage list fall
+    back to the pair's coverage. Pair-level distinct counts appear in
+    the report's Global matrix / Pairs table and the Pair Explorer, and
+    the Global tab's Query bodyId coverage card carries the query-scope
+    totals — source: `isInPath` / enrolled from `source_neurons.csv`;
+    target: reached (`Checked`) / resolved from `target_neurons.csv`).
+    Per-pair distinct counting needs bodyId-level output; `skip_bodyId`
+    runs show the type's query-scope value there (scope-labeled in the
+    hover).
 *   **`paths_pair_breakdown/pair_breakdown_intermediates.csv`**: One row
     per (pair, intermediate) — `dataset`, `threshold`, `unit`, `source`,
     `target`, `intermediate`, `n_paths_using`, `classification`
