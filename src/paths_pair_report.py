@@ -235,6 +235,7 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             ('min_synapse', r'min synapse number:\s*([^\s]+)'),
             ('min_ratio', r'min connection ratio:\s*([^\s]+)'),
             ('weight_basis', r'weight basis:\s*([^\s]+)'),
+            ('threshold_combination', r'threshold combination:\s*([^\s]+)'),
             ('max_interlayer', r'max interlayer:\s*([^\s]+)'),
             ('dataset', r'^dataset:\s*([^\s]+)'),
             ('filter_by', r'filter by:\s*([^\s]+)'),
@@ -666,8 +667,22 @@ def _root_display_label(run_dir: Path, meta: Dict[str, Any],
     if str(meta.get('weight_basis') or '').startswith('connection_ratio'):
         min_r = str(meta.get('min_ratio') or '').strip()
         if dataset and min_r:
+            # Round-13: ratio+AND runs keep a synapse floor — label it.
+            if (str(meta.get('threshold_combination') or '')
+                    .strip().lower().startswith('and')
+                    and min_syn and min_syn not in ('0', '1', 'None')):
+                return (f'{dataset} · min ratio {min_r} '
+                        f'· and synapse {min_syn}')
             return f'{dataset} · min ratio {min_r}'
     if dataset and min_syn and min_syn not in ('0', 'None'):
+        min_r = str(meta.get('min_ratio') or '').strip()
+        # Round-13: synapse+AND runs co-threshold by ratio — label it
+        # (plain synapse runs carry min connection ratio 0.0).
+        if (str(meta.get('threshold_combination') or '')
+                .strip().lower().startswith('and')
+                and min_r and min_r not in ('0', '0.0', 'None')):
+            return (f'{dataset} · min synapse {min_syn} '
+                    f'· and ratio {min_r}')
         return f'{dataset} · min synapse {min_syn}'
     if dataset:
         return dataset

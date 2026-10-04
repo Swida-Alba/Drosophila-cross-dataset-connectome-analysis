@@ -164,6 +164,16 @@ COLUMN_GLOSSARY = {
         "Fraction of the postsynaptic neuron's input coming from this "
         "partner: $w_{ij} / \\sum_k w_{kj}$ over the postsynaptic total "
         "input $D_t$.", "0-1"),
+    "threshold_combination": (
+        "How Min Synapse Count and Min Connection Ratio combine when both "
+        "are set: 'or' (default) — they are alternatives, one threshold "
+        "governs the graph; 'and' — an edge enters the pathfinding graph "
+        "only when it clears BOTH thresholds (round-13).", "or | and"),
+    "pair_min_ratio": (
+        "Weakest PAIR-level mass share among the path's hops (the pair's "
+        "kept synapse mass / the post type's full-membership incoming "
+        "mass) — independent of which bodyIds realize the path; shown "
+        "beside the realized Min ratio.", "0-1"),
     "connection_ratio_adj": (
         "Threshold-conditioned share: the connection's weight over the "
         "post's incoming mass counting only edges at/above the Min "
@@ -1165,7 +1175,9 @@ _PATHFINDING_EXPLANATION = [
         "pipeline": [
             "requested threshold (Min Synapse Count, or the Min "
             "Connection Ratio on weight-basis='connection_ratio' runs — "
-            "the stage is identical, the units change)",
+            "the stage is identical, the units change; under "
+            "threshold_combination='and' BOTH thresholds gate the same "
+            "stage — an edge must clear each on its own scale)",
             "lossless hop/dead-end pruning (never changes which paths exist)",
             "optional Edge Budget floor w0 ('all' mode only — a graph "
             "budget, exactly equivalent to raising the threshold)",
@@ -3604,7 +3616,8 @@ def _key_params(params: dict) -> list:
         "sourceNeurons", "targetNeurons", "source_neurons", "target_neurons",
         "source", "query", "line_names", "lines", "line_name",
         "threshold_mode", "threshold_dataset_order", "threshold_combinations",
-        "weight_basis", "min_synapse_num", "min_synapse_threshold", "min_ratio",
+        "weight_basis", "threshold_combination", "min_synapse_num",
+        "min_synapse_threshold", "min_ratio",
         "min_traversal_probability", "max_interlayer", "thresholds",
         "graph_edge_limit_bodyid", "max_paths_bodyid", "drop_untyped",
         "shortest_source_coverage", "shortest_target_coverage",

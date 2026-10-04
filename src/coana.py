@@ -3262,7 +3262,9 @@ class FindNeuronConnection:
     '''
     Minimum connection ratio (weight/post).  Under the default synapse
     basis this is retained for compatibility and exported as a readout
-    definition — it does not filter the pathfinding graph (F9).  Under
+    definition — it does not filter the pathfinding graph (F9) — UNLESS
+    ``threshold_combination='and'`` makes it a live co-threshold with
+    min_synapse_num (round-13).  Under
     ``weight_basis='connection_ratio'`` it IS the pathfinding threshold
     (0 < min_ratio <= 1; the graph's edge weights become the F9
     connection ratios w_ij / W_j, all-post incoming at min_weight=1).
