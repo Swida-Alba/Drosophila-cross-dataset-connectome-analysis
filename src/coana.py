@@ -19301,6 +19301,10 @@ class FindNeuronConnection:
                                        'weight']])
             for _u, _v, _w in zip(_ci_w['bodyId_pre'],
                                   _ci_w['bodyId_post'], _ci_w['weight']):
+                if _w is None:
+                    # A null weight must not crash materialization — the
+                    # affected sequences fall back to the join values.
+                    continue
                 _edge_w_lut.setdefault((str(_u), str(_v)), float(_w))
 
         # Ratio-lane mass recompute, hoisted above the CSV/Excel split so
@@ -19764,13 +19768,14 @@ class FindNeuronConnection:
                 if _weights_changed_paths:
                     self._warn_notes.append(
                         f'- [type-path weights] {_weights_changed_paths:,} '
-                        'type paths traverse pairs that also connect at '
-                        'other depths: their per-hop Weights count only the '
+                        'type paths have per-hop Weights below the pair\'s '
+                        'total mass: Weights/min_weight count only the '
                         'bodyId edges realizing that hop at that position '
-                        '(the same edges behind the Coverage n). Cross-depth '
-                        'pair totals remain in data_details/'
-                        'connection_type.csv (weight summed over '
-                        'conn_layer) and in the type matrices.')
+                        '(the same edges behind the Coverage n), while a '
+                        'type pair\'s mass is often spread over several '
+                        'depths. Cross-depth pair totals remain in '
+                        'data_details/connection_type.csv (weight summed '
+                        'over conn_layer) and in the type matrices.')
 
                 sort_cols = []
                 descending = []
