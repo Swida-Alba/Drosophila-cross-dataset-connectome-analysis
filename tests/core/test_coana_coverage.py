@@ -1075,6 +1075,26 @@ class TestRatioAdjColumns:
         assert (out['connection_ratio_adj']
                 >= out['connection_ratio']).all()
 
+    def test_ratio_and_adj_uses_pair_level_numerator(self):
+        # Round-15 (real MCNS ratio+AND run): the plain column is
+        # PAIR-level after the recompute, so the thr-conditioned adj must
+        # sum the pair's conn-layer slices for its numerator — a row
+        # slice over a pair-level plain compared two granularities.
+        fc, _ = make_fc(min_synapse_num=3,
+                        weight_basis='connection_ratio')
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame([('TB', 200.0)],
+                                                      'type_post'))
+        df = pd.DataFrame({
+            'type_pre': ['TA', 'TA'], 'type_post': ['TB', 'TB'],
+            'conn_layer': ['1->2', '2->3'], 'weight': [60, 40],
+            'connection_ratio': [0.5, 0.5],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        # pair numerator 100 over the thr-3-conditioned 200 on BOTH rows
+        assert abs(out['connection_ratio_adj'].iloc[0] - 0.5) < 1e-12
+        assert abs(out['connection_ratio_adj'].iloc[1] - 0.5) < 1e-12
+
     def test_ratio_basis_reuses_recompute_mass(self):
         # Round-14: under the ratio basis at Min Synapse 1 the adj column
         # must equal connection_ratio BY CONSTRUCTION — even when a fresh
@@ -1141,6 +1161,34 @@ class TestRatioAdjColumns:
         assert out["type_coverage"].iloc[0] == "1/5"
         # numerator/denominator untouched: 50 / (100+100)
         assert abs(out["connection_ratio"].iloc[0] - 0.25) < 1e-12
+
+    def test_recompute_numerator_dedupes_recurring_pairs(self):
+        # Round-15: conn_inpath keeps ALL layer-specific occurrences; the
+        # recompute's numerator must count a recurring physical edge ONCE
+        # (the exported weight column's semantics). Real-data exposure:
+        # SMP053->PPL101 summed 307 vs the table's 187.
+        fc, _ = make_fc(
+            weight_basis='connection_ratio',
+            min_ratio=0.01,
+            _ratio_lane_totals={'b1': 100.0},
+            _ratio_lane_type_members={'A': ['a1'], 'B': ['b1']},
+        )
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame([('B', 100.0)],
+                                                      'type_post'))
+        conn_types = pd.DataFrame({
+            'type_pre': ['A'], 'type_post': ['B'], 'weight': [50],
+            'connection_ratio': [0.5], 'traversal_probability': [1.0],
+            'block_probability': [0.0],
+        })
+        # the SAME bodyId edge recurring at two depths (307-vs-187 class)
+        conn_inpath = pd.DataFrame({
+            'type_pre': ['A', 'A'], 'type_post': ['B', 'B'],
+            'bodyId_pre': ['a1', 'a1'], 'bodyId_post': ['b1', 'b1'],
+            'weight': [30, 25],
+        })
+        out = fc._recompute_ratio_lane_type_ratios(conn_types, conn_inpath)
+        assert abs(out['connection_ratio'].iloc[0] - 30 / 100) < 1e-12
 
     def test_recompute_type_coverage_falls_back_to_frame_members(self):
         fc, _ = make_fc(

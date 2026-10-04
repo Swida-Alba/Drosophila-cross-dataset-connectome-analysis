@@ -2250,12 +2250,19 @@ class FindNeuronConnection:
         # can disagree with the settled plain ratios: on a real
         # hemibrain delegate the mass recompute missed 20 post types and
         # left their enrichment-era ratios in place, which the adj
-        # fetch-side denominators then contradicted). At thr > 1
-        # (ratio+AND) the conditioned fetch below is the meaningful
-        # denominator and stays.
+        # fetch-side denominators then contradicted). At thr > 1 the
+        # conditioned fetch below supplies the denominator. Round-15
+        # (real MCNS ratio+AND run): under the ratio basis the plain
+        # column is PAIR-level after the recompute, so the adj numerator
+        # must aggregate to the pair too (sum of the pair's conn-layer
+        # slices = its distinct-edge mass) — a row-level slice over a
+        # pair-level plain compared two different granularities.
         _copy_plain = (post_col == 'type_post' and thr <= 1
                        and getattr(self, 'weight_basis', 'synapse')
                        == 'connection_ratio')
+        _pair_numerator = (post_col == 'type_post' and thr > 1
+                           and getattr(self, 'weight_basis', 'synapse')
+                           == 'connection_ratio')
         try:
             import polars as pl
             if isinstance(df, pl.DataFrame):
@@ -2287,13 +2294,23 @@ class FindNeuronConnection:
                     df = df.with_columns(pl.col(post_col).cast(pl.Utf8))
                     df = df.join(totals_pl.rename({key: post_col}),
                                  on=post_col, how='left')
+                    if (_pair_numerator and pre_col in df.columns):
+                        pair_sum = df.group_by([pre_col, post_col]).agg(
+                            pl.col('weight').sum()
+                            .alias('_pair_weight'))
+                        df = df.join(pair_sum, on=[pre_col, post_col],
+                                     how='left')
+                        _num = pl.col('_pair_weight')
+                    else:
+                        _num = pl.col('weight')
                     df = df.with_columns(
                         pl.when(pl.col('total_incoming_weight') > 0)
-                        .then(pl.col('weight')
-                              / pl.col('total_incoming_weight'))
+                        .then(_num / pl.col('total_incoming_weight'))
                         .otherwise(None)
                         .alias('connection_ratio_adj')
                     ).drop('total_incoming_weight')
+                    if '_pair_weight' in df.columns:
+                        df = df.drop('_pair_weight')
                 else:
                     totals_gp = df.group_by(post_col).agg(
                         pl.col('weight').sum().alias('_adj_total'))
@@ -2341,10 +2358,15 @@ class FindNeuronConnection:
             adj_den = df[post_col].astype(str).map(
                 totals.set_index(key)['total_incoming_weight']
             ).replace(0, np.nan)
+            num = df['weight']
+            if _pair_numerator and pre_col in df.columns:
+                num = df.groupby([pre_col, post_col])['weight'].transform(
+                    'sum')
         else:
             adj_den = df.groupby(post_col)['weight'].transform('sum')
             adj_den = adj_den.replace(0, np.nan)
-        df['connection_ratio_adj'] = df['weight'] / adj_den
+            num = df['weight']
+        df['connection_ratio_adj'] = num / adj_den
         return df
 
     def _apply_hemisphere_suffix_to_conn_df(self, conn_df: pd.DataFrame) -> pd.DataFrame:
@@ -14717,8 +14739,21 @@ class FindNeuronConnection:
             if ct_pd.empty or ci_pd.empty:
                 return ct_pd
             ci = ci_pd.copy()
-            for col in ('type_pre', 'type_post', 'bodyId_post'):
-                ci[col] = ci[col].astype(str)
+            for col in ('type_pre', 'type_post', 'bodyId_pre',
+                        'bodyId_post'):
+                if col in ci.columns:
+                    ci[col] = ci[col].astype(str)
+            # Round-15 root cause (user-approved investigation): the
+            # numerator must match the exported weight column's semantics
+            # — the enrichment DEDUPLICATES bodyId pairs ("never double
+            # count physical edges"), while raw conn_inpath keeps ALL
+            # layer-specific occurrences, so an edge recurring at two
+            # depths was counted TWICE here (real hemibrain delegate:
+            # SMP053->PPL101 summed 307 vs the table's 187 — a 64%
+            # inflated numerator that connection_ratio_adj exposed).
+            if {'bodyId_pre', 'bodyId_post'} <= set(ci.columns):
+                ci = ci.drop_duplicates(
+                    subset=['bodyId_pre', 'bodyId_post'], keep='first')
             grouped = ci.groupby(['type_pre', 'type_post'])
             members = getattr(self, '_ratio_lane_type_members', None) or {}
             type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
