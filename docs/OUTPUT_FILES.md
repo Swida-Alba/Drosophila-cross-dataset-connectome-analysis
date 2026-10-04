@@ -160,6 +160,14 @@ fields remain decimal-valued.
 *   **`connection_info_bodyId.csv`**: BodyId-level edge table (only when `skip_bodyId=False`)
 *   **`hemisphere_unconserved_edges.csv`**: Edges removed by hemisphere-unconserved-edge filtering (only when that filter is active)
 *   **`ratio_synapse_map.csv`** (ratio-basis runs only): the per-neuron synapse cutoffs the min-connection-ratio threshold implies — `implied_syn_cutoff = max(1, ceil(t_r × total_incoming))` per post, plus kept-edge synapse ranges. The type-level path CSVs gain a `coverage` column in every basis: `[n1/N1, n2/N2, ...]` per NODE — distinct bodyIds on the emitted paths at that position over the type's members in the run's discovered network. In ratio runs the allpaths `min_ratio` column IS the run's strength definition (the ratio bottleneck StrongestFirst ordered and τ cut on); thresholds/τ/w0 in the provenance block are ratio units, synapse columns unchanged.
+*   **`data_details/pair_bodyid_coverage.csv`**: per-pair DISTINCT
+    endpoint bodyIds over the run's bodyId paths (`source_type`,
+    `target_type`, `distinct_source_bodyids`, `distinct_target_bodyids`),
+    written at run time from the in-memory path set — so `skip_bodyId`
+    runs (which never save the bodyId paths table) still carry exact
+    pair-scope coverage for the pair report (its Global matrix / Pairs
+    table / Pair Explorer). Written on every basis alongside the
+    per-node `coverage` lists.
 *   **`untyped_dropped_records.csv`**: Connection rows removed by the **Drop Untyped Neurons** filter (`drop_untyped`, default on; applied in both Complete and Shortest Paths after label enrichment and before graph construction, so an untyped neuron can never be an intermediate node of a returned path or visualization). Written only when rows were actually dropped. Columns: `dataset`, `threshold`, `conn_layer`, then the connection columns present (`bodyId_pre`, `bodyId_post`, `type_pre`, `type_post`, `weight`, `roi`, `instance_pre`, `instance_post`, `nt_type`, `custom_group_*`, `connection_ratio`, `traversal_probability`, `synapse`), plus a final `untyped_side` (`pre` | `post` | `pre+post`). An untyped label is one that is empty after strip, one of the Unknown/None/NaN sentinels (case-insensitive), or all-digit (numeric bodyId fallback) — the same predicate Cross-Dataset Comparison uses. Note: an untyped source/target can remain enrolled in `source_neurons.csv` / `target_neurons.csv` while its incident edges were removed.
     **BANC caveat:** the BANC meta table contains ~70,000 `Unknown`-type rows plus numeric-fallback labels, so with the default `drop_untyped=True` a BANC run can drop a very large share of its connections (in the 2026-09-12 Windows test, `ORN_DA1 -> DA1_lPN` dropped 320,191 connections touching 293,547 neurons). Check `untyped_dropped_records.csv` and the `[untyped dropped]` entry in `user_warning_notes.txt`; turn **Drop Untyped Neurons** off (or pass `drop_untyped=False`) to keep untyped neurons in the network.
 *   **`connection_custom_groups.csv`**: Custom query-group definitions (only when custom groups are used)
@@ -257,9 +265,11 @@ the report's `Generated:` timestamp.
     the Global tab's Query bodyId coverage card carries the query-scope
     totals — source: `isInPath` / enrolled from `source_neurons.csv`;
     target: reached (`Checked`) / resolved from `target_neurons.csv`).
-    Per-pair distinct counting needs bodyId-level output; `skip_bodyId`
-    runs show the type's query-scope value there (scope-labeled in the
-    hover).
+    Per-pair distinct counting uses the bodyId-level paths table when
+    saved, else the run-time `pair_bodyid_coverage.csv` summary
+    (`skip_bodyId` runs) — only runs predating that summary (or without
+    either file) show the type's query-scope value, scope-labeled in the
+    hover.
 *   **`paths_pair_breakdown/pair_breakdown_intermediates.csv`**: One row
     per (pair, intermediate) — `dataset`, `threshold`, `unit`, `source`,
     `target`, `intermediate`, `n_paths_using`, `classification`

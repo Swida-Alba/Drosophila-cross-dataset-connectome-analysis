@@ -13982,6 +13982,22 @@ class FindNeuronConnection:
         return cov
 
     @staticmethod
+    def _pair_endpoint_bodyids(all_paths, node_label):
+        """Per (source type, target type): the DISTINCT first/last
+        bodyIds over the bodyId paths — the per-pair coverage counts.
+        Persisted at run time (``pair_bodyid_coverage.csv``) so
+        ``skip_bodyId`` runs — which never save the bodyId paths table —
+        still get exact pair-scope coverage in the pair report."""
+        src_ids, tgt_ids = {}, {}
+        for p in all_paths:
+            if not p or len(p) < 2:
+                continue
+            key = (node_label(p[0]), node_label(p[-1]))
+            src_ids.setdefault(key, set()).add(str(p[0]))
+            tgt_ids.setdefault(key, set()).add(str(p[-1]))
+        return {key: (src_ids[key], tgt_ids[key]) for key in src_ids}
+
+    @staticmethod
     def _keep_shortest_bodyid_paths(all_paths):
         """Keep shortest paths independently for every bodyId source-target pair.
 
@@ -19313,6 +19329,27 @@ class FindNeuronConnection:
             _network_ids.update(str(_n) for _n in layer_set)
         for _bid in _network_ids:
             _type_n[str(_node_type_label(_bid))] += 1
+        # Per-pair distinct endpoint bodyIds, persisted at run time so
+        # skip_bodyId runs (no bodyId paths table on disk) still get
+        # exact pair-scope coverage in the pair report.
+        try:
+            _pair_ends = self._pair_endpoint_bodyids(
+                all_paths, _node_type_label)
+            if _pair_ends:
+                import pandas as _pd_pair_cov
+                _pd_pair_cov.DataFrame([
+                    {'source_type': _s, 'target_type': _t,
+                     'distinct_source_bodyids': len(_si),
+                     'distinct_target_bodyids': len(_ti)}
+                    for (_s, _t), (_si, _ti) in sorted(_pair_ends.items())
+                ]).to_csv(
+                    os.path.join(details_folder,
+                                 'pair_bodyid_coverage.csv'),
+                    index=False)
+        except Exception as _pair_cov_exc:
+            self._warn_notes.append(
+                '- [pair coverage] per-pair bodyId coverage summary not '
+                f'written ({_pair_cov_exc!r}).')
         self._vprint(f'  Derived {len(type_paths_to_save):,} unique type-level paths '
                      f'from {len(all_paths):,} bodyId paths', level='full')
 

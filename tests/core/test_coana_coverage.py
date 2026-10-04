@@ -2712,3 +2712,34 @@ class TestFindPathDeterminism:
             path = Path(fc.path_folder) / "data_details" / "connection_type.csv"
             contents.append(path.read_bytes())
         assert contents[0] == contents[1]
+
+
+# ---------------------------------------------------------------------------
+# Per-pair bodyId coverage summary (2026-10-04): persisted at run time
+# from the in-memory bodyId paths, so skip_bodyId runs (which never save
+# the bodyId paths table) still get exact pair-scope coverage in the
+# pair report.
+# ---------------------------------------------------------------------------
+def test_pair_endpoint_bodyids_distinct_counts():
+    import coana
+    paths = [
+        ['1', '10', '20'],
+        ['2', '11', '20'],
+        ['3', '11', '21'],
+    ]
+
+    def label(node):
+        return {'1': 'S', '2': 'S', '3': 'S',
+                '20': 'T', '21': 'T', '10': 'M', '11': 'M'}[node]
+
+    out = coana.FindNeuronConnection._pair_endpoint_bodyids(paths, label)
+    assert out[('S', 'T')] == ({'1', '2', '3'}, {'20', '21'})
+
+
+def test_materialize_paths_writes_pair_coverage_summary():
+    """The run-time write is unconditional (skip_bodyId-independent)."""
+    import inspect
+    import coana
+    src = inspect.getsource(coana.FindNeuronConnection._materialize_paths)
+    assert 'pair_bodyid_coverage.csv' in src
+    assert '_pair_endpoint_bodyids(' in src

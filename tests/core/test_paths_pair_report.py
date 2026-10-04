@@ -867,3 +867,42 @@ def test_query_coverage_card_and_unit_columns(tmp_path):
     assert "Query bodyId coverage" in text
     assert "sources 1/2" in text and "targets 1/2" in text
     assert "Src on paths</th>" in text and "Tgt reached</th>" in text
+
+
+def test_pair_summary_fallback_when_no_bodyid_paths(tmp_path):
+    """skip_bodyId runs persist per-pair distinct endpoint counts at RUN
+    time (data_details/pair_bodyid_coverage.csv) — the report reads that
+    summary when the bodyId paths table is absent and still gets EXACT
+    pair-scope coverage (scope='pair', not the query-scope fallback)."""
+    run = tmp_path / "find-paths-complete_FAFB_S3_to_T3_L2w3_20260101_000000"
+    rows = [_row("S3->M->T3", 10)]
+    rows[0]["coverage"] = "[1/2, 1/1, 1/3]"
+    _write_csv(run, rows)
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "S3", "isInPath": True},
+        {"bodyId": 2, "type": "S3", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "T3", "Checked": True},
+        {"bodyId": 21, "type": "T3", "Checked": False},
+        {"bodyId": 22, "type": "T3", "Checked": False},
+    ], "target_neurons.csv")
+    # NO bodyId paths CSV — the run-time summary stands in for it.
+    (run / "data_details").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"source_type": "S3", "target_type": "T3",
+         "distinct_source_bodyids": 2, "distinct_target_bodyids": 1},
+    ]).to_csv(run / "data_details" / "pair_bodyid_coverage.csv",
+              index=False)
+    from paths_pair_report import (
+        _load_pair_bodyid_coverage, build_unit_breakdown, load_unit_paths,
+    )
+    pair_bodyid = _load_pair_bodyid_coverage(run)
+    assert pair_bodyid[("S3", "T3")] == (2, 1)
+    frame = load_unit_paths(run / f"{run.name}_allpaths_type.csv")
+    _, _, pair_stats = build_unit_breakdown(
+        frame, "min_weight", pair_bodyid=pair_bodyid,
+        source_cov={"S3": "1/2"}, target_cov={"T3": "1/3"})
+    stats = pair_stats[("S3", "T3")]
+    assert stats["scov"] == "2/2" and stats["tcov"] == "1/3"
+    assert stats["cov_scope"] == "pair"

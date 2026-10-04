@@ -564,7 +564,22 @@ def _load_pair_bodyid_coverage(folder):
     bid_path = next(iter(sorted(folder.glob(
         '*_allpaths_bodyId_paths.csv'))), None)
     if bid_path is None:
-        return {}
+        # skip_bodyId runs persist the per-pair distinct counts at RUN
+        # time (the bodyId paths themselves are never saved) — read the
+        # summary instead; equally exact for pair-scope coverage.
+        summary = folder / 'data_details' / 'pair_bodyid_coverage.csv'
+        if not summary.exists():
+            return {}
+        try:
+            frame = pd.read_csv(summary)
+            return {
+                (str(r.source_type), str(r.target_type)):
+                    (int(r.distinct_source_bodyids),
+                     int(r.distinct_target_bodyids))
+                for r in frame.itertuples(index=False)
+            }
+        except Exception:  # noqa: BLE001
+            return {}
     try:
         frame = pd.read_csv(bid_path, usecols=['path'])
     except Exception:  # noqa: BLE001
