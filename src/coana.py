@@ -17512,11 +17512,21 @@ class FindNeuronConnection:
                         _frame.is_empty() if hasattr(_frame, 'is_empty')
                         else len(_frame) == 0):
                     continue
+                if _density_ratio and 'weight_ratio' not in _frame.columns:
+                    # Silent fallback to synapse counts would corrupt the
+                    # capture (meta says per_connection_ratio, w_start is a
+                    # float tier) — fail loudly instead.
+                    raise ValueError(
+                        'density capture (connection_ratio basis): a '
+                        'connection frame lacks the weight_ratio column — '
+                        'the ratio lane must attach it before the graph '
+                        'frames reach the capture. Refusing to record '
+                        'synapse counts as ratios.')
                 _pre = [str(_v) for _v in _frame['bodyId_pre'].to_list()]
                 _post = [str(_v) for _v in _frame['bodyId_post'].to_list()]
                 _w_parts.append(_np.asarray(
                     (_frame['weight_ratio'].to_numpy()
-                     if (_density_ratio and 'weight_ratio' in _frame.columns)
+                     if _density_ratio
                      else _frame['weight'].to_numpy()),
                     dtype=_np.float64 if _density_ratio else _np.int32))
                 if _annot_known:
@@ -17529,7 +17539,8 @@ class FindNeuronConnection:
                 _node_ids.update(_post)
             self._density_edge_weights = (
                 _np.concatenate(_w_parts) if _w_parts
-                else _np.asarray([], dtype=_np.int32))
+                else _np.asarray([], dtype=_np.float64 if _density_ratio
+                                 else _np.int32))
             # Without a loaded curated table, classification is impossible:
             # leave the class array None (the curve builder then treats all
             # edges as typed) and record it in the meta.

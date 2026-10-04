@@ -578,7 +578,7 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
             'group_name': group_name,
         })
         for dataset in dataset_names:
-            requested_threshold = int(requested[dataset])
+            requested_threshold = _cell_value(requested[dataset])
             provenance = analyzer._path_provenance_row(dataset, requested_threshold)
             row = dict(provenance)
             row.update({
@@ -724,7 +724,7 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
         query_id = str(query.get('id') or query.get('query_id'))
         query_label = str(query.get('label') or query_id)
         for dataset in dataset_names:
-            threshold = int((query.get('thresholds') or {})[dataset])
+            threshold = _cell_value((query.get('thresholds') or {})[dataset])
             df = analyzer.raw_results.get(dataset, {}).get(threshold, pd.DataFrame())
             chart_counts.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'count': int(len(df))})
             chart_weights.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'weight': float(df['weight'].sum()) if not df.empty and 'weight' in df.columns else 0})
@@ -1665,6 +1665,12 @@ def _generate_html_header() -> str:
             .replace('__VIS_NETWORK_JS__', inline_vis_network()))
 
 
+def _cell_value(value):
+    """Value-preserving threshold cast (float ratio tiers stay exact)."""
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
 def _threshold_display_label(analyzer, threshold, dataset_names) -> str:
     """``Threshold = t`` with the applied values appended when they differ."""
     try:
@@ -1672,7 +1678,7 @@ def _threshold_display_label(analyzer, threshold, dataset_names) -> str:
         for ds in dataset_names:
             if threshold not in analyzer.parameters.get_thresholds_for_dataset(ds):
                 continue
-            view = analyzer.get_threshold_view(ds, int(threshold))
+            view = analyzer.get_threshold_view(ds, _cell_value(threshold))
             values.append(view.get('applied_threshold'))
         if values and (len(set(str(v) for v in values)) > 1
                        or str(values[0]) != str(threshold)):
@@ -1699,7 +1705,7 @@ def _threshold_tab_label(analyzer, threshold, dataset_names,
         for ds in dataset_names:
             if threshold not in analyzer.parameters.get_thresholds_for_dataset(ds):
                 continue
-            view = analyzer.get_threshold_view(ds, int(threshold))
+            view = analyzer.get_threshold_view(ds, _cell_value(threshold))
             values.append(view.get('applied_threshold'))
             if view.get('status') == 'aliased':
                 aliased += 1
@@ -2226,14 +2232,14 @@ def _generate_auto_density_alignment_section(analyzer, dataset_names,
             _cells = (_q.get('thresholds') or {}) if isinstance(_q, dict) else {}
             try:
                 installed_cells.add(tuple(sorted(
-                    (str(ds), int(v)) for ds, v in _cells.items())))
+                    (str(ds), _cell_value(v)) for ds, v in _cells.items())))
             except (TypeError, ValueError):
                 continue
 
         def _row_key(row):
             try:
                 return tuple(sorted(
-                    (str(ds), int(row[ds])) for ds in dataset_names))
+                    (str(ds), _cell_value(row[ds])) for ds in dataset_names))
             except (TypeError, ValueError, KeyError):
                 return None
 
@@ -2301,7 +2307,7 @@ def _density_curves_plotly_card(curves, aligned, windows,
         series = []
         for ds, group in curves.groupby('dataset'):
             group = group.sort_values('threshold')
-            thresholds = [int(t) for t in group['threshold'].tolist()]
+            thresholds = [_cell_value(t) for t in group['threshold'].tolist()]
             density = [None if pd.isna(v) else round(float(v), 6)
                        for v in group['density'].tolist()]
             path_counts = [int(v) for v in group['path_count'].tolist()]
@@ -2309,7 +2315,7 @@ def _density_curves_plotly_card(curves, aligned, windows,
                 continue
             materialized = set()
             if 'is_materialized' in group.columns:
-                materialized = {int(t) for t, m in zip(
+                materialized = {_cell_value(t) for t, m in zip(
                     group['threshold'], group['is_materialized']) if bool(m)}
             w_start = w_star = None
             if windows is not None and not getattr(windows, 'empty', True):

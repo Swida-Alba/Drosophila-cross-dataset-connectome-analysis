@@ -48,6 +48,16 @@ def threshold_folder_token(value, weight_basis: str = 'synapse') -> str:
     return f'minsyn_{int(value)}'
 
 
+def threshold_cell_value(value):
+    """Value-preserving threshold cast: integral values stay ``int``
+    (synapse runs keep byte-identical exports/ids), float ratio tiers
+    stay exact floats. The query-identity layer (query rows, jobs,
+    comparison points) MUST pass thresholds through this — a bare
+    ``int()`` truncates every sub-1 ratio tier to 0."""
+    v = float(value)
+    return int(v) if v.is_integer() else v
+
+
 @dataclass
 class ComparisonParameters:
     """
@@ -191,13 +201,17 @@ class ComparisonParameters:
     
     # Analysis settings
     thresholds: List[int] = field(default_factory=lambda: [1, 3, 5, 10, 20])
-    """Min synapse count thresholds for standard comparisons.
+    """Comparison thresholds (plan §4).
 
-    In ``threshold_mode='standard'`` each value is a same-threshold query
-    applied to every selected dataset.  In ``threshold_mode='combinations'``
-    this field is a derived, sorted union of the values used by the explicit
-    query rows and is retained for raw-run scheduling/backward compatibility;
-    it is not a comparison identity.
+    Synapse basis: Min Synapse Count values (ints). Ratio basis
+    (``weight_basis='connection_ratio'``): FLOAT min-connection-ratio tiers
+    in (0, 1] — the default synapse list is invalid there and must be
+    replaced by explicit tiers. In ``threshold_mode='standard'`` each value
+    is a same-threshold query applied to every selected dataset.  In
+    ``threshold_mode='combinations'`` this field is a derived, sorted union
+    of the values used by the explicit query rows and is retained for
+    raw-run scheduling/backward compatibility; it is not a comparison
+    identity.
     """
 
     threshold_mode: str = 'standard'
@@ -206,7 +220,8 @@ class ComparisonParameters:
     # thresholds. 'connection_ratio' (plan-connection-ratio-pathfinding
     # §15.3): delegates run the ratio lane — the threshold list is float
     # min-connection-ratio tiers, folders use the minratio_ grammar, and
-    # auto mode / replay stay synapse-only (Phase 3).
+    # auto mode / density alignment / replay all run on those float tiers
+    # (Phase-3 remainder, implemented).
     """Threshold query mode: ``'standard'``, ``'combinations'`` or ``'auto'``.
 
     Standard mode expands each scalar in ``thresholds`` to one query shared by
@@ -225,7 +240,8 @@ class ComparisonParameters:
     """Explicit cross-dataset threshold query rows.
 
     Each row has ``id``/``label`` (optional) and a ``thresholds`` mapping from
-    every selected dataset name to exactly one positive integer.  Combination
+    every selected dataset name to exactly one positive threshold — an
+    integer (synapse basis) or a float in (0, 1] (ratio basis).  Combination
     mode requires at least two selected datasets.  This is a query matrix,
     not a per-dataset threshold schedule.
     """
@@ -1045,7 +1061,9 @@ class ComparisonParameters:
                         )
                     continue
                 cleaned = self._clean_threshold_list(
-                    values, f"dataset_thresholds[{ds}]")
+                    values, f"dataset_thresholds[{ds}]",
+                    ratio_basis=(getattr(self, 'weight_basis', 'synapse')
+                                 == 'connection_ratio'))
                 if cleaned:
                     normalized[ds] = cleaned
             self.dataset_thresholds = normalized or None
@@ -1175,7 +1193,8 @@ class ComparisonParameters:
                 {
                     'id': row['id'],
                     'label': row.get('label', row['id']),
-                    'thresholds': {ds: int(row['thresholds'][ds]) for ds in order},
+                    'thresholds': {ds: threshold_cell_value(
+                        row['thresholds'][ds]) for ds in order},
                     'dataset_order': list(order),
                     'row_mode': row.get('row_mode'),
                 }
@@ -1186,7 +1205,8 @@ class ComparisonParameters:
                 {
                     'id': row['id'],
                     'label': row.get('label', row['id']),
-                    'thresholds': {ds: int(row['thresholds'][ds]) for ds in order},
+                    'thresholds': {ds: threshold_cell_value(
+                        row['thresholds'][ds]) for ds in order},
                     'dataset_order': list(order),
                     'row_mode': row.get('row_mode'),
                 }
@@ -1195,18 +1215,20 @@ class ComparisonParameters:
         if self.threshold_mode == 'legacy_vertical':
             return [
                 {
-                    'id': f'threshold_{threshold}',
-                    'label': f'N={threshold}',
-                    'thresholds': {ds: int(threshold) for ds in order},
+                    'id': f'threshold_{threshold_cell_value(threshold)}',
+                    'label': f'N={threshold_cell_value(threshold)}',
+                    'thresholds': {ds: threshold_cell_value(threshold)
+                                   for ds in order},
                     'dataset_order': list(order),
                 }
                 for threshold in self.thresholds
             ]
         return [
             {
-                'id': f'threshold_{threshold}',
-                'label': f'N={threshold}',
-                'thresholds': {ds: int(threshold) for ds in order},
+                'id': f'threshold_{threshold_cell_value(threshold)}',
+                'label': f'N={threshold_cell_value(threshold)}',
+                'thresholds': {ds: threshold_cell_value(threshold)
+                               for ds in order},
                 'dataset_order': list(order),
             }
             for threshold in self.thresholds
@@ -1215,7 +1237,7 @@ class ComparisonParameters:
     def get_unique_threshold_jobs(self) -> List[Tuple[str, int]]:
         """Return deduplicated raw jobs required by the threshold queries."""
         jobs = {
-            (dataset, int(query['thresholds'][dataset]))
+            (dataset, threshold_cell_value(query['thresholds'][dataset]))
             for query in self.get_threshold_queries()
             for dataset in (self.threshold_dataset_order or self.get_dataset_names())
         }
@@ -1884,7 +1906,13 @@ class ComparisonParameters:
         if not hasattr(self, '_applied_folder_lookup') \
                 or self._applied_folder_lookup is None:
             self._applied_folder_lookup = {}
-        self._applied_folder_lookup[(dataset, int(threshold))] = folder_name
+        # Key convention matches get_dataset_output_path: float tiers under
+        # the ratio basis, ints otherwise (int() would truncate sub-1 tiers
+        # to 0 and silently miss the lookup).
+        key = (float(threshold)
+               if getattr(self, 'weight_basis', 'synapse')
+               == 'connection_ratio' else int(threshold))
+        self._applied_folder_lookup[(dataset, key)] = folder_name
 
     def applied_folder_name(self, applied: int, requested_thresholds=None,
                             is_floor: bool = False) -> str:

@@ -83,10 +83,11 @@ def density_curve(bottlenecks, edge_weights, t_grid) -> Dict[str, np.ndarray]:
 def dataset_window(meta: Optional[Dict]) -> Tuple[int, Optional[int]]:
     """Return ``(w_start, w_star_measured)`` for one dataset (plan §4.4).
 
-    ``w_start = max(3, applied)``; the ceiling is the MEASURED retained
-    bottleneck (``max(path_bottlenecks)``), never the stored, possibly
-    hop-unbounded ``strongest_retained_bottleneck``. ``None`` ceiling means
-    no window (no paths).
+    Synapse basis: ``w_start = max(3, applied)``; ratio basis: ``w_start``
+    is the applied ratio tier itself (no floor of 3). The ceiling is the
+    MEASURED retained bottleneck (``max(path_bottlenecks)``), never the
+    stored, possibly hop-unbounded ``strongest_retained_bottleneck``.
+    ``None`` ceiling means no window (no paths).
     """
     meta = meta or {}
     ratio = str(meta.get('weight_basis', '')) == 'connection_ratio'

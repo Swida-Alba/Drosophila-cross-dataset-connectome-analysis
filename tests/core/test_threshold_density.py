@@ -985,3 +985,183 @@ class TestRatioBasisFloatLadders:
         from comparison.threshold_density import vertical_rows
         rows = vertical_rows([0.001, 0.004], ['A', 'B'])
         assert rows[0]['thresholds'] == {'A': 0.001, 'B': 0.001}
+
+
+# ---------------------------------------------------------------------------
+# Ratio query identity: float tiers must survive the whole query chain
+# (get_threshold_queries / jobs / views / manifest / points). A bare int()
+# truncates every sub-1 tier to 0 — verified corrupting the real AUTO+ratio
+# run's threshold_view.json (queries showed thresholds 0, raw_run_key
+# ".../minsyn_0"). Synapse runs must stay byte-identical.
+# ---------------------------------------------------------------------------
+class TestRatioQueryIdentity:
+    def _ratio_params(self, **overrides):
+        from comparison.comparison_parameters import ComparisonParameters
+        kwargs = dict(
+            datasets=['ds_a', 'ds_b'], source_neurons=['L2'],
+            target_neurons=['clock'], weight_basis='connection_ratio',
+            thresholds=[0.0011919],
+            threshold_combinations=[{
+                'id': 'threshold=0.0011919', 'label': 'spine',
+                'row_mode': 'vertical',
+                'thresholds': {'ds_a': 0.0011919, 'ds_b': 0.0011919},
+            }],
+            threshold_mode='combinations',
+            threshold_dataset_order=['ds_a', 'ds_b'],
+            output_folder=None, verbose=False)
+        kwargs.update(overrides)
+        return ComparisonParameters(**kwargs)
+
+    def test_combination_queries_preserve_float_tiers(self):
+        params = self._ratio_params()
+        queries = params.get_threshold_queries()
+        assert queries[0]['thresholds'] == {'ds_a': 0.0011919,
+                                            'ds_b': 0.0011919}
+        jobs = params.get_unique_threshold_jobs()
+        assert set(jobs) == {('ds_a', 0.0011919), ('ds_b', 0.0011919)}
+
+    def test_auto_installed_queries_preserve_float_tiers(self):
+        params = self._ratio_params(
+            threshold_mode='auto', threshold_combinations=None)
+        params.install_auto_combinations([{
+            'id': 'threshold=0.0011919', 'label': 'spine',
+            'thresholds': {'ds_a': 0.0011919, 'ds_b': 0.0011919}}])
+        assert params.threshold_mode == 'combinations'
+        assert params.get_threshold_queries()[0]['thresholds'] == {
+            'ds_a': 0.0011919, 'ds_b': 0.0011919}
+
+    def test_standard_ratio_queries_preserve_float_tiers(self):
+        params = self._ratio_params(
+            threshold_mode='standard', threshold_combinations=None,
+            thresholds=[0.001, 0.01])
+        queries = params.get_threshold_queries()
+        assert [q['thresholds']['ds_a'] for q in queries] == [0.001, 0.01]
+        assert queries[0]['id'] == 'threshold_0.001'
+
+    def test_legacy_dataset_thresholds_accept_float_tiers(self):
+        params = self._ratio_params(
+            threshold_mode='standard', threshold_combinations=None,
+            dataset_thresholds={'ds_a': [0.001, 0.01], 'ds_b': [0.001]})
+        assert params.threshold_mode == 'legacy_vertical'
+        assert params.dataset_thresholds['ds_a'] == [0.001, 0.01]
+
+    def test_synapse_query_identity_byte_identical(self):
+        from comparison.comparison_parameters import ComparisonParameters
+        params = ComparisonParameters(
+            datasets=['ds_a', 'ds_b'], source_neurons=['L2'],
+            target_neurons=['clock'], thresholds=[3, 5],
+            threshold_dataset_order=['ds_a', 'ds_b'],
+            output_folder=None, verbose=False)
+        queries = params.get_threshold_queries()
+        assert [q['id'] for q in queries] == ['threshold_3', 'threshold_5']
+        assert queries[0]['thresholds'] == {'ds_a': 3, 'ds_b': 3}
+        assert all(isinstance(v, int)
+                   for q in queries for v in q['thresholds'].values())
+        assert set(params.get_unique_threshold_jobs()) == {
+            ('ds_a', 3), ('ds_b', 3), ('ds_a', 5), ('ds_b', 5)}
+
+    def test_analyzer_threshold_view_preserves_floats(self):
+        import tempfile
+        from comparison.comparison_analyzer import ComparisonAnalyzer
+        params = self._ratio_params()
+        analyzer = ComparisonAnalyzer(params, verbose=False)
+        analyzer.parameters.output_folder = None
+        analyzer._path_run_meta[('ds_a', 0.0011919)] = {
+            'requested_threshold': 0.0011919}
+        view = analyzer.get_threshold_view('ds_a', 0.0011919)
+        assert view['requested_threshold'] == 0.0011919
+        assert view['applied_threshold'] == 0.0011919
+        assert view['is_exact'] is True
+        views = analyzer.get_threshold_queries_view()
+        assert views[0]['applied_thresholds']['ds_a'] == 0.0011919
+
+    def test_manifest_rows_use_ratio_folder_grammar(self):
+        import tempfile
+        from comparison.comparison_analyzer import ComparisonAnalyzer
+        params = self._ratio_params()
+        analyzer = ComparisonAnalyzer(params, verbose=False)
+        analyzer.parameters.output_folder = None
+        analyzer._path_run_meta[('ds_a', 0.0011919)] = {
+            'requested_threshold': 0.0011919}
+        analyzer._path_run_meta[('ds_b', 0.0011919)] = {
+            'requested_threshold': 0.0011919}
+        rows = analyzer._threshold_query_manifest_rows()
+        by_ds = {r['dataset']: r for r in rows}
+        assert by_ds['ds_a']['requested_threshold'] == 0.0011919
+        assert by_ds['ds_a']['raw_run_key'] == 'ds_a/minratio_0_0011919'
+        assert by_ds['ds_a']['applied_threshold'] == 0.0011919
+
+    def test_comparison_points_preserve_float_tiers(self):
+        from comparison.point_context import (
+            ComparisonPoint, point_from_value, points_from_parameters)
+        pts = points_from_parameters(self._ratio_params())
+        assert pts[0].thresholds_by_dataset == {'ds_a': 0.0011919,
+                                                'ds_b': 0.0011919}
+        assert pts[0].file_stem.startswith('query_')  # combinations stem
+        # Standard ratio point: float tier + minratio_ stem.
+        params = self._ratio_params(
+            threshold_mode='standard', threshold_combinations=None,
+            thresholds=[0.001])
+        std = points_from_parameters(params)
+        assert std[0].thresholds_by_dataset == {'ds_a': 0.001, 'ds_b': 0.001}
+        assert std[0].file_stem == 'minratio_0_001'
+        assert std[0].raw_thresholds == [0.001]
+        assert point_from_value(0.001, params).point_id == 'threshold_0.001'
+        # Synapse standard point stays byte-identical.
+        from comparison.comparison_parameters import ComparisonParameters
+        syn = ComparisonParameters(
+            datasets=['ds_a', 'ds_b'], thresholds=[3],
+            output_folder=None, verbose=False)
+        syn_pts = points_from_parameters(syn)
+        assert syn_pts[0].file_stem == 'minsyn_3'
+        assert syn_pts[0].raw_thresholds == [3]
+
+
+def test_bootstrap_ratio_float_dedup_keeps_distinct_rows(monkeypatch):
+    """AUTO under the ratio basis: vertical spine and horizontal rows sit on
+    DISTINCT float tiers — an int() dedup key collapses them all to 0 and
+    silently drops every row after the first (regression: the spine-only
+    real run). The bootstrap must also enumerate at the float floor."""
+    import tempfile
+    from comparison.comparison_parameters import ComparisonParameters
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+
+    params = ComparisonParameters(
+        datasets=['ds_a', 'ds_b'], source_neurons=['L2'],
+        target_neurons=['clock'], thresholds=[0.001],
+        threshold_mode='auto', weight_basis='connection_ratio',
+        threshold_dataset_order=['ds_a', 'ds_b'],
+        output_folder=tempfile.mkdtemp(), verbose=False)
+    analyzer = ComparisonAnalyzer(params, verbose=False)
+    analyzer.parameters.output_folder = None
+    calls = []
+    monkeypatch.setattr(
+        analyzer, 'run_path_analysis',
+        lambda ds, t, verbose_mode='simple': (
+            calls.append((ds, t)), pd.DataFrame())[1])
+    tiers = [0.0011919, 0.01, 0.1, 0.4]
+    monkeypatch.setattr(
+        analyzer, '_build_density_curves',
+        lambda: (
+            {'ds_a': {'thresholds': tiers, 'path_count': [9, 5, 2, 1],
+                      'edge_count': [90, 50, 20, 10],
+                      'density': [1.0, 0.5, 0.25, 0.1]},
+             'ds_b': {'thresholds': tiers, 'path_count': [8, 4, 2, 1],
+                      'edge_count': [80, 40, 16, 8],
+                      'density': [0.8, 0.4, 0.2, 0.08]}},
+            {'ds_a': (0.0011919, 0.4), 'ds_b': (0.0011919, 0.4)},
+            {'ds_a': {}, 'ds_b': {}}))
+
+    assert analyzer._bootstrap_auto_mode() is True
+    # Bootstrap enumeration at the float floor, not max(1, ...) = 1.
+    assert calls == [('ds_a', 0.001), ('ds_b', 0.001)]
+    queries = params.get_threshold_queries()
+    # Distinct float rows must ALL survive the dedup (int-collapse kept 1).
+    assert len(queries) >= 2
+    modes = {q.get('row_mode') for q in queries}
+    assert 'vertical' in modes and 'horizontal' in modes
+    seen_cells = {tuple(sorted(q['thresholds'].items())) for q in queries}
+    assert len(seen_cells) == len(queries)  # no two rows share one cell
+    for q in queries:
+        for v in q['thresholds'].values():
+            assert isinstance(v, float) and 0 < v <= 1

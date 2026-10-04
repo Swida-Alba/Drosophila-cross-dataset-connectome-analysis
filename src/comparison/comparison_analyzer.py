@@ -55,7 +55,9 @@ def _inline_vis_network() -> str:
 
 
 from .dataset_config import DatasetConfig
-from .comparison_parameters import ComparisonParameters
+from .comparison_parameters import (
+    ComparisonParameters, threshold_cell_value, threshold_folder_token,
+)
 from .label_mapper import LabelMapper
 from .data_loader import DataLoader
 from .metrics import ComparisonMetrics
@@ -423,6 +425,21 @@ class ComparisonAnalyzer:
             prov.setdefault('applied_threshold_source', 'requested')
             prov.setdefault('strongest_first_budget_bitten',
                             budget_bitten)
+            # The synapse contract function always provides the full key
+            # set below; this early return must too, or every consumer
+            # that reads the contract (e.g. _path_provenance_row,
+            # _applied_state_for) KeyErrors on a minimal ratio state.
+            prov.setdefault('edge_budget_applied', False)
+            prov.setdefault('strongest_first_budget', budget)
+            prov.setdefault('strongest_first_tau', strongest_tau)
+            prov.setdefault('tau_canonical', None)
+            prov.setdefault('strongest_dropped_bottleneck',
+                            state.get('strongest_dropped'))
+            prov.setdefault('strongest_retained_bottleneck',
+                            strongest_retained)
+            prov.setdefault('edge_budget', edge_budget)
+            prov.setdefault('edge_budget_landing', edge_landing)
+            prov.setdefault('edge_weight_floor', None)
             prov.setdefault('paths_complete', not budget_bitten)
             prov['weight_basis'] = 'connection_ratio'
             return prov
@@ -619,7 +636,7 @@ class ComparisonAnalyzer:
                 applied = None
             if applied is not None and float(applied) != float(threshold):
                 stats = getattr(self, '_untyped_drop_stats', {}).get(
-                    (dataset_name, int(applied))) or {}
+                    (dataset_name, threshold_cell_value(applied))) or {}
         edge_meta = {k: meta.get(k) for k in (
             'edge_mode', 'side_path_run', 'comparison_mode')
             if meta.get(k) is not None}
@@ -1113,9 +1130,8 @@ class ComparisonAnalyzer:
         mapper = self.parameters._auto_type_mapper
         dataset_names = self.parameters.get_dataset_names()
         summary = mapper.get_intermediate_mapping_summary(str_types, dataset_names)
-        
+
         # Print summary
-        output_path = self.parameters.full_output_path
         self._log("Auto type mapping summary for intermediate neurons:")
         self._log(f"  • {summary['total_types']} neuron types in comparison results")
         if summary['mapped_count'] > 0:
@@ -1339,10 +1355,7 @@ class ComparisonAnalyzer:
         # Only log when verbose (not 'silent')
         if verbose_mode != 'silent':
             self._log(f"Running analysis: \033[94m{dataset_name} @ threshold={threshold}\033[0m")
-        
-        # Get dataset config
-        config = self._get_dataset_config(dataset_name)
-        
+
         # Get source/target neurons from ComparisonParameters
         source_neurons = self.parameters.get_source_neurons_for_dataset(dataset_name)
         target_neurons = self.parameters.get_target_neurons_for_dataset(dataset_name)
@@ -1993,7 +2006,8 @@ class ComparisonAnalyzer:
                 'label': (f'N={threshold:g}'
                           if isinstance(threshold, float) else
                           f'N={int(threshold)}'),
-                'thresholds': {dataset: int(threshold) for dataset in datasets},
+                'thresholds': {dataset: threshold_cell_value(threshold)
+                               for dataset in datasets},
             }
             for threshold in (getattr(self.parameters, 'thresholds', []) or [])
         ]
@@ -2268,9 +2282,11 @@ class ComparisonAnalyzer:
     def _reconcile_applied_folders(self) -> None:
         if getattr(self.parameters, 'weight_basis',
                    'synapse') == 'connection_ratio':
-            # Ratio v1: folders stay at their plain minratio_{t} names —
-            # the applied-floor aliasing grammar stays synapse-only until
-            # the float-tier variant (Phase 3).
+            # Ratio basis (post Phase 3): delegate folders stay at their
+            # plain ``minratio_{t}`` names — every float tier is its own
+            # materialized run, so the applied-floor aliasing grammar
+            # (``..._applied_floor`` renames + ``_skipped`` markers) stays
+            # synapse-only by design, not as a deferred variant.
             return
         """Rename materialized folders to the applied grammar, create
         ``_skipped`` markers for pruned thresholds, and write the
@@ -2973,16 +2989,17 @@ class ComparisonAnalyzer:
         # threshold (the canonical equivalent it aliases). The orchestrator
         # never aliases to a weaker folder, so no clamp is applied.
         if skipped and applied_folder is not None:
-            applied = int(applied_folder)
+            applied = threshold_cell_value(applied_folder)
         return {
             'dataset': dataset,
-            'requested_threshold': int(requested),
-            'applied_threshold': int(applied) if applied is not None else None,
+            'requested_threshold': threshold_cell_value(requested),
+            'applied_threshold': (threshold_cell_value(applied)
+                                  if applied is not None else None),
             'applied_threshold_source': source,
             'applied_folder': applied_folder,
             'status': 'aliased' if skipped else 'applied',
             'is_exact': (not skipped and applied is not None
-                         and int(applied) == int(requested)),
+                         and float(applied) == float(requested)),
             'duplicate_of': meta.get('duplicate_of'),
             'skipped': skipped,
             'edge_weight_floor': floor,
@@ -3002,7 +3019,8 @@ class ComparisonAnalyzer:
             for ds in datasets:
                 if ds not in thresholds:
                     continue
-                cell = self.get_threshold_view(ds, int(thresholds[ds]))
+                cell = self.get_threshold_view(
+                    ds, threshold_cell_value(thresholds[ds]))
                 applied_map[ds] = cell['applied_threshold']
                 status_map[ds] = cell['status']
             fully_aliased = bool(status_map) and all(
@@ -3101,7 +3119,7 @@ class ComparisonAnalyzer:
             for dataset_order_index, dataset in enumerate(dataset_order, start=1):
                 if dataset not in threshold_map:
                     continue
-                threshold = int(threshold_map[dataset])
+                threshold = threshold_cell_value(threshold_map[dataset])
                 row = self._path_provenance_row(dataset, threshold)
                 row.update({
                     'query_id': query_id,
@@ -3111,8 +3129,8 @@ class ComparisonAnalyzer:
                     'dataset_order': dataset_order_index,
                     'requested_threshold': threshold,
                     'raw_run_key': (
-                        f"{self.parameters._sanitize_name(dataset)}"
-                        f"/minsyn_{threshold}"
+                        f"{self.parameters._sanitize_name(dataset)}/"
+                        f"{threshold_folder_token(threshold, getattr(self.parameters, 'weight_basis', 'synapse'))}"
                     ),
                 })
                 rows.append(row)
@@ -3408,7 +3426,8 @@ class ComparisonAnalyzer:
             for query in self.get_threshold_queries():
                 query_id = query.get('id') or query.get('query_id')
                 for dataset, threshold in (query.get('thresholds') or {}).items():
-                    query_refs.setdefault((dataset, int(threshold)), []).append(
+                    query_refs.setdefault(
+                        (dataset, threshold_cell_value(threshold)), []).append(
                         str(query_id))
         if self._untyped_dropped_records:
             recs = pd.concat(self._untyped_dropped_records, ignore_index=True)
@@ -7254,7 +7273,7 @@ class ComparisonAnalyzer:
             query_label = query.get('label', query_id)
             threshold_map = query.get('thresholds') or {}
             for dataset in datasets:
-                threshold = int(threshold_map[dataset])
+                threshold = threshold_cell_value(threshold_map[dataset])
                 provenance = self._path_provenance_row(dataset, threshold)
                 provenance.update({
                     'query_id': query_id,
@@ -8320,7 +8339,8 @@ class ComparisonAnalyzer:
             # run still needs a schedule — default to the physical-minimum
             # floor when no chips were set (the finally would otherwise
             # overwrite this fallback with the empty list).
-            self.parameters.thresholds = saved_thresholds or [3]
+            self.parameters.thresholds = saved_thresholds or (
+                [0.001] if _ratio_auto else [3])
             self._auto_bootstrap_status = _status(
                 'degraded', uncaptured=datasets, failures=failures,
                 reason='no density capture was measured for any dataset')
@@ -8388,9 +8408,12 @@ class ComparisonAnalyzer:
                 'row_mode': 'horizontal',
                 'thresholds': r['thresholds']})
         # De-duplicate identical threshold rows, keeping the vertical label.
+        # Value-preserving key: distinct float ratio tiers must NOT collapse
+        # (int() would key every sub-1 tier as 0 and silently drop rows).
         seen, unique = set(), []
         for r in rows:
-            key = tuple((ds, int(r['thresholds'][ds])) for ds in order)
+            key = tuple((ds, threshold_cell_value(r['thresholds'][ds]))
+                        for ds in order)
             if key in seen:
                 continue
             seen.add(key)
@@ -8398,7 +8421,8 @@ class ComparisonAnalyzer:
         if not unique:
             self._log("Auto threshold mode: no aligned rows in range — "
                       "falling back to the requested thresholds.")
-            self.parameters.thresholds = saved_thresholds or [3]
+            self.parameters.thresholds = saved_thresholds or (
+                [0.001] if _ratio_auto else [3])
             self._auto_bootstrap_status = _status(
                 'degraded', uncaptured=uncaptured, failures=failures,
                 reason='the measured windows admit no aligned row')
@@ -8410,7 +8434,8 @@ class ComparisonAnalyzer:
             self._log(f"Auto threshold mode: could not install rows: "
                       f"{type(e).__name__}: {e}")
             self._log(f"  {traceback.format_exc()}")
-            self.parameters.thresholds = saved_thresholds or [3]
+            self.parameters.thresholds = saved_thresholds or (
+                [0.001] if _ratio_auto else [3])
             self._auto_bootstrap_status = _status(
                 'degraded', uncaptured=uncaptured, failures=failures,
                 reason=f'could not install the aligned rows: '
