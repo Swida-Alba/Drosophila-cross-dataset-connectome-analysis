@@ -3586,6 +3586,7 @@ def _key_params(params: dict) -> list:
         "weight_basis", "min_synapse_num", "min_synapse_threshold", "min_ratio",
         "min_traversal_probability", "max_interlayer", "thresholds",
         "graph_edge_limit_bodyid", "max_paths_bodyid", "drop_untyped",
+        "shortest_source_coverage", "shortest_target_coverage",
         "edgeN_limit",
         "output_format", "skip_bodyId", "similarity_metric", "top_n",
         "top_k", "top_m", "match_type",

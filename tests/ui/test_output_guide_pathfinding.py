@@ -408,3 +408,22 @@ def test_combination_manifest_renders_query_identity_and_provenance(tmp_path):
     assert "q-low (Low density)" in txt
     assert "edge budget 100 (applied True)" in txt
     assert "w2 —" in txt
+
+
+def test_key_params_include_shortest_coverage_knobs():
+    """The run guide's Run-parameters table surfaces the coverage
+    early-stop knobs when set (audit round 2026-10-04: they were missing
+    from the priority list)."""
+    from ui.output_guide import _key_params
+    rows = _key_params({
+        "dataset": "x",
+        "shortest_source_coverage": 0.0,
+        "shortest_target_coverage": 1.0,
+    })
+    keys = [k for k, _ in rows]
+    assert "shortest_source_coverage" in keys
+    assert "shortest_target_coverage" in keys
+    # Unset knobs (None) never clutter the table.
+    rows2 = _key_params({"dataset": "x",
+                         "shortest_source_coverage": None})
+    assert "shortest_source_coverage" not in [k for k, _ in rows2]
