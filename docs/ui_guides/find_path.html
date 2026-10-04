@@ -91,7 +91,7 @@
   <table>
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
     <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj-&gt;j — edge weight ÷ the post neuron's total incoming weight, threshold-free (min_weight&nbsp;=&nbsp;1, all dataset sources)</td><td>0–1</td></tr>
-    <tr><td><code>connection_ratio_adj</code></td><td>edge weight ÷ the post's incoming mass counting only edges ≥ Min Synapse Count (per neuron; member-summed at type level). Emitted only when Min Synapse Count &gt; 1 — always ≥ connection_ratio, moves with the threshold by design</td><td>0–1</td></tr>
+    <tr><td><code>connection_ratio_adj</code></td><td>edge weight ÷ the post's incoming mass counting only edges ≥ Min Synapse Count (per neuron; member-summed at type level). Always ≥ connection_ratio and moves with the threshold by design; equals connection_ratio when Min Synapse Count is 1</td><td>0–1</td></tr>
     <tr><td><code>traversal_probability</code></td><td>min(1.0, connection_ratio / 0.3) (30% input = maximal)</td><td>0–1</td></tr>
     <tr><td><code>block_probability</code></td><td>1 − traversal_probability</td><td>0–1</td></tr>
     <tr><td><code>path_prob</code></td><td>Π of the edge traversal probabilities over the path</td><td>0–1</td></tr>

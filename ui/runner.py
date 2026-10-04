@@ -635,6 +635,16 @@ class ScriptRunner:
         class_name = tool["class"]
         var = tool["var"]
         init_method = tool.get("init_method")
+        # Round-13 guard: an unknown method key used to fall through to an
+        # EMPTY call — the generated script ran init only and "finished"
+        # successfully in seconds without doing anything (a real audit
+        # no-op trap: driving find_path with method_name='run'). Refuse
+        # loudly instead. A present-but-empty entry stays legal (e.g.
+        # type_mapping_validation dispatches by tool name).
+        if method_name not in tool["methods"]:
+            raise ValueError(
+                f"unknown method {method_name!r} for tool {tool_name!r} — "
+                f"available: {sorted(tool['methods'])}")
         method_call = tool["methods"].get(method_name, "")
 
         # Handle special wrapper cases

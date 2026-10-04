@@ -474,6 +474,7 @@ BANC_DATASETS = [
 DEFAULTS = {
     "min_synapse_num": 3,
     "threshold_basis": "synapse",
+    "threshold_combination": "or",
     "min_ratio": 0.0,
     "min_traversal_probability": 0.0,
     "max_interlayer": 2,

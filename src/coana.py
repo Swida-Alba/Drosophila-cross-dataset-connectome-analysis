@@ -2231,19 +2231,19 @@ class FindNeuronConnection:
         this connection" — so it is always >= the plain ratio and moves
         with the threshold by design.
 
-        Skipped (no column emitted) when the threshold is 1: the adjusted
-        denominator degenerates to the threshold-free one — e.g. every
-        connection_ratio-basis run, whose entry gate forces min synapse
-        to 1. Works at both levels: ``post_col='bodyId_post'`` fetches
-        per-neuron totals, ``'type_post'`` per-type totals (summed over
-        the type's members); the in-frame group sum is the last-resort
-        fallback, understating the denominator exactly like the F9
-        fallback does."""
+        Always emitted (round-13 user directive): when no synapse-count
+        threshold is active (Min Synapse Count <= 1 — every plain
+        ratio-basis run) the adjusted denominator IS the threshold-free
+        one, so the column simply equals ``connection_ratio`` (a
+        redundant duplicate by design, disclosed in the notes). Works at
+        both levels: ``post_col='bodyId_post'`` fetches per-neuron
+        totals, ``'type_post'`` per-type totals (summed over the type's
+        members); the in-frame group sum is the last-resort fallback,
+        understating the denominator exactly like the F9 fallback
+        does."""
         if df is None:
             return df
-        thr = int(getattr(self, 'min_synapse_num', 1) or 1)
-        if thr <= 1:
-            return df
+        thr = max(1, int(getattr(self, 'min_synapse_num', 1) or 1))
         try:
             import polars as pl
             if isinstance(df, pl.DataFrame):
@@ -3304,9 +3304,28 @@ class FindNeuronConnection:
       definition): min_ratio IS the threshold (not zeroed at entry),
       min_synapse_num is forced to 1, the Edge Budget floors at ratio
       tiers and bottlenecks are min-ratio. Every export keeps its synapse
-      columns (dual-basis); the allpaths `min_ratio` column IS the run's
-      strength definition. Shortest mode refuses this basis. See
-      docs/core-features/ConnectionRatioPaths.md.
+      columns (dual-basis); the type-path `min_ratio` column is the
+      REALIZED weakest per-hop share (round-11) — the run's strength
+      definition (the bottleneck) lives on the bodyId table and in the
+      provenance block. See docs/core-features/ConnectionRatioPaths.md.
+    '''
+
+    threshold_combination: str = 'or'
+    '''
+    How Min Synapse Count and Min Connection Ratio combine when both are
+    set (round-13 user directive).
+    - 'or' (default): the historical regime — the knobs are alternatives.
+      Under the synapse basis min_ratio is a readout only (zeroed at
+      entry); under connection_ratio min_synapse_num is forced to 1.
+      Exactly one threshold governs the cone.
+    - 'and': BOTH thresholds must pass for an edge to enter the
+      pathfinding graph (weight >= min_synapse_num AND F9 connection
+      ratio >= min_ratio, each on its own scale). Under the ratio basis
+      min_synapse_num is then honored instead of forced to 1 (when > 1);
+      under the synapse basis min_ratio co-thresholds instead of being
+      zeroed. The weight basis still decides the graph's weight units
+      (budgets/bottlenecks). With min_synapse_num <= 1 'and' degenerates
+      to the single ratio threshold.
     '''
     
     aggregate_method: str = 'product'
@@ -8991,13 +9010,20 @@ class FindNeuronConnection:
                 level='full')
 
     def _ratio_lane_threshold(self):
-        """The active ratio-lane threshold, or None outside the lane
-        (threshold-at-fetch is the production semantics — the 'all' mode
-        filters at the forward fetch, shortest at this backward fetch)."""
-        if getattr(self, 'weight_basis', 'synapse') != 'connection_ratio':
-            return None
+        """The active ratio threshold at the fetch points, or None when no
+        ratio threshold governs (threshold-at-fetch is the production
+        semantics — the 'all' mode filters at the forward fetch, shortest
+        at the backward fetch). Round-13 AND mode: the ratio co-threshold
+        applies at the same fetch points under the synapse basis too."""
         t_r = float(getattr(self, 'min_ratio', 0.0) or 0.0)
-        return t_r if 0.0 < t_r <= 1.0 else None
+        if not 0.0 < t_r <= 1.0:
+            return None
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            return t_r
+        if str(getattr(self, 'threshold_combination', 'or')
+               or 'or').strip().lower() == 'and':
+            return t_r
+        return None
 
     def _filter_frame_by_ratio_threshold(self, frame, t_r):
         """Drop rows whose connection ratio (weight / all-post incoming at
@@ -13533,6 +13559,21 @@ class FindNeuronConnection:
         duplicate pairs across layers) without materializing a full
         ``pl.concat`` copy of every layer (~1 GB at a few million rows).
         """
+        # Round-13 AND mode under the synapse basis: the ratio
+        # co-threshold gates the GRAPH FRAMES too. The live fetch already
+        # applies it; this second gate keeps stubbed/harness fetches and
+        # any cache short-circuit honest (the graph must never contain a
+        # sub-t_r edge under AND, whichever route the rows took).
+        if (getattr(self, 'weight_basis', 'synapse') != 'connection_ratio'
+                and self._ratio_lane_threshold() is not None):
+            _and_t_r = self._ratio_lane_threshold()
+            conn_layers = [
+                (self._filter_frame_by_ratio_threshold(tbl, _and_t_r)
+                 if tbl is not None and (
+                     tbl.height if hasattr(tbl, 'height') else len(tbl))
+                 else tbl)
+                for tbl in conn_layers
+            ]
         conn_layers, prune_stats = prune_layers_hop_budget(
             conn_layers, sources, targets, self.max_interlayer + 1,
             vprint=self._vprint, warn_notes=self._warn_notes,
@@ -17070,17 +17111,31 @@ class FindNeuronConnection:
         # knob stays neutered.
         _ratio_basis = getattr(self, 'weight_basis', 'synapse') \
             == 'connection_ratio'
+        _and_mode = str(getattr(self, 'threshold_combination', 'or')
+                        or 'or').strip().lower()
+        if _and_mode not in ('or', 'and'):
+            raise ValueError(
+                f'threshold_combination must be \'or\' or \'and\' — '
+                f'got {self.threshold_combination!r}.')
+        _and_mode = _and_mode == 'and'
         if _ratio_basis:
             if not (0.0 < float(self.min_ratio or 0.0) <= 1.0):
                 raise ValueError(
                     'weight_basis=\'connection_ratio\' requires min_ratio '
                     f'in (0, 1] — got {self.min_ratio!r}.')
-            if int(self.min_synapse_num) != 1:
+            if int(self.min_synapse_num) != 1 and not _and_mode:
                 self._vprint(
                     'ℹ️  Ratio basis: min_synapse_num is forced to 1 (the '
                     'ratio threshold governs the cone); the saved synapse '
                     'value is ignored.', level='always')
                 self.min_synapse_num = 1
+            if _and_mode and int(self.min_synapse_num) > 1:
+                self._vprint(
+                    f'ℹ️  Threshold combination AND: Min Synapse Count '
+                    f'{int(self.min_synapse_num)} stays active — an edge '
+                    'enters the graph only when BOTH the synapse count '
+                    'and the connection ratio clear their thresholds.',
+                    level='always')
             if getattr(self, 'min_traversal_probability', 0):
                 self._vprint(
                     'ℹ️  Min Traversal Prob. filters are disabled (ratio is '
@@ -17106,18 +17161,28 @@ class FindNeuronConnection:
                 'support at that hop\'s position (the bodyId edges backing '
                 'that exact sequence there — ratios divide their mass by '
                 'the post type\'s full-membership incoming mass). '
-                'connection_ratio_adj is not emitted this run: the ratio '
-                'basis forces Min Synapse Count to 1, where the adjusted '
-                'denominator IS the threshold-free one.')
+                'connection_ratio_adj equals connection_ratio when no '
+                'synapse count threshold is active (Min Synapse Count 1 — '
+                'the adjusted denominator IS the threshold-free one).')
         else:
-            if getattr(self, 'min_ratio', 0) or getattr(
-                    self, 'min_traversal_probability', 0):
+            _keep_ratio = (_and_mode
+                           and float(getattr(self, 'min_ratio', 0) or 0) > 0)
+            if (getattr(self, 'min_ratio', 0)
+                    or getattr(self, 'min_traversal_probability', 0)) \
+                    and not _keep_ratio:
                 self._vprint(
                     'ℹ️  Min Connection Ratio / Min Traversal Prob. filters '
                     'are disabled (ratio is a readout column) — the saved '
                     'values are ignored.', level='always')
-            self.min_ratio = 0.0
-            self.min_traversal_probability = 0.0
+            if _keep_ratio:
+                self._vprint(
+                    f'ℹ️  Threshold combination AND: min connection ratio '
+                    f'{self.min_ratio:g} co-thresholds the graph with Min '
+                    'Synapse Count (an edge must pass BOTH).', level='always')
+                self.min_traversal_probability = 0.0
+            else:
+                self.min_ratio = 0.0
+                self.min_traversal_probability = 0.0
             _rd_note = (
                 '- [ratio definition] connection_ratio = weight / ALL-POST '
                 'incoming weight of the target (threshold-free, all sources '
@@ -17132,6 +17197,21 @@ class FindNeuronConnection:
                     'connection_ratio, and it moves with the threshold by '
                     'design.')
             self._warn_notes.append(_rd_note)
+
+        # Round-13: stamp the AND combination wherever it is active, so the
+        # run self-documents that BOTH thresholds gated the graph.
+        if _and_mode and ((int(self.min_synapse_num) > 1
+                           and float(self.min_ratio or 0.0) > 0)):
+            self.parameter_dict['threshold combination'] = (
+                'and (synapse count + connection ratio)')
+            self._warn_notes.append(
+                '- [threshold combination] AND: an edge enters the '
+                'pathfinding graph only when BOTH thresholds pass — weight '
+                f'>= {int(self.min_synapse_num)} synapses AND F9 '
+                f'connection ratio >= {self.min_ratio:g}. '
+                'Strong-but-thin-ratio and high-ratio-but-thin edges are '
+                'both excluded (the default regime keeps the knobs '
+                'alternative: one threshold governs the cone).')
         
         # Check if source or target dataframes are empty
         if self.source_df.empty:
@@ -17181,8 +17261,22 @@ class FindNeuronConnection:
         folder_prefix = 'find-paths-shortest' if path_mode == 'shortest' else 'find-paths-complete'
         if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
             # Ratio lane: the r-suffix grammar replaces the w part (§13.3).
+            # Round-13 AND mode (min synapse kept > 1): both tiers ride the
+            # token so the folder can't collide with either single-knob run.
+            if (str(getattr(self, 'threshold_combination', 'or')).lower()
+                    == 'and' and int(self.min_synapse_num) > 1):
+                param_suffix = (
+                    f"_{depth_label}"
+                    f"w{int(self.min_synapse_num)}"
+                    f"r{_format_decimal_for_folder(float(self.min_ratio))}")
+            else:
+                param_suffix = (
+                    f"_{depth_label}"
+                    f"r{_format_decimal_for_folder(float(self.min_ratio))}")
+        elif (str(getattr(self, 'threshold_combination', 'or')).lower()
+                == 'and' and float(getattr(self, 'min_ratio', 0) or 0) > 0):
             param_suffix = (
-                f"_{depth_label}"
+                f"_{depth_label}w{int(self.min_synapse_num)}"
                 f"r{_format_decimal_for_folder(float(self.min_ratio))}")
         else:
             param_suffix = f"_{depth_label}w{self.min_synapse_num}"

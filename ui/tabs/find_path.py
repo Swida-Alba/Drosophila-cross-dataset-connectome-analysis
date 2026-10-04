@@ -115,6 +115,19 @@ def create_find_path_tab():
                          "ratio_synapse_map.csv shows the per-neuron synapse "
                          "cutoffs this implies.",
                 ).set_visibility(False)
+                threshold_combination = select_input(
+                    "Combine Thresholds", ["Any one (default)", "Both (AND)"],
+                    default=("Both (AND)"
+                             if get_user_default("threshold_combination")
+                             == "and" else "Any one (default)"),
+                    hint="How Min Synapse Count and Min Connection Ratio "
+                         "combine when both are set. Default: they are "
+                         "alternatives — one threshold governs the graph. "
+                         "Both (AND): an edge enters the graph only when it "
+                         "clears BOTH thresholds (each on its own scale); "
+                         "both inputs stay visible and the folder token "
+                         "carries both tiers.",
+                )
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -126,10 +139,16 @@ def create_find_path_tab():
 
             def _sync_threshold_basis():
                 ratio_mode = threshold_basis.value == "Connection ratio"
-                min_synapse.set_visibility(not ratio_mode)
-                min_ratio_threshold.set_visibility(ratio_mode)
+                and_mode = threshold_combination.value == "Both (AND)"
+                # AND mode needs BOTH knobs visible whichever basis is
+                # active (round-13); single-knob regimes keep the
+                # historical visibility.
+                min_synapse.set_visibility(not ratio_mode or and_mode)
+                min_ratio_threshold.set_visibility(ratio_mode or and_mode)
 
             threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
+            threshold_combination.on_value_change(
+                lambda _e: _sync_threshold_basis())
             _sync_threshold_basis()
             interlayer_warning = ui.label(
                 "⚠️ Layers ≥ 4: the path count grows combinatorially (branching^depth) — "
@@ -361,18 +380,24 @@ def create_find_path_tab():
         keywords = [str(k) for k in keyword_filter.get_value()[1]] or ['None']
 
         ratio_mode = threshold_basis.value == "Connection ratio"
+        and_mode = threshold_combination.value == "Both (AND)"
         constructor_params = {
             "dataset": dataset.value,
             "sourceNeurons": sources,
             "targetNeurons": targets,
             "output_dir": output_dir.value,
             "weight_basis": "connection_ratio" if ratio_mode else "synapse",
-            # Ratio mode: the ratio IS the threshold (backend forces the
-            # synapse floor to 1); synapse mode: F9 — ratio/probability
-            # filters are disabled, hidden UI, sent 0.
-            "min_synapse_num": 1 if ratio_mode else int(min_synapse.value),
-            "min_ratio": (float(min_ratio_threshold.value) if ratio_mode
-                          else 0.0),
+            # Default ('or'): ratio mode — the ratio IS the threshold
+            # (backend forces the synapse floor to 1); synapse mode — F9,
+            # ratio is a readout (sent 0). AND mode (round-13): BOTH knobs
+            # ride the payload and the backend co-thresholds the graph.
+            "threshold_combination": "and" if and_mode else "or",
+            "min_synapse_num": (
+                int(min_synapse.value)
+                if (and_mode or not ratio_mode) else 1),
+            "min_ratio": (
+                float(min_ratio_threshold.value)
+                if (and_mode or ratio_mode) else 0.0),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),
             "filter_by": filter_by.value,

@@ -49,12 +49,14 @@ TARGETS = ['T1', 'T2']
 
 
 def _run(tmp_path, name, *, basis='synapse', t_r=0.2, edge_budget=0,
-         path_budget=0, asked=1):
-    with universe_types(INT_TYPES) as shim:
+         path_budget=0, asked=1, combo='or', edges=None, types=None,
+         sources=None, targets=None):
+    with universe_types(types or INT_TYPES) as shim:
         fc, _calls, _logs = _make_pipeline_fc(
-            shim, tmp_path / name, edges=INT_EDGES, max_interlayer=3,
-            min_synapse=asked, source_ids=tuple(SOURCES),
-            target_ids=tuple(TARGETS))
+            shim, tmp_path / name, edges=(edges or INT_EDGES),
+            max_interlayer=3,
+            min_synapse=asked, source_ids=tuple(sources or SOURCES),
+            target_ids=tuple(targets or TARGETS))
         fc.skip_bodyId = False
         if 'Checked' not in fc.target_df.columns:
             fc.target_df = fc.target_df.assign(
@@ -62,6 +64,7 @@ def _run(tmp_path, name, *, basis='synapse', t_r=0.2, edge_budget=0,
         fc.graph_edge_limit_bodyid = edge_budget
         fc.max_paths_bodyid = path_budget
         fc.weight_basis = basis
+        fc.threshold_combination = combo
         fc.min_ratio = t_r
         fc.parameter_dict.update({
             'min synapse number': str(asked), 'filter by': 'bodyId',
@@ -590,3 +593,103 @@ def test_ratio_replay_slice_refill(tmp_path):
     for rj in refills:
         rec = _json.loads(rj.read_text(encoding='utf-8'))
         assert rec.get('table_reproduced') is True, rj.parent.parent.parent
+
+
+# ---------------------------------------------------------------------------
+# Round-13: threshold_combination='and' — both thresholds gate the graph
+# ---------------------------------------------------------------------------
+# Bespoke universe where AND differs from BOTH single-knob regimes:
+# M->T1 has 3 synapses but a 0.10 ratio (passes synapse-only, fails AND);
+# X->T1 has 27 synapses and a 0.90 ratio (passes everything).
+# T1's total incoming is 67: M->T1 = 40/67 ~ 0.597, X->T1 = 27/67
+# ~ 0.403. t_r 0.45 drops X->T1 on RATIO only; asked 30 drops X->T1 on
+# SYNAPSE only — each single knob keeps both routes; AND + either knob
+# leaves only S1->M->T1.
+AND_EDGES = [
+    ('S1', 'M', 60), ('S1', 'X', 60),
+    ('M', 'T1', 40), ('X', 'T1', 27),
+]
+AND_TYPES = {'S1': 'SRC', 'M': 'MID', 'X': 'MID', 'T1': 'SINK'}
+AND_SOURCES = ['S1']
+AND_TARGETS = ['T1']
+
+
+def _and_paths(run_dir):
+    frame = pd.read_csv(next(run_dir.glob('*_allpaths_bodyId_paths.csv')))
+    return {tuple(r.path.split('->')) for r in frame.itertuples()}
+
+
+def test_and_mode_drops_edges_failing_either_threshold(tmp_path):
+    _fc, syn_dir = _run(tmp_path, 'syn_only', basis='synapse', asked=3,
+                        t_r=0.0, edges=AND_EDGES, types=AND_TYPES,
+                        sources=AND_SOURCES, targets=AND_TARGETS)
+    assert _and_paths(syn_dir) == {
+        ('S1', 'M', 'T1'), ('S1', 'X', 'T1')}
+
+    # or-mode: a nonzero min_ratio stays inert under the synapse basis
+    # (readout only) — both routes survive t_r 0.45.
+    _fc_ro, ro_dir = _run(tmp_path, 'ro_inert', basis='synapse', asked=3,
+                          t_r=0.45, edges=AND_EDGES, types=AND_TYPES,
+                          sources=AND_SOURCES, targets=AND_TARGETS)
+    assert _and_paths(ro_dir) == {
+        ('S1', 'M', 'T1'), ('S1', 'X', 'T1')}
+
+    _fc2, and_dir = _run(tmp_path, 'and_mode', basis='synapse', asked=3,
+                         t_r=0.45, combo='and', edges=AND_EDGES,
+                         types=AND_TYPES, sources=AND_SOURCES,
+                         targets=AND_TARGETS)
+    # X->T1 (ratio 0.403 < 0.45) is excluded by AND — the single-knob
+    # regimes keep it, only the combination drops it.
+    assert _and_paths(and_dir) == {('S1', 'M', 'T1')}
+    params = (and_dir / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'threshold combination' in params
+    assert 'and (synapse count + connection ratio)' in params
+    notes = (and_dir / 'user_warning_notes.txt').read_text(encoding='utf-8')
+    assert '[threshold combination] AND' in notes
+
+
+def test_and_mode_ratio_basis_keeps_synapse_floor(tmp_path):
+    # Under the ratio basis AND honors min_synapse instead of forcing 1:
+    # t_r 0.2 alone keeps both routes (0.597, 0.403); the asked=30
+    # co-threshold drops X->T1 (weight 27 < 30).
+    _fc, and_dir = _run(tmp_path, 'and_ratio', basis='connection_ratio',
+                        asked=30, t_r=0.2, combo='and', edges=AND_EDGES,
+                        types=AND_TYPES, sources=AND_SOURCES,
+                        targets=AND_TARGETS)
+    assert _and_paths(and_dir) == {('S1', 'M', 'T1')}
+    # folder token carries BOTH tiers under AND
+    assert 'w30r0_2' in and_dir.name
+    params = (and_dir / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'threshold combination' in params
+
+
+def test_or_mode_ratio_basis_still_forces_synapse_floor(tmp_path):
+    # Default 'or': the historical regime is byte-stable — ratio basis
+    # forces min synapse 1 and no combination stamp appears.
+    fc, run_dir = _run(tmp_path, 'or_ratio', basis='connection_ratio',
+                       asked=3, t_r=0.2, edges=AND_EDGES, types=AND_TYPES,
+                        sources=AND_SOURCES, targets=AND_TARGETS)
+    assert int(fc.min_synapse_num) == 1
+    # asked=3 arrived but was forced to 1: every edge weighs >= 3 anyway,
+    # so both routes survive on ratio alone (0.597, 0.403 >= 0.2).
+    assert _and_paths(run_dir) == {
+        ('S1', 'M', 'T1'), ('S1', 'X', 'T1')}
+    params = (run_dir / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'threshold combination' not in params
+    assert 'w3r0_2' not in run_dir.name
+
+
+def test_ratio_lane_threshold_and_mode_unit():
+    import coana as _coana
+    fc = object.__new__(_coana.FindNeuronConnection)
+    fc.weight_basis = 'synapse'
+    fc.threshold_combination = 'and'
+    fc.min_ratio = 0.15
+    assert fc._ratio_lane_threshold() == 0.15
+    fc.threshold_combination = 'or'
+    assert fc._ratio_lane_threshold() is None
+    fc.weight_basis = 'connection_ratio'
+    fc.threshold_combination = 'or'
+    assert fc._ratio_lane_threshold() == 0.15
+    fc.min_ratio = 0.0
+    assert fc._ratio_lane_threshold() is None

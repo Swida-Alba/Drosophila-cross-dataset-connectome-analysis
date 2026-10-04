@@ -257,15 +257,26 @@ def create_find_shortest_tab():
                 )
 
                 with param_grid(3):
-                    # F9: ratio/probability filters are disabled (ratio is a
-                    # readout column now). The entrances stay in the code,
-                    # hidden, for the future ratio-weighted mode.
+                    # F9: ratio/probability filters are disabled by default
+                    # (ratio is a readout column). Round-13 AND mode makes
+                    # the ratio a co-threshold with Min Synapse Count.
                     min_ratio = number_input(
                         "Min Connection Ratio", 0, 0, 1, 0.01,
-                        hint="Disabled: connection_ratio is a readout column "
-                             "(weight / all-post incoming weight) — it no longer "
-                             "filters.",
+                        hint="Readout column by default. Under Combine "
+                             "Thresholds = Both (AND) it co-thresholds the "
+                             "graph: an edge must pass BOTH the synapse "
+                             "count and this ratio.",
                     ).set_visibility(False)
+                    threshold_combination = select_input(
+                        "Combine Thresholds", ["Any one (default)", "Both (AND)"],
+                        default=("Both (AND)"
+                                 if get_user_default("threshold_combination")
+                                 == "and" else "Any one (default)"),
+                        hint="How Min Synapse Count and Min Connection Ratio "
+                             "combine when both are set. Both (AND): an edge "
+                             "enters the graph only when it clears BOTH "
+                             "thresholds (round-13).",
+                    )
                     min_traversal = number_input(
                         "Min Traversal Prob.", 0, 0, 1, 0.01,
                         hint="Disabled: traversal_probability is a readout column "
@@ -273,6 +284,14 @@ def create_find_shortest_tab():
                     ).set_visibility(False)
                     # Fix C: the lossy bodyId edge limit is deprecated and
                     # ignored — shortest paths are always complete.
+
+                    def _sync_shortest_combination():
+                        min_ratio.set_visibility(
+                            threshold_combination.value == "Both (AND)")
+
+                    threshold_combination.on_value_change(
+                        lambda _e: _sync_shortest_combination())
+                    _sync_shortest_combination()
 
                 with param_grid(3):
                     # plan-shortest-batched-discovery: discovery memory for
@@ -476,8 +495,14 @@ def create_find_shortest_tab():
             "targetNeurons": targets,
             "output_dir": output_dir.value,
             "min_synapse_num": int(min_synapse.value),
-            # F9: ratio/probability filters are disabled — hidden UI, sent 0.
-            "min_ratio": 0.0,
+            # F9 default: ratio/prob are readouts (sent 0). Round-13 AND
+            # mode: the ratio co-thresholds with Min Synapse Count.
+            "threshold_combination": (
+                "and" if threshold_combination.value == "Both (AND)"
+                else "or"),
+            "min_ratio": (float(min_ratio.value)
+                          if threshold_combination.value == "Both (AND)"
+                          else 0.0),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),
             "filter_by": filter_by.value,

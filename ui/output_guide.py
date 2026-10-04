@@ -169,7 +169,7 @@ COLUMN_GLOSSARY = {
         "post's incoming mass counting only edges at/above the Min "
         "Synapse Count (per neuron; summed over the type's members at "
         "type level). Always >= connection_ratio and moves with the "
-        "threshold by design; emitted only when Min Synapse Count > 1.",
+        "threshold by design; equals connection_ratio when Min Synapse Count is 1.",
         "0-1"),
     "ratios": ("Per-edge connection ratios along the path. On "
                "weight-basis='connection_ratio' runs these are the "

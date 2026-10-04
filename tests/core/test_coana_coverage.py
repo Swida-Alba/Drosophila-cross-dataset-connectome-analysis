@@ -1024,15 +1024,25 @@ class TestRatioAdjColumns:
     def test_skip_at_threshold_one(self):
         # thr 1: the adjusted denominator IS the F9 one — no column.
         fc, _ = make_fc(min_synapse_num=1)
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame([('TT', 100.0)],
+                                                      'type_post'))
         df = pd.DataFrame({
             'type_pre': ['TA'], 'type_post': ['TT'], 'weight': [10],
+            'connection_ratio': [0.1],
         })
         out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
-        assert 'connection_ratio_adj' not in out.columns
-        # ratio basis forces min synapse 1 — same skip
+        # Round-13: ALWAYS emitted — at Min Synapse 1 the adjusted
+        # denominator IS the threshold-free one, so adj == plain ratio
+        # (a redundant duplicate by design, disclosed in the notes).
+        assert abs(out['connection_ratio_adj'].iloc[0] - 0.1) < 1e-12
+        # ratio basis without a synapse co-threshold — same redundancy
         fc2, _ = make_fc(min_synapse_num=1, weight_basis='connection_ratio')
+        fc2._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: self._tot_frame([('TT', 100.0)],
+                                                      'type_post'))
         out2 = fc2._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
-        assert 'connection_ratio_adj' not in out2.columns
+        assert abs(out2['connection_ratio_adj'].iloc[0] - 0.1) < 1e-12
 
     def test_inframe_fallback_when_fetch_fails(self):
         fc, _ = make_fc(min_synapse_num=3)

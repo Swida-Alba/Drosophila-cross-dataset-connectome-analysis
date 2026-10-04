@@ -339,6 +339,7 @@ def build_unit_breakdown(
     source_cov: Optional[Dict[str, str]] = None,
     target_cov: Optional[Dict[str, str]] = None,
     pair_bodyid: Optional[Dict[Tuple[str, str], Tuple[int, int]]] = None,
+    pair_ratio: Optional[Dict[Tuple[str, str], float]] = None,
 ) -> Tuple[List[dict], List[dict], Dict[Tuple[str, str], dict]]:
     """Per-pair breakdown of one unit.
 
@@ -394,6 +395,8 @@ def build_unit_breakdown(
                     'coverage': '' if pd.isna(coverage) else str(coverage),
                     'min_weight': row['min_weight'],
                     'min_ratio': row.get('min_ratio'),
+                    'pair_min_ratio': _path_pair_ratio(
+                        row['path'], pair_ratio or {}),
                     'path_prob': row['path_prob'],
                     'length': int(length),
                     'source_bodyid_coverage': (
@@ -555,6 +558,40 @@ def _load_query_coverage(folder) -> Dict[str, Tuple[int, int]]:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _load_pair_level_ratios(folder) -> Dict[Tuple[str, str], float]:
+    """(type_pre, type_post) -> pair-level connection_ratio from the run's
+    own data_details/connection_type.csv (the ratio is conn_layer-
+    invariant after the recompute). Round-13: feeds the Pair-ratio column
+    shown beside the realized per-hop ratios — the pair-level claim a row
+    can never make on its own."""
+    out: Dict[Tuple[str, str], float] = {}
+    try:
+        conn_csv = Path(folder) / 'data_details' / 'connection_type.csv'
+        if not conn_csv.exists():
+            return out
+        ct = pd.read_csv(conn_csv)
+        if not {'type_pre', 'type_post', 'connection_ratio'} <= set(
+                ct.columns):
+            return out
+        for (pre, post), r in (ct.groupby(['type_pre', 'type_post'])
+                               ['connection_ratio'].first().items()):
+            if pd.notna(r):
+                out[(str(pre), str(post))] = float(r)
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
+    """Weakest PAIR-level mass share among a path's hops (None when the
+    conn table carries none of the path's pairs — e.g. legacy runs)."""
+    labs = str(path_str).split('->')
+    vals = [pair_ratio.get((labs[i], labs[i + 1]))
+            for i in range(len(labs) - 1)]
+    vals = [v for v in vals if v is not None]
+    return min(vals) if vals else None
 
 
 def _load_pair_bodyid_coverage(folder):
@@ -1027,7 +1064,8 @@ def build_payload(
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
     'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
-    'coverage', 'min_weight', 'min_ratio', 'path_prob', 'length',
+    'coverage', 'min_weight', 'min_ratio', 'pair_min_ratio',
+    'path_prob', 'length',
     'source_bodyid_coverage', 'target_bodyid_coverage', 'paths_in_pair',
 ]
 
@@ -2514,7 +2552,8 @@ REPORT_JS = r"""
           var bucket = groupsByLen[g.len] = groupsByLen[g.len] || [];
           g.rows.forEach(function(r) {
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
-              path: r.path, len: g.len, mw: r.mw, mr: r.mr, pp: r.pp,
+              path: r.path, len: g.len, mw: r.mw, mr: r.mr, pr: r.pr,
+              pp: r.pp,
               weights: r.weights, ratios: r.ratios,
               coverage: r.coverage, scov: r.scov, tcov: r.tcov,
               total: g.total});
@@ -2539,7 +2578,7 @@ REPORT_JS = r"""
       if (union) { headers.push('Pair'); }
       headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
                    'Ratios', 'Coverage');
-      if (ratioRun) { headers.push('Min ratio'); }
+      if (ratioRun) { headers.push('Min ratio', 'Pair ratio'); }
       headers.push('Source coverage', 'Target coverage');
       // Round-10 scope labels: Weights/Coverage describe the realized
       // per-position support; Ratios is the pair-level mass share —
@@ -2564,7 +2603,12 @@ REPORT_JS = r"""
           + 'exact sequence at that position / the type\u2019s population '
           + 'in the run\u2019s discovered network.',
         'Min ratio': 'Weakest per-hop realized share on this path (this '
-          + 'run\u2019s ranking key).'
+          + 'run\u2019s ranking key).',
+        'Pair ratio': 'Weakest PAIR-level mass share among this path\u2019s '
+          + 'hops: the pair\u2019s kept synapse mass / the post type\u2019s '
+          + 'full-membership incoming mass — independent of which bodyIds '
+          + 'realize the path (pair-level readouts live in '
+          + 'data_details/connection_type.csv).'
       };
       headers.forEach(function(t) {
         var th = elt('th', null, t);
@@ -2598,7 +2642,10 @@ REPORT_JS = r"""
           tr.appendChild(pathTd);
           tr.appendChild(elt('td', null, row.len));
           tr.appendChild(elt('td', null, fmt(row.mw)));
-          if (ratioRun) { tr.appendChild(elt('td', null, fmt(row.mr))); }
+          if (ratioRun) {
+            tr.appendChild(elt('td', null, fmt(row.mr)));
+            tr.appendChild(elt('td', null, fmt(row.pr)));
+          }
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
           tr.appendChild(elt('td', null, row.ratios));
@@ -2805,6 +2852,7 @@ def _attach_table_groups(
     source_cov: Optional[Dict[str, str]] = None,
     target_cov: Optional[Dict[str, str]] = None,
     pair_cov: Optional[Dict[Tuple[str, str], Tuple[str, str]]] = None,
+    pair_ratio: Optional[Dict[Tuple[str, str], float]] = None,
 ) -> None:
     """Fill each pair entry's capped table groups (ranked rows per length),
     each row carrying PER-PATH ``scov``/``tcov`` bodyId n/N strings — the
@@ -2837,6 +2885,7 @@ def _attach_table_groups(
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
                     'mr': (None if pd.isna(row.get('min_ratio'))
                            else float(row['min_ratio'])),
+                    'pr': _path_pair_ratio(row['path'], pair_ratio or {}),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),
@@ -2912,6 +2961,7 @@ def generate_paths_pair_report(
     unit_target_cov: Dict[str, Dict[str, str]] = {}
     unit_pair_cov: Dict[str, Dict[Tuple[str, str], Tuple[str, str]]] = {}
     unit_query_cov: Dict[str, Dict[str, Tuple[int, int]]] = {}
+    unit_pair_level_ratio: Dict[str, Dict[Tuple[str, str], float]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
@@ -2921,9 +2971,11 @@ def generate_paths_pair_report(
         unit_target_cov[unit.unit_id] = target_cov
         unit_query_cov[unit.unit_id] = _load_query_coverage(unit.folder)
         pair_bodyid = _load_pair_bodyid_coverage(unit.folder)
+        pair_level_ratio = _load_pair_level_ratios(unit.folder)
+        unit_pair_level_ratio[unit.unit_id] = pair_level_ratio
         path_rows, inter_rows, pair_stats = build_unit_breakdown(
             frame, rank_by, source_cov=source_cov, target_cov=target_cov,
-            pair_bodyid=pair_bodyid)
+            pair_bodyid=pair_bodyid, pair_ratio=pair_level_ratio)
         unit_pair_cov[unit.unit_id] = {
             key: (stats.get('scov', ''), stats.get('tcov', ''),
                   stats.get('cov_scope', 'type'))
@@ -2956,7 +3008,8 @@ def generate_paths_pair_report(
         unit_pair_stats, unit_drawn, top_per_length, rank_by,
         vispath_links=vispath_links)
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
-                               unit_source_cov, unit_target_cov)
+                               unit_source_cov, unit_target_cov,
+                               unit_pair_cov, unit_pair_level_ratio)
     payload['global'] = build_global(
         units, frames, global_pairs, global_edges,
         unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov,
@@ -3009,6 +3062,8 @@ def _attach_table_groups_multi(
     unit_target_cov: Optional[Dict[str, Dict[str, str]]] = None,
     unit_pair_cov: Optional[Dict[str, Dict[Tuple[str, str],
                                            Tuple[str, str]]]] = None,
+    unit_pair_ratio: Optional[Dict[str, Dict[Tuple[str, str],
+                                             float]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -3020,4 +3075,5 @@ def _attach_table_groups_multi(
                 frames[unit.unit_id], rank_by, top_per_length, entries,
                 source_cov=(unit_source_cov or {}).get(unit.unit_id),
                 target_cov=(unit_target_cov or {}).get(unit.unit_id),
-                pair_cov=(unit_pair_cov or {}).get(unit.unit_id))
+                pair_cov=(unit_pair_cov or {}).get(unit.unit_id),
+                pair_ratio=(unit_pair_ratio or {}).get(unit.unit_id))

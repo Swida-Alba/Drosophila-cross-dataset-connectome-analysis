@@ -27,7 +27,7 @@ inherited from the same code path synapse runs use.
 
 | Aspect | Behavior |
 |---|---|
-| Threshold | `min_ratio` (0 < t_r ≤ 1), same `>=` convention |
+| Threshold | `min_ratio` (0 < t_r ≤ 1), same `>=` convention. `threshold_combination='and'` (round-13) additionally honors `min_synapse_num > 1` as a co-threshold (edge must pass BOTH; folder token `L{d}w{syn}r{t_r}`); default 'or' keeps the knobs alternative (min synapse forced 1) |
 | Edge Budget | floors at the weakest ratio tier whose hop-closed cone fits the cap (gallop/bisect, ≤8 probes default; a floored lane ≡ an unfloored lane at that tier) |
 | StrongestFirst | bottleneck = min ratio; budget drains all ties at τ; default budget 1,000,000 |
 | Admission guards | `drop_untyped` DEFAULT ON (untyped neurons never intermediates; an untyped ENROLLED source/target keeps enrollment, loses its edges), `exclude_intra_type` DEFAULT OFF |
