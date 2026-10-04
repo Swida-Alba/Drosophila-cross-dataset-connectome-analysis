@@ -390,3 +390,105 @@ def test_combinations_edge_rows_gain_status_columns(coverage_env, tmp_path):
         assert col in df.columns, col
     apl = df[df["edge_key"] == "APL -> Tgt"].iloc[0]
     assert apl[f"source_status_{SAFE2}"] == "below_threshold"
+
+
+# ---------------------------------------------------------------------------
+# Ratio-basis absence diagnosis: the tier gates w / total_incoming(post),
+# so the below-threshold / not-recruited split must compare RATIOS, not
+# raw synapse weights (implemented 2026-10-04; previously degraded to
+# resolved_absent).
+# ---------------------------------------------------------------------------
+class TestRatioDiagnosis:
+    def _ratio_analyzer(self, monkeypatch, conns, in_graph, tier=0.01):
+        params = _params(
+            weight_basis='connection_ratio', thresholds=[tier])
+        analyzer = ComparisonAnalyzer(params, verbose=False)
+        monkeypatch.setattr(
+            tc, "load_neuron_table", lambda root, ds: _TABLES.get(ds))
+        monkeypatch.setattr(
+            tc, "load_connection_frame", lambda root, ds: conns.get(ds))
+        monkeypatch.setattr(tc, "load_in_graph_roles", in_graph)
+        return analyzer, {
+            "id": "threshold_0.01", "label": "N=0.01",
+            "thresholds": {DS1: tier, DS2: tier},
+        }
+
+    def test_ratio_below_threshold_and_not_recruited(self, monkeypatch):
+        # DS1 adds a Weak type: bodyId 107 with 3 x 400-syn entry legs and
+        # total incoming 1200 -> best ratio 400/1200 = 0.3333.
+        # DS2 adds 10 x 5-syn inputs onto APL(203) from bodyId 208: APL's
+        # total incoming becomes 2 + 50 = 52, so the Src->APL entry leg is
+        # 2/52 = 0.0385. At tier 0.5: Weak (DS1) and APL (DS2) are BELOW;
+        # Late(204) in DS1 is 4/4 = 1.0 >= tier -> NOT recruited.
+        conns = {
+            DS1: pd.DataFrame({
+                "bodyId_pre": ["101", "101", "101", "101", "101",
+                               "101", "101", "101"],
+                "bodyId_post": ["102", "103", "104", "105", "106",
+                                "107", "107", "107"],
+                "weight": [10, 8, 2, 3, 4, 400, 400, 400],
+            }),
+            DS2: pd.DataFrame({
+                "bodyId_pre": (["201", "201", "201", "203"]
+                               + ["208"] * 10),
+                "bodyId_post": (["202", "203", "204", "201"]
+                                + ["203"] * 10),
+                "weight": ([4, 2, 9, 50] + [5] * 10),
+            }),
+        }
+        tables = {
+            DS1: pd.DataFrame({
+                "bodyId": [101, 102, 103, 104, 105, 106, 107],
+                "type": ["Src", "Tgt", "APL", "Ghost", "Island", "Late",
+                         "Weak"],
+            }),
+            DS2: _TABLES[DS2],
+        }
+
+        seen_folders = []
+
+        def _ig(folder):
+            seen_folders.append(str(folder))
+            if "hemibrain" in str(folder):
+                return _IN_GRAPH[DS1]
+            if "male-cns" in str(folder):
+                return _IN_GRAPH[DS2]
+            return None
+
+        analyzer, query = self._ratio_analyzer(monkeypatch, conns, _ig,
+                                               tier=0.5)
+        # AFTER the helper (it installs its own plain table loader).
+        monkeypatch.setattr(
+            tc, "load_neuron_table", lambda root, ds: tables.get(ds))
+        # Union = types surfaced anywhere; each is diagnosed in the
+        # datasets where it did NOT appear.
+        analyzer.raw_results = {
+            DS1: {0.5: _edge_df([("Src", "Tgt", 10), ("APL", "Tgt", 5)])},
+            DS2: {0.5: _edge_df([("Src", "Tgt", 4), ("Weak", "Tgt", 2),
+                                 ("Late", "Tgt", 3)])},
+        }
+        coverage = tc.build_query_type_coverage(analyzer, query)
+        weak = coverage[("Weak", DS1)]
+        assert weak.status == "below_threshold"
+        assert "0.3333" in weak.detail and "400/1200" in weak.detail
+        apl2 = coverage[("APL", DS2)]
+        assert apl2.status == "below_threshold"
+        assert "0.03846" in apl2.detail and "2/52" in apl2.detail
+        late1 = coverage[("Late", DS1)]
+        assert late1.status == "not_recruited"
+        assert "1" in late1.detail and "4/4" in late1.detail
+        # Types present where they surfaced stay untouched.
+        assert coverage[("APL", DS1)].status == "present"
+        assert coverage[("Weak", DS2)].status == "present"
+        # The searched-graph folder must resolve through the ratio
+        # grammar (a bare int(0.5) once produced minratio_0_0 — never on
+        # disk — and silently degraded every diagnosis to unavailable).
+        hemi = [f for f in seen_folders if "hemibrain" in f]
+        assert hemi and all(f.endswith("minratio_0_5") for f in hemi), hemi
+
+    def test_synapse_diagnosis_unchanged(self, analyzer, coverage_env):
+        analyzer.raw_results = _results()
+        coverage = tc.build_query_type_coverage(analyzer, _query())
+        assert coverage[("APL", DS2)].status == "below_threshold"
+        assert coverage[("APL", DS2)].detail == (
+            "max edge weight from path sources 2 < threshold 3")

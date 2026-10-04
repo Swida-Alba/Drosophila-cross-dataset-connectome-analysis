@@ -1253,3 +1253,26 @@ def test_ratio_density_loader_and_curves_roundtrip(tmp_path):
     assert (a_rows.threshold > 0).all()
     assert set(a_rows.threshold.round(6)) >= {0.010, 0.012}
     assert (a_rows.edge_count > 0).any()
+
+
+def test_f7_extension_points_ratio_and_synapse():
+    """F7 float analog: under the ratio basis the k × τ_ref ladder
+    multiplies the FLOAT tier and respects the (0, 1] ceiling; the
+    synapse integer ladder is unchanged."""
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    f7 = ComparisonAnalyzer._f7_extension_points
+    pts = f7([0.002, 0.0018], 0.01, ratio_basis=True)
+    assert len(pts) == 9
+    assert all(abs(a - b) < 1e-12
+               for a, b in zip(pts, [k * 0.002 for k in range(2, 11)]))
+    assert all(isinstance(p, float) and 0 < p <= 1 for p in pts)
+    # The (0, 1] domain cap: tau_ref 0.4 with asked-max 0.9 would allow
+    # 1.2 on the 2x rule alone — the ceiling clips it.
+    assert f7([0.4], 0.9, ratio_basis=True) == [0.8]
+    # Float-tie clamp: a COMPLETE top-tier run's natural tau sits a hair
+    # above its tier (0.0106 > 0.01); unclamped, 2 x 0.0106 overshoots
+    # the 0.02 cap and the ladder dies. The clamp anchors at the tier.
+    assert f7([0.00216, 0.0106], 0.01, ratio_basis=True) == [0.02]
+    # Synapse behavior byte-identical (int ladder, 2x cap only).
+    assert f7([19.0, 18.0], 50) == [38, 57, 76, 95]
+    assert f7([], 10) == []

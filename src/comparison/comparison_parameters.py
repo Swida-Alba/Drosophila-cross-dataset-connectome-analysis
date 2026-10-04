@@ -313,8 +313,10 @@ class ComparisonParameters:
     point below tau is a duplicate), extend each dataset's threshold list
     with k x tau_ref points (tau_ref = max per-dataset tau, k = 2, 3, ...)
     while the point stays <= 2x the max asked threshold — the schedule is
-    GLOBAL so the expanded points stay shared across datasets. Default
-    off; the effective-threshold banner suggests it on collapse."""
+    GLOBAL so the expanded points stay shared across datasets. Under the
+    connection-ratio basis the ladder multiplies the FLOAT tier and is
+    additionally capped at the (0, 1] domain ceiling. Default off; the
+    effective-threshold banner suggests it on collapse."""
 
     capture_density: bool = False
     """Threshold-density capture (plan §4.1): persist each dataset's

@@ -133,11 +133,11 @@ The in-pipeline lane now covers everything Phase 1-3 planned:
   `minratio_{decimal}` grammar), comparison points, and the HTML
   report's provenance/chart cells all carry exact float tiers — an
   earlier `int()` in that chain truncated every sub-1 tier to 0 in the
-  exported views while the run itself was correct. Two honest
-  degradations remain by design: the union type-coverage
-  below-threshold/not-recruited diagnosis (a synapse-weight compare)
-  reports "unavailable under the connection-ratio basis" instead of
-  guessing, and F7 auto-extension (the integer k × τ ladder) is
-  synapse-only.
+  exported views while the run itself was correct. The union
+  type-coverage below-threshold/not-recruited diagnosis runs on RATIOS
+  (max w ÷ the post's full-table total incoming, the F9 semantics, with
+  the strongest leg spelled out in synapses), and F7 auto-extension has
+  a float analog: the k × τ_ref ladder multiplies the float tier and
+  respects the (0, 1] domain ceiling.
 - Still deferred: ratio-basis shortest-mode replay (shortest is never
   replayable in any basis).

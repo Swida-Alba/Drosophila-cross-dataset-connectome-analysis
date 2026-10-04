@@ -3481,6 +3481,36 @@ class ComparisonAnalyzer:
                   f"untyped_dropped_records.csv; counts appended to "
                   f"user_warning_notes.txt)")
 
+    @staticmethod
+    def _f7_extension_points(taus, asked_max, ratio_basis=False):
+        """F7 ladder: k × τ_ref points above τ_ref, capped at 2× the max
+        asked threshold — and additionally at the (0, 1] domain ceiling
+        under the ratio basis (ratios are scale-free fractions, so the
+        FLOAT tier multiplies directly; no integer rounding).
+
+        Ratio-only clamp: a COMPLETE top-tier run's natural τ sits a hair
+        above its tier (float ratios never tie exactly), which alone
+        would push 2 × τ_ref past the cap by ε and kill the ladder —
+        the schedule's effective top for a complete run IS the tier, so
+        τ_ref is clamped to the asked max."""
+        if not taus:
+            return []
+        if ratio_basis:
+            tau_ref = min(float(max(taus)), float(asked_max))
+            cap = min(2 * asked_max, 1.0)
+        else:
+            tau_ref = int(round(max(taus)))
+            cap = 2 * asked_max
+        points = []
+        k = 2
+        while k * tau_ref <= cap:
+            points.append(k * tau_ref)
+            k += 1
+        points = sorted({p for p in points if p > tau_ref})
+        if ratio_basis:
+            points = [threshold_cell_value(p) for p in points]
+        return points
+
     def _run_all_path_analyses(self, skip_existing: bool = True) -> Dict[str, Dict[int, pd.DataFrame]]:
         """Run path-based analyses for all datasets and their thresholds.
 
@@ -3666,18 +3696,13 @@ class ComparisonAnalyzer:
         # expanded points stay shared across datasets and every dataset
         # gains fresh material at each one. Each point is a REAL threshold
         # (own key + folder) run through the same replay batch; Feature G
-        # skipping applies between the points as usual.
+        # skipping applies between the points as usual. Under the ratio
+        # basis the ladder multiplies the FLOAT tier (ratios are
+        # scale-free fractions) and the cap additionally respects the
+        # (0, 1] domain ceiling.
+        _ratio_f7 = (getattr(self.parameters, 'weight_basis', 'synapse')
+                     == 'connection_ratio')
         if (self.parameters.auto_extend_thresholds
-                and getattr(self.parameters, 'weight_basis', 'synapse')
-                == 'connection_ratio'):
-            # The F7 ladder multiplies an INTEGER tau_ref (k × τ); under
-            # the ratio basis every sub-1 tier rounds to 0 and the ladder
-            # is meaningless. Refuse honestly instead of degrading by luck.
-            self._log(
-                "F7 auto-extension is synapse-only — the integer k × τ "
-                "ladder is not applied under the connection-ratio basis.",
-                level='warn')
-        elif (self.parameters.auto_extend_thresholds
                 and self.parameters.threshold_mode != 'combinations'
                 and self.parameters.path_mode == 'all'
                 and self.parameters.replay_paths):
@@ -3691,13 +3716,8 @@ class ComparisonAnalyzer:
                     if tau is not None and not m.get('skipped'):
                         taus.append(tau)
             if taus:
-                tau_ref = int(round(max(taus)))
-                points = []
-                k = 2
-                while k * tau_ref <= 2 * asked_max:
-                    points.append(k * tau_ref)
-                    k += 1
-                points = sorted({p for p in points if p > tau_ref})
+                points = self._f7_extension_points(
+                    taus, asked_max, ratio_basis=_ratio_f7)
             else:
                 points = []
             if not points:

@@ -44,6 +44,7 @@ from .type_resolver import (
     expansion_targets,
     resolve_valid_targets,
 )
+from .comparison_parameters import threshold_cell_value
 
 STATUS_PRESENT = 'present'
 STATUS_BELOW_THRESHOLD = 'below_threshold'
@@ -266,6 +267,61 @@ def _max_touching_weight(conn: Optional[pd.DataFrame],
     return int(sub['weight'].max())
 
 
+# Per-post total incoming weight, keyed by the connection frame's cache
+# key (the frames themselves are cached module-level).
+_POST_TOTALS_CACHE: Dict[Tuple[str, str], pd.Series] = {}
+
+
+def _post_totals(conn: Optional[pd.DataFrame],
+                 cache_key: Tuple[str, str]) -> Optional[pd.Series]:
+    """``total_incoming`` per ``bodyId_post`` from the FULL connection
+    table — the F9-equivalent all-post denominator (min_weight=1)."""
+    if conn is None:
+        return None
+    cached = _POST_TOTALS_CACHE.get(cache_key)
+    if cached is None:
+        try:
+            cached = conn.groupby('bodyId_post')['weight'].sum()
+            _POST_TOTALS_CACHE[cache_key] = cached
+        except Exception:  # noqa: BLE001 - degrade, never block
+            return None
+    return cached
+
+
+def _max_touching_ratio(conn: Optional[pd.DataFrame],
+                        totals: Optional[pd.Series],
+                        in_graph: Optional[Set[str]],
+                        bids: Set[str],
+                        directed: bool = False):
+    """Max connection ratio ``w / total_incoming(post)`` over edges between
+    ``in_graph`` and ``bids`` — the ratio-basis twin of
+    ``_max_touching_weight``.
+
+    Returns ``(ratio, weight, total)`` of the strongest leg, ``None`` when
+    the diagnosis inputs are unavailable, ``-1`` when no such edge (or no
+    edge with a usable denominator) exists.
+    """
+    if conn is None or totals is None or in_graph is None or not bids:
+        return None
+    pre_in = conn['bodyId_pre'].isin(in_graph) & conn['bodyId_post'].isin(bids)
+    if directed:
+        mask = pre_in
+    else:
+        mask = pre_in | (
+            conn['bodyId_post'].isin(in_graph) & conn['bodyId_pre'].isin(bids))
+    sub = conn[mask]
+    if sub.empty:
+        return -1
+    denom = sub['bodyId_post'].map(totals)
+    usable = denom.notna() & (denom > 0)
+    if not usable.any():
+        return -1
+    ratios = sub.loc[usable, 'weight'].astype(float) / denom[usable]
+    best = ratios.idxmax()
+    return (float(ratios.loc[best]), float(sub.loc[best, 'weight']),
+            float(denom.loc[best]))
+
+
 # ---------------------------------------------------------------------------
 # Coverage build
 # ---------------------------------------------------------------------------
@@ -338,6 +394,7 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
 
         requested = requested_map.get(dataset)
         applied_int: Optional[int] = None
+        applied_tier: Optional[float] = None  # ratio basis (exact float)
         if requested is not None:
             try:
                 applied_int = int(requested)
@@ -345,16 +402,32 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
                 applied_int = None
             try:
                 applied = analyzer._path_provenance_row(
-                    dataset, int(requested)).get('applied_threshold')
-                applied_int = int(applied)
+                    dataset, threshold_cell_value(requested)).get(
+                        'applied_threshold')
+                if ratio_basis:
+                    applied_tier = (float(applied)
+                                    if applied is not None else None)
+                else:
+                    applied_int = int(applied)
             except Exception:  # noqa: BLE001
                 pass
+            if ratio_basis and applied_tier is None:
+                try:
+                    applied_tier = float(requested)
+                except (TypeError, ValueError):
+                    applied_tier = None
+
+        # Ratio-basis denominators: per-post totals from the FULL
+        # connection table (the F9 all-post semantics).
+        post_totals = (
+            _post_totals(conn, (str(PROJECT_ROOT), _safe_dataset_name(dataset)))
+            if ratio_basis and conn is not None else None)
 
         folder = None
         if requested is not None:
             try:
                 folder = analyzer.parameters.get_dataset_output_path(
-                    dataset, int(requested))
+                    dataset, threshold_cell_value(requested))
             except Exception:  # noqa: BLE001
                 folder = None
         roles = load_in_graph_roles(folder) if folder else None
@@ -459,22 +532,86 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
             src_max = (
                 _max_touching_weight(conn_sub, src_ids, bids, directed=True)
                 if src_ids else None)
+            if ratio_basis:
+                overall_r = _max_touching_ratio(
+                    conn_sub, post_totals, in_graph_all, bids)
+                src_r = (
+                    _max_touching_ratio(
+                        conn_sub, post_totals, src_ids, bids, directed=True)
+                    if src_ids else None)
+            else:
+                overall_r = src_r = None
 
             def _detail(weight: int, partners: str) -> str:
                 return (
                     f'max edge weight from {partners} {weight} '
                     f'< threshold {applied_int}')
 
-            if ratio_basis or overall_max is None or applied_int is None:
+            def _ratio_detail(hit, partners: str, below: bool) -> str:
+                r, w, total = hit
+                rel = '<' if below else '>='
+                return (f'max connection ratio from {partners} '
+                        f'{r:.4g} {rel} threshold {applied_tier:.4g} '
+                        f'(strongest leg {w:g}/{total:g} syn)')
+
+            if ratio_basis:
+                # Ratio semantics: the tier gates per-connection
+                # w / total_incoming(post) (F9); diagnose on the max
+                # touching ratio, strongest leg spelled out in synapses.
+                if overall_r is None or applied_tier is None:
+                    coverage[(type_name, dataset)] = TypeCoverageEntry(
+                        type=type_name, dataset=dataset, present=False,
+                        resolved_type=resolved_display,
+                        status=STATUS_RESOLVED_ABSENT,
+                        detail=('diagnosis unavailable (no connection '
+                                'cache or searched-graph list)'),
+                    )
+                elif overall_r == -1:
+                    coverage[(type_name, dataset)] = TypeCoverageEntry(
+                        type=type_name, dataset=dataset, present=False,
+                        resolved_type=resolved_display,
+                        status=STATUS_NO_EDGES,
+                        detail='no edges to the searched graph at any ratio',
+                    )
+                elif src_r is not None and src_r != -1:
+                    if src_r[0] < applied_tier:
+                        entry_status, entry_detail = (
+                            STATUS_BELOW_THRESHOLD,
+                            _ratio_detail(src_r, 'path sources', True))
+                    else:
+                        entry_status, entry_detail = (
+                            STATUS_NOT_RECRUITED,
+                            f'connection ratio {src_r[0]:.4g} >= threshold '
+                            f'{applied_tier:.4g} from path sources '
+                            f'(strongest leg {src_r[1]:g}/{src_r[2]:g} syn) '
+                            f'but not in searched graph')
+                    coverage[(type_name, dataset)] = TypeCoverageEntry(
+                        type=type_name, dataset=dataset, present=False,
+                        resolved_type=resolved_display,
+                        status=entry_status, detail=entry_detail)
+                elif overall_r[0] < applied_tier:
+                    coverage[(type_name, dataset)] = TypeCoverageEntry(
+                        type=type_name, dataset=dataset, present=False,
+                        resolved_type=resolved_display,
+                        status=STATUS_BELOW_THRESHOLD,
+                        detail=_ratio_detail(
+                            overall_r, 'searched-graph partners', True))
+                else:
+                    coverage[(type_name, dataset)] = TypeCoverageEntry(
+                        type=type_name, dataset=dataset, present=False,
+                        resolved_type=resolved_display,
+                        status=STATUS_NOT_RECRUITED,
+                        detail=(f'connection ratio {overall_r[0]:.4g} >= '
+                                f'threshold {applied_tier:.4g} from '
+                                f'searched-graph partners (strongest leg '
+                                f'{overall_r[1]:g}/{overall_r[2]:g} syn) '
+                                f'but not in searched graph'))
+            elif overall_max is None or applied_int is None:
                 coverage[(type_name, dataset)] = TypeCoverageEntry(
                     type=type_name, dataset=dataset, present=False,
                     resolved_type=resolved_display,
                     status=STATUS_RESOLVED_ABSENT,
-                    detail=('below-threshold diagnosis compares synapse '
-                            'edge weights and stays unavailable under '
-                            'the connection-ratio basis'
-                            if ratio_basis else
-                            'diagnosis unavailable (no connection cache '
+                    detail=('diagnosis unavailable (no connection cache '
                             'or searched-graph list)'),
                 )
             elif overall_max < 0:
