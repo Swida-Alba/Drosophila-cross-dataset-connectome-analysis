@@ -86,16 +86,17 @@
     (edges with <code>weight ≥ Min Synapse Count</code>). Ratios use the
     global total incoming weight so the denominator reflects the whole
     dataset, not just the query:</p>
-<p><strong>Threshold Basis</strong>: choose <em>Synapse count</em> (default) or <em>Connection ratio</em>. Ratio mode thresholds edges by the fraction of the post neuron's total input (synapses / all-post incoming), ranks paths by their weakest fractional input, and writes <code>data_details/ratio_synapse_map.csv</code> with the per-neuron synapse cutoffs. Viable ratio values sit far below the synapse scale (e.g. 0.0005 on FAFB).</p>
+<p><strong>Threshold Basis</strong>: choose <em>Synapse count</em> (default) or <em>Connection ratio</em>. Ratio mode thresholds edges by the fraction of the post neuron's total input (synapses / all-post incoming), ranks paths by the exported type-path <code>min_ratio</code> (a <b>realized</b> mass share — see below), and writes <code>data_details/ratio_synapse_map.csv</code> with the per-neuron synapse cutoffs. Viable ratio values sit far below the synapse scale (e.g. 0.0005 on FAFB).</p>
 
   <table>
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj-&gt;j over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
+    <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj-&gt;j — edge weight ÷ the post neuron's total incoming weight, threshold-free (min_weight&nbsp;=&nbsp;1, all dataset sources)</td><td>0–1</td></tr>
+    <tr><td><code>connection_ratio_adj</code></td><td>edge weight ÷ the post's incoming mass counting only edges ≥ Min Synapse Count (per neuron; member-summed at type level). Emitted only when Min Synapse Count &gt; 1 — always ≥ connection_ratio, moves with the threshold by design</td><td>0–1</td></tr>
     <tr><td><code>traversal_probability</code></td><td>min(1.0, connection_ratio / 0.3) (30% input = maximal)</td><td>0–1</td></tr>
     <tr><td><code>block_probability</code></td><td>1 − traversal_probability</td><td>0–1</td></tr>
     <tr><td><code>path_prob</code></td><td>Π of the edge traversal probabilities over the path</td><td>0–1</td></tr>
-    <tr><td><code>min_weight</code></td><td>weakest edge synapse count along the path</td><td>integer</td></tr>
-    <tr><td><code>min_ratio</code></td><td>smallest edge connection ratio along the path</td><td>0–1</td></tr>
+    <tr><td><code>min_weight</code></td><td>weakest hop of the path — the <b>realized</b> synapse mass at that hop (the distinct bodyId edges backing it at that position)</td><td>integer</td></tr>
+    <tr><td><code>min_ratio</code></td><td>smallest per-hop ratio — the <b>realized</b> share on connection-ratio runs (the hop's realized mass ÷ the post type's full-membership incoming mass; can fall below the applied bodyId-level threshold); the pair-level readout in synapse runs</td><td>0–1</td></tr>
   </table>
   <p>At the <b>type</b> level the two aggregate probabilities are computed
     from the deduplicated bodyId-level pairs of D_t: type-level traversal

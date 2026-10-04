@@ -140,4 +140,4 @@ knobs per shortest delegate (`None` in `all` mode).
 
 ## Connection-ratio basis
 
-Shortest Paths supports `weight_basis='connection_ratio'` (Phase 3): the ratio threshold applies at the target-rooted discovery, per-pair min-hop paths rank by ratio bottleneck, folders use the `L{d}r{t}` suffix. Multi-threshold replay remains 'all'-mode only (as in synapse basis).
+Shortest Paths supports `weight_basis='connection_ratio'` (Phase 3): the ratio threshold applies at the target-rooted discovery, per-pair min-hop paths rank by ratio bottleneck, folders use the `L{d}r{t}` suffix (type-table readouts are realized-scope exactly as in Complete Paths — per-hop Weights/Ratios count only the bodyId edges backing that sequence at that position). Multi-threshold replay remains 'all'-mode only (as in synapse basis). At Min Synapse Count > 1, `connection_ratio_adj` (threshold-conditioned share) is exported like in Complete Paths.

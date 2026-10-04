@@ -144,7 +144,10 @@ COLUMN_GLOSSARY = {
     "upstream": ("Upstream synapse count (NeuPrint synapse category).", "integer"),
     "synweight": ("Synapse weight of the neuron (post + downstream).", "number"),
     "weight": ("Synapse count of the connection.", "integer"),
-    "weights": ("Per-edge synapse counts along the path.", "list of integers"),
+    "weights": ("Per-edge synapse counts along the path — the REALIZED "
+                "mass: the distinct bodyId edges backing that exact hop "
+                "at that path position (the same edges behind the "
+                "coverage n), not the type pair's cross-depth total.", "list of integers"),
     "weight_a": ("Partner weight in profile A (query).", "number"),
     "weight_b": ("Partner weight in profile B (candidate).", "number"),
     "weight_L": ("Edge weight on the left hemisphere (L-L or L-R pairing).", "integer"),
@@ -161,8 +164,23 @@ COLUMN_GLOSSARY = {
         "Fraction of the postsynaptic neuron's input coming from this "
         "partner: $w_{ij} / \\sum_k w_{kj}$ over the postsynaptic total "
         "input $D_t$.", "0-1"),
-    "ratios": ("Per-edge connection ratios along the path.", "list of 0-1"),
-    "min_ratio": ("Smallest edge connection ratio along the path.", "0-1"),
+    "connection_ratio_adj": (
+        "Threshold-conditioned share: the connection's weight over the "
+        "post's incoming mass counting only edges at/above the Min "
+        "Synapse Count (per neuron; summed over the type's members at "
+        "type level). Always >= connection_ratio and moves with the "
+        "threshold by design; emitted only when Min Synapse Count > 1.",
+        "0-1"),
+    "ratios": ("Per-edge connection ratios along the path. On "
+               "weight-basis='connection_ratio' runs these are the "
+               "REALIZED shares — the mass of the bodyId edges backing "
+               "that hop at that position over the post type's "
+               "full-membership incoming mass (same edges as Weights "
+               "and the coverage n).", "list of 0-1"),
+    "min_ratio": ("Smallest edge connection ratio along the path — the "
+                  "realized bottleneck on weight-basis='connection_ratio' "
+                  "runs (a mass share; can fall below the applied "
+                  "bodyId-level threshold).", "0-1"),
     "traversal_probability": (
         "Probability that a signal traverses the edge: "
         "$\\min(1.0,\\ connection\\_ratio/0.3)$.", "0-1"),
@@ -804,6 +822,7 @@ _PATH_COLUMNS = [
 
 _CONNECTION_TYPE_COLUMNS = [
     "type_pre", "type_post", "weight", "connection_ratio",
+    "connection_ratio_adj",
     "traversal_probability", "block_probability", "nt_type",
 ]
 
@@ -1162,8 +1181,10 @@ _PATHFINDING_EXPLANATION = [
         "paragraphs": [
             "The bottleneck of a path is its MINIMUM edge weight — the "
             "weakest link (synapse count by default; the F9 connection "
-            "ratio on weight_basis='connection_ratio' runs, where the "
-            "allpaths min_ratio column IS the bottleneck). All budgeted "
+            "ratio on weight_basis='connection_ratio' runs — read on the "
+            "bodyId path table and the provenance block; the TYPE-path "
+            "min_ratio column is a realized mass share and can fall "
+            "below the applied threshold). All budgeted "
             "outputs are strength-bounded path "
             "sets: the StrongestFirst enumerator emits intact paths in "
             "descending bottleneck order, so a budgeted result is exactly "
