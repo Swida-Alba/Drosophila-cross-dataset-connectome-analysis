@@ -453,6 +453,15 @@ class ComparisonParameters:
     """
     
     path_mode: str = 'all'
+    shortest_source_coverage: Optional[float] = None
+    """Shortest-mode coverage early-stop, SOURCE side (per queried type,
+    at each backward discovery layer; None = legacy per-pair completeness,
+    0.0 = Any, (0, 1] = fraction, 1.0 = Full). See
+    FindNeuronConnection.shortest_source_coverage."""
+    shortest_target_coverage: Optional[float] = None
+    """Shortest-mode coverage early-stop, TARGET side — the UI default is
+    source Any + target Full. See
+    FindNeuronConnection.shortest_target_coverage."""
     """Path enumeration mode for the per-dataset runs:
     - 'all': FindAllPath() — every path within max_interlayer (default).
     - 'shortest': FindShortestPath() — only the per-(source, target)
@@ -2081,6 +2090,8 @@ class ComparisonParameters:
             'edgeN_limit': self.edgeN_limit,
             'comparison_mode': self.comparison_mode,
             'path_mode': self.path_mode,
+            'shortest_source_coverage': self.shortest_source_coverage,
+            'shortest_target_coverage': self.shortest_target_coverage,
             'pathfinding': self.pathfinding,
             
             # Auto type mapping

@@ -341,6 +341,17 @@ writes both files.
   `skip_bodyId=True` and `max_interlayer=2`.
 
 
+## Shortest-mode coverage early-stop
+
+Under Path Enumeration = shortest, the Source/Target Coverage selectors
+(defaults Any / Full) stop each delegate's backward discovery at a layer
+boundary once both per-queried-TYPE requirements are met — same
+semantics as the Find Shortest tab (`shortest_source_coverage` /
+`shortest_target_coverage` on ComparisonParameters; forwarded to both
+delegate constructors; `None` in `all` mode). Stops are disclosed per
+delegate via the `[shortest coverage stop]` note and
+`shortest_discovery_diagnostics.coverage_stop`.
+
 ## Connection-ratio thresholds (v1)
 
 Threshold Basis = Connection ratio accepts FLOAT tiers (0<t≤1) in Standard, Combinations AND Auto; delegate folders use the `minratio_{decimal}` grammar; Auto's density bootstrap/alignment runs on the float ratio tiers (float64 arrays, distinct-tier ladders). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets. Replay Paths applies under this basis too (float slices); Auto-extend Collapsed Thresholds (F7) runs a float k × τ ladder capped at the (0, 1] ceiling. Export notes: query manifests/views carry the float tiers verbatim (`threshold_combinations.csv`, `effective_thresholds.json`), and `type_resolution_union.csv` absence diagnoses compare the max CONNECTION RATIO (w ÷ the post's full-table total incoming) against the tier, with the strongest leg spelled out in synapses.

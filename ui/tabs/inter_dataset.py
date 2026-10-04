@@ -667,6 +667,63 @@ def create_inter_dataset_tab():
                              "Visualization Edge Limit. 0 = off. Shortest mode "
                              "never floors.",
                     )
+                    # Shortest-mode coverage early-stop (per queried type,
+                    # per delegate): deepening stops once BOTH sides are
+                    # satisfied; emitted pairs keep exact per-pair minimum
+                    # hops and the stop is disclosed per delegate.
+                    _XCOV_LEVELS = ["Any", "25%", "50%", "75%", "Full",
+                                    "Custom %"]
+
+                    def _xcoverage_payload(select):
+                        value = select.value
+                        if value == "Any":
+                            return 0.0
+                        if value == "Full":
+                            return 1.0
+                        if value == "Custom %":
+                            return max(1, min(100, int(
+                                xcoverage_custom_pct.value or 50))) / 100.0
+                        if value.endswith("%"):
+                            try:
+                                return float(value[:-1]) / 100.0
+                            except ValueError:
+                                return None
+                        return None
+
+                    _xcov_hint = (
+                        "Shortest mode only, per queried TYPE: Any = >=1 "
+                        "enrolled bodyId reached; a % = each queried type "
+                        "individually reaches that share; Full = all. "
+                        "Discovery stops once both sides are satisfied."
+                    )
+                    shortest_source_coverage = select_input(
+                        "Source Coverage (shortest)", _XCOV_LEVELS, "Any",
+                        hint="Source side. " + _xcov_hint,
+                    )
+                    shortest_target_coverage = select_input(
+                        "Target Coverage (shortest)", _XCOV_LEVELS, "Full",
+                        hint="Target side (default Full = every queried "
+                             "target type fully reached). " + _xcov_hint,
+                    )
+                    xcoverage_custom_pct = number_input(
+                        "Custom Coverage % (shortest)", 50, 1, 100,
+                        hint="Used by whichever side is set to 'Custom %'.",
+                    ).set_visibility(False)
+
+                    def _sync_xcoverage():
+                        _is_shortest = path_mode.value == 'shortest'
+                        _custom = "Custom %" in (
+                            shortest_source_coverage.value,
+                            shortest_target_coverage.value)
+                        shortest_source_coverage.set_enabled(_is_shortest)
+                        shortest_target_coverage.set_enabled(_is_shortest)
+                        xcoverage_custom_pct.set_visibility(
+                            _is_shortest and _custom)
+
+                    shortest_source_coverage.on_value_change(
+                        lambda _e: _sync_xcoverage())
+                    shortest_target_coverage.on_value_change(
+                        lambda _e: _sync_xcoverage())
                     top_edges = number_input(
                         "Top Edges in Analysis Reports", 500, 10, 5000,
                         hint="Limits top-edge comparison/overlap results and edge/path "
@@ -781,6 +838,7 @@ def create_inter_dataset_tab():
                         max_interlayer.value = 2
                         edge_budget.enable()
                         edge_budget.value = get_user_default("graph_edge_limit_bodyid") or 1000000
+                    _sync_xcoverage()
                     if notify:
                         ui.notify(
                             f"Path Enumeration switched to '{path_mode.value}': "
@@ -852,6 +910,14 @@ def create_inter_dataset_tab():
             # Fix D: the Edge Budget (lossy floor above the N-th strongest
             # edge, w0 = w1 + 1). 0 = off; shortest mode never floors.
             "graph_edge_limit_bodyid": int(edge_budget.value),
+            # Shortest-mode coverage early-stop (ignored in 'all' mode —
+            # the engine only reads these under path_mode='shortest').
+            "shortest_source_coverage": (
+                _xcoverage_payload(shortest_source_coverage)
+                if path_mode.value == 'shortest' else None),
+            "shortest_target_coverage": (
+                _xcoverage_payload(shortest_target_coverage)
+                if path_mode.value == 'shortest' else None),
             "max_paths_bodyid": int(max_paths_bodyid.value) or None,
             "edgeN_limit": int(edge_limit_viz.value),
             # F1: StrongestFirst is the only 'all'-mode algorithm; the

@@ -130,8 +130,10 @@ try:
         STORE_FOLDER_NAME,
         apply_store_retention,
         batched_shortest_paths,
+        coverage_stop_met,
         finalize_store_discovery,
         resolve_batching,
+        resolve_coverage_stop,
         run_union_layer_discovery,
     )
 except ImportError:  # pragma: no cover - src laid bare on sys.path
@@ -140,8 +142,10 @@ except ImportError:  # pragma: no cover - src laid bare on sys.path
         STORE_FOLDER_NAME,
         apply_store_retention,
         batched_shortest_paths,
+        coverage_stop_met,
         finalize_store_discovery,
         resolve_batching,
+        resolve_coverage_stop,
         run_union_layer_discovery,
     )
 
@@ -1663,6 +1667,15 @@ def _is_missing_type_label(value) -> bool:
     if isinstance(value, float) and pd.isna(value):
         return True
     return str(value).strip().lower() in ('', 'none', 'nan')
+
+
+def _coverage_label(value):
+    """Parameters.txt rendering of a shortest coverage knob."""
+    if value is None:
+        return 'not set'
+    if float(value) == 0.0:
+        return 'any'
+    return f'{float(value):.0%}'
 
 
 @dataclass
@@ -3291,6 +3304,34 @@ class FindNeuronConnection:
     in meta.json, shortest_discovery_diagnostics.batching and
     user_warning_notes.txt. Invalid values fall back to keep with a
     warning note.
+    '''
+
+    shortest_source_coverage: Optional[float] = None
+    '''
+    Shortest-path mode only: stop deepening backward discovery once the
+    SOURCE coverage requirement is met (measured per queried source
+    TYPE, at the end of each discovery layer: a source bodyId counts
+    once it reaches at least one target). ``None`` (default) = no source
+    requirement (legacy per-pair-completeness behavior for this side);
+    ``0.0`` = Any (>= 1 enrolled bodyId per queried type); a fraction in
+    (0, 1] = each queried type must individually have ceil(frac x
+    N_type) reached bodyIds (1.0 = Full). Discovery stops when BOTH
+    sides' requirements are met — see ``shortest_target_coverage``.
+    Emitted pairs are a coverage-scoped subset of what a full-depth run
+    would find; every EMITTED pair keeps its exact per-pair minimum hop
+    (layer-by-layer backward BFS exactness). Stopping is disclosed via
+    the ``[shortest coverage stop]`` note, shortest_discovery_diagnostics
+    and all_attributes.json.
+    '''
+
+    shortest_target_coverage: Optional[float] = None
+    '''
+    Shortest-path mode only: stop deepening backward discovery once the
+    TARGET coverage requirement is met (measured per queried target
+    TYPE, at the end of each discovery layer: a target bodyId counts
+    once at least one enrolled source reaches it). Values as in
+    ``shortest_source_coverage`` (``None`` / ``0.0`` = Any / fraction
+    (0, 1], 1.0 = Full). The UI defaults to source=Any + target=Full.
     '''
 
     separate_hemispheres: bool = False
@@ -12210,6 +12251,10 @@ class FindNeuronConnection:
             'filter by': self.filter_by,
             'exclude intra-type connections': str(self.exclude_intra_type_connections),
             'max interlayer': str(self.max_interlayer),
+            'shortest source coverage': _coverage_label(
+                getattr(self, 'shortest_source_coverage', None)),
+            'shortest target coverage': _coverage_label(
+                getattr(self, 'shortest_target_coverage', None)),
             'separate hemispheres': str(self.separate_hemispheres),
             'hemisphere filter': self.hemisphere_filter,
             'find reciprocal': str(self.find_reciprocal),
@@ -13607,7 +13652,8 @@ class FindNeuronConnection:
             return out, stats
         return frames, stats
 
-    def _discover_shortest_backward(self, source_ID, target_ID, max_hops):
+    def _discover_shortest_backward(self, source_ID, target_ID, max_hops,
+                                    coverage_stop=None):
         """Discover a shortest-path graph backward from target bodyIds.
 
         LEGACY monolithic path: this method holds every target's
@@ -13617,8 +13663,9 @@ class FindNeuronConnection:
         (``shortest_discovery_store.run_union_layer_discovery`` +
         ``finalize_store_discovery``) is behaviorally identical — same
         fetch sequence, labeling rules, early stops, completeness
-        semantics, and return shape — but streams per-target labels into
-        the run's ``shortest_discovery_store/`` parquet store instead.
+        semantics, coverage early-stop, and return shape — but streams
+        per-target labels into the run's ``shortest_discovery_store/``
+        parquet store instead.
 
         Each target owns a reverse BFS frontier.  The frontier is expanded
         through incoming edges until all requested source bodyIds have been
@@ -13648,6 +13695,7 @@ class FindNeuronConnection:
         source_set = {str(value) for value in source_ID}
         target_ids = [str(value) for value in target_ID]
         max_hops = max(1, int(max_hops))
+        coverage_stop_record = None
 
         all_connections = []
         reverse_layers = [set(target_ids)]
@@ -13772,6 +13820,40 @@ class FindNeuronConnection:
             # Release the fetched layer before the next depth iteration
             del conn_df
             gc.collect()
+
+            # Coverage early-stop (shortest; twin of the store's layer
+            # boundary check): reached pairs already carry exact
+            # backward-BFS distances; stopping here scopes the pair set
+            # without touching the emitted pairs' minimum-hop guarantee.
+            if coverage_stop is not None:
+                reached_sources = set()
+                reached_targets = set()
+                for target, seen in seen_by_target.items():
+                    found = {src for src in source_set
+                             if src != target and src in seen}
+                    if found:
+                        reached_targets.add(target)
+                        reached_sources |= found
+                met, achieved = coverage_stop_met(
+                    coverage_stop, reached_sources, reached_targets)
+                if met:
+                    coverage_stop_record = {
+                        'stopped_at_layer': reverse_depth + 1,
+                        'requirements': {
+                            'source': coverage_stop.get('source'),
+                            'target': coverage_stop.get('target'),
+                        },
+                        'achieved': achieved,
+                        'route': 'monolithic',
+                    }
+                    self._vprint(
+                        f'Coverage stop at backward layer '
+                        f'{reverse_depth + 1}: source/target coverage '
+                        'requirements met — deeper pairs within the depth '
+                        'bound are not searched.',
+                        level='full',
+                    )
+                    break
 
             if not any(frontier_by_target.values()):
                 break
@@ -13898,6 +13980,7 @@ class FindNeuronConnection:
             'dag_nodes': len(valid_nodes),
             'dag_edges': len(valid_edges),
             'discovery_complete': discovery_complete,
+            'coverage_stop': coverage_stop_record,
             'cache_stats': dict(
                 getattr(self, '_shortest_cache_stats', {})),
         }
@@ -13913,6 +13996,7 @@ class FindNeuronConnection:
                 for target in targets_found
             },
             'complete': discovery_complete,
+            'coverage_stop': coverage_stop_record,
         }
 
     def _derive_label_paths_from_bodyid_paths(self, all_paths, node_label,
@@ -17074,6 +17158,15 @@ class FindNeuronConnection:
             # all per-target maps resident. Both return the same shape.
             batched_active, batch_budget, batch_fixed = resolve_batching(
                 self)
+            # Coverage early-stop (shortest): validate the knobs once and
+            # share the config with BOTH discovery twins (refuse invalid
+            # values loudly — resolve_coverage_stop raises).
+            self._shortest_coverage_stop = None
+            _coverage_stop_cfg = None
+            if (getattr(self, 'shortest_source_coverage', None) is not None
+                    or getattr(self, 'shortest_target_coverage', None)
+                    is not None):
+                _coverage_stop_cfg = resolve_coverage_stop(self)
             self._shortest_store_dir = None
             self._shortest_store_meta = None
             if batched_active:
@@ -17089,11 +17182,13 @@ class FindNeuronConnection:
                 )
                 store_meta = run_union_layer_discovery(
                     self, source_ID, target_ID, self.max_interlayer + 1,
-                    store_dir,
+                    store_dir, coverage_stop=_coverage_stop_cfg,
                 )
                 backward_result = finalize_store_discovery(
                     store_dir, store_meta, source_ID)
                 backward_result['store_dir'] = store_dir
+                backward_result['coverage_stop'] = store_meta.get(
+                    'coverage_stop')
                 backward_result['store_meta'] = store_meta
                 self._shortest_store_dir = store_dir
                 self._shortest_store_meta = store_meta
@@ -17110,6 +17205,7 @@ class FindNeuronConnection:
                     'dag_edges': backward_result['dag_edges'],
                     'discovery_complete':
                         store_meta['discovery_complete'],
+                    'coverage_stop': store_meta.get('coverage_stop'),
                     'cache_stats': dict(
                         getattr(self, '_shortest_cache_stats', {})),
                     'batching': {
@@ -17120,10 +17216,40 @@ class FindNeuronConnection:
                 }
             else:
                 backward_result = self._discover_shortest_backward(
-                    source_ID, target_ID, self.max_interlayer + 1
+                    source_ID, target_ID, self.max_interlayer + 1,
+                    coverage_stop=_coverage_stop_cfg,
                 )
             all_connections = backward_result['all_connections']
             all_connections_filtered = all_connections
+            # Coverage early-stop bookkeeping: record on the instance
+            # (diagnostics above), and disclose ONCE when it fired — the
+            # emitted pairs keep exact per-pair minimum hops; deeper pairs
+            # within the depth bound were simply not searched.
+            self._shortest_coverage_stop = backward_result.get(
+                'coverage_stop')
+            if self._shortest_coverage_stop:
+                _cs = self._shortest_coverage_stop
+                _req_txt = []
+                for _side in ('source', 'target'):
+                    _v = _cs['requirements'].get(_side)
+                    if _v is None:
+                        continue
+                    _req_txt.append(
+                        f'{_side} ' + ('any' if _v == 0.0 else f'{_v:.0%}'))
+                self._vprint(
+                    f'Coverage stop: backward discovery stopped at layer '
+                    f"{_cs['stopped_at_layer']} (requirements met: "
+                    + ' + '.join(_req_txt) + ').',
+                    level='simple',
+                )
+                self._warn_notes.append(
+                    '- [shortest coverage stop] backward discovery stopped '
+                    f"at layer {_cs['stopped_at_layer']} — coverage "
+                    'requirements met (' + ' + '.join(_req_txt) + ', '
+                    'per queried type). Deeper source-target pairs within '
+                    'the depth bound were not searched; every emitted '
+                    'pair keeps its exact per-pair minimum hop. See '
+                    'shortest_discovery_diagnostics.coverage_stop.')
             layer_neurons = backward_result['layer_neurons']
             all_neurons_in_network = backward_result[
                 'all_neurons_in_network'

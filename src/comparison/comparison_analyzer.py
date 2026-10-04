@@ -1415,6 +1415,10 @@ class ComparisonAnalyzer:
             pathfinding=self.parameters.pathfinding,  # Pass pathfinding algorithm
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,  # bodyId edge limit (deep searches)
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
+            shortest_source_coverage=getattr(
+                self.parameters, 'shortest_source_coverage', None),
+            shortest_target_coverage=getattr(
+                self.parameters, 'shortest_target_coverage', None),
             edgeN_limit=self.parameters.edgeN_limit,  # Visualization Edge Limit
             search_columns=self.parameters.search_columns,  # Column scope for neuron name resolution
             force_API_fetching=use_force_api,  # Use CAVE API for FAFB if enabled
@@ -4067,6 +4071,10 @@ class ComparisonAnalyzer:
             pathfinding=self.parameters.pathfinding,
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,
             max_paths_bodyid=self.parameters.max_paths_bodyid,
+            shortest_source_coverage=getattr(
+                self.parameters, 'shortest_source_coverage', None),
+            shortest_target_coverage=getattr(
+                self.parameters, 'shortest_target_coverage', None),
             edgeN_limit=self.parameters.edgeN_limit,
             search_columns=self.parameters.search_columns,
             force_API_fetching=use_force_api,

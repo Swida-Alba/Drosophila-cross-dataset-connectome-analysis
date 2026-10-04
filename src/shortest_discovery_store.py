@@ -97,6 +97,109 @@ def resolve_batching(fc):
 
 
 # ---------------------------------------------------------------------------
+# Coverage early-stop (shortest): stop deepening backward discovery once
+# the per-type source/target coverage requirements are both met.
+# ---------------------------------------------------------------------------
+
+def resolve_coverage_stop(fc):
+    """Validate the coverage knobs and build the checkpoint config.
+
+    Returns ``None`` when both sides are ``None`` (legacy behavior — the
+    discovery twins take their fast path), otherwise
+    ``{'source': req|None, 'target': req|None,
+       'source_types': {type: set(bodyIds)},
+       'target_types': {type: set(bodyIds)}}`` where ``req`` is ``0.0``
+    (Any: >= 1 bodyId per queried type) or a fraction in (0, 1]. Raises
+    ``ValueError`` on any other value (refuse-on-doubt: a mistyped
+    threshold must never silently pass).
+    """
+    def _req(value, name):
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'{name} must be None, 0.0 (any) or a fraction in (0, 1]; '
+                f'got {value!r}') from None
+        if value == 0.0:
+            return 0.0
+        if 0.0 < value <= 1.0:
+            return value
+        raise ValueError(
+            f'{name} must be None, 0.0 (any) or a fraction in (0, 1]; '
+            f'got {value!r}')
+
+    source_req = _req(getattr(fc, 'shortest_source_coverage', None),
+                      'shortest_source_coverage')
+    target_req = _req(getattr(fc, 'shortest_target_coverage', None),
+                      'shortest_target_coverage')
+    if source_req is None and target_req is None:
+        return None
+
+    def _type_map(frame):
+        # bodyId -> queried-type membership; the enrollment frames carry
+        # the resolved type per bodyId. No type column (custom groups /
+        # bodyId-only queries) -> one pooled bucket, which degenerates
+        # gracefully to whole-enrollment coverage.
+        mapping = {}
+        if frame is None or 'bodyId' not in getattr(frame, 'columns', []):
+            return mapping
+        type_col = next((c for c in ('type', 'custom_group', 'group')
+                         if c in frame.columns), None)
+        for row_bid, row_type in zip(
+                frame['bodyId'].astype(str),
+                frame[type_col].astype(str) if type_col else ''):
+            mapping.setdefault(str(row_type), set()).add(row_bid)
+        return mapping
+
+    return {
+        'source': source_req,
+        'target': target_req,
+        'source_types': _type_map(getattr(fc, 'source_df', None)),
+        'target_types': _type_map(getattr(fc, 'target_df', None)),
+    }
+
+
+def coverage_stop_met(config, reached_sources, reached_targets):
+    """Both sides' per-type requirements met at this layer boundary?
+
+    ``reached_sources``/``reached_targets`` are the bodyId sets connected
+    so far (a source counts once it reaches >= 1 target; a target once
+    >= 1 source reaches it). Returns ``(met, achieved)`` where
+    ``achieved`` is the per-type reached/total census for disclosure.
+    """
+    import math
+
+    def _side(req, type_map, reached):
+        achieved = {}
+        met = True
+        for type_name, members in (type_map or {}).items():
+            hit = len(members & reached)
+            achieved[type_name] = f'{hit}/{len(members)}'
+            if req is None:
+                continue
+            required = (1 if req == 0.0
+                        else max(1, math.ceil(req * len(members))))
+            if hit < required:
+                met = False
+        if not type_map and req is not None:
+            # No type information at all (bodyId-only enrollment): fall
+            # back to pooled coverage so the knob still means something.
+            met = bool(reached) if req == 0.0 else met
+        return met, achieved
+
+    source_met, source_ach = _side(
+        config.get('source'), config.get('source_types'),
+        reached_sources)
+    target_met, target_ach = _side(
+        config.get('target'), config.get('target_types'),
+        reached_targets)
+    achieved = {'source': source_ach, 'target': target_ach}
+    return (source_met and target_met), achieved
+
+
+# ---------------------------------------------------------------------------
 # Compact per-target membership (plan §3.A)
 # ---------------------------------------------------------------------------
 
@@ -224,12 +327,13 @@ def _label_files(store_dir, kind):
 # ---------------------------------------------------------------------------
 
 def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
-                              store_dir):
+                              store_dir, coverage_stop=None):
     """Target-rooted backward discovery writing the labeled store.
 
     Behavioral twin of ``FindNeuronConnection._discover_shortest_backward``
     (same fetch sequence, same untyped filtering, same per-target labeling
-    / DAG-edge rules, same early-stop and completeness semantics), with
+    / DAG-edge rules, same early-stop and completeness semantics — plus
+    the coverage early-stop when ``coverage_stop`` is supplied), with
     the per-target resident dicts replaced by registry-indexed bitmaps and
     the labels streamed to parquet. Returns the discovery metadata the
     pipeline and the batch phases consume (the monolithic return values
@@ -253,6 +357,7 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
     # dict-deduped, order preserved — matches the monolithic per-target
     # dict keys when duplicate target ids are supplied.
     target_ids = list(dict.fromkeys(str(value) for value in target_ID))
+    coverage_stop_record = None
     max_hops = max(1, int(max_hops))
     n_targets = len(target_ids)
 
@@ -395,6 +500,37 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
         del conn_df
         gc.collect()
 
+        # Coverage early-stop (shortest): at this layer boundary every
+        # reached pair already carries its exact backward-BFS distance;
+        # stopping here scopes the pair set without touching the
+        # per-pair minimum-hop guarantee of the emitted pairs.
+        if coverage_stop is not None:
+            reached_sources = set()
+            reached_targets = set()
+            for ti in range(n_targets):
+                if found_sources[ti]:
+                    reached_targets.add(target_ids[ti])
+                    reached_sources |= found_sources[ti]
+            met, achieved = coverage_stop_met(
+                coverage_stop, reached_sources, reached_targets)
+            if met:
+                coverage_stop_record = {
+                    'stopped_at_layer': reverse_depth + 1,
+                    'requirements': {
+                        'source': coverage_stop.get('source'),
+                        'target': coverage_stop.get('target'),
+                    },
+                    'achieved': achieved,
+                    'route': 'store',
+                }
+                fc._vprint(
+                    f'Coverage stop at backward layer {reverse_depth + 1}: '
+                    'source/target coverage requirements met — deeper '
+                    'pairs within the depth bound are not searched.',
+                    level='full',
+                )
+                break
+
         if not any(frontiers):
             break
     else:
@@ -438,6 +574,7 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
         'target_layers': target_layers,
         'target_hop_limits': target_hop_limits,
         'edge_filter_config': _edge_filter_config(fc),
+        'coverage_stop': coverage_stop_record,
     }
     with open(store_dir / META_FILE, 'w', encoding='utf-8') as handle:
         json.dump(meta, handle, indent=2, sort_keys=True)

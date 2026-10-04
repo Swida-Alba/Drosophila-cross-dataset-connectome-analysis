@@ -127,6 +127,8 @@ COLUMN_GLOSSARY = {
     "threshold_mode": ("Threshold query mode: standard same-threshold rows or explicit combinations.", "text"),
     "threshold_scope": ("Whether a row is a scalar threshold grid cell, a Custom query comparison cell, or a raw-run schedule diagnostic.", "text"),
     "path_mode": ("Path enumeration mode for the run: all paths or per-pair shortest.", "text"),
+    "shortest source coverage": ("Shortest-mode coverage early-stop, source side (per queried type; 'not set' = legacy, 'any' = >=1 bodyId per type, a % = per-type share).", "text"),
+    "shortest target coverage": ("Shortest-mode coverage early-stop, target side — same semantics; the UI default is any source + full target.", "text"),
     "comparison_mode": ("Comparison engine mode: pathfinding or direct edge comparison.", "text"),
     "threshold_": ("Prefix for one requested-threshold column per dataset (e.g. threshold_banc_v888).", "text"),
     "direction": ("Synaptic direction relative to the query: upstream or downstream.", "text"),
@@ -1261,6 +1263,15 @@ _PATHFINDING_EXPLANATION = [
             "reports the same τ metadata) but is NEVER floored: the Edge "
             "Budget does not apply in shortest mode because trimming edges "
             "could remove the only shortest route.",
+            "Shortest Paths coverage early-stop: when Source/Target "
+            "Coverage is set (per queried type; the UI defaults to source "
+            "Any + target Full), backward discovery stops at the first "
+            "layer where BOTH sides' requirements are met. Emitted pairs "
+            "keep their exact per-pair minimum hop; deeper pairs within "
+            "the depth bound are not searched. The stop is recorded in "
+            "shortest_discovery_diagnostics.coverage_stop and the "
+            "[shortest coverage stop] warning note. Unset (API default) = "
+            "the legacy per-pair completeness behavior.",
             "bodyId-level and type-level visualizations share the same "
             "drawing cap (Visualization Edge Limit). The drawing cap is not "
             "a path or graph budget: when it trims the rendered graph, the "

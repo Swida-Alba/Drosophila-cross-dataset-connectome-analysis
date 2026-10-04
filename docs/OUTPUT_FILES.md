@@ -330,7 +330,15 @@ across all three modes; the mode, sizes and removals are recorded in
     valid for, and (after enumeration) the realized batch composition
     (`shortest_discovery_diagnostics.batching` in
     `all_attributes.json` mirrors it: knob values, batch count, per-batch
-    target counts and state sums).
+    target counts and state sums). Coverage early-stop: when
+    `shortest_source_coverage` / `shortest_target_coverage` are set, the
+    store meta and `shortest_discovery_diagnostics.coverage_stop` record
+    the stopped-at layer, the per-side requirements (None = legacy
+    per-pair completeness, 0.0 = any, a fraction = per-queried-type
+    share, 1.0 = full) and the per-type achieved census; the
+    `[shortest coverage stop]` note in `user_warning_notes.txt` carries
+    the same disclosure. A coverage stop scopes the emitted pair set —
+    every emitted pair still carries its exact per-pair minimum hop.
 
 Discovery memory note: the batched path bounds enumeration memory by the
 batch budget; Phase-A discovery memory scales with the union graph ×

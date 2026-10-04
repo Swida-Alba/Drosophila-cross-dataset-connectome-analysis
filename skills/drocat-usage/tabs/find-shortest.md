@@ -36,6 +36,8 @@ fc = FindNeuronConnection(
     discovery_batch_budget=2_000_000,  # memory control: per-batch BFS distance states; 0 = legacy single batch (results identical)
     target_batch_size=0,           # alternative: fixed targets per batch; 0 = use discovery_batch_budget
     discovery_store_retention="keep",  # post-run store handling: keep | compact (merge connection layers to 4 cols, drop derivable dag chunks) | prune (keep meta.json only)
+    shortest_source_coverage=0.0,   # coverage early-stop, source side, per queried TYPE (None=legacy; 0.0=Any; 0.5=50%/type; 1.0=Full) — UI default Any
+    shortest_target_coverage=1.0,   # target side, same semantics — UI default Full (stop once every queried target type is fully reached)
     visualize_before_reconstruct=False,
     search_columns="auto",              # "auto" | "type" | "instance" | "bodyId"
     network_layout="distributed",
@@ -121,6 +123,20 @@ python skills/drocat-usage/scripts/run_direct.py \
   they do not appear as `r[]p[]` filename notes.
 - This is also the engine behind `inter_dataset`'s `path_mode="shortest"`.
 
+
+## Coverage early-stop (Source / Target Coverage)
+
+`shortest_source_coverage` / `shortest_target_coverage` stop backward
+discovery at a layer boundary once BOTH sides' per-queried-TYPE
+requirements are met (source covered once it reaches >=1 target; target
+once >=1 source reaches it): `0.0` = Any (>=1 bodyId per type), a
+fraction = ceil(frac x N) per type, `1.0` = Full, `None` = legacy
+per-pair completeness. Emitted pairs keep their exact per-pair minimum
+hop; deeper pairs within the depth bound are not searched (disclosed:
+`[shortest coverage stop]` note + `shortest_discovery_diagnostics
+.coverage_stop`). An unmeetable requirement falls back to depth-cap
+behavior with identical outputs. The Cross-Dataset tab sends the same
+knobs per shortest delegate (`None` in `all` mode).
 
 ## Connection-ratio basis
 
