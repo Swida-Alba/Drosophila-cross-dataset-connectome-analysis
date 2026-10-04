@@ -906,6 +906,108 @@ def _make_direct_fc(monkeypatch, tmp_path, fetch_rows, *, types,
     return fc, logs
 
 
+class TestTypePathRealizedWeightsAndMembershipN:
+    """Round-10: per-hop path Weights scoped to the realized bodyId edges
+    at each hop's position (not the pair's cross-layer total), and ONE
+    canonical membership N shared by the ratio recompute's type_coverage
+    and the allpaths coverage lists."""
+
+    def test_realized_hop_weights_scope_to_position(self):
+        # Pair A->B connects at two depths: edge (a1,b1) backs the 2-hop
+        # sequence, edge (a2,b2) backs the 4-hop sequence. The streaming
+        # join stamps BOTH masses (160+168=328) on every hop of the pair;
+        # the realized walk must give each sequence only its own edges.
+        label = {"s": "S", "m": "M", "a1": "A", "a2": "A",
+                 "b1": "B", "b2": "B", "t": "T"}
+        paths = [
+            ["s", "a1", "b1"],             # S->A->B
+            ["s", "m", "a2", "b2", "t"],   # S->M->A->B->T
+        ]
+        lut = {("s", "a1"): 5.0, ("a1", "b1"): 160.0,
+               ("s", "m"): 7.0, ("m", "a2"): 3.0, ("a2", "b2"): 168.0,
+               ("b2", "t"): 9.0}
+        out = coana.FindNeuronConnection._type_path_realized_hop_weights(
+            paths, label.get, lut)
+        assert out[("S", "A", "B")] == [5.0, 160.0]
+        assert out[("S", "M", "A", "B", "T")] == [7.0, 3.0, 168.0, 9.0]
+
+    def test_realized_hop_weights_no_double_count_across_paths(self):
+        # Two bodyId paths sharing one hop edge count that edge ONCE — the
+        # same de-dup the per-node coverage n applies to bodyIds.
+        label = {"a": "A", "b": "B", "c": "C"}
+        paths = [["a", "b", "c"], ["a", "b", "c"]]
+        lut = {("a", "b"): 4.0, ("b", "c"): 6.0}
+        out = coana.FindNeuronConnection._type_path_realized_hop_weights(
+            paths, label.get, lut)
+        assert out[("A", "B", "C")] == [4.0, 6.0]
+
+    def test_realized_hop_weights_missing_edge_yields_none(self):
+        # Defensive contract: a realizing edge absent from the conn tables
+        # marks the whole sequence None so the caller keeps the join value.
+        label = {"a": "A", "b": "B"}
+        out = coana.FindNeuronConnection._type_path_realized_hop_weights(
+            [["a", "b"]], label.get, {})
+        assert out[("A", "B")] is None
+
+    def test_network_type_membership_counts_union(self):
+        # N = bodyIds on emitted paths ∪ discovery layers, counted per
+        # final type label (duplicates collapse).
+        label = {"a1": "A", "a2": "A", "b": "B", "c": "C"}
+        counts = coana.FindNeuronConnection._network_type_membership_counts(
+            [["a1", "b"]], [["a1", "a2"], ["b"], []], label.get)
+        assert counts == {"A": 2, "B": 1}
+
+    def test_recompute_type_coverage_uses_canonical_n(self):
+        fc, _ = make_fc(
+            weight_basis="connection_ratio",
+            min_ratio=0.01,
+            _ratio_lane_totals={"b1": 100.0, "b2": 100.0},
+            _ratio_lane_type_members={"A": ["a1"], "B": ["b1", "b2"]},
+        )
+
+        def _fail_fetch(types, min_weight):
+            raise RuntimeError("dataset fetch unavailable in test")
+
+        fc._fetch_total_incoming_weight_by_type = _fail_fetch
+        conn_types = pd.DataFrame({
+            "type_pre": ["A"], "type_post": ["B"], "weight": [50],
+            "connection_ratio": [0.25], "traversal_probability": [0.8],
+            "block_probability": [0.2],
+        })
+        conn_inpath = pd.DataFrame({
+            "type_pre": ["A"], "type_post": ["B"],
+            "bodyId_post": ["b1"], "weight": [50],
+        })
+        out = fc._recompute_ratio_lane_type_ratios(
+            conn_types, conn_inpath, total_n_map={"B": 5})
+        # canonical N wins over the frame membership (2 members)
+        assert out["type_coverage"].iloc[0] == "1/5"
+        # numerator/denominator untouched: 50 / (100+100)
+        assert abs(out["connection_ratio"].iloc[0] - 0.25) < 1e-12
+
+    def test_recompute_type_coverage_falls_back_to_frame_members(self):
+        fc, _ = make_fc(
+            weight_basis="connection_ratio",
+            min_ratio=0.01,
+            _ratio_lane_totals={"b1": 100.0},
+            _ratio_lane_type_members={"A": ["a1"], "B": ["b1"]},
+        )
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight: pd.DataFrame())
+        conn_types = pd.DataFrame({
+            "type_pre": ["A"], "type_post": ["B"], "weight": [50],
+            "connection_ratio": [0.5], "traversal_probability": [1.0],
+            "block_probability": [0.0],
+        })
+        conn_inpath = pd.DataFrame({
+            "type_pre": ["A"], "type_post": ["B"],
+            "bodyId_post": ["b1"], "weight": [50],
+        })
+        out = fc._recompute_ratio_lane_type_ratios(conn_types, conn_inpath)
+        assert out["type_coverage"].iloc[0] == "1/1"
+        assert abs(out["connection_ratio"].iloc[0] - 0.5) < 1e-12
+
+
 class TestFindDirectConnections:
     def test_full_run_csv_outputs(self, monkeypatch, tmp_path):
         types = {"S": "TS", "A": "TA", "X": "TX"}

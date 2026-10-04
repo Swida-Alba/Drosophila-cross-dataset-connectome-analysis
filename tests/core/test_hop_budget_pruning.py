@@ -155,6 +155,38 @@ def test_strongest_retained_reported_in_stats_and_note(tmp_path):
     # we assert the stats contract used by that reporting.
 
 
+def test_ratio_basis_suppresses_synapse_bottleneck_bound():
+    """Round-10: under the connection_ratio basis the pruning bound is a
+    synapse-unit widest path (computed on the raw weight column before the
+    ratio attach) — the note must not present it as the run's strength."""
+    edges = [('S', 'A', 5), ('A', 'T', 9), ('S', 'B', 2), ('B', 'T', 3),
+             ('S', 'X', 7), ('X', 'Y', 1)]   # dead branches get pruned
+    tables = [_layer(edges, '0->1')]
+
+    notes_default = []
+    prune_layers_hop_budget(
+        tables, ['S'], ['T'], 2,
+        vprint=lambda *a, **k: None, warn_notes=notes_default)
+    assert len(notes_default) == 1
+    assert 'strongest retained path bottleneck is at most 5 synapses' \
+        in notes_default[0]
+
+    notes_ratio = []
+    prune_layers_hop_budget(
+        tables, ['S'], ['T'], 2,
+        vprint=lambda *a, **k: None, warn_notes=notes_ratio,
+        report_bottleneck_bound=False)
+    assert len(notes_ratio) == 1
+    assert 'synapses' not in notes_ratio[0]
+    assert 'connection_ratio basis' in notes_ratio[0]
+    # stats still carry the bound (parameters.txt reports the exact
+    # ratio-unit W* after enumeration instead).
+    _, stats = prune_layers_hop_budget(
+        tables, ['S'], ['T'], 2, warn_notes=[],
+        report_bottleneck_bound=False)
+    assert stats['strongest_retained'] == 5
+
+
 def test_strongest_retained_none_when_target_unreachable(tmp_path):
     edges = [('S', 'A', 5)]
     tables = [_layer(edges, '0->1')]

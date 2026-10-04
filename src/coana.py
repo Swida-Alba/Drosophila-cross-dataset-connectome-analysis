@@ -828,7 +828,7 @@ def _match_path_edges_to_layers(edges_in_paths, conn_layers):
 def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                             pre_col='bodyId_pre', post_col='bodyId_post',
                             vprint=None, warn_notes=None, label='bodyId',
-                            max_passes=4):
+                            max_passes=4, report_bottleneck_bound=True):
     """Lossless hop-budget pruning of the discovery layer tables, iterated
     to a fixpoint.
 
@@ -893,11 +893,34 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
         passes_txt = (f' in {stats["passes"]} passes'
                       if stats['passes'] > 1 else '')
         if stats['strongest_retained'] is not None:
+            # The bound is computed on the table's raw weight column
+            # (synapses) — under the connection_ratio basis it does not
+            # describe the run's units, so callers suppress it there
+            # (round-10) and the exact ratio-unit W* is reported after
+            # enumeration instead.
+            _bound_txt = (
+                f' — strongest '
+                f'retained path bottleneck: {stats["strongest_retained"]:g} '
+                f'synapses; '
+                if report_bottleneck_bound else ' — ')
+            _bound_note = (
+                f'No admissible path was '
+                f'lost; the strongest retained path bottleneck is at most '
+                f'{stats["strongest_retained"]:g} synapses (hop-bounded upper '
+                f'bound; the exact measured value is reported after '
+                f'enumeration) — the top paths and '
+                f'their order are unchanged.'
+                if report_bottleneck_bound else
+                'No admissible path was lost — the top paths and their '
+                'order are unchanged (the retained-strength bound is '
+                'synapse-unit and is omitted under the connection_ratio '
+                'basis; the exact ratio-unit value is reported after '
+                'enumeration).')
             vprint(
                 f'  Hop-budget pruning (lossless): removed {dropped_total:,} of '
                 f'{stats["rows_before"]:,} {label} edges that cannot lie on any '
-                f'source->target path within {bound} edges{passes_txt} — strongest '
-                f'retained path bottleneck: {stats["strongest_retained"]:g} synapses; '
+                f'source->target path within {bound} edges{passes_txt}'
+                f'{_bound_txt}'
                 f'the strongest (top) paths are unchanged.',
                 level='full',
             )
@@ -906,12 +929,8 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                     f'- [hop-budget pruning, lossless] {dropped_total:,} of '
                     f'{stats["rows_before"]:,} {label} discovery edges cannot lie '
                     f'on any source->target path within {bound} edges{passes_txt} '
-                    f'and were removed before pathfinding. No admissible path was '
-                    f'lost; the strongest retained path bottleneck is at most '
-                    f'{stats["strongest_retained"]:g} synapses (hop-bounded upper '
-                    f'bound; the exact measured value is reported after '
-                    f'enumeration) — the top paths and '
-                    f'their order are unchanged.'
+                    f'and were removed before pathfinding. '
+                    f'{_bound_note}'
                 )
         else:
             vprint(
@@ -13413,6 +13432,12 @@ class FindNeuronConnection:
             conn_layers, sources, targets, self.max_interlayer + 1,
             vprint=self._vprint, warn_notes=self._warn_notes,
             label='bodyId',
+            # Round-10: the pruning bound is synapse-unit (computed on the
+            # raw weight column before the ratio attach below) — do not
+            # report it as if it were the run's ratio-unit strength.
+            report_bottleneck_bound=(
+                getattr(self, 'weight_basis', 'synapse')
+                != 'connection_ratio'),
         )
         # Explicit pruning record (report-fixes concern 1): the stats ride
         # on the instance so all_attributes.json and the run guide carry
@@ -14066,6 +14091,59 @@ class FindNeuronConnection:
         return cov
 
     @staticmethod
+    def _type_path_realized_hop_weights(all_paths, node_label, edge_weights):
+        """Per type-sequence, per HOP POSITION: the realized synapse mass —
+        the summed weight of the DISTINCT bodyId edges backing that exact
+        hop at that exact position over the emitted bodyId paths.
+
+        The streaming path join aggregates a type pair across ALL conn
+        layers (a pair connecting at several depths shows the SUM of its
+        layer slices on every hop), counting synapses that cannot be
+        traversed at that hop's depth. This walk scopes each hop to the
+        edges realizing THIS sequence at THIS position — the same edge set
+        behind the per-node coverage n. ``edge_weights`` maps
+        (bodyId_pre, bodyId_post) -> weight; a hop with any realizing edge
+        missing from the map is reported as None so the caller falls back
+        to the join value (defensive: every path edge comes from the same
+        layer tables the LUT is built from)."""
+        edges = {}
+        for p in all_paths:
+            seq = tuple(node_label(n) for n in p)
+            slot = edges.get(seq)
+            if slot is None:
+                slot = edges[seq] = [set() for _ in range(len(seq) - 1)]
+            for i in range(len(p) - 1):
+                slot[i].add((str(p[i]), str(p[i + 1])))
+        out = {}
+        for seq, slot in edges.items():
+            hops = []
+            for eset in slot:
+                if any(e not in edge_weights for e in eset):
+                    hops = None
+                    break
+                hops.append(sum(edge_weights[e] for e in eset))
+            out[seq] = hops
+        return out
+
+    @staticmethod
+    def _network_type_membership_counts(all_paths, layer_neurons, node_label):
+        """N of the per-node coverage lists: the type's membership in the
+        run's discovered network (bodyIds on emitted paths ∪ the discovery
+        layers). ONE canonical map — shared by the ratio-lane recompute's
+        type_coverage denominators and the allpaths coverage column, so a
+        type never shows two different Ns in the same run."""
+        network_ids = set()
+        for p in all_paths:
+            network_ids.update(str(n) for n in p)
+        for layer_set in (layer_neurons or []):
+            network_ids.update(str(n) for n in layer_set)
+        counts = {}
+        for bid in network_ids:
+            label = str(node_label(bid))
+            counts[label] = counts.get(label, 0) + 1
+        return counts
+
+    @staticmethod
     def _pair_endpoint_bodyids(all_paths, node_label):
         """Per (source type, target type): the DISTINCT first/last
         bodyIds over the bodyId paths — the per-pair coverage counts.
@@ -14387,7 +14465,8 @@ class FindNeuronConnection:
         if getattr(vp, 'edge_limit_trimmed', False):
             self._edgeN_limit_reached = True
 
-    def _recompute_ratio_lane_type_ratios(self, conn_types, conn_inpath):
+    def _recompute_ratio_lane_type_ratios(self, conn_types, conn_inpath,
+                                          total_n_map=None):
         """Ratio lane (§2 stage 8, REVISED round-9 user directive): the
         type-level connection_ratio aggregates ALL type bodyIds — the
         numerator is the pair's emitted synapse mass, the denominator the
@@ -14396,7 +14475,14 @@ class FindNeuronConnection:
         (high ratios resting on a single low-mass member); the coverage
         that exposes low-support pairs is carried by the new
         ``type_coverage`` column (involved members / total members,
-        'n/N') and by the per-node coverage lists on the type paths."""
+        'n/N') and by the per-node coverage lists on the type paths.
+
+        ``total_n_map`` is the canonical membership denominator (the
+        run's discovered-network type counts — the same N the allpaths
+        coverage lists use). When given it takes priority over the frame
+        membership so a type never shows two different Ns in one run;
+        the frame count remains the fallback (e.g. the legacy FindPath
+        flow, which has no network membership at export time)."""
         if getattr(self, 'weight_basis', 'synapse') != 'connection_ratio':
             return conn_types
         totals = getattr(self, '_ratio_lane_totals', None) or {}
@@ -14437,7 +14523,8 @@ class FindNeuronConnection:
                 mass = type_mass.get(key[1])
                 if mass and mass > 0:
                     ratio_lut[key] = pair_num.get(key, 0.0) / mass
-                    total_n = len(members.get(key[1], ()))
+                    total_n = ((total_n_map or {}).get(key[1])
+                               or len(members.get(key[1], ())))
                     involved_n = len(pair_involved.get(key, ()))
                     cov_lut[key] = (f'{involved_n}/{total_n}'
                                     if total_n else None)
@@ -15760,7 +15847,14 @@ class FindNeuronConnection:
             tau = prov.get('strongest_first_tau')
             tau_str = (repr(tau) if isinstance(tau, float)
                        else f'{tau:g}' if tau is not None else 'not reached')
-            f.write(f'applied_tau (min path bottleneck):{" " * 4}{tau_str}\n')
+            # Round-10: under the ratio basis the applied tau is the
+            # bodyId-edge bottleneck; the exported TYPE-level min_ratio is a
+            # pair mass share and can fall below it.
+            _tau_label = ('applied_tau (bodyId-level min ratio bottleneck)'
+                          if getattr(self, 'weight_basis', 'synapse')
+                          == 'connection_ratio'
+                          else 'applied_tau (min path bottleneck)')
+            f.write(f'{_tau_label}:{" " * 4}{tau_str}\n')
             floor = prov.get('edge_weight_floor')
             floor_str = (repr(floor) if isinstance(floor, float)
                          else f'{floor:g}' if floor is not None
@@ -16318,7 +16412,14 @@ class FindNeuronConnection:
                     tau_str = (repr(tau) if isinstance(tau, float)
                                else f'{tau:g}' if tau is not None
                                else 'not reached')
-                    f.write(f'applied_tau (min path bottleneck):'
+                    # Round-10: ratio-basis label (see the replay writer for
+                    # the rationale); synapse runs keep the historical line.
+                    _tau_label = (
+                        'applied_tau (bodyId-level min ratio bottleneck)'
+                        if getattr(self, 'weight_basis', 'synapse')
+                        == 'connection_ratio'
+                        else 'applied_tau (min path bottleneck)')
+                    f.write(f'{_tau_label}:'
                             f'{" " * 4}{tau_str}\n')
                     floor = prov.get('edge_weight_floor')
                     floor_str = (repr(floor) if isinstance(floor, float)
@@ -16858,7 +16959,14 @@ class FindNeuronConnection:
                 'Budget tiers and StrongestFirst bottlenecks are in RATIO '
                 'units this run; synapse counts remain in every export '
                 'column (see data_details/ratio_synapse_map.csv for the '
-                'per-neuron synapse cutoffs this threshold implies).')
+                'per-neuron synapse cutoffs this threshold implies). '
+                'TYPE-level readouts: connection_ratio = the type pair\'s '
+                'kept synapse mass / the post type\'s full-membership '
+                'incoming mass (pair-level, aggregated over all conn '
+                'layers); type_coverage = involved members / the full type '
+                'population (the same N as the per-node coverage lists); '
+                'per-hop Weights on type paths = the realized synapse mass '
+                'at that hop\'s position.')
         else:
             if getattr(self, 'min_ratio', 0) or getattr(
                     self, 'min_traversal_probability', 0):
@@ -18177,20 +18285,35 @@ class FindNeuronConnection:
         if (path_mode == 'all' and self.strongest_first_cutoff is not None
                 and not self.strongest_first_budget_bitten):
             _ntau = self.strongest_first_cutoff
+            # Units are basis-dependent (round-10): under the ratio basis the
+            # bottleneck is a bodyId-edge ratio; under synapses it is a
+            # synapse count.
+            _ratio_basis = (getattr(self, 'weight_basis', 'synapse')
+                            == 'connection_ratio')
+            _tau_unit = 'ratio units' if _ratio_basis else 'synapses'
+            _tau_knob = ('Min Connection Ratio' if _ratio_basis
+                         else 'Min Synapse Count')
             # Complete runs have no dropped paths — the natural tau IS the
             # canonical (minimal) threshold for this set.
             self.tau_canonical = _ntau
             self.strongest_dropped_bottleneck = None
             self._vprint(
-                f'   Complete run: weakest emitted path bottleneck '
-                f'{_ntau:g} synapses — every Min Synapse Count up to this '
+                f'   Complete run: weakest emitted bodyId path bottleneck '
+                f'{_ntau:g} {_tau_unit} — every {_tau_knob} up to this '
                 f'value yields this identical set.',
                 level='full')
-            self._warn_notes.append(
+            _tau_note = (
                 '- [natural tau] Complete enumeration: the weakest emitted '
-                f'path has bottleneck {_ntau:g} synapses — every threshold '
-                f'up to this value yields this identical path set.'
-            )
+                f'bodyId-level path has bottleneck {_ntau:g} {_tau_unit} — '
+                f'every threshold up to this value yields this identical '
+                f'path set.')
+            if _ratio_basis:
+                _tau_note += (
+                    ' The threshold acts per bodyId edge (implied synapse '
+                    'cutoffs in data_details/ratio_synapse_map.csv); the '
+                    'exported TYPE-level min_ratio is a pair mass share '
+                    'and can fall below it.')
+            self._warn_notes.append(_tau_note)
 
         # Feature F (§9.3/§9.4): stash the bottleneck-annotated path set
         # (compactly encoded) + the threshold-filtered layer tables so a
@@ -18661,6 +18784,66 @@ class FindNeuronConnection:
                 if not _is_missing_type_label(t):
                     raw_type_map.setdefault(str(b), str(t))
 
+        # bodyId → final type label, HOISTED above the export phase so the
+        # ratio-lane recompute (type_coverage denominators) and the type-path
+        # derivation below share ONE label resolution — previously the
+        # recompute counted frame membership while the coverage lists counted
+        # network membership, giving two different Ns for the same type.
+        bodyid_to_label = {}
+        if self.label_mapper:
+            # Use the same mapping function that EnrichConnectionTablePolars uses
+            ndf_path = None
+            if self.dataset and self.script_path:
+                dataset_clean = canonical_dataset_name(self.dataset).replace(':', '_').replace('.', '_')
+                ndf_path = os.path.join(
+                    self.script_path, 'datasets', dataset_clean,
+                    f"{dataset_clean}_allneurons_neuron_df.csv"
+                )
+                if not os.path.exists(ndf_path):
+                    ndf_path = os.path.join(
+                        self.script_path, 'datasets',
+                        f"{dataset_clean}_allneurons_neuron_df.csv"
+                    )
+
+            if ndf_path and os.path.exists(ndf_path):
+                # infer_schema_length=0 (all Utf8): BANC neuron tables carry
+                # comma-joined id lists (e.g. manc_match = "22586, 21696")
+                # that break i64 inference past the schema window. This
+                # block only needs bodyId/label text columns.
+                ndf_complete = pl.read_csv(ndf_path, infer_schema_length=0)
+                if 'bodyId' in ndf_complete.columns:
+                    ndf_complete = ndf_complete.with_columns(pl.col('bodyId').cast(pl.Utf8))
+                bodyid_to_label = sv.build_bodyid_label_map(self.label_mapper, self.dataset, ndf_complete)
+
+        # Helper to extract hemisphere suffix from a type string
+        def _extract_hemi_suffix(type_str: str) -> str:
+            """Extract hemisphere suffix (_L, _R, _U) from type string."""
+            if type_str and isinstance(type_str, str):
+                if type_str.endswith('_L'):
+                    return '_L'
+                if type_str.endswith('_R'):
+                    return '_R'
+                if type_str.endswith('_U'):
+                    return '_U'
+            return ''
+
+        def _node_type_label(b: str) -> str:
+            """Final type label of a bodyId inside conn_types (same
+            resolution as EnrichConnectionTablePolars: mapped std_label
+            (+ hemisphere suffix) -> raw type -> bodyId)."""
+            b = str(b)
+            if b in bodyid_to_label:
+                label = bodyid_to_label[b]
+                if self.separate_hemispheres:
+                    hemi = _extract_hemi_suffix(raw_type_map.get(b, ''))
+                    if hemi and not label.endswith(hemi):
+                        label = label + hemi
+                return label
+            t = raw_type_map.get(b)
+            if not _is_missing_type_label(t):
+                return str(t)
+            return b
+
         # Create group-level real layer map if custom groups exist
         real_layer_map_group = {}
         if conn_groups is not None and not conn_groups.is_empty() and 'custom_group' in self.source_df.columns:
@@ -19097,6 +19280,41 @@ class FindNeuronConnection:
         # Force print this message so user knows we are moving to save phase
         # print('\nSaving connection data...', flush=True)
         
+        # Canonical membership N (round-10): one denominator universe for
+        # type_coverage and the allpaths coverage lists — the run's
+        # discovered-network type counts (bodyIds on emitted paths ∪ the
+        # discovery layers), matching the full-population scope the ratio
+        # denominator uses as closely as the run can see.
+        type_membership_n = self._network_type_membership_counts(
+            all_paths, layer_neurons, _node_type_label)
+
+        # Round-10: per-(bodyId_pre, bodyId_post) edge weights, extracted
+        # BEFORE the save phase — the skip_bodyId branch `del`s conn_inpath
+        # below to release memory, and the realized-hop-weights patch after
+        # the streaming write still needs the edge masses.
+        _edge_w_lut = {}
+        if conn_inpath is not None and len(conn_inpath):
+            _ci_w = (conn_inpath.select(
+                        ['bodyId_pre', 'bodyId_post', 'weight'])
+                     if hasattr(conn_inpath, 'select')
+                     else conn_inpath[['bodyId_pre', 'bodyId_post',
+                                       'weight']])
+            for _u, _v, _w in zip(_ci_w['bodyId_pre'],
+                                  _ci_w['bodyId_post'], _ci_w['weight']):
+                _edge_w_lut.setdefault((str(_u), str(_v)), float(_w))
+
+        # Ratio-lane mass recompute, hoisted above the CSV/Excel split so
+        # BOTH export branches (and the streaming type-path writer below)
+        # consume the same recomputed conn_types — the Excel branch
+        # previously skipped the recompute entirely and exported the
+        # unrecomputed ratios. _ensure_ratio_prob_columns joins the
+        # incoming-weight totals, which reorders rows nondeterministically
+        # — the per-branch export sorts remain the last operation.
+        conn_types = self._ensure_ratio_prob_columns(
+            conn_types, 'type_pre', 'type_post')
+        conn_types = self._recompute_ratio_lane_type_ratios(
+            conn_types, conn_inpath, total_n_map=type_membership_n)
+
         # Determine if using CSV or Excel based on output_format or data size
         EXCEL_ROW_LIMIT = 1_048_576
         use_csv = (self.output_format == 'csv') or (len(conn_types) >= EXCEL_ROW_LIMIT * 0.9)
@@ -19131,9 +19349,8 @@ class FindNeuronConnection:
             self._save_df_to_csv_polars(totalweight_df, os.path.join(csv_folder, 'total_weight_layer.csv'), index=True)
             
             # print("    - connection_type.csv", flush=True)
-            conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
-            conn_types = self._recompute_ratio_lane_type_ratios(
-                conn_types, conn_inpath)
+            # (ratio-lane recompute + N canonicalization already applied
+            # above the CSV/Excel split)
             # _ensure_ratio_prob_columns joins the incoming-weight totals,
             # which reorders rows nondeterministically — re-apply the
             # shared total-key stable sort so the export (and everything
@@ -19269,51 +19486,15 @@ class FindNeuronConnection:
         # repeated-type routes (A->B->A) that a simple-path search on the
         # type graph would drop.
         self._vprint('\nDeriving type-level paths from discovered bodyId paths...', level='full')
-        
-        # Build bodyId → std_label map for source/target identification
-        # This is needed because conn_types uses std_labels but source_df/target_df have bodyIds
-        bodyid_to_label = {}
-        if self.label_mapper:
-            # Use the same mapping function that EnrichConnectionTablePolars uses
-            ndf_path = None
-            if self.dataset and self.script_path:
-                dataset_clean = canonical_dataset_name(self.dataset).replace(':', '_').replace('.', '_')
-                ndf_path = os.path.join(
-                    self.script_path, 'datasets', dataset_clean,
-                    f"{dataset_clean}_allneurons_neuron_df.csv"
-                )
-                if not os.path.exists(ndf_path):
-                    ndf_path = os.path.join(
-                        self.script_path, 'datasets',
-                        f"{dataset_clean}_allneurons_neuron_df.csv"
-                    )
-            
-            if ndf_path and os.path.exists(ndf_path):
-                # infer_schema_length=0 (all Utf8): BANC neuron tables carry
-                # comma-joined id lists (e.g. manc_match = "22586, 21696")
-                # that break i64 inference past the schema window. This
-                # block only needs bodyId/label text columns.
-                ndf_complete = pl.read_csv(ndf_path, infer_schema_length=0)
-                if 'bodyId' in ndf_complete.columns:
-                    ndf_complete = ndf_complete.with_columns(pl.col('bodyId').cast(pl.Utf8))
-                bodyid_to_label = sv.build_bodyid_label_map(self.label_mapper, self.dataset, ndf_complete)
-        
+
+        # bodyid_to_label / _extract_hemi_suffix / _node_type_label are
+        # built above the export phase (with raw_type_map) so the recompute
+        # and this derivation share one label resolution.
+
         # Get source and target labels (mapped or original types)
         # When label_mapper is provided, conn_types uses std_labels, so we need to match
         # For untyped neurons, use bodyId as fallback to handle data quality gracefully
-        
-        # Helper to extract hemisphere suffix from a type string
-        def _extract_hemi_suffix(type_str: str) -> str:
-            """Extract hemisphere suffix (_L, _R, _U) from type string."""
-            if type_str and isinstance(type_str, str):
-                if type_str.endswith('_L'):
-                    return '_L'
-                if type_str.endswith('_R'):
-                    return '_R'
-                if type_str.endswith('_U'):
-                    return '_U'
-            return ''
-        
+
         source_labels = set()
         for idx, row in self.source_df.iterrows():
             b = str(row['bodyId']) if 'bodyId' in row else ''
@@ -19362,32 +19543,9 @@ class FindNeuronConnection:
             target_labels.add(label)
         
         target_types = list(target_labels)
-        
+
         # No need for type_to_label_map anymore - conn_types already uses std_labels
         # and source/target types are now properly mapped to std_labels
-        
-        # Aggregate the discovered bodyId paths into type-level paths.
-        # Raw per-bodyId types come from the fetched layer tables — the same
-        # types EnrichConnectionTablePolars aggregated into conn_types.
-        # ``raw_type_map`` was built before the group layer map (see above);
-        # untyped neurons fall back to their bodyId in _node_type_label.
-
-        def _node_type_label(b: str) -> str:
-            """Final type label of a bodyId inside conn_types (same
-            resolution as EnrichConnectionTablePolars: mapped std_label
-            (+ hemisphere suffix) -> raw type -> bodyId)."""
-            b = str(b)
-            if b in bodyid_to_label:
-                label = bodyid_to_label[b]
-                if self.separate_hemispheres:
-                    hemi = _extract_hemi_suffix(raw_type_map.get(b, ''))
-                    if hemi and not label.endswith(hemi):
-                        label = label + hemi
-                return label
-            t = raw_type_map.get(b)
-            if not _is_missing_type_label(t):
-                return str(t)
-            return b
 
         # Convert conn_types to Pandas if it's Polars (statvis expects Pandas)
         conn_types_pd = conn_types
@@ -19446,15 +19604,17 @@ class FindNeuronConnection:
         # N = the type's membership in the run's discovered network.
         _pos_cov = self._type_path_position_bodyids(
             all_paths, _node_type_label)
-        from collections import defaultdict as _dd_cov
-        _type_n = _dd_cov(int)
-        _network_ids = set()
-        for _p in all_paths:
-            _network_ids.update(str(_n) for _n in _p)
-        for layer_set in (layer_neurons or []):
-            _network_ids.update(str(_n) for _n in layer_set)
-        for _bid in _network_ids:
-            _type_n[str(_node_type_label(_bid))] += 1
+        # Round-10: realized per-hop weights. The streaming join stamps
+        # every hop with the pair's mass summed across ALL conn layers; the
+        # patch below re-scopes Weights/min_weight to the distinct edges
+        # realizing each hop at that position (the coverage n's own edges).
+        # (_edge_w_lut was built before the save phase — see the note
+        # there about the skip_bodyId `del`.)
+        _realized_w = self._type_path_realized_hop_weights(
+            all_paths, _node_type_label, _edge_w_lut)
+        # Round-10: the SAME canonical map the export-phase recompute used
+        # for type_coverage — one N per type across every file of the run.
+        _type_n = type_membership_n
         # Per-pair distinct endpoint bodyIds, persisted at run time so
         # skip_bodyId runs (no bodyId paths table on disk) still get
         # exact pair-scope coverage in the pair report.
@@ -19534,6 +19694,83 @@ class FindNeuronConnection:
                     self._warn_notes.append(
                         f'- [type coverage] per-node bodyId coverage column '
                         f'not written ({_cov_exc!r}).')
+
+                # Round-10: re-scope per-hop Weights to the realized edges
+                # at each hop's position. The streaming join stamps every
+                # hop with the pair's mass summed across ALL conn layers —
+                # a pair connecting at several depths showed its
+                # cross-depth total on EVERY hop (e.g. 328 on a hop whose
+                # position carries 168). min_weight follows the realized
+                # hops; Ratios/min_ratio stay pair-level by design (§2
+                # stage 8 mass recompute).
+                _weights_changed_paths = 0
+                try:
+                    def _fmt_w(x):
+                        return (str(int(x)) if float(x).is_integer()
+                                else str(float(x)))
+
+                    def _patch_weights(df):
+                        nonlocal _weights_changed_paths
+                        new_w, new_mw = [], []
+                        for _path_str, _old_w, _old_mw in zip(
+                                df['path'].to_list(),
+                                df['weights'].to_list(),
+                                df['min_weight'].to_list()):
+                            _seq = tuple(str(_path_str).split('->'))
+                            _rw = _realized_w.get(_seq)
+                            try:
+                                _ow = (ast.literal_eval(_old_w)
+                                       if isinstance(_old_w, str) and _old_w
+                                       else None)
+                            except (ValueError, SyntaxError):
+                                _ow = None
+                            if (_rw is not None and _ow is not None
+                                    and len(_rw) == len(_ow)):
+                                new_w.append('[' + ', '.join(
+                                    _fmt_w(w) for w in _rw) + ']')
+                                new_mw.append(min(_rw))
+                                if ([float(x) for x in _ow]
+                                        != [float(w) for w in _rw]):
+                                    _weights_changed_paths += 1
+                            else:
+                                new_w.append(
+                                    _old_w if _old_w is not None else '')
+                                new_mw.append(_old_mw)
+                        _mw_all_int = all(
+                            float(v).is_integer()
+                            for v in new_mw if v is not None)
+                        return df.with_columns([
+                            pl.Series('weights', new_w, dtype=pl.Utf8),
+                            pl.Series(
+                                'min_weight',
+                                [int(v) if _mw_all_int and v is not None
+                                 else v for v in new_mw],
+                                dtype=(pl.Int64 if _mw_all_int
+                                       else pl.Float64)),
+                        ])
+
+                    df_paths = _patch_weights(df_paths)
+                    if (os.path.exists(output_path_type_excluded_csv)
+                            and output_path_type_excluded_csv
+                            != output_path_type_csv):
+                        _df_excl = pl.read_csv(output_path_type_excluded_csv)
+                        if _df_excl.height:
+                            _patch_weights(_df_excl).write_csv(
+                                output_path_type_excluded_csv)
+                except Exception as _w_exc:
+                    self._warn_notes.append(
+                        f'- [type-path weights] realized per-hop weights '
+                        f'not applied ({_w_exc!r}).')
+                if _weights_changed_paths:
+                    self._warn_notes.append(
+                        f'- [type-path weights] {_weights_changed_paths:,} '
+                        'type paths traverse pairs that also connect at '
+                        'other depths: their per-hop Weights count only the '
+                        'bodyId edges realizing that hop at that position '
+                        '(the same edges behind the Coverage n). Cross-depth '
+                        'pair totals remain in data_details/'
+                        'connection_type.csv (weight summed over '
+                        'conn_layer) and in the type matrices.')
 
                 sort_cols = []
                 descending = []
