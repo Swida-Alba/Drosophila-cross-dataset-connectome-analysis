@@ -909,3 +909,28 @@ def test_fullmap_csv_legs_render_cell_tokens():
     assert 'flywireType=5thsLNv_LNd6' not in row[7]
     # annotation hops keep ``value`` — their cell token lives there
     assert 'flywire_FAFB_v783:additional_type(s)=s-LNv_a' in row[7]
+
+
+def test_mapped_cell_breadth_is_the_claimed_types(panel_client):
+    """Round-17 review fix: the Mapped cell is claim + pooled overhang, and
+    the pooled overhang only exists for CLAIMED types — so its type breadth
+    is the claimed types', never the evidence-reach set (which adds
+    declined-only types with zero mapped neurons: 200 over 42 was the
+    incoherent first cut on circadian_clock -> banc_v888)."""
+    from ui.components.type_mapping_panel import _compute_type_mapping
+
+    outcome = _compute_type_mapping(
+        ['circadian_clock'], [MCNS, BANC, FAFB], 'exact')
+    rows = {row['dataset']: row for row in outcome['summary']}
+    mcns, banc = rows[MCNS], rows[BANC]
+    # mapped = routed + pooled, one coherent type breadth
+    assert mcns['mapped_total'] == (mcns['mapped_neurons']
+                                    + mcns['out_map'])
+    assert banc['mapped_total'] == (banc['mapped_neurons']
+                                    + banc['out_map'])
+    assert mcns['mapped_total_cell'] == '219(40 types)'
+    assert banc['mapped_total_cell'] == '200(39 types)'
+    # the breadth never exceeds the claimed types even when the evidence
+    # reach spans more (declined-only types)
+    assert banc['reach_neurons'] > banc['mapped_total']
+    assert 'LMTe01' in str(banc['disclosure_detail'])

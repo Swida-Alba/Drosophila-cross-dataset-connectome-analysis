@@ -869,7 +869,13 @@ def _compute_type_mapping(queries, datasets, mode,
             "mapped_total": recv_neurons + out_map,
             "mapped_total_cell": _format_mapped_neurons(
                 recv_neurons + out_map,
-                len(reach_present | claim_types)),
+                # round-17 review fix: the pooled overhang only exists for
+                # CLAIMED types (pop_by_target_type accumulates per claimed
+                # flow), so Mapped's type breadth is the claimed types' —
+                # NOT the evidence-reach set, which adds declined-only
+                # types with zero mapped neurons (200 over 42 was the
+                # incoherent first cut; 200 over 39 is right).
+                len(claim_types)),
             # legacy keys kept for the per-type table and CSV consumers
             "mapped": _format_mapped_neurons(recv_neurons,
                                              len(claim_types)),
