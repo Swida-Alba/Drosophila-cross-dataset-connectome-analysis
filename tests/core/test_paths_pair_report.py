@@ -1136,3 +1136,40 @@ def test_refill_tab_present_with_hint_state(tmp_path):
     assert "Refilled ratio (adj)" in text
     assert "45.00%" in text            # refilled_connection_ratio_adj
     assert "9.00%" in text             # plain refilled ratio
+
+
+def test_pair_level_ratio_two_row_shapes(tmp_path):
+    """Real-data audit (2026-10-05): connection_type.csv carries recurring
+    pairs in two shapes — TOTAL-stamped rows (same weight on every
+    conn_layer row: the pair value is the row value; summing overcounts)
+    and SPLIT rows (per-depth weights: the pair value is the SUM of the
+    row ratios — shared per-post denominator, so ratios add like weights).
+    .first() understated every split pair."""
+    from paths_pair_report import _load_pair_level_ratios
+    run = tmp_path / "find-paths-complete_FAFB_SA_to_TA_L2w3_20260101_000000"
+    (run / "data_details").mkdir(parents=True)
+    pd.DataFrame([
+        # total-stamped recurring pair (3 identical rows)
+        {"type_pre": "SA", "type_post": "TA", "weight": 86,
+         "connection_ratio": 0.035581, "connection_ratio_adj": 0.05643,
+         "conn_layer": f"{i}->{i+1}"} for i in range(3)
+    ] + [
+        # split recurring pair (per-depth weights 23/20/23)
+        {"type_pre": "SB", "type_post": "TA", "weight": w,
+         "connection_ratio": r, "connection_ratio_adj": a,
+         "conn_layer": f"{i}->{i+1}"}
+        for i, (w, r, a) in enumerate(
+            [(23, 0.002969, 0.005356), (20, 0.002582, 0.004658),
+             (23, 0.002969, 0.005356)])
+        ] + [
+        # single-row pair
+        {"type_pre": "SC", "type_post": "TA", "weight": 10,
+         "connection_ratio": 0.01, "connection_ratio_adj": 0.02,
+         "conn_layer": "0->1"},
+    ]).to_csv(run / "data_details" / "connection_type.csv", index=False)
+    mapping, source = _load_pair_level_ratios(run)
+    assert source == "adjusted"
+    assert abs(mapping[("SA", "TA")] - 0.05643) < 1e-9      # not 3x
+    assert abs(mapping[("SB", "TA")]
+               - (0.005356 + 0.004658 + 0.005356)) < 1e-9  # summed
+    assert mapping[("SC", "TA")] == 0.02

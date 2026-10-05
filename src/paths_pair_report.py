@@ -588,10 +588,28 @@ def _load_pair_level_ratios(folder
                 break
         if col is None:
             return out, source
-        for (pre, post), r in (ct.groupby(['type_pre', 'type_post'])
-                               [col].first().items()):
-            if pd.notna(r):
-                out[(str(pre), str(post))] = float(r)
+        # Two row shapes share the table (2026-10-05 real-data audit):
+        # recurring pairs whose TOTAL is stamped identically on every
+        # conn_layer row (same weight per row — the pair value is the row
+        # value; summing would overcount by the row count), and SPLIT
+        # recurring pairs carrying each depth's realized weight (weights
+        # differ — the pair value is the SUM of the row ratios; they share
+        # the post type's denominator, so ratios add exactly like the
+        # weights). Picking .first() understated every split pair.
+        weight_col = ('weight' if 'weight' in ct.columns else None)
+        grouped = ct.groupby(['type_pre', 'type_post'])
+        for (pre, post), grp in grouped:
+            rows_col = grp[col].dropna()
+            if rows_col.empty:
+                continue
+            if weight_col is not None:
+                w = grp['weight'].astype(float)
+                split = float(w.max()) != float(w.min())
+            else:
+                split = False
+            value = (float(rows_col.sum()) if split
+                     else float(rows_col.iloc[0]))
+            out[(str(pre), str(post))] = value
     except (OSError, ValueError):
         pass
     return out, source
@@ -2910,7 +2928,7 @@ REPORT_JS = r"""
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
               path: r.path, len: g.len, mw: r.mw, mr: r.mr, pr: r.pr,
               pp: r.pp,
-              weights: r.weights, ratios: r.ratios,
+              weights: r.weights, ratios: r.ratios, pradj: r.pradj,
               coverage: r.coverage, scov: r.scov, tcov: r.tcov,
               total: g.total});
           });
