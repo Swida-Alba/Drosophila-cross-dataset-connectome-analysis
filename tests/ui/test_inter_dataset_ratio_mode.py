@@ -89,3 +89,42 @@ def test_collection_is_ratio_aware_in_every_mode():
     assert "thresholds_input = " not in src
     assert "thresholds_input.get_value" not in src
     assert "thresholds_input.set_visibility" not in src
+
+
+def test_coverage_controls_live_in_the_core_cards():
+    """User placement decision (2026-10-04): the coverage early-stop
+    selects belong to the CORE parameters card of both tabs, not the
+    Advanced card."""
+    from nicegui import Client
+    from nicegui.page import page
+    from ui.tabs.find_shortest import create_find_shortest_tab
+    from ui.tabs.inter_dataset import create_inter_dataset_tab
+
+    def in_card(el, card_id):
+        ancestor = el
+        while ancestor is not None:
+            if ((getattr(ancestor, '_props', {}) or {}).get('id')
+                    == card_id):
+                return True
+            parent_slot = getattr(ancestor, 'parent_slot', None)
+            ancestor = parent_slot.parent if parent_slot is not None else None
+        return False
+
+    with Client(page("/fs-core-placement")) as c1:
+        create_find_shortest_tab()
+    placed = set()
+    for el in c1.elements.values():
+        label = (getattr(el, '_props', {}) or {}).get('label')
+        if label in ('Source Coverage', 'Target Coverage',
+                     'Custom Coverage %'):
+            placed.add((label, in_card(el, 'card-findshortest-core')))
+    assert placed and all(ok for _, ok in placed), placed
+
+    with Client(page("/id-core-placement")) as c2:
+        create_inter_dataset_tab()
+    placed2 = set()
+    for el in c2.elements.values():
+        label = (getattr(el, '_props', {}) or {}).get('label')
+        if label and 'Coverage' in str(label):
+            placed2.add((label, in_card(el, 'card-interdataset-core')))
+    assert placed2 and all(ok for _, ok in placed2), placed2

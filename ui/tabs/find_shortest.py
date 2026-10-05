@@ -151,10 +151,75 @@ def create_find_shortest_tab():
                          "output; a single complete path may still exceed it to "
                          "stay intact.",
                 )
+                # Coverage early-stop (shortest; user placement: Core):
+                # stop deepening backward discovery once both sides'
+                # per-TYPE coverage requirements are met, instead of
+                # exhausting the depth bound on per-pair completeness.
+                # Emitted pairs keep exact per-pair minimum hops; the stop
+                # is disclosed in the notes + diagnostics.
+                _COVERAGE_LEVELS = ["Any", "25%", "50%", "75%", "Full",
+                                    "Custom %"]
+                _coverage_hint = (
+                    "Per queried TYPE: Any = at least 1 enrolled bodyId "
+                    "reached; a % = each queried type must individually "
+                    "reach that share of its enrolled bodyIds; Full = "
+                    "all. Checked at every discovery layer; deepening "
+                    "stops once BOTH sides are satisfied (deeper pairs "
+                    "within the depth bound are then not searched)."
+                )
+                shortest_source_coverage = select_input(
+                    "Source Coverage", _COVERAGE_LEVELS, "Any",
+                    hint="Source side of the coverage early-stop. " +
+                         _coverage_hint,
+                )
+                shortest_target_coverage = select_input(
+                    "Target Coverage", _COVERAGE_LEVELS, "Full",
+                    hint="Target side of the coverage early-stop "
+                         "(default Full = stop once every queried "
+                         "target type is fully reached). " + _coverage_hint,
+                )
+                coverage_custom_pct = number_input(
+                    "Custom Coverage %", 50, 1, 100,
+                    hint="Used by whichever side is set to 'Custom %': "
+                         "each queried type must individually reach "
+                         "this share of its enrolled bodyIds.",
+                )
             find_reciprocal = checkbox_input(
                 "Find Reciprocal Connections", False,
                 hint="Enrich the path graph with reciprocal direct connections.",
             )
+
+            def _sync_coverage_custom():
+                coverage_custom_pct.set_visibility(
+                    "Custom %" in (shortest_source_coverage.value,
+                                   shortest_target_coverage.value))
+
+            shortest_source_coverage.on_value_change(
+                lambda _e: _sync_coverage_custom())
+            shortest_target_coverage.on_value_change(
+                lambda _e: _sync_coverage_custom())
+            _sync_coverage_custom()
+
+            def _coverage_payload(value):
+                """UI level -> engine fraction (None = legacy)."""
+                if value == "Any":
+                    return 0.0
+                if value == "Full":
+                    return 1.0
+                if value.endswith("%"):
+                    try:
+                        return float(value[:-1]) / 100.0
+                    except ValueError:
+                        return None
+                return None  # Custom % handled by the caller
+
+            def _coverage_side_payload(select):
+                raw = _coverage_payload(select.value)
+                if raw is None and select.value == "Custom %":
+                    raw = max(
+                        1, min(100, int(coverage_custom_pct.value
+                                        or 50))) / 100.0
+                return raw
 
         with ui.card().classes("w-full drocat-card").props('id="card-findshortest-output"'):
             section_header("Output Options", "output")
@@ -328,71 +393,6 @@ def create_find_shortest_tab():
                              "meta.json as the size census. Path outputs are "
                              "identical in every mode.",
                     )
-                    # Coverage early-stop (shortest): stop deepening backward
-                    # discovery once both sides' per-TYPE coverage
-                    # requirements are met, instead of exhausting the depth
-                    # bound on per-pair completeness. Emitted pairs keep
-                    # exact per-pair minimum hops; the stop is disclosed in
-                    # the notes + diagnostics.
-                    _COVERAGE_LEVELS = ["Any", "25%", "50%", "75%", "Full",
-                                        "Custom %"]
-                    _coverage_hint = (
-                        "Per queried TYPE: Any = at least 1 enrolled bodyId "
-                        "reached; a % = each queried type must individually "
-                        "reach that share of its enrolled bodyIds; Full = "
-                        "all. Checked at every discovery layer; deepening "
-                        "stops once BOTH sides are satisfied (deeper pairs "
-                        "within the depth bound are then not searched)."
-                    )
-                    shortest_source_coverage = select_input(
-                        "Source Coverage", _COVERAGE_LEVELS, "Any",
-                        hint="Source side of the coverage early-stop. " +
-                             _coverage_hint,
-                    )
-                    shortest_target_coverage = select_input(
-                        "Target Coverage", _COVERAGE_LEVELS, "Full",
-                        hint="Target side of the coverage early-stop "
-                             "(default Full = stop once every queried "
-                             "target type is fully reached). " + _coverage_hint,
-                    )
-                    coverage_custom_pct = number_input(
-                        "Custom Coverage %", 50, 1, 100,
-                        hint="Used by whichever side is set to 'Custom %': "
-                             "each queried type must individually reach "
-                             "this share of its enrolled bodyIds.",
-                    ).set_visibility(False)
-
-                    def _sync_coverage_custom():
-                        coverage_custom_pct.set_visibility(
-                            "Custom %" in (shortest_source_coverage.value,
-                                           shortest_target_coverage.value))
-
-                    shortest_source_coverage.on_value_change(
-                        lambda _e: _sync_coverage_custom())
-                    shortest_target_coverage.on_value_change(
-                        lambda _e: _sync_coverage_custom())
-                    _sync_coverage_custom()
-
-                    def _coverage_payload(value):
-                        """UI level -> engine fraction (None = legacy)."""
-                        if value == "Any":
-                            return 0.0
-                        if value == "Full":
-                            return 1.0
-                        if value.endswith("%"):
-                            try:
-                                return float(value[:-1]) / 100.0
-                            except ValueError:
-                                return None
-                        return None  # Custom % handled by the caller
-
-                    def _coverage_side_payload(select):
-                        raw = _coverage_payload(select.value)
-                        if raw is None and select.value == "Custom %":
-                            raw = max(
-                                1, min(100, int(coverage_custom_pct.value
-                                                or 50))) / 100.0
-                        return raw
 
                 search_columns = select_input(
                     "Search Columns", SEARCH_COLUMNS, get_user_default("search_columns"),
