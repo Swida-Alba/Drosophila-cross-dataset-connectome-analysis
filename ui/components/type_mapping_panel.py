@@ -34,10 +34,9 @@ chip provenance (user 2026-09-14).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from nicegui import ui
 

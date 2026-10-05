@@ -2647,7 +2647,7 @@ def _backward_tab(d: Dict) -> str:
     interpretation layer = the advisory `source-` status distribution and
     the source-candidates regroup. Informational — the targets remain the
     validated entities."""
-    scov, tcov = d['src'], d['tgt']
+    scov = d['src']
     basis = d['basis_sources']
     row_bases, wide_bases = split_basis_buckets(basis)
     n_linker = sum(len(basis[b]) for b in row_bases)
