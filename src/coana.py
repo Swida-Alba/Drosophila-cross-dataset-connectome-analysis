@@ -13843,7 +13843,7 @@ class FindNeuronConnection:
             f.write(f'FindNetwork: mutual direct connections among {self.source_fname} neurons\n')
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
-                f.write(f'{key}:{" "*(30-keylen)}{value}\n')
+                f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
             f.write('\n')
 
         self.source_df['bodyId'] = self.source_df['bodyId'].astype(str)
@@ -16840,7 +16840,7 @@ class FindNeuronConnection:
                     f'{self.target_fname}:\n')
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
-                f.write(f'{key}:{" " * (30 - keylen)}{value}\n')
+                f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
             f.write(f'path_mode:{" " * 21}all\n')
             prov = getattr(self, '_last_provenance', None) or {}
             tau = prov.get('strongest_first_tau')
@@ -17434,7 +17434,7 @@ class FindNeuronConnection:
                         f'to {self.target_fname}:\n')
                 for key, value in self.parameter_dict.items():
                     keylen = len(key)
-                    f.write(f'{key}:{" " * (30 - keylen)}{value}\n')
+                    f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
                 f.write(f'path_mode:{" " * 21}{path_mode}\n')
                 if prov:
                     # Backward-compatible aliases (pre-provenance readers
@@ -18170,7 +18170,7 @@ class FindNeuronConnection:
             f.write(f'Parameters for processing {self.source_fname} to {self.target_fname}:\n')
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
-                f.write(f'{key}:{" "*(30-keylen)}{value}\n')
+                f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
             f.write(f'path_mode:{" "*21}{path_mode}\n')
             f.write('\n')
         
