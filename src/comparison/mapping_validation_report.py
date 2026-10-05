@@ -2436,8 +2436,33 @@ def _fill_tab(d: Dict) -> str:
          + ' / '.join(f'{k} {v}' for k, v in
                       sorted(d['side_counts'].items())) + ')'),
     ])
+    # user 2026-10-05: per-neuron branch + source match columns — both
+    # read artifacts already collected above (backward_matches rows per
+    # member, target_matches rows per bodyId), so legacy folders without
+    # them degrade to '—' without any pipeline change.  Rows order by
+    # branch so members of one branch cluster; the branch cell's tokens
+    # sort the same way, making its first token the row's primary key.
+    # Branchless members (no reverse-scan row) read last.
+    tm_by_bid = {str(rr.get('target_bodyId')): rr
+                 for rr in (d.get('target_match_rows') or [])}
+    br_by_bid = d.get('backward_rows_by_bid') or {}
+
+    def _branch_tokens(bid: str):
+        toks = [(str(rr.get('branch_source_type') or '?'),
+                 str(rr.get('branch_target_type') or '?'))
+                for rr in (br_by_bid.get(bid) or [])]
+        return sorted(toks, key=lambda p: (p[0].lower(), p[1].lower()))
+
+    def _branch_sort_key(r: Dict):
+        bid = str(r.get('target_bodyId') or '')
+        toks = _branch_tokens(bid)
+        if toks:
+            return (0, toks[0][0].lower(), toks[0][1].lower(),
+                    str(r.get('target_type') or '').lower(), bid)
+        return (1, '', '', str(r.get('target_type') or '').lower(), bid)
+
     rows = []
-    for r in d['restrictive']:
+    for r in sorted(d['restrictive'], key=_branch_sort_key):
         bid = r.get('target_bodyId', '')
         lvl = d['levels_by_bid'].get(bid) or {}
         sus = d['sus_cand_by_bid'].get(bid)
@@ -2468,9 +2493,19 @@ def _fill_tab(d: Dict) -> str:
                     prov += f" (evidence {lvl.get('evidence')})"
         brec = d['backward_by_bid'].get(str(bid)) or {}
         bev = str(brec.get('backward_evidence') or '')
+        branch_recs = br_by_bid.get(str(bid)) or []
+        if branch_recs:
+            branch_cell = ' · '.join(
+                f'{_esc(s)} → {_esc(t)}'
+                for s, t in _branch_tokens(str(bid)))
+        else:
+            branch_cell = "<span class='missing'>—</span>"
+        sm_cell = _primary_source_match_cell(tm_by_bid.get(str(bid)) or {})
         rows.append(
             f'<tr><td>{_esc(bid)}</td>'
             f"<td>{_esc(r.get('target_type'))}</td>"
+            f'<td>{branch_cell}</td>'
+            f'<td>{sm_cell}</td>'
             f'<td>{_esc(tok)}</td><td>{_esc(bar_txt)}</td>'
             f"<td>{_esc(lvl.get('level', '—'))}</td>"
             f"<td>{_esc(lvl.get('dup', r.get('dup', '')))}</td>"
@@ -2481,6 +2516,13 @@ def _fill_tab(d: Dict) -> str:
         _th('target bodyId', 'The proposed fill neuron (bodyId-unique '
             'across branches).')
         + _th('type', 'Its target-side type.')
+        + _th('branch', 'The branches (source type → target type) whose '
+              'reverse scan covers this fill member; a member claimed by '
+              'several branches lists each.')
+        + _th('source match (hover: top-3 ∪ top-3)', 'The chain-best '
+              'source of the whole source-dataset scan — the same column '
+              'as Homolog · backward; hover for the union neighbourhood '
+              'with both ranks and both scores.')
         + _th('leaf token', 'Per-bodyId provenance token: '
               '{T}(out-map) / >src / (no_source) / untyped; '
               '{T}(dedup-fill) marks a fill that had no candidates row '
@@ -2503,7 +2545,8 @@ def _fill_tab(d: Dict) -> str:
     sec6 = _section_card(
         'The fill (proposals only — the mapping is never rewritten)',
         'The bodyId-unique restrictive fill; this is the table a '
-        'reviewer acts on.',
+        'reviewer acts on. Rows order by branch (source → target), then '
+        'type and bodyId; branchless members last.',
         summ + table + footer,
         ['restrictive fill', 'family fill', 'fill levels', 'dup',
          '{T}(out-map)', 'reciprocal', 'high', 'medium', 'low',
@@ -2912,6 +2955,28 @@ def _topn_hover(raw, head: str = 'top-N reverse hits (Jaccard order)') -> str:
             "this branch; all other hits read elsewhere.'>where</th>"
             '</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>')
+
+
+def _primary_source_match_cell(
+        r: Dict,
+        head: str = ('homolog neighbourhood — top-3 rank_union ∪ top-3 '
+                     'jaccard (chain order)')) -> str:
+    """The "primary source match" cell of a ``target_matches.csv`` row —
+    the Homolog · backward column, shared with the Fill tab's
+    source-match column so the two read identically (user 2026-10-05)."""
+    s_bid = str(r.get('primary_source_bodyId') or '')
+    if not s_bid:
+        return "<span class='missing'>—</span>"
+    where = ('in a branch source pool'
+             if _truthy(r.get('primary_in_branch'))
+             else 'outside the branch source pools')
+    s_type = str(r.get('primary_source_type') or 'untyped')
+    cell = (f'{_esc(s_bid)} · {_esc(s_type)}'
+            f"<span class='mv-note'> · {where} · "
+            f'jac {_f(r.get("primary_jaccard"), 4)} · '
+            f'ru {_f(r.get("primary_rank_union"), 4)}'
+            '</span>')
+    return _hover(cell, _topn_hover(r.get('backward_topN_union'), head))
 
 
 def _as_num(v):
@@ -3580,23 +3645,7 @@ def _homolog_backward_tab(d: Dict) -> str:
             str(r.get('target_type') or 'untyped').lower(),) + _row_sort(r)):
         bid = str(r.get('target_bodyId') or '?')
         label = _alloc_label(r)
-        s_bid = str(r.get('primary_source_bodyId') or '')
-        if s_bid:
-            where = ('in a branch source pool'
-                     if _truthy(r.get('primary_in_branch'))
-                     else 'outside the branch source pools')
-            s_type = str(r.get('primary_source_type') or 'untyped')
-            cell = (f'{_esc(s_bid)} · {_esc(s_type)}'
-                    f"<span class='mv-note'> · {where} · "
-                    f'jac {_f(r.get("primary_jaccard"), 4)} · '
-                    f'ru {_f(r.get("primary_rank_union"), 4)}'
-                    '</span>')
-            cell = _hover(cell, _topn_hover(
-                r.get('backward_topN_union'),
-                'homolog neighbourhood — top-3 rank_union ∪ top-3 '
-                'jaccard (chain order)'))
-        else:
-            cell = "<span class='missing'>—</span>"
+        cell = _primary_source_match_cell(r)
         scanned = str(r.get('scanned_at') or '')
         if scanned == 'run':
             scan_cell = f'{_cnt(r.get("n_scanned"))} sources'

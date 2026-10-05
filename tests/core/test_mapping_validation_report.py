@@ -247,6 +247,67 @@ def test_fill_table_cross_bin_provenance(run_dir: Path):
     assert "B→W, source verdict borderline" in html
 
 
+def test_fill_table_branch_and_source_match_columns(run_dir: Path):
+    # user 2026-10-05: the fill table gains a branch column (from the
+    # backward_matches rows per member) and a source match column (the
+    # Homolog · backward primary-source cell, from target_matches.csv).
+    expansion = run_dir / "expansion"
+    expansion.mkdir()
+    _write_csv(expansion / "backward_matches.csv",
+               ["query", "branch_source_type", "branch_target_type",
+                "member_bodyId", "member_type", "member_category",
+                "scan_role", "backward_evidence"],
+               [["q1", "A", "X", "700", "Z", "candidates", "member", "low"],
+                ["q1", "A", "X", "701", "W", "candidates", "member", "low"],
+                ["q1", "B", "Y", "701", "W", "candidates", "member",
+                 "low"]])
+    _write_csv(expansion / "target_matches.csv",
+               ["target_bodyId", "target_type", "pool_category",
+                "pool_branches", "primary_source_bodyId",
+                "primary_source_type", "primary_jaccard",
+                "primary_rank_union", "primary_in_branch",
+                "backward_topN_union", "n_scanned", "scanned_at",
+                "morph_v2_similarity", "morph_pool_ref", "morph_bar_kind"],
+               [["700", "Z", "candidates", "", "555", "Zs", 0.2727,
+                 -0.1872, False,
+                 "1|1|555|Zs|0.0112|0.2727|1;2|4|556|Zt|-0.0168|0.2500|0",
+                 12, "run", "", "", ""],
+                ["701", "W", "candidates", "", "556", "Ws", 0.1316, 0.0451,
+                 True, "1|1|556|Ws|0.0451|0.1316|1", 9, "run", "", "",
+                 ""]])
+    html = build_report_document(collect_run_data(run_dir))
+    # the two new headers sit between `type` and `leaf token`
+    assert "source match (hover: top-3 ∪ top-3)" in html
+    assert ("The branches (source type → target type) whose reverse "
+            "scan covers this fill member") in html
+    # 700: one branch, source match outside the branch pools
+    assert "<tr><td>700</td><td>Z</td><td>A → X</td>" in html
+    assert ("<span class='term'>555 · Zs<span class='mv-note'> · outside "
+            "the branch source pools · jac 0.2727 · ru -0.1872</span>") \
+        in html
+    # 701: two claiming branches listed, source match inside a pool
+    assert "<tr><td>701</td><td>W</td><td>A → X · B → Y</td>" in html
+    assert ("<span class='term'>556 · Ws<span class='mv-note'> · in a "
+            "branch source pool · jac 0.1316 · ru 0.0451</span>") in html
+    # the hover payload is the union neighbourhood with both ranks
+    assert ("homolog neighbourhood — top-3 rank_union ∪ top-3 jaccard "
+            "(chain order)") in html
+    assert "<td>this branch</td>" in html and "<td>elsewhere</td>" in html
+    # 705 has neither artifact row — both cells degrade to —
+    assert ("<tr><td>705</td><td>W</td><td><span class='missing'>—</span>"
+            "</td><td><span class='missing'>—</span></td>") in html
+    # rows order by branch (first source → target token), then type and
+    # bodyId; 701 ties 700 on the A→X token and wins on type W < Z, and
+    # branchless 705 reads last
+    p700 = html.find("<tr><td>700</td><td>Z</td>")
+    p701 = html.find("<tr><td>701</td><td>W</td>")
+    p705 = html.find("<tr><td>705</td><td>W</td>")
+    assert 0 < p701 < p700 < p705
+    # the section summary states the display contract
+    assert ("Rows order by branch (source → target), then type and "
+            "bodyId; branchless members last.") in html
+
+
 def test_warnings_and_notes_header_discipline(run_dir: Path, capsys):
     d = collect_run_data(run_dir)
     warns = collect_warnings(d)
