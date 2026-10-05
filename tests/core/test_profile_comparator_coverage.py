@@ -1228,6 +1228,40 @@ def _install_fake_coana(monkeypatch, fnc_cache=None):
     mod = ModuleType('coana')
     mod.FindNeuronConnection = _FakeFNC
     mod._FNC_CACHE = fnc_cache if fnc_cache is not None else {}
+
+    def _fnc_frame_if_fresh(dataset_safe):
+        # Faithful mirror of coana.fnc_connection_frame_if_fresh (cache
+        # survey 2026-10-06 hazard 2): the shared frame is served only
+        # when its recorded signature matches the current cache folder.
+        import os
+        entry = mod._FNC_CACHE.get(dataset_safe) or {}
+        frame = entry.get('conn_df')
+        if frame is None:
+            return None
+        cache_folder = entry.get('cache_folder')
+        recorded = entry.get('conn_signature')
+        if not cache_folder or recorded is None:
+            return None
+        db_path = os.path.join(cache_folder, 'connections.parquet')
+        batch_dir = os.path.join(cache_folder, '_batch_files')
+        paths = [db_path] if os.path.exists(db_path) else []
+        if os.path.isdir(batch_dir):
+            paths += [os.path.join(batch_dir, name)
+                      for name in sorted(os.listdir(batch_dir))
+                      if name.startswith('batch_')
+                      and name.endswith('.parquet')]
+        current = []
+        for path in paths:
+            stat = os.stat(path)
+            current.append((os.path.relpath(path, cache_folder),
+                            (stat.st_mtime_ns, stat.st_size)))
+        if tuple(recorded) != tuple(current):
+            return None
+        return {'conn_df': frame,
+                'conn_index': entry.get('conn_index'),
+                'conn_index_post': entry.get('conn_index_post')}
+
+    mod.fnc_connection_frame_if_fresh = _fnc_frame_if_fresh
     monkeypatch.setitem(sys.modules, 'coana', mod)
     return mod
 
@@ -2191,8 +2225,12 @@ def test_load_connection_cache_internal_hit(finder):
 def test_load_connection_cache_fnc_branch(finder, monkeypatch, pc_fake_repo):
     raw = pd.DataFrame({'bodyId_pre': [1, 2], 'bodyId_post': [2, 1],
                         'weight': [5, 3]})
+    # The FNC entry carries the freshness bookkeeping real instances
+    # record (hazard 2): an empty disk signature matches the empty cache
+    # folder, so the shared frame is served.
     coana_mod = _install_fake_coana(monkeypatch, fnc_cache={
-        SAFE_A: {'conn_df': raw}})
+        SAFE_A: {'conn_df': raw, 'conn_signature': (),
+                 'cache_folder': str(pc_fake_repo / 'cache' / SAFE_A)}})
     _write_neuron_index(pc_fake_repo, SAFE_A, [1, 2], ['T1', 'T2'])
     out = finder._load_connection_cache(DS_A)
     assert out is not None

@@ -1578,7 +1578,7 @@ def clear_findallpath_cache(dataset: str = None):
 def clear_fnc_cache(dataset: str = None):
     """
     Clear the module-level FindNeuronConnection cache.
-    
+
     Args:
         dataset: Specific dataset to clear (e.g., 'hemibrain_v1_2_1'). If None, clears all.
     """
@@ -1587,6 +1587,42 @@ def clear_fnc_cache(dataset: str = None):
         _FNC_CACHE.clear()
     elif dataset in _FNC_CACHE:
         del _FNC_CACHE[dataset]
+
+
+def fnc_connection_frame_if_fresh(dataset_safe):
+    """The shared per-dataset connection snapshot, ONLY if it still
+    represents the current on-disk cache (cache survey 2026-10-06,
+    hazard 2).
+
+    Comparison modules (connectivity_profiler, profile_comparator) used
+    to read ``_FNC_CACHE[dataset_safe]['conn_df']`` directly — bypassing
+    the signature gate in ``FindNeuronConnection._load_connection_db`` —
+    so a frame loaded before a Settings pull could keep serving queries
+    after the pull replaced the parquet. This accessor re-verifies the
+    recorded signature against the cache folder and returns
+    ``{'conn_df', 'conn_index', 'conn_index_post'}`` only on a match;
+    on any mismatch (or missing bookkeeping) it returns ``None`` so the
+    caller falls back to loading from disk."""
+    entry = _FNC_CACHE.get(dataset_safe) or {}
+    frame = entry.get('conn_df')
+    if frame is None:
+        return None
+    cache_folder = entry.get('cache_folder')
+    recorded = entry.get('conn_signature')
+    if not cache_folder or recorded is None:
+        return None
+    try:
+        current = FindNeuronConnection._connection_cache_files_signature(
+            cache_folder)
+    except Exception:
+        return None
+    if tuple(recorded) != tuple(current):
+        return None
+    return {
+        'conn_df': frame,
+        'conn_index': entry.get('conn_index'),
+        'conn_index_post': entry.get('conn_index_post'),
+    }
 
 
 # FastGraph resolves lazily via module __getattr__ (vispath subproject);
@@ -4078,12 +4114,21 @@ class FindNeuronConnection:
                         f"   Please run with cache_only=False first to build the cache, "
                         f"or ensure the cache files exist in: cache/{dataset_safe}/"
                     )
-            elif already_cache_only:
-                # Dataset already known to be cache-only from previous instance - silently use cache
+            elif (already_cache_only
+                    and _CACHE_ONLY_DATASETS[self.dataset].get('reason')
+                    != 'server_unavailable'):
+                # User-requested cache-only stays sticky across instances.
                 self.cache_only = True
                 # No warning - already shown before
             else:
-                # Normal mode: try server first, fall back to cache if available
+                # Normal mode: try server first, fall back to cache if
+                # available. This branch ALSO covers datasets an earlier
+                # instance auto-downgraded after a server failure (cache
+                # survey 2026-10-06, hazard 6): the memo said
+                # 'server_unavailable', not 'user wants cache-only', so the
+                # server is retried — a recovered server must not stay
+                # pinned to cache-only for the rest of the process. A
+                # repeated failure simply re-runs the downgrade below.
                 # Check if existing default client is for the SAME dataset
                 # Different datasets require different clients (they connect to different neuprint servers)
                 try:
@@ -4149,6 +4194,17 @@ class FindNeuronConnection:
                                 f"neuron_index={cache_status['has_neuron_index']}, dataset_csv={cache_status['has_dataset']}\n"
                                 f"   Please check your network connection or ensure you have cached data for '{self.dataset}'."
                             ) from e
+
+            # Server reachable (fresh or reused client): drop an earlier
+            # instance's auto-downgrade memo so later instances connect
+            # normally (hazard 6 — the memo recorded a transient failure,
+            # not a user choice; user_requested entries stay untouched).
+            # The guard keeps a JUST-rewritten downgrade memo (the failure
+            # branch above continues without raising).
+            if (not self.cache_only
+                    and _CACHE_ONLY_DATASETS.get(self.dataset, {}).get(
+                        'reason') == 'server_unavailable'):
+                _CACHE_ONLY_DATASETS.pop(self.dataset, None)
 
         # Establish the cache-integrity baseline during ONLINE runs so later
         # cache-only runs can verify whole-cache completeness (re-test
@@ -4863,6 +4919,30 @@ class FindNeuronConnection:
             return None
         return (stat.st_mtime_ns, stat.st_size)
 
+    def _connection_cache_files_signature(cache_folder):
+        """On-disk connection-cache signature for an explicit cache folder.
+
+        Shared by the instance gate (``_connection_cache_signature``) and
+        the module-level freshness accessor for comparison modules
+        (``fnc_connection_frame_if_fresh`` — cache survey 2026-10-06,
+        hazard 2)."""
+        if not cache_folder:
+            return ()
+        db_path = os.path.join(cache_folder, 'connections.parquet')
+        batch_dir = os.path.join(cache_folder, '_batch_files')
+        paths = [db_path] if os.path.exists(db_path) else []
+        if os.path.isdir(batch_dir):
+            paths.extend(
+                os.path.join(batch_dir, name)
+                for name in sorted(os.listdir(batch_dir))
+                if name.startswith('batch_') and name.endswith('.parquet')
+            )
+        return tuple(
+            (os.path.relpath(path, cache_folder),
+             FindNeuronConnection._file_signature(path))
+            for path in paths
+        )
+
     def _connection_cache_signature(self):
         """Return the current on-disk connection-cache signature.
 
@@ -4873,20 +4953,32 @@ class FindNeuronConnection:
         """
         if not getattr(self, 'cache_folder', None):
             return ()
-        db_path = self._get_connection_db_path()
-        cache_dir = os.path.dirname(db_path)
-        batch_dir = os.path.join(cache_dir, '_batch_files')
-        paths = [db_path] if os.path.exists(db_path) else []
-        if os.path.isdir(batch_dir):
-            paths.extend(
-                os.path.join(batch_dir, name)
-                for name in sorted(os.listdir(batch_dir))
-                if name.startswith('batch_') and name.endswith('.parquet')
-            )
-        return tuple(
-            (os.path.relpath(path, cache_dir), self._file_signature(path))
-            for path in paths
-        )
+        return FindNeuronConnection._connection_cache_files_signature(
+            self.cache_folder)
+
+    def _graph_cache_data_signature(self):
+        """Identity of the data a FindAllPath graph-cache entry was built
+        from (cache survey 2026-10-06, hazard 1). Disk-served runs bind
+        the connection-cache file signature, so a rebuilt or extended
+        cache invalidates replayed graphs; online-only runs get a process
+        constant (their graphs live and die with the API session — no
+        disk state to bind)."""
+        if not getattr(self, 'use_cache', False):
+            return ('api',)
+        try:
+            return ('disk',) + tuple(self._connection_cache_signature())
+        except Exception:
+            return ('disk', None)
+
+    def _graph_cache_entry_is_fresh(self, cached_data):
+        """A cached graph may be replayed only if it was built from the
+        CURRENT connection cache. Entries without a data signature
+        (legacy, in-flight) fail closed — a one-time rediscovery is cheap
+        against replaying a stale graph."""
+        if cached_data is None:
+            return False
+        return (cached_data.get('data_signature')
+                == self._graph_cache_data_signature())
 
     def _neuron_index_signature(self):
         """Return the current on-disk metadata/progress-index signature."""
@@ -4909,6 +5001,11 @@ class FindNeuronConnection:
         global _FNC_CACHE
         if getattr(self, '_dataset_safe', None) in _FNC_CACHE:
             _FNC_CACHE[self._dataset_safe]['conn_signature'] = signature
+            # The folder the signature was computed against, so
+            # fnc_connection_frame_if_fresh can re-verify the shared frame
+            # without an instance (cache survey 2026-10-06, hazard 2).
+            _FNC_CACHE[self._dataset_safe]['cache_folder'] = (
+                getattr(self, 'cache_folder', None))
 
     def _record_neuron_index_signature(self):
         """Remember the source files represented by the neuron index frame."""
@@ -5969,6 +6066,11 @@ class FindNeuronConnection:
         Save unified connection database with compression.
         Also updates the in-memory cache and rebuilds the index.
         Uses Polars for efficient writing.
+
+        Atomic (cache survey 2026-10-06, hazard 5): a plain write_parquet
+        interrupted mid-file left a truncated cache that later loads had
+        to skip file-by-file; the temp-sibling replace keeps the previous
+        generation intact until the new one is complete.
         '''
         if not self.use_cache:
             return
@@ -5978,10 +6080,18 @@ class FindNeuronConnection:
             # Ensure conn_db is Polars DataFrame
             if not isinstance(conn_db, pl.DataFrame):
                 conn_db = pl.from_pandas(conn_db)
-                
-            conn_db.write_parquet(db_path, compression='gzip')
+
+            try:
+                from .utils.parquet_utils import write_file_atomic
+            except ImportError:
+                from utils.parquet_utils import write_file_atomic
+            write_file_atomic(
+                db_path,
+                lambda tmp_path: conn_db.write_parquet(
+                    tmp_path, compression='gzip'),
+                kind='connection-db')
             self._vprint(f'  ✓ Database saved successfully', level='full')
-            
+
             # Update in-memory cache
             self._conn_df_cache = conn_db
             self._build_conn_index()
@@ -8435,7 +8545,12 @@ class FindNeuronConnection:
         return combined
     
     def _save_to_api_cache(self, conn_df, bodyIds, api_cache_dir):
-        '''Save connection data to API cache.'''
+        '''Save connection data to API cache.
+
+        Atomic (cache survey 2026-10-06, hazard 5): both parquet writes go
+        through the shared temp-sibling replace, so an interrupted save
+        leaves the previous generation intact instead of a truncated file
+        the next CAVE path would fail to read.'''
         if not self.use_cache:
             return
         try:
@@ -8443,10 +8558,15 @@ class FindNeuronConnection:
 
             bodyIds = normalize_flywire_body_ids(bodyIds)
             normalize_flywire_id_columns(conn_df, ['bodyId_pre', 'bodyId_post'])
-            
+
+            try:
+                from .utils.parquet_utils import write_file_atomic
+            except ImportError:
+                from utils.parquet_utils import write_file_atomic
+
             api_conn_cache = os.path.join(api_cache_dir, 'connections.parquet')
             api_neuron_cache = os.path.join(api_cache_dir, 'neuron_index.parquet')
-            
+
             # Load existing cache or create new
             if os.path.exists(api_conn_cache):
                 existing_conn = pl.read_parquet(api_conn_cache)
@@ -8465,10 +8585,13 @@ class FindNeuronConnection:
                     combined = combined.with_columns(
                         pl.col(column).cast(pl.Utf8)
                     )
-            
-            # Save connections
-            combined.write_parquet(api_conn_cache)
-            
+
+            # Save connections (atomic)
+            write_file_atomic(
+                api_conn_cache,
+                lambda tmp_path: combined.write_parquet(tmp_path),
+                kind='api-connections')
+
             # Update neuron index
             if os.path.exists(api_neuron_cache):
                 existing_index = pl.read_parquet(api_neuron_cache)
@@ -8480,9 +8603,12 @@ class FindNeuronConnection:
                 combined_index = pl.concat([existing_index, new_index], how='diagonal_relaxed').unique(subset=['bodyId'])
             else:
                 combined_index = pl.DataFrame({'bodyId': bodyIds, 'cached_date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')] * len(bodyIds)})
-            
-            combined_index.write_parquet(api_neuron_cache)
-            
+
+            write_file_atomic(
+                api_neuron_cache,
+                lambda tmp_path: combined_index.write_parquet(tmp_path),
+                kind='api-index')
+
             self._vprint(f'  💾 Saved {len(bodyIds)} neurons to API cache', level='full')
         except Exception as e:
             self._vprint(f'  ⚠️ Error saving to API cache: {e}', level='full')
@@ -8956,6 +9082,25 @@ class FindNeuronConnection:
             os.path.join(base, 'incoming_connections.parquet'),
             os.path.join(base, 'incoming_complete.json'),
         )
+
+    def _clear_incoming_cache_lane(self):
+        """Delete the incoming-completeness lane's on-disk state and reset
+        the in-memory mirror (cache survey 2026-10-06, hazard 3).
+
+        Called when the connection cache is force-rebuilt: the lane's
+        'complete' markers freeze the fetch snapshot they were proven
+        against, so they must not outlive the data they describe. Never
+        raises — an unremovable file only degrades to re-fetching."""
+        rows_path, complete_path = self._incoming_cache_paths()
+        for stale in (rows_path, complete_path):
+            try:
+                if stale and os.path.exists(stale):
+                    os.remove(stale)
+            except OSError as exc:
+                self._vprint(
+                    f'  ⚠️ Could not remove {os.path.basename(stale)} '
+                    f'({exc}); the incoming cache stays as-is.', level='full')
+        self._incoming_cache = None
 
     def _load_incoming_cache(self):
         """Load the per-post incoming cache (parquet rows + complete set)."""
@@ -10143,21 +10288,43 @@ class FindNeuronConnection:
                 f'     ⚠️ {pulled:,} {label} missing from the connection '
                 f'cache — auto-pulled from {source}.', level='simple')
 
+    def _denominator_source_signature(self):
+        """Identity of the data auto-pulled denominator masses were
+        resolved against (cache survey 2026-10-06, hazard 7): the
+        connection-cache file signature plus the local release tables'
+        mtimes. A cache rebuild or release refresh changes the signature,
+        so previously 'confirmed absent' posts are re-resolved instead of
+        staying memoized against the old generation."""
+        parts = []
+        try:
+            parts.append(tuple(self._connection_cache_signature()))
+        except Exception:
+            parts.append(None)
+        conn_path, neuron_path = self._local_connectome_table_paths()
+        for path in (conn_path, neuron_path):
+            try:
+                parts.append((path, os.path.getmtime(path)))
+            except (OSError, TypeError):
+                parts.append((path, None))
+        return tuple(parts)
+
     def _pull_missing_incoming_totals(self, missing, min_weight, level):
         """Complete an incoming-mass map: totals for posts/types the cache
         did not serve, pulled automatically from the best remaining
         source. Order: the dataset's local release table (complete and
         offline) → for flywire the CAVE API → for NeuPrint datasets the
         server's per-post adjacencies (types resolved through the neuron
-        index). Results are memoized per (level, threshold) — including
-        confirmed absences — so a post with genuinely no incoming mass is
-        pulled once, never per call. Returns ``{key: total}``."""
+        index). Results are memoized per (level, threshold, data
+        signature) — including confirmed absences — so a post with
+        genuinely no incoming mass is pulled once per data generation,
+        never per call. Returns ``{key: total}``."""
         if not missing:
             return {}
         memo = getattr(self, '_incoming_pull_memo', None)
         if memo is None:
             memo = self._incoming_pull_memo = {}
-        memo_key = (level, int(min_weight))
+        memo_key = (level, int(min_weight),
+                    self._denominator_source_signature())
         resolved = memo.setdefault(memo_key, {})
         todo = [k for k in missing if k not in resolved]
         if not todo:
@@ -11188,6 +11355,13 @@ class FindNeuronConnection:
                 os.path.dirname(conn_path), CACHE_MANIFEST_FILENAME)
             if os.path.exists(manifest_path):
                 os.remove(manifest_path)
+            # Cache survey 2026-10-06 hazard 3: the incoming-completeness
+            # lane (incoming_connections.parquet + incoming_complete.json)
+            # describes fetches against the data being deleted. Posts
+            # marked incoming-complete are never re-queried online, so
+            # surviving markers would freeze pre-rebuild snapshots
+            # forever. Clear the lane with the cache it belonged to.
+            self._clear_incoming_cache_lane()
             # The app-owned neuron index deliberately survives a cache clear
             # (suggestions and the viewer depend on it); reset only the
             # progress flags that described the deleted connection data.
@@ -17911,6 +18085,16 @@ class FindNeuronConnection:
             _FINDALLPATH_GRAPH_CACHE.get(cache_key)
             if use_graph_cache and not backward_shortest else None
         )
+        if cached_data is not None and not self._graph_cache_entry_is_fresh(
+                cached_data):
+            # Cache survey 2026-10-06 hazard 1: the entry was built from a
+            # previous generation of the connection cache (rebuilt or
+            # extended since) — replaying it would serve stale discovery
+            # tables. Rediscover.
+            self._vprint(
+                '📊 Cached graph predates the current connection cache — '
+                'rediscovering', level='full')
+            cached_data = None
         use_cached_graph = False
         extend_cached_graph = False
         
@@ -18348,6 +18532,9 @@ class FindNeuronConnection:
                     'all_connections': all_connections,
                     'layer_neurons': layer_neurons,
                     'all_neurons_in_network': all_neurons_in_network,
+                    # Hazard 1: bind the entry to the connection-cache
+                    # generation it was discovered against.
+                    'data_signature': self._graph_cache_data_signature(),
                 })
                 self._vprint(f'  💾 Cached graph at threshold={self.min_synapse_num} (depth={len(all_connections)}) for future reuse', level='full')
             

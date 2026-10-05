@@ -4730,10 +4730,14 @@ class HomologFinder:
         project_root = src_dir.parent
         
         # Check FNC's module-level cache first (avoids loading from disk twice)
+        # — through the signature-gated accessor: a direct _FNC_CACHE read
+        # bypasses coana's freshness check and could serve a frame that
+        # predates a Settings pull (cache survey 2026-10-06, hazard 2).
         try:
-            from coana import _FNC_CACHE
-            if safe_name in _FNC_CACHE and 'conn_df' in _FNC_CACHE[safe_name]:
-                fnc_df = _FNC_CACHE[safe_name]['conn_df']
+            from coana import fnc_connection_frame_if_fresh
+            fnc_entry = fnc_connection_frame_if_fresh(safe_name)
+            if fnc_entry is not None:
+                fnc_df = fnc_entry['conn_df']
                 
                 # Handle both Polars and pandas DataFrames from FNC cache
                 fnc_is_empty = False

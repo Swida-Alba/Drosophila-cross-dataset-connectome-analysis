@@ -2947,13 +2947,18 @@ class ConnectivityProfiler:
             if cached_df is not None:
                 return cached_df
         
-        # Check FNC's module-level cache (set by coana.py after build_connection_cache)
+        # Check FNC's module-level cache (set by coana.py after
+        # build_connection_cache) — through the signature-gated accessor:
+        # a direct _FNC_CACHE read bypasses coana's freshness check and
+        # could serve a frame that predates a Settings pull (cache survey
+        # 2026-10-06, hazard 2).
         try:
-            from coana import _FNC_CACHE
-            if safe_name in _FNC_CACHE and 'conn_df' in _FNC_CACHE[safe_name]:
-                fnc_df = _FNC_CACHE[safe_name]['conn_df']
-                fnc_index = _FNC_CACHE[safe_name].get('conn_index', {})
-                
+            from coana import fnc_connection_frame_if_fresh
+            fnc_entry = fnc_connection_frame_if_fresh(safe_name)
+            if fnc_entry is not None:
+                fnc_df = fnc_entry['conn_df']
+                fnc_index = fnc_entry.get('conn_index') or {}
+
                 # Handle both Polars and pandas DataFrames from FNC cache
                 # FNC may store Polars DFs for efficiency, but profiler expects pandas
                 fnc_is_empty = False
@@ -2971,7 +2976,7 @@ class ConnectivityProfiler:
                         fnc_is_empty = fnc_df.empty if hasattr(fnc_df, 'empty') else len(fnc_df) == 0
                 else:
                     fnc_is_empty = True
-                
+
                 if fnc_df is not None and not fnc_is_empty:
                     # Use FNC's cache - it's already loaded and indexed
                     # Store reference in profiler cache too
@@ -2993,7 +2998,7 @@ class ConnectivityProfiler:
                     _PROFILER_CONN_CACHE[safe_name]['bodyid_pre_index'] = fnc_index
                     
                     # Use FNC's post index if available, otherwise build it
-                    fnc_post_index = _FNC_CACHE[safe_name].get('conn_index_post')
+                    fnc_post_index = fnc_entry.get('conn_index_post')
                     if fnc_post_index:
                         _PROFILER_CONN_CACHE[safe_name]['bodyid_post_index'] = fnc_post_index
                     elif 'bodyid_post_index' not in _PROFILER_CONN_CACHE[safe_name]:
@@ -3054,6 +3059,7 @@ class ConnectivityProfiler:
             ]
             
             conn_df = None
+            loaded_from = None
             for conn_file in conn_files:
                 if conn_file.exists():
                     try:
@@ -3068,9 +3074,29 @@ class ConnectivityProfiler:
                                 conn_df = pd.read_parquet(conn_file)
                         else:
                             conn_df = pd.read_csv(conn_file)
+                        loaded_from = conn_file
                         break
                     except Exception as e:
                         self._log(f"Warning: Could not load {conn_file}: {e}")
+
+            # Cache survey 2026-10-06 hazard 4: the cache/ parquet is the
+            # LAST-priority source and may be a partially-built connection
+            # cache (no local release, interrupted build). Profiles built
+            # from it silently reflect the cache's current coverage — say
+            # so once per dataset when there is no completeness manifest
+            # vouching for the cache.
+            if (loaded_from is not None
+                    and loaded_from.parent == cache_path
+                    and not (cache_path / 'cache_manifest.json').exists()
+                    and safe_name not in _PROFILER_CACHE_LOGGED):
+                _PROFILER_CACHE_LOGGED.add(safe_name)
+                self._log(
+                    f"WARNING: profiles for {dataset} are built from the "
+                    f"connection cache ({loaded_from}) with no completeness "
+                    "manifest — an interrupted cache build yields "
+                    "understated profiles that then persist. Complete the "
+                    "cache (or force-rebuild it) before trusting profile "
+                    "comparisons.")
             
             if conn_df is None or conn_df.empty:
                 # Cache the None result to avoid repeated disk checks
