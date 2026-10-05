@@ -10024,6 +10024,256 @@ class FindNeuronConnection:
             columns={'weight': 'total_incoming_weight'}
         )
 
+    def _local_connectome_table_paths(self):
+        """(connections table, neuron table) of the dataset's local release.
+
+        FAFB and standalone BANC ship a COMPLETE merged-connections table
+        plus the all-neurons table under ``datasets/<dataset>/`` — the same
+        tables the offline fetchers read. They are the authoritative
+        complete incoming-connection map for ratio denominators when the
+        connection cache is absent or incomplete. Returns (None, None) for
+        NeuPrint datasets and installs without a local release."""
+        if not is_local_connectome_dataset(self.dataset):
+            return None, None
+        try:
+            data_dir = resolve_flywire_dataset_dir(
+                self.script_path, self.dataset)
+        except Exception:
+            return None, None
+        if data_dir is None:
+            return None, None
+        dataset_safe = dataset_folder(self.dataset)
+        conn_candidates = [
+            data_dir / f'{data_dir.name}_merged_connections.parquet',
+            data_dir / f'{dataset_safe}_merged_connections.parquet',
+            data_dir / f'{data_dir.name}_merged_connections.csv',
+            data_dir / f'{dataset_safe}_merged_connections.csv',
+        ]
+        neuron_candidates = [
+            data_dir / f'{data_dir.name}_allneurons_neuron_df.parquet',
+            data_dir / f'{dataset_safe}_allneurons_neuron_df.parquet',
+            data_dir / f'{data_dir.name}_allneurons_neuron_df.csv',
+            data_dir / f'{dataset_safe}_allneurons_neuron_df.csv',
+        ]
+        conn_path = next(
+            (str(p) for p in conn_candidates if p.exists()), None)
+        neuron_path = next(
+            (str(p) for p in neuron_candidates if p.exists()), None)
+        return conn_path, neuron_path
+
+    def _local_incoming_totals_by_bodyid(self, post_bodyIds, min_weight=1):
+        """Per-post incoming totals from the LOCAL RELEASE table.
+
+        The full-release ``bodyId_post -> total weight (>= min_weight)``
+        aggregate is computed once per (file, threshold) with a Polars scan
+        and memoized; each call then just filters the requested posts.
+        Returns ``{bodyId_post: total}`` (absent = no incoming mass at the
+        threshold — a confirmed zero, not a miss)."""
+        posts = [str(p) for p in post_bodyIds]
+        if not posts:
+            return {}
+        if is_fafb_dataset(self.dataset):
+            # The release tables store canonical FlyWire root IDs; requests
+            # may carry any historical spelling.
+            posts = [str(p) for p in normalize_flywire_body_ids(posts)]
+            posts = list(dict.fromkeys(posts))
+        conn_path, _neuron_path = self._local_connectome_table_paths()
+        if not conn_path:
+            return {}
+        try:
+            mtime = os.path.getmtime(conn_path)
+        except OSError:
+            return {}
+        cache = getattr(self, '_local_incoming_agg_cache', None)
+        if cache is None:
+            cache = self._local_incoming_agg_cache = {}
+        key = (conn_path, mtime, int(min_weight))
+        table = cache.get(key)
+        if table is None:
+            if conn_path.endswith('.parquet'):
+                lazy = pl.scan_parquet(conn_path)
+            else:
+                lazy = pl.scan_csv(
+                    conn_path,
+                    schema_overrides={
+                        'pre_root_id': pl.Utf8, 'post_root_id': pl.Utf8,
+                        'bodyId_pre': pl.Utf8, 'bodyId_post': pl.Utf8,
+                    },
+                )
+            names = set(lazy.collect_schema().names())
+            post_col = ('bodyId_post' if 'bodyId_post' in names
+                        else 'post_root_id')
+            weight_col = ('weight' if 'weight' in names else 'syn_count')
+            table = (lazy.select([
+                        pl.col('bodyId_pre').cast(pl.Utf8, strict=False),
+                        pl.col(post_col).cast(pl.Utf8, strict=False)
+                        .alias('bodyId_post'),
+                        pl.col(weight_col).cast(pl.Int64, strict=False)
+                        .alias('weight')])
+                     .filter(pl.col('weight') >= int(min_weight))
+                     .group_by('bodyId_post')
+                     .agg(pl.col('weight').sum()
+                          .alias('total_incoming_weight'))
+                     .collect())
+            cache[key] = table
+        wanted = set(posts)
+        return {str(post): float(total) for post, total in
+                table.filter(pl.col('bodyId_post').is_in(wanted))
+                .iter_rows()}
+
+    def _disclose_denominator_completion(self, level, pulled, source):
+        """One user-facing note per (level, source) per run: the cache was
+        incomplete and the missing denominator mass was auto-pulled."""
+        notes = getattr(self, '_warn_notes', None)
+        if notes is None:
+            notes = self._warn_notes = []
+        label = 'post neurons' if level == 'bodyId_post' else 'post types'
+        note = (f'- [ratio denominators] the connection cache was '
+                f'incomplete: {pulled:,} {label} had no cached incoming '
+                f'mass — their totals were auto-pulled from {source} and '
+                f'merged, so connection_ratio / connection_ratio_adj use '
+                f'the completed map.')
+        if note not in notes:
+            notes.append(note)
+            self._vprint(
+                f'     ⚠️ {pulled:,} {label} missing from the connection '
+                f'cache — auto-pulled from {source}.', level='simple')
+
+    def _pull_missing_incoming_totals(self, missing, min_weight, level):
+        """Complete an incoming-mass map: totals for posts/types the cache
+        did not serve, pulled automatically from the best remaining
+        source. Order: the dataset's local release table (complete and
+        offline) → for flywire the CAVE API → for NeuPrint datasets the
+        server's per-post adjacencies (types resolved through the neuron
+        index). Results are memoized per (level, threshold) — including
+        confirmed absences — so a post with genuinely no incoming mass is
+        pulled once, never per call. Returns ``{key: total}``."""
+        if not missing:
+            return {}
+        memo = getattr(self, '_incoming_pull_memo', None)
+        if memo is None:
+            memo = self._incoming_pull_memo = {}
+        memo_key = (level, int(min_weight))
+        resolved = memo.setdefault(memo_key, {})
+        todo = [k for k in missing if k not in resolved]
+        if not todo:
+            return {k: resolved[k] for k in missing
+                    if resolved.get(k) is not None}
+
+        pulled, source = {}, None
+        conn_path, neuron_path = self._local_connectome_table_paths()
+        if conn_path:
+            source = 'the local release table'
+            if level == 'bodyId_post':
+                pulled = self._local_incoming_totals_by_bodyid(
+                    todo, min_weight)
+            elif neuron_path:
+                try:
+                    is_flywire = is_fafb_dataset(self.dataset)
+                    ndf = self._load_local_neuron_df(neuron_path, is_flywire)
+                    member_rows = ndf[ndf['type'].astype(str).isin(
+                        set(todo))]
+                    if len(member_rows):
+                        totals = self._local_incoming_totals_by_bodyid(
+                            member_rows['bodyId'].astype(str).tolist(),
+                            min_weight)
+                        by_type = {}
+                        for bid, t in zip(member_rows['bodyId'].astype(str),
+                                          member_rows['type'].astype(str)):
+                            by_type[t] = (by_type.get(t, 0.0)
+                                          + totals.get(bid, 0.0))
+                        pulled = {t: v for t, v in by_type.items() if v > 0}
+                except Exception as exc:
+                    self._vprint(
+                        f'     ⚠️ Local release type-mass lookup failed: '
+                        f'{exc}', level='full')
+        elif self.client_type == 'flywire':
+            # No local release: CAVE is the only complete source.
+            try:
+                if level == 'bodyId_post':
+                    fetched = self._fetch_flywire_incoming_weights_online(
+                        todo, min_weight)
+                    if fetched is not None and len(fetched):
+                        pulled = {
+                            str(r.bodyId_post): float(r.total_incoming_weight)
+                            for r in fetched.itertuples()}
+                    source = 'the CAVE API'
+                else:
+                    members = self._get_cave_fetcher().fetch_neurons_by_types(
+                        [str(v) for v in todo],
+                        show_progress=self.verbose_mode == 'full')
+                    if members is not None and len(members):
+                        fetched = self._fetch_flywire_incoming_weights_online(
+                            members['bodyId'].astype(str).unique().tolist(),
+                            min_weight)
+                        if fetched is not None and len(fetched):
+                            merged = fetched.rename(
+                                columns={'bodyId_post': 'bodyId'}).merge(
+                                members.assign(
+                                    bodyId=members['bodyId'].astype(str)),
+                                on='bodyId', how='inner')
+                            pulled = (merged.groupby('type')[
+                                'total_incoming_weight'].sum().to_dict())
+                    source = 'the CAVE API'
+            except Exception as exc:
+                self._vprint(
+                    f'     ⚠️ CAVE denominator completion failed: {exc}',
+                    level='full')
+        else:
+            # NeuPrint datasets: resolve members through the neuron index
+            # (offline), then per-post adjacencies from the server.
+            try:
+                index = self._load_neuron_index()
+                posts = todo if level == 'bodyId_post' else []
+                if level != 'bodyId_post':
+                    if index is not None and len(index):
+                        idx = index[index['type'].astype(str).isin(set(todo))]
+                        posts = idx['bodyId'].astype(str).unique().tolist()
+                if posts:
+                    self._ensure_neuprint_client()
+                    from neuprint import fetch_adjacencies
+                    post_ints = [int(p) for p in posts]
+                    adjacency_kwargs = dict(self.kwargs_fetch)
+                    adjacency_kwargs.pop('batch_size', None)
+                    adjacency_kwargs['batch_size'] = max(1, len(post_ints))
+                    _neurons, roi_conn_df = fetch_adjacencies(
+                        sources=None, targets=post_ints,
+                        min_total_weight=min_weight, **adjacency_kwargs)
+                    if roi_conn_df is not None and len(roi_conn_df):
+                        roi_conn_df = roi_conn_df.copy()
+                        roi_conn_df['bodyId_post'] = (
+                            roi_conn_df['bodyId_post'].astype(str))
+                        per_post = roi_conn_df.groupby('bodyId_post')[
+                            'weight'].sum().to_dict()
+                        if level == 'bodyId_post':
+                            pulled = {k: float(v)
+                                      for k, v in per_post.items()}
+                        else:
+                            by_type = {}
+                            if index is not None and len(index):
+                                bid_type = {
+                                    str(b): str(t) for b, t in zip(
+                                        index['bodyId'], index['type'])}
+                                for bid, total in per_post.items():
+                                    t = bid_type.get(bid)
+                                    if t is not None:
+                                        by_type[t] = (by_type.get(t, 0.0)
+                                                      + float(total))
+                            pulled = {t: v for t, v in by_type.items()
+                                      if t in set(todo) and v > 0}
+                    source = 'the NeuPrint API'
+            except Exception as exc:
+                self._vprint(
+                    f'     ⚠️ NeuPrint denominator completion failed: {exc}',
+                    level='full')
+
+        for key in todo:
+            resolved[key] = pulled.get(key)  # None = confirmed absent
+        if pulled and source:
+            self._disclose_denominator_completion(
+                level, len(pulled), source)
+        return {k: v for k, v in pulled.items() if v is not None}
+
     def _fetch_total_incoming_weight(self, post_bodyIds: list, min_weight: int = 1, auto_build_cache: bool = True) -> pd.DataFrame:
         """
         Fetch ALL incoming connections to the given post-synaptic bodyIds.
@@ -10065,6 +10315,20 @@ class FindNeuronConnection:
         # ``connections.parquet`` left by an older run.
         db_path = self._get_connection_db_path() if self.use_cache else ''
 
+        # Completeness guard (engine round 2026-10-05): ratio denominators
+        # need the post's COMPLETE incoming map. The connection cache may
+        # be absent (a local release needs NO server cache build) or
+        # incomplete (partial pull / interrupted build) — whatever it does
+        # not serve is auto-pulled below and disclosed.
+        _local_conn, _local_neuron = (None, None)
+        if self.use_cache and not os.path.exists(db_path):
+            _local_conn, _local_neuron = self._local_connectome_table_paths()
+            if _local_conn:
+                self._vprint(
+                    f'     ℹ️ No connection cache for {self.dataset} — '
+                    'serving ratio denominators from the complete local '
+                    'release table.', level='simple')
+
         # Online-only FAFB runs fetch the denominator from CAVE. They
         # must not inspect the converted local connection table or a stale
         # repository-relative connections.parquet.
@@ -10091,12 +10355,16 @@ class FindNeuronConnection:
                     'total_incoming_weight': 'float64',
                 })
 
-        # If cache doesn't exist and auto_build_cache is enabled, build it first
-        if self.use_cache and not os.path.exists(db_path) and auto_build_cache:
+        # If cache doesn't exist and auto_build_cache is enabled, build it
+        # first — EXCEPT when a complete local release table exists: it is
+        # the full dataset already, so a server cache build would be pure
+        # network cost (the completion pull below serves from it instead).
+        if (self.use_cache and not os.path.exists(db_path)
+                and auto_build_cache and not _local_conn):
             self._vprint(f'\n     ⚠️  Connection cache not found for {self.dataset}', level='simple')
             self._vprint(f'     ⏳ Building connection cache (this may take several minutes for large datasets)...', level='simple')
             self._vprint(f'     💡 This is a one-time operation. The cache will be reused for future analyses.', level='simple')
-            
+
             try:
                 # Build the cache with progress feedback.  Parallel workers
                 # cut the wall time ~4x on network-bound fetches (the default
@@ -10111,21 +10379,39 @@ class FindNeuronConnection:
                 self._vprint(f'     ✓ Cache built: {cache_result.get("total_connections", 0):,} connections', level='simple')
             except Exception as e:
                 self._vprint(f'     ❌ Failed to build cache: {e}', level='simple')
-        
+
+        served_map = {}
         if os.path.exists(db_path) or (self._conn_df_cache is not None and not self._is_empty_df(self._conn_df_cache)):
             try:
                 total_table = self._get_total_incoming_by_bodyid_table(min_weight)
                 total_incoming = total_table.filter(
                     pl.col('bodyId_post').is_in(post_strs)
                 ).to_pandas()
+                served_map = {
+                    str(row.bodyId_post): float(row.total_incoming_weight)
+                    for row in total_incoming.itertuples()
+                }
                 self._vprint(
                     f'     ✓ Found {len(total_incoming)} post-synaptic neurons '
                     f'with incoming connections (vectorized + cached)',
                     level='full',
                 )
-                return total_incoming
             except Exception as e:
                 self._vprint(f'     ⚠️ Error querying connection DB: {e}', level='full')
+
+        # Completeness (see the guard above): auto-pull whatever the cache
+        # did not serve and merge it into ONE complete map.
+        missing = [p for p in dict.fromkeys(post_strs)
+                   if p not in served_map]
+        if missing:
+            served_map.update(self._pull_missing_incoming_totals(
+                missing, min_weight, 'bodyId_post'))
+        if served_map:
+            return pd.DataFrame({
+                'bodyId_post': list(served_map.keys()),
+                'total_incoming_weight': list(served_map.values()),
+            }).astype({'bodyId_post': 'string',
+                       'total_incoming_weight': 'float64'})
         
         # FAFB and BANC have no NeuPrint default client. If local
         # data was not available, return a correctly typed empty result
@@ -10316,16 +10602,33 @@ class FindNeuronConnection:
                     columns=['type_post', 'total_incoming_weight']
                 )
         
-        # If cache doesn't exist and auto_build_cache is enabled, build it first
+        # Completeness guard (engine round 2026-10-05): type denominators
+        # need the type's FULL membership incoming mass. A complete local
+        # release serves them without any server cache build; an incomplete
+        # cache is completed by the pull below and disclosed.
+        _local_conn, _local_neuron = (None, None)
+        if self.use_cache and (
+                not os.path.exists(db_path)
+                or not os.path.exists(neuron_index_path)):
+            _local_conn, _local_neuron = self._local_connectome_table_paths()
+            if _local_conn and _local_neuron:
+                self._vprint(
+                    f'     ℹ️ No complete connection cache for {self.dataset} '
+                    '— serving ratio denominators from the complete local '
+                    'release table.', level='simple')
+
+        # If cache doesn't exist and auto_build_cache is enabled, build it
+        # first — EXCEPT when a complete local release exists (see above).
         if (
             self.use_cache
             and (not os.path.exists(db_path) or not os.path.exists(neuron_index_path))
             and auto_build_cache
+            and not (_local_conn and _local_neuron)
         ):
             self._vprint(f'\n     ⚠️  Connection cache not found for {self.dataset}', level='simple')
             self._vprint(f'     ⏳ Building connection cache (this may take several minutes for large datasets)...', level='simple')
             self._vprint(f'     💡 This is a one-time operation. The cache will be reused for future analyses.', level='simple')
-            
+
             try:
                 # Build the cache with progress feedback.  Parallel workers
                 # cut the wall time ~4x on network-bound fetches; the shared
@@ -10340,8 +10643,8 @@ class FindNeuronConnection:
             except Exception as e:
                 self._vprint(f'     ❌ Failed to build cache: {e}', level='simple')
                 self._vprint(f'     ⚠️ Falling back to local ratio calculation (may give inflated ratios)', level='simple')
-                return pd.DataFrame(columns=['type_post', 'total_incoming_weight'])
-        
+
+        served_map = {}
         if os.path.exists(db_path) and os.path.exists(neuron_index_path):
             try:
                 # Full-dataset type -> total incoming weights, computed once
@@ -10353,6 +10656,10 @@ class FindNeuronConnection:
                 total_incoming = total_table.filter(
                     pl.col('type_post').is_in(post_types_set)
                 ).to_pandas()
+                served_map = {
+                    str(row.type_post): float(row.total_incoming_weight)
+                    for row in total_incoming.itertuples()
+                }
 
                 if total_incoming.empty:
                     self._vprint(
@@ -10366,13 +10673,25 @@ class FindNeuronConnection:
                         f'{len(total_incoming)} types (vectorized + cached)',
                         level='full',
                     )
-                return total_incoming
-                    
+
             except Exception as e:
                 self._vprint(f'     ⚠️ Error querying connection DB: {e}', level='full')
                 import traceback
                 self._vprint(f'     Debug: {traceback.format_exc()}', level='full')
-        
+
+        # Completeness: auto-pull the types the cache did not serve.
+        missing_types = [t for t in dict.fromkeys(str(t) for t in post_types)
+                         if t not in served_map]
+        if missing_types:
+            served_map.update(self._pull_missing_incoming_totals(
+                missing_types, min_weight, 'type_post'))
+        if served_map:
+            return pd.DataFrame({
+                'type_post': list(served_map.keys()),
+                'total_incoming_weight': list(served_map.values()),
+            }).astype({'type_post': 'string',
+                       'total_incoming_weight': 'float64'})
+
         # Fallback: if we have in-memory cache with type info
         if self._conn_df_cache is not None:
             try:
@@ -10389,7 +10708,7 @@ class FindNeuronConnection:
                         return total_incoming
             except Exception as e:
                 self._vprint(f'     ⚠️ Error querying in-memory cache: {e}', level='full')
-        
+
         # If no cache available and we couldn't build it, return empty
         self._vprint(f'     ⚠️ No cached data available for type-level incoming weight', level='full')
         self._vprint(f'     ⚠️ Ratios will be calculated locally (may give inflated values)', level='simple')

@@ -148,6 +148,14 @@ wait on the first real query:
   query downloads the full neuron tables into `datasets/<dataset>/` (needs
   the NeuPrint token) and builds the connection cache incrementally as you
   query. Later runs reuse it.
+- **Ratio denominators are completeness-checked** (2026-10-05):
+  `connection_ratio` / `connection_ratio_adj` divide by the post neuron's
+  COMPLETE incoming mass. Whatever the connection cache does not cover —
+  no cache at all, or a partial/interrupted one — is auto-pulled from the
+  next complete source (the dataset's local release table first, then the
+  dataset's API) and disclosed in `user_warning_notes.txt`
+  (`[ratio denominators]`). A local-release dataset (FAFB/BANC) never
+  needs a server cache build just for its denominators.
 - **BANC** (`banc_v626`/`banc_v888`): the neuron meta and connection tables
   are pulled from the public release bucket automatically — no token.
 - **Cache-Only (offline) runs** require a *verifiably complete* pre-built
