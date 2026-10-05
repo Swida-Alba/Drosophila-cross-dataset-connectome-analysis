@@ -132,7 +132,7 @@ Bidirectional Edges.
 | Button       | Output          | Description                              |
 | ------------ | --------------- | ---------------------------------------- |
 | **PNG**      | `network_*.png` | Raster image with transparent background |
-| **SVG**      | `network_*.svg` | Vector image (infinite scaling)          |
+| **SVG**      | `network_*.svg` | Office-ready vector: labels convert to one editable text box each (multi-line labels keep their lines together via `<tspan>`s) |
 | **📊 Graph**  | JSON file       | Complete network structure with all data |
 | **📂 Import** | —               | Load previously exported JSON            |
 | **📤 Export Layout** | JSON file | Full view state (v2) + legacy positions map |
@@ -449,6 +449,11 @@ In the browser:
 2. Or PNG at 4-5× scale (300 DPI equivalent)
 3. Ensure labels are legible at print size
 4. Use colorblind-friendly palettes
+
+The SVG export is normalized for Office import: each node label becomes one
+editable, movable text box (wrapped/multi-line labels stay one box with one
+line per `<tspan>`), and edges convert to clean shape groups via
+PowerPoint's "Convert to Shape".
 
 ### For Exploration
 

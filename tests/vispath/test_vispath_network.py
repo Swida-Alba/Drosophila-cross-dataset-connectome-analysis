@@ -140,14 +140,16 @@ def _extract_js_function(js, name):
 
 
 def _ensure_node_with_cytoscape(node_cache):
-    """Return the node executable, installing headless Cytoscape into a
+    """Return the node executable, installing headless Cytoscape and jsdom
+    (DOMParser/XMLSerializer for the SVG-sanitizer harness) into a
     pytest-owned temporary directory once. Skips when node/npm or network
     access is missing."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
     cy_path = node_cache / "node_modules" / "cytoscape"
-    if cy_path.exists():
+    jsdom_path = node_cache / "node_modules" / "jsdom"
+    if cy_path.exists() and jsdom_path.exists():
         return node
     npm = shutil.which("npm")
     if not npm:
@@ -159,11 +161,11 @@ def _ensure_node_with_cytoscape(node_cache):
     # resolve a bare "npm" through PATHEXT, so subprocess.run(["npm", ...])
     # raises FileNotFoundError on Windows even when npm is installed.
     res = subprocess.run(
-        [npm, "install", "cytoscape@3.28.1", "--no-audit", "--no-fund", "--prefix", str(node_cache)],
+        [npm, "install", "cytoscape@3.28.1", "jsdom@24.1.3", "--no-audit", "--no-fund", "--prefix", str(node_cache)],
         capture_output=True, text=True, timeout=600, env=npm_env,
     )
-    if res.returncode != 0 or not cy_path.exists():
-        pytest.skip(f"could not install cytoscape for Node tests: {res.stderr[-300:]}")
+    if res.returncode != 0 or not cy_path.exists() or not jsdom_path.exists():
+        pytest.skip(f"could not install cytoscape/jsdom for Node tests: {res.stderr[-300:]}")
     return node
 
 
@@ -1400,6 +1402,22 @@ class TestGroupColorNode:
             f"group-color harness failed:\n{res.stdout}\n{res.stderr}"
         )
         assert "ALL GROUP-COLOR TESTS PASSED" in res.stdout
+
+
+class TestSvgTextMergeNode:
+    """The SVG export re-merges cytoscape-svg's one-<text>-per-line label
+    output into one <text> holding one <tspan x= y=> per line (without the
+    merge, PowerPoint converts a two-line label into two ungrouped text
+    boxes), using the REAL sanitizeSvgForOffice extracted from the
+    generated HTML under jsdom's DOMParser/XMLSerializer."""
+
+    def test_all_svg_text_merge_scenarios(self, network_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "svg_text_merge_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"svg text-merge harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL SVG TEXT-MERGE TESTS PASSED" in res.stdout
 
 
 class TestGlobalStyleHistoryNode:

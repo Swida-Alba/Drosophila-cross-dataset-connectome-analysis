@@ -269,7 +269,13 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
    3. paint-order is dropped (Office ignores it; document order already
       matches the canvas paint order) and the serializer's empty
       trailing restore <g> is removed.
-   4. Edge fusion + stroke-to-geometry: every edge's shaft and arrowheads
+   4. Multi-line labels: cytoscape draws a wrapped label as one fillText
+      per line and the serializer emits one sibling <text> per call —
+      PowerPoint converts each <text> into its own text box. Consecutive
+      same-style lines (same anchored x, one line height apart in y) are
+      re-merged into a single <text> holding one <tspan x= y=> per line,
+      so Office imports one editable, movable text box per label.
+   5. Edge fusion + stroke-to-geometry: every edge's shaft and arrowheads
       are wrapped in one group, the shaft's stroke becomes a filled
       outline polygon (never degenerate — the stroke width inflates both
       axes, which <line> boxes cannot do for near-vertical/horizontal
@@ -278,8 +284,8 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
       single-subpath triangle (multi-subpath merged paths misplace their
       subpath origins in the converted frame). No <line>, no multi-subpath
       paths, nothing for the converter to misplace.
-   5. A viewBox is added when missing so scaling stays unambiguous.
-   6. Two global groups close it out: all geometry under id="shapes" and
+   6. A viewBox is added when missing so scaling stays unambiguous.
+   7. Two global groups close it out: all geometry under id="shapes" and
       all node labels under id="texts" (PowerPoint converts each <g> to a
       group, so both sets stay selectable as units).
    Labels stay real <text> (they convert into editable text boxes). */
@@ -349,12 +355,90 @@ function sanitizeSvgForOffice(svgText) {
     // 4. paint-order carries no information Office honors.
     root.querySelectorAll('[paint-order]').forEach(function (el) { el.removeAttribute('paint-order'); });
 
-    // 5. Empty groups (the serializer's trailing restore artifact).
+    // 5. Multi-line labels: cytoscape draws a wrapped label as one
+    //    fillText per line and cytoscape-svg emits one sibling <text> per
+    //    call, which PowerPoint converts into one text box PER LINE. The
+    //    lines of one label are consecutive siblings inside the label's
+    //    own translate <g>, share every style attribute and their
+    //    anchored x, and sit one line height (≈ the font size) apart in
+    //    y — exactly the merge criteria below. Each cluster becomes ONE
+    //    <text> (first element's style, no x/y on the outer element)
+    //    holding one <tspan x= y=> per line in reading order; Office
+    //    imports that as a single editable text box. Everything else
+    //    (single-line labels, other styles, non-consecutive elements) is
+    //    left untouched.
+    function mergeMultilineLabels() {
+        function styleKey(el) {
+            const parts = [];
+            for (let i = 0; i < el.attributes.length; i++) {
+                const a = el.attributes[i];
+                if (a.name !== 'x' && a.name !== 'y') { parts.push(a.name + '=' + a.value); }
+            }
+            parts.sort();
+            return parts.join('|');
+        }
+        function fontSizeOf(el) {
+            const m = /^([\d.]+)(px)?$/.exec(el.getAttribute('font-size') || '');
+            return m ? parseFloat(m[1]) : NaN;
+        }
+        const byParent = new Map();
+        root.querySelectorAll('text').forEach(function (t) {
+            const p = t.parentNode;
+            if (!p) { return; }
+            if (!byParent.has(p)) { byParent.set(p, []); }
+            byParent.get(p).push(t);
+        });
+        byParent.forEach(function (texts) {
+            let i = 0;
+            while (i < texts.length) {
+                const first = texts[i];
+                const fs = fontSizeOf(first);
+                const key = styleKey(first);
+                const x0 = parseFloat(first.getAttribute('x'));
+                const cluster = [first];
+                let cursor = first;
+                let yPrev = parseFloat(first.getAttribute('y'));
+                for (;;) {
+                    const next = cursor.nextElementSibling;
+                    if (!next || next.tagName !== 'text') { break; }
+                    if (styleKey(next) !== key) { break; }
+                    if (!isFinite(x0) || Math.abs(parseFloat(next.getAttribute('x')) - x0) > 0.5) { break; }
+                    const dy = parseFloat(next.getAttribute('y')) - yPrev;
+                    if (!isFinite(fs) || !(dy >= 0.4 * fs && dy <= 3 * fs)) { break; }
+                    cluster.push(next);
+                    yPrev = parseFloat(next.getAttribute('y'));
+                    cursor = next;
+                }
+                if (cluster.length >= 2) {
+                    const merged = doc.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    for (let k = 0; k < first.attributes.length; k++) {
+                        const a = first.attributes[k];
+                        if (a.name !== 'x' && a.name !== 'y') { merged.setAttribute(a.name, a.value); }
+                    }
+                    cluster.forEach(function (line) {
+                        const tspan = doc.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+                        tspan.setAttribute('x', line.getAttribute('x'));
+                        tspan.setAttribute('y', line.getAttribute('y'));
+                        while (line.firstChild) { tspan.appendChild(line.firstChild); }
+                        merged.appendChild(tspan);
+                    });
+                    first.parentNode.insertBefore(merged, first);
+                    cluster.forEach(function (line) { line.parentNode.removeChild(line); });
+                    i += cluster.length;
+                } else {
+                    i += 1;
+                }
+            }
+        });
+    }
+    mergeMultilineLabels();
+
+    // 6. Empty groups (the serializer's trailing restore artifact).
     root.querySelectorAll('g').forEach(function (g) {
         if (!g.firstElementChild) { g.parentNode.removeChild(g); }
     });
 
-    // 6. Edge fusion + stroke-to-geometry. PowerPoint's converter turns
+    // 7. Edge fusion + stroke-to-geometry. PowerPoint's converter turns
     //    every path into its own shape and has two failure modes this
     //    export must not feed it: <line> elements whose extent is
     //    degenerate (a near-vertical shaft's box width rounds to ~0;
@@ -463,14 +547,14 @@ function sanitizeSvgForOffice(svgText) {
         }
     }
 
-    // 7. viewBox from width/height when missing.
+    // 8. viewBox from width/height when missing.
     if (!root.getAttribute('viewBox') && root.getAttribute('width') && root.getAttribute('height')) {
         const w = parseFloat(root.getAttribute('width'));
         const h = parseFloat(root.getAttribute('height'));
         if (isFinite(w) && isFinite(h)) { root.setAttribute('viewBox', '0 0 ' + w + ' ' + h); }
     }
 
-    // 8. Two global groups: all geometry under id="shapes", all node
+    // 9. Two global groups: all geometry under id="shapes", all node
     //    labels under id="texts". The serializer nests save/restore groups
     //    whose translate transforms vary per draw phase (nodes can even
     //    land outside the outer wrapper), so elements are collected with

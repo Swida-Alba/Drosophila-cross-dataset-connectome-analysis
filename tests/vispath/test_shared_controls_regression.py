@@ -66,17 +66,22 @@ class TestSharedBlockSingleSourceOfTruth:
         assert net_html.count(SHARED_MARKER) == 1
         assert net_html.count("function isColorDark(color)") == 1
         assert net_html.count("function exportSVG()") == 1
+        # multi-line labels re-merge into one <text> with <tspan> children
+        assert net_html.count("function mergeMultilineLabels()") == 1
+        assert net_html.count("mergeMultilineLabels();") == 1
 
     def test_sankey_embeds_shared_block_once(self, tmp_path):
         _, sankey_html = _network_sankey_htmls(tmp_path)
         assert sankey_html.count(SHARED_MARKER) == 1
         assert sankey_html.count("function isColorDark(color)") == 1
         assert sankey_html.count("function exportPNG()") == 1
+        assert sankey_html.count("function mergeMultilineLabels()") == 1
 
     def test_heatmap_embeds_shared_block_once(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
         assert heat_html.count(SHARED_MARKER) == 1
         assert heat_html.count("function isColorDark(color)") == 1
+        assert heat_html.count("function mergeMultilineLabels()") == 1
 
     def test_heatmap_has_both_export_buttons(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
