@@ -13611,9 +13611,13 @@ class FindNeuronConnection:
         OUTPUT and reports τ. Shortest mode is never floored.
 
         The pruned non-empty layer tables are returned so the caller can
-        build the graph layer by layer — identical result (add_edge sums
-        duplicate pairs across layers) without materializing a full
-        ``pl.concat`` copy of every layer (~1 GB at a few million rows).
+        build the graph layer by layer (a full ``pl.concat`` of every
+        layer is a ~1 GB duplicate at a few million rows). 'all' mode
+        relies on add_edge SUMMING duplicate pairs across layers (the
+        documented semantics); 'shortest' mode gets ONE deduped merged
+        frame instead — the per-layer duplicates there are per-target-BFS
+        refetches of the same physical edge, and summing them multiplied
+        weights by the fetch multiplicity (engine issue 2026-10-05 I1).
         """
         # Round-13 AND mode under the synapse basis: the ratio
         # co-threshold gates the GRAPH FRAMES too. The live fetch already
@@ -13770,10 +13774,68 @@ class FindNeuronConnection:
                         'edge_budget': self.graph_edge_limit_bodyid,
                         'edges_before': floor_stats.get('edges_before'),
                     }
-        return [
+        frames_out = [
             c for c in conn_layers
             if not (c.is_empty() if hasattr(c, 'is_empty') else c.empty)
         ]
+        if path_mode == 'shortest' and frames_out:
+            # Engine issue 2026-10-05 (I1): shortest mode's per-layer
+            # frames carry per-target-BFS REFETCHES of the same physical
+            # edge (a post can sit at different reverse depths for two
+            # targets), and build_from_dataframe/add_edge SUMS duplicate
+            # pairs across frames — the enumeration graph multiplied each
+            # recurring edge's weight by its fetch multiplicity (real
+            # run: [26, 43] exported as [52, 129]). Feed the graph ONE
+            # row per pair (the first fetch's weight). 'all' mode keeps
+            # the documented cross-layer summation (docs/OUTPUT_FILES.md).
+            # Only the columns the graph build and the ratio cone read
+            # survive the merge.
+            import polars as _pl_sd
+            _sd_frames = [
+                (t if hasattr(t, 'iter_rows') else _pl_sd.from_pandas(t))
+                for t in frames_out]
+            _keep = ['bodyId_pre', 'bodyId_post', 'weight']
+            if all('weight_ratio' in t.columns for t in _sd_frames):
+                _keep.append('weight_ratio')
+            frames_out = [self._dedup_physical_edge_rows(
+                _pl_sd.concat([t.select(_keep) for t in _sd_frames]),
+                'shortest weights')]
+        return frames_out
+
+    def _dedup_physical_edge_rows(self, frame, note_label):
+        """One row per (bodyId_pre, bodyId_post) — the PHYSICAL edge.
+
+        Engine issue 2026-10-05 (I1): in shortest mode the same (pre,
+        post) edge is fetched once per backward BFS layer it recurs in,
+        and every fetch carries the same physical weight. Aggregations
+        that SUM those rows — FastGraph.add_edge across layer frames, the
+        path tables' per-pair join — multiplied the weight by the fetch
+        multiplicity. Keep the first fetch's row; duplicate fetches that
+        disagree on weight are disclosed through a warning note (they
+        should not exist — same physical edge, same connection table).
+        The input frame is never mutated."""
+        if hasattr(frame, 'iter_rows'):   # polars
+            mismatched = (frame.group_by(['bodyId_pre', 'bodyId_post'])
+                          .agg([pl.col('weight').min().alias('_w_min'),
+                                pl.col('weight').max().alias('_w_max')])
+                          .filter(pl.col('_w_min') != pl.col('_w_max'))
+                          .height)
+            dedup = frame.unique(
+                subset=['bodyId_pre', 'bodyId_post'], keep='first',
+                maintain_order=True)
+        else:                             # pandas
+            _agg = frame.groupby(
+                ['bodyId_pre', 'bodyId_post'])['weight'].agg(['min', 'max'])
+            mismatched = int((_agg['min'] != _agg['max']).sum())
+            dedup = frame.drop_duplicates(
+                subset=['bodyId_pre', 'bodyId_post'], keep='first')
+        if mismatched:
+            note = (f'- [{note_label}] {mismatched:,} edge pair(s) carried '
+                    'DIFFERENT weights across fetch layers — the first '
+                    'fetch was kept.')
+            if note not in self._warn_notes:
+                self._warn_notes.append(note)
+        return dedup
 
     def _attach_weight_ratio_columns(self, conn_layers):
         """Ratio lane switch point 2 (§16.2): join the F9 all-post
@@ -14392,6 +14454,54 @@ class FindNeuronConnection:
             path_prob *= p
         return ratios, probs, path_prob, (min(ratios) if ratios else None)
 
+    def _realized_ratio_type_mass(self, post_types):
+        """ONE canonical per-type incoming-mass map per run (engine issue
+        2026-10-05, I2): the dataset-wide F9 type fetch — the SAME source
+        the connection tables' connection_ratio denominators use — so the
+        type-path per-hop Ratios and data_details/connection_type.csv can
+        never disagree on a type's mass. The per-member neuron-total sums
+        over the frame membership only guard the case where the type fetch
+        is unavailable (best-effort; unresolved types simply fall back to
+        the join values path by path)."""
+        wanted = sorted({str(t) for t in post_types if str(t).strip()})
+        if not wanted:
+            return {}
+        mass = {}
+        try:
+            fetched = self._fetch_total_incoming_weight_by_type(wanted, 1)
+            if fetched is not None and len(fetched):
+                for row in fetched.itertuples():
+                    if row.total_incoming_weight > 0:
+                        mass[str(row.type_post)] = float(
+                            row.total_incoming_weight)
+        except Exception:
+            pass
+        missing = [t for t in wanted if t not in mass]
+        if missing:
+            members = getattr(self, '_ratio_lane_type_members', None) or {}
+            totals = getattr(self, '_ratio_lane_totals', None)
+            if totals is None:
+                totals = {}
+                member_ids = sorted(
+                    {b for t in missing for b in members.get(t, ())})
+                try:
+                    if member_ids:
+                        fetched = self._fetch_total_incoming_weight(
+                            member_ids, 1)
+                        if fetched is not None and len(fetched):
+                            totals = {
+                                str(r.bodyId_post):
+                                    float(r.total_incoming_weight)
+                                for r in fetched.itertuples()}
+                except Exception:
+                    pass
+            if totals:
+                for t in missing:
+                    m = sum(totals.get(b, 0.0) for b in members.get(t, ()))
+                    if m > 0:
+                        mass[t] = m
+        return mass
+
     @staticmethod
     def _network_type_membership_counts(all_paths, layer_neurons, node_label):
         """N of the per-node coverage lists: the type's membership in the
@@ -14780,20 +14890,16 @@ class FindNeuronConnection:
             members = getattr(self, '_ratio_lane_type_members', None) or {}
             type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
                          for label, bids in members.items()}
-            # Prefer the DATASET-WIDE type masses (the enrichment's own
-            # F9 type fetch): the frame membership misses never-fetched
-            # members, whose incoming mass still belongs to the type.
-            try:
-                _gt = self._fetch_total_incoming_weight_by_type(
-                    sorted({str(r) for r in ct_pd['type_post']
-                            if pd.notna(r)}), 1)
-                if _gt is not None and len(_gt):
-                    for _row in _gt.itertuples():
-                        if _row.total_incoming_weight > 0:
-                            type_mass[str(_row.type_post)] = float(
-                                _row.total_incoming_weight)
-            except Exception:
-                pass
+            # Prefer the DATASET-WIDE type masses via the canonical map
+            # (engine issue 2026-10-05 I2): the frame membership misses
+            # never-fetched members, whose incoming mass still belongs to
+            # the type — and ONE shared fetch backs both this recompute
+            # and the type-path per-hop Ratios, so the two surfaces cannot
+            # diverge on a type's mass.
+            for _label, _m in self._realized_ratio_type_mass(
+                    {str(r) for r in ct_pd['type_post']
+                     if pd.notna(r)}).items():
+                type_mass[_label] = _m
             # Stash for the realized path-ratio patch (round-11): the
             # per-hop Ratios on the type paths divide the hop's REALIZED
             # mass by the same type_mass the pair-level recompute used.
@@ -20082,10 +20188,25 @@ class FindNeuronConnection:
                 # ratios/coverage remain the conn-table truth in
                 # data_details/connection_type.csv.
                 _weights_changed_paths = 0
-                _ratio_lane_now = (getattr(self, 'weight_basis', 'synapse')
-                                   == 'connection_ratio')
-                _type_mass = (getattr(self, '_ratio_lane_type_mass', None)
-                              or {}) if _ratio_lane_now else {}
+                # Engine issue 2026-10-05 (I2): the realized per-hop Ratios
+                # apply on EVERY weight basis, not just the ratio lane. The
+                # streaming join stamps each hop with the MEAN over the
+                # pair's per-conn-layer rows, which understates any hop
+                # whose pair connects at several depths (real run:
+                # aMe3->s-CPDN3A exported mean(0.0796, 0.0534, 0.0796) =
+                # 0.0709 while connection_type.csv carried 617/7747 =
+                # 0.0796 — one run, two denominators). The denominator is
+                # ONE canonical per-type mass map: the ratio lane's stash
+                # when present, else the same dataset-wide F9 type fetch
+                # the conn tables' own ratios used.
+                _type_mass = dict(
+                    getattr(self, '_ratio_lane_type_mass', None) or {})
+                if not _type_mass:
+                    _mass_want = set()
+                    for _seq_key in (_realized_w or {}):
+                        _mass_want.update(
+                            str(_lab) for _lab in _seq_key[1:])
+                    _type_mass = self._realized_ratio_type_mass(_mass_want)
                 try:
                     def _fmt_w(x):
                         return (str(int(x)) if float(x).is_integer()
@@ -20095,7 +20216,11 @@ class FindNeuronConnection:
                         nonlocal _weights_changed_paths
                         new_w, new_mw = [], []
                         new_r = new_p = new_mr = new_pp = None
-                        if _ratio_lane_now:
+                        _ratio_cols_ok = all(
+                            c in df.columns for c in
+                            ('ratios', 'probabilities', 'min_ratio',
+                             'path_prob'))
+                        if _ratio_cols_ok:
                             new_r, new_p, new_mr, new_pp = [], [], [], []
                             _rows = zip(df['path'].to_list(),
                                         df['weights'].to_list(),
@@ -20134,7 +20259,7 @@ class FindNeuronConnection:
                                 new_w.append(
                                     _old_w if _old_w is not None else '')
                                 new_mw.append(_old_mw)
-                            if _ratio_lane_now:
+                            if _ratio_cols_ok:
                                 _rr = (self._realized_ratio_readout(
                                     _rw if _ok else None, _seq, _type_mass))
                                 if _rr is not None:
@@ -20166,7 +20291,7 @@ class FindNeuronConnection:
                                 dtype=(pl.Int64 if _mw_all_int
                                        else pl.Float64)),
                         ]
-                        if _ratio_lane_now:
+                        if _ratio_cols_ok:
                             cols += [
                                 pl.Series('ratios', new_r, dtype=pl.Utf8),
                                 pl.Series('probabilities', new_p,
@@ -20201,13 +20326,13 @@ class FindNeuronConnection:
                         'depths. Cross-depth pair totals remain in '
                         'data_details/connection_type.csv (weight summed '
                         'over conn_layer) and in the type matrices.')
-                    if _ratio_lane_now:
-                        _w_note += (
-                            ' Per-hop Ratios/Min ratio/Path prob are the '
-                            'REALIZED shares (realized mass / the post '
-                            'type\'s full-membership incoming mass); '
-                            'pair-level ratios and type_coverage remain '
-                            'in data_details/connection_type.csv.')
+                    _w_note += (
+                        ' Per-hop Ratios/Min ratio/Path prob are the '
+                        'REALIZED shares (realized mass / the post '
+                        'type\'s full-membership incoming mass — the same '
+                        'canonical denominator as connection_type.csv); '
+                        'pair-level ratios and type_coverage remain '
+                        'in data_details/connection_type.csv.')
                     self._warn_notes.append(_w_note)
 
                 sort_cols = []
@@ -20540,9 +20665,23 @@ class FindNeuronConnection:
             type_lookup.update(dict(zip(self.target_df['bodyId'].tolist(),
                                         self.target_df['type'].tolist())))
 
+            # Engine issue 2026-10-05 (I1): the bodyId path table's join
+            # aggregates duplicate (pre, post) rows with weight SUM — in
+            # shortest mode those duplicates are per-target-BFS refetches
+            # of ONE physical edge, so the exported per-hop
+            # Weights/min_weight carried the fetch multiplicity (a path
+            # over physical edges [26, 43] exported [52, 129]). Join on
+            # the deduped frame so every hop shows the physical weight;
+            # connection_info_bodyId.csv keeps the per-layer rows (the
+            # audit surface for what was fetched).
+            _conn_bodyid_join = conn_inpath
+            if (path_mode == 'shortest' and conn_inpath is not None
+                    and len(conn_inpath)):
+                _conn_bodyid_join = self._dedup_physical_edge_rows(
+                    conn_inpath, 'shortest weights')
             path_df_bodyId = sv.build_path_dataframe_from_paths(
                 paths=all_paths,
-                conn_data=conn_inpath,
+                conn_data=_conn_bodyid_join,
                 targets=self.target_df.loc[self.target_df.Checked,'bodyId'].tolist(),
                 real_layer_map=real_layer_map_bodyId if forward_only else None,
                 level='bodyId',

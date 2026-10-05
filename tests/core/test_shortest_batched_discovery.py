@@ -321,13 +321,16 @@ def test_pipeline_batched_equals_monolithic(monkeypatch, tmp_path, synth_types):
                for line in _note_lines(_notes(fc_batch)))
 
 
-def test_pipeline_weight_multiplicity_preserved(
+def test_pipeline_layer_recurred_edge_exports_physical_weight(
         monkeypatch, tmp_path, synth_types):
-    """The cross-layer duplicate case: A sits at reverse depth 1 for T1
-    and depth 2 for T2, so S1->A is fetched in TWO conn layers and the
-    monolithic graph sums its weight. The batched store must reproduce
-    the doubled weight (a pair-deduped store would halve it and reorder
-    the emission)."""
+    """Engine issue 2026-10-05 (I1): the cross-layer duplicate case. A
+    sits at reverse depth 1 for T1 and depth 2 for T2, so S1->A is
+    fetched in TWO conn layers — but those are per-target-BFS REFETCHES
+    of ONE physical edge (weight 7 in both). The exported bodyId weights
+    must show the PHYSICAL weight once ([7, 12], not the fetch-multiplied
+    [14, 12] the old cross-layer add_edge sum produced), the monolithic
+    and batched twins must agree, and the store keeps both layer rows
+    verbatim (the audit surface for what was fetched)."""
     fc_mono, fc_batch, _, _ = _run_monolithic_vs_batched(
         monkeypatch, tmp_path)
 
@@ -339,10 +342,11 @@ def test_pipeline_weight_multiplicity_preserved(
     batch_rows = s1_rows(fc_batch)
     s1_a_t1 = 'S1->A->T1'
     assert s1_a_t1 in mono_rows and s1_a_t1 in batch_rows
-    # weight column carries the DOUBLED S1->A weight (7 fetched twice)
     assert mono_rows[s1_a_t1] == batch_rows[s1_a_t1]
+    # weight column carries the PHYSICAL S1->A weight exactly once
     weights = batch_rows[s1_a_t1][1]
-    assert weights == '[14, 12]', weights
+    assert weights == '[7, 12]', weights
+    assert batch_rows[s1_a_t1][4] == 7   # min_weight = physical too
     # and the store itself kept both layer rows
     store = os.path.join(fc_batch.allpath_folder,
                          'shortest_discovery_store', 'connections')

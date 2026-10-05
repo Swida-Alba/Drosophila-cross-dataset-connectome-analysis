@@ -21,16 +21,19 @@ This module replaces the per-target resident maps with:
   distance maps; the per-batch emissions are merged in batch order and
   the global StrongestFirst budget/tau tie-drain applies exactly once.
 
-Weight fidelity (plan §3.A / §4): ``connections/`` keeps the finalized
-per-layer frames exactly as the monolithic pipeline produced them — one
-file per ``conn_layer`` — because ``FastGraph.build_from_dataframe`` runs
-per layer and ``add_edge`` SUMS duplicate ``(pre, post)`` rows across
-layers. A post can sit at different reverse depths for two targets (its
-distance differs per target), so the same edge row is legitimately fetched
-into two layer frames; collapsing the store to one row per unique pair
-would silently change every bottleneck computed after it. The store
-therefore preserves ``conn_layer`` granularity end to end, and the batch
-graphs sum per-layer weights exactly like the monolithic build.
+Weight fidelity (plan §3.A / §4, REVISED by engine issue 2026-10-05 I1):
+``connections/`` keeps the finalized per-layer frames exactly as the
+monolithic pipeline produced them — one file per ``conn_layer`` — because
+the layer granularity is the audit surface for what was fetched (a post
+can sit at different reverse depths for two targets, so the same edge row
+is legitimately fetched into two layer frames). The frames are NOT the
+enumeration semantics, though: every fetch of a pair carries the same
+PHYSICAL weight, so the enumeration graph dedups (pre, post) to one row
+(see ``load_edge_weight_frame`` and coana's ``_graph_edge_frames``
+shortest gate) — summing the per-layer refetches multiplied weights by
+the fetch multiplicity (2.000x/3.000x measured on a real run). 'all'
+mode keeps the documented cross-layer summation; the store preserves
+``conn_layer`` granularity end to end either way.
 """
 
 from __future__ import annotations
@@ -445,8 +448,9 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
 
         # The finalized per-layer frame IS the store's connections row
         # group for this layer — written verbatim (plan §3.A: keep the
-        # conn_layer granularity; add_edge's cross-layer sums depend on
-        # it downstream).
+        # conn_layer granularity as the audit surface; the enumeration
+        # dedups (pre, post) to the physical weight at consumption —
+        # engine issue 2026-10-05 I1).
         conn_pl = fc._as_polars_conn_frame(conn_df).with_columns(
             pl.lit(f'{reverse_depth}->{reverse_depth + 1}').alias(
                 'conn_layer'
@@ -683,17 +687,24 @@ def load_target_dag_edges(store_dir, targets):
     return result
 
 
-def load_edge_weight_frame(store_dir):
-    """Compact polars frame of ``{(pre, post): summed weight}``.
+def load_edge_weight_frame(store_dir, warn=None):
+    """Compact polars frame of ``{(pre, post): PHYSICAL weight}``.
 
-    The sum runs across ``conn_layer`` files exactly like the monolithic
-    per-layer ``build_from_dataframe`` calls (add_edge sums duplicate
-    pairs across layers), so batch-graph weights match the monolithic
-    ``FastGraph.adj`` bit for bit — including the cross-layer multiplicity
-    of a post that sits at two reverse depths for different targets.
-    Kept as one polars row per unique pair (hundreds of MB at L4 scale,
-    versus gigabytes for an equivalent Python dict); per-batch slices
-    come from ``weights_for_pairs``.
+    Engine issue 2026-10-05 (I1): the per-layer duplicates in
+    ``connections_L{d}.parquet`` are per-target-BFS REFETCHES of the same
+    physical edge — a post can sit at different reverse depths for two
+    targets, so the same edge row legitimately lands in two layer frames —
+    and every fetch carries the same physical weight. The former
+    cross-layer SUM therefore multiplied the enumeration weight by the
+    fetch multiplicity (real run: one bodyId path exported weights
+    [52, 129] for physical edges of [26, 43] — exactly 2x/3x the number of
+    backward layers each edge was fetched in). The frame now keeps ONE row
+    per pair, the first fetch's weight; duplicate fetches that DISAGREE on
+    weight are counted and surfaced through ``warn(n)`` (a fetch
+    inconsistency, not biology — the on-disk frames stay verbatim as the
+    audit surface). One polars row per unique pair (hundreds of MB at L4
+    scale, versus gigabytes for an equivalent Python dict); per-batch
+    slices come from ``weights_for_pairs``.
     """
     scans = [
         pl.scan_parquet(path).select(
@@ -704,11 +715,19 @@ def load_edge_weight_frame(store_dir):
         return pl.DataFrame(schema={'bodyId_pre': pl.Utf8,
                                     'bodyId_post': pl.Utf8,
                                     'weight': pl.Int64})
-    return (pl.concat(scans)
-            .group_by(['bodyId_pre', 'bodyId_post'])
-            .agg(pl.col('weight').sum().alias('weight'))
-            .sort(['bodyId_pre', 'bodyId_post'])
-            .collect())
+    frame = (pl.concat(scans)
+             .group_by(['bodyId_pre', 'bodyId_post'])
+             .agg([pl.col('weight').first().alias('weight'),
+                   pl.col('weight').min().alias('_w_min'),
+                   pl.col('weight').max().alias('_w_max')])
+             .sort(['bodyId_pre', 'bodyId_post'])
+             .collect())
+    mismatched = frame.filter(
+        pl.col('_w_min') != pl.col('_w_max')).height
+    frame = frame.drop('_w_min', '_w_max')
+    if mismatched and warn is not None:
+        warn(mismatched)
+    return frame
 
 
 def weights_for_pairs(weight_frame, pairs):
@@ -907,9 +926,10 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
     """Budgeted batched enumeration over the discovery store.
 
     Per batch: slice the store's DAG edges + distance maps, build a
-    standalone ``FastGraph`` whose edge weights are the per-layer-summed
-    store weights (monolithic parity, see ``load_edge_weight_frame``),
-    enumerate with ``budget=None, payload=True``, then free the graph.
+    standalone ``FastGraph`` whose edge weights are the store's PHYSICAL
+    per-pair weights (deduped across conn layers — engine issue
+    2026-10-05 I1 — see ``load_edge_weight_frame``), enumerate with
+    ``budget=None, payload=True``, then free the graph.
     The batch emissions are merged in batch order and the global budget /
     tau tie-drain applies exactly once — via the same shared drain the
     monolithic enumerator uses — so stats and emission order are
@@ -929,13 +949,22 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
         merge_shortest_batch_emissions,
     )
 
+    def _weight_mismatch_note(n):
+        fc._warn_notes.append(
+            f'- [shortest weights] {n} edge pair(s) were fetched with '
+            'DIFFERENT weights across backward layers — the first fetch '
+            'was kept for enumeration. The on-disk '
+            'shortest_discovery_store/connections/ frames retain every '
+            'row for audit.')
+
     weight_frame = None
     emissions = []
     for batch in batches:
         dag_edges = load_target_dag_edges(store_dir, batch)
         seeds = load_target_distances(store_dir, batch)
         if weight_frame is None:
-            weight_frame = load_edge_weight_frame(store_dir)
+            weight_frame = load_edge_weight_frame(
+                store_dir, warn=_weight_mismatch_note)
 
         graph = FastGraph()
         batch_pairs = set()
@@ -979,11 +1008,11 @@ def _dir_size_bytes(path):
 def _compact_connections(store_dir):
     """Merge the per-layer connection frames into one 4-column file.
 
-    Rows keep their exact (layer, chunk, row) order, so the cross-layer
-    (pre, post, conn_layer) multiplicity that the graph's add_edge sums
-    are built from survives verbatim; only the fetch-dependent label /
-    roi / ratio columns are dropped (re-derivable solely by re-running
-    discovery).
+    Rows keep their exact (layer, chunk, row) order, so the fetch's
+    cross-layer (pre, post, conn_layer) multiplicity — the audit surface
+    the enumeration's physical-weight dedup reads against — survives
+    verbatim; only the fetch-dependent label / roi / ratio columns are
+    dropped (re-derivable solely by re-running discovery).
     """
     frames = []
     for _layer, path in _conn_layer_files(store_dir):

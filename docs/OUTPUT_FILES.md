@@ -341,9 +341,16 @@ across all three modes; the mode, sizes and removals are recorded in
     type / instance / nt / custom-group / ratio columns that layer's
     fetch produced — per-layer schemas can differ and are preserved
     verbatim). One file per `conn_layer`; the
-    per-layer granularity is deliberate — the pathfinding graph sums
-    duplicate `(pre, post)` rows across layers, so collapsing the files
-    would change reported path bottlenecks.
+    per-layer granularity is deliberate — it is the audit surface for
+    WHAT was fetched (an edge whose post sits at two reverse depths for
+    different targets recurs in two files with the same physical
+    weight). It is not the weight semantics: the enumeration and the
+    exported per-hop Weights/min_weight use the PHYSICAL weight — one
+    row per `(pre, post)`, first fetch kept — because summing the
+    per-layer refetches multiplied weights by the fetch multiplicity
+    (engine fix 2026-10-05: a real run exported [52, 129] for physical
+    edges of [26, 43]). 'all' mode keeps the documented cross-layer
+    summation.
 *   **`node_distances/node_distances_L{d}_c{k}.parquet`**: per-target BFS
     distance labels `(target, node, dist)` streamed at discovery time
     (`0` = the target itself); enumeration rehydrates these per batch.

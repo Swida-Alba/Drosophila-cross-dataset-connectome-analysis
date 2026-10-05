@@ -6706,10 +6706,16 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
         # ALL sources) are used when supplied; post neurons missing from the
         # global table fall back to the LOCAL total over this table so ratios
         # never collapse to 0/undefined.
+        # Engine issue 2026-10-05 (I1 hardening): the local fallback sums
+        # weight over DISTINCT (pre, post) pairs — an edge recurring across
+        # conn layers is one physical edge, and summing it once per fetch
+        # would inflate the fallback denominator (and understate ratios).
+        conn_local_base = conn_df.drop_duplicates(
+            subset=['bodyId_pre', 'bodyId_post'])
         if global_incoming_body_weights is not None and 'bodyId_post' in global_incoming_body_weights.columns:
             total_incoming = global_incoming_body_weights[['bodyId_post', 'total_incoming_weight']].copy()
             total_incoming['bodyId_post'] = total_incoming['bodyId_post'].astype(str)
-            local_total = conn_df.groupby('bodyId_post')['weight'].sum().reset_index(name='local_total_incoming')
+            local_total = conn_local_base.groupby('bodyId_post')['weight'].sum().reset_index(name='local_total_incoming')
             total_incoming = total_incoming.merge(local_total, on='bodyId_post', how='left')
             total_incoming['total_incoming_weight'] = total_incoming['total_incoming_weight'].fillna(
                 total_incoming['local_total_incoming']
@@ -6717,7 +6723,7 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
             total_incoming = total_incoming.drop(columns=['local_total_incoming'])
             conn_df = conn_df.merge(total_incoming, how='left', on='bodyId_post')
         else:
-            total_incoming = conn_df.groupby('bodyId_post')['weight'].sum().reset_index(name='total_incoming_weight')
+            total_incoming = conn_local_base.groupby('bodyId_post')['weight'].sum().reset_index(name='total_incoming_weight')
             conn_df = conn_df.merge(total_incoming, how='left', on='bodyId_post')
         
         # Calculate connection_ratio using the (global if available, else local) denominator

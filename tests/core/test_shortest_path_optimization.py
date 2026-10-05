@@ -341,3 +341,132 @@ def test_pipeline_no_longer_second_filters(monkeypatch, tmp_path, capsys):
     fc2._verify_shortest_bodyid_paths([["S", "A", "T"], ["S", "B", "C", "T"]])
     assert any("shortest invariant violation" in n
                for n in fc2._warn_notes)
+
+
+# ---------------------------------------------------------------------------
+# 7. Engine issue 2026-10-05 (I2): one type, one ratio denominator per run
+# ---------------------------------------------------------------------------
+
+_DENOM_EDGES = [
+    # S->A2->T1 (2 hops) and S->A->X->T2 (3 hops): the (TS, TA) type pair
+    # realizes at TWO conn layers with DIFFERENT masses (9 at the nearer
+    # depth, 7 at the farther) — the audited aMe3->s-CPDN3A split, where
+    # the type-path per-hop Ratio showed the MEAN over the pair's layer
+    # rows while connection_type.csv showed the single-type-mass value.
+    ("S", "A2", 9), ("A2", "T1", 12),
+    ("S", "A", 7), ("A", "X", 4), ("X", "T2", 5),
+    # never-reachable background mass: belongs to the type denominators
+    # (full-membership incoming mass) but never to any path
+    ("B1", "T1", 100), ("B1", "T2", 37), ("B1", "A2", 50),
+    ("B1", "A", 11), ("B1", "X", 13),
+]
+
+# dataset-wide full-membership incoming masses implied by _DENOM_EDGES
+_DENOM_TYPE_MASS = {"TA": 77.0, "TX": 17.0, "TT": 154.0}
+_DENOM_NEURON_TOTAL = {
+    "A": 18.0, "A2": 59.0, "X": 17.0, "T1": 112.0, "T2": 42.0,
+}
+
+
+@pytest.fixture()
+def denom_types():
+    """Type the _DENOM_EDGES nodes for the shared pipeline fixture."""
+    from tests.core.test_pathfinding import _PIPELINE_TYPES
+    saved = dict(_PIPELINE_TYPES)
+    _PIPELINE_TYPES.update({
+        "S": "TS", "A": "TA", "A2": "TA", "X": "TX",
+        "T1": "TT", "T2": "TT", "B1": "TB"})
+    yield _PIPELINE_TYPES
+    _PIPELINE_TYPES.clear()
+    _PIPELINE_TYPES.update(saved)
+
+
+def test_type_path_ratios_share_conn_table_denominator(
+        monkeypatch, tmp_path, denom_types):
+    """The type-path per-hop Ratio and connection_type.csv must imply the
+    SAME per-type mass. The realized readout (hop mass / the post type's
+    full-membership incoming mass) applies on the synapse basis too — the
+    old join value was the MEAN over the pair's per-layer rows (here
+    mean(9/77, 7/77) = 8/77 for a hop that realizes 9/77)."""
+    fc, _, _ = _pipeline(
+        monkeypatch, tmp_path, _DENOM_EDGES, max_interlayer=3,
+        source_ids=("S",), target_ids=("T1", "T2"))
+
+    # Real denominators: dataset-wide type masses + per-neuron totals
+    # (the same F9 fetches the production conn tables use).
+    monkeypatch.setattr(
+        FindNeuronConnection, "_fetch_total_incoming_weight_by_type",
+        lambda self, types, *a, **k: pd.DataFrame({
+            "type_post": [str(t) for t in types],
+            "total_incoming_weight": [
+                _DENOM_TYPE_MASS.get(str(t), 0.0) for t in types]}))
+    monkeypatch.setattr(
+        FindNeuronConnection, "_fetch_total_incoming_weight",
+        lambda self, posts, *a, **k: pd.DataFrame({
+            "bodyId_post": [str(p) for p in posts],
+            "total_incoming_weight": [
+                _DENOM_NEURON_TOTAL.get(str(p), 0.0) for p in posts]}))
+
+    # Enrichment with REAL per-row ratios: weight / the post type's mass
+    # (what EnrichConnectionTable computes in production from the same
+    # fetch, instead of the shared harness's constant 0.5).
+    def enrich(conn, **kwargs):
+        def _attach_ratio(frame, post_col):
+            posts = [str(v) for v in frame[post_col].to_list()]
+            weights = [float(v) for v in frame["weight"].to_list()]
+            return frame.with_columns(
+                pl.Series("connection_ratio",
+                          [(w / _DENOM_TYPE_MASS[p])
+                           if p in _DENOM_TYPE_MASS else None
+                           for w, p in zip(weights, posts)],
+                          dtype=pl.Float64))
+
+        conn_e = _attach_ratio(conn, "type_post").with_columns(
+            pl.lit(0.5).alias("traversal_probability"))
+        conn_t = (_attach_ratio(
+            conn_e.group_by(["type_pre", "type_post"])
+                  .agg(pl.col("weight").sum()), "type_post")
+            .with_columns(pl.lit(0.5).alias("traversal_probability")))
+        return conn_e, conn_t, None
+
+    monkeypatch.setattr(coana.sv, "EnrichConnectionTable", enrich)
+    fc.FindShortestPath()
+
+    # Surface 1: the type paths. TS->TA->TT realizes S->A2->T1, so its
+    # hops carry the realized masses 9 and 12 over the type masses 77 and
+    # 154 — NOT the cross-layer mean (8/77) or the pair sum (16/77).
+    import ast
+    type_csv = os.path.join(
+        fc.allpath_folder, "src_to_tgt_allpaths_type.csv")
+    type_rows = {
+        row[0]: row for row in pl.read_csv(type_csv).iter_rows()}
+    assert "TS->TA->TT" in type_rows, sorted(type_rows)
+    hop_ratios = ast.literal_eval(type_rows["TS->TA->TT"][3])
+    assert hop_ratios[0] == pytest.approx(9 / 77)
+    assert hop_ratios[1] == pytest.approx(12 / 154)
+
+    # Surface 2: the connection table rows backing those hops imply the
+    # SAME denominators (weight / connection_ratio == the type mass).
+    conn_csv = os.path.join(
+        fc.allpath_folder, "data_details", "connection_type.csv")
+    conn = pl.read_csv(conn_csv)
+    ta_tt = conn.filter(
+        (pl.col("type_pre") == "TA") & (pl.col("type_post") == "TT"))
+    assert ta_tt.height == 1
+    assert ta_tt["weight"][0] == 12
+    assert ta_tt["connection_ratio"][0] == pytest.approx(12 / 154)
+    assert 12 / ta_tt["connection_ratio"][0] == pytest.approx(
+        _DENOM_TYPE_MASS["TT"])
+    # and the hop ratio equals the conn-table row's ratio exactly — one
+    # run, one denominator
+    assert hop_ratios[1] == pytest.approx(ta_tt["connection_ratio"][0])
+    # the multi-layer pair (TS, TA) keeps BOTH per-layer rows with the
+    # same single-fetch mass on each
+    ts_ta = conn.filter(
+        (pl.col("type_pre") == "TS") & (pl.col("type_post") == "TA"))
+    assert sorted(ts_ta["weight"].to_list()) == [7, 9]
+    for w, r in zip(ts_ta["weight"].to_list(),
+                    ts_ta["connection_ratio"].to_list()):
+        assert w / r == pytest.approx(_DENOM_TYPE_MASS["TA"])
+    assert hop_ratios[0] == pytest.approx(
+        9 / _DENOM_TYPE_MASS["TA"])
