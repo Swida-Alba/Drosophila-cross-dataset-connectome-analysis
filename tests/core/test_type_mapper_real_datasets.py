@@ -669,12 +669,13 @@ def test_get_alias_candidates_apdn3_real(mapper):
     banc = _candidate(res, BANC, 'APDN3')
     assert banc['kind'] == 'same name'
     assert banc['aggregates'] is None
-    # male-cns side: the refused reverse aggregation exposes the group.
+    # male-cns side: round-16 licenses the reverse — the group is offered
+    # as a type-pool split, not refused.
     mcns = res[MCNS]
     assert mcns['outcome'] == 'matched'
     assert [c['name'] for c in mcns['candidates']] == [
         'CL125', 'PLP080', 'SLP249', 'SLP250']
-    assert all(c['kind'] == 'one of N' for c in mcns['candidates'])
+    assert all(c['kind'] == 'splits into' for c in mcns['candidates'])
 
 
 def test_get_alias_candidates_namespace_independence_real(mapper):

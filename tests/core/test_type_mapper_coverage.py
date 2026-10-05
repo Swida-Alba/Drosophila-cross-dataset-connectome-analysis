@@ -391,15 +391,17 @@ def test_get_alias_candidates_same_name_with_aggregates(alias_mapper):
     ]
 
 
-def test_get_alias_candidates_one_of_n(rename_mapper):
-    # LPN's reverse aggregation is refused: the male-cns candidates are the
-    # group members, labelled 'one of N'.
+def test_get_alias_candidates_reverse_split(rename_mapper):
+    # Round-16: LPN's reverse reaches the WHOLE male-cns member pool as a
+    # licensed type-pool split (the crosswalk's reverse direction) — the
+    # old 'one of N' refusal shrank taxonomy Route A reaches (real case:
+    # circadian FAFB->MCNS 52 of the documented 219).
     res = rename_mapper.get_alias_candidates('LPN', [FW, MCNS])
     assert res[FW]['candidates'] == [
         {'name': 'LPN', 'kind': 'same name', 'aggregates': ['McCB', 'McPV']},
     ]
     assert [c['name'] for c in res[MCNS]['candidates']] == ['McCB', 'McPV']
-    assert all(c['kind'] == 'one of N' for c in res[MCNS]['candidates'])
+    assert all(c['kind'] == 'splits into' for c in res[MCNS]['candidates'])
     assert all(c['aggregates'] is None for c in res[MCNS]['candidates'])
 
 

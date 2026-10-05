@@ -166,11 +166,12 @@ def test_zero_hit_query_reveals_alias_panel(viewer_client):
     assert any('please double check' in t for t in texts)
 
     # mapped tier: local group members offered as same-dataset search actions
-    assert any("'SLP249' — one of N (4 neurons)" in t for t in texts)
+    assert any("'SLP249' — splits into (4 neurons)" in t for t in texts)
     assert any("Search 'SLP249' here" in t for t in texts)
     # native tier: FAFB entry carries the aggregation annotation and count
     assert any(
-        "'APDN3' (12 neurons) — here: one of CL125, PLP080, SLP249, SLP250"
+        "'APDN3' (12 neurons) — here: splits into CL125, PLP080, SLP249,"
+        " SLP250"
         in t
         for t in texts
     )
@@ -205,8 +206,8 @@ def test_query_changes_refresh_the_panel(viewer_client):
     # 1) zero-hit FAFB-native name -> panel with the local group member
     search.set_value('APDN3')
     texts = _wait_for_labels(
-        client, lambda t: any("'SLP249' — one of N (4 neurons)" in x for x in t))
-    assert any("'SLP249' — one of N (4 neurons)" in t for t in texts)
+        client, lambda t: any("'SLP249' — splits into (4 neurons)" in x for x in t))
+    assert any("'SLP249' — splits into (4 neurons)" in t for t in texts)
 
     # 2) a query with hits -> panel hidden, normal workflow
     search.set_value('aMe12')

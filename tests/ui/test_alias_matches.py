@@ -93,7 +93,9 @@ def test_search_apdn3_in_malecns_offers_group_members():
     mcns = _entry(matches, MCNS)
     assert mcns is not None and mcns['is_selected'] is True
     counts = {c['name']: c['count'] for c in mcns['candidates']}
-    assert all(c['kind'] == 'one of N' for c in mcns['candidates'])
+    # Round-16: the crosswalk's reverse reaches the WHOLE member pool —
+    # a licensed type-pool split, no longer an arbitrary 'one of N' pick.
+    assert all(c['kind'] == 'splits into' for c in mcns['candidates'])
     assert counts == {'SLP249': 4, 'CL125': 4, 'SLP250': 2, 'PLP080': 2}
 
     # both local releases know the name natively
@@ -209,7 +211,7 @@ def test_native_expansion_enriches_with_mapped_current_dataset_names():
 
     by_ds = {e['dataset']: e for e in native}
     apdn3 = next(c for c in by_ds[FW]['types'] if c['name'] == 'APDN3')
-    assert apdn3['mapped']['kind'] == 'one of N'
+    assert apdn3['mapped']['kind'] == 'splits into'
     assert apdn3['mapped']['targets'] == ['CL125', 'PLP080', 'SLP249', 'SLP250']
     # l-CPDN3 maps uniquely to male-cns aMe13
     l_cpdn3 = next(c for c in by_ds[FW]['types'] if c['name'] == 'l-CPDN3')
@@ -228,7 +230,7 @@ def test_native_expansion_taxonomy_labels_map_covered_types():
     assert clock['column'] == 'cell_type'
     covered = {t['name']: t for t in clock['types']}
     s_cpdn3a = covered['s-CPDN3A']
-    assert s_cpdn3a['mapped']['kind'] == 'one of N'
+    assert s_cpdn3a['mapped']['kind'] == 'splits into'
     # taxonomy labels themselves get no annotation; their covered types do
     assert all(not l.get('mapped') for l in by_ds[FW]['labels'])
 
@@ -371,7 +373,7 @@ def test_build_matches_csv_exports_uncapped_entries():
     ]
     assert fafb_apdn3, rows
     assert fafb_apdn3[0]['neuron_count'] == '12'
-    assert fafb_apdn3[0]['mapped_kind'] == 'one of N'
+    assert fafb_apdn3[0]['mapped_kind'] == 'splits into'
     assert fafb_apdn3[0]['mapped_to'] == 'CL125; PLP080; SLP249; SLP250'
     assert 'additional_type(s)' in fafb_apdn3[0]['map_used']
 

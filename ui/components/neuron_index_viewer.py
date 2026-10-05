@@ -1974,6 +1974,12 @@ def _render_index(
                                     "not selected (expand Suspects)")
                         if ann["kind"] == "one of N":
                             return "— here: one of " + ", ".join(ann["targets"])
+                        if ann["kind"] == "splits into":
+                            # Round-16: a licensed type-pool split (incl.
+                            # the crosswalk's reverse direction) — the
+                            # pool is offered, not withheld.
+                            return ("— here: splits into "
+                                    + ", ".join(ann["targets"]))
                         if ann["kind"] == "renamed":
                             return "— here: maps to '" + ann["targets"][0] + "'"
                         if ann["kind"] == "conflict":

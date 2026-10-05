@@ -123,6 +123,13 @@ writes both files.
   claimed by two queried parents merges with neither (`[merge fan-in]` —
   with an explicit note that the queried parent's row is PARTIAL by
   design).
+- Query resolution (round-16): a taxonomy chip (e.g. FAFB
+  `cell_type=circadian_clock`) expands natively where the value exists
+  and bridges into the other datasets through member mapping (Route A).
+  The curated crosswalk's REVERSE direction is licensed as a type-pool
+  split: querying the group's merge target reaches the WHOLE member
+  pool in male-cns (real case: circadian_clock → 40 MCNS types /
+  219 neurons; the old reverse refusal resolved only 52).
 - Evidence surfaces: the report's Type Mapping section leads with ONE
   merged, column-aligned query-role table — section groups **Queried
   sources** / **Queried targets** / **Path intermediates** share one

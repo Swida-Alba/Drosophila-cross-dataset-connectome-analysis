@@ -4847,10 +4847,14 @@ class CrossDatasetTypeMapper:
 
         * ``mapped`` — one unconflicted canonical target;
         * ``valid_split_evidence`` — a crosswalk-backed 1-to-N split, where
-          all target names are valid evidence but no one target is selected;
-        * ``evidence_only`` — a crosswalk-derived reverse N-to-1 relation;
-          the target members remain reviewable, but no canonical target is
-          accepted;
+          all target names are valid evidence but no one target is selected
+          (round-16: this includes the crosswalk's REVERSE direction — a
+          non-MCNS query on the group's merge target reaches the whole
+          member pool, the ratified type-pool split);
+        * ``evidence_only`` — a crosswalk-derived relation whose full-pool
+          reach would be arbitrary (kept for future ambiguous shapes; the
+          historical reverse-N-to-1 class is licensed as a split since
+          round-16);
         * ``conflict`` — an unresolved vote/annotation conflict (for example
           BANC ``CB1011``), so no automatic target is accepted;
         * ``unmapped`` — no scoped relation is available.
@@ -6399,11 +6403,13 @@ class CrossDatasetTypeMapper:
     # candidate:
     # - 'same name' vs the rest: identity is checked first.
     # - 'renamed' vs 'splits into': the forward mapping is unique or many.
-    # - 'renamed' vs 'one of N': 'renamed' requires a unique reverse
-    #   mapping, 'one of N' requires the reverse to be refused (N-to-1).
-    # - 'splits into' vs 'one of N': forward conflicts only arise for
-    #   male-cns-namespace queries, reverse conflicts only for
-    #   non-male-cns queries - the query sits in one namespace.
+    # - 'splits into' applies in BOTH directions now (round-16): forward
+    #   conflicts for male-cns-namespace queries, and the crosswalk's
+    #   reverse (non-male-cns query on the group's merge target reaches
+    #   the whole member pool — the ratified type-pool split; the old
+    #   'one of N' refusal shrank the circadian FAFB->MCNS reach to 52 of
+    #   the documented 219). 'one of N' remains for any future shape
+    #   where reaching the full pool would be arbitrary.
     ALIAS_KINDS = ('same name', 'renamed', 'splits into', 'one of N')
 
     def _alias_aggregates(self, name: str, mapping_key: str) -> Optional[List[str]]:
@@ -6572,15 +6578,22 @@ class CrossDatasetTypeMapper:
                             for target in sorted(conflict.target_types):
                                 _add(target, 'splits into')
                     else:
-                        # The reverse aggregation is refused: the candidates
-                        # are the group members (male-cns namespace only).
+                        # Round-16 (user-approved): the crosswalk's reverse
+                        # direction is a legitimate type-pool split. The
+                        # curated crosswalk is authored MCNS->FAFB (N finer
+                        # subtypes merge into one FAFB type), so a non-MCNS
+                        # query hitting the group's FAFB value reaches the
+                        # WHOLE member pool here — the ratified 1-to-N
+                        # reverse split (plan-banc-label-alignment-fallback:
+                        # circadian_clock FAFB->MCNS = 40 targets / 219
+                        # unique), not an arbitrary "one of N" pick.
                         conflicts = self._n_to_1_by_source_cache().get(
                             (query_ns, base_name), [])
                         for conflict in conflicts:
                             if d_key != 'male-cns:v1.0':
                                 continue
                             for target in sorted(conflict.target_types):
-                                _add(target, 'one of N')
+                                _add(target, 'splits into')
 
             outcomes[dataset] = {
                 'outcome': 'matched' if candidates else 'no counterpart known',
