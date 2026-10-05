@@ -9981,8 +9981,10 @@ class FindNeuronConnection:
         """Fetch FAFB incoming weights directly from CAVE.
 
         This helper intentionally has no local-table or API-cache fallback.
-        It is used only by online-only runs to keep ratio denominators on the
-        same fresh API snapshot as the path edges.
+        It is used by online-only runs (to keep ratio denominators on the
+        same fresh API snapshot as the path edges) and by the denominator
+        completeness pull for cache-mode installs that have no local
+        release table (disclosed via the ``[ratio denominators]`` note).
         """
         if not post_bodyIds:
             return pd.DataFrame(
@@ -10104,8 +10106,10 @@ class FindNeuronConnection:
             post_col = ('bodyId_post' if 'bodyId_post' in names
                         else 'post_root_id')
             weight_col = ('weight' if 'weight' in names else 'syn_count')
+            # Only the post id and weight feed the aggregate; releases
+            # name the pre column differently across formats (bodyId_pre
+            # vs pre_root_id), so it is not selected at all.
             table = (lazy.select([
-                        pl.col('bodyId_pre').cast(pl.Utf8, strict=False),
                         pl.col(post_col).cast(pl.Utf8, strict=False)
                         .alias('bodyId_post'),
                         pl.col(weight_col).cast(pl.Int64, strict=False)

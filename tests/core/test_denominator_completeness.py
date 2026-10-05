@@ -36,19 +36,29 @@ _NEURONS = [
 ]
 
 
-def _write_release(root: Path):
+def _write_release(root: Path, csv_conn: bool = False):
     ds = root / "datasets" / DATASET
     ds.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        "bodyId_pre": [e[0] for e in _EDGES],
-        "bodyId_post": [e[1] for e in _EDGES],
-        "weight": [e[2] for e in _EDGES],
-    }).write_parquet(ds / f"{DATASET}_merged_connections.parquet")
+    if csv_conn:
+        # Legacy pre-converter column names (pre_root_id / syn_count) —
+        # the aggregate must adapt, not assume bodyId_pre/weight.
+        pd.DataFrame({
+            "pre_root_id": [e[0] for e in _EDGES],
+            "post_root_id": [e[1] for e in _EDGES],
+            "syn_count": [e[2] for e in _EDGES],
+        }).to_csv(ds / f"{DATASET}_merged_connections.csv", index=False)
+    else:
+        pl.DataFrame({
+            "bodyId_pre": [e[0] for e in _EDGES],
+            "bodyId_post": [e[1] for e in _EDGES],
+            "weight": [e[2] for e in _EDGES],
+        }).write_parquet(ds / f"{DATASET}_merged_connections.parquet")
     pd.DataFrame(_NEURONS, columns=["bodyId", "type"]).to_csv(
         ds / f"{DATASET}_allneurons_neuron_df.csv", index=False)
 
 
-def _make_finder(tmp_path: Path, *, cache_edges=None, cache_neurons=None):
+def _make_finder(tmp_path: Path, *, cache_edges=None, cache_neurons=None,
+                 csv_conn: bool = False):
     """Finder over the synthetic release with a configurable cache.
 
     ``cache_edges``/``cache_neurons`` None = no cache files at all;
@@ -56,7 +66,7 @@ def _make_finder(tmp_path: Path, *, cache_edges=None, cache_neurons=None):
     (an INCOMPLETE cache when shorter than the release)."""
     from coana import FindNeuronConnection
 
-    _write_release(tmp_path)
+    _write_release(tmp_path, csv_conn=csv_conn)
     cache_dir = tmp_path / "cache" / DATASET
     cache_dir.mkdir(parents=True, exist_ok=True)
     db_path = cache_dir / "connections.parquet"
@@ -186,3 +196,15 @@ def test_zero_mass_post_is_confirmed_once_not_repulled(tmp_path):
     assert _as_map(first, "bodyId_post") == {"101": 100.0}
     assert _as_map(second, "bodyId_post") == {"101": 100.0}
     assert len(calls) == 1, calls   # PX pulled once, memoized as absent
+
+
+def test_csv_release_column_names_are_adapted(tmp_path):
+    """A legacy CSV release (pre_root_id/syn_count columns) feeds the same
+    complete map as the parquet release (regression: the aggregate used
+    to select bodyId_pre unconditionally and crash on CSV releases)."""
+    finder = _make_finder(tmp_path, csv_conn=True)
+    by_body = finder._fetch_total_incoming_weight(["101", "102", "103"], 1)
+    assert _as_map(by_body, "bodyId_post") == {"101": 100.0, "102": 49.0,
+                                               "103": 9.0}
+    by_type = finder._fetch_total_incoming_weight_by_type(["TA", "TB"], 1)
+    assert _as_map(by_type, "type_post") == {"TA": 109.0, "TB": 49.0}
