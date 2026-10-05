@@ -902,6 +902,21 @@ def test_get_cached_conn_df_fnc_cache(profiler, monkeypatch):
             'conn_index_post': {'10': [0, 2], '11': [1], '12': [3]},
         }
     }
+
+    def _frame_if_fresh(dataset_safe):
+        # The profiler consumes the shared frame only through coana's
+        # signature-gated accessor (cache survey 2026-10-06, hazard 2),
+        # so the fake module must provide it. The gate rules themselves
+        # are pinned in test_cache_hazards.py; this stand-in just serves
+        # whatever the fake _FNC_CACHE holds.
+        entry = fake_coana._FNC_CACHE.get(dataset_safe) or {}
+        if entry.get('conn_df') is None:
+            return None
+        return {'conn_df': entry['conn_df'],
+                'conn_index': entry.get('conn_index'),
+                'conn_index_post': entry.get('conn_index_post')}
+
+    fake_coana.fnc_connection_frame_if_fresh = _frame_if_fresh
     monkeypatch.setitem(sys.modules, 'coana', fake_coana)
     try:
         out = profiler._get_cached_conn_df(DS)
