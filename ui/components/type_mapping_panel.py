@@ -860,6 +860,46 @@ def _compute_type_mapping(queries, datasets, mode,
         pooled_suspects_tip = ('; '.join(
             f"{e['pair']}: {e['bodies']} neurons — {e['reason']}"
             for e in _pp_detail) if _pp_detail else '')
+        # Round-17 (user): EVERY strip cell gets a summary hover. The
+        # header tooltips classify the column; these describe THIS
+        # dataset row's numbers.
+        _matched_names = sorted(matched)[:8]
+        _more = len(matched) - len(_matched_names)
+        types_tip = (
+            f"{len(matched)} matched type(s): "
+            + (", ".join(_matched_names)
+               + (f" … +{_more} more" if _more > 0 else "")
+               if _matched_names else "none")
+            + " — the query's ISSUED side in this dataset.")
+        neurons_tip = (
+            f"{neurons} neurons carry the matched types here (the issued "
+            "population; 0 = this dataset only issues the query).")
+        mapped_total_tip = (
+            f"{recv_neurons + out_map} mapped across {len(claim_types)} "
+            f"claimed types = {recv_neurons} bodyId-routed + {out_map} "
+            "type-pooled.")
+        routed_tip = (
+            f"{recv_neurons} bodyIds routed by ADOPTED flows across "
+            f"{len(claim_types)} types — the claim set the "
+            "validate-expand-visualize report grades.")
+        pooled_tip = (
+            f"{out_map} neurons reached by type-pool membership only: the "
+            "mapped types' own populations beyond the claim (coverage "
+            "evidence, never a mapping claim).")
+        reach_tip = (
+            f"{reach_neurons} neurons / {len(reach_present)} types — every "
+            "flow's pools unioned (claim + declined ends); "
+            f"{reach_neurons - recv_neurons} bodies sit in declined-only "
+            "material (see the suspect columns).")
+        unmapped_tip = (
+            f"{unmapped} matched types with no realized counterpart in "
+            "another selected dataset (per-row reasons in the orphan "
+            "list)." if unmapped else
+            "0 orphans — every matched type realized a counterpart here.")
+        dataset_tip = (
+            f"{ds}: one row per selected dataset — this dataset receives "
+            "the mapped material below; the query was issued from its "
+            "matched types.")
         summary.append({
             "dataset": ds,
             "types": len(matched),
@@ -893,6 +933,14 @@ def _compute_type_mapping(queries, datasets, mode,
             "pooled_suspects": pooled_suspects,
             "pooled_suspects_tip": pooled_suspects_tip,
             "pooled_suspects_detail": pooled_suspects_detail.get(ds, []),
+            "dataset_tip": dataset_tip,
+            "types_tip": types_tip,
+            "neurons_tip": neurons_tip,
+            "mapped_total_tip": mapped_total_tip,
+            "routed_tip": routed_tip,
+            "pooled_tip": pooled_tip,
+            "reach_tip": reach_tip,
+            "unmapped_tip": unmapped_tip,
             "unmapped": unmapped,
         })
 
@@ -1076,6 +1124,13 @@ def _compute_type_mapping(queries, datasets, mode,
                 f"{len(ends)} (+{len(transitive)} via "
                 f"{', '.join(sorted(mids))})" if mids
                 else str(len(ends))) if ends else ''
+            row['fullmap_tip'] = (
+                f"{len(ends)} composed end types through ALL licensed "
+                f"connector datasets"
+                + (f" — {len(transitive)} reachable only transitively "
+                   f"(via {', '.join(sorted(mids))})" if mids else "")
+                + ". Additive disclosure cell — the Evidence reach cell "
+                  "keeps its curated definition.") if ends else ''
 
     return {"pair_flows": pair_flows, "pools": pools, "meta": meta,
             "composed": html, "datasets": datasets,
@@ -1950,18 +2005,21 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 _summary_table = ui.table(
                     columns=[
                         {"name": "dataset", "label": "Dataset",
-                         "field": "dataset", "align": "left",
+                         "field": "dataset", "align": "left", "cell_tip": "dataset_tip",
                          "tooltip": "One row per selected dataset."},
                         {"name": "types", "label": "Matched types",
                          "field": "types", "align": "left",
+                         "cell_tip": "types_tip",
                          "tooltip": "Search terms that matched type names "
                                     "in this dataset."},
                         {"name": "neurons", "label": "Neurons",
                          "field": "neurons", "align": "left",
+                         "cell_tip": "neurons_tip",
                          "tooltip": "Neurons of the matched types in this "
                                     "dataset."},
                         {"name": "mapped_total", "label": "Mapped",
                          "field": "mapped_total_cell", "align": "left",
+                         "cell_tip": "mapped_total_tip",
                          "tooltip": "Round-17 taxonomy — the total neurons "
                                     "the mapped types reach in this dataset: "
                                     "BodyId routed + Type pooled, with "
@@ -1971,6 +2029,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "the claim."},
                         {"name": "routed", "label": "BodyId routed",
                          "field": "mapped", "align": "left",
+                         "cell_tip": "routed_tip",
                          "tooltip": "BodyId-routed neurons: a bodyId-level "
                                     "flow routes the neuron into a mapped "
                                     "type — the ADOPTED claim set (union of "
@@ -1980,6 +2039,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "→ BANC: 198."},
                         {"name": "pooled", "label": "Type pooled",
                          "field": "out_map", "align": "left",
+                         "cell_tip": "pooled_tip",
                          "tooltip": "Type-pooled neurons: reached by "
                                     "type-pool membership only — no "
                                     "bodyId-level routing (the mapped "
@@ -2022,6 +2082,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "never mapping claims."},
                         {"name": "reach", "label": "Evidence reach (all flows)",
                          "field": "reach", "align": "left",
+                         "cell_tip": "reach_tip",
                          "tooltip": "The REACH tier: every flow's pools "
                                     "unioned — the ADOPTED claim set PLUS "
                                     "the disclosure ends the decision "
@@ -2036,6 +2097,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "'not adopted' rows."},
                         {"name": "unmapped", "label": "Unmapped (orphans)",
                          "field": "unmapped", "align": "left",
+                         "cell_tip": "unmapped_tip",
                          "tooltip": "Matched types here with no realized "
                                     "counterpart in another selected "
                                     "dataset — OR held back by same-name-"
@@ -2048,6 +2110,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                         "name": "fullmap",
                         "label": "Full-map ends (transitive via connectors)",
                         "field": "fullmap", "align": "left",
+                        "cell_tip": "fullmap_tip",
                         "tooltip": "FULL-MAP MODE ONLY (2026-10-01): the "
                                    "composed reach through ALL licensed "
                                    "connector datasets — direct ends plus "

@@ -306,6 +306,28 @@ def test_cb4091_stale_crosswalk_claim_is_not_counted_as_mapped(panel_client):
                     'routed_suspects_detail': [],
                     'pooled_suspects': 0, 'pooled_suspects_tip': '',
                     'pooled_suspects_detail': [],
+                    # round-17 all-cell hovers (additive strings)
+                    'dataset_tip': 'flywire_FAFB_v783: one row per selected '
+                    'dataset — this dataset receives the mapped material '
+                    'below; the query was issued from its matched types.',
+                    'types_tip': '0 matched type(s): none — the query\'s '
+                    "ISSUED side in this dataset.",
+                    'neurons_tip': '0 neurons carry the matched types here '
+                    '(the issued population; 0 = this dataset only issues '
+                    'the query).',
+                    'mapped_total_tip': '0 mapped across 0 claimed types = '
+                    '0 bodyId-routed + 0 type-pooled.',
+                    'routed_tip': '0 bodyIds routed by ADOPTED flows across '
+                    '0 types — the claim set the validate-expand-visualize '
+                    'report grades.',
+                    'pooled_tip': '0 neurons reached by type-pool membership '
+                    'only: the mapped types\' own populations beyond the '
+                    'claim (coverage evidence, never a mapping claim).',
+                    'reach_tip': '0 neurons / 0 types — every flow\'s pools '
+                    'unioned (claim + declined ends); 0 bodies sit in '
+                    'declined-only material (see the suspect columns).',
+                    'unmapped_tip': '0 orphans — every matched type '
+                    'realized a counterpart here.',
                     'unmapped': 0}
     # the orphan explains WHY: the claim names a type FAFB does not have
     entries = outcome['orphans'].get((MCNS, FAFB)) or []
@@ -369,6 +391,18 @@ def test_orphan_claim_is_explained_in_the_expander(panel_client):
     assert 'branch_not_adopted' in by_label['Pooled suspects']['tooltip']
     assert 'no realized counterpart' in by_label['Unmapped (orphans)'][
         'tooltip']
+    # round-17 (user): EVERY strip cell carries a summary hover — each
+    # column declares cell_tip and the rows carry the per-dataset text.
+    bare = [c['label'] for c in summary_tables[0]._props['columns']
+            if not c.get('cell_tip')]
+    assert not bare, f'strip columns without cell hovers: {bare}'
+    from ui.components.type_mapping_panel import _compute_type_mapping
+    live = _compute_type_mapping(['SLP249'], [MCNS, FAFB], 'exact')
+    row = {r['dataset']: r for r in live['summary']}[FAFB]
+    for field in ('dataset_tip', 'types_tip', 'neurons_tip',
+                  'mapped_total_tip', 'routed_tip', 'pooled_tip',
+                  'reach_tip', 'unmapped_tip'):
+        assert str(row.get(field) or ''), f'{field} empty'
 
 
 # ---------------------------------------------------------------------------
