@@ -12718,6 +12718,66 @@ class FindNeuronConnection:
                          else 'cache')
         return stamp
 
+    def _check_data_generation_drift(self):
+        """Silent-until-real generation check (user-approved 2026-10-06):
+        warn ONLY when a cache-derived component PREDATES the local
+        release table — the in-place-replacement condition. A release
+        replaced under the same dataset name leaves the connection cache
+        and the incoming lane serving the previous generation, which
+        silently mixes two datasets in one run; that is the one drift
+        worth a note. Consistent generations (the normal state — e.g.
+        FAFB: release 2025-11, cache import 2026-08, lane 2026-10, all
+        one release) stay completely quiet. Never raises."""
+        try:
+            release = self._data_generation_stamp().get('release_connections')
+            if not release:
+                return
+            release_mtime = release['mtime_ns']
+
+            def _newest_mtime(paths):
+                mtimes = []
+                for path in paths:
+                    try:
+                        mtimes.append(os.stat(path).st_mtime_ns)
+                    except OSError:
+                        pass
+                return max(mtimes) if mtimes else None
+
+            stale = []
+            cache_dir = getattr(self, 'cache_folder', None)
+            cache_mtime = _newest_mtime(
+                [os.path.join(cache_dir, rel) if cache_dir else rel
+                 for rel, _sig in
+                 (self._connection_cache_signature() or [])])
+            if cache_mtime is not None and cache_mtime < release_mtime:
+                stale.append('connection cache')
+            lane_paths = [p for p in self._incoming_cache_paths() if p]
+            lane_mtime = _newest_mtime(lane_paths)
+            if lane_mtime is not None and lane_mtime < release_mtime:
+                stale.append('incoming lane')
+            if not stale:
+                return
+            import datetime as _dt
+            when = _dt.datetime.fromtimestamp(
+                release_mtime / 1e9).strftime('%Y-%m-%d')
+            verb = 'predates' if len(stale) == 1 else 'predate'
+            note = (
+                '- [data generation] the ' + ' and '.join(stale) + ' '
+                + verb + ' the dataset release table '
+                f'({os.path.basename(release["path"])}, {when}) — they '
+                'were built from an earlier generation and results may '
+                'mix two data versions. The data_generation stamps in '
+                'all_attributes.json record both sides; consider '
+                'rebuilding the cache to realign.')
+            notes = getattr(self, '_warn_notes', None)
+            if notes is None:
+                notes = self._warn_notes = []
+            if note not in notes:
+                notes.append(note)
+                self._vprint(f'  ⚠️ {note[2:]}', level='always')
+        except Exception:
+            pass
+
     def _run_export_attributes(self, path_mode: str | None = None):
         """Build JSON-safe run metadata with custom groups made explicit."""
         public_attrs = {
@@ -15149,6 +15209,11 @@ class FindNeuronConnection:
         filters...). Only written when at least one note applies; the file
         exists so results are never presented without their caveats.
         """
+        # Data-generation drift check (silent-until-real): a note appears
+        # here ONLY when a cache-derived component predates the local
+        # release table (in-place replacement under the same dataset
+        # name). Consistent generations produce nothing.
+        self._check_data_generation_drift()
         notes = list(self._warn_notes)
 
         # --- other operations that may tilt the outputs ---

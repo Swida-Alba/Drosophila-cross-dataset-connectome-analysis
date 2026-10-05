@@ -262,3 +262,85 @@ def test_pull_memo_reopens_after_release_refresh(tmp_path):
            for r in result.itertuples()}
     assert got == {"101": 100.0, "777": 8.0}
     assert len(pulls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Data-generation drift warning (user-approved 2026-10-06)
+# ---------------------------------------------------------------------------
+
+def _drift_finder(tmp_path, release_mtime, cache_mtime, lane_mtime):
+    import os as _os
+    cache = tmp_path / "cache" / "flywire_FAFB_v783"
+    cache.mkdir(parents=True, exist_ok=True)
+    release = (tmp_path / "datasets" / "flywire_FAFB_v783"
+               / "flywire_FAFB_v783_merged_connections.parquet")
+    release.parent.mkdir(parents=True, exist_ok=True)
+    release.write_bytes(b"x")
+    db = cache / "connections.parquet"
+    db.write_bytes(b"x")
+    lane_rows = cache / "incoming_connections.parquet"
+    lane_rows.write_bytes(b"x")
+    for path, mtime in ((release, release_mtime), (db, cache_mtime),
+                        (lane_rows, lane_mtime)):
+        _os.utime(path, ns=(mtime, mtime))  # (atime, mtime)
+    finder = _bare_finder(cache)
+    finder.dataset = "flywire_FAFB_v783"
+    finder.script_path = str(tmp_path)
+    finder._vprint = lambda *a, **k: None
+    return finder
+
+
+def test_drift_warning_silent_when_consistent(tmp_path):
+    finder = _drift_finder(tmp_path, 3_000, 4_000, 5_000)
+    finder._check_data_generation_drift()
+    assert not finder._warn_notes
+
+
+def test_drift_warning_names_stale_components(tmp_path):
+    import datetime
+    # release NEWER than both cache and lane -> both named
+    finder = _drift_finder(tmp_path, 9_000, 4_000, 5_000)
+    finder._check_data_generation_drift()
+    assert len(finder._warn_notes) == 1
+    note = finder._warn_notes[0]
+    assert "data generation" in note
+    assert "connection cache and incoming lane" in note
+    assert "flywire_FAFB_v783_merged_connections.parquet" in note
+    when = datetime.datetime.fromtimestamp(
+        9_000 / 1e9).strftime('%Y-%m-%d')
+    assert when in note
+
+    # only the cache stale (lane refreshed after the release) -> cache only
+    finder2 = _drift_finder(tmp_path / "d2", 9_000, 4_000, 9_500)
+    finder2._check_data_generation_drift()
+    assert len(finder2._warn_notes) == 1
+    assert "connection cache predates" in finder2._warn_notes[0]
+    assert "incoming lane" not in finder2._warn_notes[0].split(
+        "predate")[0]
+
+    # repeated checks are idempotent (no duplicate notes)
+    finder._check_data_generation_drift()
+    assert len(finder._warn_notes) == 1
+
+
+def test_drift_warning_via_notes_writer(tmp_path):
+    """_write_user_warning_notes runs the check: a drifted setup produces
+    the note file even with no other notes; a consistent one does not."""
+    import os as _os
+    finder = _drift_finder(tmp_path / "w", 9_000, 4_000, 5_000)
+    finder._vprint = lambda *a, **k: None
+    out = tmp_path / "w" / "notes"
+    out.mkdir(parents=True, exist_ok=True)
+    finder._write_user_warning_notes(out)
+    text = (out / "user_warning_notes.txt").read_text()
+    assert "data generation" in text
+
+    finder2 = _drift_finder(tmp_path / "c", 3_000, 4_000, 5_000)
+    out2 = tmp_path / "c" / "notes"
+    out2.mkdir(parents=True, exist_ok=True)
+    finder2._write_user_warning_notes(out2)
+    written = out2 / "user_warning_notes.txt"
+    # the file may exist with the static footer, but the drift note
+    # must be absent
+    if written.exists():
+        assert "data generation" not in written.read_text()
