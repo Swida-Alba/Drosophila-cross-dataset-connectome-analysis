@@ -1022,3 +1022,117 @@ def test_overview_query_coverage_card_and_refill_card(tmp_path):
     assert "100 synapses of budget-cut mass" in text  # CSV sum, not the
     # ratio-mass provenance total
     assert "Pair-ratio (adjusted)" in text
+
+
+# ---------------------------------------------------------------------------
+# Percent convention + COLUMN SPEC + Refill tab (plan
+# plan-pair-report-refill-tab-and-per-hop-ratios, 2026-10-05)
+# ---------------------------------------------------------------------------
+def test_percent_formatter_pins():
+    from paths_pair_report import _fmt_pct, _format_ratio_list
+    assert _fmt_pct(0.677) == '67.70%'
+    assert _fmt_pct(0.0263) == '2.63%'
+    assert _fmt_pct(0.000602) == '0.06%'
+    assert _fmt_pct(0.0000042) == '0.00%'   # rounds away; title rule
+    assert _fmt_pct(None) == '—'
+    assert _fmt_pct('nan') == '—'
+    assert _format_ratio_list('[0.0263, 0.060]') == '[2.63%, 6.00%]'
+    assert _format_ratio_list('') == ''
+    assert _format_ratio_list('[1]') == '[100.00%]'
+
+
+def test_per_hop_adjusted_list_and_report_percent_forms(tmp_path):
+    """pradj lists carry per-hop adjusted ratios; the payload's ratios
+    lists are percent-formatted (the CSV keeps raw)."""
+    from paths_pair_report import (
+        _per_hop_adjusted_list, generate_paths_pair_report,
+    )
+    run = tmp_path / "find-paths-complete_FAFB_S8_to_T8_L2w3_20260101_000000"
+    rows = [_row("S8->M8a->T8", 10), _row("S8->M8b->T8", 8)]
+    rows[0]["ratios"] = "[0.5, 0.25]"
+    rows[1]["ratios"] = "[0.1, 0.02]"
+    _write_csv(run, rows)
+    (run / "data_details").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"type_pre": "S8", "type_post": "M8a", "weight": 5,
+         "nt_type": "ACH", "connection_ratio": 0.1,
+         "traversal_probability": 0.3, "block_probability": 0.7,
+         "conn_layer": "0->1", "connection_ratio_adj": 0.4},
+        {"type_pre": "M8a", "type_post": "T8", "weight": 3,
+         "nt_type": "ACH", "connection_ratio": 0.2,
+         "traversal_probability": 0.5, "block_probability": 0.5,
+         "conn_layer": "1->2", "connection_ratio_adj": 0.8},
+    ]).to_csv(run / "data_details" / "connection_type.csv", index=False)
+    pair_ratio = {("S8", "M8a"): 0.4, ("M8a", "T8"): 0.8,
+                  ("S8", "M8b"): 0.25, ("M8b", "T8"): 0.5}
+    assert _per_hop_adjusted_list("S8->M8a->T8", pair_ratio) == \
+        '[40.00%, 80.00%]'
+    assert _per_hop_adjusted_list("S8->M9->T8", pair_ratio) == \
+        '[—, —]'
+
+    report = generate_paths_pair_report(run, log=None)
+    payload = _payload(report.read_text(encoding="utf-8"))
+    entry = payload["pairs"][0]
+    trows = [r for g in entry["table"]["groups"] for r in g["rows"]]
+    by_path = {r["path"]: r for r in trows}
+    assert by_path["S8->M8a->T8"]["ratios"] == "[50.00%, 25.00%]"
+    assert by_path["S8->M8a->T8"]["pradj"] == "[40.00%, 80.00%]"
+    # the breakdown CSV keeps the RAW strings
+    bd = pd.read_csv(run / "paths_pair_breakdown" / "pair_breakdown_paths.csv")
+    assert "[0.5, 0.25]" in set(bd.ratios.astype(str))
+    # scalar pr = min over the same adjusted map
+    assert by_path["S8->M8a->T8"]["pr"] == 0.4
+
+
+def test_column_spec_header_cell_alignment_source_pins():
+    """The renderer builds headers AND cells from one COLUMN SPEC —
+    pinned structurally (the 2026-10-05 screenshot mismatch class)."""
+    import inspect
+    import paths_pair_report as M
+    src = inspect.getsource(M)
+    js = src[src.index("REPORT_JS"):]
+    assert "var COLS = [" in js
+    assert "COLS.forEach(function(col) {" in js
+    # headers and cells both iterate the SAME spec
+    assert js.count("COLS.forEach(function(col)") == 2
+    # the hand-kept parallel lists are gone
+    assert "var headers = ['#'];" not in js
+    assert "headers.push('Path', 'Len'" not in js
+    # percent formatter + the rounding-to-zero title fallback
+    assert "function fmtPct(v)" in js
+    assert "toFixed(2) + '%'" in js
+    assert "Math.abs(100 * v) < 0.005" in js
+
+
+def test_refill_tab_present_with_hint_state(tmp_path):
+    """The Refill tab is a standalone page: always present, hint state
+    when no records, full table when they exist (adjusted column when
+    the engine wrote it)."""
+    from paths_pair_report import generate_paths_pair_report
+    run = tmp_path / "find-paths-complete_FAFB_S9_to_T9_L2w3_20260101_000000"
+    rows = [_row("S9->M->T9", 10)]
+    _write_csv(run, rows)
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert 'id="tpl-refill"' in text
+    assert "TAB.show('refill')" in text
+    assert "No refill records — the budget did not bite" in text
+
+    # now with records (+ the adjusted column)
+    refill = run / "data_details" / "type_level_refill"
+    refill.mkdir(parents=True)
+    json.dump({"status": "refilled", "refill_edges": 7},
+              open(refill / "refill_provenance.json", "w"))
+    pd.DataFrame([
+        {"type_pre": "S9", "type_post": "T9", "emitted_weight": 5,
+         "refill_weight": 40, "refilled_total": 45,
+         "emitted_pair_count": 1, "refill_pair_count": 8,
+         "refilled_connection_ratio": 0.09,
+         "refilled_connection_ratio_adj": 0.45,
+         "split_status": "rederived_topn"},
+    ]).to_csv(refill / "refill_type_pairs.csv", index=False)
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Refilled ratio (adj)" in text
+    assert "45.00%" in text            # refilled_connection_ratio_adj
+    assert "9.00%" in text             # plain refilled ratio

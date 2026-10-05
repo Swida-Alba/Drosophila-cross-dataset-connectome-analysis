@@ -607,6 +607,48 @@ def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
     return min(vals) if vals else None
 
 
+# ---------------------------------------------------------------------------
+# Percent convention (plan §2.5, 2026-10-05 user directive): every ratio
+# and probability the REPORT renders is xx.xx% (2 decimals). The breakdown
+# CSV keeps raw values; only report payloads re-format.
+# ---------------------------------------------------------------------------
+
+def _fmt_pct(value) -> str:
+    """One ratio/probability as ``xx.xx%`` (raw passthrough when NaN)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return '—' if value in (None, '') else str(value)
+    if v != v:  # NaN
+        return '—'
+    return f'{100.0 * v:.2f}%'
+
+
+_RATIO_LIST_RE = re.compile(r'-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?')
+
+
+def _format_ratio_list(text) -> str:
+    """'[0.0263, 0.060]' -> '[2.63%, 6.00%]' (passthrough when the string
+    carries no parseable numbers — legacy/hand-edited payloads)."""
+    raw = '' if text is None else str(text)
+    if not _RATIO_LIST_RE.search(raw):
+        return raw
+    parts = _RATIO_LIST_RE.findall(raw)
+    return '[' + ', '.join(_fmt_pct(p) for p in parts) + ']'
+
+
+def _per_hop_adjusted_list(path_str, pair_ratio) -> str:
+    """Per-hop ADJUSTED ratio list for one path: connection_ratio_adj of
+    each (type_pre, type_post) hop from the loaded pair map, percent-
+    formatted; hops the map lacks render '—'."""
+    labs = str(path_str).split('->')
+    parts = []
+    for i in range(len(labs) - 1):
+        v = (pair_ratio or {}).get((labs[i], labs[i + 1]))
+        parts.append(_fmt_pct(v) if v is not None else '—')
+    return '[' + ', '.join(parts) + ']' if parts else ''
+
+
 def _load_pair_bodyid_coverage(folder):
     """Distinct endpoint bodyIds per (source type, target type) pair,
     counted over the bodyId-level paths table (per-path, per-pair).
@@ -2036,6 +2078,126 @@ def unit_csv_candidates(run_dir: Path, unit: dict) -> List[Path]:
     return sorted(folder.glob(f'*{PATHS_SUFFIX}'))
 
 
+def _render_refill_tab(payload: dict, run_dir: Path) -> str:
+    """The standalone Refill page (plan §2.3, 2026-10-05): the type-level
+    refill as a first-class view parallel to the path data. Always
+    present; per-unit sections (cross roots show every delegate). With
+    records: recovered-mass header + the FULL refilled type-pairs table
+    (plain + adjusted ratios, percent form). Without records (budget did
+    not bite): the honest hint state — nothing was cut, nothing to
+    recover."""
+    run = payload['run']
+    units = run.get('units') or []
+    sections = []
+    for unit in units:
+        label = _esc(unit.get('label') or unit.get('id') or '')
+        unit_rel = unit.get('id') or ''
+        folder = (Path(run_dir) / 'dataset_data' / unit_rel
+                  if unit.get('dataset') else Path(run_dir))
+        sections.append(_render_refill_section(folder, label))
+    if not sections:
+        sections.append(_render_refill_section(Path(run_dir), 'Run'))
+    return (
+        '<div class="card"><h3>Type-level refill</h3>'
+        '<p style="color:var(--secondary-color);font-size:0.9em;">The '
+        'budget-cut mass recovered behind the emitted type pairs — a '
+        'standalone view parallel to the path data. refilled_total = '
+        'emitted + refill mass; ratios use percent form and the adjusted '
+        'variant carries the threshold-conditioned denominator. Full '
+        'bodyId detail: data_details/type_level_refill/'
+        'refill_bodyId_pairs.csv.</p></div>' + ''.join(sections))
+
+
+def _render_refill_section(folder: Path, label: str) -> str:
+    """One unit's refill section: data table or the not-bitten hint."""
+    folder = Path(folder)
+    prov_path = folder / 'data_details' / 'type_level_refill' / (
+        'refill_provenance.json')
+    prov = {}
+    if prov_path.exists():
+        try:
+            prov = json.loads(prov_path.read_text(encoding='utf-8'))
+        except Exception:  # noqa: BLE001
+            prov = {}
+    pairs_csv = folder / 'data_details' / 'type_level_refill' / (
+        'refill_type_pairs.csv')
+
+    head = (f'<div class="card"><h3>{label}</h3>')
+
+    if prov.get('status') != 'refilled' or not pairs_csv.exists():
+        applied = asked = None
+        attrs_path = folder / 'all_attributes.json'
+        if attrs_path.exists():
+            try:
+                attrs = json.loads(attrs_path.read_text(encoding='utf-8'))
+                applied = attrs.get('applied_threshold')
+                asked = attrs.get('requested_threshold')
+            except Exception:  # noqa: BLE001
+                pass
+        detail = ''
+        if applied is not None and asked is not None:
+            detail = (f' This run: applied {applied} ≤ asked {asked}.')
+        return (head
+                + '<p class="cap-note">No refill records — the budget did '
+                  'not bite: the emitted pairs are the complete set at '
+                  'this threshold; there is no cut mass to recover.'
+                + detail + '</p></div>')
+
+    rows = []
+    has_adj = False
+    try:
+        frame = pd.read_csv(pairs_csv)
+        has_adj = 'refilled_connection_ratio_adj' in frame.columns
+        frame = frame[frame['refill_weight'].fillna(0) > 0]
+        frame = frame.sort_values('refill_weight', ascending=False)
+        for _, r in frame.iterrows():
+            ratio = _fmt_pct(r.get('refilled_connection_ratio'))
+            cells = (
+                '<tr><td>' + _esc(str(r['type_pre'])) + '</td>'
+                '<td>' + _esc(str(r['type_post'])) + '</td>'
+                f'<td>{int(r.get("emitted_weight", 0) or 0):,}</td>'
+                f'<td>+{int(r.get("refill_weight", 0) or 0):,}</td>'
+                f'<td><strong>{int(r.get("refilled_total", 0) or 0):,}'
+                '</strong></td>'
+                f'<td>{ratio}</td>')
+            if has_adj:
+                cells += ('<td>' + _fmt_pct(
+                    r.get('refilled_connection_ratio_adj')) + '</td>')
+            cells += ('<td>' + _esc(str(r.get('split_status') or '')) +
+                      '</td></tr>')
+            rows.append(cells)
+    except Exception:  # noqa: BLE001 - table is best-effort
+        rows = []
+
+    edges = prov.get('refill_pair_count') or prov.get('refill_edges')
+    syn_total = None
+    try:
+        syn_total = int(pd.read_csv(pairs_csv)['refill_weight'].fillna(0)
+                        .sum())
+    except Exception:  # noqa: BLE001
+        syn_total = None
+    summary_bits = []
+    if edges is not None:
+        summary_bits.append(f'{int(edges):,} bodyId edges')
+    if syn_total:
+        summary_bits.append(f'{syn_total:,} synapses of budget-cut mass')
+    adj_note = ('' if has_adj else
+                ' (adjusted refilled ratios arrive with runs from the '
+                'updated engine; this run predates the column)')
+    table = (
+        '<div class="sticky-table-container"><table><thead><tr>'
+        '<th>Pre type</th><th>Post type</th><th>Emitted</th>'
+        '<th>Refill</th><th>Refilled total</th><th>Refilled ratio</th>'
+        + ('<th>Refilled ratio (adj)</th>' if has_adj else '')
+        + '<th>Split</th></tr></thead><tbody>'
+        + ''.join(rows) + '</tbody></table></div>') if rows else ''
+    return (head
+            + '<p>Recovered ' + ' / '.join(summary_bits)
+            + ' — recovered behind the emitted pairs; a certified lower '
+            'bound of the complete-at-asked refill.' + adj_note + '</p>'
+            + table + '</div>')
+
+
 def _render_explorer_template(run: dict) -> str:
     multi = len(run['units']) > 1
     unit_select = ''
@@ -2058,7 +2220,8 @@ def _render_explorer_template(run: dict) -> str:
 
 def _render_page_shell(payload_json: str, overview_html: str,
                        global_html: str, data_html: str, explorer_html: str,
-                       run: dict, generated_at: str) -> str:
+                       run: dict, generated_at: str,
+                       refill_html: str = '') -> str:
     return """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2084,6 +2247,8 @@ __VIS_NETWORK__
     onclick="TAB.show('global')">Global</button>
   <button class="page-tab-btn" data-page="explorer" role="tab"
     onclick="TAB.show('explorer')">Pair Explorer</button>
+  <button class="page-tab-btn" data-page="refill" role="tab"
+    onclick="TAB.show('refill')">Refill</button>
   <button class="page-tab-btn" data-page="data" role="tab"
     onclick="TAB.show('data')">Data</button>
 </div>
@@ -2092,6 +2257,7 @@ __VIS_NETWORK__
 <template id="tpl-global">__GLOBAL__</template>
 <template id="tpl-explorer">__EXPLORER__</template>
 <template id="tpl-data">__DATA__</template>
+<template id="tpl-refill">__REFILL__</template>
 </div>
 <script type="application/json" id="pair-data">__PAYLOAD__</script>
 <script>
@@ -2109,6 +2275,7 @@ __JS__
            .replace('__GLOBAL__', global_html) \
            .replace('__EXPLORER__', explorer_html) \
            .replace('__DATA__', data_html) \
+           .replace('__REFILL__', refill_html) \
            .replace('__PAYLOAD__', payload_json) \
            .replace('__JS__', REPORT_JS)
 
@@ -2751,72 +2918,134 @@ REPORT_JS = r"""
       });
       var lengths = Object.keys(groupsByLen).map(Number).sort(function(a, b) {
         return a - b; });
-      // Round-8c fix: the Pair column exists ONLY in union mode — header
-      // and data cells must always agree (a 9-wide header over 8-wide rows
-      // shifted every cell one column left).
+      // COLUMN SPEC (plan §2.1, 2026-10-05): headers, cells, sort keys
+      // and hovers ALL derive from one ordered spec — a header/cell
+      // drift is structurally impossible (the round-8c union-column fix,
+      // generalized after the 2026-10-05 mismatch the user screenshotted:
+      // the conditional ratio columns had landed in different positions
+      // in the two hand-kept lists).
       var union = pairs.length > 1;
-      // Round-10: ratio-basis runs rank (and union re-rank) by min_ratio;
-      // the Min ratio column exists exactly there, keeping header/cell
-      // agreement the same way.
       var ratioRun = DATA.run.rank_by === 'min_ratio';
-      var wrap = elt('div', 'sticky-table-container');
-      var table = elt('table');
-      var thead = elt('thead');
-      var hr = elt('tr');
-      var headers = ['#'];
-      if (union) { headers.push('Pair'); }
-      headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
-                   'Ratios', 'Coverage');
-      if (ratioRun) { headers.push('Min ratio'); }
       var prSrc = (DATA.run.pair_ratio_source || '');
       var hasPr = pairs.some(function(p) {
         return (p.table.groups || []).some(function(g) {
           return (g.rows || []).some(function(r) { return r.pr != null; });
         });
       });
-      if (prSrc || hasPr) {
-        headers.push(prSrc === 'adjusted'
-          ? 'Pair-ratio (adjusted)' : 'Pair-ratio');
+      var hasAdj = pairs.some(function(p) {
+        return (p.table.groups || []).some(function(g) {
+          return (g.rows || []).some(function(r) { return r.pradj; });
+        });
+      });
+      // Percent convention (§2.5): every ratio/probability renders
+      // xx.xx%; a value that rounds to 0.00% keeps the raw form in the
+      // title so no precision silently vanishes.
+      function fmtPct(v) {
+        if (v == null || v !== v) { return '—'; }
+        return (100 * v).toFixed(2) + '%';
       }
-      headers.push('Source coverage', 'Target coverage');
-      // Round-10 scope labels: Weights/Coverage describe the realized
-      // per-position support; Ratios is the pair-level mass share —
-      // different universes that must not be read as one.
-      var headerTitles = {
-        'Min weight': 'Weakest hop of this path — the realized synapse '
-          + 'mass of that hop (distinct bodyId edges at that position).',
-        'Weights': 'Per-hop realized synapse mass: the distinct bodyId '
-          + 'edges backing each hop at that position — the same edges '
-          + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
-        'Ratios': ratioRun
-          ? 'Per-hop REALIZED share: the mass of the bodyId edges backing '
-            + 'that hop at that position / the post type\u2019s '
-            + 'full-membership incoming mass — the same edges behind '
-            + 'Weights and the Coverage n. Pair-level shares remain in '
-            + 'data_details/connection_type.csv.'
-          : 'Per-hop type-PAIR mass share: the pair\u2019s kept synapse '
-            + 'mass / the post type\u2019s full-membership incoming mass. '
-            + 'Pair-level over all conn layers — it does not depend on '
-            + 'which bodyIds realize this path.',
-        'Coverage': 'Per-node coverage: distinct bodyIds realizing this '
-          + 'exact sequence at that position / the type\u2019s population '
-          + 'in the run\u2019s discovered network.',
-        'Min ratio': 'Weakest per-hop realized share on this path (this '
-          + 'run\u2019s ranking key).',
-        'Pair ratio': 'Weakest PAIR-level mass share among this path\u2019s '
-          + 'hops: the pair\u2019s kept synapse mass / the post type\u2019s '
-          + 'full-membership incoming mass — independent of which bodyIds '
-          + 'realize the path (pair-level readouts live in '
-          + 'data_details/connection_type.csv).'
-      };
-      headers.forEach(function(t) {
-        var th = elt('th', null, t);
-        if (headerTitles[t]) { th.title = headerTitles[t]; }
+      function pctTd(v) {
+        var td = elt('td', null, fmtPct(v));
+        if (v != null && v === v && Math.abs(100 * v) < 0.005) {
+          td.title = String(v);
+        }
+        return td;
+      }
+      function tdc(v, title) {
+        var td = elt('td', null, v);
+        if (title) { td.title = title; }
+        return td;
+      }
+      var COLS = [
+        { h: '#', cell: function(row, i) {
+            return elt('td', null, i + 1); } },
+        union && { h: 'Pair', cell: function(row) {
+            return elt('td', null, row.pair); } },
+        { h: 'Path', cell: function(row) {
+            var td = elt('td');
+            td.appendChild(elt('strong', null, row.path));
+            return td; } },
+        { h: 'Len', cell: function(row) { return elt('td', null, row.len); } },
+        { h: 'Min weight',
+          title: 'Weakest hop of this path — the realized synapse '
+            + 'mass of that hop (distinct bodyId edges at that position).',
+          cell: function(row) { return elt('td', null, fmt(row.mw)); } },
+        ratioRun && { h: 'Min ratio',
+          title: 'Weakest per-hop realized share on this path (this '
+            + 'run\u2019s ranking key). Percent form (§2.5).',
+          cell: function(row) { return pctTd(row.mr); } },
+        hasAdj && { h: 'Adj. ratios',
+          title: 'Per-hop ADJUSTED ratio list: connection_ratio_adj of '
+            + 'each (pre, post) type hop — the threshold-conditioned '
+            + 'input share (refill-aware); percent form. Hops missing '
+            + 'from connection_type.csv render —.',
+          cell: function(row) { return elt('td', null, row.pradj || '—'); } },
+        (prSrc || hasPr) && { h: prSrc === 'adjusted'
+            ? 'Pair-ratio (adjusted)' : 'Pair-ratio',
+          title: prSrc === 'adjusted'
+            ? 'Weakest PAIR-level ADJUSTED share among this path\u2019s '
+              + 'hops (connection_ratio_adj: threshold-conditioned '
+              + 'denominator) — independent of which bodyIds realize '
+              + 'the path.'
+            : 'Weakest PAIR-level mass share among this path\u2019s '
+              + 'hops: the pair\u2019s kept synapse mass / the post '
+              + 'type\u2019s full-membership incoming mass — independent '
+              + 'of which bodyIds realize the path (pair-level readouts '
+              + 'live in data_details/connection_type.csv). Percent form.',
+          cell: function(row) { return pctTd(row.pr); } },
+        { h: 'Path prob', cell: function(row) { return pctTd(row.pp); } },
+        { h: 'Weights',
+          title: 'Per-hop realized synapse mass: the distinct bodyId '
+            + 'edges backing each hop at that position — the same edges '
+            + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
+          cell: function(row) { return elt('td', null, row.weights); } },
+        { h: 'Ratios',
+          title: ratioRun
+            ? 'Per-hop REALIZED share: the mass of the bodyId edges '
+              + 'backing that hop at that position / the post type\u2019s '
+              + 'full-membership incoming mass — the same edges behind '
+              + 'Weights and the Coverage n. Percent form (§2.5); '
+              + 'pair-level shares remain in data_details/'
+              + 'connection_type.csv.'
+            : 'Per-hop type-PAIR mass share: the pair\u2019s kept synapse '
+              + 'mass / the post type\u2019s full-membership incoming '
+              + 'mass. Percent form (§2.5); pair-level over all conn '
+              + 'layers — it does not depend on which bodyIds realize '
+              + 'this path.',
+          cell: function(row) { return elt('td', null, row.ratios); } },
+        { h: 'Coverage',
+          title: 'Per-node coverage: distinct bodyIds realizing this '
+            + 'exact sequence at that position / the type\u2019s '
+            + 'population in the run\u2019s discovered network.',
+          cell: function(row) {
+            return tdc(row.coverage || '',
+              'Per-node bodyId coverage: distinct bodyIds on the emitted '
+              + 'paths at that position / the type\u2019s members in the '
+              + 'run\u2019s discovered network.'); } },
+        { h: 'Source coverage',
+          title: 'PER PATH: distinct source bodyIds realizing this exact '
+            + 'path / the source type\u2019s members in the run (first '
+            + 'entry of the coverage list; pair-scope value when the '
+            + 'row has no list).',
+          cell: function(row) { return tdc(row.scov || '—'); } },
+        { h: 'Target coverage',
+          title: 'PER PATH: distinct target bodyIds realizing this exact '
+            + 'path / the target type\u2019s members in the run (last '
+            + 'entry of the coverage list).',
+          cell: function(row) { return tdc(row.tcov || '—'); } },
+      ].filter(Boolean);
+      var wrap = elt('div', 'sticky-table-container');
+      var table = elt('table');
+      var thead = elt('thead');
+      var hr = elt('tr');
+      COLS.forEach(function(col) {
+        var th = elt('th', null, col.h);
+        if (col.title) { th.title = col.title; }
         hr.appendChild(th); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = elt('tbody');
       var rowPaths = [];
-      var colSpan = headers.length;
+      var colSpan = COLS.length;
       lengths.forEach(function(len) {
         var rows = groupsByLen[len].slice().sort(function(a, b) {
           var ka = ratioRun ? (a.mr || 0) : (a.mw || 0);
@@ -2834,44 +3063,11 @@ REPORT_JS = r"""
         rows.forEach(function(row, i) {
           var tr = elt('tr');
           tr.dataset.path = row.path;
-          tr.appendChild(elt('td', null, i + 1));
-          if (union) { tr.appendChild(elt('td', null, row.pair)); }
-          var pathTd = elt('td');
-          pathTd.appendChild(elt('strong', null, row.path));
-          tr.appendChild(pathTd);
-          tr.appendChild(elt('td', null, row.len));
-          tr.appendChild(elt('td', null, fmt(row.mw)));
-          if (ratioRun) {
-            tr.appendChild(elt('td', null, fmt(row.mr)));
-          }
-          if (prSrc || hasPr) {
-            var prTd = elt('td', null, fmt(row.pr));
-            prTd.title = prSrc === 'adjusted'
-              ? 'Pair-level ADJUSTED connection ratio '
-                + '(connection_ratio_adj: deduped recurring-pair '
-                + 'numerators, refill-aware) from connection_type.csv.'
-              : 'Pair-level connection_ratio from connection_type.csv.';
-            tr.appendChild(prTd);
-          }
-          tr.appendChild(elt('td', null, fmt(row.pp)));
-          tr.appendChild(elt('td', null, row.weights));
-          tr.appendChild(elt('td', null, row.ratios));
-          var covTd = elt('td', null, row.coverage || '');
-          covTd.title = 'Per-node bodyId coverage: distinct bodyIds on '
-            + 'the emitted paths at that position / the type\'s members '
-            + 'in the run\'s discovered network.';
-          tr.appendChild(covTd);
-          var scovTd = elt('td', null, row.scov || '—');
-          scovTd.title = 'PER PATH: distinct source bodyIds realizing '
-            + 'this exact path / the source type\'s members in the run '
-            + '(first entry of the coverage list; pair-scope value when '
-            + 'the row has no list)';
-          tr.appendChild(scovTd);
-          var tcovTd = elt('td', null, row.tcov || '—');
-          tcovTd.title = 'PER PATH: distinct target bodyIds realizing '
-            + 'this exact path / the target type\'s members in the run '
-            + '(last entry of the coverage list)';
-          tr.appendChild(tcovTd);
+          // §2.1: cells come from the SAME spec as the headers — one
+          // loop, one order, always aligned.
+          COLS.forEach(function(col) {
+            tr.appendChild(col.cell(row, i));
+          });
           tbody.appendChild(tr);
           rowPaths.push(row.path);
         });
@@ -3095,7 +3291,13 @@ def _attach_table_groups(
                     'pr': _path_pair_ratio(row['path'], pair_ratio or {}),
                     'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
-                    'ratios': '' if pd.isna(row['ratios']) else str(row['ratios']),
+                    # Percent convention (§2.5): the report payload shows
+                    # xx.xx% lists; the breakdown CSV keeps raw strings.
+                    'ratios': _format_ratio_list(
+                        '' if pd.isna(row['ratios'])
+                        else str(row['ratios'])),
+                    'pradj': _per_hop_adjusted_list(
+                        row['path'], pair_ratio or {}),
                     'coverage': ('' if pd.isna(row.get('coverage'))
                                  else str(row['coverage'])),
                     'scov': path_scov or pair_scov,
@@ -3258,6 +3460,7 @@ def generate_paths_pair_report(
         _render_explorer_template(payload['run']),
         payload['run'],
         _generated_stamp(),
+        refill_html=_render_refill_tab(payload, run_dir),
     )
     report_path = run_dir / REPORT_NAME
     with open(report_path, 'w', encoding='utf-8') as handle:

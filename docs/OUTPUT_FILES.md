@@ -253,7 +253,17 @@ the report's `Generated:` timestamp.
     ADJUSTED ratio (`connection_ratio_adj`) when present — labeled
     "Pair-ratio (adjusted)" in the header and hover — falling back to
     plain `connection_ratio`, on EVERY basis (not just ratio-ranked
-    runs). An **applied-threshold
+    runs); its headers and cells derive from one COLUMN SPEC so they can
+    never drift out of alignment. Beside the per-hop **Ratios** list,
+    an **Adj. ratios** list column carries the per-hop
+    `connection_ratio_adj` values, and EVERY ratio/probability the
+    report renders uses the percent form `xx.xx%` (the breakdown CSV
+    keeps raw values; cells rounding to `0.00%` carry the raw form in
+    their hover).
+    A standalone **Refill** tab (always present) shows the type-level
+    refill parallel to the path data: the full refilled type-pairs
+    table with plain AND adjusted refilled ratios, or the explicit
+    "budget did not bite" hint when no records exist. An **applied-threshold
     &amp; budget provenance card** marks explicitly what the run used
     (applied vs requested threshold, StrongestFirst budget/tau, Edge
     Budget landing/floor, W\*, paths_complete) — single-dataset runs from

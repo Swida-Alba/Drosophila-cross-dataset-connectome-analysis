@@ -392,6 +392,35 @@ def test_ratio_threshold_free(staged_runs):
     row = tc.iloc[0]
     assert row['refilled_total'] == 17
     assert abs(row['refilled_connection_ratio'] - 17 / TT_TOTAL_IN) < 1e-6
+    # Adjusted twin (plan §2.4): this fixture stamps min synapse = 1, so
+    # the threshold-conditioned denominator IS the F9 one — equal by
+    # doctrine (always emitted, redundant when no synapse threshold).
+    assert abs(row['refilled_connection_ratio_adj']
+               - 17 / TT_TOTAL_IN) < 1e-6
+
+
+def test_adjusted_refill_ratio_threshold_conditioned(staged_runs, tmp_path):
+    """min synapse = 3: the adjusted denominator drops the weight-2
+    C2->T2 edge (103 -> 101), so adj > plain on the same TC->TT row;
+    the plain F9 ratio is unchanged (threshold-free by doctrine)."""
+    import shutil
+    run_dir = staged_runs['floor'][1]
+    copy = tmp_path / 'cond'
+    shutil.copytree(run_dir, copy)
+    import re as _re
+    text = (copy / 'parameters.txt').read_text()
+    text = _re.sub(r'^min synapse number:\s*\S+', 'min synapse number:          3',
+                   text, flags=_re.MULTILINE)
+    (copy / 'parameters.txt').write_text(text)
+    out = tmp_path / '_records_cond'
+    compute_type_level_refill(copy, edges=EDGES, type_map=TYPE_MAP,
+                              out_dir=out, write=True)
+    rows = pd.read_csv(out / 'refill_type_pairs.csv')
+    row = rows[(rows['type_pre'] == 'TC')
+               & (rows['type_post'] == 'TT')].iloc[0]
+    assert abs(row['refilled_connection_ratio'] - 17 / 103) < 1e-6
+    assert abs(row['refilled_connection_ratio_adj'] - 17 / 101) < 1e-6
+
 
 
 def test_determinism_bytes(staged_runs, tmp_path):

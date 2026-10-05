@@ -923,6 +923,22 @@ def compute_type_level_refill(
     for (u, v, w) in edges:
         type_in[type_map.get(str(v), f'~{v}')] += w
 
+    # Adjusted refilled ratio (plan §2.4, 2026-10-05): the threshold-
+    # CONDITIONED post-type denominator — incoming mass counting only
+    # edges at/above the run's Min Synapse Count (the same doctrine as
+    # connection_ratio_adj: always emitted, equals the plain refilled
+    # ratio when no synapse threshold is active — every ratio-basis run,
+    # where min_synapse is forced to 1).
+    try:
+        _min_syn = float(prov.get('min_synapse'))
+    except (TypeError, ValueError):
+        _min_syn = None
+    type_in_adj: Dict[str, float] = defaultdict(float)
+    if _min_syn and _min_syn > 1:
+        for (u, v, w) in edges:
+            if float(w) >= _min_syn:
+                type_in_adj[type_map.get(str(v), f'~{v}')] += w
+
     emitted_pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
     for (u, v) in cut_info:
         emitted_pair_counts[(type_map[u], type_map[v])] += 1
@@ -933,6 +949,10 @@ def compute_type_level_refill(
         ref_w = totals.get(pair, 0.0)
         denom = type_in.get(pair[1], 0.0)
         type_ratio = ((emit_w + ref_w) / denom) if denom > 0 else None
+        denom_adj = (type_in_adj.get(pair[1], 0.0)
+                     if (_min_syn and _min_syn > 1) else denom)
+        type_ratio_adj = ((emit_w + ref_w) / denom_adj) \
+            if denom_adj > 0 else None
         union_pairs = [
             uv for uv in list(refill_edges) + list(cut_info)
             if (type_map[uv[0]], type_map[uv[1]]) == pair]
@@ -947,6 +967,9 @@ def compute_type_level_refill(
                 if (type_map[uv[0]], type_map[uv[1]]) == pair),
             'refilled_connection_ratio': (
                 round(type_ratio, 6) if type_ratio is not None else None),
+            'refilled_connection_ratio_adj': (
+                round(type_ratio_adj, 6)
+                if type_ratio_adj is not None else None),
             'refilled_traversal_probability': round(
                 _type_probability(
                     ((_pair_prob(uv), edge_weight[uv]) for uv in union_pairs),
@@ -1038,7 +1061,10 @@ Files
 - `refill_type_pairs.csv` — one row per EMITTED type pair (zeros
   included). `refilled_total = emitted_weight + refill_weight` is the
   refilled strength; `refilled_connection_ratio` uses the threshold-free
-  all-post denominator (F9). Refill mass counts only bodyId pairs on
+  all-post denominator (F9) and `refilled_connection_ratio_adj` the
+  threshold-conditioned one (edges at/above the run's Min Synapse Count;
+  equals the plain ratio when no synapse threshold is active). Refill
+  mass counts only bodyId pairs on
   simple source->target paths within the run's hop bound on the subgraph
   induced by the involved types' neurons — a certified lower bound of the
   full complete-at-asked refill (paths that leave the induced subgraph
