@@ -3018,18 +3018,13 @@ REPORT_JS = r"""
             + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
           cell: function(row) { return elt('td', null, row.weights); } },
         { h: 'Ratios',
-          title: ratioRun
-            ? 'Per-hop REALIZED share: the mass of the bodyId edges '
-              + 'backing that hop at that position / the post type\u2019s '
-              + 'full-membership incoming mass — the same edges behind '
-              + 'Weights and the Coverage n. Percent form (§2.5); '
-              + 'pair-level shares remain in data_details/'
-              + 'connection_type.csv.'
-            : 'Per-hop type-PAIR mass share: the pair\u2019s kept synapse '
-              + 'mass / the post type\u2019s full-membership incoming '
-              + 'mass. Percent form (§2.5); pair-level over all conn '
-              + 'layers — it does not depend on which bodyIds realize '
-              + 'this path.',
+          title: 'Per-hop REALIZED share on every weight basis '
+            + '(engine fix 2026-10-05): the mass of the bodyId edges '
+            + 'backing that hop at that position / the post type\u2019s '
+            + 'full-membership incoming mass — the same edges behind '
+            + 'Weights and the Coverage n, and the same canonical '
+            + 'denominator as data_details/connection_type.csv. Percent '
+            + 'form (§2.5); pair-level shares remain there.',
           cell: function(row) { return elt('td', null, row.ratios); } },
         { h: 'Coverage',
           title: 'Per-node coverage: distinct bodyIds realizing this '

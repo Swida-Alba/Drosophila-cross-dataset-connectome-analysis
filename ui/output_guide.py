@@ -147,7 +147,10 @@ COLUMN_GLOSSARY = {
     "weights": ("Per-edge synapse counts along the path — the REALIZED "
                 "mass: the distinct bodyId edges backing that exact hop "
                 "at that path position (the same edges behind the "
-                "coverage n), not the type pair's cross-depth total.", "list of integers"),
+                "coverage n), not the type pair's cross-depth total. In "
+                "Shortest runs each physical edge counts once even when "
+                "fetched at several reverse depths (2026-10-05).",
+                "list of integers"),
     "weight_a": ("Partner weight in profile A (query).", "number"),
     "weight_b": ("Partner weight in profile B (candidate).", "number"),
     "weight_L": ("Edge weight on the left hemisphere (L-L or L-R pairing).", "integer"),
@@ -181,16 +184,16 @@ COLUMN_GLOSSARY = {
         "type level). Always >= connection_ratio and moves with the "
         "threshold by design; equals connection_ratio when Min Synapse Count is 1.",
         "0-1"),
-    "ratios": ("Per-edge connection ratios along the path. On "
-               "weight-basis='connection_ratio' runs these are the "
-               "REALIZED shares — the mass of the bodyId edges backing "
-               "that hop at that position over the post type's "
-               "full-membership incoming mass (same edges as Weights "
-               "and the coverage n).", "list of 0-1"),
+    "ratios": ("Per-edge connection ratios along the path — the "
+               "REALIZED shares on every weight basis: the mass of the "
+               "bodyId edges backing that hop at that position over the "
+               "post type's full-membership incoming mass (same edges "
+               "as Weights and the coverage n, same canonical "
+               "denominator as connection_type.csv).", "list of 0-1"),
     "min_ratio": ("Smallest edge connection ratio along the path — the "
-                  "realized bottleneck on weight-basis='connection_ratio' "
-                  "runs (a mass share; can fall below the applied "
-                  "bodyId-level threshold).", "0-1"),
+                  "REALIZED bottleneck on every weight basis (a mass "
+                  "share; can fall below the applied bodyId-level "
+                  "threshold).", "0-1"),
     "traversal_probability": (
         "Probability that a signal traverses the edge: "
         "$\\min(1.0,\\ connection\\_ratio/0.3)$.", "0-1"),

@@ -125,10 +125,10 @@ Count (round-13; both knobs visible in the UI when AND is selected).
 #### Main Data Files
 *   **`{source}_to_{target}_allpaths_type.csv`**: The primary path table (type-level when `skip_bodyId=True`, the UI default). Columns:
     *   `path`: Path as a type sequence (e.g. `aMe12 → SMP238 → PPL101`)
-    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios — all **realized** (round-10/11): `weights` is the distinct bodyId edges' mass backing that exact hop at that path position (the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total — that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). In **ratio runs** `ratios`/`probabilities`/`min_ratio`/`path_prob` are also realized-scope: hop ratio = the hop's realized mass ÷ the post type's full-membership incoming mass (the same denominator the pair-level recompute uses), probability = min(1, ratio/0.3). In synapse runs `ratios`/`probabilities` stay pair-level readouts
+    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios — all **realized** (round-10/11): `weights` is the distinct bodyId edges' mass backing that exact hop at that path position (the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total — that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). On EVERY weight basis (engine fix 2026-10-05, I2) `ratios`/`probabilities`/`min_ratio`/`path_prob` are realized-scope: hop ratio = the hop's realized mass ÷ the post type's full-membership incoming mass — the same canonical denominator as `data_details/connection_type.csv`, so one run can never show two denominators for a type; probability = min(1, ratio/0.3)
     *   `min_weight`: Smallest realized hop weight along the path
     *   `path_prob`: Overall path probability (product of per-hop probabilities)
-    *   `min_ratio`: Smallest edge connection ratio (realized in ratio runs; a mass share that can fall below the applied bodyId-level `t_r`)
+    *   `min_ratio`: Smallest edge connection ratio (realized on every weight basis; a mass share that can fall below the applied bodyId-level `t_r`)
     *   `length`: Number of hops
     *   `nt_types`: Neurotransmitter types along the path — one entry per
         hop, positionally aligned; an empty entry marks a hop whose
@@ -389,7 +389,7 @@ Layers or raise Min Synapse Count for those.
 
 > ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio`, `traversal_probability`, and filtering thresholds.
 >
-> ℹ️ With `skip_bodyId=False`, bodyId-level tables are written alongside the type-level ones: `data_details/connection_info_bodyId.csv` (edge table), `{source}_to_{target}_allpaths_bodyId_paths.csv` (bodyId-level path table, same score columns as the type table), and `data_details/conn_mat_bodyId_weight.csv` / `_ratio.csv` / `_prob.csv` bodyId-level matrices. With `output_format='xlsx'`, tables are written as multi-sheet Excel workbooks instead of CSVs (sheets mirror the CSV file names, e.g. `connection_info_bodyId`, `conn_mat_type_weight`). The structure above reflects the UI defaults (`skip_bodyId=True`, `output_format='csv'`).
+> ℹ️ With `skip_bodyId=False`, bodyId-level tables are written alongside the type-level ones: `data_details/connection_info_bodyId.csv` (edge table), `{source}_to_{target}_allpaths_bodyId_paths.csv` (bodyId-level path table, same score columns as the type table), and `data_details/conn_mat_bodyId_weight.csv` / `_ratio.csv` / `_prob.csv` bodyId-level matrices. In Shortest runs the per-hop `weights`/`min_weight` are the PHYSICAL per-edge synapse counts (engine fix 2026-10-05: a per-target-BFS edge recurring at several reverse depths counts ONCE, not once per fetch), while `connection_info_bodyId.csv` keeps every per-layer row as the audit surface for what was fetched. With `output_format='xlsx'`, tables are written as multi-sheet Excel workbooks instead of CSVs (sheets mirror the CSV file names, e.g. `connection_info_bodyId`, `conn_mat_type_weight`). The structure above reflects the UI defaults (`skip_bodyId=True`, `output_format='csv'`).
 
 ---
 
