@@ -207,10 +207,34 @@ def read_enrollment(run_dir) -> Tuple[List[str], List[str]]:
 
 
 def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
-    """Per-type-pair emitted weight, summed across ``conn_layer`` rows
-    (the type-graph convention — ``add_edge`` sums duplicate pairs across
-    layers; in 'all' mode each pair lives in exactly one layer table)."""
+    """Per-type-pair emitted weight — the run's PHYSICAL edge mass.
+
+    Engine round 2026-10-06: prefers ``connection_info_bodyId.csv`` and
+    dedups (bodyId_pre, bodyId_post) keep-first before aggregating. In
+    shortest runs the same physical edge is fetched once per backward
+    BFS layer it recurs in, and ``connection_type.csv`` therefore counts
+    it once per fetch (measured on a real FAFB run: the pair-level sums
+    were 2.18x the physical mass; 519 of 582 type pairs inflated) — the
+    dedup restores the mass every other surface of the run reports and
+    what the refill's own cut re-derivation (deduped per cut edge) must
+    reproduce for the anchor check to hold. In 'all' mode each pair
+    lives in exactly one layer, so both readings coincide. Runs without
+    bodyId detail (``skip_bodyId=True``) fall back to the conn-table
+    sums; there the anchor semantics stay per-layer (disclosed)."""
     run_dir = Path(run_dir)
+    info_path = run_dir / 'data_details' / 'connection_info_bodyId.csv'
+    if info_path.exists():
+        ci = pd.read_csv(
+            info_path,
+            dtype={'bodyId_pre': str, 'bodyId_post': str,
+                   'type_pre': str, 'type_post': str})
+        if not ci.empty and {'bodyId_pre', 'bodyId_post',
+                             'type_pre', 'type_post'} <= set(ci.columns):
+            ci = ci.drop_duplicates(
+                subset=['bodyId_pre', 'bodyId_post'], keep='first')
+            ci = ci[ci['type_pre'].notna() & ci['type_post'].notna()]
+            agg = ci.groupby(['type_pre', 'type_post'])['weight'].sum()
+            return {tuple(k): int(v) for k, v in agg.items()}
     path = run_dir / 'data_details' / 'connection_type.csv'
     if not path.exists():
         raise TypeLevelRefillError(
@@ -456,9 +480,11 @@ def _type_probability(pair_prob_weights: Iterable[Tuple[Optional[float],
 # ---------------------------------------------------------------------------
 def _load_shortest_store(run_dir: Path):
     """Load the shortest discovery store's structural pieces: per-layer
-    connection frames (pair -> per-layer weights, preserving the
-    cross-layer multiplicity the exported table counts), the store meta
-    (targets found + hop limits) and the per-target distance maps."""
+    connection frames (pair -> per-layer weights; the per-edge values
+    are the PHYSICAL weight in every layer — enumeration over them is
+    multiplicity-insensitive, and anchor masses dedup via ``syn_of``),
+    the store meta (targets found + hop limits) and the per-target
+    distance maps."""
     store_dir = run_dir / 'shortest_discovery_store'
     meta_file = store_dir / 'meta.json'
     if not meta_file.exists():
@@ -511,17 +537,21 @@ def _load_shortest_store(run_dir: Path):
 def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
                         budget, distances, hop_limits):
     """Shortest-mode re-exploration on the induced subgraph: per-layer
-    weights summed exactly like the production batch graphs
-    (``load_edge_weight_frame`` parity), enumeration seeded with the
-    store's full-graph distance maps so per-pair min-hop semantics match
-    the run."""
+    weights DEDUPED to the PHYSICAL per-edge weight (keep-first), the
+    exact parity ``load_edge_weight_frame`` has had since engine fix
+    2026-10-05 (I1) — summing the per-layer refetches multiplied weights
+    by the fetch multiplicity, which re-ordered the StrongestFirst drain
+    against the fixed engine and broke the cut anchor on runs with
+    cross-layer recurring edges. Enumeration is seeded with the store's
+    full-graph distance maps so per-pair min-hop semantics match the
+    run."""
     FastGraph = _load_fast_graph()
-    summed: Dict[Tuple[str, str], float] = defaultdict(float)
+    physical: Dict[Tuple[str, str], float] = {}
     for _layer, weights in layer_weights:
         for (u, v), w in weights.items():
             if u in node_set and v in node_set:
-                summed[(u, v)] += w
-    df = pd.DataFrame([(u, v, w) for (u, v), w in summed.items()],
+                physical.setdefault((u, v), w)
+    df = pd.DataFrame([(u, v, w) for (u, v), w in physical.items()],
                       columns=['bodyId_pre', 'bodyId_post', 'weight'])
     g = FastGraph()
     g.build_from_dataframe(df, 'bodyId_pre', 'bodyId_post', 'weight',
@@ -540,7 +570,7 @@ def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
         nodes = [str(n) for n in path]
         for i in range(len(nodes) - 1):
             traversals[(nodes[i], nodes[i + 1])] += 1
-    weight_of = dict(summed)
+    weight_of = dict(physical)
     info = {k: {'w': weight_of[k], 'traversals': n, 'hops': [0]}
             for k, n in traversals.items()}
     return info, stats
@@ -736,7 +766,12 @@ def compute_type_level_refill(
                     denom = post_tot.get(v, 0.0)
                     conv_layer[(u, v)] = (
                         float(w) / denom if denom > 0 else 0.0)
-                    syn_of[(u, v)] += float(w)   # multiplicity preserved
+                    # PHYSICAL anchor mass: keep the first fetch's weight.
+                    # A pair recurring across BFS layers is one edge; the
+                    # anchor must reproduce read_emitted_pairs' deduped
+                    # mass, not the fetch multiplicity (2026-10-06).
+                    if (u, v) not in syn_of:
+                        syn_of[(u, v)] = float(w)
                 converted.append((_layer, conv_layer))
             layer_weights = converted
         estar, ask_stats = _enumerate_shortest(
@@ -1081,9 +1116,14 @@ Files
 
 Join recipe
 -----------
-Join `refill_type_pairs.csv` on `(type_pre, type_post)` against the
-run's `data_details/connection_type.csv` (sum that table's `weight`
-across its `conn_layer` rows first — that sum is `emitted_weight`).
+`emitted_weight` is the run's PHYSICAL edge mass per type pair: since
+2026-10-06 it dedups `data_details/connection_info_bodyId.csv` by
+`(bodyId_pre, bodyId_post)` (keep-first) before aggregating — in
+shortest runs the same edge is fetched once per backward BFS layer it
+recurs in, and summing `connection_type.csv`'s per-layer rows instead
+multiplied the mass by that fetch multiplicity (measured 2.18x on a
+real FAFB run). Runs without bodyId detail (`skip_bodyId=True`) fall
+back to the conn-table sums (per-layer semantics, disclosed).
 """
 
 

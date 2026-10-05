@@ -134,6 +134,7 @@ Count (round-13; both knobs visible in the UI when AND is selected).
         hop, positionally aligned; an empty entry marks a hop whose
         connection has no NT annotation
 *   **`all_attributes.json`**: Serialized run attributes — includes the
+    *   `data_generation`: the exact data generation the run was computed against — local release table path/mtime/size, a digest of the connection-cache file signatures, and the incoming-lane (shortest numerators) file signatures. Two runs are comparable only within one generation; a replaced table under the same dataset name shows up as a different stamp. The same components ride parameters.txt/parameters.csv as `data_generation_*` lines.
     applied-threshold provenance block described under Run Metadata.
 *   **`{source}_to_{target}_allpaths_group.csv`**: Group-level path table
     (only for custom-group queries).

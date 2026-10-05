@@ -1396,6 +1396,8 @@ class ConnectivityProfiler:
         
         # Data availability cache: dataset -> True (avoids repeated checks)
         self._data_availability_cache: Dict[str, bool] = {}
+        # bodyId -> downstream_complete, mtime-memoized per index file
+        self._index_flags_cache: Dict[tuple, dict] = {}
         
         # Type normalization cache: dataset -> {original_type -> normalized_type}
         # Pre-computed at connection cache load time for vectorized lookups
@@ -2994,6 +2996,7 @@ class ConnectivityProfiler:
                         conn_df = self._join_type_info_from_neuron_df(conn_df, dataset_path, safe_name)
                     
                     _PROFILER_CONN_CACHE[safe_name]['conn_df'] = conn_df
+                    _PROFILER_CONN_CACHE[safe_name]['source'] = 'fnc'
                     # Use FNC's pre index
                     _PROFILER_CONN_CACHE[safe_name]['bodyid_pre_index'] = fnc_index
                     
@@ -3075,6 +3078,11 @@ class ConnectivityProfiler:
                         else:
                             conn_df = pd.read_csv(conn_file)
                         loaded_from = conn_file
+                        _PROFILER_CONN_CACHE.setdefault(
+                            safe_name, {})['source'] = (
+                            'cache'
+                            if loaded_from.parent == cache_path
+                            else 'release')
                         break
                     except Exception as e:
                         self._log(f"Warning: Could not load {conn_file}: {e}")
@@ -3929,6 +3937,99 @@ class ConnectivityProfiler:
             profile.neuron_type = str(ntype)
         return profile
 
+    def _neuron_index_flags(self, dataset: str) -> dict:
+        """``{bodyId: downstream_complete}`` from the app-owned neuron
+        index (mtime-memoized; empty when no index exists). The flags are
+        the connection cache's own per-neuron completion record."""
+        safe_name = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
+        src_dir = Path(__file__).parent.parent
+        project_root = src_dir.parent
+        index_root = (getattr(self, 'neuron_index_dir', None)
+                      or (project_root / 'neuron_indexes'))
+        index_path = index_root / safe_name / 'neuron_index.parquet'
+        try:
+            mtime = index_path.stat().st_mtime_ns
+        except OSError:
+            return {}
+        memo_key = (str(index_path), mtime)
+        cached = self._index_flags_cache.get(memo_key)
+        if cached is not None:
+            return cached
+        try:
+            import polars as pl
+            frame = pl.read_parquet(
+                str(index_path), columns=['bodyId', 'downstream_complete'])
+            flags = {str(b): bool(c) for b, c in frame.iter_rows()}
+        except Exception:
+            flags = {}
+        self._index_flags_cache[memo_key] = flags
+        return flags
+
+    def _incomplete_bodyids(self, bodyids, dataset: str) -> list:
+        """The requested bodyIds the connection cache does not prove
+        complete (missing from the index or flagged incomplete)."""
+        flags = self._neuron_index_flags(dataset)
+        if not flags:
+            return [str(b) for b in bodyids]
+        return [str(b) for b in bodyids if not flags.get(str(b), False)]
+
+    def _supplement_incomplete_cache(self, neuron, upstream_df, downstream_df,
+                                     dataset: str):
+        """Cache-sourced profile completeness (cache survey 2026-10-06
+        follow-up): a connection cache may hold only PART of a neuron's
+        connections (incremental build), and profiles built from the
+        partial rows silently persist understated. For bodyId-level
+        queries on non-local datasets, consult the neuron index's
+        ``downstream_complete`` flags; incomplete neurons are supplemented
+        from the dataset API and merged (deduped) into the local frames.
+        Local-release datasets (FAFB/BANC) are complete by definition and
+        skip the check. Returns the (possibly merged) frames."""
+        if is_local_connectome_dataset(dataset):
+            return upstream_df, downstream_df
+        safe_name = canonical_dataset_name(dataset).replace(
+            ':', '_').replace('.', '_')
+        source = (_PROFILER_CONN_CACHE.get(safe_name) or {}).get('source')
+        if source not in ('cache', 'fnc'):
+            return upstream_df, downstream_df
+        if isinstance(neuron, int):
+            bodyids = [neuron]
+        elif isinstance(neuron, list) and neuron and all(
+                isinstance(b, int) or str(b).isdigit() for b in neuron):
+            bodyids = [int(b) for b in neuron]
+        else:
+            # Type-level query: per-member flags need member resolution —
+            # disclosed once instead (H4's warning covers the class).
+            return upstream_df, downstream_df
+        incomplete = self._incomplete_bodyids(bodyids, dataset)
+        if not incomplete:
+            return upstream_df, downstream_df
+        self._log(
+            f"WARNING: {len(incomplete)} neuron(s) not proven complete in "
+            f"the {dataset} connection cache — supplementing their "
+            "connections from the dataset API before profiling.")
+        try:
+            up_api, down_api = self._query_connections_neuprint(
+                incomplete, dataset)
+        except Exception as exc:
+            self._log(f"Warning: profile completeness supplement failed: {exc}")
+            return upstream_df, downstream_df
+
+        def _merge(local, api):
+            if api is None or len(api) == 0:
+                return local
+            parts = [df for df in (local, api) if df is not None and len(df)]
+            if not parts:
+                return api
+            merged = pd.concat(parts, ignore_index=True)
+            for col in ('partner_bodyId', 'neuron_bodyId'):
+                if col in merged.columns:
+                    merged[col] = merged[col].astype(str)
+            key = [c for c in ('partner_bodyId', 'neuron_bodyId', 'weight')
+                   if c in merged.columns]
+            return merged.drop_duplicates(subset=key, keep='first')
+
+        return (_merge(upstream_df, up_api), _merge(downstream_df, down_api))
+
     def get_profile(
         self,
         neuron: Union[str, int, List],
@@ -3975,7 +4076,14 @@ class ConnectivityProfiler:
         # Local cache includes: FAFB/BANC local releases AND NeuPrint datasets
         # with pre-built connection cache from FNC.build_connection_cache()
         upstream_df, downstream_df = self._query_connections_local(neuron, dataset)
-        
+
+        # Cache-sourced completeness (cache survey 2026-10-06 follow-up):
+        # neurons the incremental cache does not prove complete are
+        # supplemented from the API before the profile is built, so a
+        # partial cache cannot silently persist an understated profile.
+        upstream_df, downstream_df = self._supplement_incomplete_cache(
+            neuron, upstream_df, downstream_df, dataset)
+
         # Fall back to NeuPrint API only if local data not available
         if upstream_df.empty and downstream_df.empty:
             if not is_local_connectome_dataset(dataset):

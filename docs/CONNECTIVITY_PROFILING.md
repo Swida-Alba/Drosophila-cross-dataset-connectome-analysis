@@ -21,6 +21,19 @@ The `ConnectivityProfiling.py` script compares connectivity profiles within one 
 - **Profile Saving**: Saves individual and aggregated connectivity profiles
 - **Auto-Generated Output**: Folder named `profiling_{query_name}_{timestamp}`
 
+## Data Sources & Completeness
+
+Profiles read connections from, in priority order: the dataset's local
+release table (`datasets/<ds>/`), then the connection cache
+(`cache/<ds>/connections.parquet`). When a profile is built from the
+connection cache (NeuPrint datasets without a local release), neurons the
+incremental cache does not prove complete (`downstream_complete` flags in
+the app-owned neuron index) are supplemented from the dataset API before
+the profile is computed and the merge is deduplicated — a partial cache
+cannot silently persist an understated profile. A cache chosen with no
+completeness manifest is disclosed in the profiler log. Local-release
+datasets (FAFB/BANC) are complete by definition and skip the check.
+
 ## Quick Start
 
 ### Basic Usage

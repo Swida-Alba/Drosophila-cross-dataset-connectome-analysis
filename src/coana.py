@@ -12677,6 +12677,47 @@ class FindNeuronConnection:
             return [cls._sanitize_export_value(item) for item in value]
         return value
 
+    def _data_generation_stamp(self):
+        """Identity of the data generation a run was computed against
+        (cache survey 2026-10-06 follow-up: the dataset NAME carries the
+        release, but a table can be replaced in place under the same
+        name — the stamp binds the run to the exact files).
+
+        Components: the local release tables (path + mtime + size),
+        the connection-cache file signature, and the incoming-lane file
+        signatures (the shortest-mode numerator source). Exported into
+        all_attributes.json as ``data_generation`` so any two runs can be
+        compared for cross-run reproducibility, and any intra-run
+        numerator/denominator source mixing is inspectable offline."""
+        stamp = {'dataset': getattr(self, 'dataset', None)}
+        conn_path, neuron_path = self._local_connectome_table_paths()
+        for key, path in (('release_connections', conn_path),
+                          ('release_neurons', neuron_path)):
+            try:
+                stat = os.stat(path)
+                stamp[key] = {'path': str(path),
+                              'mtime_ns': stat.st_mtime_ns,
+                              'size': stat.st_size}
+            except (OSError, TypeError):
+                stamp[key] = None
+        stamp['connection_cache'] = (
+            list(self._connection_cache_signature())
+            if getattr(self, 'use_cache', False) else None)
+        lanes = {}
+        try:
+            rows_path, complete_path = self._incoming_cache_paths()
+            for key, path in (('incoming_rows', rows_path),
+                              ('incoming_complete', complete_path)):
+                sig = self._file_signature(path) if path else None
+                if sig is not None:
+                    lanes[key] = {'mtime_ns': sig[0], 'size': sig[1]}
+        except Exception:
+            pass
+        stamp['incoming_lane'] = lanes or None
+        stamp['mode'] = ('online' if not getattr(self, 'use_cache', False)
+                         else 'cache')
+        return stamp
+
     def _run_export_attributes(self, path_mode: str | None = None):
         """Build JSON-safe run metadata with custom groups made explicit."""
         public_attrs = {
@@ -12707,6 +12748,10 @@ class FindNeuronConnection:
         grouping = self._custom_group_export_payload()
         if grouping is not None:
             public_attrs["custom_grouping"] = grouping
+        try:
+            public_attrs["data_generation"] = self._data_generation_stamp()
+        except Exception:
+            pass
         if path_mode is not None:
             public_attrs["path_mode"] = path_mode
         return self._sanitize_export_value(public_attrs)
@@ -17094,6 +17139,38 @@ class FindNeuronConnection:
                 prov['strongest_retained_bottleneck']),
             'paths_complete': str(prov['paths_complete']),
         })
+        # Data-generation stamp (cache survey 2026-10-06): binds the run
+        # to the exact release tables / cache / incoming-lane files it
+        # was computed against, so cross-run reproducibility is
+        # checkable even when a table is replaced in place under the
+        # same dataset name. Digests are stable short signatures of the
+        # underlying file signatures (not content hashes).
+        try:
+            stamp = self._data_generation_stamp()
+
+            def _dg_digest(sig):
+                import hashlib as _hl
+                return _hl.md5(repr(sig).encode()).hexdigest()[:8]
+
+            release = stamp.get('release_connections')
+            self.parameter_dict.update({
+                'data_generation_mode': stamp.get('mode'),
+                'data_generation_release': (
+                    f"{os.path.basename(release['path'])} "
+                    f"mtime={release['mtime_ns']} size={release['size']}"
+                    if release else 'none'),
+                'data_generation_connection_cache': (
+                    _dg_digest(tuple(stamp['connection_cache']))
+                    if stamp.get('connection_cache') else 'none'),
+                'data_generation_incoming_lane': (
+                    _dg_digest(tuple(sorted(
+                        (k, v['mtime_ns'], v['size'])
+                        for k, v in (stamp.get('incoming_lane')
+                                     or {}).items())))
+                    if stamp.get('incoming_lane') else 'none'),
+            })
+        except Exception:
+            pass
         self.parameter_df = pd.DataFrame.from_dict(
             self.parameter_dict, orient='index', columns=['value'])
         self.parameter_df.reset_index(inplace=True)

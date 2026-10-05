@@ -956,3 +956,77 @@ def test_and_mode_bad_ratio_refused(tmp_path):
     fc.parameter_dict = {}
     with _pytest.raises(ValueError, match='min_ratio in'):
         fc.FindAllPath(forward_only=True)
+
+
+# ---------------------------------------------------------------------------
+# Engine round 2026-10-06: emitted pairs are the run's PHYSICAL mass
+# ---------------------------------------------------------------------------
+
+def _stage_minimal_run(run_dir, conn_rows, info_rows=None, types=None):
+    """Stage the smallest folder read_emitted_pairs can consume."""
+    run_dir = Path(run_dir)
+    dd = run_dir / 'data_details'
+    dd.mkdir(parents=True, exist_ok=True)
+    ct = pd.DataFrame(conn_rows)
+    ct.to_csv(dd / 'connection_type.csv', index=False)
+    if info_rows is not None:
+        pd.DataFrame(info_rows).to_csv(
+            dd / 'connection_info_bodyId.csv', index=False)
+    return run_dir
+
+
+def test_read_emitted_pairs_prefers_deduped_bodyId_mass(tmp_path):
+    # call the ENGINE function explicitly: the module-level
+    # read_emitted_pairs above is a test-local legacy helper (line ~157)
+    from type_level_refill import read_emitted_pairs as engine_read
+    """connection_info_bodyId.csv present -> per-bodyId dedup (physical):
+    an edge recurring across conn layers counts ONCE even though the type
+    table's per-layer rows each carry it."""
+    run = _stage_minimal_run(
+        tmp_path / 'run',
+        conn_rows=[{'type_pre': 'TA', 'type_post': 'TB', 'weight': 7},
+                   {'type_pre': 'TA', 'type_post': 'TB', 'weight': 7},
+                   {'type_pre': 'TA', 'type_post': 'TC', 'weight': 5}],
+        info_rows=[
+            # edge x1y1 fetched at TWO layers (same physical weight 7);
+            # x2y2 once at 5; an untyped row must be ignored
+            {'bodyId_pre': 'x1', 'bodyId_post': 'y1', 'weight': 7,
+             'type_pre': 'TA', 'type_post': 'TB', 'conn_layer': '0->1'},
+            {'bodyId_pre': 'x1', 'bodyId_post': 'y1', 'weight': 7,
+             'type_pre': 'TA', 'type_post': 'TB', 'conn_layer': '1->2'},
+            {'bodyId_pre': 'x2', 'bodyId_post': 'y2', 'weight': 5,
+             'type_pre': 'TA', 'type_post': 'TC', 'conn_layer': '0->1'},
+            {'bodyId_pre': 'x3', 'bodyId_post': 'y3', 'weight': 99,
+             'type_pre': None, 'type_post': 'TB', 'conn_layer': '0->1'},
+        ])
+    emitted = engine_read(run)
+    assert emitted == {('TA', 'TB'): 7, ('TA', 'TC'): 5}
+
+
+def test_read_emitted_pairs_falls_back_to_conn_table(tmp_path):
+    """skip_bodyId runs have no bodyId detail: the conn-table sums remain
+    the source (documented per-layer semantics)."""
+    run = _stage_minimal_run(
+        tmp_path / 'run',
+        conn_rows=[{'type_pre': 'TA', 'type_post': 'TB', 'weight': 7},
+                   {'type_pre': 'TA', 'type_post': 'TB', 'weight': 7}])
+    assert read_emitted_pairs(run) == {('TA', 'TB'): 14}
+
+
+def test_enumerate_shortest_uses_physical_not_summed_weights(tmp_path):
+    """_enumerate_shortest must dedup per-layer refetches (keep-first) —
+    the I1-parity fix: summing re-ordered the StrongestFirst drain
+    against the fixed engine and broke the cut anchor."""
+    from type_level_refill import _enumerate_shortest
+    # S->A (weight 7, fetched at two layers) -> T; the S->A->T path's
+    # bottleneck must be 7 (physical), not 14 (summed).
+    layer_weights = [
+        ('0->1', {('S', 'A'): 7.0}),
+        ('1->2', {('S', 'A'): 7.0, ('A', 'T'): 12.0}),
+    ]
+    info, stats = _enumerate_shortest(
+        layer_weights, {'S', 'A', 'T'}, ['S'], ['T'], 2, None,
+        {'T': {'S': 2, 'A': 1}}, {'T': 2})
+    assert ('S', 'A') in info
+    assert info[('S', 'A')]['w'] == 7.0
+    assert stats.get('budget_bitten') in (False, None)

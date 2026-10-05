@@ -208,3 +208,78 @@ def test_csv_release_column_names_are_adapted(tmp_path):
                                                "103": 9.0}
     by_type = finder._fetch_total_incoming_weight_by_type(["TA", "TB"], 1)
     assert _as_map(by_type, "type_post") == {"TA": 109.0, "TB": 49.0}
+
+
+# ---------------------------------------------------------------------------
+# Cache-sourced profile completeness (profiler supplement)
+# ---------------------------------------------------------------------------
+
+def test_profiler_supplement_merges_incomplete_neurons(tmp_path, monkeypatch):
+    """A cache-sourced bodyId profile for a neuron flagged
+    downstream_complete=False is supplemented from the dataset API and
+    dedup-merged; complete neurons and release-sourced datasets are
+    untouched."""
+    import sys as _sys
+    _sys.path.insert(0, str(PROJECT_ROOT / "src"))
+    from comparison.connectivity_profiler import (
+        ConnectivityProfiler as CP, _PROFILER_CONN_CACHE)
+
+    index_dir = tmp_path / "neuron_indexes" / "ds"
+    index_dir.mkdir(parents=True)
+    pl.DataFrame({"bodyId": ["101", "102"],
+                  "downstream_complete": [True, False]}).write_parquet(
+        index_dir / "neuron_index.parquet")
+
+    profiler = object.__new__(CP)
+    profiler._index_flags_cache = {}
+    profiler.neuron_index_dir = tmp_path / "neuron_indexes"
+    profiler._log = lambda *a, **k: None
+
+    saved_entry = _PROFILER_CONN_CACHE.get("ds")
+    _PROFILER_CONN_CACHE["ds"] = {"conn_df": None, "source": "cache"}
+    try:
+        local_up = pd.DataFrame({
+            "partner_bodyId": ["900"], "partner_type": ["TX"],
+            "neuron_bodyId": ["102"], "weight": [4]})
+        api_up = pd.DataFrame({
+            "partner_bodyId": ["901", "900"], "partner_type": ["TY", "TX"],
+            "neuron_bodyId": ["102", "102"], "weight": [6, 4]})
+        calls = []
+        monkeypatch.setattr(
+            CP, "_query_connections_neuprint",
+            lambda self, ids, ds: calls.append(list(ids))
+            or (api_up, pd.DataFrame(columns=[
+                "partner_bodyId", "partner_type", "neuron_bodyId",
+                "weight"])))
+
+        # flags resolve via the overridden index dir; but the SAFE name of
+        # dataset "ds" is "ds" -> index at neuron_indexes/ds staged above
+        up, down = profiler._supplement_incomplete_cache(
+            102, local_up, pd.DataFrame(), "ds")
+        assert calls == [['102']]
+        assert sorted(up["partner_bodyId"].astype(str)) == ["900", "901"]
+        assert down.empty
+
+        # complete neuron: no API call
+        up2, _ = profiler._supplement_incomplete_cache(
+            101, local_up, pd.DataFrame(), "ds")
+        assert calls == [['102']]
+        assert len(up2) == 1
+
+        # local-release dataset: never supplements (release is complete)
+        up3, _ = profiler._supplement_incomplete_cache(
+            102, local_up, pd.DataFrame(), "flywire_FAFB_v783")
+        assert calls == [['102']]
+        assert len(up3) == 1
+
+        # release-sourced cache entry: no supplement either
+        _PROFILER_CONN_CACHE["ds"]["source"] = "release"
+        up4, _ = profiler._supplement_incomplete_cache(
+            102, local_up, pd.DataFrame(), "ds")
+        assert calls == [['102']]
+        assert len(up4) == 1
+    finally:
+        if saved_entry is None:
+            _PROFILER_CONN_CACHE.pop("ds", None)
+        else:
+            _PROFILER_CONN_CACHE["ds"] = saved_entry
