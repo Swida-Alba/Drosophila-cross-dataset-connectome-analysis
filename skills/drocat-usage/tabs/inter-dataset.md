@@ -349,8 +349,11 @@ boundary once both per-queried-TYPE requirements are met — same
 semantics as the Find Shortest tab (`shortest_source_coverage` /
 `shortest_target_coverage` on ComparisonParameters; forwarded to both
 delegate constructors; `None` in `all` mode). Stops are disclosed per
-delegate via the `[shortest coverage stop]` note and
-`shortest_discovery_diagnostics.coverage_stop`.
+delegate via the `[shortest coverage stop]` note,
+`shortest_discovery_diagnostics.coverage_stop`, and the pair report's
+per-delegate Coverage stop column. Under a target requirement a
+covered target closes its frontier immediately (early-covered targets
+keep the pairs found up to their own closure layer).
 
 ## Connection-ratio thresholds (v1)
 

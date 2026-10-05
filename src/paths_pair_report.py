@@ -219,6 +219,9 @@ PROVENANCE_KEYS = (
     'strongest_first_tau', 'tau_canonical', 'strongest_dropped_bottleneck',
     'edge_budget', 'edge_budget_applied', 'edge_budget_landing',
     'edge_weight_floor', 'strongest_retained_bottleneck', 'paths_complete',
+    # Coverage early-stop knobs (shortest); the realized stop layer lives
+    # in all_attributes.json (surfaced by the card/table renderers).
+    'shortest source coverage', 'shortest target coverage',
 )
 
 
@@ -1324,7 +1327,7 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
     if not prov and not delegate_prov:
         return ''
     if not prov:
-        return _render_delegate_provenance_table(delegate_prov)
+        return _render_delegate_provenance_table(delegate_prov, run_dir)
     rows = []
 
     def field(label, key, badge=False, badge_cls='badge-info'):
@@ -1387,6 +1390,17 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
     field('Edge budget landing (w1)', 'edge_budget_landing')
     field('Edge weight floor (w0)', 'edge_weight_floor')
     field('Retained bottleneck (W*)', 'strongest_retained_bottleneck')
+    field('Shortest source coverage', 'shortest source coverage')
+    field('Shortest target coverage', 'shortest target coverage')
+    stop = _coverage_stop_summary(run_dir)
+    if stop:
+        rows.append(
+            f'<tr><td><strong>Coverage stop</strong></td>'
+            f'<td><span class="badge badge-info">{_esc(stop)}</span> — '
+            'backward discovery stopped once the per-type requirements '
+            'were met; deeper pairs within the depth bound were not '
+            'searched (emitted pairs keep exact per-pair minimum '
+            'hops).</td></tr>')
     # Phase 2 (plan-type-level-refill): when the auto hook (or the CLI
     # with --in-run) produced refill records, surface them beside the
     # provenance they answer to.
@@ -1424,11 +1438,42 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
         'equals a complete run at the canonical tau).</p></div>')
 
 
-def _render_delegate_provenance_table(delegate_prov: dict) -> str:
+def _coverage_stop_summary(folder) -> str:
+    """'layer 3 (source any + target 100%)' from all_attributes.json's
+    shortest_discovery_diagnostics.coverage_stop — '' when absent."""
+    try:
+        attrs = json.loads(
+            (Path(folder) / 'all_attributes.json').read_text(
+                encoding='utf-8'))
+        stop = (attrs.get('shortest_discovery_diagnostics')
+                or {}).get('coverage_stop')
+    except Exception:  # noqa: BLE001 - best-effort disclosure
+        return ''
+    if not stop:
+        return ''
+
+    def _fmt(value):
+        if value is None:
+            return 'unset'
+        return 'any' if float(value) == 0.0 else f'{float(value):.0%}'
+
+    req = stop.get('requirements') or {}
+    return (f"layer {stop.get('stopped_at_layer')} "
+            f"(source {_fmt(req.get('source'))} + "
+            f"target {_fmt(req.get('target'))})")
+
+
+def _render_delegate_provenance_table(delegate_prov: dict,
+                                      run_dir=None) -> str:
     """Per-delegate applied-threshold table for cross-dataset run roots
-    (round 9b): one row per delegate, aggregated by ``_sniff_metadata``."""
+    (round 9b): one row per delegate, aggregated by ``_sniff_metadata``.
+    The coverage-stop column reads each delegate's own
+    all_attributes.json diagnostics."""
     rows = []
     for unit_id, prov in sorted(delegate_prov.items()):
+        cov_stop = (_coverage_stop_summary(
+            Path(run_dir) / 'dataset_data' / unit_id)
+            if run_dir else '')
         bitten = prov.get('strongest_first_budget_bitten', '')
         bitten_cls = ('badge-danger' if bitten.lower() == 'true'
                       else 'badge-success')
@@ -1446,12 +1491,17 @@ def _render_delegate_provenance_table(delegate_prov: dict) -> str:
             f'<td><span class="badge {bitten_cls}">{_esc(bitten or "—")}</span></td>'
             f'<td>{_esc(prov.get("strongest_first_tau", "—"))}</td>'
             f'<td><span class="badge {complete_cls}">{_esc(complete or "—")}</span></td>'
+            f'<td>{_esc(prov.get("shortest source coverage", "—"))}</td>'
+            f'<td>{_esc(prov.get("shortest target coverage", "—"))}</td>'
+            f'<td><span class="badge badge-info">'
+            f'{_esc(cov_stop or "—")}</span></td>'
             f'</tr>')
     return (
         '<div class="card"><h3>⚙️ Applied thresholds (per delegate)</h3>'
         '<div class="sticky-table-container"><table><thead><tr>'
         '<th>Unit</th><th>Requested</th><th>Applied</th><th>Source</th>'
         '<th>SF budget bitten</th><th>Tau</th><th>Paths complete</th>'
+        '<th>Cov src</th><th>Cov tgt</th><th>Coverage stop</th>'
         '</tr></thead><tbody>' + ''.join(rows) +
         '</tbody></table></div>'
         '<p class="cap-note">One row per cross-dataset delegate, from each '

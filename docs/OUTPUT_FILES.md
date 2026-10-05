@@ -345,6 +345,10 @@ across all three modes; the mode, sizes and removals are recorded in
     `[shortest coverage stop]` note in `user_warning_notes.txt` carries
     the same disclosure. A coverage stop scopes the emitted pair set —
     every emitted pair still carries its exact per-pair minimum hop.
+    Under a target requirement each covered target closes its frontier
+    at once, so an early-covered target's pairs are those found up to
+    its own closure layer (the union frontier shrinks while straggler
+    targets finish).
 
 Discovery memory note: the batched path bounds enumeration memory by the
 batch budget; Phase-A discovery memory scales with the union graph ×

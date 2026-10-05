@@ -134,7 +134,10 @@ fraction = ceil(frac x N) per type, `1.0` = Full, `None` = legacy
 per-pair completeness. Emitted pairs keep their exact per-pair minimum
 hop; deeper pairs within the depth bound are not searched (disclosed:
 `[shortest coverage stop]` note + `shortest_discovery_diagnostics
-.coverage_stop`). An unmeetable requirement falls back to depth-cap
+.coverage_stop`). Under a target requirement a covered target closes
+its frontier immediately — early-covered targets keep the pairs found
+up to their own closure layer (smaller fetches while stragglers
+finish). An unmeetable requirement falls back to depth-cap
 behavior with identical outputs. The Cross-Dataset tab sends the same
 knobs per shortest delegate (`None` in `all` mode).
 

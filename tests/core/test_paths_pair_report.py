@@ -906,3 +906,46 @@ def test_pair_summary_fallback_when_no_bodyid_paths(tmp_path):
     stats = pair_stats[("S3", "T3")]
     assert stats["scov"] == "2/2" and stats["tcov"] == "1/3"
     assert stats["cov_scope"] == "pair"
+
+
+def test_coverage_stop_surfaces_in_provenance(tmp_path):
+    """The single-run provenance card names the realized coverage stop
+    (layer + requirements) and the knobs; cross roots get per-delegate
+    Cov src / Cov tgt / Coverage stop columns (2026-10-04)."""
+    run = tmp_path / "find-paths-shortest_FAFB_S4_to_T4_L3w3_20260101_000000"
+    rows = [_row("S4->M->T4", 10)]
+    _write_csv(run, rows)
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "S4", "isInPath": True},
+        {"bodyId": 2, "type": "S4", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "T4", "Checked": True},
+        {"bodyId": 21, "type": "T4", "Checked": False},
+    ], "target_neurons.csv")
+    (run / "parameters.txt").write_text(
+        "requested_threshold:           3\n"
+        "applied_threshold:             3\n"
+        "shortest source coverage:      any\n"
+        "shortest target coverage:      100%\n"
+    )
+    attrs = {
+        "shortest_source_coverage": 0.0,
+        "shortest_target_coverage": 1.0,
+        "shortest_discovery_diagnostics": {"coverage_stop": {
+            "stopped_at_layer": 2,
+            "requirements": {"source": 0.0, "target": 1.0},
+        }},
+    }
+    (run / "all_attributes.json").write_text(
+        json.dumps(attrs), encoding="utf-8")
+    from paths_pair_report import (
+        generate_paths_pair_report, _coverage_stop_summary,
+    )
+    assert _coverage_stop_summary(run) == (
+        "layer 2 (source any + target 100%)")
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Coverage stop" in text
+    assert "layer 2 (source any + target 100%)" in text
+    assert "Shortest source coverage" in text

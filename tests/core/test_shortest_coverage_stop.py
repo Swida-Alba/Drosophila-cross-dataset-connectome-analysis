@@ -339,3 +339,109 @@ def test_bool_knob_refused(monkeypatch, tmp_path, synth_types):
                         'source_df': None, 'target_df': None})()
     with pytest.raises(ValueError):
         resolve_coverage_stop(fc)
+
+
+# ---------------------------------------------------------------------------
+# Optimization round (2026-10-04): under a target-coverage requirement a
+# COVERED target closes its frontier at once — the union frontier shrinks
+# during straggler windows, and pairs that only a deeper layer would have
+# added to an already-covered target are out of scope by design.
+# ---------------------------------------------------------------------------
+_STRAGGLER_TYPES = {
+    'S1a': 'SA', 'S1b': 'SA', 'S2': 'SB',
+    'M1': 'TM1', 'W1': 'TW1', 'W2': 'TW2',
+    'N1': 'TN1',
+    'T_A': 'TA', 'T_B': 'TB',
+}
+_STRAGGLER_EDGES = [
+    # T_A covered at hop 2 (S1a/S1b via M1); its cone extends deeper:
+    # S2 reaches T_A only at hop 4 (S2 -> W2 -> W1 -> M1 -> T_A), so the
+    # LEGACY per-target closure keeps fetching the A-cone to layer 4.
+    ('S1a', 'M1', 10), ('S1b', 'M1', 8), ('M1', 'T_A', 10),
+    ('W1', 'M1', 9), ('W2', 'W1', 9), ('S2', 'W2', 9),
+    # T_B covered at hop 2 (S1a AND S2 via N1 — S2 needs early
+    # coverage too, or the source-Any requirement blocks the stop).
+    ('S1a', 'N1', 10), ('S2', 'N1', 7), ('N1', 'T_B', 10),
+]
+_STRAGGLER_SOURCES = ('S1a', 'S1b', 'S2')
+_STRAGGLER_TARGETS = ('T_A', 'T_B')
+
+
+@pytest.fixture()
+def straggler_types():
+    saved = dict(_PIPELINE_TYPES)
+    _PIPELINE_TYPES.update(_STRAGGLER_TYPES)
+    yield _PIPELINE_TYPES
+    _PIPELINE_TYPES.clear()
+    _PIPELINE_TYPES.update(saved)
+
+
+def _make_straggler_fc(monkeypatch, tmp_path, *, budget=None, **kwargs):
+    monkeypatch.setattr(
+        coana.FindNeuronConnection, "_ensure_neuprint_client",
+        lambda self: None)
+    fc, fetch_calls, logs = _make_pipeline_fc(
+        monkeypatch, tmp_path, _STRAGGLER_EDGES, max_interlayer=5,
+        source_ids=_STRAGGLER_SOURCES, target_ids=_STRAGGLER_TARGETS,
+        **kwargs)
+    fc.skip_bodyId = False
+    if budget is not None:
+        fc.discovery_batch_budget = budget
+    return fc, fetch_calls, logs
+
+
+def test_covered_target_closes_early_and_saves_fetches(
+        monkeypatch, tmp_path, straggler_types):
+    """The motivating optimization: T_A is covered at layer 2 but its cone
+    runs to layer 4 under legacy (S2 waits at hop 4). Under Any+Full the
+    covered T_A closes at once — fewer/smaller backward fetches, the run
+    stops at layer 2, and the layer-4 S2->T_A pair is out of scope while
+    every emitted pair keeps its exact hop."""
+    fc_ref, calls_ref, _ = _make_straggler_fc(monkeypatch, tmp_path / 'ref')
+    fc_ref.FindShortestPath()
+    ref = _bodyid_pairs_and_hops(fc_ref)
+    assert ('S2', 'T_A', 4) in ref          # legacy finds the deep pair
+    ref_diag = _attrs(fc_ref)['shortest_discovery_diagnostics']
+    ref_fetch_volume = sum(ref_diag['frontier_sizes'])
+
+    fc, calls, _ = _make_straggler_fc(monkeypatch, tmp_path / 'cov')
+    fc.shortest_source_coverage = 0.0
+    fc.shortest_target_coverage = 1.0
+    fc.FindShortestPath()
+    got = _bodyid_pairs_and_hops(fc)
+    diag = _attrs(fc)['shortest_discovery_diagnostics']
+    stop = diag['coverage_stop']
+
+    assert stop['stopped_at_layer'] == 2
+    assert stop['stopped_at_layer'] < ref_diag['reverse_layers_fetched']
+    assert sum(diag['frontier_sizes']) < ref_fetch_volume
+    assert ('S2', 'T_A', 4) not in got      # early-closure scope
+    assert got <= ref                       # subset, and ...
+    ref_by_pair = {(s, t): h for s, t, h in ref}
+    for s, t, h in got:
+        assert ref_by_pair[(s, t)] == h     # ... exact hops everywhere
+    assert ('S1a', 'T_A', 2) in got and ('S1b', 'T_A', 2) in got
+
+
+def test_early_closure_twin_equivalence(monkeypatch, tmp_path,
+                                        straggler_types):
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+    fc_mono, _, _ = _make_straggler_fc(monkeypatch, tmp_path / 'mono',
+                                       budget=0)
+    fc_mono.shortest_source_coverage = 0.0
+    fc_mono.shortest_target_coverage = 1.0
+    fc_mono.FindShortestPath()
+
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+    fc_batch, _, _ = _make_straggler_fc(monkeypatch, tmp_path / 'batch')
+    fc_batch.shortest_source_coverage = 0.0
+    fc_batch.shortest_target_coverage = 1.0
+    fc_batch.FindShortestPath()
+
+    d1 = _attrs(fc_mono)['shortest_discovery_diagnostics']
+    d2 = _attrs(fc_batch)['shortest_discovery_diagnostics']
+    assert d1['coverage_stop']['stopped_at_layer'] == \
+        d2['coverage_stop']['stopped_at_layer']
+    assert d1['frontier_sizes'] == d2['frontier_sizes']
+    assert _bodyid_pairs_and_hops(fc_mono) == \
+        _bodyid_pairs_and_hops(fc_batch)

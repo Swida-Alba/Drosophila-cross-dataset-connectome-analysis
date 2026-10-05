@@ -1301,7 +1301,10 @@ _PATHFINDING_EXPLANATION = [
             "Any + target Full), backward discovery stops at the first "
             "layer where BOTH sides' requirements are met. Emitted pairs "
             "keep their exact per-pair minimum hop; deeper pairs within "
-            "the depth bound are not searched. The stop is recorded in "
+            "the depth bound are not searched. Under a target requirement "
+            "a covered target closes its frontier immediately, so "
+            "early-covered targets keep the pairs found up to their own "
+            "closure layer. The stop is recorded in "
             "shortest_discovery_diagnostics.coverage_stop and the "
             "[shortest coverage stop] warning note. Unset (API default) = "
             "the legacy per-pair completeness behavior.",

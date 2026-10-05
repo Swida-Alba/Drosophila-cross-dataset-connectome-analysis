@@ -503,6 +503,18 @@ def run_union_layer_discovery(fc, source_ID, target_ID, max_hops,
             required = source_set - {target_ids[ti]}
             if required and found_sources[ti] >= required:
                 next_frontiers[ti] = set()
+            elif (coverage_stop is not None
+                    and coverage_stop.get('target') is not None
+                    and found_sources[ti]):
+                # OPTIMIZATION (target-coverage regime): a target with
+                # >=1 found source is COVERED and needs nothing more —
+                # deeper layers could only find it MORE sources, the
+                # exact computation the coverage scope cuts. Closing it
+                # here shrinks the union frontier during straggler
+                # windows (smaller backward fetches; the global stop
+                # arrives no later). Its emitted pairs keep the sources
+                # found as of this closure layer, exact per-pair hops.
+                next_frontiers[ti] = set()
 
         frontiers = next_frontiers
         del conn_df

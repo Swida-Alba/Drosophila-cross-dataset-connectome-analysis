@@ -3523,6 +3523,13 @@ class FindNeuronConnection:
     once at least one enrolled source reaches it). Values as in
     ``shortest_source_coverage`` (``None`` / ``0.0`` = Any / fraction
     (0, 1], 1.0 = Full). The UI defaults to source=Any + target=Full.
+
+    Under any target requirement a COVERED target closes its frontier
+    immediately (the optimization): deeper layers could only find it
+    more sources — the exact computation the coverage scope cuts — so
+    covered targets stop contributing to the union frontier during
+    straggler windows. A covered target's emitted pairs are those found
+    as of its own closure layer (still exact per-pair hops).
     '''
 
     separate_hemispheres: bool = False
@@ -13940,6 +13947,11 @@ class FindNeuronConnection:
         target_ids = [str(value) for value in target_ID]
         max_hops = max(1, int(max_hops))
         coverage_stop_record = None
+        # Incremental per-target found-source sets (twin of the store's
+        # found_sources): updated at labeling time, read by the per-target
+        # closure and the coverage checkpoint — no per-layer O(T x S)
+        # recompute of the found sets.
+        found_by_target = {target: set() for target in target_ids}
 
         all_connections = []
         reverse_layers = [set(target_ids)]
@@ -14041,17 +14053,29 @@ class FindNeuronConnection:
                     t_dist[pre] = reverse_depth + 1
                     t_dag_edges.add((pre, post))
                     next_frontier.add(pre)
+                    if pre in source_set and pre != target:
+                        found_by_target[target].add(pre)
 
                 # Once every requested source has been encountered for this
                 # target, deeper incoming branches cannot improve any of
                 # those source-target distances. Other targets continue their
-                # own reverse BFS independently.
-                found_sources = {
-                    source for source in source_set
-                    if source != target and source in t_seen
-                }
+                # own reverse BFS independently. found_by_target is
+                # maintained incrementally at labeling time (the store's
+                # twin keeps the same incremental sets).
                 required_sources = source_set - {target}
-                if required_sources and found_sources >= required_sources:
+                if (required_sources
+                        and found_by_target[target] >= required_sources):
+                    next_frontier = set()
+                elif (coverage_stop is not None
+                        and coverage_stop.get('target') is not None
+                        and found_by_target[target]):
+                    # OPTIMIZATION (target-coverage regime): a covered
+                    # target (>=1 found source) needs nothing more —
+                    # deeper layers could only find it MORE sources, the
+                    # exact computation the coverage scope cuts. Closing
+                    # it here shrinks the union frontier during straggler
+                    # windows; its emitted pairs keep the sources found
+                    # as of this closure layer, exact per-pair hops.
                     next_frontier = set()
 
                 next_frontier_by_target[target] = next_frontier
@@ -14072,9 +14096,7 @@ class FindNeuronConnection:
             if coverage_stop is not None:
                 reached_sources = set()
                 reached_targets = set()
-                for target, seen in seen_by_target.items():
-                    found = {src for src in source_set
-                             if src != target and src in seen}
+                for target, found in found_by_target.items():
                     if found:
                         reached_targets.add(target)
                         reached_sources |= found
