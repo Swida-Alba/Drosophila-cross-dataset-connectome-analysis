@@ -300,6 +300,12 @@ def test_cb4091_stale_crosswalk_claim_is_not_counted_as_mapped(panel_client):
                     # NOR an out-map overhang — FAFB has no neurons of the
                     # type, so there is nothing left out of the map either
                     'out_map': 0,
+                    # round-17: additive display fields at zero here
+                    'mapped_total': 0, 'mapped_total_cell': '0',
+                    'routed_suspects': 0, 'routed_suspects_tip': '',
+                    'routed_suspects_detail': [],
+                    'pooled_suspects': 0, 'pooled_suspects_tip': '',
+                    'pooled_suspects_detail': [],
                     'unmapped': 0}
     # the orphan explains WHY: the claim names a type FAFB does not have
     entries = outcome['orphans'].get((MCNS, FAFB)) or []
@@ -340,20 +346,27 @@ def test_orphan_claim_is_explained_in_the_expander(panel_client):
     summary_tables = [
         e for e in client.elements.values()
         if type(e).__name__ == 'Table'
-        and any(c.get('label') == 'Mapped neurons'
+        and any(c.get('label') == 'BodyId routed'
                 for c in e._props.get('columns', []))]
     assert summary_tables, 'per-dataset summary table missing'
     by_label = {c['label']: c
                 for c in summary_tables[0]._props['columns']}
-    assert 'no neurons here does not count' in by_label['Mapped neurons'][
+    # round-17: the strip carries the new taxonomy with classification
+    # hovers — Mapped (total) = BodyId routed + Type pooled, plus the two
+    # suspect columns
+    assert {'Mapped', 'BodyId routed', 'Type pooled', 'Evidence reach '
+            '(all flows)', 'Routed suspects', 'Pooled suspects'} <= (
+        set(by_label))
+    assert 'BodyId routed' in by_label['Mapped']['tooltip'] or \
+        'BodyId routed + Type pooled' in by_label['Mapped']['tooltip']
+    routed_tip = by_label['BodyId routed']['tooltip']
+    assert 'ADOPTED claim set' in routed_tip
+    pooled_tip = by_label['Type pooled']['tooltip']
+    assert '219' in pooled_tip and 'family' in pooled_tip
+    assert 'type-pool membership only' in pooled_tip
+    assert 'same-name-first rival' in by_label['Routed suspects'][
         'tooltip']
-    # the out-map column renders beside the claim it complements, and its own
-    # hover says which population it is — the panel-side overhang, not the
-    # validation pipeline's `family` bin (219 − 204 = 15 vs 11 rows)
-    assert 'Out-map (in-map types)' in by_label
-    out_map_tip = by_label['Out-map (in-map types)']['tooltip']
-    assert '219' in out_map_tip and 'family' in out_map_tip
-    assert 'does not reach' in out_map_tip
+    assert 'branch_not_adopted' in by_label['Pooled suspects']['tooltip']
     assert 'no realized counterpart' in by_label['Unmapped (orphans)'][
         'tooltip']
 
@@ -430,9 +443,9 @@ def test_multi_type_preview_shows_collapsed_per_type_expansion(panel_client):
                for e in expansions)
     # the breakdown publishes the same column at its PER-BRANCH grain
     breakdown = [t for t in _tables(client)
-                 if 'Out-map (in-map types)' in _column_labels(t)
+                 if 'Type pooled (in-map types)' in _column_labels(t)
                  and 'Matched type' in _column_labels(t)]
-    assert breakdown, 'the per-type breakdown lacks the Out-map column'
+    assert breakdown, 'the per-type breakdown lacks the Type pooled column'
 
 
 def test_per_type_breakdown_rows_are_dataset_specific(panel_client):

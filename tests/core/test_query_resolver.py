@@ -255,3 +255,69 @@ def test_taxonomy_resolver_cross_dataset_columns_flag(tmp_path):
         workspace_path=str(tmp_path),
         include_cross_dataset_type_columns=True)
     assert intra.resolve("FW9", "male-cns:v1.0") == ["T1"]
+
+
+# --- Round-17: Route A contributes decision-ADOPTED branches only ----------
+
+def test_member_targets_drop_declined_branches():
+    """resolve_valid_targets unions declined bridge ends into a VALID_SPLIT;
+    Route A must contribute the decision-ADOPTED subset only (real case:
+    s-CPDN3C -> banc admitted CB3767 x2 via branch_not_adopted, BANC
+    resolved 202 where the ratified claim is 198+2=200)."""
+    from comparison import type_resolver as tr
+
+    class SplitMapper(FakeMapper):
+        def resolve_valid_targets(self, member, hit_ds, ds):  # unused
+            raise NotImplementedError
+
+    # monkeypatch the module-level resolver the helper imports
+    decisions = {}
+
+    mapper = FakeMapper(decisions)
+    orig = tr.resolve_valid_targets
+
+    def fake_resolve(mapper_, member, hit_ds, ds):
+        return _Res('valid_split_evidence', kind='splits into',
+                    target_types=['CB1449', 'CB1709', 'CB3767'])
+
+    tr.resolve_valid_targets = fake_resolve
+    try:
+        # the scoped decision adopts only 2 of the 3 ends
+        mapper.get_mapping_decision = (
+            lambda s, sd, td, include_bridges=False:
+            {'status': 'valid_split_evidence', 'target_types':
+             ['CB1449', 'CB1709'], 'relationship': '1-to-N',
+             'conflicts': []})
+        got = qr._member_targets(mapper, 's-CPDN3C', 'fafb', 'banc')
+        assert got == ['CB1449', 'CB1709']
+
+        # a decision adopting everything keeps the full split
+        mapper.get_mapping_decision = (
+            lambda s, sd, td, include_bridges=False:
+            {'status': 'valid_split_evidence', 'target_types':
+             ['CB1449', 'CB1709', 'CB3767'], 'relationship': '1-to-N',
+             'conflicts': []})
+        got = qr._member_targets(mapper, 'DN1pD', 'fafb', 'mcns')
+        assert got == ['CB1449', 'CB1709', 'CB3767']
+    finally:
+        tr.resolve_valid_targets = orig
+
+
+def test_member_targets_keep_full_split_when_decision_unavailable():
+    from comparison import type_resolver as tr
+    mapper = FakeMapper({})
+    orig = tr.resolve_valid_targets
+
+    def fake_resolve(mapper_, member, hit_ds, ds):
+        return _Res('valid_split_evidence', kind='splits into',
+                    target_types=['SMP537', 'SMP539'])
+
+    tr.resolve_valid_targets = fake_resolve
+    try:
+        # no get_mapping_decision on this double at all -> keep everything
+        class Bare:
+            pass
+        got = qr._member_targets(Bare(), 'DN1pD', 'fafb', 'mcns')
+        assert got == ['SMP537', 'SMP539']
+    finally:
+        tr.resolve_valid_targets = orig

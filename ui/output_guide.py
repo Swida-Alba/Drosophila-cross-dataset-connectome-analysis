@@ -2743,8 +2743,8 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "expansion/family_candidates.csv",
              "description": "The whole family bin (out-map bodyIds of each "
                             "branch's target type). NOT the same number as "
-                            "the Type Mapping panel's 'Out-map (in-map "
-                            "types)' column: the panel subtracts the bridge "
+                            "the Type Mapping panel's 'Type pooled "
+                            "(in-map types)' column: the panel subtracts the bridge "
                             "claim from the received types' populations and "
                             "has no morphology, so a candidate that closes a "
                             "hole here cannot close one there — on "

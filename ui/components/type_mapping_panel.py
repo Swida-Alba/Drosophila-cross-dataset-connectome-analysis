@@ -68,11 +68,27 @@ _HEADER_TOOLTIP_SLOT = (
     '</q-th>'
 )
 
+# Round-17: per-CELL tooltip for columns that declare ``cell_tip`` (the
+# name of a row field carrying the hover text). Renders the field value
+# exactly as Quasar would, plus the tooltip when the row carries text.
+_BODY_TOOLTIP_SLOT = (
+    '<q-td :props="props">'
+    '<q-tooltip v-if="props.col.cell_tip && props.row[props.col.cell_tip]" '
+    'anchor="top middle" self="bottom middle" max-width="30rem" '
+    'style="white-space: pre-line">{{ props.row[props.col.cell_tip] }}'
+    '</q-tooltip>'
+    '{{ props.row[props.col.field] }}'
+    '</q-td>'
+)
+
 
 def _col(name: str, label: str, field: str, *,
-         max_w=None, min_w=None, tooltip=None) -> Dict[str, Any]:
-    """A QTable column def with wrapping, an optional width cap, and an
-    optional header tooltip (rendered by ``_HEADER_TOOLTIP_SLOT``)."""
+         max_w=None, min_w=None, tooltip=None,
+         cell_tip: str = None) -> Dict[str, Any]:
+    """A QTable column def with wrapping, an optional width cap, an
+    optional header tooltip (rendered by ``_HEADER_TOOLTIP_SLOT``), and
+    an optional per-CELL tooltip row-field (rendered by
+    ``_BODY_TOOLTIP_SLOT``)."""
     bounds = ((f"max-width: {max_w}px;" if max_w else "")
               + (f"min-width: {min_w}px;" if min_w else ""))
     column = {
@@ -82,6 +98,8 @@ def _col(name: str, label: str, field: str, *,
     }
     if tooltip:
         column["tooltip"] = tooltip
+    if cell_tip:
+        column["cell_tip"] = cell_tip
     return column
 
 
@@ -599,6 +617,17 @@ def _compute_type_mapping(queries, datasets, mode,
     reach_types_by_ds: Dict[str, set] = {}
     claim_types_by_ds: Dict[str, set] = {}
     disclosure_by_ds: Dict[str, List[Dict[str, Any]]] = {}
+    # Round-17 suspect columns (user 2026-10-05): the declined material
+    # splits into two classes — ROUTED suspects (same-name-first rival
+    # flows: bodyId-routed evidence the decision did not adopt) and
+    # POOLED suspects (declined fan-out branches / vote-conflict ends:
+    # pool-membership evidence only). Both are bodyId SETS per dataset
+    # (deduped like the claim/reach tiers) + per-dataset detail lists for
+    # the hover.
+    routed_suspects_by_ds: Dict[str, set] = {}
+    pooled_suspects_by_ds: Dict[str, set] = {}
+    routed_suspects_detail: Dict[str, List[Dict[str, Any]]] = {}
+    pooled_suspects_detail: Dict[str, List[Dict[str, Any]]] = {}
     for (src, tgt), flows in pair_flows.items():
         for f in flows:
             claimed = flow_is_claimed(f)
@@ -650,6 +679,23 @@ def _compute_type_mapping(queries, datasets, mode,
                     "bodies": len({int(b) for b in tb}),
                     "reason": reason,
                 })
+                # Round-17 classification: suspects-flagged flows are
+                # ROUTED suspects (bodyId-routed rival evidence); every
+                # other declined flow is POOL-only evidence.
+                entry = {
+                    "pair": (f"{f.get('source_type') or '?'} → "
+                             f"{f.get('foreign_type') or '?'}"),
+                    "bodies": len({int(b) for b in tb}),
+                    "reason": reason,
+                }
+                if f.get("suspects"):
+                    routed_suspects_by_ds.setdefault(tgt, set()).update(
+                        int(b) for b in tb)
+                    routed_suspects_detail.setdefault(tgt, []).append(entry)
+                else:
+                    pooled_suspects_by_ds.setdefault(tgt, set()).update(
+                        int(b) for b in tb)
+                    pooled_suspects_detail.setdefault(tgt, []).append(entry)
 
     def _out_map_ids(target_dataset: str, foreign_type: str) -> set:
         """The out-map bodyId set of one received type in one dataset."""
@@ -801,12 +847,30 @@ def _compute_type_mapping(queries, datasets, mode,
         out_map = len(out_map_by_ds.get(ds, set()))
         unmapped = len({e["type"] for (s, _t), v in orphans.items()
                         if s == ds for e in v})
+        # Round-17 display taxonomy: Mapped = BodyId routed + Type pooled
+        # (the full reach of the mapped types), with the two suspect
+        # columns itemizing the declined material.
+        routed_suspects = len(routed_suspects_by_ds.get(ds, set()))
+        pooled_suspects = len(pooled_suspects_by_ds.get(ds, set()))
+        _rt_detail = routed_suspects_detail.get(ds, [])
+        _pp_detail = pooled_suspects_detail.get(ds, [])
+        routed_suspects_tip = ('; '.join(
+            f"{e['pair']}: {e['bodies']} neurons — {e['reason']}"
+            for e in _rt_detail) if _rt_detail else '')
+        pooled_suspects_tip = ('; '.join(
+            f"{e['pair']}: {e['bodies']} neurons — {e['reason']}"
+            for e in _pp_detail) if _pp_detail else '')
         summary.append({
             "dataset": ds,
             "types": len(matched),
             "neurons": neurons,
             "mapped_types": len(claim_types),
             "mapped_neurons": recv_neurons,
+            "mapped_total": recv_neurons + out_map,
+            "mapped_total_cell": _format_mapped_neurons(
+                recv_neurons + out_map,
+                len(reach_present | claim_types)),
+            # legacy keys kept for the per-type table and CSV consumers
             "mapped": _format_mapped_neurons(recv_neurons,
                                              len(claim_types)),
             "reach_types": len(reach_present),
@@ -817,6 +881,12 @@ def _compute_type_mapping(queries, datasets, mode,
             "disclosure_bodies": disclosure_bodies,
             "disclosure_detail": disclosure,
             "out_map": out_map,
+            "routed_suspects": routed_suspects,
+            "routed_suspects_tip": routed_suspects_tip,
+            "routed_suspects_detail": routed_suspects_detail.get(ds, []),
+            "pooled_suspects": pooled_suspects,
+            "pooled_suspects_tip": pooled_suspects_tip,
+            "pooled_suspects_detail": pooled_suspects_detail.get(ds, []),
             "unmapped": unmapped,
         })
 
@@ -1581,7 +1651,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 _col("map_used", "Map used (per linker)", "map_used",
                      max_w=440),
                 _col("cov", "Pool coverage (bodyIds)", "cov", min_w=210),
-                _col("out_map", "Out-map (this type)", "out_map",
+                _col("out_map", "Type pooled (this type)", "out_map",
                      min_w=120,
                      tooltip="Neurons of the mapped target type that THIS "
                              "branch's pool does not reach — per branch, so "
@@ -1871,7 +1941,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                 ui.label(note).classes("text-caption drocat-muted")
             summary = state.get("summary") or []
             if summary:
-                ui.table(
+                _summary_table = ui.table(
                     columns=[
                         {"name": "dataset", "label": "Dataset",
                          "field": "dataset", "align": "left",
@@ -1884,26 +1954,66 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                          "field": "neurons", "align": "left",
                          "tooltip": "Neurons of the matched types in this "
                                     "dataset."},
-                        {"name": "mapped", "label": "Mapped neurons",
+                        {"name": "mapped_total", "label": "Mapped",
+                         "field": "mapped_total_cell", "align": "left",
+                         "tooltip": "Round-17 taxonomy — the total neurons "
+                                    "the mapped types reach in this dataset: "
+                                    "BodyId routed + Type pooled, with "
+                                    "'(k types)' from 2 distinct reached "
+                                    "types up. Equal to the old Evidence "
+                                    "reach when nothing was pooled beyond "
+                                    "the claim."},
+                        {"name": "routed", "label": "BodyId routed",
                          "field": "mapped", "align": "left",
-                         "tooltip": "The CLAIM set: branch-claimed bodyIds "
-                                    "received INTO this dataset (union of "
-                                    "the ADOPTED branches' resolved pools), "
-                                    "with '(k types)' from 2 distinct "
-                                    "adopted types up. Pure claim basis "
-                                    "(2026-09-27): only pairs the scoped "
-                                    "decision ADOPTED count — a same-name "
-                                    "rival it declined, or a fan-out branch "
-                                    "it did not adopt, is listed in the "
-                                    "pair table as a disclosure row and "
-                                    "shows under Evidence reach instead. "
-                                    "The received types' full populations "
-                                    "are the reference denominator. A "
-                                    "claimed type that has no neurons here "
-                                    "does not count — it is listed under "
-                                    "orphans. A dataset that only issues "
-                                    "the query receives 0 — its issued "
-                                    "side is Matched types / Neurons."},
+                         "tooltip": "BodyId-routed neurons: a bodyId-level "
+                                    "flow routes the neuron into a mapped "
+                                    "type — the ADOPTED claim set (union of "
+                                    "the adopted branches' resolved pools). "
+                                    "The former 'Mapped neurons' column. "
+                                    "circadian_clock → male-cns: 204; "
+                                    "→ BANC: 198."},
+                        {"name": "pooled", "label": "Type pooled",
+                         "field": "out_map", "align": "left",
+                         "tooltip": "Type-pooled neurons: reached by "
+                                    "type-pool membership only — no "
+                                    "bodyId-level routing (the mapped "
+                                    "types' own populations beyond the "
+                                    "claim; the former 'Out-map' column). "
+                                    "A type claimed on its full-population "
+                                    "basis contributes 0. The validation "
+                                    "pipeline bins the same material per "
+                                    "BRANCH and lets a morph-qualified "
+                                    "candidate close a hole, so on "
+                                    "circadian_clock → male-cns this reads "
+                                    "15 (219 − 204) where "
+                                    "family_candidates.csv holds 11 rows. "
+                                    "Evidence about coverage, never a "
+                                    "mapping claim."},
+                        {"name": "routed_suspects",
+                         "label": "Routed suspects",
+                         "field": "routed_suspects", "align": "left",
+                         "cell_tip": "routed_suspects_tip",
+                         "tooltip": "Declined bodyId-ROUTED evidence: "
+                                    "same-name-first rival flows whose "
+                                    "pools resolved but which the decision "
+                                    "did not adopt (hover lists each "
+                                    "pair → rival with its neuron count). "
+                                    "Real case, circadian_clock: FAFB "
+                                    "APDN3 → BANC LMTe01 (4) and LTe71 "
+                                    "(1); MCNS CB0367 → BANC CB3767 (2). "
+                                    "Suspects, never mapping claims."},
+                        {"name": "pooled_suspects",
+                         "label": "Pooled suspects",
+                         "field": "pooled_suspects", "align": "left",
+                         "cell_tip": "pooled_suspects_tip",
+                         "tooltip": "Declined pool-only evidence: fan-out "
+                                    "branches / vote-conflict ends the "
+                                    "decision declined without a "
+                                    "same-name-first rival (hover lists "
+                                    "each pair with its decline reason). "
+                                    "Real case: s-CPDN3C → BANC CB3767 "
+                                    "(2, branch_not_adopted). Suspects, "
+                                    "never mapping claims."},
                         {"name": "reach", "label": "Evidence reach (all flows)",
                          "field": "reach", "align": "left",
                          "tooltip": "The REACH tier: every flow's pools "
@@ -1918,25 +2028,6 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                     "material, listed per type with its "
                                     "decline reason in the pair table's "
                                     "'not adopted' rows."},
-                        {"name": "out_map",
-                         "label": "Out-map (in-map types)",
-                         "field": "out_map", "align": "left",
-                         "tooltip": "Neurons of the received (in-map) "
-                                    "types in THIS dataset that the claim "
-                                    "set above does not reach — the "
-                                    "union of those types' own populations "
-                                    "minus the branch-claimed bodyIds, so a "
-                                    "type claimed on its full-population "
-                                    "basis contributes 0. This is the "
-                                    "PANEL's figure: the validation "
-                                    "pipeline bins the same material per "
-                                    "BRANCH and lets a morph-qualified "
-                                    "candidate close a hole, so on "
-                                    "circadian_clock → male-cns it reports "
-                                    "15 out-map here (219 − 204) while "
-                                    "family_candidates.csv holds 11 rows. "
-                                    "Evidence about coverage, never a "
-                                    "mapping claim."},
                         {"name": "unmapped", "label": "Unmapped (orphans)",
                          "field": "unmapped", "align": "left",
                          "tooltip": "Matched types here with no realized "
@@ -1962,8 +2053,12 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                    "(route_scope='full')."}]
                         if (state.get("route_scope") == "full") else []),
                     rows=summary,
-                ).classes("w-full").add_slot("header-cell",
-                                             _HEADER_TOOLTIP_SLOT)
+                ).classes("w-full")
+                # add_slot returns the Slot element (never chain — see the
+                # :1671 note): the body-cell slot carries the round-17
+                # per-cell suspect hovers (columns declaring `cell_tip`).
+                _summary_table.add_slot("header-cell", _HEADER_TOOLTIP_SLOT)
+                _summary_table.add_slot("body-cell", _BODY_TOOLTIP_SLOT)
             else:
                 ui.label("No mappings found for the search across the "
                          "selected datasets.").classes(
@@ -2030,7 +2125,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                          "for the per-rival evidence; the "
                                          "pair's Suspects block lists the "
                                          "same facts."),
-                            _col("mapped", "Mapped neurons", "mapped",
+                            _col("mapped", "BodyId routed", "mapped",
                                  min_w=120,
                                  tooltip="Branch-claimed bodyIds received "
                                          "into this row's target dataset "
@@ -2061,7 +2156,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
                                         "CSV).")]
                               if (state.get("route_scope") == "full")
                               else []),
-                            _col("out_map", "Out-map (in-map types)",
+                            _col("out_map", "Type pooled (in-map types)",
                                  "out_map", min_w=120,
                                  tooltip="Neurons of THIS row's mapped "
                                          "target type(s) that the claim does "

@@ -500,9 +500,29 @@ def _member_targets(mapper, member, hit_ds, ds) -> List[str]:
     # valid_split_evidence) contributes its branches; single-end bridged
     # partners map to their one end.  Only evidence-only/unmapped unions
     # contribute nothing.
+    #
+    # Round-17 (user-approved): the contributed branches are the DECISION-
+    # ADOPTED ones. resolve_valid_targets unions declined derivation-bridge
+    # ends into a VALID_SPLIT (type_resolver.py:578), which admitted
+    # disclosure-only ends into the delegate target set (real case:
+    # s-CPDN3C -> banc admitted CB3767 x2 via a branch_not_adopted
+    # disclosure — BANC resolved 202 where the ratified panel claim is
+    # 198+2=200). Intersecting with the scoped decision's adopted targets
+    # aligns the delegate with the claim; MCNS's 40/219 union is fully
+    # adopted (verified) and unaffected. Declined ends remain visible as
+    # panel suspects/disclosure rows.
     if res.status in (STATUS_VALID_SPLIT, STATUS_MAPPED) and len(
             res.target_types or ()) > 1:
-        return [str(t) for t in (res.target_types or ())]
+        targets = [str(t) for t in (res.target_types or ())]
+        try:
+            decision = mapper.get_mapping_decision(member, hit_ds, ds)
+            adopted = {str(t) for t in (
+                decision.get('target_types') or [])}
+            if adopted:
+                targets = [t for t in targets if t in adopted]
+        except Exception:
+            pass
+        return targets
     if res.status == STATUS_MAPPED and res.equivalence_key is not None:
         return [str(res.equivalence_key)]
     if res.status == STATUS_BRIDGED:

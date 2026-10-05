@@ -207,12 +207,17 @@
     mappings carry the tier <code>direct alignment label</code> and are
     disclosed in the <code>[BANC alignment fallback]</code> run-note block.
     A curated winner or curated conflict is never touched.</p>
-  <p>The preview's summary strip reads in three tiers (2026-09-27):
-    <em>Mapped neurons</em> is the CLAIM set (adopted pairs only, pure
-    basis), <em>Evidence reach (all flows)</em> adds the disclosure ends
-    the decision declined (hover the pair table's "not adopted" rows for
-    the per-type decline reasons), and <em>Out-map</em> stays
-    claim-scope. claim ≤ reach always; the validation report's headlines
+  <p>The preview's summary strip reads in the round-17 taxonomy:
+    <em>Mapped</em> is the total neurons the mapped types reach
+    (<em>BodyId routed</em> + <em>Type pooled</em>), <em>BodyId
+    routed</em> is the CLAIM set (adopted pairs only, pure basis — a
+    bodyId-level flow routes the neuron into a mapped type),
+    <em>Type pooled</em> is reached by type-pool membership only (the
+    former Out-map), <em>Evidence reach (all flows)</em> adds the
+    disclosure ends the decision declined, and the two SUSPECT columns
+    itemize the declined material by class (routed = same-name-first
+    rivals; pooled = declined fan-out branches / vote-conflict ends —
+    hover either for the per-pair illustration). claim ≤ reach always; the validation report's headlines
     grade the claim tier and carry the disclosure as advisory
     material.</p>
   <p>For a shared type queried in <code>male-cns:v0.9</code>, the mapping
@@ -517,14 +522,14 @@
       mapping views never say "synapses".</li>
     <li><b>Summary table</b> (per dataset): Matched types, Neurons (the
       issued side — every matched type is issued into the resolution,
-      flowed or orphaned), <b>Mapped neurons</b> — what the dataset
-      RECEIVES: the branch-claimed bodyIds (union of the branches' resolved
-      pools, each bodyId counted ONCE — the claim set per
-      plan-same-name-fidelity-and-three-level-coverage.md; the received
-      types' full populations are the reference denominator), shown as
-      <code>{N}({m} types)</code> from 2 distinct received types up, plain
-      <code>{N}</code> otherwise — a dataset that only issues the query
-      reads 0 — plus <b>Out-map (in-map types)</b>, the received types' own
+      flowed or orphaned), <b>Mapped</b> — the total neurons the mapped
+      types reach, split into <b>BodyId routed</b> (what the dataset
+      RECEIVES: the branch-claimed bodyIds — union of the branches'
+      resolved pools, each bodyId counted ONCE — the claim set per
+      plan-same-name-fidelity-and-three-level-coverage.md; shown as
+      <code>{N}({m} types)</code> from 2 distinct received types up; a
+      dataset that only issues the query reads 0) and <b>Type pooled
+      (in-map types)</b>, the received types' own
       neurons that the claim set does <i>not</i> reach (union of those types'
       populations minus the claim, so a type pooled on its full population
       contributes 0; on circadian_clock → male-cns this reads
