@@ -241,7 +241,19 @@ the report's `Generated:` timestamp.
     in the Network card, a tab per path length alongside the merged view —
     multi-selections render one UNION pane), and an interactive
     layered network coloring shared (blue) vs unique (gray) intermediates),
-    and **Data** (unit rollup + artifact links). An **applied-threshold
+    and **Data** (unit rollup + artifact links). The **Overview** also
+    carries an **overall bodyId coverage (query scope)** card —
+    source bodyIds on any path / enrolled and target bodyIds reached /
+    resolved over the WHOLE enrollment, independent of path pairs — and,
+    when the run produced refill records, a **type-level refill** card
+    (recovered edges / synapse mass + the top refilled type pairs with
+    refilled totals and ratios; the synapse total comes from
+    refill_type_pairs.csv, whose units are synapses even on ratio runs).
+    The capped path table's **Pair-ratio** column shows the pair-level
+    ADJUSTED ratio (`connection_ratio_adj`) when present — labeled
+    "Pair-ratio (adjusted)" in the header and hover — falling back to
+    plain `connection_ratio`, on EVERY basis (not just ratio-ranked
+    runs). An **applied-threshold
     &amp; budget provenance card** marks explicitly what the run used
     (applied vs requested threshold, StrongestFirst budget/tau, Edge
     Budget landing/floor, W\*, paths_complete) — single-dataset runs from

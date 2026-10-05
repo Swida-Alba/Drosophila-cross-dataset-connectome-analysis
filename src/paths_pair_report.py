@@ -564,28 +564,37 @@ def _load_query_coverage(folder) -> Dict[str, Tuple[int, int]]:
     return out
 
 
-def _load_pair_level_ratios(folder) -> Dict[Tuple[str, str], float]:
-    """(type_pre, type_post) -> pair-level connection_ratio from the run's
-    own data_details/connection_type.csv (the ratio is conn_layer-
-    invariant after the recompute). Round-13: feeds the Pair-ratio column
-    shown beside the realized per-hop ratios — the pair-level claim a row
-    can never make on its own."""
+def _load_pair_level_ratios(folder
+                            ) -> Tuple[Dict[Tuple[str, str], float], str]:
+    """(type_pre, type_post) -> pair-level ratio from the run's own
+    data_details/connection_type.csv (the ratio is conn_layer-invariant
+    after the recompute). Prefers ``connection_ratio_adj`` — the adjusted
+    pair-level ratio (deduped recurring-pair numerators / refill-aware)
+    — falling back to plain ``connection_ratio``. Returns
+    ``(mapping, source)`` with source in {'adjusted', 'plain', ''} so the
+    Pair-ratio column can label which claim it shows."""
     out: Dict[Tuple[str, str], float] = {}
+    source = ''
     try:
         conn_csv = Path(folder) / 'data_details' / 'connection_type.csv'
         if not conn_csv.exists():
-            return out
+            return out, source
         ct = pd.read_csv(conn_csv)
-        if not {'type_pre', 'type_post', 'connection_ratio'} <= set(
-                ct.columns):
-            return out
+        col = None
+        for candidate, tag in (('connection_ratio_adj', 'adjusted'),
+                               ('connection_ratio', 'plain')):
+            if {'type_pre', 'type_post', candidate} <= set(ct.columns):
+                col, source = candidate, tag
+                break
+        if col is None:
+            return out, source
         for (pre, post), r in (ct.groupby(['type_pre', 'type_post'])
-                               ['connection_ratio'].first().items()):
+                               [col].first().items()):
             if pd.notna(r):
                 out[(str(pre), str(post))] = float(r)
     except (OSError, ValueError):
         pass
-    return out
+    return out, source
 
 
 def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
@@ -1019,6 +1028,7 @@ def build_payload(
     unit_drawn: Dict[str, Dict[Tuple[str, str], List[dict]]],
     top_per_length: int, rank_by: str,
     vispath_links: Optional[List[Dict[str, str]]] = None,
+    unit_pair_ratio_source: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON payload the page renders on demand."""
     pairs: List[dict] = []
@@ -1063,6 +1073,10 @@ def build_payload(
             'meta': {k: v for k, v in meta.items() if v is not None},
             'top_per_length': top_per_length,
             'rank_by': rank_by,
+            # Pair-ratio column source: 'adjusted' (connection_ratio_adj)
+            # or 'plain' (connection_ratio); '' = no pair-level ratios.
+            'pair_ratio_source': (unit_pair_ratio_source or {}).get(
+                units[0].unit_id, '') if units else '',
             'vispath': vispath_links or [],
             'units': [
                 {'id': u.unit_id, 'label': u.label, 'dataset': u.dataset,
@@ -1514,6 +1528,113 @@ def _applied_title_attr(source: str) -> str:
             if source else '')
 
 
+def _render_query_coverage_card(payload: dict) -> str:
+    """Overall (query-scope) source/target bodyId coverage on the
+    Overview tab — over the whole enrollment, IGNORING path pairs:
+    sources = bodyIds on ANY path (isInPath) / enrolled; targets =
+    bodyIds reached (Checked) / resolved. One line per unit (cross
+    roots show every delegate)."""
+    units = (payload.get('global') or {}).get('units') or []
+    lines = []
+    for unit in units:
+        parts = [_esc(unit['label'])]
+        for side, key, verb in (('source', 'src_cov', 'on paths'),
+                                ('target', 'tgt_cov', 'reached')):
+            cov = unit.get(key)
+            if not cov:
+                continue
+            n, total = cov
+            pct = f' ({100.0 * n / total:.1f}%)' if total else ''
+            parts.append(f'{side}: <strong>{n:,}/{total:,}</strong>{pct} '
+                         f'{verb}')
+        if len(parts) > 1:
+            lines.append('<div>· ' + ' — '.join(parts) + '</div>')
+    if not lines:
+        return ''
+    return (
+        '<div class="card"><h3>Overall bodyId coverage (query scope)</h3>'
+        + ''.join(lines)
+        + '<p class="cap-note">Query-scope coverage over the WHOLE '
+          'enrollment, independent of path pairs: source bodyIds lying on '
+          'any emitted path (isInPath) over all enrolled; target bodyIds '
+          'reached by any path (Checked) over all resolved. Per-pair and '
+          'per-path coverage live in the Global tab and the Pair '
+          'Explorer.</p></div>')
+
+
+def _render_refill_card(run_dir: Path) -> str:
+    """Type-level refill RESULTS, shown automatically when the run
+    produced refill records (budget-cut mass recovered behind the
+    emitted pairs): the provenance summary plus the top refilled type
+    pairs with their refilled strength and ratio."""
+    folder = Path(run_dir) / 'data_details' / 'type_level_refill'
+    prov_path = folder / 'refill_provenance.json'
+    if not prov_path.exists():
+        return ''
+    prov = {}
+    try:
+        prov = json.loads(prov_path.read_text(encoding='utf-8'))
+    except Exception:  # noqa: BLE001
+        return ''
+    status = str(prov.get('status') or '')
+    if status and status != 'refilled':
+        return ''
+    pairs_csv = folder / 'refill_type_pairs.csv'
+    rows = []
+    try:
+        frame = pd.read_csv(pairs_csv)
+        frame = frame[frame['refill_weight'].fillna(0) > 0]
+        frame = frame.sort_values('refill_weight', ascending=False).head(12)
+        for _, r in frame.iterrows():
+            ratio = r.get('refilled_connection_ratio')
+            ratio_txt = (f'{float(ratio):.4g}'
+                         if pd.notna(ratio) else '—')
+            rows.append(
+                '<tr><td>' + _esc(str(r['type_pre'])) + '</td>'
+                '<td>' + _esc(str(r['type_post'])) + '</td>'
+                f'<td>{int(r.get("emitted_weight", 0) or 0):,}</td>'
+                f'<td>+{int(r.get("refill_weight", 0) or 0):,}</td>'
+                f'<td><strong>{int(r.get("refilled_total", 0) or 0):,}'
+                '</strong></td>'
+                f'<td>{ratio_txt}</td></tr>')
+    except Exception:  # noqa: BLE001 - table is best-effort
+        rows = []
+    edges = prov.get('refill_pair_count') or prov.get('refill_edges')
+    summary_bits = []
+    if edges is not None:
+        summary_bits.append(f'{int(edges):,} bodyId edges')
+    # The provenance's refill_weight_total is in the RUN's weight units
+    # (ratio mass on ratio runs); the type-pairs CSV is synapse mass —
+    # prefer the CSV sum so the label is always honest.
+    syn_total = None
+    try:
+        syn_total = int(pd.read_csv(pairs_csv)['refill_weight'].fillna(0)
+                        .sum())
+    except Exception:  # noqa: BLE001
+        syn_total = None
+    if syn_total:
+        summary_bits.append(f'{syn_total:,} synapses of budget-cut mass')
+    summary = ('Recovered ' + ' / '.join(summary_bits)
+               if summary_bits else 'Refill records present')
+    table_html = (
+        '<div class="sticky-table-container"><table><thead><tr>'
+        '<th>Pre type</th><th>Post type</th><th>Emitted</th>'
+        '<th>Refill</th><th>Refilled total</th>'
+        '<th>Refilled ratio</th></tr></thead><tbody>'
+        + ''.join(rows) + '</tbody></table></div>') if rows else ''
+    return (
+        '<div class="card"><h3>Type-level refill (budget-cut mass '
+        'recovered)</h3>'
+        f'<p>{_esc(summary)} — recovered behind the emitted pairs (see '
+        'data_details/type_level_refill/; the refilled strength is a '
+        'certified lower bound of the complete-at-asked refill).</p>'
+        + table_html
+        + '<p class="cap-note">refilled_total = emitted + refill mass; '
+          'refilled ratio uses the threshold-free all-post denominator '
+          '(F9). Full bodyId-level detail in '
+          'refill_bodyId_pairs.csv.</p></div>') if (summary_bits or rows) else ''
+
+
 def _render_overview(payload: dict, run_dir: Path,
                      breakdown_paths: Tuple[Path, Path]) -> str:
     run = payload['run']
@@ -1521,6 +1642,8 @@ def _render_overview(payload: dict, run_dir: Path,
     total_paths = sum(p['paths_total'] for p in pairs)
     largest = max(pairs, key=lambda p: (p['paths_total'], p['source'], p['target'])) \
         if pairs else None
+    coverage_card = _render_query_coverage_card(payload)
+    refill_card = _render_refill_card(run_dir)
 
     stats_html = f"""
         <div class="grid">
@@ -1629,7 +1752,8 @@ def _render_overview(payload: dict, run_dir: Path,
             f'(pair, length) · rank by {_esc(run["rank_by"])}. Every capped '
             f'view links to the uncapped CSV beside this report.</p></div>'
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
-            + hist_html + _render_provenance_card(run, run_dir) + pair_table + artifacts)
+            + hist_html + coverage_card + refill_card
+            + _render_provenance_card(run, run_dir) + pair_table + artifacts)
 
 
 def _meta_summary(run: dict) -> str:
@@ -2643,7 +2767,17 @@ REPORT_JS = r"""
       if (union) { headers.push('Pair'); }
       headers.push('Path', 'Len', 'Min weight', 'Path prob', 'Weights',
                    'Ratios', 'Coverage');
-      if (ratioRun) { headers.push('Min ratio', 'Pair ratio'); }
+      if (ratioRun) { headers.push('Min ratio'); }
+      var prSrc = (DATA.run.pair_ratio_source || '');
+      var hasPr = pairs.some(function(p) {
+        return (p.table.groups || []).some(function(g) {
+          return (g.rows || []).some(function(r) { return r.pr != null; });
+        });
+      });
+      if (prSrc || hasPr) {
+        headers.push(prSrc === 'adjusted'
+          ? 'Pair-ratio (adjusted)' : 'Pair-ratio');
+      }
       headers.push('Source coverage', 'Target coverage');
       // Round-10 scope labels: Weights/Coverage describe the realized
       // per-position support; Ratios is the pair-level mass share —
@@ -2709,7 +2843,15 @@ REPORT_JS = r"""
           tr.appendChild(elt('td', null, fmt(row.mw)));
           if (ratioRun) {
             tr.appendChild(elt('td', null, fmt(row.mr)));
-            tr.appendChild(elt('td', null, fmt(row.pr)));
+          }
+          if (prSrc || hasPr) {
+            var prTd = elt('td', null, fmt(row.pr));
+            prTd.title = prSrc === 'adjusted'
+              ? 'Pair-level ADJUSTED connection ratio '
+                + '(connection_ratio_adj: deduped recurring-pair '
+                + 'numerators, refill-aware) from connection_type.csv.'
+              : 'Pair-level connection_ratio from connection_type.csv.';
+            tr.appendChild(prTd);
           }
           tr.appendChild(elt('td', null, fmt(row.pp)));
           tr.appendChild(elt('td', null, row.weights));
@@ -3026,6 +3168,7 @@ def generate_paths_pair_report(
     unit_target_cov: Dict[str, Dict[str, str]] = {}
     unit_pair_cov: Dict[str, Dict[Tuple[str, str], Tuple[str, str]]] = {}
     unit_query_cov: Dict[str, Dict[str, Tuple[int, int]]] = {}
+    unit_pair_ratio_source: Dict[str, str] = {}
     unit_pair_level_ratio: Dict[str, Dict[Tuple[str, str], float]] = {}
 
     for unit in units:
@@ -3036,7 +3179,9 @@ def generate_paths_pair_report(
         unit_target_cov[unit.unit_id] = target_cov
         unit_query_cov[unit.unit_id] = _load_query_coverage(unit.folder)
         pair_bodyid = _load_pair_bodyid_coverage(unit.folder)
-        pair_level_ratio = _load_pair_level_ratios(unit.folder)
+        pair_level_ratio, pair_ratio_source = _load_pair_level_ratios(
+            unit.folder)
+        unit_pair_ratio_source[unit.unit_id] = pair_ratio_source
         unit_pair_level_ratio[unit.unit_id] = pair_level_ratio
         path_rows, inter_rows, pair_stats = build_unit_breakdown(
             frame, rank_by, source_cov=source_cov, target_cov=target_cov,
@@ -3071,7 +3216,8 @@ def generate_paths_pair_report(
         run_dir.name, run_kind(run_dir.name), meta,
         units, frames, unit_inter_counts, unit_inter_minhop,
         unit_pair_stats, unit_drawn, top_per_length, rank_by,
-        vispath_links=vispath_links)
+        vispath_links=vispath_links,
+        unit_pair_ratio_source=unit_pair_ratio_source)
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
                                unit_source_cov, unit_target_cov,
                                unit_pair_cov, unit_pair_level_ratio)

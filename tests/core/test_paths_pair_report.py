@@ -949,3 +949,76 @@ def test_coverage_stop_surfaces_in_provenance(tmp_path):
     assert "Coverage stop" in text
     assert "layer 2 (source any + target 100%)" in text
     assert "Shortest source coverage" in text
+
+
+# ---------------------------------------------------------------------------
+# Refill + adjusted ratios + Overview query coverage (2026-10-05 round)
+# ---------------------------------------------------------------------------
+def test_adjusted_ratio_preferred_and_labeled(tmp_path):
+    """The pair-ratio loader prefers connection_ratio_adj and reports
+    'adjusted'; plain runs report 'plain'."""
+    from paths_pair_report import _load_pair_level_ratios
+    run = tmp_path / "find-paths-complete_FAFB_S5_to_T5_L2w3_20260101_000000"
+    (run / "data_details").mkdir(parents=True)
+    pd.DataFrame([
+        {"type_pre": "S5", "type_post": "T5",
+         "connection_ratio": 0.10, "connection_ratio_adj": 0.25},
+    ]).to_csv(run / "data_details" / "connection_type.csv", index=False)
+    mapping, source = _load_pair_level_ratios(run)
+    assert source == "adjusted"
+    assert mapping[("S5", "T5")] == 0.25
+
+    run2 = tmp_path / "find-paths-complete_FAFB_S6_to_T6_L2w3_20260101_000000"
+    (run2 / "data_details").mkdir(parents=True)
+    pd.DataFrame([
+        {"type_pre": "S6", "type_post": "T6", "connection_ratio": 0.10},
+    ]).to_csv(run2 / "data_details" / "connection_type.csv", index=False)
+    mapping2, source2 = _load_pair_level_ratios(run2)
+    assert source2 == "plain"
+    assert mapping2[("S6", "T6")] == 0.10
+
+
+def test_overview_query_coverage_card_and_refill_card(tmp_path):
+    """Overview gains the overall (pair-ignoring) coverage card; refill
+    results display automatically when the records exist (synapse-summed
+    summary + top refilled pairs table)."""
+    run = tmp_path / "find-paths-complete_FAFB_S7_to_T7_L2w3_20260101_000000"
+    rows = [_row("S7->M->T7", 10)]
+    rows[0]["coverage"] = "[1/2, 1/1, 1/3]"
+    _write_csv(run, rows)
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "S7", "isInPath": True},
+        {"bodyId": 2, "type": "S7", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "T7", "Checked": True},
+        {"bodyId": 21, "type": "T7", "Checked": False},
+    ], "target_neurons.csv")
+    (run / "data_details").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"type_pre": "S7", "type_post": "T7", "weight": 5,
+         "nt_type": "ACH", "connection_ratio": 0.1,
+         "traversal_probability": 0.3, "block_probability": 0.7,
+         "conn_layer": "0->1", "connection_ratio_adj": 0.4},
+    ]).to_csv(run / "data_details" / "connection_type.csv", index=False)
+    refill = run / "data_details" / "type_level_refill"
+    refill.mkdir(parents=True)
+    json.dump({"status": "refilled", "refill_edges": 42,
+               "refill_weight_total": 0.02},
+              open(refill / "refill_provenance.json", "w"))
+    pd.DataFrame([
+        {"type_pre": "S7", "type_post": "T7", "emitted_weight": 5,
+         "refill_weight": 100, "refilled_total": 105,
+         "emitted_pair_count": 1, "refill_pair_count": 20,
+         "refilled_connection_ratio": 0.44, "split_status": "ok"},
+    ]).to_csv(refill / "refill_type_pairs.csv", index=False)
+    from paths_pair_report import generate_paths_pair_report
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Overall bodyId coverage (query scope)" in text
+    assert "source:" in text and "target:" in text
+    assert "Type-level refill (budget-cut mass" in text
+    assert "42 bodyId edges" in text          # provenance edge count
+    assert "100 synapses of budget-cut mass" in text  # CSV sum, not the
+    # ratio-mass provenance total
+    assert "Pair-ratio (adjusted)" in text
