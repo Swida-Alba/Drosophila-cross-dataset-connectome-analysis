@@ -344,3 +344,45 @@ def test_drift_warning_via_notes_writer(tmp_path):
     # must be absent
     if written.exists():
         assert "data generation" not in written.read_text()
+
+
+def test_drift_warning_skipped_for_online_runs(tmp_path):
+    """use_cache=False (online-only) runs never read the local cache —
+    a stale cache they ignore must not produce a note."""
+    finder = _drift_finder(tmp_path, 9_000, 4_000, 5_000)
+    finder.use_cache = False
+    finder._check_data_generation_drift()
+    assert not finder._warn_notes
+
+
+def test_realized_ratio_type_mass_member_fallback(tmp_path):
+    """The canonical-map fallback: when the dataset-wide type fetch is
+    unavailable, per-member neuron totals over the run's frame
+    membership still resolve masses (coverage for the otherwise
+    untested branch)."""
+    import sys as _sys
+    _sys.path.insert(0, str(PROJECT_ROOT / "src"))
+    from coana import FindNeuronConnection
+
+    finder = object.__new__(FindNeuronConnection)
+    finder._vprint = lambda *a, **k: None
+    finder._warn_notes = []
+    # frame membership: TA = {101, 103}
+    finder._ratio_lane_type_members = {'TA': {'101', '103'}, 'TB': {'102'}}
+    # dataset-wide type fetch unavailable; per-neuron fetch answers
+    def _by_type(types, *a, **k):
+        return None
+    def _by_body(posts, *a, **k):
+        rows = [
+            ('101', 100.0), ('103', 9.0), ('102', 49.0),
+        ]
+        wanted = {str(p) for p in posts}
+        import pandas as _pd
+        return _pd.DataFrame(
+            [(b, w) for b, w in rows if b in wanted],
+            columns=['bodyId_post', 'total_incoming_weight'])
+    finder._fetch_total_incoming_weight_by_type = _by_type
+    finder._fetch_total_incoming_weight = _by_body
+
+    mass = finder._realized_ratio_type_mass(['TA', 'TB'])
+    assert mass == {'TA': 109.0, 'TB': 49.0}

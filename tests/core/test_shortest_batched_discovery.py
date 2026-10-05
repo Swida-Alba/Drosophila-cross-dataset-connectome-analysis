@@ -554,3 +554,26 @@ def test_store_retention_invalid_falls_back_to_keep(
     assert os.path.isdir(store + '/dag_edges')
     assert '[discovery store]' in _notes(fc)
     assert 'unknown discovery_store_retention' in _notes(fc)
+
+
+def test_pipeline_ratio_shortest_twins_equal(monkeypatch, tmp_path,
+                                              synth_types):
+    """Audit 2026-10-06: on ratio-basis shortest runs the BATCHED lane
+    drained on synapse weights while the monolithic twin used
+    weight_ratio — tau on the wrong scale, different path sets. The
+    batched graphs now convert the physical synapse weights to the same
+    F9 ratios (totals from _attach_weight_ratio_columns), so the twins
+    must agree row-for-row on the ratio basis too."""
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+
+    def _run(where):
+        fc, _, _ = _make_fc(monkeypatch, tmp_path / where)
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.0005
+        fc.FindShortestPath()
+        return pl.read_csv(_paths_csv(fc)).rows()
+
+    mono = _run('mono')
+    coana._FINDALLPATH_GRAPH_CACHE.clear()
+    batched = _run('batch')
+    assert mono == batched

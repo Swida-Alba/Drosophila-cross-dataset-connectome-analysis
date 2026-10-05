@@ -958,6 +958,25 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
             'row for audit.')
 
     weight_frame = None
+    # Ratio-basis parity (audit 2026-10-06): the monolithic twin's graph
+    # carries weight_ratio (synapses / the post's F9 all-post incoming
+    # total, attached by _attach_weight_ratio_columns BEFORE this point),
+    # so its StrongestFirst drain and tau are ratio-scale. The batched
+    # lane read raw synapse weights — on ratio runs the budget bit on the
+    # wrong scale (real run: batched tau 10.0 synapse vs monolithic 0.0205
+    # ratio, different path sets) and broke twin equivalence. Convert the
+    # per-pair PHYSICAL synapse weights to the same F9 ratios here. Posts
+    # without a positive total are excluded exactly like the attached
+    # frames (their weight_ratio is null and the t_r gate drops them).
+    ratio_lane = (getattr(fc, 'weight_basis', 'synapse')
+                  == 'connection_ratio')
+    ratio_totals = (dict(getattr(fc, '_ratio_lane_totals', None) or {})
+                    if ratio_lane else {})
+    if ratio_lane and not ratio_totals:
+        fc._warn_notes.append(
+            '- [shortest weights] connection_ratio basis but no ratio '
+            'totals were attached before batched enumeration — the '
+            'batched drain ran on synapse weights; report this query.')
     emissions = []
     for batch in batches:
         dag_edges = load_target_dag_edges(store_dir, batch)
@@ -973,8 +992,14 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
         batch_weights = weights_for_pairs(weight_frame, batch_pairs)
         for pre, post in sorted(batch_pairs):
             weight = batch_weights.get((pre, post))
-            if weight is not None:
-                graph.add_edge(pre, post, weight)
+            if weight is None:
+                continue
+            if ratio_totals:
+                denom = ratio_totals.get(str(post))
+                if not denom or denom <= 0:
+                    continue
+                weight = float(weight) / float(denom)
+            graph.add_edge(pre, post, weight)
 
         payload = list(graph.find_paths_shortest_strongest_first(
             batch, list(sources), cutoff,

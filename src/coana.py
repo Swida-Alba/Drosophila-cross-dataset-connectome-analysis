@@ -12727,7 +12727,12 @@ class FindNeuronConnection:
         silently mixes two datasets in one run; that is the one drift
         worth a note. Consistent generations (the normal state — e.g.
         FAFB: release 2025-11, cache import 2026-08, lane 2026-10, all
-        one release) stay completely quiet. Never raises."""
+        one release) stay completely quiet. Online-only runs
+        (``use_cache=False``) skip the check entirely: their data comes
+        from the API, and a stale LOCAL cache they never read must not
+        produce a note. Never raises."""
+        if not getattr(self, 'use_cache', False):
+            return
         try:
             release = self._data_generation_stamp().get('release_connections')
             if not release:
