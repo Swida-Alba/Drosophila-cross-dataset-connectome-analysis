@@ -85,11 +85,13 @@ srcs, even inside JS `document.write`).
 The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
 
 - **Open view** — with no layout saved for the generated file, the page fits
-  once (`cy.fit(null, 50)`, clamped by `minZoom` on large graphs); a SAVED
-  layout auto-restores its own zoom/pan instead (deferred 250 ms, after the
+  once (`cy.fit(null, 50)`, lifted to a readable 0.35 zoom floor on large
+  graphs where exact framing would clamp to `minZoom`); a SAVED layout
+  auto-restores its own zoom/pan instead (deferred 250 ms, after the
   hemisphere cache). Re-layouts never re-fit (`config.fit = false` choke
-  point); ⛶ Fit and the import toasts are the explicit fits. Tests pin
-  `js.count("cy.fit(null, 50)") == 4` and `"cy.fit();" not in js`.
+  point); ⛶ Fit and the import toasts are the explicit fits (exact
+  framing). Tests pin `js.count("cy.fit(null, 50)") == 4` and
+  `"cy.fit();" not in js`.
 - **Edge Anchor ribbon group** (beside Edge Route) — `Center` (default,
   byte-identical classic attachment on the center-line rim) vs `Auto`: every
   edge end snaps to the nearest of 8 anchors — the 4 box corners (ellipses:

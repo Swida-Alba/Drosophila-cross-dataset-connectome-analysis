@@ -341,12 +341,16 @@ class TestGeneratedHtmlStructure:
         assert "cy.zoom(state.zoom)" in js
         assert "cy.pan(state.pan)" in js
         # the open fit is gated: only the no-save branch of the open-view
-        # block fits, and the saved branch keeps the deferred restore
+        # block fits, and the saved branch keeps the deferred restore.
+        # Large graphs clamp the exact framing to minZoom (tiny dots), so
+        # the open fit lifts the zoom to a readable 0.35 floor (⛶ Fit and
+        # the import toasts keep their exact framing)
         tail = js[js.index("Open view:"):]
         assert "if (savedLayoutJson) {" in tail
         assert tail.index("setTimeout(function() {") < tail.index("cy.fit(null, 50);")
-        else_branch = tail[tail.index("cy.fit(null, 50);") - 200:]
+        else_branch = tail[tail.index("cy.fit(null, 50);") - 600:]
         assert "} else {" in else_branch
+        assert "if (cy.zoom() < 0.35) { cy.zoom(0.35); }" in tail
 
     def test_snapshots_are_complete_deep_copies(self, network_html):
         js = _script_text(network_html)
