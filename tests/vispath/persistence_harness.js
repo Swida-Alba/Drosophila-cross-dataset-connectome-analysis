@@ -121,6 +121,13 @@ function buildScope(cy) {
         let pendingStyle = null;
         let reciprocalMode = 'straight';
         let edgeRouteMode = 'flow';
+        // edge-anchor state: applyNetworkState routes mode restores through
+        // applyEdgeAnchorMode and re-syncs the handles — both stubbed like
+        // refreshEdgeStyles below (the DOM-overlay machinery is out of
+        // scope here; capture/apply of mode + overrides IS the contract).
+        let edgeAnchorMode = 'center';
+        function applyEdgeAnchorMode(m) { edgeAnchorMode = m; }
+        function syncAnchorHandles() {}
         function queueStyleHistory(label) {}
         function flushPendingStyle() {}
         let straightReciprocalEdgesEnabled = false;

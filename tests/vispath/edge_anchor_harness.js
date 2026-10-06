@@ -32,16 +32,23 @@ const html = (() => {
     return own[0];
 })();
 
-// Extract a top-level function declaration with balanced braces.
+// Extract a top-level const arrow/value declaration with balanced braces
+// or brackets (ANCHOR8_DIRS is a bare array literal).
 function extractFunction(name, source) {
     const marker = 'const ' + name + ' = ';
     const start = source.indexOf(marker);
     if (start === -1) throw new Error('function not found: ' + name);
-    const open = source.indexOf('{', start);
+    let open = -1, openCh = null, closeCh = null;
+    for (let i = start + marker.length; i < source.length; i++) {
+        const c = source[i];
+        if (c === '{' || c === '[') {
+            open = i; openCh = c; closeCh = c === '{' ? '}' : ']'; break;
+        }
+    }
     let depth = 0;
     for (let i = open; i < source.length; i++) {
-        if (source[i] === '{') depth++;
-        else if (source[i] === '}') {
+        if (source[i] === openCh) depth++;
+        else if (source[i] === closeCh) {
             depth--;
             if (depth === 0) return source.slice(start, i + 1) + ';';
         }
@@ -52,9 +59,10 @@ function extractFunction(name, source) {
 // Evaluate the page's own geometry helpers with a stubbed `document`
 // (they only read the node-size slider fallback from it).
 const geometry = (() => {
-    const src = ['nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine']
+    const src = ['nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
+                 'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors']
         .map(n => extractFunction(n, html)).join('\n')
-        + '\nmodule.exports = { nodeHalfSizes, rimDistance, rimPointOnOffsetLine };';
+        + '\nmodule.exports = { nodeHalfSizes, rimDistance, rimPointOnOffsetLine, ANCHOR8_DIRS, snapAnchorIndex, anchorPoint, writeEdgeAnchors };';
     const mod = { exports: {} };
     new Function('module', 'exports', 'document', src)(
         mod, mod.exports, { getElementById: () => ({ value: '40' }) });
@@ -184,6 +192,118 @@ console.log("[3] headless cytoscape — the page's style writes parse and consum
     });
 
     cy.destroy();
+}
+
+console.log('[4] snapAnchorIndex — 45° sectors, mirror symmetry, degenerate north');
+{
+    const E = 0, SE = 1, S = 2, SW = 3, W = 4, NW = 5, N = 6, NE = 7;
+    check('east sector center', geometry.snapAnchorIndex(100, 0) === E,
+        geometry.snapAnchorIndex(100, 0));
+    // 22.5° is the sector boundary: 22° stays east, 23° falls to SE
+    check('22° -> E', geometry.snapAnchorIndex(100, 40.4) === E,
+        geometry.snapAnchorIndex(100, 40.4));
+    check('23° -> SE', geometry.snapAnchorIndex(100, 42.4) === SE,
+        geometry.snapAnchorIndex(100, 42.4));
+    check('68° -> SE', geometry.snapAnchorIndex(42.4, 100) === SE,
+        geometry.snapAnchorIndex(42.4, 100));
+    check('68.2° -> S', geometry.snapAnchorIndex(40, 100) === S,
+        geometry.snapAnchorIndex(40, 100));
+    check('west across the ±π seam', geometry.snapAnchorIndex(-100, 1.3) === W,
+        geometry.snapAnchorIndex(-100, 1.3));
+    check('north', geometry.snapAnchorIndex(0, -100) === N,
+        geometry.snapAnchorIndex(0, -100));
+    // every anchor's opposite is +4 (mod 8) — the mirror rule behind the
+    // auto snap (source = snap(d), target = snap(-d))
+    let mirrorOK = true;
+    for (let i = 0; i < 8; i++) {
+        const [ux, uy] = geometry.ANCHOR8_DIRS[i];
+        if (geometry.snapAnchorIndex(-ux, -uy) !== (i + 4) % 8) mirrorOK = false;
+    }
+    check('mirror rule snap(-d) = snap(d)+4 for all 8', mirrorOK);
+    check('degenerate (0,0) -> N', geometry.snapAnchorIndex(0, 0) === N,
+        geometry.snapAnchorIndex(0, 0));
+    check('non-finite -> N', geometry.snapAnchorIndex(NaN, 1) === N,
+        geometry.snapAnchorIndex(NaN, 1));
+}
+
+console.log('[5] anchorPoint — exact box corners, exact mids, ellipse 45° rim');
+{
+    const rect = mockNode(100, 60, 'round-rectangle');   // hw=50, hh=30
+    let p = geometry.anchorPoint(rect, 1);   // SE
+    check('box SE corner = (50, 30)', near(p[0], 50, 1e-6) && near(p[1], 30, 1e-6), p);
+    p = geometry.anchorPoint(rect, 4);   // W
+    check('box W mid = (-50, 0)', near(p[0], -50, 1e-6) && near(p[1], 0, 1e-6), p);
+    p = geometry.anchorPoint(rect, 6);   // N
+    check('box N mid = (0, -30)', near(p[0], 0, 1e-6) && near(p[1], -30, 1e-6), p);
+
+    const circ = mockNode(100, 100, 'ellipse');   // r=50
+    p = geometry.anchorPoint(circ, 1);   // 45° rim point
+    check('circle SE anchor = (35.36, 35.36)',
+        near(p[0], 50 / Math.SQRT2, 1e-6) && near(p[1], 50 / Math.SQRT2, 1e-6), p);
+    p = geometry.anchorPoint(circ, 0);
+    check('circle E mid = (50, 0)', near(p[0], 50, 1e-6) && near(p[1], 0, 1e-6), p);
+
+    // aspect ellipse: the diagonal anchor rides the exact polar rim
+    const tall = mockNode(60, 100, 'ellipse');   // hw=30, hh=50
+    p = geometry.anchorPoint(tall, 3);   // SW
+    check('ellipse SW anchor on the 45° diagonal',
+        near(Math.abs(p[0]), Math.abs(p[1]), 1e-9) && p[0] < 0 && p[1] > 0, p);
+    check('ellipse SW anchor on the rim',
+        near((p[0] / 30) * (p[0] / 30) + (p[1] / 50) * (p[1] / 50), 1, 1e-6),
+        (p[0] / 30) * (p[0] / 30) + (p[1] / 50) * (p[1] / 50));
+    // out-of-range and negative indices wrap mod 8
+    check('index wrap: 9 -> 1 (SE)', near(geometry.anchorPoint(rect, 9)[0], 50, 1e-6) &&
+        near(geometry.anchorPoint(rect, 9)[1], 30, 1e-6), geometry.anchorPoint(rect, 9));
+    check('index wrap: -4 -> 4 (W)', near(geometry.anchorPoint(rect, -4)[0], -50, 1e-6),
+        geometry.anchorPoint(rect, -4));
+}
+
+console.log("[6] writeEdgeAnchors — auto snap mirrors, per-end override wins, parse-back");
+{
+    const cy2 = cytoscape({
+        headless: true,
+        styleEnabled: true,
+        elements: [
+            { data: { id: 'a', label: 'a' }, position: { x: 0, y: 0 } },
+            { data: { id: 'b', label: 'b' }, position: { x: 120, y: 90 } },
+            { data: { id: 'ab', source: 'a', target: 'b', weight: 3 } },
+        ],
+        style: [
+            { selector: 'node', style: { width: 100, height: 100, shape: 'ellipse' } },
+            { selector: 'edge', style: { 'curve-style': 'straight' } },
+        ],
+    });
+    const e = cy2.getElementById('ab');
+    // headless cytoscape ignores the element-definition `position` key —
+    // set the seats explicitly (stage [3] hardcodes its deltas, so it
+    // never noticed).
+    cy2.getElementById('b').position({ x: 120, y: 90 });
+    geometry.writeEdgeAnchors(e);
+    // direction (120, 90) is 36.9° -> source snaps SE; the target end
+    // mirrors to NW (216° sector)
+    let se = e.pstyle('source-endpoint');
+    let te = e.pstyle('target-endpoint');
+    check('auto source = SE 45° point',
+        near(se.pfValue[0], 50 / Math.SQRT2, 0.01) && near(se.pfValue[1], 50 / Math.SQRT2, 0.01),
+        JSON.stringify({ v: se && se.pfValue }));
+    check('auto target = NW mirrored point',
+        near(te.pfValue[0], -50 / Math.SQRT2, 0.01) && near(te.pfValue[1], -50 / Math.SQRT2, 0.01),
+        JSON.stringify({ v: te && te.pfValue }));
+    check('distance-from-node pinned to 0',
+        e.pstyle('source-distance-from-node').pfValue === 0 &&
+        e.pstyle('target-distance-from-node').pfValue === 0);
+    // a dragged override pins THAT end only; the other stays auto
+    e.data('anchorSrc', 0);   // E mid on the source node
+    geometry.writeEdgeAnchors(e);
+    se = e.pstyle('source-endpoint');
+    te = e.pstyle('target-endpoint');
+    check('override pins source to E mid (50, 0)',
+        near(se.pfValue[0], 50, 0.01) && near(se.pfValue[1], 0, 0.01),
+        JSON.stringify({ v: se && se.pfValue }));
+    check('un-overridden target stays auto NW',
+        near(te.pfValue[0], -50 / Math.SQRT2, 0.01) && near(te.pfValue[1], -50 / Math.SQRT2, 0.01),
+        JSON.stringify({ v: te && te.pfValue }));
+    cy2.destroy();
 }
 
 if (failures > 0) {

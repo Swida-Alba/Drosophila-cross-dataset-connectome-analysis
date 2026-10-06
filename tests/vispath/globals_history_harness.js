@@ -56,11 +56,42 @@ const FUNCTIONS = [
     'vpBowAroundObstructions', 'vpNodeHalfSizes', 'vpRimDistance', 'vpPointInsideNode',
 ];
 
+// Top-level const arrow helpers the extracted functions close over
+// (refreshEdgeStyles' shared edge geometry — see edge_anchor_harness.js).
+// Handles both brace and bracket openers (ANCHOR8_DIRS is an array).
+function extractConstFunction(name, source) {
+    const marker = 'const ' + name + ' = ';
+    const start = source.indexOf(marker);
+    if (start === -1) throw new Error('const not found: ' + name);
+    let open = -1, openCh = null, closeCh = null;
+    for (let i = start + marker.length; i < source.length; i++) {
+        const c = source[i];
+        if (c === '{' || c === '[') {
+            open = i; openCh = c; closeCh = c === '{' ? '}' : ']'; break;
+        }
+    }
+    let depth = 0;
+    for (let i = open; i < source.length; i++) {
+        if (source[i] === openCh) depth++;
+        else if (source[i] === closeCh) {
+            depth--;
+            if (depth === 0) return source.slice(start, i + 1) + ';';
+        }
+    }
+    throw new Error('unbalanced braces: ' + name);
+}
+
+const CONST_FUNCTIONS = [
+    'nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
+    'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors',
+];
+
 // NOTE: sources come from the project's own generated HTML (trusted,
 // locally-produced artifact); new Function only executes that code against
 // the headless core + stubs.
 function buildScope(cy) {
-    const fnSources = FUNCTIONS.map(f => extractFunction(f, html)).join('\n');
+    const fnSources = CONST_FUNCTIONS.map(f => extractConstFunction(f, html)).join('\n')
+        + '\n' + FUNCTIONS.map(f => extractFunction(f, html)).join('\n');
 
     const prelude = `
         let undoStack = [];

@@ -6088,6 +6088,25 @@ class VisualizePath:
             box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
         }}
 
+        /* Edge-anchor endpoint handles: the same overlay pattern as the
+           waypoint rings (DOM in #cy, pointer-events:none, capture-phase
+           hit-test, display:none until first positioned).  A square diamond
+           in accent blue distinguishes them from the amber waypoint rings;
+           the handles carry no visual "selected" state — every selected
+           edge shows exactly its two. */
+        .anchor-handle {{
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #2196f3;
+            background: rgba(33, 150, 243, 0.35);
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
+            transform: translate(-50%, -50%) rotate(45deg);
+            pointer-events: none;
+            z-index: 41;
+            display: none;
+        }}
+
         /* Collapsed states: hide the top control bar and reclaim the right
            palette column so the canvas grows into the freed space. */
         .controls.collapsed {{
@@ -6574,6 +6593,9 @@ class VisualizePath:
                             </div>
                             <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Click a bend on the canvas to select it (click again to release) — a bundle across edges works; drag moves it; Esc or a blank-canvas click clears.</div>
                             <div id="waypointList" style="margin-top: 4px;"></div>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 4px;">
+                                <button class="btn" onclick="resetEdgeAnchors()" title="Clear the per-end anchor overrides on the selected edges — back to the automatic 8-point snap (Auto anchor mode) or the plain center-line attachment (Center mode)" style="font-size: 10px; padding: 5px; background: #607d8b;">↺ Reset anchors</button>
+                            </div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
                             <button class="btn" id="alignHBtn" onclick="alignSelectedNodes('h')" title="Align selected nodes horizontally (same Y)" style="font-size: 10px; padding: 5px; background: #00897b; opacity: 0.4;">⇔ Align H</button>
@@ -8953,6 +8975,15 @@ class VisualizePath:
                 edgeRoute: {{
                     mode: edgeRouteMode
                 }},
+                // Edge-anchor mode + per-end 8-point overrides (dragged
+                // handles); an absent src/dst field falls back to the auto
+                // snap on restore.  File export embeds this state verbatim,
+                // so the v2 layout file carries anchors for free.
+                edgeAnchor: {{
+                    mode: edgeAnchorMode,
+                    overrides: cy.edges().filter(e =>
+                        e.data('anchorSrc') !== undefined || e.data('anchorDst') !== undefined).map(e => ({{ id: e.id(), src: e.data('anchorSrc'), dst: e.data('anchorDst') }}))
+                }},
                 filter: {{
                     inputValue: document.getElementById('ignoreEdgesInput')?.value || '',
                     ignoredValues: Array.from(ignoredEdges),
@@ -9158,6 +9189,23 @@ class VisualizePath:
                 // --- edge route mode (straight | flow) ---
                 if (state.edgeRoute && state.edgeRoute.mode !== undefined) {{
                     applyEdgeRouteMode(state.edgeRoute.mode);
+                }}
+
+                // --- edge anchor mode (center | auto) + per-end overrides ---
+                if (state.edgeAnchor) {{
+                    if (state.edgeAnchor.mode !== undefined) {{
+                        applyEdgeAnchorMode(state.edgeAnchor.mode);
+                    }}
+                    (state.edgeAnchor.overrides || []).forEach(item => {{
+                        const e = cy.getElementById(item.id);
+                        if (!e || e.length === 0 || e.isNode()) return;
+                        if (item.src !== undefined && item.src !== null) e.data('anchorSrc', item.src);
+                        else e.removeData('anchorSrc');
+                        if (item.dst !== undefined && item.dst !== null) e.data('anchorDst', item.dst);
+                        else e.removeData('anchorDst');
+                    }});
+                    refreshEdgeStyles(false);
+                    syncAnchorHandles();
                 }}
 
                 // --- edge weight labels + label position ---
@@ -9788,6 +9836,123 @@ class VisualizePath:
             }}
         }});
         
+        // ===== Edge geometry (shared by refreshEdgeStyles, the flow bow's
+        // clip test callers and the endpoint handles) =====
+        // Anchor distances must follow the ACTUAL size and SHAPE of each
+        // endpoint node: nodes can be individually resized via the geometry
+        // editor (width and height independently for rectangles), so the
+        // global slider is only a fallback.
+        const nodeHalfSizes = (node) => {{
+            const fallback =
+                parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
+            return [(node.numericStyle('width') || fallback) / 2,
+                    (node.numericStyle('height') || fallback) / 2];
+        }};
+        // Distance from the node center to its rendered rim along a
+        // ray pointing at (wx, wy).  Ellipse — the default shape —
+        // gets the exact polar rim; a single box formula overshoots
+        // an ellipse by up to 41% on diagonals (40px circle at 45°:
+        // 28.28 vs 20), which is what used to leave line ends and
+        // arrowheads floating off diagonal nodes.  Non-ellipse
+        // shapes keep the box intersection.
+        const rimDistance = (node, wx, wy) => {{
+            const [hw, hh] = nodeHalfSizes(node);
+            const len = Math.hypot(wx, wy) || 1;
+            const adx = Math.abs(wx) / len || 1e-6;
+            const ady = Math.abs(wy) / len || 1e-6;
+            if ((node.style('shape') || 'ellipse') === 'ellipse') {{
+                return (hw * hh) / Math.hypot(hh * adx, hw * ady);
+            }}
+            return Math.min(hw / adx, hh / ady);
+        }};
+        // Where the OFFSET edge line meets each node's rim, returned
+        // as an offset from that node's position.  Radial
+        // fixed-point: start on the center line, then re-project the
+        // rim direction through the perpendicular offset until the
+        // anchor stops moving (3 iterations settle far below a
+        // pixel).  Writing the rim point itself as the manual
+        // endpoint — with distance-from-node 0 — pins the rendered
+        // segment to the offset line.  The previous scheme (endpoint
+        // = perpendicular offset plus a distance-from-node rim
+        // value) let cytoscape pull every endpoint toward the
+        // OPPOSITE NODE CENTER by arrowGap + distance, a direction
+        // that is not the edge line: on diagonal pairs that both
+        // detached the arrows from the rim and rotated/shortened the
+        // two halves into a crossed X mid-gap.
+        const rimPointOnOffsetLine = (node, dx, dy, offX, offY) => {{
+            const lineLen = Math.hypot(dx, dy);
+            const dirX = lineLen > 0 ? dx / lineLen : 0;
+            const dirY = lineLen > 0 ? dy / lineLen : 0;
+            let wx = dirX, wy = dirY;
+            if (wx === 0 && wy === 0) {{ wx = 0; wy = -1; }}
+            let rho = rimDistance(node, wx, wy);
+            for (let i = 0; i < 3; i++) {{
+                wx = dirX * rho + offX;
+                wy = dirY * rho + offY;
+                if (!isFinite(wx) || !isFinite(wy) || (wx === 0 && wy === 0)) {{
+                    wx = dirX; wy = dirY || -1;
+                }}
+                rho = rimDistance(node, wx, wy);
+            }}
+            const len = Math.hypot(wx, wy) || 1;
+            return [rho * wx / len, rho * wy / len];
+        }};
+
+        // Auto edge-anchor mode ('auto'): every edge end attaches at
+        // one of 8 fixed anchors — the 4 box corners (ellipses: the
+        // rim points on the 45° diagonals) and the 4 mid-edges.
+        // ANCHOR8_DIRS is indexed by atan2(dy, dx) rounded to 45°
+        // steps (screen coords, y down): E, SE, S, SW, W, NW, N, NE.
+        const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+        const snapAnchorIndex = (dx, dy) => {{
+            if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) {{ return 6; }}
+            const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+            return ((step % 8) + 8) % 8;
+        }};
+        // The anchor's exact point, as an offset from the node
+        // center.  Mid anchors are exact for every shape; a box
+        // corner IS (±hw, ±hh) — its direction from the center is
+        // aspect-dependent, so it must not go through the polar rim
+        // formula — while an ellipse's diagonal rides the 45° rim
+        // point (±hw/√2, ±hh/√2) via rimDistance.
+        const anchorPoint = (node, idx) => {{
+            const [hw, hh] = nodeHalfSizes(node);
+            const i = ((Number(idx) || 0) % 8 + 8) % 8;
+            const [ux, uy] = ANCHOR8_DIRS[i];
+            if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {{
+                return [ux * hw, uy * hh];
+            }}
+            const d = rimDistance(node, ux, uy);
+            const len = Math.hypot(ux, uy);
+            return [ux * d / len, uy * d / len];
+        }};
+        // Writes BOTH ends for a plain edge (no visible reciprocal
+        // pair): the per-end override (anchorSrc/anchorDst, set by
+        // dragging an endpoint handle) wins, otherwise the anchor
+        // nearest each end's direction.  Same node-position +
+        // distance-0 form as the reciprocal rim pins, so plain
+        // translation drags follow and direction re-snaps run on
+        // drop/relayout.
+        const writeEdgeAnchors = (edge) => {{
+            const srcPos = edge.source().position();
+            const tgtPos = edge.target().position();
+            const dx = tgtPos.x - srcPos.x;
+            const dy = tgtPos.y - srcPos.y;
+            const srcOv = edge.data('anchorSrc');
+            const dstOv = edge.data('anchorDst');
+            const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;
+            const tgtIdx = (dstOv === undefined || dstOv === null) ? snapAnchorIndex(-dx, -dy) : dstOv;
+            const srcPt = anchorPoint(edge.source(), srcIdx);
+            const tgtPt = anchorPoint(edge.target(), tgtIdx);
+            edge.style({{
+                'edge-distances': 'node-position',
+                'source-endpoint': `${{srcPt[0].toFixed(2)}} ${{srcPt[1].toFixed(2)}}`,
+                'target-endpoint': `${{tgtPt[0].toFixed(2)}} ${{tgtPt[1].toFixed(2)}}`,
+                'source-distance-from-node': 0,
+                'target-distance-from-node': 0
+            }});
+        }};
+
         function clearEdgeEndpointOverrides(edge) {{
             edge.removeStyle('source-endpoint');
             edge.removeStyle('target-endpoint');
@@ -9971,89 +10136,6 @@ class VisualizePath:
                     return;
                 }}
 
-                // Anchor distances must follow the ACTUAL size and SHAPE of
-                // each endpoint node: nodes can be individually resized via
-                // the geometry editor (width and height independently for
-                // rectangles), so the global slider is only a fallback.
-                const nodeHalfSizes = (node) => {{
-                    const fallback =
-                        parseFloat(document.getElementById('nodeSizeSlider')?.value || 40);
-                    return [(node.numericStyle('width') || fallback) / 2,
-                            (node.numericStyle('height') || fallback) / 2];
-                }};
-                // Distance from the node center to its rendered rim along a
-                // ray pointing at (wx, wy).  Ellipse — the default shape —
-                // gets the exact polar rim; a single box formula overshoots
-                // an ellipse by up to 41% on diagonals (40px circle at 45°:
-                // 28.28 vs 20), which is what used to leave line ends and
-                // arrowheads floating off diagonal nodes.  Non-ellipse
-                // shapes keep the box intersection.
-                const rimDistance = (node, wx, wy) => {{
-                    const [hw, hh] = nodeHalfSizes(node);
-                    const len = Math.hypot(wx, wy) || 1;
-                    const adx = Math.abs(wx) / len || 1e-6;
-                    const ady = Math.abs(wy) / len || 1e-6;
-                    if ((node.style('shape') || 'ellipse') === 'ellipse') {{
-                        return (hw * hh) / Math.hypot(hh * adx, hw * ady);
-                    }}
-                    return Math.min(hw / adx, hh / ady);
-                }};
-
-                // Auto edge-anchor mode ('auto'): every edge end attaches at
-                // one of 8 fixed anchors — the 4 box corners (ellipses: the
-                // rim points on the 45° diagonals) and the 4 mid-edges.
-                // ANCHOR8_DIRS is indexed by atan2(dy, dx) rounded to 45°
-                // steps (screen coords, y down): E, SE, S, SW, W, NW, N, NE.
-                const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-                const snapAnchorIndex = (dx, dy) => {{
-                    if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) {{ return 6; }}
-                    const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
-                    return ((step % 8) + 8) % 8;
-                }};
-                // The anchor's exact point, as an offset from the node
-                // center.  Mid anchors are exact for every shape; a box
-                // corner IS (±hw, ±hh) — its direction from the center is
-                // aspect-dependent, so it must not go through the polar rim
-                // formula — while an ellipse's diagonal rides the 45° rim
-                // point (±hw/√2, ±hh/√2) via rimDistance.
-                const anchorPoint = (node, idx) => {{
-                    const [hw, hh] = nodeHalfSizes(node);
-                    const i = ((Number(idx) || 0) % 8 + 8) % 8;
-                    const [ux, uy] = ANCHOR8_DIRS[i];
-                    if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {{
-                        return [ux * hw, uy * hh];
-                    }}
-                    const d = rimDistance(node, ux, uy);
-                    const len = Math.hypot(ux, uy);
-                    return [ux * d / len, uy * d / len];
-                }};
-                // Writes BOTH ends for a plain edge (no visible reciprocal
-                // pair): the per-end override (anchorSrc/anchorDst, set by
-                // dragging an endpoint handle) wins, otherwise the anchor
-                // nearest each end's direction.  Same node-position +
-                // distance-0 form as the reciprocal rim pins, so plain
-                // translation drags follow and direction re-snaps run on
-                // drop/relayout.
-                const writeEdgeAnchors = (edge) => {{
-                    const srcPos = edge.source().position();
-                    const tgtPos = edge.target().position();
-                    const dx = tgtPos.x - srcPos.x;
-                    const dy = tgtPos.y - srcPos.y;
-                    const srcOv = edge.data('anchorSrc');
-                    const dstOv = edge.data('anchorDst');
-                    const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;
-                    const tgtIdx = (dstOv === undefined || dstOv === null) ? snapAnchorIndex(-dx, -dy) : dstOv;
-                    const srcPt = anchorPoint(edge.source(), srcIdx);
-                    const tgtPt = anchorPoint(edge.target(), tgtIdx);
-                    edge.style({{
-                        'edge-distances': 'node-position',
-                        'source-endpoint': `${{srcPt[0].toFixed(2)}} ${{srcPt[1].toFixed(2)}}`,
-                        'target-endpoint': `${{tgtPt[0].toFixed(2)}} ${{tgtPt[1].toFixed(2)}}`,
-                        'source-distance-from-node': 0,
-                        'target-distance-from-node': 0
-                    }});
-                }};
-
                 if (!hasVisibleParallel) {{
                     applyStraightEdgeStyle(edge);
                     if (edgeAnchorMode === 'auto') {{
@@ -10071,39 +10153,6 @@ class VisualizePath:
                     if (edgeRouteMode === 'flow') {{ vpBowAroundObstructions(edge); }}
                     return;
                 }}
-                // Where the OFFSET edge line meets each node's rim, returned
-                // as an offset from that node's position.  Radial
-                // fixed-point: start on the center line, then re-project the
-                // rim direction through the perpendicular offset until the
-                // anchor stops moving (3 iterations settle far below a
-                // pixel).  Writing the rim point itself as the manual
-                // endpoint — with distance-from-node 0 — pins the rendered
-                // segment to the offset line.  The previous scheme (endpoint
-                // = perpendicular offset plus a distance-from-node rim
-                // value) let cytoscape pull every endpoint toward the
-                // OPPOSITE NODE CENTER by arrowGap + distance, a direction
-                // that is not the edge line: on diagonal pairs that both
-                // detached the arrows from the rim and rotated/shortened the
-                // two halves into a crossed X mid-gap.
-                const rimPointOnOffsetLine = (node, dx, dy, offX, offY) => {{
-                    const lineLen = Math.hypot(dx, dy);
-                    const dirX = lineLen > 0 ? dx / lineLen : 0;
-                    const dirY = lineLen > 0 ? dy / lineLen : 0;
-                    let wx = dirX, wy = dirY;
-                    if (wx === 0 && wy === 0) {{ wx = 0; wy = -1; }}
-                    let rho = rimDistance(node, wx, wy);
-                    for (let i = 0; i < 3; i++) {{
-                        wx = dirX * rho + offX;
-                        wy = dirY * rho + offY;
-                        if (!isFinite(wx) || !isFinite(wy) || (wx === 0 && wy === 0)) {{
-                            wx = dirX; wy = dirY || -1;
-                        }}
-                        rho = rimDistance(node, wx, wy);
-                    }}
-                    const len = Math.hypot(wx, wy) || 1;
-                    return [rho * wx / len, rho * wy / len];
-                }};
-
                 // Compute perpendicular offset in CANONICAL direction (smaller ID -> larger ID)
                 // to ensure reciprocal edges offset in opposite directions relative to canvas
                 const canonicalSourceId = source < target ? source : target;
@@ -10347,7 +10396,7 @@ class VisualizePath:
         // nearest of 8 anchors (4 corners + 4 mid-edges) and enables the
         // draggable endpoint handles on selected edges.  refreshEdgeStyles
         // reads edgeAnchorMode on every pass, so the mode swap only needs
-        // a re-style + button sync.
+        // a re-style + button/handle sync.
         function syncEdgeAnchorControls() {{
             const pair = [['edgeAnchorModeCenter', 'center'], ['edgeAnchorModeAuto', 'auto']];
             pair.forEach(([id, mode]) => {{
@@ -10363,6 +10412,7 @@ class VisualizePath:
             edgeAnchorMode = mode;
             refreshEdgeStyles(false);
             syncEdgeAnchorControls();
+            syncAnchorHandles();
         }}
         function setEdgeAnchorMode(mode) {{
             if (edgeAnchorMode === mode) {{
@@ -10567,6 +10617,10 @@ class VisualizePath:
                     }}
                 }});
             }}
+            // The rim formula branches on the shape (ellipse polar vs box
+            // intersection) — endpoint pins go stale on a shape change
+            // until edges are re-derived.
+            refreshEdgeStyles(false);
         }}
 
         function updateEdgeWidth(width) {{
@@ -12453,6 +12507,198 @@ class VisualizePath:
             }});
         }}
 
+        // ===== Edge-anchor endpoint handles =====
+        // In 'auto' anchor mode every selected edge (except waypoint and
+        // self-loop edges, which keep their own handle UI) shows its two
+        // endpoint handles — DOM overlays inside #cy, the waypoint-ring
+        // pattern: NOT cytoscape nodes (they would leak into layout
+        // captures, orphan/dead-end re-derivation and every global style
+        // applier) and pointer-events:none, with a capture-phase hit-test
+        // doing the targeting.  Dragging a handle snaps the pointer angle
+        // around the node to the nearest of the 8 anchors and reassigns
+        // THAT END ONLY — independently per reciprocal half — by writing
+        // the anchorSrc/anchorDst override plus the endpoint style.  The
+        // pointerdown handler below registers BEFORE the waypoint one, so
+        // a handle wins when the two overlays overlap.
+        let anchorDrag = null;   // {{ edge, end, startClient, moved, queued }}
+
+        function anchorHandleId(edgeId, end) {{ return 'anchor-handle-' + edgeId + '-' + end; }}
+
+        // Resolved endpoint offset for one edge end — reads the explicit
+        // endpoint style refreshEdgeStyles wrote (px pair per the
+        // node-position form); falls back to the center-line rim point
+        // when no bypass is present (center mode).
+        function anchorEndpointOffset(edge, end) {{
+            const ps = edge.pstyle(end === 'src' ? 'source-endpoint' : 'target-endpoint');
+            if (ps && ps.units && ps.units[0] === 'px' && ps.units[1] === 'px') {{
+                return [ps.pfValue[0], ps.pfValue[1]];
+            }}
+            const a = edge.source().position();
+            const b = edge.target().position();
+            const dx = end === 'src' ? b.x - a.x : a.x - b.x;
+            const dy = end === 'src' ? b.y - a.y : a.y - b.y;
+            const node = end === 'src' ? edge.source() : edge.target();
+            const d = rimDistance(node, dx, dy);
+            const len = Math.hypot(dx, dy) || 1;
+            return [d * dx / len, d * dy / len];
+        }}
+
+        function anchorHandleEligible(e) {{
+            return e.inside() && !e.hasClass('pair-hidden') &&
+                !e.data('hasWaypoints') &&
+                e.source().id() !== e.target().id();
+        }}
+
+        function positionAnchorHandle(edge, end) {{
+            const el = document.getElementById(anchorHandleId(edge.id(), end));
+            if (!el) return;
+            const node = end === 'src' ? edge.source() : edge.target();
+            const off = anchorEndpointOffset(edge, end);
+            const p = node.position();
+            const pan = cy.pan(), z = cy.zoom();
+            el.style.left = ((p.x + off[0]) * z + pan.x) + 'px';
+            el.style.top = ((p.y + off[1]) * z + pan.y) + 'px';
+        }}
+
+        // Create/drop/reposition the handles so they mirror (auto mode &&
+        // current edge selection) exactly.  Hooked to viewport (pan/zoom),
+        // edge select/unselect and node drag/position below.
+        function syncAnchorHandles() {{
+            const layer = document.getElementById('cy');
+            if (!layer) return;
+            const wanted = [];
+            if (edgeAnchorMode === 'auto') {{
+                cy.edges(':selected').forEach(e => {{
+                    if (!anchorHandleEligible(e)) return;
+                    wanted.push([e, 'src'], [e, 'dst']);
+                }});
+            }}
+            const wantedKeys = new Set(wanted.map(([e, end]) => anchorHandleId(e.id(), end)));
+            layer.querySelectorAll('.anchor-handle').forEach(el => {{
+                if (!wantedKeys.has(el.id)) el.remove();
+            }});
+            wanted.forEach(([e, end]) => {{
+                let el = document.getElementById(anchorHandleId(e.id(), end));
+                if (!el) {{
+                    el = document.createElement('div');
+                    el.id = anchorHandleId(e.id(), end);
+                    el.className = 'anchor-handle';
+                    el.title = (end === 'src' ? 'Source' : 'Target') +
+                        ' endpoint anchor — drag to reassign it to another of the 8 anchors';
+                    layer.appendChild(el);
+                }}
+                positionAnchorHandle(e, end);
+                el.style.display = 'block';
+            }});
+        }}
+
+        function removeAllAnchorHandles() {{
+            document.querySelectorAll('.anchor-handle').forEach(el => el.remove());
+        }}
+
+        function hitTestAnchorHandleModel(mx, my, radius) {{
+            let best = null;
+            cy.edges(':selected').forEach(e => {{
+                if (!anchorHandleEligible(e)) return;
+                [['src', e.source()], ['dst', e.target()]].forEach(([end, node]) => {{
+                    const off = anchorEndpointOffset(e, end);
+                    const p = node.position();
+                    const d = Math.hypot(p.x + off[0] - mx, p.y + off[1] - my);
+                    if (d <= radius && (!best || d < best.d)) best = {{ d: d, edge: e, end: end }};
+                }});
+            }});
+            return best;
+        }}
+
+        cy.on('viewport', syncAnchorHandles);
+        cy.on('select unselect', 'edge', syncAnchorHandles);
+        cy.on('drag position', 'node', syncAnchorHandles);
+
+        // cursor feedback while hovering a handle (never CLEARS the cursor:
+        // the waypoint hover listener below owns the non-handle default)
+        document.getElementById('cy').addEventListener('pointermove', function(e) {{
+            if (anchorDrag) return;
+            if (edgeAnchorMode !== 'auto') return;
+            const rect = this.getBoundingClientRect();
+            const pan = cy.pan(), zoom = cy.zoom();
+            const mx = (e.clientX - rect.left - pan.x) / zoom;
+            const my = (e.clientY - rect.top - pan.y) / zoom;
+            const hit = hitTestAnchorHandleModel(mx, my, 10 / zoom);
+            if (hit) this.style.cursor = 'grab';
+        }});
+
+        document.getElementById('cy').addEventListener('pointerdown', function(e) {{
+            if (e.button !== 0 || dialogCtl.isActive()) return;
+            if (edgeAnchorMode !== 'auto') return;
+            const rect = this.getBoundingClientRect();
+            const pan = cy.pan(), zoom = cy.zoom();
+            const mx = (e.clientX - rect.left - pan.x) / zoom;
+            const my = (e.clientY - rect.top - pan.y) / zoom;
+            const hit = hitTestAnchorHandleModel(mx, my, 12 / zoom);
+            if (!hit) return;
+            // preempt Cytoscape: the pointer acts on the ENDPOINT HANDLE,
+            // not the node/edge underneath
+            e.stopPropagation();
+            e.preventDefault();
+
+            const cyContainer = this;
+            const startClient = {{ x: e.clientX, y: e.clientY }};
+            anchorDrag = {{ edge: hit.edge, end: hit.end,
+                            startClient: startClient, moved: false, queued: false }};
+
+            const onMove = function(ev) {{
+                if (!anchorDrag) return;
+                if (!anchorDrag.moved && Math.hypot(ev.clientX - startClient.x,
+                        ev.clientY - startClient.y) < 3) return;
+                anchorDrag.moved = true;
+                if (!anchorDrag.queued) {{ queueStyleHistory('Reassign edge anchor'); anchorDrag.queued = true; }}
+                const crect = cyContainer.getBoundingClientRect();
+                const cpan = cy.pan(), czoom = cy.zoom();
+                const cmx = (ev.clientX - crect.left - cpan.x) / czoom;
+                const cmy = (ev.clientY - crect.top - cpan.y) / czoom;
+                const node = anchorDrag.end === 'src' ? anchorDrag.edge.source() : anchorDrag.edge.target();
+                const np = node.position();
+                const idx = snapAnchorIndex(cmx - np.x, cmy - np.y);
+                anchorDrag.edge.data(anchorDrag.end === 'src' ? 'anchorSrc' : 'anchorDst', idx);
+                const pt = anchorPoint(node, idx);
+                anchorDrag.edge.style({{
+                    'edge-distances': 'node-position',
+                    [anchorDrag.end === 'src' ? 'source-endpoint' : 'target-endpoint']:
+                        `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`,
+                    [anchorDrag.end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node']: 0
+                }});
+                positionAnchorHandle(anchorDrag.edge, anchorDrag.end);
+            }};
+            const onUp = function() {{
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                if (anchorDrag && anchorDrag.moved) {{
+                    flushPendingStyle();
+                    updateHoverInfo('✓ Endpoint anchor reassigned (drag again or Reset anchors to change)');
+                }}
+                anchorDrag = null;
+            }};
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+        }}, {{ capture: true }});
+
+        // Per-end override reset for the selected edges (the panel button):
+        // back to the automatic 8-point snap in auto mode, or to the plain
+        // center-line attachment in center mode (overrides lie dormant in
+        // the edge data either way until explicitly cleared).
+        function resetEdgeAnchors() {{
+            const edges = cy.edges(':selected');
+            if (edges.length === 0) return;
+            pushHistory('Reset edge anchors');
+            edges.forEach(e => {{
+                e.removeData('anchorSrc');
+                e.removeData('anchorDst');
+            }});
+            refreshEdgeStyles(false);
+            syncAnchorHandles();
+            updateHoverInfo('✓ Endpoint anchors reset to auto on ' + edges.length + ' edge(s)');
+        }}
+
         // ===== Waypoint canvas interaction =====
         // Waypoints are selectable independent of their edge: a click
         // within the grab radius TOGGLES the waypoint in a SELECTION SET
@@ -12799,6 +13045,10 @@ class VisualizePath:
                 ' on ' + nodes.length + ' node(s)');
             // reset the dropdown to the placeholder after acting on it
             document.getElementById('selGeomShape').value = '';
+            // keep endpoints/offsets attached to reshaped nodes: the rim
+            // formula branches on ellipse vs box, so the shape change
+            // re-derives every pin touching these nodes
+            refreshEdgeStyles(false);
         }}
 
         // Apply initial opacity values from parsed input colors

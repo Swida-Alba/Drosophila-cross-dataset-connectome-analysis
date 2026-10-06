@@ -471,6 +471,48 @@ class TestGeneratedHtmlStructure:
         # curved pairs keep the cp-40 bow AND anchor both ends in auto mode
         assert js.count("writeEdgeAnchors(edge);") == 2
 
+    def test_edge_anchor_handles_and_persistence(self, network_html):
+        """Auto mode shows draggable endpoint handles on selected edges
+        (the waypoint-ring overlay pattern); the mode + per-end overrides
+        ride the layout save/restore and — verbatim via captureNetworkState —
+        the v2 layout file; shape changes re-derive the rim pins."""
+        js = _script_text(network_html)
+        html = network_html.read_text(encoding="utf-8")
+        # handles: waypoint-ring overlay pattern (DOM in #cy, capture-phase
+        # hit-test), synced on viewport / selection / node moves
+        assert ".anchor-handle {" in html
+        assert "function syncAnchorHandles()" in js
+        assert "function anchorEndpointOffset(" in js
+        assert "function hitTestAnchorHandleModel(" in js
+        assert "cy.on('viewport', syncAnchorHandles);" in js
+        assert "cy.on('select unselect', 'edge', syncAnchorHandles);" in js
+        assert "cy.on('drag position', 'node', syncAnchorHandles);" in js
+        # a drag writes the override + endpoint style for THAT end only
+        # (reciprocal halves reassign independently), tracked as one
+        # queued history entry per gesture
+        assert "anchorDrag.edge.data(anchorDrag.end === 'src' ? 'anchorSrc' : 'anchorDst', idx);" in js
+        assert "queueStyleHistory('Reassign edge anchor');" in js
+        # per-edge reset action in the selection panel
+        assert "resetEdgeAnchors()" in html
+        reset_fn = _extract_js_function(js, "resetEdgeAnchors")
+        assert "pushHistory('Reset edge anchors')" in reset_fn
+        assert "e.removeData('anchorSrc');" in reset_fn
+        # persistence: mode + overrides in the captured state, restored
+        # through applyEdgeAnchorMode + explicit override re-application
+        assert "edgeAnchor: {" in js
+        assert "overrides: cy.edges().filter(e =>" in js
+        assert "(state.edgeAnchor.overrides || []).forEach(item => {" in js
+        # the v2 layout file embeds captureNetworkState verbatim, so the
+        # anchor state needs no separate export/import field list
+        assert "state: captureNetworkState()" in js
+        assert "applyNetworkState(importData.state);" in js
+        # mode swap re-syncs the handles
+        aam = _extract_js_function(js, "applyEdgeAnchorMode")
+        assert "syncAnchorHandles();" in aam
+        # shape changes re-derive the rim pins (the ellipse/box branch swap)
+        assert "refreshEdgeStyles(false);" in _extract_js_function(js, "updateNodeShape")
+        assert "refreshEdgeStyles(false);" in _extract_js_function(js, "applySelectedShape")
+
     def test_reciprocal_detection_excludes_edge_itself(self, network_html):
         """A one-way edge must never be treated as its own parallel: the
         reciprocal check counts edges per direction, so only a DIFFERENT
