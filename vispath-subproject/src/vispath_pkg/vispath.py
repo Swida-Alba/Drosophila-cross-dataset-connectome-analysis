@@ -7120,10 +7120,11 @@ class VisualizePath:
                 }}
             }};
 
-            // The viewer never moves the zoom on its own. Layouts default to
-            // fit:true (and 'mapping' set it explicitly), which re-scaled the
-            // view on every open and every user-triggered re-layout; the
-            // ⛶ Fit button (and the import toasts) are the explicit fits.
+            // Layouts never auto-scale the view: this choke point keeps fit:false so
+            // every run (initial or user-triggered) preserves the current zoom/pan.
+            // The ONE-TIME fit at open lives in the script tail's open-view block
+            // (gated on an absent saved layout); ⛶ Fit and the import toasts are the
+            // explicit fits.
             const config = configs[layoutName] || configs['dagre'];
             config.fit = false;
             return config;
@@ -7415,9 +7416,9 @@ class VisualizePath:
         
         // Fix for click position drift - ensure Cytoscape canvas is properly sized
         cy.resize();
-        // no auto-fit on load: the page opens at 100% zoom — a saved layout's
-        // zoom/pan is restored explicitly by the auto-restore below, and the
-        // ⛶ Fit button is the way to frame the graph on demand
+        // no auto-fit here: layouts run with fit:false; the one-time open fit
+        // (skipped when a saved layout restores its own zoom/pan) lives in the
+        // script tail's open-view block, and ⛶ Fit frames the graph on demand
 
         // Initial reciprocal mode: DOM sync is safe here (its variables are
         // already initialized), but the merge itself touches globals
@@ -14269,36 +14270,51 @@ class VisualizePath:
             'border-opacity': 1
         }}).update();
         
-        // Apply initial opacity (the view is NOT auto-fitted — see above)
+        // Apply initial opacity (the open fit itself lives in the tail's
+        // open-view block below)
         applyInitialOpacity();
         initializeEdgeBaseStyles();
         initializeLogBaseVisibility();
         initPanelBar();
 
-        // Auto-restore: a layout saved for THIS generated file is re-applied
-        // on open. Deferred past the init's 200 ms hemisphere-caching timer
-        // so the original-layout cache is captured before the saved (possibly
-        // mirrored) positions land. The Reset action drops the saved state
-        // and reloads — a reload re-renders the generated defaults, so no
-        // separate reset machinery is needed.
-        setTimeout(function() {{
-            try {{
-                const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
-                if (!saved) return;
-                const state = JSON.parse(saved);
-                if (!state || typeof state !== 'object' || !state.positions) return;
-                applyNetworkState(state);
-                showToast('Restored saved layout', 'success', {{
-                    label: 'Reset',
-                    onClick: function() {{
-                        try {{ localStorage.removeItem(LAYOUT_STORAGE_KEY); }} catch (e) {{ /* privacy mode */ }}
-                        window.location.reload();
-                    }}
-                }});
-            }} catch (e) {{
-                console.error('Auto-restore failed:', e);
-            }}
-        }}, 250);
+        // Open view: with a layout saved for THIS generated file, it is
+        // re-applied on open; with no save, the view is fitted ONCE here —
+        // the page's only automatic fit (re-layouts keep config.fit = false,
+        // and ⛶ Fit / the import toasts stay the explicit fits). Reading the
+        // save synchronously keeps the two branches out of each other's way:
+        // the restore stays deferred past the init's 200 ms hemisphere-
+        // caching timer so the original-layout cache is captured before the
+        // saved (possibly mirrored) positions land, while the fit runs
+        // before first paint (this script tail is synchronous — every
+        // layout above completed inside .run()). The Reset action drops the
+        // saved state and reloads — a reload re-renders the generated
+        // defaults (fit included), so no separate reset machinery is needed.
+        let savedLayoutJson = null;
+        try {{
+            savedLayoutJson = localStorage.getItem(LAYOUT_STORAGE_KEY);
+        }} catch (e) {{ /* privacy mode: no save, fall through to the fit */ }}
+        if (savedLayoutJson) {{
+            setTimeout(function() {{
+                try {{
+                    const state = JSON.parse(savedLayoutJson);
+                    if (!state || typeof state !== 'object' || !state.positions) return;
+                    applyNetworkState(state);
+                    showToast('Restored saved layout', 'success', {{
+                        label: 'Reset',
+                        onClick: function() {{
+                            try {{ localStorage.removeItem(LAYOUT_STORAGE_KEY); }} catch (e) {{ /* privacy mode */ }}
+                            window.location.reload();
+                        }}
+                    }});
+                }} catch (e) {{
+                    console.error('Auto-restore failed:', e);
+                }}
+            }}, 250);
+        }} else {{
+            // One-time fit at open: without it the page would frame nothing
+            // and start at cytoscape's default 100% zoom.
+            cy.fit(null, 50);
+        }}
     </script>
 </body>
 </html>"""
@@ -14619,7 +14635,8 @@ class VisualizePath:
                 title=title,
                 color_scale=color_scale,
                 showfig=False,  # Don't auto-open each heatmap
-                verbose=self.verbose
+                verbose=self.verbose,
+                inline_plotly=True  # single-file page survives relocation
             )
             
             created_files.append(filename)
@@ -14779,7 +14796,8 @@ class VisualizePath:
             title=title,
             showfig=False,
             matrices_dict=matrices_dict,  # Pass all matrices for metric toggle
-            verbose=self.verbose
+            verbose=self.verbose,
+            inline_plotly=True  # single-file page survives relocation
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -15352,11 +15370,13 @@ def visualize_network(
     return vp.visualize_network()
 
 
-def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False):
+def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
-    canvas height auto-fitted to the matrix shape.
+    canvas height auto-fitted to the matrix shape. ``inline_plotly=True``
+    embeds plotly.js INTO the html (single-file page, ~4.8MB heavier)
+    instead of sharing one library copy per output directory.
     """
     # Remember whether the CALLER passed a colorscale: only then do we seed the
     # heatmap with a custom colorscale (the default below is a legacy leftover).
@@ -15690,20 +15710,38 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             " }, 250); });"
         )
 
-    # plotly.js is shared per output DIRECTORY (plan-offline-html-exports
-    # Phase C): many matrix HTMLs can be emitted per run, so one library
-    # copy per folder replaces the per-file CDN tag; inline fallback when
-    # plotly is unavailable.
+    # plotly.js source, two modes (plan-offline-html-exports Phase C):
+    # inline_plotly=True embeds the version-matched package file into
+    # THIS html — a single-file page that no relocation can ever break
+    # (the find-paths heatmaps: one per run, so the ~4.8MB is fine).
+    # inline_plotly=False shares one library copy per output DIRECTORY
+    # (statvis matrix pages, many per run) and adds a parse-time
+    # fallback to a copy one level up, because a run organizer may move
+    # the html into a subfolder WITHOUT the sibling library (the
+    # find-paths heatmap blanked exactly that way). No CDN — these
+    # exports must stay fully offline.
     try:
         import plotly as _plotly_mod
         _plotly_lib = (Path(_plotly_mod.__file__).parent
                        / 'package_data' / 'plotly.min.js')
-        _plotly_target = (Path(filename).resolve().parent
-                          / 'plotly.min.js')
-        if not _plotly_target.exists():
-            _plotly_target.parent.mkdir(parents=True, exist_ok=True)
-            _plotly_target.write_bytes(_plotly_lib.read_bytes())
-        plotly_tag = '<script src="plotly.min.js"></script>'
+        if inline_plotly:
+            plotly_tag = ('<script>' + re.sub(
+                r'</(script)', r'<\\/\1',
+                _plotly_lib.read_text(encoding='utf-8'),
+                flags=re.IGNORECASE) + '</script>')
+        else:
+            _plotly_target = (Path(filename).resolve().parent
+                              / 'plotly.min.js')
+            if not _plotly_target.exists():
+                _plotly_target.parent.mkdir(parents=True, exist_ok=True)
+                _plotly_target.write_bytes(_plotly_lib.read_bytes())
+            plotly_tag = (
+                '<script src="plotly.min.js"></script>\n'
+                '    <script>'
+                'if (!window.Plotly) { document.write(\'<script src='
+                '"../plotly.min.js"><\\/script>\'); }'
+                '</script>'
+            )
     except Exception as _plotly_err:  # pragma: no cover - degrade to CDN
         import sys as _sys
         print(f'[vispath plotly] shared plotly.min.js unavailable, using '

@@ -317,26 +317,36 @@ class TestGeneratedHtmlStructure:
         clear_fn = _extract_js_function(js, "clearSelection")
         assert "resetSelectionPanelUI()" in clear_fn
 
-    def test_no_auto_fit_on_load(self, network_html):
-        """The viewer must never rescale the view on its own: no layout run
-        (initial or user-triggered) auto-fits, no on-load cy.fit() exists.
-        The page opens at 100% zoom; a SAVED layout's zoom/pan is restored
-        explicitly by the auto-restore, and ⛶ Fit / import toast Fits are
-        the only remaining fits."""
+    def test_fit_once_on_open_only_without_saved_layout(self, network_html):
+        """The page fits ONCE at open, and only when no layout is saved for
+        the file — the script tail's open-view block reads the save
+        synchronously: saved state restores its own zoom/pan (deferred past
+        the hemisphere cache), no save gets a single cy.fit before first
+        paint. No layout run (initial or user-triggered) auto-fits, no bare
+        on-load cy.fit() exists, and ⛶ Fit / import toast Fits remain the
+        explicit fits."""
         js = _script_text(network_html)
         # every layout config is forced to fit:false at the single choke point
-        # (cytoscape layouts default fit:true, which re-scaled on every open)
+        # (cytoscape layouts default fit:true, which would re-scale on re-layout)
         config_fn = _extract_js_function(js, "getLayoutConfig")
         assert "config.fit = false" in config_fn
         # no bare on-load fit calls (init, hemisphere layout, hemisphere restore)
         assert "cy.fit();" not in js
-        # the explicit fits survive: ⛶ Fit button, graph-import fit, and the
-        # two toast Fit actions after a layout import
+        # the explicit fits survive: ⛶ Fit button, graph-import fit, the
+        # two toast Fit actions after a layout import, and the new one-time
+        # open fit in the tail's open-view block
         assert "cy.fit(visible, 80)" in js
-        assert js.count("cy.fit(null, 50)") == 3
+        assert js.count("cy.fit(null, 50)") == 4
         # restoring a SAVED view (user state, not auto-scaling) stays intact
         assert "cy.zoom(state.zoom)" in js
         assert "cy.pan(state.pan)" in js
+        # the open fit is gated: only the no-save branch of the open-view
+        # block fits, and the saved branch keeps the deferred restore
+        tail = js[js.index("Open view:"):]
+        assert "if (savedLayoutJson) {" in tail
+        assert tail.index("setTimeout(function() {") < tail.index("cy.fit(null, 50);")
+        else_branch = tail[tail.index("cy.fit(null, 50);") - 200:]
+        assert "} else {" in else_branch
 
     def test_snapshots_are_complete_deep_copies(self, network_html):
         js = _script_text(network_html)
@@ -806,7 +816,7 @@ class TestPanelCollapseAndRegrouping:
         whose Reset action drops the saved state and reloads."""
         html = network_html.read_text(encoding="utf-8")
         init_at = html.index("initializeEdgeBaseStyles();")
-        autorestore_at = html.index("Auto-restore: a layout saved for THIS generated file")
+        autorestore_at = html.index("Open view: with a layout saved for THIS generated file")
         assert autorestore_at > init_at, "auto-restore must run after the edge base init"
         block = html[autorestore_at:autorestore_at + 2000]
         assert "applyNetworkState(state)" in block
