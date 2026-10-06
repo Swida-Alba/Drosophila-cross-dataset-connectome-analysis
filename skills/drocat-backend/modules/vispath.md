@@ -58,6 +58,67 @@ Key behaviors:
   when vispath_pkg cannot be imported) does NOT have the dendrogram feature;
   it emits an ImportWarning when used.
 
+## Library embedding (offline contract)
+
+`VisConnMatInteractive(..., inline_plotly=False)` — the plotly.js source has
+two modes:
+
+- `inline_plotly=True` embeds the version-matched `plotly.min.js` (from the
+  installed plotly package) INTO the html: a single-file page, immune to any
+  later relocation (+~4.8 MB per file). Find-paths `create_heatmap()` /
+  `create_heatmaps()` pass `True` — their `Heatmap_<run>.html` files are
+  fully self-contained.
+- `inline_plotly=False` (default) shares ONE `plotly.min.js` per output
+  directory (statvis matrix pages emit many htmls per run) and adds a
+  parse-time fallback: if `window.Plotly` is missing the page retries a copy
+  one directory up (`../plotly.min.js`).
+
+Relocation contract: htmls and the side-file library must stay co-located —
+`coana._organize_vispath_artifacts` moves `plotly.min.js` together with the
+relocated heatmap (fixed 2026-10-06: a library left at the run root blanked
+every relocated `visualization/Heatmap_*.html`). CDN strings are forbidden
+in generated pages (the offline tests regex-scan for `https?://` script
+srcs, even inside JS `document.write`).
+
+## Network page (Net-Viz): view behavior + Edge Anchor
+
+The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
+
+- **Open view** — with no layout saved for the generated file, the page fits
+  once (`cy.fit(null, 50)`, clamped by `minZoom` on large graphs); a SAVED
+  layout auto-restores its own zoom/pan instead (deferred 250 ms, after the
+  hemisphere cache). Re-layouts never re-fit (`config.fit = false` choke
+  point); ⛶ Fit and the import toasts are the explicit fits. Tests pin
+  `js.count("cy.fit(null, 50)") == 4` and `"cy.fit();" not in js`.
+- **Edge Anchor ribbon group** (beside Edge Route) — `Center` (default,
+  byte-identical classic attachment on the center-line rim) vs `Auto`: every
+  edge end snaps to the nearest of 8 anchors — the 4 box corners (ellipses:
+  the exact 45° rim points via `rimDistance`) and the 4 mid-edges — chosen
+  by 45°-sector direction (`snapAnchorIndex`/`anchorPoint`, shared
+  top-level geometry helpers). Applies in ALL edge modes (straight, curved
+  pairs keep the cp-40 bow, merged canonical half, flow bows keep their
+  center-line obstruction test); waypoint (segments) and self-loop edges
+  are excluded.
+- **Per-end overrides** — selected edges show draggable ◇ endpoint handles
+  (DOM overlays, waypoint-ring pattern). A drag reassigns THAT end only
+  (reciprocal halves independently) by writing `anchorSrc`/`anchorDst`
+  data + the endpoint style; reciprocal pairs keep their parallel
+  offset-line look unless overridden. `↺ Reset anchors` in the selection
+  panel clears overrides. Mode + overrides persist through
+  `captureNetworkState`/`applyNetworkState` (localStorage saves and the v2
+  layout file verbatim). Node shape changes re-derive the rim pins.
+- **Waypoints** — bends declare `edge-distances: 'node-position'` so the
+  rendered bend lands EXACTLY on the stored point (cytoscape's default
+  `'intersection'` basis spans the rim-to-rim chord and drifts the bend by
+  up to a rim radius near the ends — fixed 2026-10-07, regression-tested in
+  `edge_anchor_harness.js` stage [7]). Selecting an edge reveals slate
+  passive rings on its waypoints (no click near the bend needed); the amber
+  click-to-bundle behavior is unchanged and suppresses the passive ring.
+- **In-page exports** — SVG (`sanitizeSvgForOffice`: every element closed
+  filled geometry, no `<line>`, arrowheads as single triangles, waypoint
+  bends included), PNG, edge-list CSV, graph JSON, and the v2 layout JSON
+  (carries `edgeAnchor: {mode, overrides}` — added 2026-10-07).
+
 ## Examples
 
 ```python
