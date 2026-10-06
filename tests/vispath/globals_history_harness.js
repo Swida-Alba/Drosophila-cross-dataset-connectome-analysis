@@ -79,6 +79,7 @@ function buildScope(cy) {
         function applyReciprocalMode(m) { reciprocalMode = m; }
         function syncReciprocalControls() {}
         let edgeRouteMode = 'flow';
+        let edgeAnchorMode = 'center';
         let pendingNudge = null;
         function flushPendingNudge() {}
         let pendingStyle = null;

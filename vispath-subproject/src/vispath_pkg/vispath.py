@@ -6277,6 +6277,20 @@ class VisualizePath:
                 </div>
             </div>
             </div>
+            <div class="vp-ribbon-group" id="edgeAnchorControls">
+            <label class="vp-group-title">Edge Anchor</label>
+            <div class="vp-spinner-row">
+                <!-- 2-way anchor switch for every edge end: Center keeps the
+                     classic center-line rim attachment; Auto snaps ends to
+                     the nearest of 8 anchors (4 corners + 4 mid-edges) and
+                     turns on the draggable endpoint handles for selected
+                     edges. -->
+                <div style="display: inline-flex; border: 1px solid var(--vp-border); border-radius: 4px; overflow: hidden;">
+                    <button type="button" id="edgeAnchorModeCenter" onclick="setEdgeAnchorMode('center')" title="Edges attach at the center-line rim intersection" style="padding: 4px 8px; font-size: 11px; border: none; background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Center</button>
+                    <button type="button" id="edgeAnchorModeAuto" onclick="setEdgeAnchorMode('auto')" title="Edges attach to the nearest of 8 anchors (4 corners + 4 mid-edges); select an edge to drag its endpoints between anchors" style="padding: 4px 8px; font-size: 11px; border: none; border-left: 1px solid var(--vp-border); background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Auto</button>
+                </div>
+            </div>
+            </div>
             <div class="vp-ribbon-group" style="width: 258px;">
             <label class="vp-group-title">Background & Font color</label>
             <div style="display: flex; gap: 8px; align-items: center;">
@@ -6985,6 +6999,13 @@ class VisualizePath:
         // bowing around the obstruction (the Edge Route ribbon switches
         // it live; 'flow' is the default).
         let edgeRouteMode = 'flow';
+        // Edge-anchor mode: 'center' attaches every edge end at the
+        // center-line rim intersection (the classic look); 'auto' attaches
+        // ends to the nearest of 8 anchors — the 4 corners (ellipses: the
+        // 45° rim points) and the 4 mid-edges — and shows draggable
+        // endpoint handles on selected edges. The Edge Anchor ribbon
+        // switches it live.
+        let edgeAnchorMode = 'center';
         const highlightColor = '{self.highlight_color}';
         const highlightOpacity = {self.highlight_opacity};
         const defaultReciprocalOffset = 5;
@@ -7425,6 +7446,7 @@ class VisualizePath:
         // declared further down (TDZ) — defer it like the other late init.
         syncReciprocalControls();
         syncEdgeRouteControls();
+        syncEdgeAnchorControls();
         setTimeout(() => {{
             applyReciprocalMode(reciprocalMode);
             refreshEdgeStyles(false);
@@ -9949,18 +9971,6 @@ class VisualizePath:
                     return;
                 }}
 
-                if (!hasVisibleParallel) {{
-                    clearEdgeEndpointOverrides(edge);
-                    applyStraightEdgeStyle(edge);
-                    // 'flow' re-routes edges that would cut through an
-                    // unrelated node (see vpBowAroundObstructions);
-                    // 'straight' keeps the raw center line. The straight
-                    // style above has already cleared any bow styles from
-                    // a previous flow pass.
-                    if (edgeRouteMode === 'flow') {{ vpBowAroundObstructions(edge); }}
-                    return;
-                }}
-
                 // Anchor distances must follow the ACTUAL size and SHAPE of
                 // each endpoint node: nodes can be individually resized via
                 // the geometry editor (width and height independently for
@@ -9988,6 +9998,79 @@ class VisualizePath:
                     }}
                     return Math.min(hw / adx, hh / ady);
                 }};
+
+                // Auto edge-anchor mode ('auto'): every edge end attaches at
+                // one of 8 fixed anchors — the 4 box corners (ellipses: the
+                // rim points on the 45° diagonals) and the 4 mid-edges.
+                // ANCHOR8_DIRS is indexed by atan2(dy, dx) rounded to 45°
+                // steps (screen coords, y down): E, SE, S, SW, W, NW, N, NE.
+                const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+                const snapAnchorIndex = (dx, dy) => {{
+                    if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) {{ return 6; }}
+                    const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+                    return ((step % 8) + 8) % 8;
+                }};
+                // The anchor's exact point, as an offset from the node
+                // center.  Mid anchors are exact for every shape; a box
+                // corner IS (±hw, ±hh) — its direction from the center is
+                // aspect-dependent, so it must not go through the polar rim
+                // formula — while an ellipse's diagonal rides the 45° rim
+                // point (±hw/√2, ±hh/√2) via rimDistance.
+                const anchorPoint = (node, idx) => {{
+                    const [hw, hh] = nodeHalfSizes(node);
+                    const i = ((Number(idx) || 0) % 8 + 8) % 8;
+                    const [ux, uy] = ANCHOR8_DIRS[i];
+                    if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {{
+                        return [ux * hw, uy * hh];
+                    }}
+                    const d = rimDistance(node, ux, uy);
+                    const len = Math.hypot(ux, uy);
+                    return [ux * d / len, uy * d / len];
+                }};
+                // Writes BOTH ends for a plain edge (no visible reciprocal
+                // pair): the per-end override (anchorSrc/anchorDst, set by
+                // dragging an endpoint handle) wins, otherwise the anchor
+                // nearest each end's direction.  Same node-position +
+                // distance-0 form as the reciprocal rim pins, so plain
+                // translation drags follow and direction re-snaps run on
+                // drop/relayout.
+                const writeEdgeAnchors = (edge) => {{
+                    const srcPos = edge.source().position();
+                    const tgtPos = edge.target().position();
+                    const dx = tgtPos.x - srcPos.x;
+                    const dy = tgtPos.y - srcPos.y;
+                    const srcOv = edge.data('anchorSrc');
+                    const dstOv = edge.data('anchorDst');
+                    const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;
+                    const tgtIdx = (dstOv === undefined || dstOv === null) ? snapAnchorIndex(-dx, -dy) : dstOv;
+                    const srcPt = anchorPoint(edge.source(), srcIdx);
+                    const tgtPt = anchorPoint(edge.target(), tgtIdx);
+                    edge.style({{
+                        'edge-distances': 'node-position',
+                        'source-endpoint': `${{srcPt[0].toFixed(2)}} ${{srcPt[1].toFixed(2)}}`,
+                        'target-endpoint': `${{tgtPt[0].toFixed(2)}} ${{tgtPt[1].toFixed(2)}}`,
+                        'source-distance-from-node': 0,
+                        'target-distance-from-node': 0
+                    }});
+                }};
+
+                if (!hasVisibleParallel) {{
+                    applyStraightEdgeStyle(edge);
+                    if (edgeAnchorMode === 'auto') {{
+                        writeEdgeAnchors(edge);
+                    }} else {{
+                        clearEdgeEndpointOverrides(edge);
+                    }}
+                    // 'flow' re-routes edges that would cut through an
+                    // unrelated node (see vpBowAroundObstructions);
+                    // 'straight' keeps the raw center line. The straight
+                    // style above has already cleared any bow styles from
+                    // a previous flow pass.  (The bow's obstruction test
+                    // stays on the center line; anchor offsets sit within
+                    // the node box, well inside its pen+8 margin.)
+                    if (edgeRouteMode === 'flow') {{ vpBowAroundObstructions(edge); }}
+                    return;
+                }}
                 // Where the OFFSET edge line meets each node's rim, returned
                 // as an offset from that node's position.  Radial
                 // fixed-point: start on the center line, then re-project the
@@ -10053,12 +10136,22 @@ class VisualizePath:
                     applyStraightEdgeStyle(edge);
                     const srcPos = edge.source().position();
                     const tgtPos = edge.target().position();
-                    const srcRim = rimPointOnOffsetLine(
+                    let srcRim = rimPointOnOffsetLine(
                         edge.source(), tgtPos.x - srcPos.x, tgtPos.y - srcPos.y,
                         pairOffsetX, pairOffsetY);
-                    const tgtRim = rimPointOnOffsetLine(
+                    let tgtRim = rimPointOnOffsetLine(
                         edge.target(), srcPos.x - tgtPos.x, srcPos.y - tgtPos.y,
                         pairOffsetX, pairOffsetY);
+                    if (edgeAnchorMode === 'auto') {{
+                        // Auto anchors: the pair default KEEPS the offset-
+                        // line look; a dragged anchor reassigns that one
+                        // end — independently per half — to a fixed
+                        // 8-point anchor.
+                        const srcOv = edge.data('anchorSrc');
+                        const dstOv = edge.data('anchorDst');
+                        if (srcOv !== undefined && srcOv !== null) srcRim = anchorPoint(edge.source(), srcOv);
+                        if (dstOv !== undefined && dstOv !== null) tgtRim = anchorPoint(edge.target(), dstOv);
+                    }}
 
                     edge.style({{
                         'edge-distances': 'node-position',
@@ -10073,12 +10166,19 @@ class VisualizePath:
                     edge.style('control-point-distances', 40);
                     edge.style('control-point-weights', 0.5);
 
-                    // Clear any endpoint offsets and distance overrides from straight mode
-                    edge.removeStyle('source-endpoint');
-                    edge.removeStyle('target-endpoint');
-                    edge.removeStyle('edge-distances');
-                    edge.removeStyle('source-distance-from-node');
-                    edge.removeStyle('target-distance-from-node');
+                    if (edgeAnchorMode === 'auto') {{
+                        // Anchors coexist with the cp-40 bow: each half
+                        // terminates at its 8-point anchors and the two
+                        // arcs still split around the shared chord.
+                        writeEdgeAnchors(edge);
+                    }} else {{
+                        // Clear any endpoint offsets and distance overrides from straight mode
+                        edge.removeStyle('source-endpoint');
+                        edge.removeStyle('target-endpoint');
+                        edge.removeStyle('edge-distances');
+                        edge.removeStyle('source-distance-from-node');
+                        edge.removeStyle('target-distance-from-node');
+                    }}
                 }}
             }});
             
@@ -10240,6 +10340,38 @@ class VisualizePath:
             pushHistory('Edge route: ' + mode);
             applyEdgeRouteMode(mode);
             updateHoverInfo('✓ Edge route: ' + mode);
+        }}
+
+        // Edge Anchor mode (center | auto): 'center' is the classic
+        // center-line rim attachment; 'auto' snaps every edge end to the
+        // nearest of 8 anchors (4 corners + 4 mid-edges) and enables the
+        // draggable endpoint handles on selected edges.  refreshEdgeStyles
+        // reads edgeAnchorMode on every pass, so the mode swap only needs
+        // a re-style + button sync.
+        function syncEdgeAnchorControls() {{
+            const pair = [['edgeAnchorModeCenter', 'center'], ['edgeAnchorModeAuto', 'auto']];
+            pair.forEach(([id, mode]) => {{
+                const btn = document.getElementById(id);
+                if (!btn) {{ return; }}
+                const active = edgeAnchorMode === mode;
+                btn.style.background = active ? '#2196f3' : 'var(--vp-bg, #fff)';
+                btn.style.color = active ? '#fff' : 'inherit';
+            }});
+        }}
+        function applyEdgeAnchorMode(mode) {{
+            if (mode !== 'center' && mode !== 'auto') {{ return; }}
+            edgeAnchorMode = mode;
+            refreshEdgeStyles(false);
+            syncEdgeAnchorControls();
+        }}
+        function setEdgeAnchorMode(mode) {{
+            if (edgeAnchorMode === mode) {{
+                syncEdgeAnchorControls();
+                return;
+            }}
+            pushHistory('Edge anchor: ' + mode);
+            applyEdgeAnchorMode(mode);
+            updateHoverInfo('✓ Edge anchor: ' + mode);
         }}
 
 

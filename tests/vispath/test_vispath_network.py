@@ -425,9 +425,10 @@ class TestGeneratedHtmlStructure:
         # straight-mode reciprocal halves pin EXPLICIT rim endpoints with
         # distance-from-node 0: cytoscape would otherwise pull each
         # endpoint toward the opposite node center, rotating the two
-        # halves into a crossed X on diagonal pairs
-        assert "const srcRim = rimPointOnOffsetLine(" in js
-        assert "const tgtRim = rimPointOnOffsetLine(" in js
+        # halves into a crossed X on diagonal pairs.  (let, not const:
+        # auto-anchor mode may reassign one end to a fixed 8-point anchor.)
+        assert "let srcRim = rimPointOnOffsetLine(" in js
+        assert "let tgtRim = rimPointOnOffsetLine(" in js
         assert "'source-distance-from-node': 0," in js
         assert "'target-distance-from-node': 0" in js
         # one canonical comparator everywhere: the offset side must be
@@ -436,6 +437,39 @@ class TestGeneratedHtmlStructure:
         assert "const canonicalSign = source < target ? 1 : -1;" in js
         # the geometry editor refreshes edge styles after resizing
         assert "refreshEdgeStyles(false);  // keep endpoints/offsets attached to resized nodes" in js
+
+    def test_edge_anchor_mode_center_and_auto(self, network_html):
+        """The Edge Anchor ribbon switches center (classic center-line rim
+        attachment, byte-identical default) vs auto (8-point: box corners /
+        ellipse 45° rim points + the 4 mid-edges), and the mode is live
+        (history-tracked, refresh-driven) like the other surface modes."""
+        js = _script_text(network_html)
+        html = network_html.read_text(encoding="utf-8")
+        # state + ribbon: a 2-way segmented switch beside Edge Route
+        assert "let edgeAnchorMode = 'center';" in js
+        assert 'id="edgeAnchorControls"' in html
+        assert "setEdgeAnchorMode('center')" in html
+        assert "setEdgeAnchorMode('auto')" in html
+        fn = _extract_js_function(js, "setEdgeAnchorMode")
+        assert "pushHistory('Edge anchor: ' + mode)" in fn
+        # geometry: sector snap over atan2 in 45° steps (E, SE, S, SW, W, NW, N, NE);
+        # degenerate directions fall north like rimPointOnOffsetLine
+        assert "const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];" in js
+        assert "const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));" in js
+        assert "if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) { return 6; }" in js
+        # box corners are exact (±hw, ±hh): their direction from the center
+        # is aspect-dependent, so they must not ride the polar rim formula
+        assert "if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {" in js
+        assert "return [ux * hw, uy * hh];" in js
+        # plain (non-pair) edges — the majority — anchor in auto mode where
+        # they previously cleared endpoints
+        assert "const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;" in js
+        # reciprocal straight halves keep the offset-line look by default;
+        # a dragged anchor reassigns that ONE end, independently per half
+        assert "if (srcOv !== undefined && srcOv !== null) srcRim = anchorPoint(edge.source(), srcOv);" in js
+        assert "if (dstOv !== undefined && dstOv !== null) tgtRim = anchorPoint(edge.target(), dstOv);" in js
+        # curved pairs keep the cp-40 bow AND anchor both ends in auto mode
+        assert js.count("writeEdgeAnchors(edge);") == 2
 
     def test_reciprocal_detection_excludes_edge_itself(self, network_html):
         """A one-way edge must never be treated as its own parallel: the
