@@ -513,6 +513,41 @@ class TestGeneratedHtmlStructure:
         assert "refreshEdgeStyles(false);" in _extract_js_function(js, "updateNodeShape")
         assert "refreshEdgeStyles(false);" in _extract_js_function(js, "applySelectedShape")
 
+    def test_edge_waypoint_selection_rings_and_drift_fix(self, network_html):
+        """Selecting an edge reveals its waypoints (slate passive rings) and
+        anchors directly — no click near the bend required.  Segment bends
+        declare edge-distances:'node-position' so the rendered bend lands
+        exactly on the stored waypoint: the cytoscape default basis
+        ('intersection') spans the rim-to-rim chord, re-parameterizing the
+        weights onto a shorter line and drifting the bend longitudinally
+        (up to ± a rim radius near the ends) while the ring tracked the
+        pointer."""
+        js = _script_text(network_html)
+        html = network_html.read_text(encoding="utf-8")
+        # drift fix: declare the basis the projection actually uses
+        rf = _extract_js_function(js, "renderEdgeWaypoints")
+        assert "const s = e.source().position(), t = e.target().position();" in rf
+        assert "e.style('edge-distances', 'node-position');" in rf
+        # clearing waypoints removes the basis override with them
+        cf = _extract_js_function(js, "clearEdgeWaypoints")
+        assert "e.removeStyle('edge-distances');" in cf
+        # passive selection rings: waypoint rings on mere edge selection
+        assert ".wp-ring.wp-sel {" in html
+        assert "function syncSelectedWaypointRings()" in js
+        assert "cy.on('viewport', syncSelectedWaypointRings);" in js
+        assert "cy.on('select unselect', 'edge', syncSelectedWaypointRings);" in js
+        assert "cy.on('drag position', 'node', syncSelectedWaypointRings);" in js
+        # a bundle-selected waypoint suppresses the passive ring (render once)
+        sf = _extract_js_function(js, "syncSelectedWaypointRings")
+        assert "selectedWaypointKeys.some(k => k.edgeId === e.id() && k.index === i)" in sf
+        # every bundle mutation point re-syncs the passive rings
+        assert "syncSelectedWaypointRings();" in _extract_js_function(js, "syncWaypointHighlights")
+        # the waypoint drag keeps the passive ring glued to the pointer
+        drag_region = js[js.index("wpDrag = {"):]
+        drag_region = drag_region[:drag_region.index("const onUp = function()")]
+        assert "positionWaypointRing(edge.id(), wpDrag.index);" in drag_region
+        assert "syncSelectedWaypointRings();" in drag_region
+
     def test_reciprocal_detection_excludes_edge_itself(self, network_html):
         """A one-way edge must never be treated as its own parallel: the
         reciprocal check counts edges per direction, so only a DIFFERENT
@@ -569,8 +604,9 @@ class TestGeneratedHtmlStructure:
         assert "function csvEscapeField" in js
         # documented column order (source/target/weight re-importable, plus
         # color, NT, grouping info and the {key:val; ...} hover-info cells)
+        # PROBABILITY SUSPENSION (2026-10-06): no probability column.
         assert "'source', 'target', 'weight', 'color', 'nt_type', 'nt_group'," in js
-        assert "'source_group', 'target_group', 'custom_groups', 'ratio', 'probability'," in js
+        assert "'source_group', 'target_group', 'custom_groups', 'ratio'," in js
         assert "'edge info', 'source info', 'target info'" in js
         assert "const formatInfoCell" in js
 
@@ -1163,7 +1199,8 @@ class TestUiRedesign:
 
     def test_metric_drives_edge_filter(self, network_html):
         """The Connection Metric lives in the Filter card and the edge
-        filter evaluates the ACTIVE metric (weight / ratio / probability);
+        filter evaluates the ACTIVE metric (weight / ratio — probability
+        is suspended and no longer a selectable metric);
         changing the metric re-applies the filter and adapts the input
         placeholder to the filtered unit."""
         html = network_html.read_text(encoding="utf-8")
@@ -1670,9 +1707,10 @@ class TestEdgeListExportMatchesPathfindingInput:
         _conn_df, rows = self._exported_rows(node, node_cache, tmp_path)
         header = rows[0]
         # every documented column is present and populated per row
+        # (PROBABILITY SUSPENSION 2026-10-06: no probability column)
         assert header == [
             "source", "target", "weight", "color", "nt_type", "nt_group",
-            "source_group", "target_group", "custom_groups", "ratio", "probability",
+            "source_group", "target_group", "custom_groups", "ratio",
             "edge info", "source info", "target info",
         ]
         for r in rows[1:]:
@@ -1721,7 +1759,8 @@ class TestExpandedEdgeListReimport:
                 "target_group": G.nodes[r["target"]].get("node_type", "intermediate"),
                 "custom_groups": "",
                 "ratio": r["ratio"] if pd.notna(r["ratio"]) else "",
-                "probability": r["probability"] if pd.notna(r["probability"]) else "",
+                # PROBABILITY SUSPENSION (2026-10-06): the export no longer
+                # carries a probability column.
             })
         csv_path = tmp_path / "expanded_edge_list.csv"
         pd.DataFrame(rows).to_csv(csv_path, index=False)
@@ -1752,9 +1791,11 @@ class TestExpandedEdgeListReimport:
                     zip(conn_df["source"], conn_df["target"], conn_df["weight"])}
         assert exported == expected
 
-        # ratio/probability metrics survive the round trip
+        # ratio metric survives the round trip (probability is suspended:
+        # the export no longer carries a probability column, so none is
+        # expected after re-import)
         assert "ratio" in conn2.columns and conn2["ratio"].notna().sum() == len(conn_df)
-        assert "probability" in conn2.columns and conn2["probability"].notna().sum() == len(conn_df)
+        assert "probability" not in conn2.columns
 
         # node classification is restored from source_group/target_group
         # (a plain edge list would classify EVERY node as "source")
@@ -2158,7 +2199,9 @@ class TestSaveDataMatrices:
         names = [os.path.basename(f) for f in files]
         assert "run_data_connMatrix_weight.csv" in names
         assert "run_data_connMatrix_ratio.csv" in names
-        assert "run_data_connMatrix_prob.csv" in names
+        # PROBABILITY SUSPENSION (2026-10-06): the probability matrix is
+        # no longer exported.
+        assert not any("connMatrix_prob" in n for n in names), names
 
 
 def test_empty_network_does_not_repeat_timestamp_in_folder_name(tmp_path):

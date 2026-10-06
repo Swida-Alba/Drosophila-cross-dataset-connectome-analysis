@@ -6088,6 +6088,19 @@ class VisualizePath:
             box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
         }}
 
+        /* Passive selection rings: a waypoint ring shown merely because its
+           EDGE is selected (smaller, slate) — selecting an edge reveals its
+           waypoints and anchors directly, no click near the bend required.
+           The amber .wp-ring look stays the click-to-bundle state; a
+           bundle-selected waypoint suppresses the passive ring so the same
+           bend renders exactly once. */
+        .wp-ring.wp-sel {{
+            width: 10px;
+            height: 10px;
+            border-color: #64748b;
+            background: rgba(100, 116, 139, 0.3);
+        }}
+
         /* Edge-anchor endpoint handles: the same overlay pattern as the
            waypoint rings (DOM in #cy, pointer-events:none, capture-phase
            hit-test, display:none until first positioned).  A square diamond
@@ -12351,6 +12364,15 @@ class VisualizePath:
                 // a bypass — the value itself applies (verified by read-back
                 // and render), so the error is swallowed.
                 e.style('curve-style', 'segments');
+                // cytoscape's DEFAULT distance basis is 'intersection' — the
+                // rim-to-rim span — which re-parameterizes the weights over a
+                // SHORTER line and slid the rendered bend longitudinally off
+                // the stored point (up to ± a rim radius near the ends: the
+                // ring tracked the pointer while the bend lagged/led).  The
+                // projection above is over the NODE positions, so declare
+                // that basis explicitly — reconstruction is then exact:
+                // bend = s + w·(t−s) + dist·(−dy,dx)/len.
+                e.style('edge-distances', 'node-position');
                 e.style('segment-distances', dists);
                 e.style('segment-weights', weights);
             }} catch (err) {{ /* value applied despite the bookkeeping error */ }}
@@ -12409,6 +12431,9 @@ class VisualizePath:
                 e.removeStyle('segment-distances');
                 e.removeStyle('segment-weights');
                 e.removeStyle('curve-style');
+                // the waypoint basis override goes with the waypoints — the
+                // straight/curved re-style below declares its own basis
+                e.removeStyle('edge-distances');
                 e.removeData('waypoints');
                 e.removeData('hasWaypoints');
             }}));
@@ -12613,6 +12638,9 @@ class VisualizePath:
         cy.on('viewport', syncAnchorHandles);
         cy.on('select unselect', 'edge', syncAnchorHandles);
         cy.on('drag position', 'node', syncAnchorHandles);
+        cy.on('viewport', syncSelectedWaypointRings);
+        cy.on('select unselect', 'edge', syncSelectedWaypointRings);
+        cy.on('drag position', 'node', syncSelectedWaypointRings);
 
         // cursor feedback while hovering a handle (never CLEARS the cursor:
         // the waypoint hover listener below owns the non-handle default)
@@ -12697,6 +12725,59 @@ class VisualizePath:
             refreshEdgeStyles(false);
             syncAnchorHandles();
             updateHoverInfo('✓ Endpoint anchors reset to auto on ' + edges.length + ' edge(s)');
+        }}
+
+        // ===== Passive waypoint rings on selection =====
+        // Selecting an edge reveals its waypoints immediately — no click
+        // near the bend required.  These rings are separate overlay
+        // elements (wp-sel-ring ids, slate .wp-sel) from the amber bundle
+        // rings so the click-to-bundle machinery keeps owning its own
+        // state; a waypoint that is BOTH on a selected edge and
+        // bundle-selected renders once, as the bundle ring.  Self-loops
+        // are skipped: refreshEdgeStyles renders loops, not segments, so
+        // their waypoints never show as bends.
+        function selWaypointRingId(edgeId, index) {{ return 'wp-sel-ring-' + wpKey(edgeId, index); }}
+
+        function positionSelWaypointRing(edge, index) {{
+            const el = document.getElementById(selWaypointRingId(edge.id(), index));
+            if (!el) return;
+            const p = (edge.data('waypoints') || [])[index];
+            if (!p) return;
+            const pan = cy.pan(), z = cy.zoom();
+            el.style.left = (p.x * z + pan.x) + 'px';
+            el.style.top = (p.y * z + pan.y) + 'px';
+        }}
+
+        function syncSelectedWaypointRings() {{
+            const layer = document.getElementById('cy');
+            if (!layer) return;
+            const wanted = [];
+            cy.edges(':selected').forEach(e => {{
+                if (!e.inside() || e.hasClass('pair-hidden')) return;
+                if (e.source().id() === e.target().id()) return;
+                const wps = e.data('waypoints') || [];
+                wps.forEach((p, i) => {{
+                    if (!selectedWaypointKeys.some(k => k.edgeId === e.id() && k.index === i)) {{
+                        wanted.push([e, i]);
+                    }}
+                }});
+            }});
+            const wantedKeys = new Set(wanted.map(([e, i]) => selWaypointRingId(e.id(), i)));
+            layer.querySelectorAll('.wp-sel').forEach(el => {{
+                if (!wantedKeys.has(el.id)) el.remove();
+            }});
+            wanted.forEach(([e, i]) => {{
+                let el = document.getElementById(selWaypointRingId(e.id(), i));
+                if (!el) {{
+                    el = document.createElement('div');
+                    el.id = selWaypointRingId(e.id(), i);
+                    el.className = 'wp-ring wp-sel';
+                    el.title = 'Waypoint — click to select it for the bundle / per-waypoint list';
+                    layer.appendChild(el);
+                }}
+                positionSelWaypointRing(e, i);
+                el.style.display = 'block';
+            }});
         }}
 
         // ===== Waypoint canvas interaction =====
@@ -12796,6 +12877,11 @@ class VisualizePath:
                     !!selectedWaypoint && selectedWaypoint.edgeId === k.edgeId &&
                     selectedWaypoint.index === k.index);
             }});
+            // Passive selection rings share every mutation point with the
+            // bundle (add/clear/shift/align) and re-evaluate the bundle
+            // suppression here — a newly bundled waypoint drops its slate
+            // ring in favor of the amber one.
+            syncSelectedWaypointRings();
         }}
 
         // Panning/zooming moves every waypoint on screen — rings follow.
@@ -12893,6 +12979,7 @@ class VisualizePath:
                 edge.data('waypoints', pts);
                 renderEdgeWaypoints(edge);
                 positionWaypointRing(edge.id(), wpDrag.index);
+                syncSelectedWaypointRings();
                 // live-update the list row inputs without a rebuild
                 const row = document.querySelectorAll('#waypointList .wp-xy');
                 const base = wpDrag.index * 2;

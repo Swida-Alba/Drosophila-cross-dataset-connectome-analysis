@@ -306,6 +306,70 @@ console.log("[6] writeEdgeAnchors — auto snap mirrors, per-end override wins, 
     cy2.destroy();
 }
 
+console.log('[7] renderEdgeWaypoints — bend renders exactly at the stored waypoint');
+{
+    // renderEdgeWaypoints is a function DECLARATION (not a const arrow)
+    const rwSrc = (() => {
+        const marker = 'function renderEdgeWaypoints(';
+        const start = html.indexOf(marker);
+        if (start === -1) throw new Error('renderEdgeWaypoints not found');
+        const open = html.indexOf('{', start);
+        let depth = 0;
+        for (let i = open; i < html.length; i++) {
+            if (html[i] === '{') depth++;
+            else if (html[i] === '}') { depth--; if (depth === 0) return html.slice(start, i + 1); }
+        }
+        throw new Error('unbalanced braces: renderEdgeWaypoints');
+    })();
+    const renderEdgeWaypoints = new Function(rwSrc + '; return renderEdgeWaypoints;')();
+
+    const cy3 = cytoscape({
+        headless: true,
+        styleEnabled: true,
+        elements: [
+            { data: { id: 'a' }, position: { x: 0, y: 0 } },
+            { data: { id: 'b' }, position: { x: 0, y: 0 } },
+            { data: { id: 'ab', source: 'a', target: 'b', weight: 3 } },
+        ],
+        style: [
+            { selector: 'node', style: { width: 100, height: 100, shape: 'ellipse' } },
+            { selector: 'edge', style: { 'curve-style': 'straight' } },
+        ],
+    });
+    cy3.getElementById('b').position({ x: 120, y: 90 });
+    const e = cy3.getElementById('ab');
+    // deliberately near one end of the line (t≈0.18) — the old basis's
+    // worst drift zone; explicit anchor endpoints must not matter
+    const wp = { x: 24, y: 12 };
+    e.data('waypoints', [wp]);
+    e.data('hasWaypoints', true);
+    geometry.writeEdgeAnchors(e);
+    renderEdgeWaypoints(e);
+    check('edge-distances basis = node-position',
+        e.pstyle('edge-distances').value === 'node-position',
+        e.pstyle('edge-distances').value);
+    const w = e.pstyle('segment-weights').pfValue[0];
+    const d = e.pstyle('segment-distances').pfValue[0];
+    // reconstruct the bend exactly the way cytoscape's findSegmentsPoints
+    // does for edge-distances:'node-position' (midptPts = node positions,
+    // normal = (-dy,dx)/len)
+    const s = cy3.getElementById('a').position(), t = cy3.getElementById('b').position();
+    const dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy);
+    const rx = s.x + w * dx + d * (-dy / len);
+    const ry = s.y + w * dy + d * (dx / len);
+    check('bend round-trips to the stored waypoint', near(rx, wp.x, 1e-6) && near(ry, wp.y, 1e-6),
+        { rx: rx, ry: ry, wp: wp });
+    // the old default basis ('intersection') spans the rim-to-rim chord,
+    // re-parameterizing the same weight onto a shorter line: the bend sat
+    // |rim·(2w−1)| off the stored point — at t≈0.18 on 50px rims, ~32px
+    const rimA = geometry.rimDistance(mockNode(100, 100, 'ellipse'), dx, dy);
+    const rimB = geometry.rimDistance(mockNode(100, 100, 'ellipse'), -dx, -dy);
+    const oldPosAlong = rimA + w * (len - rimA - rimB);
+    const drift = Math.abs(w * len - oldPosAlong);
+    check('old rim-span basis would drift >5px at this weight', drift > 5, drift);
+    cy3.destroy();
+}
+
 if (failures > 0) {
     console.error('EDGE-ANCHOR HARNESS: ' + failures + ' FAILURE(S)');
     process.exit(1);
