@@ -4668,12 +4668,16 @@ class VisualizePath:
         this file in that browser — a saved layout auto-restores its own
         zoom/pan instead, and no layout run ever re-fits (⛶ Fit stays the
         explicit fit).  The Edge Anchor
-        ribbon switches edge attachment between the classic center-line rim
-        ('center') and 8-point anchors ('auto': the 4 box corners —
-        ellipses: the exact 45° rim points — plus the 4 mid-edges, each end
-        snapped to the anchor nearest its direction).  Selected edges show
-        draggable endpoint handles; a drag reassigns that one end and the
-        override persists through saved/exported layout state.  Waypoint
+        ribbon switches the DEFAULT edge attachment between center-directed
+        ('center': the classic center-line rim) and 8-point anchors
+        ('auto': the 4 box corners — ellipses: the exact 45° rim points —
+        plus the 4 mid-edges, each end snapped to the anchor nearest its
+        direction).  Edges are adjustable in BOTH modes: selected edges
+        show draggable endpoint handles (diamond = compass anchor, round
+        teal badge = the ninth, center-directed anchor), and a drag
+        reassigns that one end — around the node to an 8-point anchor or
+        into the node body for center-directed — with the override
+        persisting through saved/exported layout state.  Waypoint
         bends declare ``edge-distances: 'node-position'`` so the rendered
         bend lands exactly on the stored point (cytoscape's default
         'intersection' basis spans the rim-to-rim chord and drifts the bend
@@ -6138,6 +6142,17 @@ class VisualizePath:
             display: none;
         }}
 
+        /* The CENTER anchor's own mark: a round teal badge (vs the blue
+           diamond of the 8 compass anchors).  An end wears it when it is
+           center-directed — the mode default in Center mode, or pinned
+           there by dragging the handle into the node body. */
+        .anchor-handle.anchor-center {{
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            border-color: #00897b;
+            background: rgba(0, 137, 123, 0.35);
+        }}
+
         /* Collapsed states: hide the top control bar and reclaim the right
            palette column so the canvas grows into the freed space. */
         .controls.collapsed {{
@@ -6768,8 +6783,8 @@ class VisualizePath:
                 <div id="helpMouse">
                     <h4>🖱️ Mouse</h4>
                     <table>
-                        <tr><td class="vp-key">Click</td><td>Select a node / edge — a selected edge reveals its endpoint anchors and waypoint rings directly</td></tr>
-                        <tr><td class="vp-key">Drag ◇ handle</td><td>Reassign ONE edge end to another of the 8 anchors (Auto anchor mode; reciprocal halves move independently; one undo step; ↺ Reset anchors in the panel clears)</td></tr>
+                        <tr><td class="vp-key">Click</td><td>Select a node / edge — a selected edge reveals its endpoint anchors and waypoint rings directly (both anchor modes)</td></tr>
+                        <tr><td class="vp-key">Drag ◇ / ● handle</td><td>Reassign ONE edge end: drag around the node to one of the 8 anchors (◇ blue), or INTO the node for the center-directed attachment (● teal). Works in both modes; reciprocal halves move independently; one undo step; ↺ Reset anchors in the panel clears</td></tr>
                         <tr><td class="vp-key">Drag / click ● bend</td><td>Move a waypoint (the edge keeps bending exactly through it) or select it for the amber bundle</td></tr>
                         <tr><td class="vp-key">Shift+Click / drag</td><td>Multi-select (box select) — L→R frame: FULL; R→L dashed frame: TOUCH; frame over selected objects deselects them (⇧ toggles)</td></tr>
                         <tr><td class="vp-key">Double-click</td><td>Highlight a node's connections</td></tr>
@@ -6799,7 +6814,7 @@ class VisualizePath:
                     <code>&lt;5, &gt;100</code> hides weak and very strong edges;<br>
                     <code>(&gt;=10, &lt;=20)</code> keeps only a weight band.</p>
                     <p><strong>Save vs Export Layout</strong> — Save keeps the full view state (positions, colors + alpha, groups, filters, toggles, controls) in this browser for this file and auto-restores it on reopen; Export Layout downloads the same state as JSON to share or re-import elsewhere. The page frames the graph with a one-time fit only when nothing is saved — a saved layout always wins. On large graphs the open fit stops at a readable 0.35× zoom floor instead of zooming out to the minZoom limit; ⛶ Fit always frames everything exactly.</p>
-                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses where edge ends attach. Center keeps the classic attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (ellipses: the exact 45° rim points) and the 4 mid-edges — and shows ◇ handles on selected edges for dragging an end to a different anchor. Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Both the mode and the per-end assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
+                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses the DEFAULT edge attachment. Center keeps the classic center-directed attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (ellipses: the exact 45° rim points) and the 4 mid-edges. Edges are adjustable in BOTH modes: selecting an edge shows its endpoint handles, and dragging one reassigns that end — around the node to one of the 8 anchors (◇ blue), or into the node body for the center-directed attachment (● teal). Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
                     <p><strong>Horizontal/Vertical Gap &amp; Rotate</strong> — set the center-to-center distance between neighboring nodes in px (node size unchanged); rotation turns the whole arrangement around its center — the gaps are measured along the layout's own columns/rows, so small tilts keep the values stable, while at ±90°/270° the Horizontal and Vertical values swap accordingly (↺ Reset Spacing restores the layout-run gaps for the current rotation); both reset when the layout re-runs and are undoable.</p>
                     <p><strong>Panels</strong> — ⚙️ hides the top tool panel, 🎨 the right panel; both states are remembered.</p>
                 </div>
@@ -9938,6 +9953,11 @@ class VisualizePath:
         // ANCHOR8_DIRS is indexed by atan2(dy, dx) rounded to 45°
         // steps (screen coords, y down): E, SE, S, SW, W, NW, N, NE.
         const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+        // The NINTH anchor: center-directed attachment (the classic
+        // center-line rim intersection).  As an OVERRIDE (anchorSrc/
+        // anchorDst === 8) it pins an end to the center-directed point in
+        // either mode, and it wears its own round teal handle mark.
+        const ANCHOR_CENTER = 8;
         const snapAnchorIndex = (dx, dy) => {{
             if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) {{ return 6; }}
             const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
@@ -9948,8 +9968,14 @@ class VisualizePath:
         // corner IS (±hw, ±hh) — its direction from the center is
         // aspect-dependent, so it must not go through the polar rim
         // formula — while an ellipse's diagonal rides the 45° rim
-        // point (±hw/√2, ±hh/√2) via rimDistance.
+        // point (±hw/√2, ±hh/√2) via rimDistance.  ANCHOR_CENTER is
+        // NOT valid here (it is direction-dependent — use
+        // centerRimPoint); the mod-8 wrap would silently map it to
+        // east.
         const anchorPoint = (node, idx) => {{
+            if (Number(idx) === ANCHOR_CENTER) {{
+                throw new Error('anchorPoint: use centerRimPoint for ANCHOR_CENTER');
+            }}
             const [hw, hh] = nodeHalfSizes(node);
             const i = ((Number(idx) || 0) % 8 + 8) % 8;
             const [ux, uy] = ANCHOR8_DIRS[i];
@@ -9960,30 +9986,59 @@ class VisualizePath:
             const len = Math.hypot(ux, uy);
             return [ux * d / len, uy * d / len];
         }};
-        // Writes BOTH ends for a plain edge (no visible reciprocal
-        // pair): the per-end override (anchorSrc/anchorDst, set by
-        // dragging an endpoint handle) wins, otherwise the anchor
-        // nearest each end's direction.  Same node-position +
-        // distance-0 form as the reciprocal rim pins, so plain
-        // translation drags follow and direction re-snaps run on
-        // drop/relayout.
+        // The center-directed rim point along the given direction (the
+        // classic attachment: where the ray from the node center toward
+        // the other node pierces the rim).
+        const centerRimPoint = (node, dx, dy) => {{
+            const len = Math.hypot(dx, dy) || 1;
+            const d = rimDistance(node, dx, dy);
+            return [dx / len * d, dy / len * d];
+        }};
+        // Does the edge carry at least one per-end anchor override?  In
+        // Center mode this is what makes an edge leave the plain cleared
+        // path and get explicit (adjustable) endpoints.
+        const hasAnyAnchorOverride = (edge) =>
+            (edge.data('anchorSrc') !== undefined && edge.data('anchorSrc') !== null) ||
+            (edge.data('anchorDst') !== undefined && edge.data('anchorDst') !== null);
+        // Writes BOTH ends for a plain edge (no visible reciprocal pair),
+        // per end: an override (anchorSrc/anchorDst, set by dragging an
+        // endpoint handle — one of the 8 anchors or ANCHOR_CENTER) always
+        // wins; otherwise the MODE default — Auto snaps to the nearest
+        // of the 8 anchors, Center keeps the classic center-line rim
+        // attachment (no explicit endpoint, byte-identical to the old
+        // cleared path).  Same node-position + distance-0 form as the
+        // reciprocal rim pins, so plain translation drags follow and
+        // direction re-snaps run on drop/relayout.
         const writeEdgeAnchors = (edge) => {{
             const srcPos = edge.source().position();
             const tgtPos = edge.target().position();
             const dx = tgtPos.x - srcPos.x;
             const dy = tgtPos.y - srcPos.y;
-            const srcOv = edge.data('anchorSrc');
-            const dstOv = edge.data('anchorDst');
-            const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;
-            const tgtIdx = (dstOv === undefined || dstOv === null) ? snapAnchorIndex(-dx, -dy) : dstOv;
-            const srcPt = anchorPoint(edge.source(), srcIdx);
-            const tgtPt = anchorPoint(edge.target(), tgtIdx);
-            edge.style({{
-                'edge-distances': 'node-position',
-                'source-endpoint': `${{srcPt[0].toFixed(2)}} ${{srcPt[1].toFixed(2)}}`,
-                'target-endpoint': `${{tgtPt[0].toFixed(2)}} ${{tgtPt[1].toFixed(2)}}`,
-                'source-distance-from-node': 0,
-                'target-distance-from-node': 0
+            const len = Math.hypot(dx, dy) || 1;
+            const resolveEnd = (node, isSrc) => {{
+                const ov = edge.data(isSrc ? 'anchorSrc' : 'anchorDst');
+                const ux = isSrc ? dx : -dx;
+                const uy = isSrc ? dy : -dy;
+                if (ov !== undefined && ov !== null) {{
+                    return (ov === ANCHOR_CENTER)
+                        ? centerRimPoint(node, ux, uy)
+                        : anchorPoint(node, ov);
+                }}
+                if (edgeAnchorMode === 'auto') {{
+                    return anchorPoint(node, snapAnchorIndex(ux, uy));
+                }}
+                return null;  // Center default: no explicit endpoint
+            }};
+            edge.style('edge-distances', 'node-position');
+            [['source', edge.source(), resolveEnd(edge.source(), true)],
+             ['target', edge.target(), resolveEnd(edge.target(), false)]].forEach(([which, node, pt]) => {{
+                if (pt) {{
+                    edge.style(`${{which}}-endpoint`, `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
+                    edge.style(`${{which}}-distance-from-node`, 0);
+                }} else {{
+                    edge.removeStyle(`${{which}}-endpoint`);
+                    edge.removeStyle(`${{which}}-distance-from-node`);
+                }}
             }});
         }};
 
@@ -10172,7 +10227,7 @@ class VisualizePath:
 
                 if (!hasVisibleParallel) {{
                     applyStraightEdgeStyle(edge);
-                    if (edgeAnchorMode === 'auto') {{
+                    if (edgeAnchorMode === 'auto' || hasAnyAnchorOverride(edge)) {{
                         writeEdgeAnchors(edge);
                     }} else {{
                         clearEdgeEndpointOverrides(edge);
@@ -10225,15 +10280,23 @@ class VisualizePath:
                     let tgtRim = rimPointOnOffsetLine(
                         edge.target(), srcPos.x - tgtPos.x, srcPos.y - tgtPos.y,
                         pairOffsetX, pairOffsetY);
-                    if (edgeAnchorMode === 'auto') {{
-                        // Auto anchors: the pair default KEEPS the offset-
-                        // line look; a dragged anchor reassigns that one
-                        // end — independently per half — to a fixed
-                        // 8-point anchor.
-                        const srcOv = edge.data('anchorSrc');
-                        const dstOv = edge.data('anchorDst');
-                        if (srcOv !== undefined && srcOv !== null) srcRim = anchorPoint(edge.source(), srcOv);
-                        if (dstOv !== undefined && dstOv !== null) tgtRim = anchorPoint(edge.target(), dstOv);
+                    // Per-end overrides win in BOTH modes: a dragged anchor
+                    // reassigns that one end — independently per half — to
+                    // a fixed 8-point anchor or to the center-directed
+                    // attachment (ANCHOR_CENTER).  Without an override the
+                    // pair keeps its parallel offset-line look in every
+                    // mode.
+                    const srcOv = edge.data('anchorSrc');
+                    const dstOv = edge.data('anchorDst');
+                    if (srcOv !== undefined && srcOv !== null) {{
+                        srcRim = (srcOv === ANCHOR_CENTER)
+                            ? centerRimPoint(edge.source(), tgtPos.x - srcPos.x, tgtPos.y - srcPos.y)
+                            : anchorPoint(edge.source(), srcOv);
+                    }}
+                    if (dstOv !== undefined && dstOv !== null) {{
+                        tgtRim = (dstOv === ANCHOR_CENTER)
+                            ? centerRimPoint(edge.target(), srcPos.x - tgtPos.x, srcPos.y - tgtPos.y)
+                            : anchorPoint(edge.target(), dstOv);
                     }}
 
                     edge.style({{
@@ -10249,10 +10312,11 @@ class VisualizePath:
                     edge.style('control-point-distances', 40);
                     edge.style('control-point-weights', 0.5);
 
-                    if (edgeAnchorMode === 'auto') {{
+                    if (edgeAnchorMode === 'auto' || hasAnyAnchorOverride(edge)) {{
                         // Anchors coexist with the cp-40 bow: each half
-                        // terminates at its 8-point anchors and the two
-                        // arcs still split around the shared chord.
+                        // terminates at its resolved anchors (8-point or
+                        // center-directed) and the two arcs still split
+                        // around the shared chord.
                         writeEdgeAnchors(edge);
                     }} else {{
                         // Clear any endpoint offsets and distance overrides from straight mode
@@ -12606,19 +12670,29 @@ class VisualizePath:
             el.style.top = ((p.y + off[1]) * z + pan.y) + 'px';
         }}
 
-        // Create/drop/reposition the handles so they mirror (auto mode &&
-        // current edge selection) exactly.  Hooked to viewport (pan/zoom),
-        // edge select/unselect and node drag/position below.
+        // Is this edge END currently center-directed?  An explicit
+        // ANCHOR_CENTER override pins it in either mode; without an
+        // override the Center MODE default is center-directed.
+        function anchorEndIsCenter(e, end) {{
+            const ov = e.data(end === 'src' ? 'anchorSrc' : 'anchorDst');
+            if (ov !== undefined && ov !== null) return ov === ANCHOR_CENTER;
+            return edgeAnchorMode === 'center';
+        }}
+
+        // Create/drop/reposition the handles so they mirror (current edge
+        // selection) exactly — in BOTH anchor modes: Center-mode edges are
+        // adjustable too, their ends wearing the round teal center mark at
+        // the rim attachment; Auto shows diamonds unless an end is pinned
+        // center.  Hooked to viewport (pan/zoom), edge select/unselect and
+        // node drag/position below.
         function syncAnchorHandles() {{
             const layer = document.getElementById('cy');
             if (!layer) return;
             const wanted = [];
-            if (edgeAnchorMode === 'auto') {{
-                cy.edges(':selected').forEach(e => {{
-                    if (!anchorHandleEligible(e)) return;
-                    wanted.push([e, 'src'], [e, 'dst']);
-                }});
-            }}
+            cy.edges(':selected').forEach(e => {{
+                if (!anchorHandleEligible(e)) return;
+                wanted.push([e, 'src'], [e, 'dst']);
+            }});
             const wantedKeys = new Set(wanted.map(([e, end]) => anchorHandleId(e.id(), end)));
             layer.querySelectorAll('.anchor-handle').forEach(el => {{
                 if (!wantedKeys.has(el.id)) el.remove();
@@ -12628,11 +12702,14 @@ class VisualizePath:
                 if (!el) {{
                     el = document.createElement('div');
                     el.id = anchorHandleId(e.id(), end);
-                    el.className = 'anchor-handle';
-                    el.title = (end === 'src' ? 'Source' : 'Target') +
-                        ' endpoint anchor — drag to reassign it to another of the 8 anchors';
                     layer.appendChild(el);
                 }}
+                const isCenter = anchorEndIsCenter(e, end);
+                el.className = 'anchor-handle' + (isCenter ? ' anchor-center' : '');
+                el.title = (end === 'src' ? 'Source' : 'Target') + ' endpoint anchor — ' +
+                    (isCenter
+                        ? 'center-directed (teal ●): drag around the node to one of the 8 anchors, or back into the node to stay centered'
+                        : 'drag around the node to another of the 8 anchors, or into the node for center-directed attachment');
                 positionAnchorHandle(e, end);
                 el.style.display = 'block';
             }});
@@ -12707,15 +12784,32 @@ class VisualizePath:
                 const cmy = (ev.clientY - crect.top - cpan.y) / czoom;
                 const node = anchorDrag.end === 'src' ? anchorDrag.edge.source() : anchorDrag.edge.target();
                 const np = node.position();
-                const idx = snapAnchorIndex(cmx - np.x, cmy - np.y);
+                // Drag INTO the node body = the CENTER-directed anchor
+                // (its round teal mark, facing the other node); around the
+                // rim = the nearest of the 8 compass anchors.
+                const dxp = cmx - np.x, dyp = cmy - np.y;
+                const rimD = rimDistance(node, dxp, dyp);
+                const other = anchorDrag.end === 'src' ? anchorDrag.edge.target() : anchorDrag.edge.source();
+                const op = other.position();
+                const fdx = anchorDrag.end === 'src' ? op.x - np.x : np.x - op.x;
+                const fdy = anchorDrag.end === 'src' ? op.y - np.y : np.y - op.y;
+                const idx = (Math.hypot(dxp, dyp) < rimD - 5)
+                    ? ANCHOR_CENTER
+                    : snapAnchorIndex(dxp, dyp);
                 anchorDrag.edge.data(anchorDrag.end === 'src' ? 'anchorSrc' : 'anchorDst', idx);
-                const pt = anchorPoint(node, idx);
+                const pt = (idx === ANCHOR_CENTER)
+                    ? centerRimPoint(node, fdx, fdy)
+                    : anchorPoint(node, idx);
                 anchorDrag.edge.style({{
                     'edge-distances': 'node-position',
                     [anchorDrag.end === 'src' ? 'source-endpoint' : 'target-endpoint']:
                         `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`,
                     [anchorDrag.end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node']: 0
                 }});
+                // the mark follows the anchor kind live (diamond = 8-point,
+                // round teal = center-directed)
+                const hEl = document.getElementById(anchorHandleId(anchorDrag.edge.id(), anchorDrag.end));
+                if (hEl) hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');
                 positionAnchorHandle(anchorDrag.edge, anchorDrag.end);
             }};
             const onUp = function() {{

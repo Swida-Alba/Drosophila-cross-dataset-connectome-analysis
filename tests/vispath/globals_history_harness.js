@@ -69,6 +69,11 @@ function extractConstFunction(name, source) {
         if (c === '{' || c === '[') {
             open = i; openCh = c; closeCh = c === '{' ? '}' : ']'; break;
         }
+        if (c === ';') break;   // bare literal (e.g. const ANCHOR_CENTER = 8;)
+    }
+    if (open === -1) {
+        const semi = source.indexOf(';', start);
+        return source.slice(start, semi + 1);
     }
     let depth = 0;
     for (let i = open; i < source.length; i++) {
@@ -84,6 +89,7 @@ function extractConstFunction(name, source) {
 const CONST_FUNCTIONS = [
     'nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
     'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors',
+    'ANCHOR_CENTER', 'centerRimPoint', 'hasAnyAnchorOverride',
 ];
 
 // NOTE: sources come from the project's own generated HTML (trusted,

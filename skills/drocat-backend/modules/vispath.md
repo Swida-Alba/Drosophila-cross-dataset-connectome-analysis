@@ -93,20 +93,24 @@ The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
   framing). Tests pin `js.count("cy.fit(null, 50)") == 4` and
   `"cy.fit();" not in js`.
 - **Edge Anchor ribbon group** (beside Edge Route) — `Center` (default,
-  byte-identical classic attachment on the center-line rim) vs `Auto`: every
-  edge end snaps to the nearest of 8 anchors — the 4 box corners (ellipses:
-  the exact 45° rim points via `rimDistance`) and the 4 mid-edges — chosen
-  by 45°-sector direction (`snapAnchorIndex`/`anchorPoint`, shared
-  top-level geometry helpers). Applies in ALL edge modes (straight, curved
-  pairs keep the cp-40 bow, merged canonical half, flow bows keep their
+  classic center-directed attachment on the center-line rim) vs `Auto`: every
+  edge end defaults to the nearest of 8 anchors — the 4 box corners
+  (ellipses: the exact 45° rim points via `rimDistance`) and the 4 mid-edges —
+  chosen by 45°-sector direction (`snapAnchorIndex`/`anchorPoint`/`ANCHOR_CENTER`,
+  shared top-level geometry helpers). Applies in ALL edge modes (straight,
+  curved pairs keep the cp-40 bow, merged canonical half, flow bows keep their
   center-line obstruction test); waypoint (segments) and self-loop edges
   are excluded.
-- **Per-end overrides** — selected edges show draggable ◇ endpoint handles
-  (DOM overlays, waypoint-ring pattern). A drag reassigns THAT end only
-  (reciprocal halves independently) by writing `anchorSrc`/`anchorDst`
-  data + the endpoint style; reciprocal pairs keep their parallel
-  offset-line look unless overridden. `↺ Reset anchors` in the selection
-  panel clears overrides. Mode + overrides persist through
+- **Per-end overrides (both modes adjustable)** — selected edges show
+  draggable endpoint handles in BOTH modes: a blue diamond for each of the
+  8 compass anchors and a round teal badge for the NINTH, center-directed
+  anchor (`ANCHOR_CENTER = 8`). Dragging around the node snaps to the
+  nearest compass anchor; dragging INTO the node body pins the
+  center-directed attachment. A drag reassigns THAT end only (reciprocal
+  halves independently) by writing `anchorSrc`/`anchorDst` data + the
+  endpoint style; reciprocal pairs keep their parallel offset-line look
+  unless overridden. `↺ Reset anchors` in the selection panel clears
+  overrides. Mode + overrides persist through
   `captureNetworkState`/`applyNetworkState` (localStorage saves and the v2
   layout file verbatim). Node shape changes re-derive the rim pins.
 - **Waypoints** — bends declare `edge-distances: 'node-position'` so the

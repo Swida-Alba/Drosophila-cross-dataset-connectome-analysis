@@ -461,19 +461,32 @@ class TestGeneratedHtmlStructure:
         assert "const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];" in js
         assert "const step = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));" in js
         assert "if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) { return 6; }" in js
+        # the NINTH anchor: center-directed, wear-marked, overridable
+        assert "const ANCHOR_CENTER = 8;" in js
+        assert "const centerRimPoint = (node, dx, dy) => {" in js
+        assert "if (Number(idx) === ANCHOR_CENTER) {" in js  # guard: not a compass anchor
         # box corners are exact (±hw, ±hh): their direction from the center
         # is aspect-dependent, so they must not ride the polar rim formula
         assert "if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {" in js
         assert "return [ux * hw, uy * hh];" in js
-        # plain (non-pair) edges — the majority — anchor in auto mode where
-        # they previously cleared endpoints
-        assert "const srcIdx = (srcOv === undefined || srcOv === null) ? snapAnchorIndex(dx, dy) : srcOv;" in js
-        # reciprocal straight halves keep the offset-line look by default;
-        # a dragged anchor reassigns that ONE end, independently per half
-        assert "if (srcOv !== undefined && srcOv !== null) srcRim = anchorPoint(edge.source(), srcOv);" in js
-        assert "if (dstOv !== undefined && dstOv !== null) tgtRim = anchorPoint(edge.target(), dstOv);" in js
-        # curved pairs keep the cp-40 bow AND anchor both ends in auto mode
+        # plain (non-pair) edges anchor in auto mode OR when a per-end
+        # override exists — Center mode stays byte-identical otherwise
+        assert "if (edgeAnchorMode === 'auto' || hasAnyAnchorOverride(edge)) {" in js
         assert js.count("writeEdgeAnchors(edge);") == 2
+        # per-end resolution: override wins (8-point or ANCHOR_CENTER),
+        # then the mode default — Auto snaps, Center leaves the end cleared
+        wf = js[js.index("const writeEdgeAnchors = (edge) => {"):]
+        wf = wf[:wf.index("};", wf.index("resolveEnd"))]
+        assert "const resolveEnd = (node, isSrc) => {" in wf
+        assert "return (ov === ANCHOR_CENTER)" in wf
+        assert ": anchorPoint(node, ov);" in wf
+        assert "return anchorPoint(node, snapAnchorIndex(ux, uy));" in wf
+        assert "return null;  // Center default: no explicit endpoint" in wf
+        # reciprocal straight halves keep the offset-line look by default in
+        # every mode; a dragged anchor reassigns that ONE end, independently
+        # per half, to an 8-point anchor or the center-directed attachment
+        assert "srcRim = (srcOv === ANCHOR_CENTER)" in js
+        assert "tgtRim = (dstOv === ANCHOR_CENTER)" in js
 
     def test_edge_anchor_handles_and_persistence(self, network_html):
         """Auto mode shows draggable endpoint handles on selected edges
@@ -491,6 +504,20 @@ class TestGeneratedHtmlStructure:
         assert "cy.on('viewport', syncAnchorHandles);" in js
         assert "cy.on('select unselect', 'edge', syncAnchorHandles);" in js
         assert "cy.on('drag position', 'node', syncAnchorHandles);" in js
+        # handles live in BOTH anchor modes with per-end marks: a round teal
+        # badge for the center-directed anchor (the Center-mode default, or
+        # an end pinned there via ANCHOR_CENTER), the blue diamond for the
+        # 8 compass anchors; the auto-only gates are gone
+        assert ".anchor-handle.anchor-center {" in html
+        assert "function anchorEndIsCenter(" in js
+        assert "return ov === ANCHOR_CENTER;" in js
+        assert "return edgeAnchorMode === 'center';" in js
+        assert "if (edgeAnchorMode !== 'auto') return;" not in js
+        # drag INTO the node body pins the center-directed anchor; around
+        # the rim snaps to the nearest compass anchor; the mark follows live
+        assert "const idx = (Math.hypot(dxp, dyp) < rimD - 5)" in js
+        assert "? ANCHOR_CENTER" in js
+        assert "hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');" in js
         # a drag writes the override + endpoint style for THAT end only
         # (reciprocal halves reassign independently), tracked as one
         # queued history entry per gesture

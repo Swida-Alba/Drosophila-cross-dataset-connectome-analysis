@@ -44,6 +44,11 @@ function extractFunction(name, source) {
         if (c === '{' || c === '[') {
             open = i; openCh = c; closeCh = c === '{' ? '}' : ']'; break;
         }
+        if (c === ';') break;   // bare literal (e.g. const ANCHOR_CENTER = 8;)
+    }
+    if (open === -1) {
+        const semi = source.indexOf(';', start);
+        return source.slice(start, semi + 1);
     }
     let depth = 0;
     for (let i = open; i < source.length; i++) {
@@ -60,9 +65,11 @@ function extractFunction(name, source) {
 // (they only read the node-size slider fallback from it).
 const geometry = (() => {
     const src = ['nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
-                 'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors']
+                 'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors',
+                 'ANCHOR_CENTER', 'centerRimPoint', 'hasAnyAnchorOverride']
         .map(n => extractFunction(n, html)).join('\n')
-        + '\nmodule.exports = { nodeHalfSizes, rimDistance, rimPointOnOffsetLine, ANCHOR8_DIRS, snapAnchorIndex, anchorPoint, writeEdgeAnchors };';
+        + '\nlet edgeAnchorMode = "auto";'
+        + '\nmodule.exports = { nodeHalfSizes, rimDistance, rimPointOnOffsetLine, ANCHOR8_DIRS, snapAnchorIndex, anchorPoint, writeEdgeAnchors, ANCHOR_CENTER, centerRimPoint, hasAnyAnchorOverride, setMode: (m) => { edgeAnchorMode = m; } };';
     const mod = { exports: {} };
     new Function('module', 'exports', 'document', src)(
         mod, mod.exports, { getElementById: () => ({ value: '40' }) });
@@ -368,6 +375,63 @@ console.log('[7] renderEdgeWaypoints — bend renders exactly at the stored wayp
     const drift = Math.abs(w * len - oldPosAlong);
     check('old rim-span basis would drift >5px at this weight', drift > 5, drift);
     cy3.destroy();
+}
+
+console.log('[8] ANCHOR_CENTER — the ninth, center-directed anchor');
+{
+    const cy4 = cytoscape({
+        headless: true,
+        styleEnabled: true,
+        elements: [
+            { data: { id: 'a' }, position: { x: 0, y: 0 } },
+            { data: { id: 'b' }, position: { x: 0, y: 0 } },
+            { data: { id: 'ab', source: 'a', target: 'b', weight: 3 } },
+        ],
+        style: [
+            { selector: 'node', style: { width: 100, height: 100, shape: 'ellipse' } },
+            { selector: 'edge', style: { 'curve-style': 'straight' } },
+        ],
+    });
+    cy4.getElementById('b').position({ x: 120, y: 90 });
+    const e = cy4.getElementById('ab');
+    const px = (e, prop) => {
+        const ps = e.pstyle(prop);
+        return (ps && ps.units && ps.units[0] === 'px') ? ps.pfValue : null;
+    };
+    // AUTO mode + an explicit CENTER pin: that end attaches at the exact
+    // center-line rim point (facing the other node), the other stays auto
+    e.data('anchorSrc', geometry.ANCHOR_CENTER);
+    geometry.writeEdgeAnchors(e);
+    const s = cy4.getElementById('a').position(), t = cy4.getElementById('b').position();
+    const dx = t.x - s.x, dy = t.y - s.y, len = Math.hypot(dx, dy);
+    const rim = geometry.rimDistance(mockNode(100, 100, 'ellipse'), dx, dy);
+    let se = px(e, 'source-endpoint');
+    check('center pin = exact center-line rim point (40, 30)',
+        se && near(se[0], dx / len * rim, 0.01) && near(se[1], dy / len * rim, 0.01),
+        JSON.stringify(se));
+    let te = px(e, 'target-endpoint');
+    check('un-overridden target stays auto (NW mirror)',
+        te && near(te[0], -50 / Math.SQRT2, 0.01) && near(te[1], -50 / Math.SQRT2, 0.01),
+        JSON.stringify(te));
+    // CENTER mode: no overrides -> NO explicit endpoints (byte-identical
+    // classic path); an 8-point override styles ONLY that end
+    geometry.setMode('center');
+    e.removeData('anchorSrc');
+    e.removeData('anchorDst');
+    geometry.writeEdgeAnchors(e);
+    check('center mode, no override -> endpoints cleared (classic path)',
+        px(e, 'source-endpoint') === null && px(e, 'target-endpoint') === null,
+        JSON.stringify({ s: px(e, 'source-endpoint'), t: px(e, 'target-endpoint') }));
+    e.data('anchorDst', 1);   // SE compass anchor on the target end only
+    geometry.writeEdgeAnchors(e);
+    te = px(e, 'target-endpoint');
+    check('center mode + override styles ONLY that end (SE 45° point)',
+        te && near(te[0], 50 / Math.SQRT2, 0.01) && near(te[1], 50 / Math.SQRT2, 0.01),
+        JSON.stringify(te));
+    check('center mode: un-overridden source stays cleared',
+        px(e, 'source-endpoint') === null, JSON.stringify(px(e, 'source-endpoint')));
+    check('hasAnyAnchorOverride sees the pin', geometry.hasAnyAnchorOverride(e) === true);
+    cy4.destroy();
 }
 
 if (failures > 0) {
