@@ -96,12 +96,12 @@ TERM_DEFS: Dict[str, str] = {
         '`matched` (the row is some metric\'s top-1 for its source AND its '
         'rank_union clears the matched bar), `verified` (top-1 on either '
         'metric), `nominated` (ranks 2..N inside the bar). It shares two NAMES '
-        'with the supervised tiers and none of their machinery: pooling has no '
-        'branch pool to be a member of, so a pooling `matched` asserts a '
-        'connectivity-and-morphology finding under this mode\'s own bar, not '
-        'the mapper\'s mutual-best claim. There is no `borderline` and no '
-        '`relative` here — the deep window and the type-mate bins belong to '
-        'the nested modes.',
+        'with the supervised `tier` ladder and none of its machinery: pooling '
+        'has no branch pool to be a member of, so a pooling `matched` asserts '
+        'a connectivity-and-morphology finding under this mode\'s own bar, '
+        'not the supervised tier of the same word (see `tier`). There is no '
+        '`borderline` and no `relative` here — the deep window and the '
+        'type-mate bins belong to the nested modes.',
     'mapper_cell':
         'Post-hoc comparison of one pooling candidate with the supervised '
         'mapping: `confirmed` sits in a branch\'s refined target pool; '
@@ -132,7 +132,11 @@ TERM_DEFS: Dict[str, str] = {
         'A source neuron whose best pool member is itself the target\'s '
         'best source — both sides read on the ordering chain, so the '
         'strict pairing counted as "assigned" is the same relation the '
-        'ranked lists show.',
+        'ranked lists show. Counted per branch as `best` in '
+        'pair_summary.csv (that column was named `matched` until '
+        '2026-09-24) and per run as `assigned` in set_coverage.json; '
+        'neither is the target-side `matched` tier, which is a pool '
+        'member\'s evidence grade and needs no pairing.',
     'ordering chain':
         'How two candidate neurons are compared for "best": jaccard first, '
         'rank_union breaking a jaccard tie, bodyId last (user 2026-09-20, '
@@ -142,29 +146,59 @@ TERM_DEFS: Dict[str, str] = {
         'the order: jaccard is a ratio of small integers, so a tie block '
         'shares one rank and would otherwise be decided by row order.',
     'verdict':
-        'Tiered rule, read off the POOL rather than off one chosen row, with a '
-        'rank-1 claim lifting only the row that PUBLISHES the partner holding '
-        'it: verified_strong (ONE pool member is global top-1 under BOTH '
+        'The SOURCE-side ladder: one value per source neuron × branch, the '
+        '`verdict` column of validation_results.csv. Tiered rule, read off '
+        'the POOL rather than off one chosen row, with a rank-1 claim '
+        'lifting only the row that PUBLISHES the partner holding it: '
+        'verified_strong (ONE pool member is global top-1 under BOTH '
         'rank_union, positive, and jaccard), verified (that same published '
         'member is top-1 under at least one metric), borderline (the pool\'s '
-        'best sits inside the top-5 window), unmatched. Quantifying over the '
-        'pool keeps a label from moving with the ordering key; tying the '
-        'claim to the published partner is what stops a verdict meaning "this '
-        'pool contains a winner somewhere" — r17 measured 46 rows on two '
-        'half-claims and r18 2 more on an unpublished rank_union win. Any '
-        'rank_union top-1 that is not the published target stays visible in '
-        'ru_top_target_bodyId, as evidence rather than verdict.',
+        'best sits inside the top-`rank_top_k` window, 5), unmatched (the '
+        'else), skipped (no usable profile — this side only). Quantifying '
+        'over the pool keeps a label from moving with the ordering key; '
+        'tying the claim to the published partner is what stops a verdict '
+        'meaning "this pool contains a winner somewhere" — r17 measured 46 '
+        'rows on two half-claims and r18 2 more on an unpublished '
+        'rank_union win. Any rank_union top-1 that is not the published '
+        'target stays visible in ru_top_target_bodyId, as evidence rather '
+        'than verdict. Shares three words with the TARGET-side `tier` and '
+        'none of its rules — `verified_strong` has no tier counterpart and '
+        'tier `matched` has no verdict counterpart.',
+    'tier':
+        'The TARGET-side ladder: one value per in-map target neuron, the '
+        '`category` column of pool_categories.csv and the first rung of the '
+        '`category` partition. Precedence top-down — matched > verified > '
+        'borderline > unmatched, `unmatched` the final else, so there is no '
+        '`skipped` here (that value exists only on the source side). The '
+        'ladder and the source-side `verdict` share three words and grade '
+        'different neurons by different tests.',
     'matched':
-        'The only ASSERTED tier: the pool member is the mutual best under '
-        'both metrics.',
+        'ASSERTED tier (target side): a pool member that reaches `verified` '
+        'AND whose best source gives it `rank_union > matched_ru_min` (0.1) '
+        '— the only tier stated as an assertion rather than a review '
+        'request. The bar is a far-above-the-disjoint-floor test (a random '
+        'pair sits near -0.8), not a percentage of correlation. NOT the '
+        'mutual-best 1:1 pairing, which is the relation '
+        '`mutual-best (assigned)` and the count `best` in pair_summary.csv; '
+        'NOT the source-side `verified_strong` verdict either.',
     'verified':
-        'Review tier: the published pool member is global top-1 under at '
-        'least one of rank_union / jaccard.',
+        'Review tier (target side): global top-1 on rank_union or on '
+        'jaccard for some source, OR the continuous ordered '
+        'top-`verified_top_n` (2) of a metric being all in-pool. The same '
+        'word on the source side is the narrower published-member rule in '
+        '`verdict`.',
     'borderline':
-        'Review tier: the pool\'s best member sits inside the top-5 window.',
+        'Review tier (target side): neither matched nor verified, and at '
+        'most `invader_borderline_max` (3) out-of-pool neurons rank ahead '
+        'of it — the best case over both metrics across the branch\'s '
+        'sources. The source-side `borderline` verdict is the '
+        'top-`rank_top_k` window instead; see `verdict`.',
     'unmatched':
-        'No pool member qualifies under the tier rule — counted as a '
-        'miss, never as coverage.',
+        'Tier else (target side): more than `invader_borderline_max` '
+        'invaders ahead, or no ranking at all. Counted as a miss, never as '
+        'coverage — and it is still an in-map target, so a reverse scan '
+        'reads it as the control. The source-side verdict of the same name '
+        'is the outside-the-window else; see `verdict`.',
     'category':
         'Revision 3.12 partition; every in-scope target gets EXACTLY '
         'one, decided in this order: tier (matched > verified > '
@@ -221,7 +255,9 @@ TERM_DEFS: Dict[str, str] = {
         'A non-sibling bodyId labeled in more than one branch — '
         'cross-branch convergence, not double counting.',
     'gap':
-        'min(source_pool, target_pool) - matched; fills fire when '
+        'min(source_pool, target_pool) - `best` (the mutual-best 1:1 pair '
+        'count; this column was named `matched` until 2026-09-24, which is '
+        'why older prose uses that word); fills fire when '
         'gap > 1. Per-branch gaps double-count cross-branch convergence.',
     'hole':
         'An OUT-MAP bodyId of an in-map TYPE — family material no branch '
@@ -334,10 +370,14 @@ TERM_DEFS: Dict[str, str] = {
         'longer gates anything (retired); proposals, never rewrites.',
     'verified_strong':
         'The source ranks the same pool target top-1 under BOTH metrics '
-        '(positive rank_union AND jaccard) — the strongest verdict.',
+        '(positive rank_union AND jaccard) — the strongest verdict. '
+        'Source-side only: the target-side `tier` ladder has no such rung, '
+        'and it is the rung the morphology AUC gate can demote (to '
+        '`verified`, with the `morph_below_threshold` flag).',
     'forward':
-        'The validation direction: source neurons are scanned and the '
-        'target-side pool members earn the verdict tiers. Branches, '
+        'The validation direction: source neurons are scanned, each one '
+        'earning a source-side `verdict`, and the in-map target neurons '
+        'they reach earn a target-side `tier`. Branches, '
         'Targets and Coverage report the forward view.',
     'backward':
         'The interpretive direction: what the receiving target types and '
@@ -449,15 +489,60 @@ TERM_DEFS: Dict[str, str] = {
     'no profile':
         'The neuron had no usable connectivity profile, so its scan was '
         'skipped — silence with a reason, never a negative result.',
+    'full-map mode':
+        'The route scope in which the mapper also admits COMPOSED pairs — '
+        'a target reached THROUGH a connector dataset (`via_mid`) rather '
+        'than entirely inside the two endpoint datasets. Labelled per pair '
+        'as `route_basis` (direct / composed) on mapping_export.csv, '
+        'validation_results.csv and pair_summary.csv. Advisory marking '
+        'only: every bin grades a composed pair exactly like a direct one, '
+        'so the split discloses how wide the route reached and gates '
+        'nothing.',
+    'same-name-first':
+        'The mapper\'s fan-out rule: within a same-name fan-out the '
+        'candidate carrying the source\'s OWN base name is selected, and '
+        'the other candidates are demoted to rival suspects instead of '
+        'claims. A fired selection arrives as an ordinary mapped pair and '
+        'is MARKED, never gated — the Branches tab puts a ⟡ on it and its '
+        'rows carry `same_name_first` / `same_name_rivals`. Held and '
+        'evidence-only fan-outs stay excluded (fail-closed) but are '
+        'accounted in same_name_excluded.csv.',
+    'suspects':
+        'Those withheld same-name rivals (fired, held or excluded). '
+        '`--verify-suspects` (opt-in, default OFF) validates each rival '
+        'against its own target pool with the ordinary source-side '
+        '`verdict` machinery and writes mapping/suspects_verification.csv '
+        'plus the Suspects tab. Those rows enter NO validation count, '
+        'fill, dedup or scene: a rival that verifies well is a candidate '
+        'ANNOTATION, not a mapping — inclusion goes through the custom '
+        'label mapper.',
+    'multi-value type cells':
+        'Neurons whose `type` annotation is comma-joined (several types on '
+        'one cell). The mapper keeps them ATOMIC — one cell stays one type '
+        'value and is never split into several pairs — so the run only '
+        'accounts them (`multivalue_types` / `multivalue_target_types`).',
+    'three-tier':
+        'The mapper\'s three counting bases, shown side by side because '
+        'they answer different questions: CLAIM (the pairs the scoped '
+        'decision adopted — the basis every headline count here uses), '
+        'REACH (all flows\' pools, declined ends included) and DISCLOSURE '
+        '(reach minus claim, per declined end with its reason).',
+    'disclosure':
+        'The third basis: bridge ends the derivation evidence reaches but '
+        'the scoped decision declined. Each row names its '
+        '`decline_reason` — `same_name_first_rival`, `branch_not_adopted` '
+        'or `vote_conflict_declined` — and, on a `--verify-suspects` run, '
+        'the verdict its own pool scored. Kept in '
+        'disclosure_evidence.csv and this card: never a claim, a fill or '
+        'a headline count.',
 }
 
 # per-file column/term notes for §12 expanders
 FILE_GLOSSARY: Dict[str, List[str]] = {
     'validation/validation_results.csv': [
-        'verdict', 'ordering chain', 'matched', 'verified', 'borderline',
-        'unmatched'],
+        'verdict', 'ordering chain', 'verified_strong'],
     'validation/examinees.csv': [
-        'category', 'sibling', 'candidates', 'family', 'relative',
+        'category', 'tier', 'sibling', 'candidates', 'family', 'relative',
         'out of scope', 'candidate_annotation', 'reciprocal',
         'shared partner types', 'thin evidence'],
     'expansion/backward_matches.csv': [
@@ -478,13 +563,17 @@ FILE_GLOSSARY: Dict[str, List[str]] = {
     'pooling/pooling_candidates.csv': [
         'pooling', 'ordering chain', 'rank_union', 'candidate_annotation',
         'out of scope', 'morph_gate', 'branch bar', 'mapper_cell',
-        'jaccard floor'],
-    'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate'],
+        'jaccard floor', 'pooling tier'],
+    'pooling/pooling_pool.csv': ['dup', 'mapper_cell', 'morph_gate',
+                                 'pooling tier'],
     'pooling/pooling_sources.csv': ['pooling', 'admission bar', 'morph_gate'],
     'pooling/pooling_cross_validation.json': ['pooling', 'mapper_cell',
                                               'morph_gate'],
-    'validation/pair_summary.csv': ['gap', 'verdict'],
-    'validation/pool_categories.csv': ['pool_ref tier'],
+    'validation/pair_summary.csv': ['gap', 'verdict',
+                                    'mutual-best (assigned)'],
+    'validation/pool_categories.csv': [
+        'tier', 'matched', 'verified', 'borderline', 'unmatched',
+        'pool_ref tier'],
     'morphology_calibration.json': [
         'branch bar', 'native floor', 'Track-A backup floor', 'null bar',
         'AUC gate', 'score frames'],
@@ -1766,7 +1855,8 @@ def _coverage_tab(d: Dict) -> str:
                 f"<tr><td>{_esc(assigned_n)} assigned</td>"
                 '<td>paired onto branch pools</td></tr>',
                 f'<tr><td>+{_esc(proposed_n)} fill-proposed only</td>'
-                '<td>tiered pool members below mutual-best</td></tr>',
+                '<td>a gap-fill proposal reaches them, but no '
+                'mutual-best pairing does</td></tr>',
                 f"<tr><td>{_esc(unpaired)} unpaired without proposal</td>"
                 f'<td>= {_esc(in_pool_residue)} in-pool residue + '
                 f'{_esc(unclaimed)} unclaimed</td></tr>',
@@ -1812,9 +1902,10 @@ def _coverage_tab(d: Dict) -> str:
             + _th('pool', 'Source neurons of this type in the query '
                   'set.')
             + _th('assigned', 'Neurons with a mutual-best pair onto a '
-                  'branch pool — the ASSERTED tier.')
-            + _th('fill-proposed', 'Neurons carried only as tiered '
-                  'fill proposals — evidence, never an assignment.')
+                  'branch pool — the PAIRING, not the target-side `matched` '
+                  'tier (see `mutual-best (assigned)`).')
+            + _th('fill-proposed', 'Neurons carried only as gap-fill '
+                  'proposals — evidence, never an assignment.')
             + _th('unpaired', 'No pair and no proposal: in-pool '
                   'residue plus unclaimed neurons.'))
         cards.append(_section_card(
@@ -1920,6 +2011,9 @@ def _coverage_tab(d: Dict) -> str:
         if len(disc_rows) > 12:
             disc_items.append(
                 (f'+{len(disc_rows) - 12} more row(s)', ''))
+        disc_items.append(
+            ('Declined ends by reason',
+             ' · '.join(f'{k} × {v}' for k, v in sorted(by_reason.items()))))
         cards.append(_section_card(
             'Disclosure evidence (declined, not claimed)',
             'Bridge ends the scoped decision declined — same-name-first '
@@ -1928,8 +2022,7 @@ def _coverage_tab(d: Dict) -> str:
             'claim set does not. Verified with the ordinary machinery '
             'when --verify-suspects ran; never in the headline counts.',
             _kv_block('', disc_items),
-            ['three-tier', 'disclosure',
-             ', '.join(f'{k}×{v}' for k, v in sorted(by_reason.items()))]))
+            ['three-tier', 'disclosure', 'same-name-first', 'suspects']))
 
     return ''.join(cards)
 
@@ -2007,7 +2100,7 @@ def _branches_tab(d: Dict) -> str:
         except (ValueError, SyntaxError):
             pass
         # Mapped = every source on this branch carrying a MAPPING verdict.
-        # The mutual-best pair count (`matched` in pair_summary.csv) is a
+        # The mutual-best pair count (`best` in pair_summary.csv) is a
         # STRICTER subset — a source inside a pair is already counted here —
         # so the two are shown side by side, never added.
         try:
@@ -2115,7 +2208,7 @@ def _branches_tab(d: Dict) -> str:
         + _th('Mapped (M)',
               'Source neurons on this branch carrying a MAPPING verdict: '
               'verified_strong + verified + borderline. The smaller number '
-              'beside it is the mutual-best 1:1 pair count (`matched` in '
+              'beside it is the mutual-best 1:1 pair count (`best` in '
               'pair_summary.csv) — a stricter subset, since a paired source '
               'is already inside the mapped total. The two are never added.')
         + _th('Gap',
@@ -2219,8 +2312,10 @@ def _targets_tab(d: Dict) -> str:
                   'type in the target dataset.')
             + _th('map-covered', 'How many of them the type mapper '
                   'covers (its mapped set).')
-            + _th('tier m / v / b', 'In-pool members by validation '
-                  'tier: matched / verified / borderline.')
+            + _th('tier m / v / b', 'In-pool members by target-side '
+                  '`tier`: matched / verified / borderline. The '
+                  'map-covered count beside it is these three plus '
+                  '`unmatched` (`in_pool_unmatched` in set_coverage.json).')
             + _th('cand-only', 'Neurons reached only as fill '
                   'candidates, never in a branch pool.')
             + _th('holes', 'Out-map bodyIds of this in-map type that no '
@@ -2765,7 +2860,7 @@ def _backward_tab(d: Dict) -> str:
                 'Advisory — never a fill; inclusion of a candidate goes '
                 'through user verification.',
                 sc_table,
-                ['source-candidates', 'source-candidates (dup)']))
+                ['source-candidates', 'dup']))
     elif sib:
         tgt_branch = {}
         try:
@@ -3698,7 +3793,8 @@ def _homolog_backward_tab(d: Dict) -> str:
 
 def _suspects_tab(d: Dict) -> str:
     """P3 (opt-in): advisory verification of the mapper's rival
-    suspects — per rival, the ordinary tier machinery applied to the
+    suspects — per rival, the ordinary source-side verdict machinery
+    applied to the
     rival's own target pool."""
     rows = d.get('suspects_verification') or []
     if not rows:
@@ -3768,9 +3864,11 @@ def _suspects_tab(d: Dict) -> str:
         + _th('pop src→tgt', "The rival's own population sizes, "
               'source → target.')
         + _th('sources', 'Source neurons behind this rival relation.')
-        + _th('verdicts vS / v / b / u', 'Rival-pool validation tier '
-              'counts: verified_strong / verified / borderline / '
-              'unmatched.')
+        + _th('verdicts v★ / v / b / u', 'Rival-pool SOURCE-side verdict '
+              'counts (the `verdict` column of '
+              'suspects_verification.csv): verified_strong / verified / '
+              'borderline / unmatched. Verdicts, not the target-side '
+              '`tier` ladder.')
         + '</tr></thead><tbody>' + ''.join(trs)
         + '</tbody></table></div>')
     n_types = len({k[0] for k in groups})
@@ -3778,12 +3876,12 @@ def _suspects_tab(d: Dict) -> str:
         f'Suspects — {len(groups)} rival relation(s) across '
         f'{n_types} source type(s)',
         'ADVISORY (never a gate): each rival\'s own target pool was '
-        'validated with the ordinary tier machinery. A rival that '
+        'validated with the ordinary SOURCE-side `verdict` machinery, not '
+        'the target-side `tier` ladder. A rival that '
         'verifies well is a candidate ANNOTATION, not a mapping — '
         'inclusion goes through the custom label mapper (Decision 8).',
         table,
-        ['suspects', 'same-name-first', 'verified', 'borderline',
-         'unmatched'])
+        ['suspects', 'same-name-first', 'verdict', 'tier'])
 
 
 def _morph_tab(d: Dict) -> str:

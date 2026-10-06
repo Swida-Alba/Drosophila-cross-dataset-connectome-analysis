@@ -354,6 +354,24 @@ against — `local_data/` is disposable by design.
 
 ## 3. Interpretation rules (hard-won; do not improvise)
 
+- **Two ladders share three words — always say which one you mean.** The
+  TARGET-side `tier` (`pool_categories.csv` `category`, and the partition's
+  first rung) grades a pool member: `matched` = reaches `verified` **and**
+  its best source gives it `rank_union > matched_ru_min`; `verified` =
+  top-1 on either metric for some source, or a continuous ordered
+  top-`verified_top_n` entirely in-pool; `borderline` = at most
+  `invader_borderline_max` out-of-pool invaders ahead; `unmatched` = the
+  else (there is **no `skipped`** on this side). The SOURCE-side `verdict`
+  (`validation_results.csv`) grades a source neuron: `verified_strong` =
+  ONE pool member is top-1 under BOTH metrics, `verified` = the PUBLISHED
+  member holds a top-1 on one, `borderline` = the pool's best sits inside
+  `rank_top_k`, then `unmatched` / `skipped`. Neither ladder contains the
+  other's top rung — `matched` is never a verdict and `verified_strong` is
+  never a tier — and the mutual-best 1:1 pairing is a THIRD quantity
+  (`best` per branch in `pair_summary.csv`, `assigned` per run in
+  `set_coverage.json`), not the asserted tier. Pooling reuses
+  `matched`/`verified` per ROW under its own bar and has no `borderline`.
+  The report's glossary keys are `tier` and `verdict`.
 - **The category partition (Rev 3.12) — one ordered first-match per
   branch, mode-independent**: tier (`matched` > `verified` >
   `borderline` > `unmatched`) > `sibling` (in-map target of the query in
@@ -628,8 +646,10 @@ not):
   populations with no per-bodyId rows — DN1a / DN1pA / DN1pB / l-LNv;
   s-LNv resolves via rows instead). This is why a wide `full population`
   pool is not a missing bridge (§3's per-side basis rule).
-- L3 is the grading: `matched` is the only asserted tier;
-  verified/verified_strong/borderline are review; assignments are
+- L3 is the grading: `matched` is the only asserted **tier**
+  (`pool_categories.csv`), while `verified_strong` / `verified` /
+  `borderline` are **verdict** rungs on the source side
+  (`validation_results.csv`) — see §3's two-ladders rule; assignments are
   **mutual-best 1:1** — N-to-1 convergence (8 l-LNv sources → 3 MCNS
   targets) leaves in-pool sources unpaired even at 100% pool coverage.
   Those unpaired are the scene's `out-map` review material only when they

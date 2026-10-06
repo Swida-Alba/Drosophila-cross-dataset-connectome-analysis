@@ -169,7 +169,7 @@ for the verification is this pipeline's own:**
   branches. Retention: top-100 per metric + pool (`FILL_KEEP_TOP`).
 
 **Source verdicts** (tiered, read off the POOL — quantified over its members,
-so a label cannot move when the ordering key moves; the tiers stay
+so a label cannot move when the ordering key moves; the verdicts stay
 *nested*, verified ⊇ verified_strong):
 
 - `verified_strong` — ONE pool member is global top-1 under BOTH rank_union
@@ -712,12 +712,12 @@ disclosure-only suspects — `plan-samename-first-fanout-resolution.md`
 - **Suspects verification (OPT-IN, `--verify-suspects`, default OFF)**:
   each rival of every queried same-name fan-out (fired, held, or
   excluded) is validated against its own target pool with the ordinary
-  tier machinery, using the same scan frames (fired types) or a fresh
-  scan pass (held/excluded types). Rows land ONLY in
-  `suspects_verification.csv` and the report's Suspects tab — never in
-  the validation counts, fills, dedup, or scenes. Advisory: a rival that
-  verifies well is a candidate annotation, not a mapping; inclusion goes
-  through the custom label mapper.
+  source-side **verdict** machinery (§3), using the same scan frames
+  (fired types) or a fresh scan pass (held/excluded types). Rows land
+  ONLY in `suspects_verification.csv` and the report's Suspects tab —
+  never in the validation counts, fills, dedup, or scenes. Advisory: a
+  rival that verifies well is a candidate annotation, not a mapping;
+  inclusion goes through the custom label mapper.
 - **Multi-value type cells** (comma-joined `type` annotations, kept
   atomic by the mapper) are accounted, never split:
   `multivalue_types` / `multivalue_target_types` counters, rows in

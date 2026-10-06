@@ -458,11 +458,26 @@ suggestion.
 
 1. **The tier — `matched` / `verified` / `borderline` / `unmatched`.**
    The in-map targets of *this* branch, i.e. the neurons the type mapping
-   itself put here. `matched` is the asserted tier (top evidence under
-   both metrics, positive correlation). `verified` is strong but
-   imperfect (top under one metric). `borderline` has a few outside
-   neurons ahead. `unmatched` is the fallback. There is no fifth tier:
-   `unmatched` always catches the rest.
+   itself put here. This ladder grades the **target** neuron. `matched` is
+   the asserted tier: a neuron that reaches `verified` **and** whose best
+   source gives it `rank_union > matched_ru_min` — the correlation bar, a
+   far-above-the-disjoint-floor test (a random pair sits near −0.8), not a
+   percentage. `verified` is strong but imperfect: global top-1 on one
+   metric, or inside a continuous ordered top-N that is entirely in-pool.
+   `borderline` has a few outside neurons ahead (at most
+   `invader_borderline_max`). `unmatched` is the fallback. There is no
+   fifth tier: `unmatched` always catches the rest.
+
+   Do not read these four words as the **source-side verdicts**. The
+   `verdict` column of `validation_results.csv` grades the *source* neuron
+   by a different test — `verified_strong` (one pool member is top-1 under
+   both metrics), `verified` (the published member is top-1 on one),
+   `borderline` (the pool's best inside the `rank_top_k` window),
+   `unmatched`, plus `skipped`, which has no tier counterpart. Tier
+   `matched` likewise has no verdict counterpart, and the mutual-best 1:1
+   pairing is a third quantity (`best` in `pair_summary.csv`). Normative:
+   the technical report §3 (verdicts) and §4 (categories); the run report
+   hovers each word under its own ladder (`tier` vs `verdict`).
 2. **`sibling`.** An in-map target of your **query** that belongs to a
    *different* branch but appears in this branch's expansion. It is
    already mapped somewhere, so it is not a missing partner — it is
