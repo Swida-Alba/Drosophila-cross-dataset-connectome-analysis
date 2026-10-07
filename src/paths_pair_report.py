@@ -40,7 +40,9 @@ inside a cross-dataset run) and writes, additively into the run folder:
 
 Capping is viewport-only: every capped view states its cap and links to the
 uncapped CSV beside the report. Ranking is bottleneck-first
-(``min_weight`` desc, ``path_prob`` desc, ``path`` asc). The generator
+(``min_weight`` desc, ``path`` asc; the path-probability tiebreak is
+SUSPENDED 2026-10-06 — probability values are withheld due to
+unverifiable fidelity and are neither exported nor rendered). The generator
 overwrites only its own outputs and is byte-stable modulo the Generated
 timestamp.
 """
@@ -80,7 +82,8 @@ PATHS_SUFFIX = '_allpaths_type.csv'
 DEFAULT_TOP_PER_LENGTH = 10
 DEFAULT_GLOBAL_EDGES = 60
 DEFAULT_GLOBAL_PAIRS = 50
-RANK_KEYS = ('min_weight', 'min_ratio', 'path_prob', 'length')
+# path_prob removed from the rank keys (SUSPENDED 2026-10-06):
+RANK_KEYS = ('min_weight', 'min_ratio', 'length')
 
 # Folders that never hold a paths table unit (viz/analysis sidecars).
 SKIP_DIRS = {
@@ -89,7 +92,7 @@ SKIP_DIRS = {
     'find_reciprocal', 'hemisphere_symmetry', 'custom_groups',
     'comparison_results', 'comparison_visualizations',
     'comparison_report_used_data', 'similarity_matrices', 'conserved_paths',
-    '_density', 'cache', '__pycache__',
+    'type_level_refill', '_density', 'cache', '__pycache__',
 }
 
 # House palette (html_report_generator._generate_html_header) plus the
@@ -332,9 +335,11 @@ def load_unit_paths(csv_path: Path) -> pd.DataFrame:
 
 
 def _rank_sort(frame: pd.DataFrame, rank_by: str) -> pd.DataFrame:
-    ascending = [rank_by == 'length', False, True]
+    # The former ``path_prob`` tiebreak is SUSPENDED (2026-10-06,
+    # unverifiable fidelity): ties resolve on the path string.
+    ascending = [rank_by == 'length', True]
     return frame.sort_values(
-        [rank_by, 'path_prob', '_path_key'],
+        [rank_by, '_path_key'],
         ascending=ascending, na_position='last', kind='mergesort')
 
 
@@ -383,7 +388,6 @@ def build_unit_breakdown(
                     prior = inter_minhop[key].get(node)
                     if prior is None or hop < prior:
                         inter_minhop[key][node] = hop
-                probabilities = row.get('probabilities', '')
                 ratios = row.get('ratios', '')
                 coverage = row.get('coverage', '')
                 path_scov, path_tcov = _path_end_coverage(coverage)
@@ -394,14 +398,12 @@ def build_unit_breakdown(
                     'rank_in_pair_length': rank,
                     'path': str(row['path']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
-                    'probabilities': '' if pd.isna(probabilities) else str(probabilities),
                     'ratios': '' if pd.isna(ratios) else str(ratios),
                     'coverage': '' if pd.isna(coverage) else str(coverage),
                     'min_weight': row['min_weight'],
                     'min_ratio': row.get('min_ratio'),
                     'pair_min_ratio': _path_pair_ratio(
                         row['path'], pair_ratio or {}),
-                    'path_prob': row['path_prob'],
                     'length': int(length),
                     'source_bodyid_coverage': (
                         path_scov or source_cov.get(source, '')),
@@ -623,6 +625,39 @@ def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
             for i in range(len(labs) - 1)]
     vals = [v for v in vals if v is not None]
     return min(vals) if vals else None
+
+
+def _load_refill_pair_ratios(
+        folder: Path) -> Tuple[Dict[Tuple[str, str], float], str]:
+    """(type_pre, type_post) -> refilled pair-level ratio for the Refill
+    Explorer, from data_details/type_level_refill/refill_type_pairs.csv.
+    Prefers ``refilled_connection_ratio_adj`` (the threshold-conditioned
+    denominator) over plain ``refilled_connection_ratio`` — the same
+    preference order as the main table's loader. Returns
+    ``(mapping, source)`` with source in {'adjusted', 'plain', ''}."""
+    out: Dict[Tuple[str, str], float] = {}
+    source = ''
+    try:
+        pairs_csv = (Path(folder) / 'data_details' / 'type_level_refill'
+                     / 'refill_type_pairs.csv')
+        if not pairs_csv.exists():
+            return out, source
+        frame = pd.read_csv(pairs_csv)
+        col = None
+        for candidate, tag in (('refilled_connection_ratio_adj', 'adjusted'),
+                               ('refilled_connection_ratio', 'plain')):
+            if {'type_pre', 'type_post', candidate} <= set(frame.columns):
+                col, source = candidate, tag
+                break
+        if col is None:
+            return out, source
+        for _, r in frame.iterrows():
+            if pd.notna(r.get(col)):
+                out[(str(r['type_pre']), str(r['type_post']))] = float(
+                    r[col])
+    except (OSError, ValueError):
+        pass
+    return out, source
 
 
 # ---------------------------------------------------------------------------
@@ -939,6 +974,12 @@ def build_global(
                 'source'),
             'tgt_cov': (unit_query_cov or {}).get(unit.unit_id, {}).get(
                 'target'),
+            # Per-TYPE breakdown for the Overview coverage card: the same
+            # enrollment CSVs grouped by type ({type: 'n/N'} strings).
+            'src_cov_by_type': dict(
+                (unit_source_cov or {}).get(unit.unit_id) or {}),
+            'tgt_cov_by_type': dict(
+                (unit_target_cov or {}).get(unit.unit_id) or {}),
         })
 
     pair_cells: Dict[Tuple[str, str], Dict[str, int]] = {}
@@ -999,6 +1040,28 @@ def build_global(
         'rows': matrix_rows[:global_pairs],
     }
 
+    # ROUTE NETWORK (2026-10-07): ONE representative path per source-
+    # target pair — the SHORTEST, then the STRONGEST (max min_weight)
+    # within that length, then path asc for determinism. The network
+    # shows each pair's backbone route; the full graph stays in the
+    # linked vispath network html.
+    rep_paths: List[Tuple[str, ...]] = []
+    for unit in units:
+        frame = frames[unit.unit_id]
+        best = {}
+        for _, row in frame.iterrows():
+            ids = str(row['path']).split('->')
+            key = (ids[0], ids[-1])
+            length = len(ids) - 1
+            mw = row['min_weight']
+            mw = float('-inf') if pd.isna(mw) else float(mw)
+            cur = best.get(key)
+            # SHORTEST, then STRONGEST (max bottleneck), then path asc
+            cand = (length, -mw, ids)
+            if cur is None or cand < cur:
+                best[key] = cand
+        rep_paths.extend(v[2] for v in best.values())
+
     edge_count: Counter = Counter()
     min_hop_inter: Dict[str, int] = {}
     ever_source: Dict[str, bool] = {}
@@ -1006,26 +1069,23 @@ def build_global(
     node_paths: Counter = Counter()
     node_pairs: Dict[str, set] = defaultdict(set)
     ncols = 2
-    for unit in units:
-        frame = frames[unit.unit_id]
-        for row in frame.itertuples(index=False):
-            ids = str(row.path).split('->')
-            ncols = max(ncols, len(ids))
-            hops = len(ids) - 1
-            source, target = ids[0], ids[-1]
-            for hop, node in enumerate(ids):
-                node_paths[node] += 1
-                node_pairs[node].add((source, target))
-                if hop == 0:
-                    ever_source[node] = True
-                elif hop == hops:
-                    ever_target[node] = True
-                else:
-                    prior = min_hop_inter.get(node)
-                    if prior is None or hop < prior:
-                        min_hop_inter[node] = hop
-            for a, b in zip(ids, ids[1:]):
-                edge_count[(a, b)] += 1
+    for ids in rep_paths:
+        ncols = max(ncols, len(ids))
+        hops = len(ids) - 1
+        source, target = ids[0], ids[-1]
+        for hop, node in enumerate(ids):
+            node_paths[node] += 1
+            node_pairs[node].add((source, target))
+            if hop == 0:
+                ever_source[node] = True
+            elif hop == hops:
+                ever_target[node] = True
+            else:
+                prior = min_hop_inter.get(node)
+                if prior is None or hop < prior:
+                    min_hop_inter[node] = hop
+        for a, b in zip(ids, ids[1:]):
+            edge_count[(a, b)] += 1
 
     def node_col(node: str) -> int:
         if node in min_hop_inter:
@@ -1153,11 +1213,14 @@ def build_payload(
 # breakdown CSV writers
 # ---------------------------------------------------------------------------
 
+# SUSPENDED (2026-10-06): the probability columns (``probabilities``,
+# ``path_prob``) are withheld from the breakdown export — unverifiable
+# fidelity.
 PATHS_COLUMNS = [
     'dataset', 'threshold', 'unit', 'source', 'target', 'pair',
-    'rank_in_pair_length', 'path', 'weights', 'probabilities', 'ratios',
+    'rank_in_pair_length', 'path', 'weights', 'ratios',
     'coverage', 'min_weight', 'min_ratio', 'pair_min_ratio',
-    'path_prob', 'length',
+    'length',
     'source_bodyid_coverage', 'target_bodyid_coverage', 'paths_in_pair',
 ]
 
@@ -1588,14 +1651,56 @@ def _applied_title_attr(source: str) -> str:
             if source else '')
 
 
+def _render_per_type_coverage_table(unit: dict, show_label: bool) -> str:
+    """Per-TYPE breakdown under the aggregate query-coverage line: the
+    same enrollment CSVs grouped by type — source rows count bodyIds on
+    any path over the type's enrolled members, target rows bodyIds
+    reached over the type's resolved members. Worst coverage first
+    within each role, so the gaps surface at the top."""
+    rows = []
+    for role, key in (('source', 'src_cov_by_type'),
+                      ('target', 'tgt_cov_by_type')):
+        parsed = []
+        for type_name, n_over_n in (unit.get(key) or {}).items():
+            m = _COV_ELEMENT_RE.search(str(n_over_n or ''))
+            if not m:
+                continue
+            n, total = int(m.group(1)), int(m.group(2))
+            pct = (100.0 * n / total) if total else 0.0
+            parsed.append((type_name, n, total, pct))
+        parsed.sort(key=lambda t: (t[3], t[0]))
+        rows.extend((role,) + row for row in parsed)
+    if not rows:
+        return ''
+    body = []
+    for role, type_name, n, total, pct in rows:
+        title = f'{n:,} of {total:,} bodyIds in the {role} enrollment'
+        body.append(
+            '<tr>'
+            f'<td title="{_esc(title)}">{_esc(str(type_name))}</td>'
+            f'<td>{role}</td>'
+            f'<td title="{_esc(title)}">{n:,} / {total:,}</td>'
+            f'<td>{pct:.1f}%</td></tr>')
+    heading = 'Coverage by type'
+    if show_label:
+        heading += f' — {_esc(unit.get("label") or "")}'
+    return (
+        f'<h4 style="margin:14px 0 6px 0;">{heading}</h4>'
+        '<div class="sticky-table-container"><table><thead><tr>'
+        '<th>Type</th><th>Role</th><th>BodyIds</th><th>Covered</th>'
+        '</tr></thead><tbody>' + ''.join(body) + '</tbody></table></div>')
+
+
 def _render_query_coverage_card(payload: dict) -> str:
     """Overall (query-scope) source/target bodyId coverage on the
     Overview tab — over the whole enrollment, IGNORING path pairs:
     sources = bodyIds on ANY path (isInPath) / enrolled; targets =
     bodyIds reached (Checked) / resolved. One line per unit (cross
-    roots show every delegate)."""
+    roots show every delegate), followed by the per-type breakdown of
+    the same enrollment CSVs."""
     units = (payload.get('global') or {}).get('units') or []
     lines = []
+    tables = []
     for unit in units:
         parts = [_esc(unit['label'])]
         for side, key, verb in (('source', 'src_cov', 'on paths'),
@@ -1609,15 +1714,22 @@ def _render_query_coverage_card(payload: dict) -> str:
                          f'{verb}')
         if len(parts) > 1:
             lines.append('<div>· ' + ' — '.join(parts) + '</div>')
+        table = _render_per_type_coverage_table(
+            unit, show_label=len(units) > 1)
+        if table:
+            tables.append(table)
     if not lines:
         return ''
     return (
         '<div class="card"><h3>Overall bodyId coverage (query scope)</h3>'
         + ''.join(lines)
+        + ''.join(tables)
         + '<p class="cap-note">Query-scope coverage over the WHOLE '
           'enrollment, independent of path pairs: source bodyIds lying on '
           'any emitted path (isInPath) over all enrolled; target bodyIds '
-          'reached by any path (Checked) over all resolved. Per-pair and '
+          'reached by any path (Checked) over all resolved. The per-type '
+          'rows use the same denominators per type (enrolled / resolved '
+          'members), worst coverage first. Per-pair and '
           'per-path coverage live in the Global tab and the Pair '
           'Explorer.</p></div>')
 
@@ -1646,17 +1758,13 @@ def _render_refill_card(run_dir: Path) -> str:
         frame = frame[frame['refill_weight'].fillna(0) > 0]
         frame = frame.sort_values('refill_weight', ascending=False).head(12)
         for _, r in frame.iterrows():
-            ratio = r.get('refilled_connection_ratio')
-            ratio_txt = (f'{float(ratio):.4g}'
-                         if pd.notna(ratio) else '—')
             rows.append(
                 '<tr><td>' + _esc(str(r['type_pre'])) + '</td>'
                 '<td>' + _esc(str(r['type_post'])) + '</td>'
                 f'<td>{int(r.get("emitted_weight", 0) or 0):,}</td>'
                 f'<td>+{int(r.get("refill_weight", 0) or 0):,}</td>'
                 f'<td><strong>{int(r.get("refilled_total", 0) or 0):,}'
-                '</strong></td>'
-                f'<td>{ratio_txt}</td></tr>')
+                '</strong></td></tr>')
     except Exception:  # noqa: BLE001 - table is best-effort
         rows = []
     edges = prov.get('refill_pair_count') or prov.get('refill_edges')
@@ -1674,13 +1782,47 @@ def _render_refill_card(run_dir: Path) -> str:
         syn_total = None
     if syn_total:
         summary_bits.append(f'{syn_total:,} synapses of budget-cut mass')
+    # R3 unfired residual: >=asked emitted-pair mass that fired on NO
+    # chain (off-route); disclosed, not silently dropped.
+    unfired = None
+    try:
+        if 'unfired_residual' in pd.read_csv(pairs_csv, nrows=1).columns:
+            unfired = int(pd.read_csv(
+                pairs_csv)['unfired_residual'].fillna(0).sum())
+    except Exception:  # noqa: BLE001
+        unfired = None
+    if unfired:
+        summary_bits.append(f'{unfired:,} synapses unfired (off-route)')
     summary = ('Recovered ' + ' / '.join(summary_bits)
                if summary_bits else 'Refill records present')
+    # the REAL applied synapse threshold (the cut that defined the
+    # emitted set) labels the mass columns — not a static string
+    cutoff = prov.get('applied_threshold')
+    try:
+        cutoff_lbl = f'synapse \u2265 {float(cutoff):g}'
+    except (TypeError, ValueError):
+        cutoff_lbl = 'synapse'
+    _th_titles = {
+        'Pre type': 'The presynaptic type of the pair.',
+        'Post type': 'The postsynaptic type of the pair.',
+        f'Emitted ({cutoff_lbl})': 'The pair\u2019s synapse mass at the '
+            'applied cutoff \u2014 what connection_type.csv counts.',
+        f'Refill ({cutoff_lbl})': 'Recovered mass behind the cutoff on '
+            'this pair, riding in-scope routes only \u2014 a certified '
+            'lower bound of the complete-at-asked refill.',
+        f'Refilled total ({cutoff_lbl})': 'Emitted + Refill \u2014 the '
+            'complete-at-asked strength of the pair.',
+    }
     table_html = (
         '<div class="sticky-table-container"><table><thead><tr>'
-        '<th>Pre type</th><th>Post type</th><th>Emitted</th>'
-        '<th>Refill</th><th>Refilled total</th>'
-        '<th>Refilled ratio</th></tr></thead><tbody>'
+        '<th>Pre type</th><th>Post type</th>'
+        f'<th title="{_esc(_th_titles[f"Emitted ({cutoff_lbl})"])}">'
+        f'Emitted ({cutoff_lbl})</th>'
+        f'<th title="{_esc(_th_titles[f"Refill ({cutoff_lbl})"])}">'
+        f'Refill ({cutoff_lbl})</th>'
+        f'<th title="{_esc(_th_titles[f"Refilled total ({cutoff_lbl})"])}">'
+        f'Refilled total ({cutoff_lbl})</th>'
+        '</tr></thead><tbody>'
         + ''.join(rows) + '</tbody></table></div>') if rows else ''
     return (
         '<div class="card"><h3>Type-level refill (budget-cut mass '
@@ -1689,10 +1831,16 @@ def _render_refill_card(run_dir: Path) -> str:
         'data_details/type_level_refill/; the refilled strength is a '
         'certified lower bound of the complete-at-asked refill).</p>'
         + table_html
-        + '<p class="cap-note">refilled_total = emitted + refill mass; '
-          'refilled ratio uses the threshold-free all-post denominator '
-          '(F9). Full bodyId-level detail in '
-          'refill_bodyId_pairs.csv.</p></div>') if (summary_bits or rows) else ''
+        + '<p class="cap-note">refilled_total = emitted + refill mass '
+          '(synapse \u2265 cutoff). Full tables: the Refill tab and '
+          'data_details/type_level_refill/; the standalone '
+          '<code>type_level_refill/</code> folder mirrors the refilled '
+          'data in the connection-table format with its own '
+          'heatmap/network. What "Adjusted ratios" and the refill mean: '
+          'see the exported '
+          '<a href="_UserGuide_please_read_me.html" target="_blank">'
+          'user guide</a> (Ratios, adjusted ratios, and the refill).</p>'
+        '</div>') if (summary_bits or rows) else ''
 
 
 def _render_overview(payload: dict, run_dir: Path,
@@ -2067,6 +2215,16 @@ def _render_global_tab(payload: dict) -> str:
 
     stats = glob['edge_stats']
     nstat = glob['node_stats']
+    # full-graph link: the vispath network html(s) carry the COMPLETE
+    # graph this backbone summarizes
+    full_links = []
+    for item in (run.get('vispath') or []):
+        if 'network' in item.get('label', '').lower():
+            full_links.append(
+                f'<a href="{_esc(item["href"])}" target="_blank">'
+                f'{_esc(item["label"])}</a>')
+    full_note = (' Full graph: ' + ' · '.join(full_links) + '.') \
+        if full_links else ''
     network_card = (
         '<div class="card"><h3>Global route network</h3>'
         '<div class="legend">'
@@ -2077,11 +2235,13 @@ def _render_global_tab(payload: dict) -> str:
         '<span><span class="chip" style="background:#94a3b8"></span>intermediate in 1 pair</span>'
         '</div>'
         '<div id="global-network"></div>'
-        f'<p class="cap-note">Showing the top {stats["shown"]} of '
-        f'{stats["total"]:,} distinct edges by traversal count '
-        f'({nstat["shown"]} of {nstat["total"]:,} nodes). Edge width ∝ '
-        f'traversals; hover a node for its path/pair counts. The full edge '
-        f'set is derivable from pair_breakdown_paths.csv.</p></div>')
+        f'<p class="cap-note">One representative route per source-target '
+        f'pair — the SHORTEST, then the strongest (max bottleneck) within '
+        f'that length: {stats["shown"]} of {stats["total"]:,} distinct '
+        f'edges ({nstat["shown"]} of {nstat["total"]:,} nodes). Edge width '
+        f'∝ traversals; hover a node for its path/pair counts.'
+        f'{full_note} Full edge set derivable from '
+        f'pair_breakdown_paths.csv.</p></div>')
 
     return units_card + matrix_card + hist_card + network_card
 
@@ -2097,37 +2257,103 @@ def unit_csv_candidates(run_dir: Path, unit: dict) -> List[Path]:
 
 
 def _render_refill_tab(payload: dict, run_dir: Path) -> str:
-    """The standalone Refill page (plan §2.3, 2026-10-05): the type-level
-    refill as a first-class view parallel to the path data. Always
-    present; per-unit sections (cross roots show every delegate). With
-    records: recovered-mass header + the FULL refilled type-pairs table
-    (plain + adjusted ratios, percent form). Without records (budget did
-    not bite): the honest hint state — nothing was cut, nothing to
-    recover."""
+    """The standalone Refill page: the SECOND path-building round (the
+    asked-threshold re-enumeration within the involved-types restricted
+    graph) presented as a SECOND Pair Explorer over the refilled
+    type-level paths — selects → per-pair panes → capped
+    "Top paths per length" tables, exactly the Pair Explorer layout
+    (plan round 2026-10-06, user correction). Always present. States:
+    records + paths table → the explorer; records without the paths
+    table (legacy run) → summary + export links + a regeneration note;
+    no records → the honest "budget did not bite" hint."""
     run = payload['run']
+    refill = payload.get('refill')
+    refill_complete = payload.get('refill_complete')
     units = run.get('units') or []
     sections = []
+    has_records = False
     for unit in units:
         label = _esc(unit.get('label') or unit.get('id') or '')
         unit_rel = unit.get('id') or ''
-        folder = (Path(run_dir) / 'dataset_data' / unit_rel
-                  if unit.get('dataset') else Path(run_dir))
-        sections.append(_render_refill_section(folder, label))
+        if unit.get('dataset'):
+            folder = Path(run_dir) / 'dataset_data' / unit_rel
+            link_prefix = f'dataset_data/{unit_rel}/'
+        else:
+            folder = Path(run_dir)
+            link_prefix = ''
+        section, found = _render_refill_section(folder, label, link_prefix)
+        sections.append(section)
+        has_records = has_records or found
     if not sections:
-        sections.append(_render_refill_section(Path(run_dir), 'Run'))
-    return (
+        section, found = _render_refill_section(Path(run_dir), 'Run')
+        sections.append(section)
+        has_records = has_records or found
+    parts = [
         '<div class="card"><h3>Type-level refill</h3>'
         '<p style="color:var(--secondary-color);font-size:0.9em;">The '
-        'budget-cut mass recovered behind the emitted type pairs — a '
-        'standalone view parallel to the path data. refilled_total = '
-        'emitted + refill mass; ratios use percent form and the adjusted '
-        'variant carries the threshold-conditioned denominator. Full '
-        'bodyId detail: data_details/type_level_refill/'
-        'refill_bodyId_pairs.csv.</p></div>' + ''.join(sections))
+        'budget-cut mass recovered behind the emitted type pairs — one '
+        'more round of path building at the ASKED threshold within the '
+        'involved-types restricted graph, presented as a second Pair '
+        'Explorer with TWO views: <b>Complete at asked</b> (every '
+        'asked-threshold chain — emitted + refill + skipped per hop; the '
+        'default) and <b>Refill-carrying</b> (only the chains that carry '
+        'recovered mass). refilled_total = emitted + refill mass; ratios '
+        'use percent form and the adjusted variant carries the '
+        'threshold-conditioned denominator.</p></div>'
+    ]
+    parts.extend(sections)
+    has_tables = ((refill and refill.get('pairs'))
+                  or (refill_complete and refill_complete.get('pairs')))
+    if has_tables:
+        parts.append(_render_refill_select_card(
+            refill, refill_complete))
+        parts.append('<div id="refill-pane"></div>')
+    elif has_records:
+        parts.append(
+            '<div class="card"><p class="cap-note">This run has refill '
+            'records but no refilled type-level paths table '
+            '(<code>type_level_refill/refill_paths_type.csv</code>) — it '
+            'predates the refill path explorer. Regenerate with '
+            '<code>scripts/TypeLevelRefill.py &lt;run_folder&gt; '
+            '--connections ... --neuron-table ... --in-run</code> to '
+            'browse the recovered routes here.</p></div>')
+    return ''.join(parts)
 
 
-def _render_refill_section(folder: Path, label: str) -> str:
-    """One unit's refill section: data table or the not-bitten hint."""
+def _render_refill_select_card(refill: Optional[dict],
+                               refill_complete: Optional[dict]) -> str:
+    """The refill Select-pairs card: same layout as the Pair Explorer's,
+    with r-prefixed element ids bound to RefillExplorer. The mode bar
+    (RefillModes in the page JS) switches between the complete-at-asked
+    and refill-carrying datasets; the JS builds the buttons itself."""
+    units_for_bar = ((refill_complete or {}).get('units')
+                     or (refill or {}).get('units') or [])
+    multi = len(units_for_bar) > 1
+    unit_select = ('<label>Unit<select id="r-sel-unit"></select></label>'
+                   if multi else '')
+    return (
+        '<div class="card"><h3>Select refilled pairs</h3>'
+        '<div id="refill-mode-bar" class="button-group" '
+        'style="margin-bottom:10px;"></div>'
+        '<div class="select-row">'
+        + unit_select +
+        '<label>Source<select id="r-sel-source" multiple size="6">'
+        '</select></label>'
+        '<label>Target<select id="r-sel-target" multiple size="6">'
+        '</select></label>'
+        '</div>'
+        '<p class="cap-note">Ctrl/Cmd-click (shift-click for ranges) to '
+        'select several sources and/or targets — the pane renders every '
+        'selected source × target combination that has refilled paths, '
+        'stacked. The capped tables rank the refilled type paths exactly '
+        'like the Pair Explorer ranks the emitted ones (top '
+        'per length, bottleneck-first).</p></div>')
+
+
+def _render_refill_section(folder: Path, label: str,
+                           link_prefix: str = '') -> Tuple[str, bool]:
+    """One unit's recovered-mass summary + export links. Returns
+    (html, has_records)."""
     folder = Path(folder)
     prov_path = folder / 'data_details' / 'type_level_refill' / (
         'refill_provenance.json')
@@ -2159,33 +2385,7 @@ def _render_refill_section(folder: Path, label: str) -> str:
                 + '<p class="cap-note">No refill records — the budget did '
                   'not bite: the emitted pairs are the complete set at '
                   'this threshold; there is no cut mass to recover.'
-                + detail + '</p></div>')
-
-    rows = []
-    has_adj = False
-    try:
-        frame = pd.read_csv(pairs_csv)
-        has_adj = 'refilled_connection_ratio_adj' in frame.columns
-        frame = frame[frame['refill_weight'].fillna(0) > 0]
-        frame = frame.sort_values('refill_weight', ascending=False)
-        for _, r in frame.iterrows():
-            ratio = _fmt_pct(r.get('refilled_connection_ratio'))
-            cells = (
-                '<tr><td>' + _esc(str(r['type_pre'])) + '</td>'
-                '<td>' + _esc(str(r['type_post'])) + '</td>'
-                f'<td>{int(r.get("emitted_weight", 0) or 0):,}</td>'
-                f'<td>+{int(r.get("refill_weight", 0) or 0):,}</td>'
-                f'<td><strong>{int(r.get("refilled_total", 0) or 0):,}'
-                '</strong></td>'
-                f'<td>{ratio}</td>')
-            if has_adj:
-                cells += ('<td>' + _fmt_pct(
-                    r.get('refilled_connection_ratio_adj')) + '</td>')
-            cells += ('<td>' + _esc(str(r.get('split_status') or '')) +
-                      '</td></tr>')
-            rows.append(cells)
-    except Exception:  # noqa: BLE001 - table is best-effort
-        rows = []
+                + detail + '</p></div>', False)
 
     edges = prov.get('refill_pair_count') or prov.get('refill_edges')
     syn_total = None
@@ -2199,21 +2399,80 @@ def _render_refill_section(folder: Path, label: str) -> str:
         summary_bits.append(f'{int(edges):,} bodyId edges')
     if syn_total:
         summary_bits.append(f'{syn_total:,} synapses of budget-cut mass')
+    has_adj = False
+    try:
+        has_adj = 'refilled_connection_ratio_adj' in pd.read_csv(
+            pairs_csv, nrows=1).columns
+    except Exception:  # noqa: BLE001
+        has_adj = False
     adj_note = ('' if has_adj else
                 ' (adjusted refilled ratios arrive with runs from the '
                 'updated engine; this run predates the column)')
-    table = (
-        '<div class="sticky-table-container"><table><thead><tr>'
-        '<th>Pre type</th><th>Post type</th><th>Emitted</th>'
-        '<th>Refill</th><th>Refilled total</th><th>Refilled ratio</th>'
-        + ('<th>Refilled ratio (adj)</th>' if has_adj else '')
-        + '<th>Split</th></tr></thead><tbody>'
-        + ''.join(rows) + '</tbody></table></div>') if rows else ''
+
+    # -- exports + standalone-folder artifacts (the per-connection pair
+    # table and the bodyId detail are exported files only).
+    data_rel = f'{link_prefix}data_details/type_level_refill'
+    export_links = [
+        (f'{data_rel}/refill_type_pairs.csv',
+         'refill_type_pairs.csv — full per-connection type-pairs table'),
+        (f'{data_rel}/refill_bodyId_pairs.csv',
+         'refill_bodyId_pairs.csv — full bodyId detail'),
+        (f'{data_rel}/refill_provenance.json', 'refill_provenance.json'),
+    ]
+    standalone_links = [
+        (f'{link_prefix}type_level_refill/complete_at_asked_paths_type.csv',
+         'complete_at_asked_paths_type.csv — complete-at-asked chains '
+         'with the emitted/refill/skipped per-hop split'),
+        (f'{link_prefix}type_level_refill/refill_paths_type.csv',
+         'refill_paths_type.csv — refilled type paths (allpaths format)'),
+        (f'{link_prefix}type_level_refill/refill_connection_type.csv',
+         'refill_connection_type.csv — refill mass, connection-table '
+         'format'),
+        (f'{link_prefix}type_level_refill/refilled_connection_type.csv',
+         'refilled_connection_type.csv — complete-at-asked '
+         '(emitted + refill)'),
+        (f'{link_prefix}type_level_refill/refilled_connection_bodyId.csv',
+         'refilled_connection_bodyId.csv — complete-at-asked bodyId edges'),
+        (f'{link_prefix}type_level_refill/refill_type_heatmap.html',
+         '🔥 refill type heatmap'),
+        (f'{link_prefix}type_level_refill/refill_type_network.html',
+         '🕸️ refill type network'),
+        (f'{link_prefix}type_level_refill/refill_bodyId_heatmap.html',
+         '🔥 refill bodyId heatmap'),
+        (f'{link_prefix}type_level_refill/refill_bodyId_network.html',
+         '🕸️ refill bodyId network'),
+    ]
+
+    def _links_html(pairs):
+        found = []
+        for href, text in pairs:
+            if (folder / href[len(link_prefix):]).exists():
+                found.append(f'<a href="{_esc(href)}" target="_blank">'
+                             f'{_esc(text)}</a>')
+        return found
+
+    export_html = _links_html(export_links)
+    standalone_html = _links_html(standalone_links)
+    export_note = ''
+    if export_html:
+        export_note = ('<p class="cap-note">Exported data: '
+                       + ' · '.join(export_html) + '</p>')
+    standalone_note = ''
+    if standalone_html:
+        standalone_note = (
+            '<p class="cap-note">Standalone folder '
+            f'<code>{_esc(link_prefix)}type_level_refill/</code> — the '
+            'refilled data mirrored in the path/connection data format '
+            'with its own visualizations: '
+            + ' · '.join(standalone_html) + '</p>')
+
     return (head
             + '<p>Recovered ' + ' / '.join(summary_bits)
             + ' — recovered behind the emitted pairs; a certified lower '
             'bound of the complete-at-asked refill.' + adj_note + '</p>'
-            + table + '</div>')
+            + export_note
+            + standalone_note
+            + '</div>', True)
 
 
 def _render_explorer_template(run: dict) -> str:
@@ -2239,7 +2498,8 @@ def _render_explorer_template(run: dict) -> str:
 def _render_page_shell(payload_json: str, overview_html: str,
                        global_html: str, data_html: str, explorer_html: str,
                        run: dict, generated_at: str,
-                       refill_html: str = '') -> str:
+                       refill_html: str = '',
+                       guide_link: str = '') -> str:
     return """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2255,6 +2515,7 @@ __VIS_NETWORK__
   <h1>🛤️ Paths Pair Report</h1>
   <p>__KIND__ — __RUNAME__</p>
   <p>__META__</p>
+  <p style="margin-top:2px;">__GUIDELINK__</p>
   <p style="opacity:0.8;">Generated: __GENERATED__ · capped views; full data in
   paths_pair_breakdown/ beside this file</p>
 </header>
@@ -2288,6 +2549,7 @@ __JS__
            .replace('__KIND__', _esc(run['kind'])) \
            .replace('__RUNAME__', _esc(run['name'])) \
            .replace('__META__', _esc(_meta_summary(run))) \
+           .replace('__GUIDELINK__', guide_link) \
            .replace('__GENERATED__', _esc(generated_at)) \
            .replace('__OVERVIEW__', overview_html) \
            .replace('__GLOBAL__', global_html) \
@@ -2392,6 +2654,7 @@ REPORT_JS = r"""
       document.querySelectorAll('.page-tab-btn').forEach(function(b) {
         b.classList.toggle('active', b.dataset.page === page); });
       if (page === 'explorer') { Explorer.mount(); }
+      if (page === 'refill') { RefillModes.init(); }
       if (page === 'global') { GlobalNet.render(); }
       try { history.replaceState(null, '', '#tab=' + page); } catch (e) {}
     },
@@ -2660,7 +2923,23 @@ REPORT_JS = r"""
   };
 
   // ---- pair explorer ----
-  var Explorer = {
+  // Explorer factory: the SAME explorer machinery powers the Pair
+  // Explorer tab (main paths) and the Refill tab (the second
+  // path-building round's refilled type paths) — only the data array,
+  // element ids and run context differ per instance.
+  function makeExplorer(cfg) {
+    var P = cfg.data;
+    var RUN = cfg.run;
+    var UNIT_LABEL = {};
+    // rebuilt on every mount: mode switches (RefillModes.set) swap
+    // cfg.units after construction
+    function refreshUnitLabels() {
+      UNIT_LABEL = {};
+      (cfg.units || []).forEach(function(u) {
+        UNIT_LABEL[u.id] = u.label; });
+    }
+    refreshUnitLabels();
+    return {
     // TAB.show re-clones the page template on EVERY visit, so mount() must
     // fully re-bind the fresh selects and re-render each time — an
     // early-return guard here left the pane empty whenever the user
@@ -2668,12 +2947,15 @@ REPORT_JS = r"""
     byUnit: null,
     mount: function() {
       this.byUnit = {};
-      DATA.pairs.forEach(function(p) {
-        (Explorer.byUnit[p.unit] = Explorer.byUnit[p.unit] || []).push(p); });
-      this.unitSel = document.getElementById('sel-unit');
-      this.sourceSel = document.getElementById('sel-source');
-      this.targetSel = document.getElementById('sel-target');
-      var units = DATA.run.units.map(function(u) { return u.id; });
+      refreshUnitLabels();
+      var self = this;
+      cfg.data.forEach(function(p) {
+        (self.byUnit[p.unit] = self.byUnit[p.unit] || []).push(p); });
+      this.unitSel = document.getElementById(cfg.unitSelId);
+      this.sourceSel = document.getElementById(cfg.sourceSelId);
+      this.targetSel = document.getElementById(cfg.targetSelId);
+      if (!this.sourceSel || !this.targetSel) { return; }
+      var units = cfg.units.map(function(u) { return u.id; });
       var self = this;
       if (this.unitSel) {
         units.forEach(function(uid) {
@@ -2686,8 +2968,8 @@ REPORT_JS = r"""
       }
       this.sourceSel.addEventListener('change', function() { self.fillTargets(); });
       this.targetSel.addEventListener('change', function() { self.render(); });
-      var biggest = DATA.pairs.reduce(function(a, b) {
-        return (b.paths_total > a.paths_total) ? b : a; }, DATA.pairs[0]);
+      var biggest = cfg.data.reduce(function(a, b) {
+        return (b.paths_total > a.paths_total) ? b : a; }, cfg.data[0]);
       if (biggest) {
         this.setPair(biggest.id);
       } else {
@@ -2695,7 +2977,7 @@ REPORT_JS = r"""
       }
     },
     currentUnit: function() {
-      return this.unitSel ? this.unitSel.value : DATA.run.units[0].id;
+      return this.unitSel ? this.unitSel.value : (cfg.units[0] || {}).id;
     },
     fillSources: function() {
       var unit = this.currentUnit();
@@ -2747,7 +3029,7 @@ REPORT_JS = r"""
       this.render();
     },
     setPair: function(pairId) {
-      var pair = DATA.pairs.filter(function(p) { return p.id === pairId; })[0];
+      var pair = cfg.data.filter(function(p) { return p.id === pairId; })[0];
       if (!pair) { return; }
       if (this.unitSel) { this.unitSel.value = pair.unit; }
       this.fillSources();
@@ -2778,7 +3060,7 @@ REPORT_JS = r"""
     },
 
     render: function() {
-      var pane = document.getElementById('pair-pane');
+      var pane = document.getElementById(cfg.paneId);
       if (!pane) { return; }
       pane.innerHTML = '';
       var pairs = this.currentPairs();
@@ -2806,11 +3088,11 @@ REPORT_JS = r"""
       badges.appendChild(badge(p.shared + ' shared · ' + p.unique + ' unique intermediates', 'badge-success'));
       badges.appendChild(badge('unit: ' + UNIT_LABEL[p.unit], 'badge-warning'));
       head.appendChild(badges);
-      if (DATA.run.shortest) {
+      if (RUN.shortest) {
         head.appendChild(elt('p', 'cap-note',
           'Shortest mode: only the minimum-hop paths per bodyId pair (ties '
           + 'kept); a type-level pair can still span several lengths, so '
-          + 'the per-length top-' + DATA.run.top_per_length
+          + 'the per-length top-' + RUN.top_per_length
           + ' cap applies normally.'));
       }
       pane.appendChild(head);
@@ -2833,15 +3115,19 @@ REPORT_JS = r"""
       // links
       var foot = elt('p', 'cap-note');
       foot.appendChild(document.createTextNode('Full list: '));
-      var a = elt('a', null, 'pair_breakdown_paths.csv');
-      a.href = 'paths_pair_breakdown/pair_breakdown_paths.csv';
+      var a = elt('a', null, cfg.csvLabel);
+      a.href = cfg.csvHref;
       a.target = '_blank';
       foot.appendChild(a);
-      foot.appendChild(document.createTextNode(' — filter '));
-      foot.appendChild(elt('span', 'code', 'pair = ' + p.source + '->' + p.target));
-      foot.appendChild(document.createTextNode(' and '));
-      foot.appendChild(elt('span', 'code', 'unit = ' + (UNIT_LABEL[p.unit] || p.unit)));
-      (DATA.run.vispath || []).forEach(function(item) {
+      if (cfg.filterPairs) {
+        foot.appendChild(document.createTextNode(' — filter '));
+        foot.appendChild(elt('span', 'code',
+          'pair = ' + p.source + '->' + p.target));
+        foot.appendChild(document.createTextNode(' and '));
+        foot.appendChild(elt('span', 'code',
+          'unit = ' + (UNIT_LABEL[p.unit] || p.unit)));
+      }
+      (RUN.vispath || []).forEach(function(item) {
         foot.appendChild(document.createTextNode(' · '));
         var v = elt('a', null, item.label);
         v.href = item.href; v.target = '_blank';
@@ -2896,18 +3182,20 @@ REPORT_JS = r"""
 
       var foot = elt('p', 'cap-note');
       foot.appendChild(document.createTextNode('Full list: '));
-      var a = elt('a', null, 'pair_breakdown_paths.csv');
-      a.href = 'paths_pair_breakdown/pair_breakdown_paths.csv';
+      var a = elt('a', null, cfg.csvLabel);
+      a.href = cfg.csvHref;
       a.target = '_blank';
       foot.appendChild(a);
-      foot.appendChild(document.createTextNode(' — filter '));
-      var filterText = 'pair in (' + names.slice(0, 6).join(', ')
-        + (names.length > 6 ? ', …' : '') + ')';
-      foot.appendChild(elt('span', 'code',
-        filterText.replace(/→/g, '->')));
-      foot.appendChild(document.createTextNode(' and '));
-      foot.appendChild(elt('span', 'code',
-        'unit = ' + (UNIT_LABEL[pairs[0].unit] || pairs[0].unit)));
+      if (cfg.filterPairs) {
+        foot.appendChild(document.createTextNode(' — filter '));
+        var filterText = 'pair in (' + names.slice(0, 6).join(', ')
+          + (names.length > 6 ? ', …' : '') + ')';
+        foot.appendChild(elt('span', 'code',
+          filterText.replace(/→/g, '->')));
+        foot.appendChild(document.createTextNode(' and '));
+        foot.appendChild(elt('span', 'code',
+          'unit = ' + (UNIT_LABEL[pairs[0].unit] || pairs[0].unit)));
+      }
       pane.appendChild(foot);
       return pane;
     },
@@ -2927,9 +3215,8 @@ REPORT_JS = r"""
           g.rows.forEach(function(r) {
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
               path: r.path, len: g.len, mw: r.mw, mr: r.mr, pr: r.pr,
-              pp: r.pp,
               weights: r.weights, ratios: r.ratios, pradj: r.pradj,
-              coverage: r.coverage, scov: r.scov, tcov: r.tcov,
+              coverage: r.coverage,
               total: g.total});
           });
         });
@@ -2943,13 +3230,7 @@ REPORT_JS = r"""
       // the conditional ratio columns had landed in different positions
       // in the two hand-kept lists).
       var union = pairs.length > 1;
-      var ratioRun = DATA.run.rank_by === 'min_ratio';
-      var prSrc = (DATA.run.pair_ratio_source || '');
-      var hasPr = pairs.some(function(p) {
-        return (p.table.groups || []).some(function(g) {
-          return (g.rows || []).some(function(r) { return r.pr != null; });
-        });
-      });
+      var ratioRun = RUN.rank_by === 'min_ratio';
       var hasAdj = pairs.some(function(p) {
         return (p.table.groups || []).some(function(g) {
           return (g.rows || []).some(function(r) { return r.pradj; });
@@ -2962,17 +3243,51 @@ REPORT_JS = r"""
         if (v == null || v !== v) { return '—'; }
         return (100 * v).toFixed(2) + '%';
       }
-      function pctTd(v) {
-        var td = elt('td', null, fmtPct(v));
-        if (v != null && v === v && Math.abs(100 * v) < 0.005) {
-          td.title = String(v);
-        }
-        return td;
-      }
+
       function tdc(v, title) {
         var td = elt('td', null, v);
         if (title) { td.title = title; }
         return td;
+      }
+      // Presence-matrix dash format (cross-dataset paths-tab style):
+      // -v1-v2- with the BOTTLENECK (minimum) bolded. Ratios below
+      // 0.01% render as (<0.01%).
+      function dashList(listStr, fmt) {
+        var vals = String(listStr || '').replace(/^\[/, '')
+          .replace(/\]$/, '').split(',').map(function(x) {
+            return x.trim(); })
+          .filter(function(x) { return x !== ''; });
+        if (!vals.length) { return '—'; }
+        var nums = vals.map(function(v) {
+          var n = parseFloat(v);
+          return isNaN(n) ? null
+            : (v.indexOf('%') !== -1 ? n / 100 : n);
+        });
+        var present = nums.filter(function(n) { return n !== null; });
+        var mn = present.length ? Math.min.apply(null, present) : null;
+        var parts = vals.map(function(v, i) {
+          var shown = fmt ? fmt(v, nums[i]) : v;
+          if (nums[i] !== null && nums[i] === mn) {
+            return '<strong>' + shown + '</strong>';
+          }
+          return shown;
+        });
+        return '-' + parts.join('-') + '-';
+      }
+      function dashTd(listStr, fmt, title) {
+        var td = elt('td');
+        td.innerHTML = dashList(listStr, fmt);
+        if (title) { td.title = title; }
+        return td;
+      }
+      function ratioDashFmt(v, n) {
+        if (n === null) { return '—'; }
+        return n < 0.0001 ? '(<0.01%)' : fmtPct(n);
+      }
+      function adjHeader(minSyn) {
+        return minSyn
+          ? 'Adj. ratios (inputs \u2265 ' + minSyn + ' synapses)'
+          : 'Adj. ratios (threshold-conditioned inputs)';
       }
       var COLS = [
         { h: '#', cell: function(row, i) {
@@ -2984,68 +3299,54 @@ REPORT_JS = r"""
             td.appendChild(elt('strong', null, row.path));
             return td; } },
         { h: 'Len', cell: function(row) { return elt('td', null, row.len); } },
-        { h: 'Min weight',
-          title: 'Weakest hop of this path — the realized synapse '
-            + 'mass of that hop (distinct bodyId edges at that position).',
-          cell: function(row) { return elt('td', null, fmt(row.mw)); } },
-        ratioRun && { h: 'Min ratio',
-          title: 'Weakest per-hop realized share on this path (this '
-            + 'run\u2019s ranking key). Percent form (§2.5).',
-          cell: function(row) { return pctTd(row.mr); } },
-        hasAdj && { h: 'Adj. ratios',
-          title: 'Per-hop ADJUSTED ratio list: connection_ratio_adj of '
-            + 'each (pre, post) type hop — the threshold-conditioned '
-            + 'input share (refill-aware); percent form. Hops missing '
-            + 'from connection_type.csv render —.',
-          cell: function(row) { return elt('td', null, row.pradj || '—'); } },
-        (prSrc || hasPr) && { h: prSrc === 'adjusted'
-            ? 'Pair-ratio (adjusted)' : 'Pair-ratio',
-          title: prSrc === 'adjusted'
-            ? 'Weakest PAIR-level ADJUSTED share among this path\u2019s '
-              + 'hops (connection_ratio_adj: threshold-conditioned '
-              + 'denominator) — independent of which bodyIds realize '
-              + 'the path.'
-            : 'Weakest PAIR-level mass share among this path\u2019s '
-              + 'hops: the pair\u2019s kept synapse mass / the post '
-              + 'type\u2019s full-membership incoming mass — independent '
-              + 'of which bodyIds realize the path (pair-level readouts '
-              + 'live in data_details/connection_type.csv). Percent form.',
-          cell: function(row) { return pctTd(row.pr); } },
-        { h: 'Path prob', cell: function(row) { return pctTd(row.pp); } },
         { h: 'Weights',
-          title: 'Per-hop realized synapse mass: the distinct bodyId '
-            + 'edges backing each hop at that position — the same edges '
-            + 'behind the Coverage n, NOT the pair\u2019s cross-depth total.',
-          cell: function(row) { return elt('td', null, row.weights); } },
-        { h: 'Ratios',
-          title: 'Per-hop REALIZED share on every weight basis '
-            + '(engine fix 2026-10-05): the mass of the bodyId edges '
-            + 'backing that hop at that position / the post type\u2019s '
-            + 'full-membership incoming mass — the same edges behind '
-            + 'Weights and the Coverage n, and the same canonical '
-            + 'denominator as data_details/connection_type.csv. Percent '
-            + 'form (§2.5); pair-level shares remain there.',
-          cell: function(row) { return elt('td', null, row.ratios); } },
-        { h: 'Coverage',
-          title: 'Per-node coverage: distinct bodyIds realizing this '
-            + 'exact sequence at that position / the type\u2019s '
-            + 'population in the run\u2019s discovered network.',
+          title: 'Per-hop realized synapse mass, -w1-w2- (presence-matrix '
+            + 'format; the BOTTLENECK — weakest hop — is bolded): the '
+            + 'distinct bodyId edges backing each hop at that position — '
+            + 'the same edges behind the Coverage n, NOT the pair\u2019s '
+            + 'cross-depth total.',
           cell: function(row) {
-            return tdc(row.coverage || '',
+            return dashTd(row.weights, null,
+              'Per-hop realized synapse mass; bold = the bottleneck.'); } },
+        { h: 'Ratios (all inputs)',
+          title: 'Per-hop REALIZED share on every weight basis, -r1-r2- '
+            + '(presence-matrix format; the BOTTLENECK — weakest hop — '
+            + 'is bolded; shares below 0.01% show (<0.01%)): the mass of '
+            + 'the bodyId edges backing that hop at that position / the '
+            + 'post type\u2019s full-membership incoming mass — ALL '
+            + 'inputs (Min Synapse Count = 1), the same canonical '
+            + 'denominator as data_details/connection_type.csv.',
+          cell: function(row) {
+            return dashTd(row.ratios, ratioDashFmt,
+              'Per-hop realized share; bold = the bottleneck; '
+              + '(<0.01%) = below 0.01%.'); } },
+        hasAdj && { h: adjHeader(RUN.min_synapse),
+          title: 'Per-hop ADJUSTED ratio list, -r1-r2- (presence-matrix '
+            + 'format; the weakest entry is bolded; shares below 0.01% '
+            + 'show (<0.01%)): connection_ratio_adj of each (pre, post) '
+            + 'type hop — the THRESHOLD-CONDITIONED input share: the '
+            + 'denominator counts only edges at or above the run\u2019s '
+            + 'Min Synapse Count (always \u2265 Ratios; equals them when '
+            + 'N \u2264 1). Hops missing from connection_type.csv '
+            + 'render \u2014 in place. The pair-level adjusted share is '
+            + 'the weakest entry of this list.',
+          cell: function(row) {
+            return dashTd(row.pradj, ratioDashFmt,
+              'Per-hop adjusted share; bold = the weakest entry; '
+              + '(<0.01%) = below 0.01%.'); } },
+        { h: 'Coverage',
+          title: 'Per-node coverage, n1/N1, n2/N2, ...: distinct bodyIds '
+            + 'realizing this exact sequence at that position / the '
+            + 'type\u2019s population in the run\u2019s discovered '
+            + 'network (first entry = source coverage, last = target '
+            + 'coverage).',
+          cell: function(row) {
+            var plain = String(row.coverage || '')
+              .replace(/^\[/, '').replace(/\]$/, '');
+            return tdc(plain || '—',
               'Per-node bodyId coverage: distinct bodyIds on the emitted '
               + 'paths at that position / the type\u2019s members in the '
               + 'run\u2019s discovered network.'); } },
-        { h: 'Source coverage',
-          title: 'PER PATH: distinct source bodyIds realizing this exact '
-            + 'path / the source type\u2019s members in the run (first '
-            + 'entry of the coverage list; pair-scope value when the '
-            + 'row has no list).',
-          cell: function(row) { return tdc(row.scov || '—'); } },
-        { h: 'Target coverage',
-          title: 'PER PATH: distinct target bodyIds realizing this exact '
-            + 'path / the target type\u2019s members in the run (last '
-            + 'entry of the coverage list).',
-          cell: function(row) { return tdc(row.tcov || '—'); } },
       ].filter(Boolean);
       var wrap = elt('div', 'sticky-table-container');
       var table = elt('table');
@@ -3067,7 +3368,7 @@ REPORT_JS = r"""
         var gr = elt('tr', 'group-row');
         var gtd = elt('td', null, len + ' hops — ' + rows.length
           + ' shown (' + (union ? 'union, top '
-            + DATA.run.top_per_length + ' per pair' : 'top ' + rows.length)
+            + RUN.top_per_length + ' per pair' : 'top ' + rows.length)
           + ' of ' + rows.reduce(function(acc, r) {
             return acc + r.total; }, 0) + ')');
         gtd.colSpan = colSpan;
@@ -3093,8 +3394,8 @@ REPORT_JS = r"""
       pairs.forEach(function(p) { totalAll += p.paths_total; });
       var note = elt('p', 'cap-note');
       note.textContent = 'Showing ' + totalShown + ' of ' + totalAll
-        + ' paths (top-' + DATA.run.top_per_length + ' per pair and length, '
-        + 'rank by ' + DATA.run.rank_by
+        + ' paths (top-' + RUN.top_per_length + ' per pair and length, '
+        + 'rank by ' + RUN.rank_by
         + (pairs.length > 1
            ? ', union re-ranked by '
              + (ratioRun ? 'min ratio' : 'min weight')
@@ -3152,7 +3453,7 @@ REPORT_JS = r"""
         vizArea.appendChild(elt('p', 'cap-note', caption));
       }
       function bindHover() {
-        var pane = document.getElementById('pair-pane');
+        var pane = document.getElementById(cfg.paneId);
         if (!pane) { return; }
         pane.querySelectorAll('tr[data-path]').forEach(function(tr) {
           if (tr.dataset.hoverBound) { return; }
@@ -3206,6 +3507,94 @@ REPORT_JS = r"""
       activate('all');
       return card;
     }
+    };
+  }
+  // Threshold labels for the ratio headers: the run's own Min Synapse
+  // Count (from the sniffed metadata).
+  var MIN_SYN = DATA.run.meta ? DATA.run.meta.min_synapse : null;
+  var Explorer = makeExplorer({
+    data: DATA.pairs, units: DATA.run.units,
+    run: {rank_by: DATA.run.rank_by, min_synapse: MIN_SYN,
+          pair_ratio_source: DATA.run.pair_ratio_source,
+          shortest: DATA.run.shortest,
+          top_per_length: DATA.run.top_per_length,
+          vispath: DATA.run.vispath || []},
+    unitSelId: 'sel-unit', sourceSelId: 'sel-source',
+    targetSelId: 'sel-target', paneId: 'pair-pane',
+    csvLabel: 'pair_breakdown_paths.csv',
+    csvHref: 'paths_pair_breakdown/pair_breakdown_paths.csv',
+    filterPairs: true });
+  // Refill tab mode switch (plan-refill-complete-at-asked-paths R2/D2):
+  // one explorer, TWO datasets — the COMPLETE-AT-ASKED paths (default)
+  // and the REFILL-carrying paths. A mode switch mutates the shared cfg
+  // and re-mounts; makeExplorer itself stays untouched (the main
+  // Explorer shares it).
+  var REFILL_CFG = {
+    data: [], units: [],
+    run: {
+      rank_by: DATA.run.rank_by, pair_ratio_source: '',
+      min_synapse: MIN_SYN,
+      shortest: DATA.run.shortest,
+      top_per_length: DATA.run.top_per_length, vispath: []
+    },
+    unitSelId: 'r-sel-unit', sourceSelId: 'r-sel-source',
+    targetSelId: 'r-sel-target', paneId: 'refill-pane',
+    csvLabel: '', csvHref: '', filterPairs: false };
+  var RefillExplorer = makeExplorer(REFILL_CFG);
+  var RefillModes = {
+    sets: {},
+    init: function() {
+      var self = this;
+      this.sets = {};
+      if (DATA.refill_complete && DATA.refill_complete.pairs &&
+          DATA.refill_complete.pairs.length) {
+        this.sets.complete = {
+          data: DATA.refill_complete.pairs,
+          units: DATA.refill_complete.units,
+          pair_ratio_source: DATA.refill_complete.pair_ratio_source,
+          csvLabel: 'complete_at_asked_paths_type.csv',
+          csvHref: 'type_level_refill/complete_at_asked_paths_type.csv',
+          vispath: (DATA.refill_complete.vispath || []) };
+      }
+      if (DATA.refill && DATA.refill.pairs && DATA.refill.pairs.length) {
+        this.sets.refill = {
+          data: DATA.refill.pairs, units: DATA.refill.units,
+          pair_ratio_source: DATA.refill.pair_ratio_source,
+          csvLabel: 'refill_paths_type.csv',
+          csvHref: 'type_level_refill/refill_paths_type.csv',
+          vispath: (DATA.refill.vispath || []) };
+      }
+      var bar = document.getElementById('refill-mode-bar');
+      if (bar) {
+        bar.innerHTML = '';
+        var self2 = self;
+        [['complete', 'Complete at asked'],
+         ['refill', 'Refill-carrying']].forEach(function(item) {
+          if (!self2.sets[item[0]]) { return; }
+          var b = document.createElement('button');
+          b.type = 'button'; b.className = 'page-tab-btn';
+          b.textContent = item[1]; b.dataset.mode = item[0];
+          b.addEventListener('click', function() { self2.set(item[0]); });
+          bar.appendChild(b);
+        });
+      }
+      this.set(this.sets.complete ? 'complete'
+                                 : (this.sets.refill ? 'refill' : null));
+    },
+    set: function(mode) {
+      if (!mode || !this.sets[mode]) { return; }
+      var s = this.sets[mode];
+      REFILL_CFG.data = s.data; REFILL_CFG.units = s.units;
+      REFILL_CFG.run.pair_ratio_source = s.pair_ratio_source;
+      REFILL_CFG.run.vispath = s.vispath;
+      REFILL_CFG.csvLabel = s.csvLabel; REFILL_CFG.csvHref = s.csvHref;
+      var bar = document.getElementById('refill-mode-bar');
+      if (bar) {
+        bar.querySelectorAll('button').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.mode === mode); });
+      }
+      RefillExplorer.mount();
+    }
   };
 
   // ---- boot: parse the deep link, else Overview ----
@@ -3255,7 +3644,6 @@ def _build_unit_drawn(
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     'ratios': '' if pd.isna(row.get('ratios')) else str(row['ratios']),
                     'min_weight': row['min_weight'],
-                    'path_prob': row['path_prob'],
                     'rank': 0,
                 })
         drawn[(source, target)] = rows
@@ -3292,8 +3680,8 @@ def _attach_table_groups(
             take = length_group.head(top_per_length)
             rows = []
             for rank, (_, row) in enumerate(take.iterrows(), start=1):
-                path_scov, path_tcov = _path_end_coverage(
-                    row.get('coverage'))
+                self_cov = ('' if pd.isna(row.get('coverage'))
+                            else str(row['coverage']))
                 rows.append({
                     'rank': rank,
                     'path': str(row['path']),
@@ -3302,7 +3690,6 @@ def _attach_table_groups(
                     'mr': (None if pd.isna(row.get('min_ratio'))
                            else float(row['min_ratio'])),
                     'pr': _path_pair_ratio(row['path'], pair_ratio or {}),
-                    'pp': None if pd.isna(row['path_prob']) else float(row['path_prob']),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
                     # Percent convention (§2.5): the report payload shows
                     # xx.xx% lists; the breakdown CSV keeps raw strings.
@@ -3311,10 +3698,15 @@ def _attach_table_groups(
                         else str(row['ratios'])),
                     'pradj': _per_hop_adjusted_list(
                         row['path'], pair_ratio or {}),
-                    'coverage': ('' if pd.isna(row.get('coverage'))
-                                 else str(row['coverage'])),
-                    'scov': path_scov or pair_scov,
-                    'tcov': path_tcov or pair_tcov,
+                    # 2026-10-07: the per-path scov/tcov fields are
+                    # gone — the coverage list IS the coverage display
+                    # (n1/N1>n2/N2>... via the JS cell); rows without
+                    # their own list fall back to the pair-scope
+                    # endpoints (source>target).
+                    'coverage': (
+                        self_cov if self_cov else
+                        (f'{pair_scov}>{pair_tcov}'
+                         if (pair_scov or pair_tcov) else '')),
                 })
             groups.append({'len': int(length), 'total': len(length_group),
                            'rows': rows})
@@ -3441,6 +3833,133 @@ def generate_paths_pair_report(
         unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov,
         unit_pair_cov=unit_pair_cov, unit_query_cov=unit_query_cov)
 
+    # -- Refill datasets = the second path-building round. TWO tables
+    # when the run's mirror carries both (R1, plan
+    # plan-refill-complete-at-asked-paths): the REFILL-carrying paths
+    # (refill_paths_type.csv) and the COMPLETE-AT-ASKED paths
+    # (complete_at_asked_paths_type.csv — every asked-threshold chain
+    # with the emitted/refill/skipped per-hop split). Both run through
+    # the SAME machinery as the main tables; the Refill tab mounts a
+    # second Pair Explorer with a mode toggle (complete = default, D2).
+
+    def _build_refill_dataset(kind: str, filename: str) -> Optional[dict]:
+        frames_k: Dict[str, pd.DataFrame] = {}
+        units_k: List[Unit] = []
+        ratio_k: Dict[str, Dict[Tuple[str, str], float]] = {}
+        ratio_src_k: Dict[str, str] = {}
+        for unit in units:
+            csv_path = unit.folder / 'type_level_refill' / filename
+            if not csv_path.exists():
+                continue
+            try:
+                rframe = load_unit_paths(csv_path)
+            except Exception as exc:  # noqa: BLE001 - refill is additive
+                say(f'  ! {kind} paths for {unit.label} unreadable: {exc}')
+                continue
+            if rframe.empty:
+                continue
+            frames_k[unit.unit_id] = rframe
+            units_k.append(unit)
+            ratio_map, ratio_src = _load_refill_pair_ratios(unit.folder)
+            ratio_k[unit.unit_id] = ratio_map
+            ratio_src_k[unit.unit_id] = ratio_src
+        if not units_k:
+            return None
+        pairs_k: List[dict] = []
+        for unit in units_k:
+            rframe = frames_k[unit.unit_id]
+            r_rows, r_inter, r_stats = build_unit_breakdown(
+                rframe, rank_by,
+                source_cov=unit_source_cov.get(unit.unit_id) or {},
+                target_cov=unit_target_cov.get(unit.unit_id) or {},
+                pair_ratio=ratio_k.get(unit.unit_id))
+            r_drawn = _build_unit_drawn(rframe, rank_by, top_per_length)
+            r_counts: Dict[Tuple[str, str], Counter] = defaultdict(Counter)
+            r_minhop: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
+                dict)
+            for row in r_inter:
+                key = (row['source'], row['target'])
+                r_counts[key][row['intermediate']] = row['n_paths_using']
+                r_minhop[key][row['intermediate']] = row['min_hop_position']
+            for (source, target), stats in sorted(
+                    r_stats.items(),
+                    key=lambda item: (-item[1]['paths'], item[0])):
+                pairs_k.append(build_pair_entry(
+                    unit, source, target, stats, r_counts[key],
+                    r_minhop[key], r_drawn[(source, target)]))
+        used_ids: Dict[str, int] = {}
+        for entry in pairs_k:
+            base = _query_report_slug(
+                f"{entry['unit']}__{entry['source']}__{entry['target']}")
+            entry['id'] = base
+            if base in used_ids:
+                used_ids[base] += 1
+                entry['id'] = f'{base}_{used_ids[base]}'
+            else:
+                used_ids[base] = 1
+        for unit in units_k:
+            entries = [e for e in pairs_k if e['unit'] == unit.unit_id]
+            if entries:
+                _attach_table_groups(
+                    frames_k[unit.unit_id], rank_by, top_per_length,
+                    entries,
+                    source_cov=unit_source_cov.get(unit.unit_id) or {},
+                    target_cov=unit_target_cov.get(unit.unit_id) or {},
+                    pair_ratio=ratio_k.get(unit.unit_id))
+        # vispath network links for the pane footer (the mirror folder's
+        # per-level vispath networks cover every pair)
+        vis_links: List[Dict[str, str]] = []
+        seen_hrefs: set = set()
+        for unit in units_k:
+            prefix = (f'dataset_data/{unit.unit_id}/'
+                      if unit.dataset else '')
+            for fname, label in (
+                    ('refill_type_network.html',
+                     '🕸️ refill type network (vispath)'),
+                    ('refill_bodyId_network.html',
+                     '🕸️ refill bodyId network (vispath)')):
+                href = f'{prefix}type_level_refill/{fname}'
+                if (unit.folder / 'type_level_refill' / fname).exists() \
+                        and href not in seen_hrefs:
+                    seen_hrefs.add(href)
+                    vis_links.append({'href': href, 'label': label})
+
+        return {
+            'units': [{'id': u.unit_id, 'label': u.label,
+                       'dataset': u.dataset, 'threshold': u.threshold}
+                      for u in units_k],
+            'pairs': pairs_k,
+            'pair_ratio_source': next(
+                (ratio_src_k.get(u.unit_id, '') for u in units_k
+                 if ratio_src_k.get(u.unit_id)), ''),
+            'vispath': vis_links,
+        }
+
+    refill_payload = _build_refill_dataset(
+        'refill', 'refill_paths_type.csv')
+    refill_complete_payload = _build_refill_dataset(
+        'complete', 'complete_at_asked_paths_type.csv')
+    if refill_complete_payload is not None:
+        # completeness stamp: the AND over every contributing unit's own
+        # provenance (a cross root is complete only when all delegates are)
+        stamps = []
+        for unit in units:
+            prov_path = unit.folder / 'data_details' / 'type_level_refill' / (
+                'refill_provenance.json')
+            if not prov_path.exists():
+                continue
+            try:
+                stamps.append(json.loads(
+                    prov_path.read_text(encoding='utf-8')).get(
+                    'complete_at_asked'))
+            except Exception:  # noqa: BLE001
+                stamps.append(None)
+        refill_complete_payload['complete_at_asked'] = (
+            all(s is True for s in stamps) if stamps else None)
+
+    payload['refill'] = refill_payload
+    payload['refill_complete'] = refill_complete_payload
+
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
 
     # Cross-dataset runs also embed a single-unit report INTO every
@@ -3465,6 +3984,14 @@ def generate_paths_pair_report(
         if nested_reports:
             say(f'.nested reports: {len(nested_reports)} delegate folders')
 
+    # link the exported user guide when it exists (the detailed
+    # explanation of adjusted ratios and the refill lives there)
+    guide_file = run_dir / '_UserGuide_please_read_me.html'
+    guide_link = ''
+    if guide_file.exists():
+        guide_link = (' &middot; <a href="_UserGuide_please_read_me.html" '
+                      'target="_blank">\U0001f4d6 user guide (ratios, '
+                      'adjusted ratios, refill explained)</a>')
     html_str = _render_page_shell(
         payload_json,
         _render_overview(payload, run_dir, breakdown_paths),
@@ -3474,6 +4001,7 @@ def generate_paths_pair_report(
         payload['run'],
         _generated_stamp(),
         refill_html=_render_refill_tab(payload, run_dir),
+        guide_link=guide_link,
     )
     report_path = run_dir / REPORT_NAME
     with open(report_path, 'w', encoding='utf-8') as handle:

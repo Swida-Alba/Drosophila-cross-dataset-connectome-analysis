@@ -180,3 +180,26 @@ def test_statvis_matrix_shares_plotly_per_folder(tmp_path):
     shared = tmp_path / "plotly.min.js"
     assert shared.exists(), "shared per-folder plotly.min.js not written"
     assert 'src="plotly.min.js"' in html1 and 'src="plotly.min.js"' in html2
+    # relocation fallback: if the sibling library went missing (html moved
+    # into a subfolder without it), retry a copy one directory up — inline
+    # JS only, so the page stays fully offline
+    assert '"../plotly.min.js"' in html1
+
+
+def test_vispath_heatmap_inline_mode_is_self_contained(tmp_path):
+    """inline_plotly=True (the find-paths create_heatmap(s) mode) embeds
+    plotly.js INTO the page: no sibling library file and no script src at
+    all — the html renders no matter where it is moved."""
+    from vispath_pkg import VisConnMatInteractive
+    df = pd.DataFrame([[1, 2], [3, 4]], index=["A", "B"], columns=["X", "Y"])
+    out = tmp_path / "heatmap_inline.html"
+    VisConnMatInteractive(df, str(out), title="t", showfig=False,
+                          verbose=False, inline_plotly=True)
+    html = out.read_text(encoding="utf-8")
+    _assert_offline(html, "inline heatmap")
+    assert 'src="plotly.min.js"' not in html
+    assert '"../plotly.min.js"' not in html
+    assert not (tmp_path / "plotly.min.js").exists(), \
+        "inline mode must not write a side-file library"
+    # the embedded library IS there (plotly.min.js is ~4.8MB)
+    assert len(html) > 4_000_000

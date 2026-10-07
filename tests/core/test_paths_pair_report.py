@@ -383,11 +383,14 @@ def test_embedded_rows_are_in_csv(single_run):
                 hit = sub[sub["path"] == row["path"]]
                 assert len(hit) >= 1, f"{row['path']} missing from CSV"
                 assert int(hit.iloc[0]["rank_in_pair_length"]) == row["rank"]
-                # the two coverage columns embedded == CSV (pair-level n/N)
+                # the CSV coverage columns == the row coverage list's
+                # first/last entries (the payload scov/tcov fields are
+                # removed, 2026-10-07 — the coverage column carries them)
+                _parts = str(row["coverage"]).strip("[]").split(", ")
                 assert (str(hit.iloc[0]["source_bodyid_coverage"])
-                        == (row["scov"] or ""))
+                        == (_parts[0] if _parts else ""))
                 assert (str(hit.iloc[0]["target_bodyid_coverage"])
-                        == (row["tcov"] or ""))
+                        == (_parts[-1] if _parts else ""))
 
 
 def test_bodyid_coverage_source_target_n_over_n(tmp_path):
@@ -409,10 +412,14 @@ def test_bodyid_coverage_source_target_n_over_n(tmp_path):
     report = generate_paths_pair_report(run, log=None)
     payload = _payload(report.read_text(encoding="utf-8"))
     pair = payload["pairs"][0]
+    # 2026-10-07: the per-path Source/Target coverage COLUMNS are gone —
+    # the endpoints are the FIRST/LAST entries of the coverage list
+    # (rendered n1/N1>n2/N2>...); the CSV keeps the lossless columns
     for g in pair["table"]["groups"]:
         for row in g["rows"]:
-            assert row["scov"] == "2/3"
-            assert row["tcov"] == "2/3"
+            cov = str(row["coverage"])
+            assert cov.startswith("2/3"), cov
+            assert cov.endswith("2/3"), cov
     csv = pd.read_csv(run / OUTPUT_DIR_NAME / PATHS_CSV_NAME,
                       keep_default_na=False)
     assert (csv["source_bodyid_coverage"] == "2/3").all()
@@ -426,7 +433,9 @@ def test_bodyid_coverage_missing_files(tmp_path):
     payload = _payload(report.read_text(encoding="utf-8"))
     for g in payload["pairs"][0]["table"]["groups"]:
         for row in g["rows"]:
-            assert row["scov"] == "" and row["tcov"] == ""
+            # no enrollment files -> no per-node coverage list (the
+            # per-path scov/tcov fields are removed, 2026-10-07)
+            assert str(row.get("coverage") or "") == ""
 
 
 def test_no_presence_matrix_in_payload_and_pane(single_run):
@@ -731,12 +740,14 @@ def test_global_pair_matrix_and_network_cross_unit_join(cross_run):
         "dsA/minsyn_3": 2, "dsA/minsyn_5_applied_floor": 1, "dsB/minsyn_3": 2}
     assert row["cons"] == 3 and row["total"] == 5
     assert glob["pair_units_hist"] == {"3": 1}
-    # edge aggregation across units: S->X traversed by dsA/minsyn_3 + dsB
+    # 2026-10-07: the network carries ONE representative route per pair
+    # per unit — the SHORTEST, then strongest (max min_weight): dsA3 and
+    # dsB pick S->X->T, dsA5floor picks S->Y->T; S->Z->T is never drawn
     edges = {(e["f"], e["t"]): e["c"] for e in glob["network"]["edges"]}
     assert edges[("S", "X")] == 2 and edges[("X", "T")] == 2
-    assert edges[("S", "Y")] == 2 and edges[("Y", "T")] == 2
-    assert edges[("S", "Z")] == 1 and edges[("Z", "T")] == 1
-    assert glob["edge_stats"] == {"total": 6, "shown": 6}
+    assert edges[("S", "Y")] == 1 and edges[("Y", "T")] == 1
+    assert ("S", "Z") not in edges
+    assert glob["edge_stats"] == {"total": 4, "shown": 4}
     by_id = {n["id"]: n for n in glob["network"]["nodes"]}
     assert by_id["S"]["cls"] == "source" and by_id["T"]["cls"] == "target"
     # each intermediate is touched by exactly one pair -> unique (gray)
@@ -1021,7 +1032,9 @@ def test_overview_query_coverage_card_and_refill_card(tmp_path):
     assert "42 bodyId edges" in text          # provenance edge count
     assert "100 synapses of budget-cut mass" in text  # CSV sum, not the
     # ratio-mass provenance total
-    assert "Pair-ratio (adjusted)" in text
+    # Pair-ratio column REMOVED (2026-10-07): the pair-level adjusted
+    # share is the weakest entry of the Adj. ratios list
+    assert 'Pair-ratio (adjusted)' not in text
 
 
 # ---------------------------------------------------------------------------
@@ -1098,16 +1111,20 @@ def test_column_spec_header_cell_alignment_source_pins():
     # the hand-kept parallel lists are gone
     assert "var headers = ['#'];" not in js
     assert "headers.push('Path', 'Len'" not in js
-    # percent formatter + the rounding-to-zero title fallback
+    # percent formatter + the sub-0.01% display rule (2026-10-07:
+    # "(<0.01%)" replaced the old rounding-to-zero title fallback)
     assert "function fmtPct(v)" in js
     assert "toFixed(2) + '%'" in js
-    assert "Math.abs(100 * v) < 0.005" in js
+    assert "'(<0.01%)'" in js
 
 
 def test_refill_tab_present_with_hint_state(tmp_path):
     """The Refill tab is a standalone page: always present, hint state
-    when no records, full table when they exist (adjusted column when
-    the engine wrote it)."""
+    when no records. With records it mounts a SECOND Pair Explorer
+    (RefillExplorer) over the refilled type-level paths — selects →
+    per-pair pane with the same capped tables — while the per-connection
+    pair table stays an exported file. Legacy runs (records without the
+    refilled paths table) get a regeneration note."""
     from paths_pair_report import generate_paths_pair_report
     run = tmp_path / "find-paths-complete_FAFB_S9_to_T9_L2w3_20260101_000000"
     rows = [_row("S9->M->T9", 10)]
@@ -1118,24 +1135,125 @@ def test_refill_tab_present_with_hint_state(tmp_path):
     assert "TAB.show('refill')" in text
     assert "No refill records — the budget did not bite" in text
 
-    # now with records (+ the adjusted column)
+    # legacy layout: records WITHOUT the refilled paths table
     refill = run / "data_details" / "type_level_refill"
     refill.mkdir(parents=True)
     json.dump({"status": "refilled", "refill_edges": 7},
               open(refill / "refill_provenance.json", "w"))
     pd.DataFrame([
-        {"type_pre": "S9", "type_post": "T9", "emitted_weight": 5,
-         "refill_weight": 40, "refilled_total": 45,
-         "emitted_pair_count": 1, "refill_pair_count": 8,
-         "refilled_connection_ratio": 0.09,
+        {"type_pre": "S9", "type_post": "M", "emitted_weight": 5,
+         "refill_weight": 30, "refilled_total": 35,
+         "refilled_connection_ratio": 0.5,
+         "refilled_connection_ratio_adj": 0.5,
+         "split_status": "rederived_topn"},
+        {"type_pre": "M", "type_post": "T9", "emitted_weight": 3,
+         "refill_weight": 10, "refilled_total": 13,
+         "refilled_connection_ratio": 0.4,
          "refilled_connection_ratio_adj": 0.45,
          "split_status": "rederived_topn"},
     ]).to_csv(refill / "refill_type_pairs.csv", index=False)
     report = generate_paths_pair_report(run, log=None)
     text = report.read_text(encoding="utf-8")
-    assert "Refilled ratio (adj)" in text
-    assert "45.00%" in text            # refilled_connection_ratio_adj
-    assert "9.00%" in text             # plain refilled ratio
+    assert "predates the refill path explorer" in text
+    assert ('href="data_details/type_level_refill/refill_type_pairs.csv"'
+            in text)
+    assert "Refilled bodyId pairs" not in text
+
+    # with the refilled type paths table: the second explorer mounts
+    mirror = run / "type_level_refill"
+    mirror.mkdir()
+    pd.DataFrame([
+        {"path": "S9->M->T9", "weights": "[10, 8]", "ratios": "[0.5, 0.4]",
+         "min_weight": 8, "min_ratio": 0.4, "length": 2, "nt_types": "",
+         "coverage": "[1/1, 1/1, 1/1]"},
+        {"path": "S9->M2->T9", "weights": "[6, 4]", "ratios": "[0.3, 0.2]",
+         "min_weight": 4, "min_ratio": 0.2, "length": 2, "nt_types": "",
+         "coverage": "[1/1, 1/1, 1/1]"},
+    ]).to_csv(mirror / "refill_paths_type.csv", index=False)
+    # the COMPLETE-AT-ASKED table (plan-refill-complete-at-asked-paths):
+    # superset of chains with the three-way per-hop split
+    pd.DataFrame([
+        {"path": "S9->M->T9", "weights": "[18, 12]", "ratios": "[0.9, 0.6]",
+         "min_weight": 12, "min_ratio": 0.4, "length": 2, "nt_types": "",
+         "coverage": "[2/1, 2/1, 1/1]",
+         "emitted_weights": "[8, 4]", "refill_weights": "[10, 8]",
+         "skipped_weights": "[0, 0]"},
+    ]).to_csv(mirror / "complete_at_asked_paths_type.csv", index=False)
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    assert payload["refill"] and payload["refill"]["pairs"]
+    entry = payload["refill"]["pairs"][0]
+    assert (entry["source"], entry["target"]) == ("S9", "T9")
+    assert entry["paths_total"] == 2
+    assert entry["table"]["groups"][0]["len"] == 2
+    top = entry["table"]["groups"][0]["rows"][0]
+    assert top["path"] == "S9->M->T9" and top["mw"] == 8.0
+    assert top["pr"] == 0.45      # weakest hop's ADJUSTED refilled ratio
+    assert top["coverage"] == "[1/1, 1/1, 1/1]"
+    # the complete dataset (R2): superset chains, three-way split columns
+    assert payload["refill_complete"] and payload["refill_complete"]["pairs"]
+    centry = payload["refill_complete"]["pairs"][0]
+    assert centry["paths_total"] == 1
+    crow = centry["table"]["groups"][0]["rows"][0]
+    assert crow["path"] == "S9->M->T9" and crow["mw"] == 12.0
+    assert 'id="r-sel-source"' in text and 'id="r-sel-target"' in text
+    assert 'id="refill-pane"' in text
+    assert 'id="refill-mode-bar"' in text
+    assert "var RefillExplorer = makeExplorer(REFILL_CFG);" in text
+    assert "var RefillModes = {" in text
+    assert "Select refilled pairs" in text
+    assert 'href="type_level_refill/refill_paths_type.csv"' in text
+    assert ('href="type_level_refill/complete_at_asked_paths_type.csv"'
+            in text)
+    # D2: complete-at-asked is the DEFAULT mode
+    assert "this.sets.complete ? 'complete'" in text
+    # the per-connection pair table stays an exported file only
+    assert "<th>Refilled ratio (adj)</th>" not in text
+    assert "<th>Split</th>" not in text
+    # probability SUSPENDED (2026-10-06): neither explorer renders a
+    # Path prob column and the payload rows carry no pp field
+    assert '"Path prob"' not in text
+    assert "'pp'" not in text and '"pp"' not in text
+    # the breakdown CSV no longer exports probability columns
+    import csv as _csv
+    with open(run / OUTPUT_DIR_NAME / PATHS_CSV_NAME) as _h:
+        _header = next(_csv.reader(_h))
+    assert "probabilities" not in _header and "path_prob" not in _header
+
+
+def test_query_coverage_card_per_type_breakdown(tmp_path):
+    """The coverage card carries a per-type table under the aggregate
+    line: source rows = on paths / enrolled, target rows = reached /
+    resolved, worst coverage first within each role."""
+    run = tmp_path / "find-paths-complete_FAFB_SB_to_TB_L2w3_20260101_000000"
+    rows = [_row("SB->M->TB", 10)]
+    _write_csv(run, rows)
+    _write_enrollment_csv(run, [
+        {"bodyId": 1, "type": "SB", "isInPath": True},
+        {"bodyId": 2, "type": "SB", "isInPath": False},
+        {"bodyId": 3, "type": "SB2", "isInPath": False},
+        {"bodyId": 4, "type": "SB2", "isInPath": False},
+    ], "source_neurons.csv")
+    _write_enrollment_csv(run, [
+        {"bodyId": 20, "type": "TB", "Checked": True},
+        {"bodyId": 21, "type": "TB", "Checked": False},
+        {"bodyId": 22, "type": "TB2", "Checked": True},
+    ], "target_neurons.csv")
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    assert "Coverage by type" in text
+    block = text[text.index("Coverage by type"):]
+    # sources first (role order), worst coverage first within the role:
+    # SB2 0/2 before SB 1/2; then targets TB 1/2 before TB2 1/1
+    assert ">SB2</td>" in block and ">SB</td>" in block
+    assert block.index(">SB2</td>") < block.index(">SB</td>")
+    assert block.index(">TB</td>") < block.index(">TB2</td>")
+    assert block.index(">SB</td>") < block.index(">TB</td>")
+    assert "0 / 2</td>" in block and "1 / 2</td>" in block
+    assert "1 / 1</td>" in block
+    assert "<td>0.0%</td>" in block and "<td>100.0%</td>" in block
+    assert "<td>source</td>" in block and "<td>target</td>" in block
 
 
 def test_pair_level_ratio_two_row_shapes(tmp_path):
