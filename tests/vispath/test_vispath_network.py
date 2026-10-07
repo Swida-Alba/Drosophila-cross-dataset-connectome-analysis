@@ -522,6 +522,11 @@ class TestGeneratedHtmlStructure:
         assert "const idx = (Math.hypot(dxp, dyp) < rimD - 5)" in js
         assert "? ANCHOR_CENTER" in js
         assert "hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');" in js
+        # the center pin attaches at the PROXIMAL rim: the write direction
+        # is this node TOWARD the other node (first rim intersection) — an
+        # earlier sign flip attached target ends at the FAR rim
+        assert "const fdx = op.x - np.x;" in js
+        assert "const fdy = op.y - np.y;" in js
         # the CENTER badge sits at the NODE CENTER (unambiguous in-node
         # indicator) while the edge end anchors to the near rim intersection
         assert "function anchorHandleModelPos(" in js

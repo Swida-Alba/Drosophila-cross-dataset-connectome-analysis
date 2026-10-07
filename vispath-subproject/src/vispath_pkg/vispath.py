@@ -12853,13 +12853,16 @@ class VisualizePath:
                 const np = node.position();
                 // Drag INTO the node body = the CENTER-directed anchor
                 // (its round teal mark, facing the other node); around the
-                // rim = the nearest of the 8 compass anchors.
+                // rim = the nearest of the 8 compass anchors.  The center
+                // pin attaches at the PROXIMAL rim intersection: the FIRST
+                // rim point along the direction from this node TOWARD the
+                // other node — never the far-side (exit) intersection.
                 const dxp = cmx - np.x, dyp = cmy - np.y;
                 const rimD = rimDistance(node, dxp, dyp);
                 const other = anchorDrag.end === 'src' ? anchorDrag.edge.target() : anchorDrag.edge.source();
                 const op = other.position();
-                const fdx = anchorDrag.end === 'src' ? op.x - np.x : np.x - op.x;
-                const fdy = anchorDrag.end === 'src' ? op.y - np.y : np.y - op.y;
+                const fdx = op.x - np.x;
+                const fdy = op.y - np.y;
                 const idx = (Math.hypot(dxp, dyp) < rimD - 5)
                     ? ANCHOR_CENTER
                     : snapAnchorIndex(dxp, dyp);
