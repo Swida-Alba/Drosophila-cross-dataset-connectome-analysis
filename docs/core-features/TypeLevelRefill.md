@@ -104,6 +104,18 @@ separate_hemispheres=...)`).
 | `refill_provenance.json` | Thresholds/budgets (incl. the run's `graph_pruning_record`), induced-graph sizes, `table_reproduced`, `refill_truncated`, and the disclosure counters: `skipped_pairs_not_emitted_type_pair` (per-type-pair census + capped examples; EMPTY under the 2026-10-07 route scope — pruned edges are disclosed as `non_emitted_pair_mass` instead), `excluded_edges_non_involved_endpoint`, `boundary_refill_edge_count/weight/examples_at_or_above_w0`. |
 | `README.md` | Semantics + join recipe (join on `(type_pre, type_post)` against `connection_type.csv` summed across its `conn_layer` rows). |
 
+### Ratio-basis refills run at synapse >= 1
+
+Plain ratio-basis refills always use **synapse >= 1** as the mass floor
+(the run's own forced min synapse; the AND-specified value under
+`threshold_combination='and'`), and the F9 denominators sum only
+>=1-synapse edges — matching the run's `min_weight=1` fetch so the
+second round's universe and ratios are complete. Stamped as
+`refill_synapse_floor` in the provenance. In the pair report the
+Weights column on ratio runs labels the forced min synapse (never the
+applied RATIO) and the Adj. ratios column is removed (adj == plain at
+min synapse 1).
+
 ### Standalone mirror folder (`<run_folder>/type_level_refill/`)
 
 When generated inside the run flow (automatic hook or `--in-run`), the

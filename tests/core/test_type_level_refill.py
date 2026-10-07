@@ -1303,3 +1303,54 @@ def test_type_incoming_applied_written(tmp_path):
     got = frame.set_index('type')['incoming'].to_dict()
     for ty, mass in expect.items():
         assert abs(got.get(ty, 0) - mass) < 1e-6, (ty, mass)
+
+
+def test_ratio_mode_refill_floor_synapse_ge_1(tmp_path):
+    """RATIO-MODE FLOOR (2026-10-07, user directive): plain ratio-basis
+    refills always run at synapse >= 1 — the run's own forced floor. A
+    sub-1 edge in the stream (which the run's min_weight=1 fetch never
+    saw) must NOT enter the second round NOR inflate the F9 denominators,
+    even when its ratio clears the asked tier."""
+    run = tmp_path / 'find-paths-complete_TEST_s_to_t_L2r0_05_20260101_000000'
+    run.mkdir()
+    (run / 'parameters.txt').write_text(
+        'weight basis:                  connection_ratio (bodyId)\n'
+        'requested_threshold:           0.05\n'
+        'applied_threshold:             0.5\n'
+        'applied_threshold_source:      strongest_first_budget\n'
+        'strongest_first_budget:        100\n'
+        'strongest_first_budget_bitten: True\n'
+        'strongest_first_tau:           0.5\n'
+        'min synapse number:            1\n'
+        'max interlayer:                2\n'
+        'aggregate method:              product\n'
+        'filter by:                     bodyId\n'
+        'separate hemispheres:          False\n'
+        'exclude intra-type connections: False\n',
+        encoding='utf-8')
+    (run / 'data_details').mkdir()
+    # the run's emitted table: ONE edge (s1->t1, 10 synapses). The run
+    # fetched with min_weight=1, so the 0.9-synapse edge never existed
+    # for it.
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TT', 'weight': 10,
+         'nt_type': '', 'connection_ratio': 1.0, 'conn_layer': '0->1'},
+    ]).to_csv(run / 'data_details' / 'connection_type.csv', index=False)
+    pd.DataFrame([{'bodyId': 's1', 'type': 'TS', 'isInPath': True},
+                  {'bodyId': 's2', 'type': 'TS', 'isInPath': False}]).to_csv(
+        run / 'source_neurons.csv', index=False)
+    pd.DataFrame([{'bodyId': 't1', 'type': 'TT', 'Checked': True}]).to_csv(
+        run / 'target_neurons.csv', index=False)
+
+    from type_level_refill import compute_type_level_refill
+    rec = compute_type_level_refill(
+        run,
+        edges=[('s1', 't1', 10.0), ('s2', 't1', 0.9)],
+        type_map={'s1': 'TS', 's2': 'TS', 't1': 'TT'},
+        write=False)
+    assert rec['status'] == 'refilled'
+    assert rec['table_reproduced'] is True
+    # the floor is stamped and the sub-1 edge is EXCLUDED: refill mass 0
+    assert rec['refill_synapse_floor'] == 1
+    assert rec['refill_weight_total'] == 0
+    assert rec['refill_edges'] == 0

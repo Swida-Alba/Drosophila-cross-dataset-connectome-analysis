@@ -222,6 +222,15 @@ Written automatically whenever the run produced refill records (applied
 threshold &gt; asked; see `data_details/type_level_refill/` for the raw
 records): the refilled data mirrored in the path/connection data format,
 parallel to `find_reciprocal/`.
+*   **Ratio-basis refills** run at **synapse \u2265 1** (the run's own
+    forced min synapse; the AND-specified value under
+    `threshold_combination='and'`), and the second round's F9
+    denominators sum only \u22651 edges — stamped as
+    `refill_synapse_floor` in the provenance. In the pair report,
+    ratio-basis runs label the Weights column with the forced min
+    synapse (never the applied RATIO), name the ratio tier separately on
+    the refill card, and carry **no Adj. ratios column** (the adjusted
+    ratio equals the plain ratio by construction at min synapse 1).
 *   **`refill_paths_type.csv`**: the REFILLED type-level paths — the
     second path-building round's product (asked-threshold enumeration on
     the involved-types induced subgraph, restricted to paths carrying

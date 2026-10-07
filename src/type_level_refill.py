@@ -688,6 +688,11 @@ def compute_type_level_refill(
         'aggregate_method': aggregate_method,
         'graph_pruning_record': prov.get('graph_pruning_record'),
         'source_note': source_note,
+        # basis disclosure (the report's cutoff labels are mode-aware):
+        # on ratio runs the applied threshold is a RATIO and the mass
+        # cutoff is the forced min synapse
+        'weight_basis': ('connection_ratio' if ratio_mode else 'synapse'),
+        'min_synapse': prov.get('min_synapse'),
     }
 
     # -- gate (I4): refill only when a budget raised the applied threshold
@@ -800,8 +805,14 @@ def compute_type_level_refill(
         # fills it with per-layer multiplicity; the all-mode branch here)
         post_totals: Dict[str, float] = defaultdict(float)
         if ratio_mode:
+            # RATIO-MODE FLOOR (2026-10-07): the run itself forces
+            # min_synapse to 1 (or the AND-specified floor) and fetches
+            # with min_weight=1, so the F9 denominators sum only edges
+            # the run could ever see — sub-floor stream rows (w < 1)
+            # must not inflate them.
             for u, v, w in edges:
-                post_totals[str(v)] += float(w)
+                if float(w) >= 1:
+                    post_totals[str(v)] += float(w)
         non_involved_excluded = 0
         # R3 residual accumulator: raw PHYSICAL mass of >=asked edges on
         # EMITTED type pairs that entered the induced graph — the union
@@ -814,8 +825,14 @@ def compute_type_level_refill(
         # from the same edge source).
         _and_mode = str(prov.get('threshold_combination',
                                  '')).strip().lower().startswith('and')
-        and_syn_floor = (prov.get('min_synapse')
-                         if (_and_mode and ratio_mode) else None)
+        # RATIO-MODE FLOOR (2026-10-07, user directive): PLAIN ratio mode
+        # always refills to synapse >= 1 — the run's own forced floor —
+        # so the second round's universe is complete; "unless specified
+        # independently" = AND mode's own min_synapse.
+        if ratio_mode:
+            and_syn_floor = (prov.get('min_synapse') if _and_mode else 1)
+        else:
+            and_syn_floor = None
         and_ratio_tier = (_parse_float(prov.get('min connection ratio'))
                           if (_and_mode and not ratio_mode) else None)
         and_post_totals: Dict[str, float] = defaultdict(float)
@@ -1095,6 +1112,11 @@ def compute_type_level_refill(
     # ROUTE SCOPE disclosure: >=asked mass on non-emitted pairs pruned
     # from the second-round graph (out-of-scope routes are not built).
     rec['non_emitted_pair_mass'] = int(non_emitted_pair_mass)
+    # RATIO-MODE FLOOR disclosure: the second round's synapse floor
+    # (1 = the run's forced min_synapse; the AND-specified value under
+    # 'and'; None on synapse-basis runs where `asked` is the floor).
+    if ratio_mode:
+        rec['refill_synapse_floor'] = float(and_syn_floor or 1)
     if write:
         # Standalone mirror folder: only for the DEFAULT in-run record
         # location — a custom --out dir means "leave the run folder
@@ -1245,6 +1267,13 @@ graph must fire on some ENUMERATED asked-threshold path (any chain,
 not only the Pair Explorer's chain scope — the pair totals and the
 chain tables are intentionally different scopes); mass that fires on
 no enumerated path (off-route geometry) is disclosed per pair as
+RATIO-MODE FLOOR (2026-10-07): plain ratio-basis refills always run
+at synapse >= 1 (the run's own forced min_synapse; the AND-specified
+value under threshold_combination='and'), and the F9 denominators sum
+only w >= 1 edges — matching the run's min_weight=1 fetch so the
+second round's universe and ratios are complete. Stamped as
+`refill_synapse_floor`.
+
 `unfired_residual = asked_pair_mass - emitted_weight - refill_weight`
 (0 on clean runs; nonzero = off-route mass +, when the refill guard
 bit, guard-missed mass + pruned non-emitted-pair mass on the pair).

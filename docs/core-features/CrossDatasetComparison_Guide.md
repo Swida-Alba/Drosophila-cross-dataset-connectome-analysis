@@ -950,6 +950,16 @@ pre- or post-neuron before aggregation. Dropped rows are written once at
 retain their raw rows so the comparison-level filter is the single source of
 truth.
 
+### Path presence matrices key through the merge policy
+
+The path lane (presence matrices, per-dataset path tables, conservation
+donuts, path similarity) keys every path node through the QUERY-ANCHORED
+merge policy first (the same tier the edge lane uses), falling back to
+the canonical resolver toward the policy's anchor dataset. N-to-1
+groupings (e.g. FAFB R7/R8 vs male-cns R7p/R7y/R7d subtypes) therefore
+merge under the group label — identical routes across datasets share one
+presence row — instead of failing closed to raw per-dataset names.
+
 ### Traversal Probability
 
 ****SUSPENDED (2026-10-06, unverifiable fidelity)** — probability values are no longer exported, displayed, or used for ranking.**

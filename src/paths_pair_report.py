@@ -1842,10 +1842,28 @@ def _render_refill_card(run_dir: Path) -> str:
     # the REAL applied synapse threshold (the cut that defined the
     # emitted set) labels the mass columns — not a static string
     cutoff = prov.get('applied_threshold')
+    # MODE-AWARE (2026-10-07): on ratio-basis runs the applied threshold
+    # is a RATIO — labeling it "synapse >= 0.01" is wrong; the mass
+    # columns' cutoff there is the forced min synapse (1), with the
+    # ratio tier named separately.
+    ratio_basis = str(prov.get('weight_basis') or '').startswith(
+        'connection_ratio')
     try:
-        cutoff_lbl = f'synapse \u2265 {float(cutoff):g}'
+        cutoff_val = float(cutoff)
     except (TypeError, ValueError):
-        cutoff_lbl = 'synapse'
+        cutoff_val = None
+    if ratio_basis:
+        min_syn = prov.get('min_synapse')
+        try:
+            min_syn = float(min_syn)
+        except (TypeError, ValueError):
+            min_syn = 1.0
+        cutoff_lbl = (f'synapse \u2265 {min_syn:g}'
+                      + (f', ratio \u2265 {cutoff_val:g}'
+                         if cutoff_val is not None else ''))
+    else:
+        cutoff_lbl = (f'synapse \u2265 {cutoff_val:g}'
+                      if cutoff_val is not None else 'synapse')
     _th_titles = {
         'Pre type': 'The presynaptic type of the pair.',
         'Post type': 'The postsynaptic type of the pair.',
@@ -3343,7 +3361,9 @@ REPORT_JS = r"""
             td.appendChild(elt('strong', null, row.path));
             return td; } },
         { h: 'Len', cell: function(row) { return elt('td', null, row.len); } },
-        { h: 'Weights (synapse ≥ ' + (RUN.applied || RUN.min_synapse) + ')',
+        { h: 'Weights (synapse ≥ ' + (RUN.ratio_basis
+            ? (RUN.min_synapse || 1)
+            : (RUN.applied || RUN.min_synapse)) + ')',
           title: 'Per-hop realized synapse mass, -w1-w2- (presence-matrix '
             + 'format; the BOTTLENECK — weakest hop — is bolded): the '
             + 'distinct bodyId edges backing each hop at that position — '
@@ -3364,7 +3384,7 @@ REPORT_JS = r"""
             return dashTd(row.ratios, ratioDashFmt,
               'Per-hop realized share; bold = the bottleneck; '
               + '(<0.01%) = below 0.01%.'); } },
-        hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
+        !RUN.ratio_basis && hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
           title: 'Per-hop ADJUSTED ratio list, -r1-r2- (presence-matrix '
             + 'format; the weakest entry is bolded; shares below 0.01% '
             + 'show (<0.01%)): connection_ratio_adj of each (pre, post) '
@@ -3556,13 +3576,19 @@ REPORT_JS = r"""
   // Threshold labels for the ratio headers: the run's own Min Synapse
   // Count (from the sniffed metadata).
   var MIN_SYN = DATA.run.meta ? DATA.run.meta.min_synapse : null;
+  // ratio-basis runs: the applied threshold is a RATIO, not a synapse
+  // cutoff; the Weights scope is the forced min synapse (1) and the
+  // adjusted-ratio column is removed (adj == plain by construction).
+  var RATIO_BASIS = !!(DATA.run.meta
+    && String(DATA.run.meta.weight_basis || '')
+      .startsWith('connection_ratio'));
   // the APPLIED threshold (the cut that defined the emitted set) — the
   // Pair Explorer's Weights/Adj scope; refill views are asked-scoped
   var APPLIED = DATA.run.meta ? DATA.run.meta.applied_threshold : null;
   var Explorer = makeExplorer({
     data: DATA.pairs, units: DATA.run.units,
     run: {rank_by: DATA.run.rank_by, min_synapse: MIN_SYN,
-          applied: APPLIED,
+          applied: APPLIED, ratio_basis: RATIO_BASIS,
           pair_ratio_source: DATA.run.pair_ratio_source,
           shortest: DATA.run.shortest,
           top_per_length: DATA.run.top_per_length,
@@ -3581,7 +3607,7 @@ REPORT_JS = r"""
     data: [], units: [],
     run: {
       rank_by: DATA.run.rank_by, pair_ratio_source: '',
-      min_synapse: MIN_SYN,
+      min_synapse: MIN_SYN, applied: APPLIED, ratio_basis: RATIO_BASIS,
       shortest: DATA.run.shortest,
       top_per_length: DATA.run.top_per_length, vispath: []
     },

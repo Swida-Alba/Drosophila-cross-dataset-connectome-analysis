@@ -1306,3 +1306,35 @@ def test_pair_level_ratio_two_row_shapes(tmp_path):
     mapping2, source2 = _load_pair_level_ratios(run2)
     assert source2 == "adjusted"
     assert mapping2[("SD", "TD")] == 0.12  # not 3x0.12
+
+
+def test_ratio_basis_labels_and_adj_column_removed(tmp_path):
+    """Ratio-basis runs (2026-10-07): the Weights header scopes to the
+    forced min synapse (1) — NOT the applied RATIO (the old header read
+    'Weights (synapse >= 0.01)'); the Adj. ratios column is removed
+    entirely (adj == plain by construction at min synapse 1); the
+    Overview refill card names the ratio tier separately."""
+    run = tmp_path / "find-paths-complete_FAFB_S10_to_T10_L2r0_01_20260101_000000"
+    _write_csv(run, [_row("S10->M->T10", 10)])
+    (run / "parameters.txt").write_text(
+        "weight basis:                  connection_ratio (bodyId)\n"
+        "min synapse number:            1\n"
+        "applied_threshold:             0.01\n", encoding="utf-8")
+    (run / "data_details").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"type_pre": "S10", "type_post": "M", "weight": 5,
+         "nt_type": "ACH", "connection_ratio": 0.1,
+         "traversal_probability": 0.3, "block_probability": 0.7,
+         "conn_layer": "0->1", "connection_ratio_adj": 0.4},
+    ]).to_csv(run / "data_details" / "connection_type.csv", index=False)
+    report = generate_paths_pair_report(run, log=None)
+    text = report.read_text(encoding="utf-8")
+    payload = _payload(text)
+    assert payload["run"]["meta"]["weight_basis"] == "connection_ratio"
+    assert payload["run"]["meta"]["applied_threshold"] == "0.01"
+    # JS: ratio_basis flag threaded into BOTH explorer configs and the
+    # column gates
+    assert "var RATIO_BASIS" in text
+    assert "ratio_basis: RATIO_BASIS" in text
+    assert "!RUN.ratio_basis && hasAdj" in text          # Adj removed
+    assert "RUN.ratio_basis\n            ? (RUN.min_synapse || 1)" in text

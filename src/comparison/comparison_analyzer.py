@@ -1061,6 +1061,17 @@ class ComparisonAnalyzer:
         if self._mapper_snapshot is None:
             self._mapper_snapshot = get_mapper_snapshot(
                 self.parameters._auto_type_mapper)
+        # Merge-policy tier FIRST (2026-10-07): the path lane used to key
+        # toward the FIXED canonical namespace only, where an N-to-1
+        # grouping (e.g. FAFB R7/R8 vs male-cns R7p/R7y/...) resolves as
+        # a split and FAILS CLOSED to the raw name — guaranteeing
+        # cross-dataset path keys never merged (0 shared presence-matrix
+        # rows on a real FAFB x MCNS run while the edge lane, which
+        # consults the query-anchored MergePolicy, shared 528/673).
+        # Mirror the edge lane (metrics.py `_align_results_for_threshold_map`):
+        # the policy group label wins; otherwise canonical_merge_key
+        # toward the policy's anchor dataset (the direction where each
+        # subtype maps uniquely).
         merge_key = canonical_merge_key(
             self.parameters._auto_type_mapper, type_name, dataset,
             snapshot=self._mapper_snapshot, cache=self._merge_key_cache,
@@ -1068,6 +1079,79 @@ class ComparisonAnalyzer:
         if merge_key.status == 'conflict':
             self._conflicted_merge_types[f'{dataset}:{type_name}'] = merge_key.key
         return merge_key.key
+
+    def _get_path_merge_type(self, type_name: str, dataset: str) -> str:
+        """PATH-LANE merge key (2026-10-07): the convergent keying for
+        cross-dataset path presence. Tiers: (1) the QUERY-ANCHORED merge
+        policy's group label — the same tier the edge alignment uses;
+        (2) the query EXPANSION map — every name the query itself would
+        have expanded from a chip (the clean mapped counterpart plus
+        every valid_split/evidence_only branch), which converges the two
+        families directional resolution cannot: split BRANCHES (MCNS
+        R7p <- FAFB R7) and split PARENTS (MCNS 5thsLNv_LNd6 -> FAFB
+        5th-LNv, N:1 toward the anchor, fails closed directionally);
+        (3) the shared canonical resolver toward the policy's anchor
+        dataset. Non-path surfaces keep `_get_canonical_type` (canonical
+        namespace semantics) untouched."""
+        from .type_resolver import canonical_merge_key
+        policy = self._merge_policy_or_none()
+        if policy is not None:
+            group_key = policy.key_for(dataset, type_name)
+            if group_key is not None:
+                return group_key
+            members = self._policy_path_members(policy)
+            expansion_key = members.get((dataset, type_name))
+            if expansion_key is not None:
+                return expansion_key
+            return canonical_merge_key(
+                self.parameters._auto_type_mapper, type_name, dataset,
+                target_dataset=policy.anchor_ds,
+                snapshot=self._mapper_snapshot, cache=self._merge_key_cache,
+                on_status=self._note_mapping_status).key
+        return self._get_canonical_type(type_name, dataset)
+
+    def _policy_path_members(self, policy) -> Dict[Tuple[str, str], str]:
+        """Lazily built, cached per-run: {(dataset, type): group label}
+        for every name the QUERY would have expanded from each policy
+        chip — the clean mapped counterpart plus every split branch, per
+        non-anchor dataset. Mirrors the delegate query expansion
+        (resolve_valid_targets), so path nodes land in the chip's group
+        exactly when the run itself treated them as the chip."""
+        cached = getattr(self, '_policy_path_member_map', None)
+        if cached is not None:
+            return cached if cached != {} else {}
+        from .merge_policy import _decision, _split_branches
+        mapper = self.parameters._auto_type_mapper
+        datasets = list(self.parameters.get_dataset_names())
+        out: Dict[Tuple[str, str], str] = {}
+        try:
+            for group in policy.groups:
+                home = group.anchor[0]
+                anchor_type = group.anchor[1]
+                for ds in datasets:
+                    if ds == home:
+                        continue
+                    decision = _decision(mapper, anchor_type, home, ds)
+                    targets = []
+                    if (decision.get('status') in ('mapped', 'bridged')
+                            and decision.get('target_type')):
+                        targets.append(str(decision['target_type']))
+                    # FULL query-expansion semantics (the delegate ran
+                    # with exactly these subtype lists): the query
+                    # resolver licenses valid_split_evidence AND
+                    # evidence_only N-of-M targets; the group builder's
+                    # stricter _split_branches is alignment doctrine.
+                    if decision.get('status') in ('valid_split_evidence',
+                                                  'evidence_only'):
+                        targets.extend(
+                            str(x) for x in (decision.get('target_types')
+                                             or []))
+                    for name in targets:
+                        out.setdefault((ds, name), group.label)
+        except Exception:  # noqa: BLE001 — expansion is best-effort
+            out = {}
+        self._policy_path_member_map = out
+        return out
 
     def _note_mapping_status(self, status: str) -> None:
         """Count one mapping resolution by status (unique-resolution basis)."""
@@ -1104,8 +1188,9 @@ class ComparisonAnalyzer:
             - canonical_key: Path with canonical names for merging
             - display_key: Path with display names (variants in parentheses)
         """
-        # Get canonical names for each node
-        canonical_nodes = [self._get_canonical_type(node, dataset) for node in path_nodes]
+        # Path-lane merge keys (policy + expansion + anchored canonical)
+        canonical_nodes = [self._get_path_merge_type(node, dataset)
+                           for node in path_nodes]
         canonical_key = ' → '.join(canonical_nodes)
         
         # Get display names for each canonical node

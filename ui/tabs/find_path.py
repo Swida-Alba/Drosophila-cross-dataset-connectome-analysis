@@ -105,15 +105,18 @@ def create_find_path_tab():
                     "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
                     hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
                 )
+                # Percent display (2026-10-07): the ratio threshold reads
+                # far more naturally as a percentage of the post neuron's
+                # input; the payload divides by 100. Default 1% (= 0.01).
                 min_ratio_threshold = number_input(
-                    "Min Connection Ratio (threshold)", 0.0005, 0, 1, 0.0001,
-                    hint="Ratio-mode threshold: keep edges carrying at least "
-                         "this fraction of the post neuron's TOTAL input "
-                         "(F9 all-post denominator). Real-data viable values "
-                         "sit ~5e-4..2e-3 — far below the legacy "
-                         "direct-connection tables. data_details/"
-                         "ratio_synapse_map.csv shows the per-neuron synapse "
-                         "cutoffs this implies.",
+                    "Min Connection Ratio (%)", 1.0, 0.0, 100.0, 0.01,
+                    hint="Ratio-mode threshold in PERCENT: keep edges "
+                         "carrying at least this share of the post "
+                         "neuron's TOTAL input (F9 all-post denominator). "
+                         "Default 1% (= 0.01); finer tiers (e.g. 0.05%) "
+                         "stay typeable as decimals. data_details/"
+                         "ratio_synapse_map.csv shows the per-neuron "
+                         "synapse cutoffs the value implies.",
                 ).set_visibility(False)
                 threshold_combination = select_input(
                     "Combine Thresholds", ["Any one (default)", "Both (AND)"],
@@ -396,7 +399,8 @@ def create_find_path_tab():
                 int(min_synapse.value)
                 if (and_mode or not ratio_mode) else 1),
             "min_ratio": (
-                float(min_ratio_threshold.value)
+                # the field is in PERCENT — convert to the raw fraction
+                float(min_ratio_threshold.value) / 100.0
                 if (and_mode or ratio_mode) else 0.0),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),

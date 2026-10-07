@@ -2470,3 +2470,86 @@ def test_corrupt_sidecar_is_a_cache_miss_not_a_stale_pair(tmp_path):
         'an unreadable sidecar must not delete the derived table')
     assert (out_dir / 'connections_edge.fingerprint.json').exists()
     assert any('unreadable' in str(msg).lower() for msg in logs)
+
+
+def test_path_keying_consults_merge_policy(analyzer):
+    """2026-10-07: the path lane's canonical keying mirrors the edge lane
+    (metrics.py): the QUERY-ANCHORED MergePolicy group label wins first,
+    else canonical_merge_key toward the policy's anchor dataset. Before,
+    the path lane keyed toward the FIXED male-cns namespace only, where
+    an N-to-1 grouping (FAFB R7 vs MCNS R7p/R7y/...) is a split that
+    fails closed to the raw name — cross-dataset path keys could never
+    merge (0 shared presence-matrix rows on a real FAFB x MCNS run)."""
+    class _SplitFamilyMapper:
+        _loaded = True
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            # the REAL shapes from the FAFB x MCNS run: the source chip
+            # R7 expands to a valid split (subtypes), the target chip
+            # 5th-LNv maps cleanly to the MCNS group name (a split
+            # PARENT toward FAFB — N:1, fails closed directionally)
+            if (source_type == 'R7' and source_dataset == DS1
+                    and target_dataset == DS2):
+                return {'status': 'valid_split_evidence',
+                        'source_type': 'R7', 'target_type': None,
+                        'target_types': ['R7p', 'R7y', 'R7d'],
+                        'relationship': '1-to-N', 'conflicts': []}
+            if (source_type == '5th-LNv' and source_dataset == DS1
+                    and target_dataset == DS2):
+                return {'status': 'mapped', 'source_type': '5th-LNv',
+                        'target_type': '5thsLNv_LNd6',
+                        'target_types': ['5thsLNv_LNd6'],
+                        'relationship': '1-to-1', 'conflicts': []}
+            return {'status': 'unmapped', 'source_type': source_type,
+                    'target_type': None, 'target_types': [],
+                    'relationship': None, 'conflicts': []}
+
+        def get_display_name(self, canonical, datasets):
+            return canonical
+
+    analyzer.parameters.auto_type_mapping = True
+    analyzer.parameters._auto_type_mapper = _SplitFamilyMapper()
+
+    from comparison.merge_policy import MergePolicy, MergeGroup
+    _policy = MergePolicy(anchor_ds="flywire_FAFB_v783",
+                          anchor_case="single_dataset")
+    for label in ("R7", "R8", "5th-LNv", "LNd_CRY+_ITP+"):
+        g = MergeGroup(group_id=f"g-{label}", anchor=(DS1, label),
+                       label=label, kind="clean",
+                       members={DS1: [label]})
+        _policy.groups.append(g)
+        _policy.labels.add(label)
+        _policy.key_map[(DS1, label)] = label
+    analyzer._merge_policy_or_none = lambda: _policy
+
+    # MCNS subtypes key to the policy group label
+    assert analyzer._get_path_merge_type("R7p", DS2) == "R7"
+    assert analyzer._get_path_merge_type("R7y", DS2) == "R7"
+    # FAFB R7: no policy key -> canonical toward the ANCHOR (FAFB):
+    # native -> raw 'R7' -> MERGES with the policy-keyed subtypes
+    assert analyzer._get_path_merge_type("R7", DS1) == "R7"
+    # path keys merge end to end
+    fafb_key, _ = analyzer._build_path_key_with_mapping(
+        ["R7", "aMe12", "5th-LNv"], DS1)
+    mcns_key, _ = analyzer._build_path_key_with_mapping(
+        ["R7p", "aMe12", "5th-LNv"], DS2)
+    assert fafb_key == "R7 → aMe12 → 5th-LNv"
+    assert mcns_key == fafb_key
+    # split PARENT family (target chips): MCNS 5thsLNv_LNd6 <- FAFB
+    # 5th-LNv maps cleanly — the expansion tier keys it to the group
+    # label even though the ANCHOR-direction canonical fails closed
+    assert analyzer._get_path_merge_type("5thsLNv_LNd6", DS2) == "5th-LNv"
+    tgt_fafb, _ = analyzer._build_path_key_with_mapping(
+        ["R7", "aMe12", "5th-LNv"], DS1)
+    tgt_mcns, _ = analyzer._build_path_key_with_mapping(
+        ["R7p", "aMe12", "5thsLNv_LNd6"], DS2)
+    assert tgt_fafb == "R7 → aMe12 → 5th-LNv"
+    assert tgt_mcns == tgt_fafb
+    # no-policy fallback stays byte-identical to the old behavior
+    analyzer._merge_policy_or_none = lambda: None
+    analyzer._policy_path_member_map = {}
+    assert analyzer._get_path_merge_type("R7p", DS2) == "R7p"
