@@ -109,10 +109,13 @@ The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
   anchor (`ANCHOR_CENTER = 8`) — the badge sits AT THE NODE CENTER while
   the edge end anchors to the near rim intersection (the rim point facing
   the other node). Dragging around the node snaps to the nearest compass
-  anchor; dragging INTO the node body pins the center-directed attachment. A drag reassigns THAT end only (reciprocal
-  halves independently) by writing `anchorSrc`/`anchorDst` data + the
-  endpoint style; reciprocal pairs keep their parallel offset-line look
-  unless overridden. `↺ Reset anchors` in the selection panel clears
+  anchor; dragging INTO the node body pins the center-directed attachment. A drag reassigns THAT end on the grabbed
+  edge AND, as a SYNCHED MULTI-EDIT, the same anchor on that end of every
+  other selected eligible edge (each resolving against its own geometry;
+  one coalesced history entry — undo reverts the whole selection) by
+  writing `anchorSrc`/`anchorDst` data + the endpoint style; the other
+  ends stay untouched, and reciprocal pairs keep their parallel
+  offset-line look unless overridden. `↺ Reset anchors` in the selection panel clears
   overrides. Mode + overrides persist through
   `captureNetworkState`/`applyNetworkState` (localStorage saves and the v2
   layout file verbatim). Node shape changes re-derive the rim pins. Rim formulas are shape-exact:

@@ -521,12 +521,25 @@ class TestGeneratedHtmlStructure:
         # the rim snaps to the nearest compass anchor; the mark follows live
         assert "const idx = (Math.hypot(dxp, dyp) < rimD - 5)" in js
         assert "? ANCHOR_CENTER" in js
-        assert "hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');" in js
+        # marks + seats follow live via the full handle sync (the drag no
+        # longer patches one handle: the whole selection's marks update)
+        drag_region = js[js.index("SYNCHED MULTI-EDIT"):]
+        drag_region = drag_region[:drag_region.index("const onUp = function()")]
+        assert "writeEdgeAnchorEnd(anchorDrag.edge, anchorDrag.end, idx);" in drag_region
+        assert "cy.edges(':selected').forEach(e => {" in drag_region
+        assert "if (e === anchorDrag.edge || !anchorHandleEligible(e)) return;" in drag_region
+        assert "writeEdgeAnchorEnd(e, anchorDrag.end, idx);" in drag_region
+        assert "syncAnchorHandles();" in drag_region
+        # the single-end writer used by the drag: resolves against each
+        # edge's OWN geometry (center pin faces that edge's other node)
+        wf = js[js.index("const writeEdgeAnchorEnd = (edge, end, idx) => {"):]
+        wf = wf[:wf.index("function clearEdgeEndpointOverrides")]
+        assert "const other = end === 'src' ? edge.target() : edge.source();" in wf
+        assert "op.x - node.position().x" in wf
         # the center pin attaches at the PROXIMAL rim: the write direction
         # is this node TOWARD the other node (first rim intersection) — an
-        # earlier sign flip attached target ends at the FAR rim
-        assert "const fdx = op.x - np.x;" in js
-        assert "const fdy = op.y - np.y;" in js
+        # earlier sign flip attached target ends at the FAR rim.  The
+        # direction math lives in writeEdgeAnchorEnd (asserted above).
         # the CENTER badge sits at the NODE CENTER (unambiguous in-node
         # indicator) while the edge end anchors to the near rim intersection
         assert "function anchorHandleModelPos(" in js
@@ -537,10 +550,9 @@ class TestGeneratedHtmlStructure:
         assert "if (hasBypass(edge, which + '-distance-from-node') &&" in js
         assert "!hasBypass(edge, which + '-endpoint')" in js
         assert "edge.removeStyle(which + '-distance-from-node');" in js
-        # a drag writes the override + endpoint style for THAT end only
-        # (reciprocal halves reassign independently), tracked as one
+        # a drag writes the override + endpoint style through the
+        # single-end writer (see the sync pins above), tracked as one
         # queued history entry per gesture
-        assert "anchorDrag.edge.data(anchorDrag.end === 'src' ? 'anchorSrc' : 'anchorDst', idx);" in js
         assert "queueStyleHistory('Reassign edge anchor');" in js
         # per-edge reset action in the selection panel
         assert "resetEdgeAnchors()" in html

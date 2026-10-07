@@ -4672,7 +4672,8 @@ class VisualizePath:
         show draggable endpoint handles (diamond = compass anchor, round
         teal badge at the node center = the ninth, center-directed anchor —
         the edge end itself anchors to the near rim intersection), and a
-        drag reassigns that one end — around the node to an 8-point anchor or
+        drag reassigns that end on the grabbed edge AND, synched, on every
+        other selected edge (each on its own rim) — around the node to an 8-point anchor or
         into the node body for center-directed — with the override
         persisting through saved/exported layout state.  Waypoint
         bends declare ``edge-distances: 'node-position'`` so the rendered
@@ -6781,7 +6782,7 @@ class VisualizePath:
                     <h4>🖱️ Mouse</h4>
                     <table>
                         <tr><td class="vp-key">Click</td><td>Select a node / edge — a selected edge reveals its endpoint anchors and waypoint rings directly (both anchor modes)</td></tr>
-                        <tr><td class="vp-key">Drag ◇ / ● handle</td><td>Reassign ONE edge end: drag around the node to one of the 8 anchors (◇ blue), or INTO the node for the center-directed attachment (● teal badge moves to the node center; the edge end anchors to the near rim intersection). Works in both modes; reciprocal halves move independently; one undo step; ↺ Reset anchors in the panel clears</td></tr>
+                        <tr><td class="vp-key">Drag ◇ / ● handle</td><td>Reassign ONE edge end: drag around the node to one of the 8 anchors (◇ blue), or INTO the node for the center-directed attachment (● teal badge moves to the node center; the edge end anchors to the near rim intersection). With SEVERAL edges selected the drag applies the same anchor to that end of all of them (each on its own rim); one undo step reverts the whole selection; ↺ Reset anchors in the panel clears</td></tr>
                         <tr><td class="vp-key">Drag / click ● bend</td><td>Move a waypoint (the edge keeps bending exactly through it) or select it for the amber bundle</td></tr>
                         <tr><td class="vp-key">Shift+Click / drag</td><td>Multi-select (box select) — L→R frame: FULL; R→L dashed frame: TOUCH; frame over selected objects deselects them (⇧ toggles)</td></tr>
                         <tr><td class="vp-key">Double-click</td><td>Highlight a node's connections</td></tr>
@@ -10099,6 +10100,27 @@ class VisualizePath:
                 }}
             }});
         }};
+        // Writes ONE end of ONE edge to the given anchor (one of the 8
+        // compass anchors or ANCHOR_CENTER): the override data plus the
+        // endpoint style resolved against THIS edge's own geometry (the
+        // center pin faces the edge's other node; the compass anchor is
+        // this node's own rim point).  The single-end writer behind the
+        // endpoint-handle drag — the drag resolves the pointer to an idx
+        // once and applies it to the grabbed edge AND, as a synched
+        // multi-edit, to every other selected edge.
+        const writeEdgeAnchorEnd = (edge, end, idx) => {{
+            const node = end === 'src' ? edge.source() : edge.target();
+            const other = end === 'src' ? edge.target() : edge.source();
+            const op = other.position();
+            const pt = (idx === ANCHOR_CENTER)
+                ? centerRimPoint(node, op.x - node.position().x, op.y - node.position().y)
+                : anchorPoint(node, idx);
+            edge.data(end === 'src' ? 'anchorSrc' : 'anchorDst', idx);
+            setStyleSafe(edge, 'edge-distances', 'node-position');
+            setStyleSafe(edge, end === 'src' ? 'source-endpoint' : 'target-endpoint',
+                `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
+            setStyleSafe(edge, end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node', 0);
+        }};
 
         function clearEdgeEndpointOverrides(edge) {{
             edge.removeStyle('source-endpoint');
@@ -12876,28 +12898,26 @@ class VisualizePath:
                 // other node — never the far-side (exit) intersection.
                 const dxp = cmx - np.x, dyp = cmy - np.y;
                 const rimD = rimDistance(node, dxp, dyp);
-                const other = anchorDrag.end === 'src' ? anchorDrag.edge.target() : anchorDrag.edge.source();
-                const op = other.position();
-                const fdx = op.x - np.x;
-                const fdy = op.y - np.y;
                 const idx = (Math.hypot(dxp, dyp) < rimD - 5)
                     ? ANCHOR_CENTER
                     : snapAnchorIndex(dxp, dyp);
-                anchorDrag.edge.data(anchorDrag.end === 'src' ? 'anchorSrc' : 'anchorDst', idx);
-                const pt = (idx === ANCHOR_CENTER)
-                    ? centerRimPoint(node, fdx, fdy)
-                    : anchorPoint(node, idx);
-                setStyleSafe(anchorDrag.edge, 'edge-distances', 'node-position');
-                setStyleSafe(anchorDrag.edge,
-                    anchorDrag.end === 'src' ? 'source-endpoint' : 'target-endpoint',
-                    `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
-                setStyleSafe(anchorDrag.edge,
-                    anchorDrag.end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node', 0);
-                // the mark follows the anchor kind live (diamond = 8-point,
-                // round teal = center-directed)
-                const hEl = document.getElementById(anchorHandleId(anchorDrag.edge.id(), anchorDrag.end));
-                if (hEl) hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');
-                positionAnchorHandle(anchorDrag.edge, anchorDrag.end);
+                // SYNCHED MULTI-EDIT: the grabbed end of the dragged edge
+                // AND the same end of every other selected (eligible) edge
+                // take the SAME anchor — each edge resolving it against its
+                // OWN geometry, so a NE drag sends every selected edge's
+                // end to its own NE rim point (or pins every grabbed end
+                // center-directed).  The OTHER ends stay untouched, and
+                // reciprocal halves remain independent per end.  One
+                // gesture = one coalesced history entry; undo reverts the
+                // whole selection's overrides together.
+                writeEdgeAnchorEnd(anchorDrag.edge, anchorDrag.end, idx);
+                cy.edges(':selected').forEach(e => {{
+                    if (e === anchorDrag.edge || !anchorHandleEligible(e)) return;
+                    writeEdgeAnchorEnd(e, anchorDrag.end, idx);
+                }});
+                // marks + seats follow live for every touched handle
+                // (diamond = 8-point, round teal = center-directed)
+                syncAnchorHandles();
             }};
             const onUp = function() {{
                 window.removeEventListener('pointermove', onMove);
