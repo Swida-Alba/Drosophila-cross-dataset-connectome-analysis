@@ -47,7 +47,7 @@ Design contracts pinned by tests (plan §7/§17/§18):
 
 This module never imports coana/statvis; the only production surface it
 touches is ``type_level_refill`` (hop_prefilter / _enumerate_paths /
-_type_probability / build_effective_type_map / read_enrollment /
+build_effective_type_map / read_enrollment /
 read_run_provenance) and, through it, the production FastGraph
 enumerator. Phase 2 (in-pipeline ``weight_basis`` field, UI, exports) is
 planned separately and touches no code here.

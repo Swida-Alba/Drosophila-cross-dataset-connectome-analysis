@@ -1249,10 +1249,11 @@ induced subgraph at the ASKED threshold
 realized only below the applied tier are excluded, and the second-round
 GRAPH is pruned to emitted-pair edges so out-of-scope routes are never
 pathfinded), aggregated into type chains with the same engine recipe as
-`refill_paths_type.csv`. Each hop's realized mass is split three ways:
-`emitted_weights` + `refill_weights` + `refill_weights` == `weights`
-    (two-way split; the pruned non-emitted-pair mass is disclosed at
-    pair level as `non_emitted_pair_mass` / `unfired_residual`).
+`refill_paths_type.csv`. Each hop's realized mass is split two ways:
+`emitted_weights` + `refill_weights` == `weights` (the route-scope
+restriction prunes non-emitted-pair edges, so the former skipped class
+cannot occur — the pruned mass is disclosed at pair level as
+`non_emitted_pair_mass` / `unfired_residual`).
 Completeness is a per-run EMPIRICAL property, stamped in
 `refill_provenance.json` as `complete_at_asked` (true = the table is
 the complete simple-path set at the asked tier; false = complete only
