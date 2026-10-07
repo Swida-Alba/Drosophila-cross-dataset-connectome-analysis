@@ -425,7 +425,7 @@
     <tr><td><code>cosine_similarity</code></td><td>(W1·W2) / (‖W1‖·‖W2‖) over the union</td><td>0–1</td></tr>
     <tr><td><code>edge_rank_correlation</code></td><td>Spearman ρ of edge-weight ranks over the union (missing = 0)</td><td>−1 to 1</td></tr>
     <tr><td><code>spearman_rank_correlation</code></td><td>Spearman ρ of the compared values</td><td>−1 to 1</td></tr>
-    <tr><td><code>path_rank_correlation</code></td><td>Spearman ρ of path-probability ranks</td><td>−1 to 1</td></tr>
+    <tr><td><code>path_rank_correlation</code></td><td>Spearman ρ of path ranks (historically probability ranks — probability SUSPENDED 2026-10-06)</td><td>−1 to 1</td></tr>
     <tr><td><code>rv_coefficient</code></td><td>⟨E1, E2⟩_F² / (‖E1‖_F²·‖E2‖_F²) on normalized matrices</td><td>0–1</td></tr>
   </table>
   <p>Rank-based metrics return <code>NaN</code> with fewer than 3 non-zero

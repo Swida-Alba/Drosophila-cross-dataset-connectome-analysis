@@ -118,16 +118,15 @@
   <table>
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
     <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
-    <tr><td><code>traversal_probability</code></td><td>min(1.0, connection_ratio / 0.3) (30% input = maximal)</td><td>0–1</td></tr>
-    <tr><td><code>block_probability</code></td><td>1 − traversal_probability</td><td>0–1</td></tr>
-    <tr><td><code>path_prob</code></td><td>Π of the edge traversal probabilities over the path</td><td>0–1</td></tr>
+    <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+    <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+    <tr><td><code>path_prob</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
     <tr><td><code>min_weight</code></td><td>weakest edge synapse count along the path (the bottleneck)</td><td>integer</td></tr>
     <tr><td><code>min_ratio</code></td><td>smallest edge connection ratio along the path</td><td>0–1</td></tr>
   </table>
-  <p>At the <b>type</b> level the aggregate probabilities are computed from the
-    deduplicated bodyId-level pairs of D_t: type-level traversal probability
-    uses the <b>product</b> method by default
-    (<code>1 − Π(1 − p_pair)</code>), which models parallel channels. Full
+  <p><b>SUSPENDED (2026-10-06, unverifiable fidelity):</b> the aggregate
+    traversal probabilities are no longer computed for display or export
+    (historically the <b>product</b> method). Full
     derivations live in
     <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
 

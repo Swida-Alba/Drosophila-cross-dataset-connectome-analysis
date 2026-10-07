@@ -76,6 +76,44 @@ fc2.InitializeNeuronInfo()
 fc2.FindDirectConnections()
 ```
 
+## Type-level refill (auto hook)
+
+When a materialized FindAllPath run's **applied threshold exceeded the asked
+threshold** (Edge Budget floor and/or StrongestFirst budget bite),
+`_maybe_generate_type_level_refill` re-runs path building at the ASKED
+threshold within the involved-types induced subgraph and writes the recovered
+mass WITHOUT touching run files:
+
+- `data_details/type_level_refill/` — the raw records:
+  `refill_type_pairs.csv` (per emitted pair: emitted / refill /
+  refilled_total + refilled ratios), `refill_bodyId_pairs.csv` (capped
+  bodyId detail), `refill_provenance.json` (`table_reproduced` is the
+  consistency anchor — the re-derived cut must reproduce
+  `connection_type.csv` exactly or the module refuses),
+  `README.md`.
+- `<run>/type_level_refill/` — the standalone mirror (parallel to
+  `find_reciprocal/`): `complete_at_asked_paths_type.csv` (EVERY
+  asked-threshold chain with the emitted/refill/skipped per-hop split,
+  stamped `complete_at_asked` in the provenance — the Refill tab's
+  DEFAULT view) and `refill_paths_type.csv` (the refill-carrying paths
+  in the exact `*_allpaths_type.csv` column order — the second view), `refill_connection_type.csv`
+  (refill-only) / `refilled_connection_type.csv` (complete-at-asked) /
+  `refilled_connection_bodyId.csv` in the connection-table formats, plus
+  `refill_type_heatmap.html` / `refill_type_network.html` (+ bodyId twins)
+  built by the visualization stage.
+- Post-hoc: `python scripts/TypeLevelRefill.py <run_folder> --connections
+  <full connections parquet> --neuron-table <allneurons csv> --in-run`
+  (add `--out DIR` to keep the run folder byte-identical). The
+  `[type-level refill]` entry in `user_warning_notes.txt` reports applied
+  vs asked and the recovered totals.
+
+The pair report's **Refill tab** renders this as a second Pair Explorer
+(selects → per-pair panes → capped "Top paths per length"); the per-connection
+pair table and bodyId detail stay exported files.
+
+**Probability SUSPENDED (2026-10-06, unverifiable fidelity):** traversal/path-probability values are no longer exported, displayed, or used for ranking. — the refill records and mirrors carry no probability columns;
+ratios (plain + adjusted) are the strength readouts.
+
 ## Notes
 
 - InitializeNeuronInfo emits a `[DROCAT][neuron-match] source=… target=…` marker;

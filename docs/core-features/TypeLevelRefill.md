@@ -46,8 +46,10 @@ The refill adds back exactly that mass:
   conservatism gap instead of silently closing it.
 
 Ratios use the threshold-free all-post denominators (F9,
-`min_weight=1`); `refilled_traversal_probability` folds the union pair
-set with the run's `aggregate method` (`product` by default).
+`min_weight=1`). **`refilled_traversal_probability` is SUSPENDED
+(2026-10-06, unverifiable fidelity)** — it is no longer exported
+(historically it folded the union pair set with the run's `aggregate
+method`, `product` by default).
 
 ## Usage
 
@@ -99,8 +101,26 @@ separate_hemispheres=...)`).
 |---|---|
 | `refill_type_pairs.csv` | One row per emitted type pair (zeros included): `emitted_weight`, `refill_weight`, `refilled_total`, `emitted_pair_count`, `refill_pair_count`, `refilled_connection_ratio`, `refilled_traversal_probability`, `split_status`. Never capped. |
 | `refill_bodyId_pairs.csv` | The refilled bodyId pairs with `traversal_count` and hop positions; capped by `--detail-cap` (default 50,000, deterministic weight-desc order). |
-| `refill_provenance.json` | Thresholds/budgets (incl. the run's `graph_pruning_record`), induced-graph sizes, `table_reproduced`, `refill_truncated`, and the disclosure counters: `skipped_pairs_not_emitted_type_pair` (per-type-pair census + capped examples), `excluded_edges_non_involved_endpoint`, `boundary_refill_edge_count/weight/examples_at_or_above_w0`. |
+| `refill_provenance.json` | Thresholds/budgets (incl. the run's `graph_pruning_record`), induced-graph sizes, `table_reproduced`, `refill_truncated`, and the disclosure counters: `skipped_pairs_not_emitted_type_pair` (per-type-pair census + capped examples; EMPTY under the 2026-10-07 route scope — pruned edges are disclosed as `non_emitted_pair_mass` instead), `excluded_edges_non_involved_endpoint`, `boundary_refill_edge_count/weight/examples_at_or_above_w0`. |
 | `README.md` | Semantics + join recipe (join on `(type_pre, type_post)` against `connection_type.csv` summed across its `conn_layer` rows). |
+
+### Standalone mirror folder (`<run_folder>/type_level_refill/`)
+
+When generated inside the run flow (automatic hook or `--in-run`), the
+refilled data is additionally mirrored in the path/connection data
+format, parallel to `find_reciprocal/`:
+
+| File | Content |
+|---|---|
+| `refill_paths_type.csv` | The REFILLED type-level paths (the second path-building round's product): asked-threshold enumeration restricted to paths carrying refill edges and to emitted pairs, aggregated into type sequences. Exact `*_allpaths_type.csv` column order — the pair report's Refill tab mounts a second Pair Explorer over this file. Realized per-hop masses; per-hop ratios over the all-post denominator; coverage `n/N` = distinct bodyIds realizing the node over the type's induced-node-set membership. |
+| `complete_at_asked_paths_type.csv` | The COMPLETE-AT-ASKED view: the PAIR EXPLORER'S chains (the emitted type routes) re-valued at the asked threshold — a VALUE change only, no structural change — with each hop's realized mass split three ways (`emitted_weights` + `refill_weights` + `skipped_weights` == `weights`). Per-run stamp `complete_at_asked` in the provenance (true / false at the drain tau / null in shortest mode). The Refill tab's default view. |
+| *(refill_type_pairs.csv)* | Gains `unfired_residual` (last column): >=asked mass on the emitted pair that entered the induced graph but fired on NO chain (off-route mass +, when the refill guard bit, guard-missed mass +, since the route scope, pruned non-emitted-pair mass on the pair). 0 on clean runs; empty in shortest mode. |
+| `refill_connection_type.csv` | The REFILL mass only, `connection_type.csv` column order; `connection_ratio` = refill mass over the threshold-free all-post denominator, `connection_ratio_adj` the threshold-conditioned variant; `nt_type`/`block_probability`/`conn_layer` stay empty (not derivable for refilled edges). |
+| `refilled_connection_type.csv` | Complete-at-asked: one row per emitted pair, `weight = refilled_total` (emitted + refill) with the pair's refilled ratios. |
+| `refilled_connection_bodyId.csv` | Complete-at-asked bodyId edges (emitted-rederived + refill), canonical connection-table columns plus `traversal_count`/`min_hop`/`max_hop`; non-derivable enrichment columns stay empty. |
+| `refill_type_heatmap.html` / `refill_type_network.html` | The refill mass drawn like the reciprocal views (built by the run flow's visualization stage; the CLI mirror writes the CSVs only). |
+| `refill_bodyId_heatmap.html` / `refill_bodyId_network.html` | BodyId-level twins, when bodyId refill records exist. |
+| `parameters.csv` | The run's parameters (same frame as `data_details/parameters.csv`). |
 
 ## Real-data verification (FAFB v783, aMe12 → PPL101, L2, asked 3)
 

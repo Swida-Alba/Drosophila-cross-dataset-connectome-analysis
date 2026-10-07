@@ -1,5 +1,8 @@
 # Score and Probability Calculation Guide
 
+> **SUSPENDED (2026-10-06): traversal/path-probability values are withheld due to unverifiable fidelity — they are no longer exported, displayed, or used for ranking. The engine still computes them internally, but no file or surface exposes them. The formulas in this document are retained for reference only. (Connection ratios are unaffected.)**
+
+
 This document provides comprehensive explanations of all score and probability calculations used throughout the toolkit, including their formulas, biological rationale, and where they are applied.
 
 ---

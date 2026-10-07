@@ -113,9 +113,10 @@ the explored, threshold-filtered graph; see `user_warning_notes.txt`.
 
 Example: `find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/` (ratio-basis runs: `..._L2r0_0005_...` — `r{min connection ratio}`, see `ConnectionRatioPaths.md`; Combine Thresholds = Both (AND) runs carry BOTH tiers: `..._L2w3r0_002_...`)
 
-Ratio and traversal-probability filters are disabled for both pathfinding
+Ratio filters are disabled for both pathfinding
 tabs, so their former `r...p...` annotations are not included in path-run
-folder names. The ratio/probability columns remain readout data in the
+folder names. The ratio columns remain readout data in the (probability
+columns are SUSPENDED — see the path-table note below)
 exported path tables — except under Combine Thresholds = Both (AND), where
 the Min Connection Ratio co-thresholds the graph together with Min Synapse
 Count (round-13; both knobs visible in the UI when AND is selected).
@@ -125,9 +126,9 @@ Count (round-13; both knobs visible in the UI when AND is selected).
 #### Main Data Files
 *   **`{source}_to_{target}_allpaths_type.csv`**: The primary path table (type-level when `skip_bodyId=True`, the UI default). Columns:
     *   `path`: Path as a type sequence (e.g. `aMe12 → SMP238 → PPL101`)
-    *   `weights`, `probabilities`, `ratios`: Per-edge synapse counts, traversal probabilities, and connection ratios — all **realized** (round-10/11): `weights` is the distinct bodyId edges' mass backing that exact hop at that path position (the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total — that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). On EVERY weight basis (engine fix 2026-10-05, I2) `ratios`/`probabilities`/`min_ratio`/`path_prob` are realized-scope: hop ratio = the hop's realized mass ÷ the post type's full-membership incoming mass — the same canonical denominator as `data_details/connection_type.csv`, so one run can never show two denominators for a type; probability = min(1, ratio/0.3)
+    *   `weights`, `ratios`: Per-edge synapse counts and connection ratios — all **realized** (round-10/11): `weights` is the distinct bodyId edges' mass backing that exact hop at that path position (the same edge set behind the per-node `coverage` n, not the type pair's cross-depth total — that total lives in `data_details/connection_type.csv`, summed over `conn_layer`). On EVERY weight basis (engine fix 2026-10-05, I2) `ratios`/`min_ratio` are realized-scope: hop ratio = the hop's realized mass ÷ the post type's full-membership incoming mass — the same canonical denominator as `data_details/connection_type.csv`, so one run can never show two denominators for a type
     *   `min_weight`: Smallest realized hop weight along the path
-    *   `path_prob`: Overall path probability (product of per-hop probabilities)
+    *   **SUSPENDED (2026-10-06): the `probabilities` and `path_prob` columns are no longer exported** — traversal/path-probability values are withheld due to unverifiable fidelity (no export, display, or ranking use). The historical formula was min(1, ratio/0.3) per hop, product over hops
     *   `min_ratio`: Smallest edge connection ratio (realized on every weight basis; a mass share that can fall below the applied bodyId-level `t_r`)
     *   `length`: Number of hops
     *   `nt_types`: Neurotransmitter types along the path — one entry per
@@ -151,12 +152,12 @@ Count (round-13; both knobs visible in the UI when AND is selected).
     it was reached).
 
 Synapse-count fields (`weight`, `weights`, `min_weight`, and total-weight
-fields) are exported as integers (`5`, not `5.0`). Ratio and probability
-fields remain decimal-valued.
+fields) are exported as integers (`5`, not `5.0`). Ratio fields remain
+decimal-valued. (Probability fields are SUSPENDED — see above.)
 
 #### Supporting Data (`data_details/`)
-*   **`conn_mat_type_weight.csv` / `conn_mat_type_ratio.csv` / `conn_mat_type_prob.csv` / `conn_mat_type_nt.csv`**: Type-level matrices (rows/columns = neuron types; values = synapse count / connection_ratio / traversal_probability / nt_type)
-*   **`connection_type.csv`**: Edges aggregated by type pair — columns `type_pre`, `type_post`, `weight`, `connection_ratio`, `traversal_probability`, `block_probability`, `nt_type`, plus `connection_ratio_adj` (round-12/13: the threshold-CONDITIONED share — weight ÷ the post type's incoming mass counting only edges at/above the Min Synapse Count, summed over the type's members; always ≥ the threshold-free `connection_ratio` and moves with the threshold by design. With Min Synapse Count 1 — every plain connection_ratio-basis run — the column equals `connection_ratio` (a disclosed redundant duplicate))
+*   **`conn_mat_type_weight.csv` / `conn_mat_type_ratio.csv` / `conn_mat_type_nt.csv`**: Type-level matrices (rows/columns = neuron types; values = synapse count / connection_ratio / nt_type). **The `conn_mat_type_prob.csv` matrix is SUSPENDED (2026-10-06, unverifiable fidelity) and no longer written.**
+*   **`connection_type.csv`**: Edges aggregated by type pair — columns `type_pre`, `type_post`, `weight`, `connection_ratio`, `nt_type`, plus `connection_ratio_adj` (**the `traversal_probability` and `block_probability` columns are SUSPENDED (2026-10-06, unverifiable fidelity) and no longer exported**) (round-12/13: the threshold-CONDITIONED share — weight ÷ the post type's incoming mass counting only edges at/above the Min Synapse Count, summed over the type's members; always ≥ the threshold-free `connection_ratio` and moves with the threshold by design. With Min Synapse Count 1 — every plain connection_ratio-basis run — the column equals `connection_ratio` (a disclosed redundant duplicate))
 *   **`neurons_included.csv`**: All neurons participating in the found connections — columns `group`, `bodyId`, `type`, `instance`, `nt_type`
 *   **`total_weight_layer.csv`**: Total weight per intermediate layer — columns `conn_layer` (layer transition label, e.g. `0->1`), `weight`
 *   **`parameters.csv`**: Parameters of the run (`parameter`, `value` rows; carries the same applied-threshold provenance block as `parameters.txt`)
@@ -171,7 +172,7 @@ fields remain decimal-valued.
     pair-scope coverage for the pair report (its Global matrix / Pairs
     table / Pair Explorer). Written on every basis alongside the
     per-node `coverage` lists.
-*   **`untyped_dropped_records.csv`**: Connection rows removed by the **Drop Untyped Neurons** filter (`drop_untyped`, default on; applied in both Complete and Shortest Paths after label enrichment and before graph construction, so an untyped neuron can never be an intermediate node of a returned path or visualization). Written only when rows were actually dropped. Columns: `dataset`, `threshold`, `conn_layer`, then the connection columns present (`bodyId_pre`, `bodyId_post`, `type_pre`, `type_post`, `weight`, `roi`, `instance_pre`, `instance_post`, `nt_type`, `custom_group_*`, `connection_ratio`, `traversal_probability`, `synapse`), plus a final `untyped_side` (`pre` | `post` | `pre+post`). An untyped label is one that is empty after strip, one of the Unknown/None/NaN sentinels (case-insensitive), or all-digit (numeric bodyId fallback) — the same predicate Cross-Dataset Comparison uses. Note: an untyped source/target can remain enrolled in `source_neurons.csv` / `target_neurons.csv` while its incident edges were removed.
+*   **`untyped_dropped_records.csv`**: Connection rows removed by the **Drop Untyped Neurons** filter (`drop_untyped`, default on; applied in both Complete and Shortest Paths after label enrichment and before graph construction, so an untyped neuron can never be an intermediate node of a returned path or visualization). Written only when rows were actually dropped. Columns: `dataset`, `threshold`, `conn_layer`, then the connection columns present (`bodyId_pre`, `bodyId_post`, `type_pre`, `type_post`, `weight`, `roi`, `instance_pre`, `instance_post`, `nt_type`, `custom_group_*`, `connection_ratio`, `synapse`), plus a final `untyped_side` (`pre` | `post` | `pre+post`). An untyped label is one that is empty after strip, one of the Unknown/None/NaN sentinels (case-insensitive), or all-digit (numeric bodyId fallback) — the same predicate Cross-Dataset Comparison uses. Note: an untyped source/target can remain enrolled in `source_neurons.csv` / `target_neurons.csv` while its incident edges were removed.
     **BANC caveat:** the BANC meta table contains ~70,000 `Unknown`-type rows plus numeric-fallback labels, so with the default `drop_untyped=True` a BANC run can drop a very large share of its connections (in the 2026-09-12 Windows test, `ORN_DA1 -> DA1_lPN` dropped 320,191 connections touching 293,547 neurons). Check `untyped_dropped_records.csv` and the `[untyped dropped]` entry in `user_warning_notes.txt`; turn **Drop Untyped Neurons** off (or pass `drop_untyped=False`) to keep untyped neurons in the network.
 *   **`connection_custom_groups.csv`**: Custom query-group definitions (only when custom groups are used)
 *   **`{source}_to_{target}_allpaths_type_excluded.csv`**: Paths excluded by the active filters
@@ -179,10 +180,10 @@ fields remain decimal-valued.
 
 #### Visualizations (`visualization/`)
 *   **`Network_{folder}.html`**: Interactive network graph of the found paths — the cytoscape/dagre libraries are **vendored and inlined**, so it works fully offline. Opens framed with a one-time fit (large graphs stop at a readable 0.35× zoom floor instead of zooming out to the minZoom limit; a browser-saved layout re-applies its own view instead); the Edge Anchor ribbon switches the default edge attachment between the classic center-directed rim and the 8-point mode (4 corners + 4 mid-edges), and every edge is adjustable in both modes — selected edges expose draggable endpoint handles (diamond = compass anchor, teal circle at the node center = center-directed, with the edge end anchoring to the near rim intersection) whose per-end overrides persist in the page's saved/exported layout state. The in-page exports (SVG / PNG / edge-list CSV / graph JSON / layout JSON) carry the same geometry the canvas renders, including the anchored endpoints and waypoint bends
-*   **`Heatmap_{folder}.html`**: Connection weight heatmap (plotly inlined — offline)
+*   **`Heatmap_{folder}.html`**: Connection weight heatmap — plotly.js is **inlined into the file** (single-file page; survives the `visualization/` relocation and folder copies; no `plotly.min.js` side file). Profiling/comparison matrix pages still share one `plotly.min.js` per output folder by design
 *   **`Sankey_{folder}.html`**: Sankey flow diagram of the pathways (plotly inlined — offline)
-*   **`visualization_data/{folder}_data_connections.csv` / `{folder}_data_original_paths.csv`**: Data backing the HTML files (connections columns: `source`, `target`, `weight`, `ratio`, `probability`, `nt_type`)
-*   **`visualization_data/{folder}_data_connMatrix_weight.csv` / `_connMatrix_ratio.csv` / `_connMatrix_prob.csv` / `_connMatrix_nt_type.csv`**: Long-form connection matrices backing the HTML views
+*   **`visualization_data/{folder}_data_connections.csv` / `{folder}_data_original_paths.csv`**: Data backing the HTML files (connections columns: `source`, `target`, `weight`, `ratio`, `nt_type`; the former `probability` column is SUSPENDED)
+*   **`visualization_data/{folder}_data_connMatrix_weight.csv` / `_connMatrix_ratio.csv` / `_connMatrix_nt_type.csv`**: Long-form connection matrices backing the HTML views (`_connMatrix_prob.csv` is SUSPENDED and no longer written)
 *   **`visualization_data/type_paths_visualized.csv`**: Written only when the Visualization Edge Limit (`edgeN_limit`) actually trims — the exact path rows the rendered (edge-limited) network represents
 
 The Visualization Edge Limit is a **drawing-only** cap on the unique edges rendered per HTML view: it never changes fetching, the graph, or the path outputs, and a single complete path may exceed it to stay intact. Type-level and bodyId-level visualizations share the same cap.
@@ -216,6 +217,50 @@ Written when `find_reciprocal=True`:
 *   **`reciprocal_type_network.html`** / **`reciprocal_type_heatmap.html`**: Reciprocal visualizations
 *   **`parameters.csv`**: Reciprocal-analysis parameters
 
+#### Type-Level Refill Standalone Folder (`type_level_refill/`)
+Written automatically whenever the run produced refill records (applied
+threshold &gt; asked; see `data_details/type_level_refill/` for the raw
+records): the refilled data mirrored in the path/connection data format,
+parallel to `find_reciprocal/`.
+*   **`refill_paths_type.csv`**: the REFILLED type-level paths — the
+    second path-building round's product (asked-threshold enumeration on
+    the involved-types induced subgraph, restricted to paths carrying
+    refill edges and to emitted pairs) — in the exact
+    `*_allpaths_type.csv` column order; per-hop weights are the REALIZED
+    masses (distinct edges realizing the hop position), per-hop ratios
+    use the threshold-free all-post denominator, coverage `n/N` counts
+    distinct bodyIds realizing the node in this path set over the type's
+    membership in the induced node set.
+*   **`complete_at_asked_paths_type.csv`**: the COMPLETE-AT-ASKED view —
+    the PAIR EXPLORER'S chains re-valued at the asked threshold (a value
+    change only; chains realized only below the applied tier are
+    excluded, and the second-round pathfinding never builds out-of-scope
+    routes — pruned mass is disclosed as `non_emitted_pair_mass`) with
+    each hop's realized mass split
+    three ways (`emitted_weights` + `refill_weights` + `skipped_weights`
+    == `weights`). Completeness is stamped per run in
+    `refill_provenance.json` (`complete_at_asked`: true = the complete
+    simple-path set at the asked tier; false = complete only at the
+    drain tau; null = shortest mode, where the table is not produced).
+    All-mode runs only. The Refill tab defaults to this view.
+*   **`refill_connection_type.csv`**: the REFILL mass only, in the
+    `connection_type.csv` column order — `connection_ratio` is the refill
+    mass over the threshold-free all-post denominator,
+    `connection_ratio_adj` the threshold-conditioned variant; `nt_type`,
+    `conn_layer` are not derivable for refilled
+    edges and stay empty.
+*   **`refilled_connection_type.csv`**: complete-at-asked view — one row
+    per emitted pair with `weight = refilled_total` (emitted + refill)
+    and the pair's refilled ratios.
+*   **`refilled_connection_bodyId.csv`**: complete-at-asked bodyId edges
+    (emitted-rederived + refill), the canonical bodyId connection-table
+    columns plus `traversal_count`/`min_hop`/`max_hop`; enrichment
+    columns the module cannot derive stay empty.
+*   **`refill_type_heatmap.html`** / **`refill_type_network.html`** (and
+    **`refill_bodyId_*`** twins when bodyId refill records exist): the
+    refill mass drawn like the reciprocal views.
+*   **`parameters.csv`**: the run's parameters.
+
 #### Pair Report (`path_report.html`, `paths_pair_breakdown/`)
 
 Written automatically at the end of every UI pathfinding run (Complete
@@ -245,7 +290,11 @@ the report's `Generated:` timestamp.
     and **Data** (unit rollup + artifact links). The **Overview** also
     carries an **overall bodyId coverage (query scope)** card —
     source bodyIds on any path / enrolled and target bodyIds reached /
-    resolved over the WHOLE enrollment, independent of path pairs — and,
+    resolved over the WHOLE enrollment, independent of path pairs — with
+    a **coverage-by-type** table beneath the aggregate line (per type:
+    enrolled members on any path for sources, resolved members reached
+    for targets, worst coverage first, same denominators as the
+    aggregate) — and,
     when the run produced refill records, a **type-level refill** card
     (recovered edges / synapse mass + the top refilled type pairs with
     refilled totals and ratios; the synapse total comes from
@@ -257,14 +306,23 @@ the report's `Generated:` timestamp.
     runs); its headers and cells derive from one COLUMN SPEC so they can
     never drift out of alignment. Beside the per-hop **Ratios** list,
     an **Adj. ratios** list column carries the per-hop
-    `connection_ratio_adj` values, and EVERY ratio/probability the
+    `connection_ratio_adj` values, and EVERY ratio the
     report renders uses the percent form `xx.xx%` (the breakdown CSV
     keeps raw values; cells rounding to `0.00%` carry the raw form in
     their hover).
     A standalone **Refill** tab (always present) shows the type-level
-    refill parallel to the path data: the full refilled type-pairs
-    table with plain AND adjusted refilled ratios, or the explicit
-    "budget did not bite" hint when no records exist. An **applied-threshold
+    refill as a **second Pair Explorer over the refilled type paths** —
+    the run's second path-building round (the asked-threshold
+    re-enumeration within the involved-types restricted graph, exposed as
+    `type_level_refill/refill_paths_type.csv`): source/target multi-selects
+    → per-pair panes with the same badges and capped "Top paths per
+    length" tables as the Pair Explorer, ranked by the same key, with the
+    refilled pair ratios as the Pair-ratio column. The per-connection
+    type-pairs table and the bodyId detail stay **exported files**
+    (linked on the tab), and runs whose records predate the paths table
+    get a regeneration note; the explicit "budget did not bite" hint
+    appears when no records exist. An
+    **applied-threshold
     &amp; budget provenance card** marks explicitly what the run used
     (applied vs requested threshold, StrongestFirst budget/tau, Edge
     Budget landing/floor, W\*, paths_complete) — single-dataset runs from
@@ -273,14 +331,15 @@ the report's `Generated:` timestamp.
     top-10 paths per (pair, length), 50 global-matrix pairs, 60
     global-network edges — and every capped view
     states its cap and links to the lossless CSVs below. Ranking is
-    bottleneck-first (`min_weight` desc, `path_prob` desc, path asc).
+    bottleneck-first (`min_weight` desc, path asc; the former
+    `path_prob` tiebreak is SUSPENDED).
     Shared = intermediate on ≥2 paths of the same pair, unique = exactly 1
     (classified over the pair's FULL path set, drawn subset colored
     accordingly).
 *   **`paths_pair_breakdown/pair_breakdown_paths.csv`**: One row per path,
     uncapped — columns `dataset`, `threshold`, `unit`, `source`, `target`,
-    `pair`, `rank_in_pair_length`, `path`, `weights`, `probabilities`,
-    `ratios`, `min_weight`, `min_ratio`, `path_prob`, `length`,
+    `pair`, `rank_in_pair_length`, `path`, `weights`,
+    `ratios`, `min_weight`, `min_ratio`, `length`,
     `source_bodyid_coverage`, `target_bodyid_coverage`, `paths_in_pair`
     (round-10: the Explorer table shows a Min-ratio column and the union
     pane re-ranks by it whenever the run ranks by `min_ratio`; Weights /
@@ -388,7 +447,7 @@ result, and the Edge Budget never applies in shortest mode. Deep runs
 with a single broad target remain depth-bound — lower Max Intermediate
 Layers or raise Min Synapse Count for those.
 
-> ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio`, `traversal_probability`, and filtering thresholds.
+> ℹ️ **Parameter Calculations**: See [ScoreCalculation_Guide](core-features/ScoreCalculation_Guide.md) for formulas explaining `connection_ratio` and filtering thresholds. **Traversal/path-probability values are SUSPENDED (2026-10-06, unverifiable fidelity) — no longer exported, displayed, or used for ranking.**
 >
 > ℹ️ With `skip_bodyId=False`, bodyId-level tables are written alongside the type-level ones: `data_details/connection_info_bodyId.csv` (edge table), `{source}_to_{target}_allpaths_bodyId_paths.csv` (bodyId-level path table, same score columns as the type table), and `data_details/conn_mat_bodyId_weight.csv` / `_ratio.csv` / `_prob.csv` bodyId-level matrices. In Shortest runs the per-hop `weights`/`min_weight` are the PHYSICAL per-edge synapse counts (engine fix 2026-10-05: a per-target-BFS edge recurring at several reverse depths counts ONCE, not once per fetch), while `connection_info_bodyId.csv` keeps every per-layer row as the audit surface for what was fetched. With `output_format='xlsx'`, tables are written as multi-sheet Excel workbooks instead of CSVs (sheets mirror the CSV file names, e.g. `connection_info_bodyId`, `conn_mat_type_weight`). The structure above reflects the UI defaults (`skip_bodyId=True`, `output_format='csv'`).
 
@@ -493,7 +552,7 @@ Example: `plot-network_custom_edgelist_20260815_142334/`
 *   **`{base}_network.html`**: Interactive pathway graph
 *   **`{base}_heatmap.html`**: Edge weight heatmap
 *   **`{base}_Sankey.html`**: Sankey flow diagram
-*   **`{base}_data.xlsx`**: Workbook with sheets `connections`, `original_paths`, `connMatrix_weight`, `connMatrix_ratio`, `connMatrix_prob`, plus `connMatrix_nt_type` when the input carries neurotransmitter data. Long-form CSVs of these tables (`{base}_data_connections.csv`, `{base}_data_connMatrix_{weight|ratio|prob|nt_type}.csv`) are written alongside.
+*   **`{base}_data.xlsx`**: Workbook with sheets `connections`, `original_paths`, `connMatrix_weight`, `connMatrix_ratio`, plus `connMatrix_nt_type` when the input carries neurotransmitter data (the `connMatrix_prob` sheet is SUSPENDED). Long-form CSVs of these tables (`{base}_data_connections.csv`, `{base}_data_connMatrix_{weight|ratio|nt_type}.csv`) are written alongside.
 *   The "Create Empty Canvas" mode writes only an HTML drawing canvas.
 
 ---
@@ -780,7 +839,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 
 #### Visualizations (`comparison_visualizations/`)
 *   **`edge_heatmap_{N}.png`**, **`path_heatmap_{N}.png`**, **`path_counts.png`**: Standard static heatmaps/counts per threshold. Combination mode uses `edge_heatmap_query_{query_id}.png`, `path_heatmap_query_{query_id}.png`, and query-annotated CSVs for every query.
-*   **`by_ratio/`** / **`by_probability/`**: Ratio and traversal-probability heatmaps (PNG + `data/` CSV) for analyses that enable those filters. Pathfinding comparisons disable ratio/probability filtering and do not emit these folders.
+*   **`by_ratio/`**: Ratio heatmaps (PNG + `data/` CSV) for analyses that enable those filters. Pathfinding comparisons disable ratio filtering and do not emit this folder. (**`by_probability/` is SUSPENDED (2026-10-06, unverifiable fidelity) and no longer generated.**)
 *   **`visualization_data/`**: CSVs backing the report (`edge_overlap.csv`, `key_findings_per_threshold.csv`, `overlap_matrices_per_threshold.csv`, `path_counts.csv`, `path_heatmap_{N}.csv`, `edge_heatmap_{N}.csv`). In Custom combination mode, aggregate rows carry `query_id`/`query_label` and query threshold-map columns; the scalar `threshold` field is left blank rather than overloaded with a query ID.
 
 #### Similarity Matrices (`similarity_matrices/`)
@@ -1682,8 +1741,8 @@ setting (useful for scripts and tests).
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `weight`                | Synapse count                   | Raw count from dataset                                                                           |
 | `connection_ratio`      | Fraction of post-synaptic input | `weight / post_total` ([details](core-features/ScoreCalculation_Guide.md#connection-ratio)); ratio-basis type tables use the pair's INVOLVED-post denominator (see ConnectionRatioPaths.md)      |
-| `traversal_probability` | Signal transmission probability | `min(1.0, ratio × 3)` ([details](core-features/ScoreCalculation_Guide.md#traversal-probability)) |
-| `block_probability`     | Signal blocking probability     | `1 - traversal_probability`                                                                      |
+| `traversal_probability` | **SUSPENDED (2026-10-06, unverifiable fidelity)** — no longer exported or displayed | historical: `min(1.0, ratio × 3)` |
+| `block_probability`     | **SUSPENDED (2026-10-06)**                                     | historical: `1 - traversal_probability` |
 | `nt_type`               | Neurotransmitter type           | ACH, GABA, GLUT, etc.                                                                            |
 
 ### Path Table Columns (`*_allpaths_type.csv`)
@@ -1695,7 +1754,7 @@ setting (useful for scripts and tests).
 | `probabilities`| Per-edge traversal probabilities                |
 | `ratios`       | Per-edge connection ratios                      |
 | `min_weight`   | Smallest edge weight along the path             |
-| `path_prob`    | Overall path probability                        |
+| `path_prob`    | **SUSPENDED (2026-10-06, unverifiable fidelity)** — no longer exported or displayed |
 | `min_ratio`    | Smallest edge connection ratio                  |
 | `length`       | Number of hops                                  |
 | `nt_types`     | Neurotransmitter types along the path (one entry per hop; empty entry = no annotation) |

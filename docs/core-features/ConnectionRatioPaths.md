@@ -13,7 +13,7 @@ exploration findings).
 ratio(u → v) = synapses(u → v) / total_incoming(v)
 total_incoming(v) = ALL-post incoming synapse mass of v at min_weight=1
                     over the FULL dataset table
-traversal_probability = min(1, ratio / 0.3)
+traversal_probability = min(1, ratio / 0.3) — ****SUSPENDED (2026-10-06, unverifiable fidelity)** — probability values are no longer exported, displayed, or used for ranking**
 ```
 
 The denominator is the same F9 definition as the pipeline's

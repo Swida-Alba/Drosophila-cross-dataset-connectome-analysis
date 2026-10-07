@@ -463,7 +463,7 @@ min_synapse_num = 10
 # Connection ratio (direct proportion)
 min_ratio = 0.01  # weight/post
 
-# Traversal probability (scaled)
+# Traversal probability (scaled) — SUSPENDED 2026-10-06: no longer exported/displayed/ranked (unverifiable fidelity)
 min_traversal_probability = 0.001  # min(1, weight/(post*0.3))
 
 # Filtering level

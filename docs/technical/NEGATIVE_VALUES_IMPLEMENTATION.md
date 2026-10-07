@@ -1,5 +1,8 @@
 # Negative Value Handling - Implementation Summary
 
+> **SUSPENDED (2026-10-06, unverifiable fidelity):** probability values are no longer displayed in vispath hovers/metrics. The `Probability:` examples below are historical.
+
+
 > **Dated record (v1.0, 2024), with later drift.** The vispath sections
 > remain the accurate mechanism reference (absolute widths, sign-preserving
 > hover, negative-edge styling in `vispath_pkg.vispath`). Two claims are

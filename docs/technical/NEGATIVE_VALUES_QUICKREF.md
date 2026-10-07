@@ -1,5 +1,8 @@
 # Negative Values - Quick Reference
 
+> **SUSPENDED (2026-10-06, unverifiable fidelity):** probability values are no longer displayed in vispath hovers/metrics. The `Probability:` examples below are historical.
+
+
 ## Summary
 When edge weights contain negative values, the toolkit automatically handles them with special visual indicators.
 

@@ -1,5 +1,8 @@
 # Multiple Connections Between Same Neuron Pair - Handling Example
 
+> **SUSPENDED (2026-10-06, unverifiable fidelity):** probability values are no longer exported or displayed. The `traversal_probability` columns shown in the examples below no longer appear in exported files.
+
+
 ## Overview
 The updated `FindAllPath()` method now correctly handles and preserves ALL connections between the same neuron pair when they exist in different layers and are used in valid paths.
 

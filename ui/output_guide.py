@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import Optional
 
 GUIDE_BASENAME = "_UserGuide_please_read_me"
+
+# Probability suspension (2026-10-06): traversal/path-probability values
+# are withheld due to unverifiable fidelity — no longer exported, shown,
+# or used for ranking.
+SUSP_SHORT = ("**SUSPENDED (2026-10-06, unverifiable fidelity)** — no "
+              "longer exported, displayed, or used for ranking")
 GUIDE_FORMAT_ENV = "DROCAT_RUN_GUIDE_FORMAT"
 GUIDE_FORMATS = ("html", "txt", "markdown", "disabled")
 GUIDE_EXTENSIONS = {"html": ".html", "txt": ".txt", "markdown": ".md"}
@@ -195,11 +201,12 @@ COLUMN_GLOSSARY = {
                   "share; can fall below the applied bodyId-level "
                   "threshold).", "0-1"),
     "traversal_probability": (
-        "Probability that a signal traverses the edge: "
-        "$\\min(1.0,\\ connection\\_ratio/0.3)$.", "0-1"),
-    "probabilities": ("Per-edge traversal probabilities along the path.", "list of 0-1"),
-    "block_probability": ("Probability the signal is blocked: "
-                         "$1 - \\text{traversal\\_probability}$.", "0-1"),
+        f"{SUSP_SHORT}. Historical formula: "
+        "$\\min(1.0,\\ connection\\_ratio/0.3)$.", "suspended"),
+    "probabilities": (f"{SUSP_SHORT}. Was: per-edge traversal "
+                       "probabilities along the path.", "suspended"),
+    "block_probability": (f"{SUSP_SHORT}. Historical formula: "
+                           "$1 - \\text{traversal\\_probability}$.", "suspended"),
     "path": ("Path as a neuron-type sequence, e.g. aMe12 → SMP238 → PPL101.", "text"),
     # --- Pair report (post-hoc, scripts/PathsPairReport.py) -----------------
     "unit": ("Pathfinding unit the row came from: the raw folder name relative "
@@ -263,8 +270,9 @@ COLUMN_GLOSSARY = {
                 "across re-exploration paths.", "integer"),
     "max_hop": ("Largest 0-based hop index of the pair's pre endpoint "
                 "across re-exploration paths.", "integer"),
-    "path_prob": ("Overall path probability = product of edge traversal "
-                   "probabilities $\\left(\\prod p_k\\right)$.", "0-1"),
+    "path_prob": (f"{SUSP_SHORT}. Historical formula: product of edge "
+                   "traversal probabilities $\\left(\\prod p_k\\right)$.",
+                   "suspended"),
     "min_weight": ("Smallest edge weight along the path.", "integer"),
     "length": ("Number of hops (edges) in the path.", "integer"),
     "nt_type": ("Predicted neurotransmitter type (ACh, GABA, glutamate, ...).", "text"),
@@ -272,7 +280,8 @@ COLUMN_GLOSSARY = {
     "conn_layer": ("Layer transition label of the connection, e.g. '0->1'.", "text"),
     "node": ("Neuron body id the shortest-discovery label describes.", "integer or text"),
     "dist": ("BFS distance in hops to the row's target (0 = the target itself).", "integer"),
-    "probability": ("Edge traversal probability.", "0-1"),
+    "probability": (f"{SUSP_SHORT}. Was: edge traversal probability.",
+                     "suspended"),
     # --- Enrollment / status flags --------------------------------------------
     "isInPath": ("Whether the source neuron participates in at least one found path.", "boolean"),
     # --- NeuronBridge find-lines expansion map --------------------------------
@@ -519,7 +528,7 @@ COLUMN_GLOSSARY = {
     "cosine_similarity": ("Cosine similarity of edge-weight vectors over the union: "
                             "$(E_1 \\cdot E_2) / "
                             "(\\lVert E_1 \\rVert \\cdot \\lVert E_2 \\rVert)$.", "0-1"),
-    "path_rank_correlation": ("Spearman correlation of path-probability ranks.", "-1 to 1"),
+    "path_rank_correlation": ("Spearman correlation of path ranks (historically probability ranks; probability SUSPENDED 2026-10-06).", "-1 to 1"),
     "spearman_rank_correlation": ("Spearman rank correlation of the compared values.", "-1 to 1"),
     "rv_coefficient": ("RV coefficient (multivariate correlation) of the edge "
                          "matrices: $\\langle A, B\\rangle_F^2 / "
@@ -638,7 +647,8 @@ COLUMN_GLOSSARY = {
         "no path data was provided.", "0-1"),
     "path_top20_overlap": (
         "v2.2 detail metric: overlap of the two datasets' top-20 paths "
-        "(ranked by traversal probability). NaN without path data.",
+        "(ranked by bottleneck; probability ranking SUSPENDED "
+        "2026-10-06). NaN without path data.",
         "0-1"),
     "hop_profile_w1": (
         "v2.2 detail metric: W1 (earth-mover) distance between the two "
@@ -828,15 +838,16 @@ _NEURON_TABLE_NOTE = (
     "cross-dataset type names, ...)"
 )
 
+# Probability columns SUSPENDED (2026-10-06, unverifiable fidelity).
 _PATH_COLUMNS = [
-    "path", "weights", "probabilities", "ratios", "min_weight",
-    "path_prob", "min_ratio", "length", "nt_types",
+    "path", "weights", "ratios", "min_weight",
+    "min_ratio", "length", "nt_types",
 ]
 
 _CONNECTION_TYPE_COLUMNS = [
     "type_pre", "type_post", "weight", "connection_ratio",
     "connection_ratio_adj",
-    "traversal_probability", "block_probability", "nt_type",
+    "nt_type",
 ]
 
 _HOMOLOG_RESULT_COLUMNS = [
@@ -888,7 +899,7 @@ _FIND_NETWORK = {
                         "dendrograms."},
         {"pattern": "visualization/visualization_data/*_data_connections.csv",
          "description": "Edge list backing the HTML visualizations.",
-         "columns": ["source", "target", "weight", "ratio", "probability",
+         "columns": ["source", "target", "weight", "ratio",
                      "nt_type"]},
         {"pattern": "visualization/visualization_data/*_data_original_paths.csv",
          "description": "Original path records backing the HTML files."},
@@ -960,7 +971,7 @@ _PATHFINDING_FILES = [
     {"pattern": "bodyId_visualization/visualization_data/*_data_connections.csv",
      "description": "Edge list backing the bodyId-level HTML "
                     "visualizations.",
-     "columns": ["source", "target", "weight", "ratio", "probability",
+     "columns": ["source", "target", "weight", "ratio",
                  "nt_type"]},
     {"pattern": "bodyId_visualization/visualization_data/*_data_original_paths.csv",
      "description": "Original bodyId-level path records backing the HTML "
@@ -989,9 +1000,6 @@ _PATHFINDING_FILES = [
     {"pattern": "data_details/conn_mat_type_ratio.csv",
      "description": "Type-level connection-ratio matrix.",
      "matrix": "rows/columns = neuron types, values = connection_ratio"},
-    {"pattern": "data_details/conn_mat_type_prob.csv",
-     "description": "Type-level traversal-probability matrix.",
-     "matrix": "rows/columns = neuron types, values = traversal_probability"},
     {"pattern": "data_details/conn_mat_type_nt.csv",
      "description": "Type-level neurotransmitter matrix.",
      "matrix": "rows/columns = neuron types, values = nt_type"},
@@ -1014,7 +1022,7 @@ _PATHFINDING_FILES = [
      "description": "Sankey flow diagram of the pathways."},
     {"pattern": "visualization/visualization_data/*_data_connections.csv",
      "description": "Edge list backing the HTML visualizations.",
-     "columns": ["source", "target", "weight", "ratio", "probability",
+     "columns": ["source", "target", "weight", "ratio",
                  "nt_type"]},
     {"pattern": "visualization/visualization_data/*_data_original_paths.csv",
      "description": "Original path records backing the HTML files."},
@@ -1051,6 +1059,29 @@ _PATHFINDING_FILES = [
      "description": "Reciprocal heatmap visualization."},
     {"pattern": "find_reciprocal/parameters.csv",
      "description": "Reciprocal-analysis parameters."},
+    # Standalone type-level refill mirror (written by the run flow
+    # whenever refill records exist; entries surface when files exist).
+    {"pattern": "type_level_refill/refill_paths_type.csv",
+     "description": "Refilled type-level paths (the second path-building "
+                    "round) in the allpaths format; the report's Refill "
+                    "tab mounts a second Pair Explorer over it."},
+    {"pattern": "type_level_refill/refill_connection_type.csv",
+     "description": "Refill mass only, in the connection-table format "
+                    "(when the budget bit).",
+     "columns": _CONNECTION_TYPE_COLUMNS},
+    {"pattern": "type_level_refill/refilled_connection_type.csv",
+     "description": "Complete-at-asked type pairs (emitted + refill "
+                    "mass, refilled ratios).",
+     "columns": _CONNECTION_TYPE_COLUMNS},
+    {"pattern": "type_level_refill/refilled_connection_bodyId.csv",
+     "description": "Complete-at-asked bodyId edges (emitted-rederived "
+                    "+ refill) with traversal counts and hop spans."},
+    {"pattern": "type_level_refill/refill_type_network.html",
+     "description": "Refill mass network visualization."},
+    {"pattern": "type_level_refill/refill_type_heatmap.html",
+     "description": "Refill mass heatmap visualization."},
+    {"pattern": "type_level_refill/parameters.csv",
+     "description": "Refill-analysis parameters (run parameters)."},
     # Post-hoc pair-report additions (scripts/PathsPairReport.py writes
     # these INTO the run folder after the fact; the entries surface in the
     # run guide only when the files exist).
@@ -1387,6 +1418,75 @@ _PATHFINDING_EXPLANATION = [
         "values_column": False,
         "pipeline": None,
     },
+    {
+        "heading": "Ratios, adjusted ratios, and the refill — detailed "
+                   "explanation",
+        "paragraphs": [
+            "Ratios (all inputs). Every Ratios value in the path tables "
+            "is a REALIZED share over the threshold-free all-post "
+            "denominator: the mass of the bodyId edges backing that hop "
+            "at that position, divided by the post type's full-membership "
+            "incoming synapse mass (Min Synapse Count = 1, i.e. ALL "
+            "inputs — the same canonical denominator as "
+            "connection_type.csv). Column headers label this '(all "
+            "inputs)'. The same edges back the Weights and the coverage "
+            "n, so one run can never show two denominators for one hop.",
+            "Adjusted ratios (inputs >= N synapses). connection_ratio_adj "
+            "re-scopes the denominator to the THRESHOLD-CONDITIONED "
+            "incoming mass: only edges at or above the run's Min Synapse "
+            "Count count toward the post type's incoming total. It is "
+            "always >= the plain ratio and moves with the threshold by "
+            "design; with Min Synapse Count 1 it equals the plain ratio "
+            "(a disclosed redundant duplicate). Column headers label this "
+            "'(inputs >= N synapses)' with the run's own N. The pair-level "
+            "adjusted share of a path is the weakest entry of its Adj. "
+            "ratios list.",
+            "The refill (budget-cut mass recovered). When a run's APPLIED "
+            "threshold exceeded the asked one (a budget bit), the exported "
+            "connection table counts only the surviving pairs. The refill "
+            "re-runs path building at the ASKED threshold within the "
+            "involved-types restricted graph and recovers the mass behind "
+            "the cut — restricted to the Pair Explorer's own chains (a "
+            "VALUE change on the given routes; out-of-scope routes are "
+            "never pathfinded). Refilled total = Emitted + Refill. "
+            "Refill mass only rides in-scope routes; mass that can fire "
+            "on no chain is disclosed per pair as unfired_residual, and "
+            "pruned non-emitted-pair mass as non_emitted_pair_mass. "
+            "Refill is a CERTIFIED LOWER BOUND of the complete-at-asked "
+            "refill; the consistency anchor table_reproduced in "
+            "refill_provenance.json guarantees the re-derived cut "
+            "reproduces connection_type.csv exactly.",
+            "Traversal/path probability values are SUSPENDED (2026-10-06, "
+            "unverifiable fidelity): they are no longer exported, "
+            "displayed, or used for ranking. Ratios (plain and adjusted) "
+            "are the strength readouts.",
+        ],
+        "table": [
+            ["Surface", "What it carries"],
+            ["Ratios (all inputs)",
+             "Realized hop share over ALL inputs (F9 all-post denominator)."],
+            ["Adj. ratios (inputs >= N synapses)",
+             "Realized hop share over the threshold-conditioned "
+             "denominator; equals Ratios when N <= 1."],
+            ["Emitted (synapse >= N)",
+             "The pair's synapse mass at the applied cutoff N — what "
+             "connection_type.csv counts."],
+            ["Refill (synapse >= N)",
+             "Recovered mass behind the cutoff on the pair, riding "
+             "in-scope routes only (certified lower bound)."],
+            ["Refilled total (synapse >= N)",
+             "Emitted + Refill — the complete-at-asked strength."],
+            ["unfired_residual",
+             ">=asked mass on the pair that fired on no chain (off-route "
+             "+ guard-missed). 0 on clean runs."],
+            ["complete_at_asked_paths_type.csv",
+             "The complete-at-asked chains with the per-hop "
+             "emitted/refill split; stamped complete only when the "
+             "second-round enumeration was not truncated."],
+        ],
+        "values_column": False,
+        "pipeline": None,
+    },
 ]
 
 # Symmetry columns also appear as base_pre/base_post pairs (defined in the
@@ -1604,9 +1704,11 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "*_data.xlsx",
              "description": "Data workbook with sheets: connections, "
                             "original_paths, connMatrix_weight, "
-                            "connMatrix_ratio, connMatrix_prob (plus "
+                            "connMatrix_ratio (plus "
                             "connMatrix_nt_type when the input carries "
-                            "neurotransmitter data)."},
+                            "neurotransmitter data). The connMatrix_prob "
+                            "sheet is SUSPENDED (2026-10-06, unverifiable "
+                            "fidelity)."},
         ],
     },
     "find_homologs": {
@@ -2292,10 +2394,6 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "comparison_visualizations/by_ratio/**",
              "description": "Connection-ratio heatmaps (PNG + backing CSV) "
                             "when enabled; not emitted for pathfinding "
-                            "comparisons."},
-            {"pattern": "comparison_visualizations/by_probability/**",
-                            "description": "Traversal-probability heatmaps (PNG + backing "
-                            "CSV), when enabled; not emitted for pathfinding "
                             "comparisons."},
             {"pattern": "comparison_visualizations/visualization_data/*.csv",
              "description": "CSVs backing the HTML report (edge overlap, key "

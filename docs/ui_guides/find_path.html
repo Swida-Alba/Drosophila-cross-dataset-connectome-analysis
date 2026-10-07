@@ -93,17 +93,16 @@
     <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
     <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj-&gt;j — edge weight ÷ the post neuron's total incoming weight, threshold-free (min_weight&nbsp;=&nbsp;1, all dataset sources)</td><td>0–1</td></tr>
     <tr><td><code>connection_ratio_adj</code></td><td>edge weight ÷ the post's incoming mass counting only edges ≥ Min Synapse Count (per neuron; member-summed at type level). Always ≥ connection_ratio and moves with the threshold by design; equals connection_ratio when Min Synapse Count is 1</td><td>0–1</td></tr>
-    <tr><td><code>traversal_probability</code></td><td>min(1.0, connection_ratio / 0.3) (30% input = maximal)</td><td>0–1</td></tr>
-    <tr><td><code>block_probability</code></td><td>1 − traversal_probability</td><td>0–1</td></tr>
-    <tr><td><code>path_prob</code></td><td>Π of the edge traversal probabilities over the path</td><td>0–1</td></tr>
+    <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+    <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+    <tr><td><code>path_prob</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
     <tr><td><code>min_weight</code></td><td>weakest hop of the path — the <b>realized</b> synapse mass at that hop (the distinct bodyId edges backing it at that position)</td><td>integer</td></tr>
     <tr><td><code>min_ratio</code></td><td>smallest per-hop ratio — the <b>realized</b> share on connection-ratio runs (the hop's realized mass ÷ the post type's full-membership incoming mass; can fall below the applied bodyId-level threshold); the pair-level readout in synapse runs</td><td>0–1</td></tr>
   </table>
-  <p>At the <b>type</b> level the two aggregate probabilities are computed
-    from the deduplicated bodyId-level pairs of D_t: type-level traversal
-    probability uses the <b>product</b> method by default
-    (<code>1 − Π(1 − p_pair)</code>), which models parallel channels and
-    makes a multi-pair type edge stronger than any single pair. Full
+  <p><b>SUSPENDED (2026-10-06, unverifiable fidelity):</b> the aggregate
+    traversal probabilities are no longer computed for display or export
+    (historically the <b>product</b> method,
+    <code>1 − Π(1 − p_pair)</code>). Full
     derivations live in
     <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
 
@@ -173,8 +172,8 @@
     query and parameters
     (<code>MCNS</code> = male-cns, <code>FAFB</code> = flywire FAFB, ...):</p>
   <pre><code>{output_dir}/find-paths-complete_MCNS_aMe12_to_PPL101_L1w3_20260815_142520/
-  aMe12_to_PPL101_allpaths_type.csv  # paths (path, weights, probabilities,
-                                     #   ratios, min_weight, path_prob, ...)
+  aMe12_to_PPL101_allpaths_type.csv  # paths (path, weights, ratios,
+                                     #   min_weight, min_ratio, ...)
   source_neurons.csv, target_neurons.csv # resolved enrollment/status details
   all_attributes.json
   parameters.txt, user_warning_notes.txt

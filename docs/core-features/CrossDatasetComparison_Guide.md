@@ -952,7 +952,7 @@ truth.
 
 ### Traversal Probability
 
-Probability of a signal traversing from source to target along a path.
+****SUSPENDED (2026-10-06, unverifiable fidelity)** — probability values are no longer exported, displayed, or used for ranking.**
 ```
 path_prob = Π (edge_weight / total_output_of_source)
 ```

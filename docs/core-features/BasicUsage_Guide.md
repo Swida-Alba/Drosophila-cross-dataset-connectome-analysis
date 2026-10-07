@@ -605,7 +605,8 @@ local_data/neuronbridge_finding/NB-find-lines_{query}_{timestamp}/
 - `bodyId_post`, `type_post`, `instance_post`: Target neuron
 - `weight`: Synapse count
 - `connection_ratio`: weight/post
-- `traversal_probability`: min(1, ratio/0.3)
+- `traversal_probability`: min(1, ratio/0.3) — **SUSPENDED (2026-10-06,
+  unverifiable fidelity): no longer exported or displayed**
 - `roi`: Region of interest
 
 **paths_type.csv:**

@@ -121,7 +121,7 @@ Automatic column name recognition in input data.
 - Target: `target`, `targettype`, `target_type`
 - Weight: `weight`, `synapse_count`, `synapses`
 - Ratio: `ratio`, `connection_ratio`
-- Probability: `probability`, `traversal_probability`
+- Probability: `probability`, `traversal_probability` — ****SUSPENDED (2026-10-06, unverifiable fidelity)** — probability values are no longer exported, displayed, or used for ranking**
 
 ### [Negative Values Implementation](./NEGATIVE_VALUES_IMPLEMENTATION.md)
 Support for negative connection values (inhibitory connections).

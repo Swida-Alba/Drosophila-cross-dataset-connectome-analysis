@@ -1,5 +1,8 @@
 # Connection Ratio Filter (`min_ratio`)
 
+> **SUSPENDED (2026-10-06): traversal/path-probability values are withheld due to unverifiable fidelity — they are no longer exported, displayed, or used for ranking. The engine still computes them internally, but no file or surface exposes them. The formulas in this document are retained for reference only. (Connection ratios are unaffected.)**
+
+
 ## Overview
 
 Added a new filtering parameter `min_ratio` that filters connections based on the **direct connection ratio** (`weight/post`) without the 0.3 scaling factor used in `traversal_probability`.

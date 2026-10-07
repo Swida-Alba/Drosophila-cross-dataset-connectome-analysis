@@ -118,7 +118,8 @@ python skills/drocat-usage/scripts/run_direct.py \
   as the size census. Applied only after a successful run; path outputs
   are byte-identical across modes; recorded in `meta.json`
   (`retention`), the run metadata, and `user_warning_notes.txt`.
-- `min_ratio` and `min_traversal_probability` remain available as readout
+- `min_ratio` remains available as readout. **Probability SUSPENDED (2026-10-06, unverifiable fidelity):** traversal/path-probability values are no longer exported, displayed, or used for ranking. The probability
+  readout is withheld (was `min_traversal_probability`-related columns).
   columns for compatibility, but their filters are disabled in Shortest Paths;
   they do not appear as `r[]p[]` filename notes.
 - This is also the engine behind `inter_dataset`'s `path_mode="shortest"`.

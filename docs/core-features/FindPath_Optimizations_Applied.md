@@ -1,5 +1,8 @@
 # FindPath Optimizations Applied
 
+> **SUSPENDED (2026-10-06, unverifiable fidelity):** probability values are no longer exported or displayed. Probability link values and columns described below are historical.
+
+
 ## Summary
 All optimizations from `FindAllPath()` have been successfully applied to `FindPath()` method to achieve feature parity and consistency across both methods.
 

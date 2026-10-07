@@ -27,11 +27,12 @@ def _make_pathfinding_folder(root: Path, with_warnings: bool = True) -> Path:
     (run / "data_details").mkdir(parents=True)
     (run / "visualization" / "visualization_data").mkdir(parents=True)
     (run / "aMe12_to_PPL101_allpaths_type.csv").write_text(
-        "path,weights,probabilities,ratios,min_weight,path_prob,min_ratio,"
+        # probability columns SUSPENDED (2026-10-06): no longer exported
+        "path,weights,ratios,min_weight,min_ratio,"
         "length,nt_types\n", encoding="utf-8")
     (run / "data_details" / "connection_type.csv").write_text(
-        "type_pre,type_post,weight,connection_ratio,traversal_probability,"
-        "block_probability,nt_type\n", encoding="utf-8")
+        "type_pre,type_post,weight,connection_ratio,"
+        "nt_type\n", encoding="utf-8")
     (run / "visualization" / "Network_20240101.html").write_text(
         "<html></html>", encoding="utf-8")
     if with_warnings:
@@ -228,7 +229,11 @@ class TestWriteRunGuide:
         path = guide.write_run_guide(run, "find_path", PARAMS, fmt="markdown")
         text = path.read_text(encoding="utf-8")
         assert "$w_{ij} / \\sum_k w_{kj}$" in text
-        assert "$\\min(1.0,\\ connection\\_ratio/0.3)$" in text
+        # traversal/path probability is SUSPENDED (2026-10-06,
+        # unverifiable fidelity): neither the column nor its formula
+        # renders in the guide
+        assert "traversal_probability" not in text
+        assert "min(1.0" not in text
 
     def test_txt_format(self, tmp_path):
         run = _make_pathfinding_folder(tmp_path)
