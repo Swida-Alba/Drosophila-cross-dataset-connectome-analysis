@@ -479,9 +479,68 @@ _PATH_CONN_KEEP_COLS = (
     'type_pre', 'type_post', 'instance_pre', 'instance_post',
     'nt_type', 'nt_type_pre',
     'custom_group_pre', 'custom_group_post',
-    'connection_ratio', 'traversal_probability',
+    'connection_ratio',
     'synapse',
 )
+
+# ============================================================================
+# PROBABILITY SUSPENSION (2026-10-06, "unverifiable fidelity"): probability
+# values are no longer EXPORTED to files. The enrichment engines may keep
+# computing them internally (the min_traversal_probability filter and the
+# aggregate methods consume them), but every connection-table writer drops
+# the two suspended columns right before writing. RATIOS ARE UNAFFECTED —
+# connection_ratio/min_ratio/total_incoming are never touched here.
+# ============================================================================
+_SUSPENDED_PROB_COLUMNS = ('traversal_probability', 'block_probability')
+
+
+def _strip_suspended_prob_columns(frame):
+    """Return *frame* without the suspended probability columns.
+
+    Tolerant of pandas and polars frames (and of frames that never carried
+    the columns). Used at export time so upstream enrichment computations
+    stay intact while no probability value reaches a file.
+    """
+    if isinstance(frame, pl.DataFrame):
+        drop = [c for c in _SUSPENDED_PROB_COLUMNS if c in frame.columns]
+        return frame.drop(drop) if drop else frame
+    if isinstance(frame, pd.DataFrame):
+        drop = [c for c in _SUSPENDED_PROB_COLUMNS if c in frame.columns]
+        return frame.drop(columns=drop) if drop else frame
+    # Unknown frame-like object: best-effort duck typing, pass through on
+    # any surprise so an export never crashes over the suspension.
+    try:
+        columns = list(frame.columns)
+    except AttributeError:
+        return frame
+    drop = [c for c in _SUSPENDED_PROB_COLUMNS if c in columns]
+    if not drop:
+        return frame
+    try:
+        return frame.drop(drop)
+    except (TypeError, ValueError):
+        try:
+            return frame.drop(columns=drop)
+        except (TypeError, ValueError):
+            return frame
+
+
+def _top_n_paths_by_weight(frame, n):
+    """Top-N path selection for visualization.
+
+    PROBABILITY SUSPENSION (2026-10-06): the former "by traversal_probability"
+    top-N now ranks by the weakest hop (min_weight, strongest first) instead.
+    The sort is STABLE, so paths that tie on min_weight keep their pre-existing
+    (length-ascending) order — byte-deterministic. Works for pandas and polars
+    frames; frames without a min_weight column fall back to the head(n) slice.
+    """
+    if 'min_weight' not in getattr(frame, 'columns', []):
+        return frame.head(n)
+    if isinstance(frame, pl.DataFrame):
+        return frame.sort('min_weight', descending=True,
+                          maintain_order=True).head(n)
+    return frame.sort_values('min_weight', ascending=False,
+                             kind='stable').head(n)
 
 # Matrix exports pivot into a dense index x columns grid.  Past this cell
 # count the pivot itself (not the disk write) exhausts memory, so the
@@ -2095,15 +2154,17 @@ class FindNeuronConnection:
         Enrichment aggregations and their totals joins follow polars'
         thread scheduling, so the frames' row order varies run-to-run —
         every exporter therefore sorts on a TOTAL key before writing:
-        conn_layer first when the frame is multi-layer, then
-        traversal_probability / weight descending, then the endpoint
-        columns (bodyId pair + roi for bodyId tables, where a pair can
-        carry several roi rows; custom-group or type pair otherwise).
-        Stable kind / maintain_order pins any residual ties. Accepts
-        polars and pandas frames; returns the frame unchanged when empty
-        or None. This is the single shared implementation behind the
-        FindPath / FindNetwork / pathfinding-materialization export
-        sorts (byte-reproducibility fix, 2026-10-02).
+        conn_layer first when the frame is multi-layer, then weight
+        descending, then the endpoint columns (bodyId pair + roi for
+        bodyId tables, where a pair can carry several roi rows;
+        custom-group or type pair otherwise). Stable kind / maintain_order
+        pins any residual ties. Accepts polars and pandas frames; returns
+        the frame unchanged when empty or None. This is the single shared
+        implementation behind the FindPath / FindNetwork /
+        pathfinding-materialization export sorts (byte-reproducibility
+        fix, 2026-10-02). PROBABILITY SUSPENSION (2026-10-06): the former
+        traversal_probability tier is gone — probabilities no longer rank
+        exports.
         """
         if frame is None:
             return frame
@@ -2118,9 +2179,6 @@ class FindNeuronConnection:
         if 'conn_layer' in frame.columns:
             keys.append('conn_layer')
             desc.append(False)
-        if 'traversal_probability' in frame.columns:
-            keys.append('traversal_probability')
-            desc.append(True)
         keys.append('weight')
         desc.append(True)
         if 'bodyId_pre' in frame.columns:
@@ -2524,12 +2582,8 @@ class FindNeuronConnection:
                 print(f"Warning: Could not create ratio matrix: {e}")
 
         # 3. Probability Matrix
-        if 'traversal_probability' in df.columns:
-            try:
-                mat_prob = df.pivot(index=index_col, columns=columns_col, values='traversal_probability').fillna(0)
-                mat_prob.to_excel(writer, sheet_name=f'conn_mat_{level}_prob')
-            except Exception as e:
-                print(f"Warning: Could not create probability matrix: {e}")
+        # PROBABILITY SUSPENSION (2026-10-06): the connMat_*_prob sheet is
+        # no longer written.
 
         # 4. NT Type Matrix
         if 'nt_type' in df.columns:
@@ -3012,15 +3066,8 @@ class FindNeuronConnection:
                 print(f" Failed: {e}", flush=True)
 
         # 3. Probability Matrix
-        if level != 'bodyId' and 'traversal_probability' in df.columns:
-            try:
-                if _pivot_too_dense():
-                    return
-                # Use max for probabilities
-                mat_prob = pl_df.pivot(values='traversal_probability', index=index_col, on=columns_col, aggregate_function='max').fill_null(0)
-                mat_prob.write_csv(os.path.join(folder, f'conn_mat_{level}_prob.csv'))
-            except Exception as e:
-                print(f" Failed: {e}", flush=True)
+        # PROBABILITY SUSPENSION (2026-10-06): the connMat_*_prob.csv pivot
+        # is no longer written.
 
         # 4. NT Type Matrix (the only pivot that also runs at bodyId level)
         if 'nt_type' in df.columns:
@@ -3902,10 +3949,11 @@ class FindNeuronConnection:
     [DEPRECATED] Use edgeN_limit instead.\n
     number of strongest paths to show in network visualization\n
     -1: show all paths (default)\n
-    n > 0: show only the top n paths ranked by traversal_probability (product of edge probabilities)\n
+    n > 0: show only the top n paths ranked by min_weight (weakest hop)\n
     applies to both FindPath and FindAllPath visualizations\n
     helps focus on most significant pathways in large networks\n
-    Note: paths are already sorted by traversal_probability in the path_type/path_bodyId DataFrames
+    Note: PROBABILITY SUSPENSION (2026-10-06) — was ranked by traversal_probability;\n
+    paths are sorted by length/min_weight in the path_type/path_bodyId DataFrames
     '''
     
     verbose_mode: str = 'full'
@@ -8842,6 +8890,9 @@ class FindNeuronConnection:
                    if c in record.columns]
         record = record[leading + [c for c in record.columns
                                    if c not in leading]]
+        # PROBABILITY SUSPENSION (2026-10-06): the passthrough carries raw
+        # conn rows — strip the suspended probability columns before writing.
+        record = _strip_suspended_prob_columns(record)
         out_path = os.path.join(details_dir, 'untyped_dropped_records.csv')
         self._save_df_to_csv_polars(record, out_path)
         self._vprint(
@@ -13415,7 +13466,11 @@ class FindNeuronConnection:
         self.conn_matrix_type.index = self.conn_matrix_type.index.astype(str)
         self.conn_matrix_type.columns = self.conn_matrix_type.columns.astype(str)
         self.cmat_full_bodyId,self.cmat_full_type = sv.Conn2FullMat(self.source_df,self.target_df,self.conn_df,self.conn_type)
-        self.transitionMat_bodyId,self.transitionMat_type = sv.Conn2FullMat(self.source_df,self.target_df,self.conn_df,self.conn_type,weight_col='traversal_probability')
+        # PROBABILITY SUSPENSION (2026-10-06): the traversal-probability
+        # transmission matrices are no longer computed or written — the
+        # attributes stay as None so stray references degrade gracefully.
+        self.transitionMat_bodyId = None
+        self.transitionMat_type = None
         # Create ratio-based matrices (both square and full rectangular)
         self.conn_matrix_ratio_bodyId: pd.DataFrame = connection_table_to_matrix(self.conn_df, group_cols='bodyId', sort_by='type', weight_col='connection_ratio')
         self.conn_matrix_ratio_bodyId.index = self.conn_matrix_ratio_bodyId.index.astype(str)
@@ -13473,11 +13528,13 @@ class FindNeuronConnection:
             self._save_df_to_csv_polars(self.target_df, base_name + '_target_info.csv')
             self._save_df_to_csv_polars(self.source_in_conn, base_name + '_source_in_connection.csv')
             self._save_df_to_csv_polars(self.target_in_conn, base_name + '_target_in_connection.csv')
-            self._save_df_to_csv_polars(self.conn_type, base_name + '_connection_groupby_type.csv')
-            
+            # PROBABILITY SUSPENSION (2026-10-06): strip suspended probability
+            # columns from the exports (in-memory frames keep them).
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(self.conn_type), base_name + '_connection_groupby_type.csv')
+
             # Add custom group sheets if custom grouping was used
             if self.conn_group is not None:
-                self._save_df_to_csv_polars(self.conn_group, base_name + '_connection_groupby_custom.csv')
+                self._save_df_to_csv_polars(_strip_suspended_prob_columns(self.conn_group), base_name + '_connection_groupby_custom.csv')
                 if not self.largeTargetSet:
                     self._save_df_to_csv_polars(self.conn_matrix_group, base_name + '_connectionMatrix_group.csv', index=True)
                     self._save_df_to_csv_polars(self.conn_matrix_ratio_group, base_name + '_connectionRatioMat_group.csv', index=True)
@@ -13489,13 +13546,13 @@ class FindNeuronConnection:
             if not self.largeTargetSet:
                 self._save_df_to_csv_polars(self.conn_matrix_type, base_name + '_connectionMatrix_type.csv', index=True)
                 self._save_df_to_csv_polars(self.cmat_full_type, base_name + '_connMat_type_full.csv', index=True)
-                self._save_df_to_csv_polars(self.transitionMat_type, base_name + '_transmissionMat_type.csv', index=True)
+                # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_type.csv
                 self._save_df_to_csv_polars(self.conn_matrix_ratio_type, base_name + '_connectionRatioMat_type.csv', index=True)
                 self._save_df_to_csv_polars(self.ratioMat_full_type, base_name + '_ratioMat_type_full.csv', index=True)
             else:
                 self._save_df_to_csv_polars(self.conn_matrix_type.transpose(), base_name + '_connectionMatrix_type.csv', index=True)
                 self._save_df_to_csv_polars(self.cmat_full_type.transpose(), base_name + '_connMat_type_full.csv', index=True)
-                self._save_df_to_csv_polars(self.transitionMat_type.transpose(), base_name + '_transmissionMat_type.csv', index=True)
+                # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_type.csv
                 self._save_df_to_csv_polars(self.conn_matrix_ratio_type.transpose(), base_name + '_connectionRatioMat_type.csv', index=True)
         else:
             output_excel_name = os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_info_snp'+str(self.min_synapse_num)+'.xlsx')
@@ -13510,11 +13567,13 @@ class FindNeuronConnection:
                 self.target_df.to_excel(dataWriter,sheet_name='target_info',index=False)
                 self.source_in_conn.to_excel(dataWriter,sheet_name='source_in_connection')
                 self.target_in_conn.to_excel(dataWriter,sheet_name='target_in_connection')
-                self.conn_type.to_excel(dataWriter,sheet_name='connection_groupby_type')
-                
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the sheet.
+                _strip_suspended_prob_columns(self.conn_type).to_excel(dataWriter,sheet_name='connection_groupby_type')
+
                 # Add custom group sheets if custom grouping was used
                 if self.conn_group is not None:
-                    self.conn_group.to_excel(dataWriter,sheet_name='connection_groupby_custom')
+                    _strip_suspended_prob_columns(self.conn_group).to_excel(dataWriter,sheet_name='connection_groupby_custom')
                     if not self.largeTargetSet:
                         self.conn_matrix_group.to_excel(dataWriter,sheet_name='connectionMatrix_group')
                         self.conn_matrix_ratio_group.to_excel(dataWriter,sheet_name='connectionRatioMat_group')
@@ -13526,13 +13585,13 @@ class FindNeuronConnection:
                 if not self.largeTargetSet:
                     self.conn_matrix_type.to_excel(dataWriter,sheet_name='connectionMatrix_type')
                     self.cmat_full_type.to_excel(dataWriter,sheet_name='connMat_type_full')
-                    self.transitionMat_type.to_excel(dataWriter,sheet_name='transmissionMat_type')
+                    # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_type sheet
                     self.conn_matrix_ratio_type.to_excel(dataWriter,sheet_name='connectionRatioMat_type')
                     self.ratioMat_full_type.to_excel(dataWriter,sheet_name='ratioMat_type_full')
                 else:
                     self.conn_matrix_type.transpose().to_excel(dataWriter,sheet_name='connectionMatrix_type')
                     self.cmat_full_type.transpose().to_excel(dataWriter,sheet_name='connMat_type_full')
-                    self.transitionMat_type.transpose().to_excel(dataWriter,sheet_name='transmissionMat_type')
+                    # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_type sheet
                     self.conn_matrix_ratio_type.transpose().to_excel(dataWriter,sheet_name='connectionRatioMat_type')
         
         # Save bodyId-level data (use CSV for large data)
@@ -13565,16 +13624,18 @@ class FindNeuronConnection:
             
             # Save bodyId connection data as CSV
             output_bodyid_csv = os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_bodyId_connections_snp'+str(self.min_synapse_num)+'.csv')
-            self._save_df_to_csv_polars(self.conn_df, output_bodyid_csv)
+            # PROBABILITY SUSPENSION (2026-10-06): strip suspended probability
+            # columns from the export (in-memory frames keep them).
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(self.conn_df), output_bodyid_csv)
             print(f'  ✓ Saved to: {output_bodyid_csv}')
             
             # Save matrices as separate CSVs
             if not self.largeTargetSet:
                 self._save_df_to_csv_polars(self.conn_matrix_bodyId, os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_connectionMatrix_bodyId.csv'), index=True)
-                self._save_df_to_csv_polars(self.transitionMat_bodyId, os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_transmissionMat_bodyId.csv'), index=True)
+                # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_bodyId.csv
             else:
                 self._save_df_to_csv_polars(self.conn_matrix_bodyId.transpose(), os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_connectionMatrix_bodyId.csv'), index=True)
-                self._save_df_to_csv_polars(self.transitionMat_bodyId.transpose(), os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_transmissionMat_bodyId.csv'), index=True)
+                # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_bodyId.csv
         else:
             # Data fits in Excel
             output_bodyid_excel = os.path.join(self.direct_folder,self.source_fname+'_to_'+self.target_fname+'_bodyId_data_snp'+str(self.min_synapse_num)+'.xlsx')
@@ -13584,18 +13645,20 @@ class FindNeuronConnection:
                 worksheet.set_column('A:A', 30, dataWriter.book.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                 worksheet.set_column('B:B', 30, dataWriter.book.add_format({'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                 
-                self.conn_df.to_excel(dataWriter,sheet_name='connection_info_bodyId')
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the sheet.
+                _strip_suspended_prob_columns(self.conn_df).to_excel(dataWriter,sheet_name='connection_info_bodyId')
                 
                 if not self.largeTargetSet:
                     self.conn_matrix_bodyId.to_excel(dataWriter,sheet_name='connectionMatrix_bodyId')
                     self.cmat_full_bodyId.to_excel(dataWriter,sheet_name='connMat_bodyId_full')
-                    self.transitionMat_bodyId.to_excel(dataWriter,sheet_name='transmissionMat_bodyId')
+                    # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_bodyId sheet
                     self.conn_matrix_ratio_bodyId.to_excel(dataWriter,sheet_name='connectionRatioMat_bodyId')
                     self.ratioMat_full_bodyId.to_excel(dataWriter,sheet_name='ratioMat_bodyId_full')
                 else:
                     self.conn_matrix_bodyId.transpose().to_excel(dataWriter,sheet_name='connectionMatrix_bodyId')
                     self.cmat_full_bodyId.transpose().to_excel(dataWriter,sheet_name='connMat_bodyId_full')
-                    self.transitionMat_bodyId.transpose().to_excel(dataWriter,sheet_name='transmissionMat_bodyId')
+                    # PROBABILITY SUSPENSION (2026-10-06): no transmissionMat_bodyId sheet
                     self.conn_matrix_ratio_bodyId.transpose().to_excel(dataWriter,sheet_name='connectionRatioMat_bodyId')
                     self.ratioMat_full_bodyId.transpose().to_excel(dataWriter,sheet_name='ratioMat_bodyId_full')
             print(f'  ✓ Saved to: {output_bodyid_excel}')
@@ -13950,13 +14013,17 @@ class FindNeuronConnection:
         conn_df = self._sort_connection_export(conn_df)
         if conn_group is not None and len(conn_group) > 0:
             conn_group = self._sort_connection_export(conn_group)
-        self._save_df_to_csv_polars(conn_type, os.path.join(details_folder, 'connection_type.csv'))
+        # PROBABILITY SUSPENSION (2026-10-06): probability columns are
+        # stripped from every connection-table export at write time (see
+        # _strip_suspended_prob_columns); the enrichment frames keep them
+        # in memory for the threshold filter.
+        self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_type), os.path.join(details_folder, 'connection_type.csv'))
         if not self.skip_bodyId:
-            self._save_df_to_csv_polars(conn_df, os.path.join(details_folder, 'connection_info_bodyId.csv'))
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_df), os.path.join(details_folder, 'connection_info_bodyId.csv'))
         else:
             self._vprint('Skipping bodyId-level data saving (skip_bodyId=True)', level='full')
         if conn_group is not None and len(conn_group) > 0:
-            self._save_df_to_csv_polars(conn_group, os.path.join(details_folder, 'connection_custom_groups.csv'))
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_group), os.path.join(details_folder, 'connection_custom_groups.csv'))
         self._write_user_warning_notes(network_folder)
         self._export_untyped_drop_records(network_folder)
 
@@ -15824,7 +15891,9 @@ class FindNeuronConnection:
             # Save combined neurons CSV with group column
             self._create_combined_neurons_csv(self.source_df, self.target_df, conn_inpath, csv_folder)
             self._save_df_to_csv_polars(totalweight_df, os.path.join(csv_folder, 'total_weight_layer.csv'))
-            self._save_df_to_csv_polars(conn_types, os.path.join(csv_folder, 'connection_type.csv'))
+            # PROBABILITY SUSPENSION (2026-10-06): strip suspended probability
+            # columns from the export (in-memory frames keep them).
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_types), os.path.join(csv_folder, 'connection_type.csv'))
             self._save_matrices_to_csv(conn_types, csv_folder, level='type')
         else:
             output_excel_name = os.path.join(self.path_folder,self.source_fname+'_to_'+self.target_fname+'_path_info.xlsx')
@@ -15837,7 +15906,9 @@ class FindNeuronConnection:
                 self.source_df.to_excel(writer,sheet_name='source_neurons',index=False)
                 self.target_df.to_excel(writer,sheet_name='target_neurons',index=False)
                 totalweight_df.to_excel(writer,sheet_name='total_weight_layer')
-                conn_types.to_excel(writer,sheet_name='connection_type')
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the sheet.
+                _strip_suspended_prob_columns(conn_types).to_excel(writer,sheet_name='connection_type')
                 self._save_matrices_to_excel(conn_types, writer, level='type')
         
         # Save bodyId-level data (use CSV if too large or if output_format='csv')
@@ -15862,7 +15933,9 @@ class FindNeuronConnection:
             
             # Save bodyId connection data as CSV
             output_bodyid_csv = os.path.join(bodyid_folder, 'connection_info_bodyId.csv')
-            self._save_df_to_csv_polars(conn_inpath, output_bodyid_csv)
+            # PROBABILITY SUSPENSION (2026-10-06): strip suspended probability
+            # columns from the export (in-memory frames keep them).
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_inpath), output_bodyid_csv)
             self._save_matrices_to_csv(conn_inpath, bodyid_folder, level='bodyId')
             print(f'  ✓ Saved to: {bodyid_folder}/')
         else:
@@ -15874,7 +15947,9 @@ class FindNeuronConnection:
                 worksheet.set_column('A:A', 30, writer.book.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                 worksheet.set_column('B:B', 30, writer.book.add_format({'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                 
-                conn_inpath.to_excel(writer,sheet_name='connection_info_bodyId')
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the export.
+                _strip_suspended_prob_columns(conn_inpath).to_excel(writer,sheet_name='connection_info_bodyId')
                 self._save_matrices_to_excel(conn_inpath, writer, level='bodyId')
             print(f'  ✓ Saved to: {output_bodyid_excel}')
         
@@ -16333,8 +16408,9 @@ class FindNeuronConnection:
                 self._vprint('\nCreating bodyId-level network visualizations...')
                 # Filter paths if pathN_to_show is specified
                 if self.pathN_to_show > 0 and len(path_df_bodyId) > self.pathN_to_show:
-                    paths_to_visualize_bodyId = path_df_bodyId.head(self.pathN_to_show).copy()
-                    self._vprint(f'  Showing top {self.pathN_to_show} bodyId paths (by traversal_probability) out of {len(path_df_bodyId)} total paths')
+                    # PROBABILITY SUSPENSION (2026-10-06): top-N by min_weight
+                    paths_to_visualize_bodyId = _top_n_paths_by_weight(path_df_bodyId, self.pathN_to_show).copy()
+                    self._vprint(f'  Showing top {self.pathN_to_show} bodyId paths (by min_weight) out of {len(path_df_bodyId)} total paths')
                 else:
                     paths_to_visualize_bodyId = path_df_bodyId.copy()
                     self._vprint(f'  Showing all {len(path_df_bodyId)} bodyId paths')
@@ -16539,6 +16615,10 @@ class FindNeuronConnection:
           run-folder name). Missing artifact types stay absent — a
           network-only preview never gains a Sankey file from naming
           parity alone.
+        - the shared ``plotly.min.js`` that VisConnMatInteractive writes
+          BESIDE the heatmap html moves with it — the heatmap references
+          it relatively, so a library left behind in ``source_dir``
+          blanks the relocated heatmap.
         - the vispath-exported data files (``<source>_data*``) move to
           ``<viz_dir>/visualization_data/``.
         - an optional companion DataFrame is saved there as
@@ -16561,6 +16641,19 @@ class FindNeuronConnection:
             if os.path.exists(src):
                 # prefix + run name; the level suffix is redundant now
                 shutil.move(src, os.path.join(viz_dir, f'{prefix}_{run_name}.html'))
+        # The heatmap html references its shared plotly.min.js relatively,
+        # so the library must move with it (a no-op for the in-place
+        # bodyId layout where source_dir already IS viz_dir; if viz_dir
+        # somehow already has a copy, both came from the same plotly
+        # package file and the source copy is just an orphan to drop).
+        _plotly_src = os.path.join(source_dir, 'plotly.min.js')
+        if os.path.exists(_plotly_src):
+            _plotly_dst = os.path.join(viz_dir, 'plotly.min.js')
+            if os.path.realpath(_plotly_src) != os.path.realpath(_plotly_dst):
+                if os.path.exists(_plotly_dst):
+                    os.remove(_plotly_src)
+                else:
+                    shutil.move(_plotly_src, _plotly_dst)
         for fname in os.listdir(source_dir):
             if fname.startswith(base + '_data'):
                 # Rename to the shared <run>_data* convention while moving:
@@ -17247,6 +17340,137 @@ class FindNeuronConnection:
         self.parameter_df.columns = ['parameter', 'value']
         return prov
 
+    def _viz_to_pandas(self, df):
+        """Polars -> pandas for the visualization edge-frame builders."""
+        if isinstance(df, pl.DataFrame):
+            return df.to_pandas()
+        return df
+
+    @staticmethod
+    def _viz_edge_df(df, pre_col, post_col):
+        """The shared VisualizePath edge-frame conversion (reciprocal +
+        refill visualization blocks): source/target/weight plus the
+        optional ratio/probability/nt_type enrichments; None when the
+        frame lacks the mandatory columns."""
+        if df is None or df.empty:
+            return None
+        if pre_col not in df.columns or post_col not in df.columns or 'weight' not in df.columns:
+            return None
+        edge_df = df[[pre_col, post_col, 'weight']].copy()
+        edge_df.columns = ['source', 'target', 'weight']
+        if 'connection_ratio' in df.columns:
+            edge_df['ratio'] = df['connection_ratio']
+        elif 'ratio' in df.columns:
+            edge_df['ratio'] = df['ratio']
+        if 'traversal_probability' in df.columns:
+            edge_df['probability'] = df['traversal_probability']
+        elif 'probability' in df.columns:
+            edge_df['probability'] = df['probability']
+        if 'nt_type' in df.columns:
+            edge_df['nt_type'] = df['nt_type']
+        elif 'nt_type_pre' in df.columns:
+            edge_df['nt_type'] = df['nt_type_pre']
+        return edge_df
+
+    def _viz_source_target_sets(self, level: str):
+        """Source/target node sets for visualization coloring (type /
+        custom-group / bodyId level); targets respect the Checked flag."""
+        if level == 'type':
+            source = set(self.source_df['type'].dropna().astype(str).tolist())
+            if 'Checked' in self.target_df.columns:
+                target_df = self.target_df[self.target_df['Checked']]
+            else:
+                target_df = self.target_df
+            target = set(target_df['type'].dropna().astype(str).tolist())
+        elif level == 'group':
+            source = set(self.source_df['custom_group'].dropna().astype(str).tolist()) if 'custom_group' in self.source_df.columns else set()
+            if 'Checked' in self.target_df.columns:
+                target_df = self.target_df[self.target_df['Checked']]
+            else:
+                target_df = self.target_df
+            target = set(target_df['custom_group'].dropna().astype(str).tolist()) if 'custom_group' in target_df.columns else set()
+        else:
+            source = set(self.source_df['bodyId'].dropna().astype(str).tolist())
+            if 'Checked' in self.target_df.columns:
+                target_df = self.target_df[self.target_df['Checked']]
+            else:
+                target_df = self.target_df
+            target = set(target_df['bodyId'].dropna().astype(str).tolist())
+        return source, target
+
+    @staticmethod
+    def _viz_assign_node_roles(vp, source_nodes, target_nodes):
+        """Stamp source/target/intermediate roles onto the built
+        network graph (VisualizePath G_network)."""
+        if vp.G_network is None:
+            return
+        for node in vp.G_network.nodes():
+            if node in source_nodes:
+                vp.G_network.nodes[node]['node_type'] = 'source'
+            elif node in target_nodes:
+                vp.G_network.nodes[node]['node_type'] = 'target'
+            else:
+                vp.G_network.nodes[node]['node_type'] = 'intermediate'
+
+    def _build_refill_visualizations(self, mirror_dir):
+        """Heatmap + network for the standalone type_level_refill/ folder
+        (type level from refill_connection_type.csv; bodyId twins from
+        the refill_bodyId_pairs.csv records when present) — same recipe
+        as the reciprocal views: build_network + role coloring +
+        create_heatmap + create_network, no Sankey."""
+        if self.verbose_mode == 'full':
+            self._vprint('\nCreating refill visualizations...', level='full')
+
+        def _vp(edge_df):
+            return VisualizePath(
+                path_file=edge_df,
+                output_folder=mirror_dir,
+                source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
+                intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
+                target_color=self.target_color if hasattr(self, 'target_color') else '#d62728',
+                link_color=self.link_color if hasattr(self, 'link_color') else 'rgba(100,100,100,0.3)',
+                network_layout=self.network_layout if hasattr(self, 'network_layout') else 'hierarchical',
+                showfig=self.showfig,
+                edgeN_limit=self.edgeN_limit,
+                output_format=self.output_format,
+                verbose=(self.verbose_mode == 'full'),
+                color_edges_by_nt=True,
+                separate_hemispheres=self.separate_hemispheres
+            )
+
+        refill_type_frame = pd.read_csv(
+            os.path.join(mirror_dir, 'refill_connection_type.csv'))
+        refill_type_frame = refill_type_frame[
+            refill_type_frame['weight'].fillna(0) > 0]
+        type_edge_df = self._viz_edge_df(
+            refill_type_frame, 'type_pre', 'type_post')
+        if type_edge_df is not None and not type_edge_df.empty:
+            vp_refill_type = _vp(type_edge_df)
+            vp_refill_type.base_filename = 'refill_type'
+            vp_refill_type.build_network()
+            source_nodes, target_nodes = self._viz_source_target_sets('type')
+            self._viz_assign_node_roles(vp_refill_type, source_nodes, target_nodes)
+            vp_refill_type.create_heatmap()
+            vp_refill_type.create_network()
+
+        _refill_body_csv = os.path.join(
+            self.allpath_folder, 'data_details', 'type_level_refill',
+            'refill_bodyId_pairs.csv')
+        if os.path.exists(_refill_body_csv):
+            refill_body_frame = pd.read_csv(
+                _refill_body_csv,
+                dtype={'bodyId_pre': str, 'bodyId_post': str})
+            body_edge_df = self._viz_edge_df(
+                refill_body_frame, 'bodyId_pre', 'bodyId_post')
+            if body_edge_df is not None and not body_edge_df.empty:
+                vp_refill_body = _vp(body_edge_df)
+                vp_refill_body.base_filename = 'refill_bodyId'
+                vp_refill_body.build_network()
+                source_nodes, target_nodes = self._viz_source_target_sets('bodyId')
+                self._viz_assign_node_roles(vp_refill_body, source_nodes, target_nodes)
+                vp_refill_body.create_heatmap()
+                vp_refill_body.create_network()
+
     def _maybe_generate_type_level_refill(self):
         """Phase 2 hook (plan-type-level-refill): after a materialized
         FindAllPath ('all' mode) folder carries its final provenance,
@@ -17356,6 +17580,19 @@ class FindNeuronConnection:
                 run_dir, edges=stream, type_map=type_map, out_dir=None,
                 source_note='auto (post-materialization hook)')
             if rec.get('status') == 'refilled':
+                # The standalone mirror folder's parameters.csv (same
+                # frame as data_details/parameters.csv, like
+                # find_reciprocal/); the refill visualizations themselves
+                # are built later by the visualization stage.
+                try:
+                    _mirror_dir = os.path.join(str(run_dir), 'type_level_refill')
+                    os.makedirs(_mirror_dir, exist_ok=True)
+                    self._save_df_to_csv_polars(
+                        self.parameter_df,
+                        os.path.join(_mirror_dir, 'parameters.csv'))
+                except Exception as exc:  # best-effort mirror extra
+                    self._vprint(f'[type-level refill] parameters.csv '
+                                 f'not mirrored: {exc}', level='full')
                 self._warn_notes.append(
                     '- [type-level refill] applied threshold '
                     f'{rec["applied_threshold"]} > asked '
@@ -17367,7 +17604,10 @@ class FindNeuronConnection:
                     f'{rec["refill_weight_total"]:,} synapses of '
                     'budget-cut mass recovered behind the existing '
                     'connection_type.csv rows (refill only; '
-                    'non-emitted type pairs counted, not recovered).')
+                    'non-emitted type pairs are not built; their mass is disclosed '
+                    'as non_emitted_pair_mass). '
+                    'Refilled data mirrored in the type_level_refill/ '
+                    'folder (connection-table format + visualizations).')
             return rec.get('status') == 'refilled'
         except TypeLevelRefillError as exc:
             self._warn_notes.append(
@@ -20160,15 +20400,17 @@ class FindNeuronConnection:
                     reciprocal_folder = os.path.join(self.allpath_folder, 'find_reciprocal')
                     os.makedirs(reciprocal_folder, exist_ok=True)
                     self._save_df_to_csv_polars(self.parameter_df, os.path.join(reciprocal_folder, 'parameters.csv'))
-                    self._save_df_to_csv_polars(reciprocal_types, os.path.join(reciprocal_folder, 'reciprocal_connection_type.csv'))
+                    # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                    # probability columns from the exports.
+                    self._save_df_to_csv_polars(_strip_suspended_prob_columns(reciprocal_types), os.path.join(reciprocal_folder, 'reciprocal_connection_type.csv'))
 
                     if reciprocal_groups is not None:
                         is_groups_empty = reciprocal_groups.is_empty() if hasattr(reciprocal_groups, 'is_empty') else reciprocal_groups.empty
                         if not is_groups_empty:
-                            self._save_df_to_csv_polars(reciprocal_groups, os.path.join(reciprocal_folder, 'reciprocal_connection_custom_groups.csv'))
+                            self._save_df_to_csv_polars(_strip_suspended_prob_columns(reciprocal_groups), os.path.join(reciprocal_folder, 'reciprocal_connection_custom_groups.csv'))
 
                     if not self.skip_bodyId:
-                        self._save_df_to_csv_polars(reciprocal_df_enriched, os.path.join(reciprocal_folder, 'reciprocal_connection_bodyId.csv'))
+                        self._save_df_to_csv_polars(_strip_suspended_prob_columns(reciprocal_df_enriched), os.path.join(reciprocal_folder, 'reciprocal_connection_bodyId.csv'))
         
         # Handle the case where no paths were found
         if conn_inpath.is_empty():
@@ -20190,12 +20432,14 @@ class FindNeuronConnection:
             # conn_types contains type-level aggregated edges (correctly aggregated at this threshold)
             if not conn_types.is_empty():
                 conn_types = self._ensure_ratio_prob_columns(conn_types, 'type_pre', 'type_post')
-                self._save_df_to_csv_polars(conn_types, os.path.join(csv_folder, 'connection_type.csv'))
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the export.
+                self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_types), os.path.join(csv_folder, 'connection_type.csv'))
                 self._vprint(f'  ✓ Saved {len(conn_types)} type-level edges to connection_type.csv (no valid paths)', level='full')
             else:
                 # Create empty connection file
-                empty_conn = pl.DataFrame(schema={'type_pre': pl.Utf8, 'type_post': pl.Utf8, 'weight': pl.Int64, 
-                                                  'conn_layer': pl.Utf8, 'traversal_probability': pl.Float64, 'connection_ratio': pl.Float64})
+                empty_conn = pl.DataFrame(schema={'type_pre': pl.Utf8, 'type_post': pl.Utf8, 'weight': pl.Int64,
+                                                  'conn_layer': pl.Utf8, 'connection_ratio': pl.Float64})
                 self._save_df_to_csv_polars(empty_conn, os.path.join(csv_folder, 'connection_type.csv'))
             
             self._vprint(f'  ✓ Saved to: {csv_folder}/', level='full')
@@ -20280,7 +20524,10 @@ class FindNeuronConnection:
             
             if conn_types_list_new:
                 conn_types = pl.concat(conn_types_list_new)
-                conn_types = conn_types.sort(['conn_layer','traversal_probability','weight'], descending=[False,True,True])
+                # PROBABILITY SUSPENSION (2026-10-06): the former
+                # traversal_probability tier is gone — sort on the layer and
+                # weight only (deterministic).
+                conn_types = conn_types.sort(['conn_layer','weight'], descending=[False,True])
             
             if conn_groups_list_new:
                 conn_groups = pl.concat(conn_groups_list_new)
@@ -20486,11 +20733,13 @@ class FindNeuronConnection:
             # pivoted from it) stays byte-reproducible.
             if not conn_types.is_empty():
                 conn_types = self._sort_connection_export(conn_types)
-            self._save_df_to_csv_polars(conn_types, os.path.join(csv_folder, 'connection_type.csv'), index=True)
-            
+            # PROBABILITY SUSPENSION (2026-10-06): strip suspended probability
+            # columns from the exports (in-memory frames keep them).
+            self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_types), os.path.join(csv_folder, 'connection_type.csv'), index=True)
+
             if conn_groups is not None and not conn_groups.is_empty():
                 # print("    - connection_custom_groups.csv", flush=True)
-                self._save_df_to_csv_polars(conn_groups, os.path.join(csv_folder, 'connection_custom_groups.csv'), index=True)
+                self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_groups), os.path.join(csv_folder, 'connection_custom_groups.csv'), index=True)
             
             # Save matrices (use global aggregation); same shared total-key
             # sort as the connection table so the pivot orders are stable.
@@ -20525,18 +20774,20 @@ class FindNeuronConnection:
                 self.target_df.to_excel(writer,sheet_name='target_neurons',index=False)
                 totalweight_df.to_excel(writer,sheet_name='total_weight_layer')
                 
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the sheets.
                 if isinstance(conn_types, pl.DataFrame):
-                    conn_types.to_pandas().to_excel(writer,sheet_name='connection_type')
+                    _strip_suspended_prob_columns(conn_types).to_pandas().to_excel(writer,sheet_name='connection_type')
                 else:
-                    conn_types.to_excel(writer,sheet_name='connection_type')
-                
+                    _strip_suspended_prob_columns(conn_types).to_excel(writer,sheet_name='connection_type')
+
                 # Add custom group sheet if custom grouping was used
                 is_groups_empty = conn_groups.is_empty() if isinstance(conn_groups, pl.DataFrame) else conn_groups.empty
                 if conn_groups is not None and not is_groups_empty:
                     if isinstance(conn_groups, pl.DataFrame):
-                        conn_groups.to_pandas().to_excel(writer,sheet_name='connection_custom_groups')
+                        _strip_suspended_prob_columns(conn_groups).to_pandas().to_excel(writer,sheet_name='connection_custom_groups')
                     else:
-                        conn_groups.to_excel(writer,sheet_name='connection_custom_groups')
+                        _strip_suspended_prob_columns(conn_groups).to_excel(writer,sheet_name='connection_custom_groups')
                 
                 # Save matrices (use global aggregation)
                 self._save_matrices_to_excel(conn_types_global, writer, level='type')
@@ -20566,7 +20817,9 @@ class FindNeuronConnection:
                 # Save bodyId connection data as CSV (parameters.csv already saved with type-level data)
                 output_bodyid_csv = os.path.join(bodyid_folder, 'connection_info_bodyId.csv')
                 # print(f"    - connection_info_bodyId.csv", flush=True)
-                self._save_df_to_csv_polars(conn_inpath, output_bodyid_csv)
+                # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                # probability columns from the export.
+                self._save_df_to_csv_polars(_strip_suspended_prob_columns(conn_inpath), output_bodyid_csv)
                 
                 self._save_matrices_to_csv(conn_inpath_global, bodyid_folder, level='bodyId')
                 self._vprint(f'  ✓ Saved to: {bodyid_folder}/', level='full')
@@ -20579,11 +20832,12 @@ class FindNeuronConnection:
                     worksheet.set_column('A:A', 30, writer.book.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                     worksheet.set_column('B:B', 30, writer.book.add_format({'font_name': 'Arial', 'font_size': 11, 'align': 'left'}))
                     
-                    # Save bodyId-level connection info
+                    # PROBABILITY SUSPENSION (2026-10-06): strip suspended
+                    # probability columns from the export.
                     if isinstance(conn_inpath, pl.DataFrame):
-                        conn_inpath.to_pandas().to_excel(writer,sheet_name='connection_info_bodyId')
+                        _strip_suspended_prob_columns(conn_inpath).to_pandas().to_excel(writer,sheet_name='connection_info_bodyId')
                     else:
-                        conn_inpath.to_excel(writer,sheet_name='connection_info_bodyId')
+                        _strip_suspended_prob_columns(conn_inpath).to_excel(writer,sheet_name='connection_info_bodyId')
                     self._save_matrices_to_excel(conn_inpath_global, writer, level='bodyId')
                 self._vprint(f'  ✓ Saved to: {output_bodyid_excel}', level='full')
         else:
@@ -20836,7 +21090,7 @@ class FindNeuronConnection:
                 # cross-depth total on EVERY hop (e.g. 328 on a hop whose
                 # position carries 168). Weights/min_weight (both bases)
                 # become the realized masses; under the connection_ratio
-                # basis the per-hop Ratios/Min ratio/Path prob become the
+                # basis the per-hop Ratios/Min ratio become the
                 # REALIZED shares (realized mass / the post type's
                 # full-membership incoming mass — the same denominator as
                 # the pair-level recompute, only the numerator is scoped to
@@ -20871,30 +21125,30 @@ class FindNeuronConnection:
 
                     def _patch_weights(df):
                         nonlocal _weights_changed_paths
+                        # PROBABILITY SUSPENSION (2026-10-06): only Weights /
+                        # min_weight and the ratio-lane Ratios / Min ratio are
+                        # patched — the probabilities / path_prob arms are
+                        # removed (those columns are no longer exported).
                         new_w, new_mw = [], []
-                        new_r = new_p = new_mr = new_pp = None
+                        new_r = new_mr = None
                         _ratio_cols_ok = all(
                             c in df.columns for c in
-                            ('ratios', 'probabilities', 'min_ratio',
-                             'path_prob'))
+                            ('ratios', 'min_ratio'))
                         if _ratio_cols_ok:
-                            new_r, new_p, new_mr, new_pp = [], [], [], []
+                            new_r, new_mr = [], []
                             _rows = zip(df['path'].to_list(),
                                         df['weights'].to_list(),
                                         df['min_weight'].to_list(),
                                         df['ratios'].to_list(),
-                                        df['probabilities'].to_list(),
-                                        df['min_ratio'].to_list(),
-                                        df['path_prob'].to_list())
+                                        df['min_ratio'].to_list())
                         else:
                             _n_none = [None] * df.height
                             _rows = zip(df['path'].to_list(),
                                         df['weights'].to_list(),
                                         df['min_weight'].to_list(),
-                                        _n_none, _n_none, _n_none,
-                                        _n_none)
-                        for (_path_str, _old_w, _old_mw, _old_r, _old_p,
-                             _old_mr, _old_pp) in _rows:
+                                        _n_none, _n_none)
+                        for (_path_str, _old_w, _old_mw, _old_r,
+                             _old_mr) in _rows:
                             _seq = tuple(str(_path_str).split('->'))
                             _rw = _realized_w.get(_seq)
                             try:
@@ -20920,21 +21174,14 @@ class FindNeuronConnection:
                                 _rr = (self._realized_ratio_readout(
                                     _rw if _ok else None, _seq, _type_mass))
                                 if _rr is not None:
-                                    ratios_, probs_, pp_, mr_ = _rr
+                                    ratios_, _probs_, _pp_, mr_ = _rr
                                     new_r.append('[' + ', '.join(
                                         repr(v) for v in ratios_) + ']')
-                                    new_p.append('[' + ', '.join(
-                                        repr(v) for v in probs_) + ']')
-                                    new_pp.append(pp_)
                                     new_mr.append(mr_)
                                 else:
                                     new_r.append(_old_r
                                                  if _old_r is not None
                                                  else '')
-                                    new_p.append(_old_p
-                                                 if _old_p is not None
-                                                 else '')
-                                    new_pp.append(_old_pp)
                                     new_mr.append(_old_mr)
                         _mw_all_int = all(
                             float(v).is_integer()
@@ -20951,11 +21198,7 @@ class FindNeuronConnection:
                         if _ratio_cols_ok:
                             cols += [
                                 pl.Series('ratios', new_r, dtype=pl.Utf8),
-                                pl.Series('probabilities', new_p,
-                                          dtype=pl.Utf8),
                                 pl.Series('min_ratio', new_mr,
-                                          dtype=pl.Float64),
-                                pl.Series('path_prob', new_pp,
                                           dtype=pl.Float64),
                             ]
                         return df.with_columns(cols)
@@ -20984,7 +21227,7 @@ class FindNeuronConnection:
                         'data_details/connection_type.csv (weight summed '
                         'over conn_layer) and in the type matrices.')
                     _w_note += (
-                        ' Per-hop Ratios/Min ratio/Path prob are the '
+                        ' Per-hop Ratios/Min ratio are the '
                         'REALIZED shares (realized mass / the post '
                         'type\'s full-membership incoming mass — the same '
                         'canonical denominator as connection_type.csv); '
@@ -21003,14 +21246,13 @@ class FindNeuronConnection:
                     sort_cols.append('path_length')
                     descending.append(False)
                     
-                # Check for probability column
-                if 'path_prob' in df_paths.columns:
-                    sort_cols.append('path_prob')
+                # PROBABILITY SUSPENSION (2026-10-06): the former
+                # path_prob/path_probability tier is gone — order by the
+                # weakest hop instead (strongest path first, deterministic).
+                if 'min_weight' in df_paths.columns:
+                    sort_cols.append('min_weight')
                     descending.append(True)
-                elif 'path_probability' in df_paths.columns:
-                    sort_cols.append('path_probability')
-                    descending.append(True)
-                
+
                 if sort_cols:
                     df_paths = df_paths.sort(sort_cols, descending=descending)
                     df_paths.write_csv(output_path_type_csv)
@@ -21147,15 +21389,14 @@ class FindNeuronConnection:
                 elif 'path_length' in path_df_group.columns:
                     sort_cols.append('path_length')
                     ascending.append(True)
-                if 'path_prob' in path_df_group.columns:
-                    sort_cols.append('path_prob')
-                    ascending.append(False)
-                elif 'path_probability' in path_df_group.columns:
-                    sort_cols.append('path_probability')
+                # PROBABILITY SUSPENSION (2026-10-06): the former
+                # path_prob/path_probability tier is gone — order by the
+                # weakest hop instead (strongest path first, deterministic).
+                if 'min_weight' in path_df_group.columns:
+                    sort_cols.append('min_weight')
                     ascending.append(False)
                 if sort_cols:
-                    path_df_group = path_df_group.sort_values(by=sort_cols, ascending=ascending)
-        
+                    path_df_group = path_df_group.sort_values(by=sort_cols, ascending=ascending)        
         # Filter out paths with any zero-weight hops
         # This happens when bodyId-level connections exist but type-level aggregation results in 0 weight
         # Note: If streaming was used (type_paths_saved_streaming=True), this filtering was already done during streaming
@@ -21255,13 +21496,13 @@ class FindNeuronConnection:
                     sort_cols.append('path_length')
                     ascending.append(True)
                     
-                if 'path_prob' in path_df_type.columns:
-                    sort_cols.append('path_prob')
+                # PROBABILITY SUSPENSION (2026-10-06): the former
+                # path_prob/path_probability tier is gone — order by the
+                # weakest hop instead (strongest path first, deterministic).
+                if 'min_weight' in path_df_type.columns:
+                    sort_cols.append('min_weight')
                     ascending.append(False)
-                elif 'path_probability' in path_df_type.columns:
-                    sort_cols.append('path_probability')
-                    ascending.append(False)
-                
+
                 if sort_cols:
                     path_df_type = path_df_type.sort_values(by=sort_cols, ascending=ascending)
 
@@ -21359,11 +21600,11 @@ class FindNeuronConnection:
                 elif 'path_length' in cols:
                     sort_cols.append('path_length')
                     ascending.append(True)
-                if 'path_prob' in cols:
-                    sort_cols.append('path_prob')
-                    ascending.append(False)
-                elif 'path_probability' in cols:
-                    sort_cols.append('path_probability')
+                # PROBABILITY SUSPENSION (2026-10-06): the former
+                # path_prob/path_probability tier is gone — order by the
+                # weakest hop instead (strongest path first, deterministic).
+                if 'min_weight' in cols:
+                    sort_cols.append('min_weight')
                     ascending.append(False)
                 if sort_cols:
                     if is_polars:
@@ -21570,12 +21811,11 @@ class FindNeuronConnection:
             if len(path_df_type) > 0:
                 # Filter paths if pathN_to_show is specified
                 if self.pathN_to_show > 0 and len(path_df_type) > self.pathN_to_show:
-                    # Calculate path strength (product of traversal probabilities)
-                    # Paths are already sorted by traversal_probability in sv.getAllPath()
-                    # Just take the first N paths
-                    paths_to_visualize = path_df_type.head(self.pathN_to_show).copy()
+                    # PROBABILITY SUSPENSION (2026-10-06): top-N by min_weight
+                    # (was: by traversal_probability).
+                    paths_to_visualize = _top_n_paths_by_weight(path_df_type, self.pathN_to_show).copy()
                     if self.verbose_mode == 'full':
-                        print(f'  Showing top {self.pathN_to_show} paths (by traversal_probability) out of {len(path_df_type)} total paths')
+                        print(f'  Showing top {self.pathN_to_show} paths (by min_weight) out of {len(path_df_type)} total paths')
                 else:
                     paths_to_visualize = path_df_type.copy()
                     if self.verbose_mode == 'full':
@@ -21698,74 +21938,17 @@ class FindNeuronConnection:
                     reciprocal_vis_base = os.path.join(self.allpath_folder, 'find_reciprocal')
                     os.makedirs(reciprocal_vis_base, exist_ok=True)
 
-                    def _to_pandas(df):
-                        if isinstance(df, pl.DataFrame):
-                            return df.to_pandas()
-                        return df
-
-                    def _build_edge_df(df, pre_col, post_col):
-                        if df is None or df.empty:
-                            return None
-                        if pre_col not in df.columns or post_col not in df.columns or 'weight' not in df.columns:
-                            return None
-                        edge_df = df[[pre_col, post_col, 'weight']].copy()
-                        edge_df.columns = ['source', 'target', 'weight']
-                        if 'connection_ratio' in df.columns:
-                            edge_df['ratio'] = df['connection_ratio']
-                        elif 'ratio' in df.columns:
-                            edge_df['ratio'] = df['ratio']
-                        if 'traversal_probability' in df.columns:
-                            edge_df['probability'] = df['traversal_probability']
-                        elif 'probability' in df.columns:
-                            edge_df['probability'] = df['probability']
-                        if 'nt_type' in df.columns:
-                            edge_df['nt_type'] = df['nt_type']
-                        elif 'nt_type_pre' in df.columns:
-                            edge_df['nt_type'] = df['nt_type_pre']
-                        return edge_df
-
-                    def _get_source_target_sets(level: str):
-                        if level == 'type':
-                            source = set(self.source_df['type'].dropna().astype(str).tolist())
-                            if 'Checked' in self.target_df.columns:
-                                target_df = self.target_df[self.target_df['Checked']]
-                            else:
-                                target_df = self.target_df
-                            target = set(target_df['type'].dropna().astype(str).tolist())
-                        elif level == 'group':
-                            source = set(self.source_df['custom_group'].dropna().astype(str).tolist()) if 'custom_group' in self.source_df.columns else set()
-                            if 'Checked' in self.target_df.columns:
-                                target_df = self.target_df[self.target_df['Checked']]
-                            else:
-                                target_df = self.target_df
-                            target = set(target_df['custom_group'].dropna().astype(str).tolist()) if 'custom_group' in target_df.columns else set()
-                        else:
-                            source = set(self.source_df['bodyId'].dropna().astype(str).tolist())
-                            if 'Checked' in self.target_df.columns:
-                                target_df = self.target_df[self.target_df['Checked']]
-                            else:
-                                target_df = self.target_df
-                            target = set(target_df['bodyId'].dropna().astype(str).tolist())
-                        return source, target
-
-                    def _assign_node_roles(vp, source_nodes, target_nodes):
-                        if vp.G_network is None:
-                            return
-                        for node in vp.G_network.nodes():
-                            if node in source_nodes:
-                                vp.G_network.nodes[node]['node_type'] = 'source'
-                            elif node in target_nodes:
-                                vp.G_network.nodes[node]['node_type'] = 'target'
-                            else:
-                                vp.G_network.nodes[node]['node_type'] = 'intermediate'
-
+                    # Shared edge-frame / coloring helpers live on the
+                    # class (_viz_to_pandas/_viz_edge_df/
+                    # _viz_source_target_sets/_viz_assign_node_roles) —
+                    # the refill visualization block reuses them.
                     if self.verbose_mode == 'full':
                         self._vprint('\nCreating reciprocal visualizations...', level='full')
 
                     # Type-level reciprocal visualization
-                    reciprocal_types_pd = _to_pandas(self._reciprocal_types)
+                    reciprocal_types_pd = self._viz_to_pandas(self._reciprocal_types)
                     if reciprocal_types_pd is not None and not reciprocal_types_pd.empty:
-                        type_edge_df = _build_edge_df(reciprocal_types_pd, 'type_pre', 'type_post')
+                        type_edge_df = self._viz_edge_df(reciprocal_types_pd, 'type_pre', 'type_post')
                         if type_edge_df is not None and not type_edge_df.empty:
                             vp_recip_type = VisualizePath(
                                 path_file=type_edge_df,
@@ -21784,14 +21967,14 @@ class FindNeuronConnection:
                             )
                             vp_recip_type.base_filename = 'reciprocal_type'
                             vp_recip_type.build_network()
-                            source_nodes, target_nodes = _get_source_target_sets('type')
-                            _assign_node_roles(vp_recip_type, source_nodes, target_nodes)
+                            source_nodes, target_nodes = self._viz_source_target_sets('type')
+                            self._viz_assign_node_roles(vp_recip_type, source_nodes, target_nodes)
                             vp_recip_type.create_heatmap()
                             vp_recip_type.create_network()
 
                     # Custom group reciprocal visualization
                     if hasattr(self, '_reciprocal_groups') and self._reciprocal_groups is not None:
-                        reciprocal_groups_pd = _to_pandas(self._reciprocal_groups)
+                        reciprocal_groups_pd = self._viz_to_pandas(self._reciprocal_groups)
                         if reciprocal_groups_pd is not None and not reciprocal_groups_pd.empty:
                             group_pre_col = 'group_pre' if 'group_pre' in reciprocal_groups_pd.columns else None
                             group_post_col = 'group_post' if 'group_post' in reciprocal_groups_pd.columns else None
@@ -21800,7 +21983,7 @@ class FindNeuronConnection:
                             if group_post_col is None and 'custom_group_post' in reciprocal_groups_pd.columns:
                                 group_post_col = 'custom_group_post'
                             if group_pre_col and group_post_col:
-                                group_edge_df = _build_edge_df(reciprocal_groups_pd, group_pre_col, group_post_col)
+                                group_edge_df = self._viz_edge_df(reciprocal_groups_pd, group_pre_col, group_post_col)
                                 if group_edge_df is not None and not group_edge_df.empty:
                                     vp_recip_group = VisualizePath(
                                         path_file=group_edge_df,
@@ -21819,16 +22002,16 @@ class FindNeuronConnection:
                                     )
                                     vp_recip_group.base_filename = 'reciprocal_groups'
                                     vp_recip_group.build_network()
-                                    source_nodes, target_nodes = _get_source_target_sets('group')
-                                    _assign_node_roles(vp_recip_group, source_nodes, target_nodes)
+                                    source_nodes, target_nodes = self._viz_source_target_sets('group')
+                                    self._viz_assign_node_roles(vp_recip_group, source_nodes, target_nodes)
                                     vp_recip_group.create_heatmap()
                                     vp_recip_group.create_network()
 
                     # BodyId reciprocal visualization (if available and not skipped)
                     if not self.skip_bodyId and hasattr(self, '_reciprocal_bodyId') and self._reciprocal_bodyId is not None:
-                        reciprocal_body_pd = _to_pandas(self._reciprocal_bodyId)
+                        reciprocal_body_pd = self._viz_to_pandas(self._reciprocal_bodyId)
                         if reciprocal_body_pd is not None and not reciprocal_body_pd.empty:
-                            body_edge_df = _build_edge_df(reciprocal_body_pd, 'bodyId_pre', 'bodyId_post')
+                            body_edge_df = self._viz_edge_df(reciprocal_body_pd, 'bodyId_pre', 'bodyId_post')
                             if body_edge_df is not None and not body_edge_df.empty:
                                 vp_recip_body = VisualizePath(
                                     path_file=body_edge_df,
@@ -21846,12 +22029,24 @@ class FindNeuronConnection:
                                 )
                                 vp_recip_body.base_filename = 'reciprocal_bodyId'
                                 vp_recip_body.build_network()
-                                source_nodes, target_nodes = _get_source_target_sets('bodyId')
-                                _assign_node_roles(vp_recip_body, source_nodes, target_nodes)
+                                source_nodes, target_nodes = self._viz_source_target_sets('bodyId')
+                                self._viz_assign_node_roles(vp_recip_body, source_nodes, target_nodes)
                                 vp_recip_body.create_heatmap()
                                 vp_recip_body.create_network()
                 except Exception as e:
                     self._vprint(f'  Warning: Reciprocal visualizations failed: {e}', level='full')
+
+            # Independent refill visualizations (type/bodyId): the
+            # standalone type_level_refill/ folder mirrors the refilled
+            # data in the path/connection data format (plan round
+            # 2026-10-06); the views draw the REFILL mass, mirroring the
+            # reciprocal pattern of visualizing the special edges only.
+            _refill_mirror_dir = os.path.join(self.allpath_folder, 'type_level_refill')
+            if os.path.exists(os.path.join(_refill_mirror_dir, 'refill_connection_type.csv')):
+                try:
+                    self._build_refill_visualizations(_refill_mirror_dir)
+                except Exception as e:
+                    self._vprint(f'  Warning: Refill visualizations failed: {e}', level='full')
             
             # Create network from path_bodyId if it exists and requested
             if find_bodyId_path and len(path_df_bodyId) > 0:
@@ -21868,9 +22063,10 @@ class FindNeuronConnection:
                     
                 # Filter paths if pathN_to_show is specified
                 if self.pathN_to_show > 0 and len(path_df_bodyId_pd) > self.pathN_to_show:
-                    paths_to_visualize_bodyId = path_df_bodyId_pd.head(self.pathN_to_show).copy()
+                    # PROBABILITY SUSPENSION (2026-10-06): top-N by min_weight
+                    paths_to_visualize_bodyId = _top_n_paths_by_weight(path_df_bodyId_pd, self.pathN_to_show).copy()
                     if self.verbose_mode == 'full':
-                        self._vprint(f'  Showing top {self.pathN_to_show} bodyId paths (by traversal_probability) out of {len(path_df_bodyId_pd)} total paths', level='full')
+                        self._vprint(f'  Showing top {self.pathN_to_show} bodyId paths (by min_weight) out of {len(path_df_bodyId_pd)} total paths', level='full')
                 else:
                     paths_to_visualize_bodyId = path_df_bodyId_pd.copy()
                     if self.verbose_mode == 'full':

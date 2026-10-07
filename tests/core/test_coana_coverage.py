@@ -405,11 +405,15 @@ class TestExportNormalizers:
             fc._save_matrices_to_excel(pl.from_pandas(df), writer, level="type")
             fc._save_matrices_to_excel(pd.DataFrame(), writer)  # no-op
         sheets = pd.ExcelFile(xlsx).sheet_names
+        # PROBABILITY SUSPENSION (2026-10-06): the conn_mat_*_prob sheets are
+        # no longer written.
         for name in ("conn_mat_bodyId_weight", "conn_mat_bodyId_ratio",
-                     "conn_mat_bodyId_prob", "conn_mat_bodyId_nt",
+                     "conn_mat_bodyId_nt",
                      "conn_mat_type_weight", "conn_mat_type_ratio",
-                     "conn_mat_type_prob", "conn_mat_type_nt"):
+                     "conn_mat_type_nt"):
             assert name in sheets
+        for name in ("conn_mat_bodyId_prob", "conn_mat_type_prob"):
+            assert name not in sheets
 
     def test_save_matrices_to_csv(self, tmp_path):
         fc, _ = make_fc()
@@ -426,7 +430,9 @@ class TestExportNormalizers:
         fc._save_matrices_to_csv(df, str(folder), level="type")
         assert (folder / "conn_mat_type_weight.csv").exists()
         assert (folder / "conn_mat_type_ratio.csv").exists()
-        assert (folder / "conn_mat_type_prob.csv").exists()
+        # PROBABILITY SUSPENSION (2026-10-06): the prob pivot is no longer
+        # written.
+        assert not (folder / "conn_mat_type_prob.csv").exists()
         assert (folder / "conn_mat_type_nt.csv").exists()
         # empty frame writes nothing
         fc._save_matrices_to_csv(pd.DataFrame(), str(folder), level="type")
@@ -1237,16 +1243,22 @@ class TestFindDirectConnections:
                        "_target_in_connection.csv",
                        "_connection_groupby_type.csv",
                        "_connectionMatrix_type.csv", "_connMat_type_full.csv",
-                       "_transmissionMat_type.csv",
                        "_connectionRatioMat_type.csv",
                        "_ratioMat_type_full.csv"):
             assert (details / (base + suffix)).exists(), suffix
+        # PROBABILITY SUSPENSION (2026-10-06): the traversal-probability
+        # transmission matrix is no longer written.
+        assert not (details / (base + "_transmissionMat_type.csv")).exists()
         body_csv = folder / "src_to_tgt_bodyId_connections_snp1.csv"
         assert body_csv.exists()
         body = pd.read_csv(body_csv)
         # X is not a target: only S->A survives
         assert set(zip(body["bodyId_pre"].astype(str),
                        body["bodyId_post"].astype(str))) == {("S", "A")}
+        # PROBABILITY SUSPENSION (2026-10-06): the suspended probability
+        # columns are stripped from the bodyId export at write time.
+        assert "traversal_probability" not in body.columns
+        assert "block_probability" not in body.columns
         assert (folder / "src_to_tgt_connectionMatrix_bodyId.csv").exists()
         # target enrollment marks A checked at layer 1
         tgt = pd.read_csv(folder / "target_neurons.csv")

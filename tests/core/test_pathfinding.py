@@ -672,6 +672,8 @@ def test_relocate_viz_outputs_organizes_visualization_folder(tmp_path):
     (run / (base + "_data_connections.csv")).write_text("a\n")
     (run / (base + "_data_original_paths.csv")).write_text("b\n")
     (run / (base + "_data.xlsx")).write_text("x")
+    # the shared library VisConnMatInteractive writes beside the heatmap
+    (run / "plotly.min.js").write_text("plotly")
 
     inp = pd.DataFrame({"path": ["A->B"], "length": [1]})
     fc._relocate_viz_outputs(
@@ -685,6 +687,10 @@ def test_relocate_viz_outputs_organizes_visualization_folder(tmp_path):
     assert (viz / f"Sankey_{base}.html").exists()
     assert (viz / f"Heatmap_{base}.html").exists()
     assert not (viz / f"Network_{base}_network.html").exists()
+    # the heatmap's shared plotly.min.js moves with the htmls it serves —
+    # left behind it blanks the relocated heatmap (relative script src)
+    assert (viz / "plotly.min.js").exists()
+    assert not (run / "plotly.min.js").exists()
     # originals moved out of the run root
     assert not (run / (base + "_network.html")).exists()
     d = viz / "visualization_data"

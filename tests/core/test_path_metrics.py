@@ -126,9 +126,13 @@ class TestBodyIdLevelMetrics:
             _synthetic_conn(), traversal_probability_threshold=0,
             global_incoming_weights=_global_incoming(),
         )
+        # PROBABILITY SUSPENSION (2026-10-06): the polars engine no longer
+        # exports traversal_probability/block_probability on the bodyId frame.
+        assert 'traversal_probability' not in conn_df_pl.columns
+        assert 'block_probability' not in conn_df_pl.columns
         pl_pd = conn_df_pl.to_pandas().sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
         pd_pd = conn_df_pd.sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
-        for col in ['weight', 'connection_ratio', 'traversal_probability']:
+        for col in ['weight', 'connection_ratio']:
             pd.testing.assert_series_equal(
                 pl_pd[col], pd_pd[col], check_dtype=False,
                 obj=f'bodyId-level {col}',
@@ -158,13 +162,18 @@ class TestTypeLevelAggregation:
     @pytest.mark.parametrize('impl', ['pandas', 'polars'])
     def test_global_ratio_and_probability(self, impl):
         ct = self._type_table(impl)
+        # PROBABILITY SUSPENSION (2026-10-06): the suspended probability
+        # columns are no longer exported (values no longer asserted); the
+        # aggregate math itself is exercised through the F9 threshold filter
+        # elsewhere.
+        assert 'traversal_probability' not in ct.columns
+        assert 'block_probability' not in ct.columns
         for (pre, post), (w, ratio, prob) in _expected_type_metrics().items():
             row = ct[(ct['t_pre'] == pre) & (ct['t_post'] == post)]
             assert len(row) == 1, f'missing type pair {pre}->{post} in {impl}'
             row = row.iloc[0]
             assert row['weight'] == pytest.approx(w), f'weight {pre}->{post}'
             assert row['connection_ratio'] == pytest.approx(ratio), f'ratio {pre}->{post}'
-            assert row['traversal_probability'] == pytest.approx(prob), f'prob {pre}->{post}'
 
     @pytest.mark.parametrize('impl', ['pandas', 'polars'])
     def test_duplicate_bodyid_pair_is_deduplicated(self, impl):
@@ -177,7 +186,7 @@ class TestTypeLevelAggregation:
     def test_pandas_matches_polars_with_global_weights(self):
         ct_pd = self._type_table('pandas').sort_values(['t_pre', 't_post']).reset_index(drop=True)
         ct_pl = self._type_table('polars').sort_values(['t_pre', 't_post']).reset_index(drop=True)
-        for col in ['weight', 'connection_ratio', 'traversal_probability']:
+        for col in ['weight', 'connection_ratio']:
             pd.testing.assert_series_equal(
                 ct_pl[col], ct_pd[col], check_dtype=False,
                 obj=f'type-level {col}',
@@ -192,7 +201,7 @@ class TestTypeLevelAggregation:
             _synthetic_conn(), traversal_probability_threshold=0)
         ct_pd = ct_pd.sort_values(['type_pre', 'type_post']).reset_index(drop=True)
         ct_pl = ct_pl.sort(['type_pre', 'type_post']).to_pandas().reset_index(drop=True)
-        for col in ['weight', 'connection_ratio', 'traversal_probability']:
+        for col in ['weight', 'connection_ratio']:
             pd.testing.assert_series_equal(
                 ct_pl[col], ct_pd[col], check_dtype=False,
                 obj=f'local-fallback {col}',
@@ -218,13 +227,18 @@ class TestTypeLevelAggregation:
         # Local fallback: the table's own total incoming to Q is 5 -> ratio 1.0
         assert ct_pd['connection_ratio'].iloc[0] == pytest.approx(1.0)
         assert ct_pl.to_pandas()['connection_ratio'].iloc[0] == pytest.approx(1.0)
-        assert ct_pd['traversal_probability'].iloc[0] == pytest.approx(1.0)
-        assert ct_pl.to_pandas()['traversal_probability'].iloc[0] == pytest.approx(1.0)
+        # PROBABILITY SUSPENSION (2026-10-06): probabilities are no longer
+        # exported.
+        assert 'traversal_probability' not in ct_pd.columns
+        assert 'traversal_probability' not in ct_pl.columns
 
     @pytest.mark.parametrize('impl', ['pandas', 'polars'])
     def test_aggregate_method_param_still_accepted(self, impl):
-        """'product'/'average'/'ratio' are accepted and each takes effect;
-        'ratio' reproduces the legacy min(ratio / 0.3, 1) model."""
+        """'product'/'average'/'ratio' are accepted and still run; the
+        suspended probability VALUES they used to export are no longer
+        asserted (PROBABILITY SUSPENSION 2026-10-06) — the 'ratio' model's
+        legacy min(ratio / 0.3, 1) math is exercised through the F9
+        threshold filter in the pipeline tests."""
         if impl == 'pandas':
             _, ct_product, _ = EnrichConnectionTable(
                 _synthetic_conn(), traversal_probability_threshold=0,
@@ -232,7 +246,7 @@ class TestTypeLevelAggregation:
             _, ct_ratio, _ = EnrichConnectionTable(
                 _synthetic_conn(), traversal_probability_threshold=0,
                 aggregate_method='ratio', global_incoming_weights=_global_incoming())
-            cols = ['type_pre', 'type_post', 'weight', 'connection_ratio', 'traversal_probability']
+            cols = ['type_pre', 'type_post', 'weight', 'connection_ratio']
         else:
             _, ct_product, _ = EnrichConnectionTablePolars(
                 _synthetic_conn(), traversal_probability_threshold=0,
@@ -242,12 +256,13 @@ class TestTypeLevelAggregation:
                 aggregate_method='ratio', global_incoming_weights=_global_incoming())
             ct_product = ct_product.to_pandas()
             ct_ratio = ct_ratio.to_pandas()
-            cols = ['weight', 'connection_ratio', 'traversal_probability']
-        ax = ct_product[ct_product['type_post'] == 'X'].iloc[0]
-        assert ax['traversal_probability'] == pytest.approx(223 / 243)  # product compounds
-        rx = ct_ratio[ct_ratio['type_post'] == 'X'].iloc[0]
-        # legacy model: min((15/30) / 0.3, 1) = 1.0 (capped)
-        assert rx['traversal_probability'] == pytest.approx(1.0)
+            cols = ['weight', 'connection_ratio']
+        assert len(ct_product) == len(ct_ratio)
+        # PROBABILITY SUSPENSION (2026-10-06): no probability columns in
+        # either method's export.
+        for ct in (ct_product, ct_ratio):
+            assert 'traversal_probability' not in ct.columns
+            assert 'block_probability' not in ct.columns
         # Both methods still emit the same schema
         for col in cols:
             assert col in ct_product.columns
@@ -334,8 +349,10 @@ class TestEnrichmentEngineParity:
             pd.testing.assert_series_equal(cg_pl[col], cg_pd[col], check_dtype=False, obj=f'group {col}')
 
     def test_block_probability_missing_denominator_fallback(self):
-        """Missing global denominator -> LOCAL fallback ratio (1.0 here),
-        prob 1.0 and block 0.0 in BOTH engines (no more NaN/0 collapse)."""
+        """Missing global denominator -> LOCAL fallback ratio (1.0 here) in
+        BOTH engines (no more NaN/0 collapse). PROBABILITY SUSPENSION
+        (2026-10-06): the probability columns are no longer exported, so the
+        former prob-1.0/block-0.0 assertions became absence checks."""
         from statvis import EnrichConnectionTable as pd_enrich
         from statvis import EnrichConnectionTablePolars
         conn = pd.DataFrame({
@@ -349,11 +366,13 @@ class TestEnrichmentEngineParity:
         _, ct_pl, _ = EnrichConnectionTablePolars(pl.from_pandas(conn),
                                                   traversal_probability_threshold=0,
                                                   global_incoming_weights=gw)
-        assert ct_pd['traversal_probability'].iloc[0] == pytest.approx(1.0)
-        assert ct_pd['block_probability'].iloc[0] == pytest.approx(0.0)
+        assert ct_pd['connection_ratio'].iloc[0] == pytest.approx(1.0)
+        assert 'traversal_probability' not in ct_pd.columns
+        assert 'block_probability' not in ct_pd.columns
         ct_pl = ct_pl.to_pandas()
-        assert ct_pl['traversal_probability'].iloc[0] == pytest.approx(1.0)
-        assert ct_pl['block_probability'].iloc[0] == pytest.approx(0.0)
+        assert ct_pl['connection_ratio'].iloc[0] == pytest.approx(1.0)
+        assert 'traversal_probability' not in ct_pl.columns
+        assert 'block_probability' not in ct_pl.columns
 
     def test_bodyid_level_shared_schema(self):
         """BodyId-level outputs share every column; std_label_pre/post are
@@ -609,20 +628,20 @@ class TestPathLevelMetrics:
         return builder(paths, conn_data, targets, real_layer_map=None, level='type')
 
     def test_hand_computed_path_metrics(self):
-        """path_prob = product of edge probs; min_ratio/min_weight = weakest edge.
-        Edge probs come from the product-aggregated conn_type (default):
-        A->X = 223/243, X->Y = 0.2, B->Y = 0.6."""
+        """min_ratio/min_weight = weakest edge; length = number of edges.
+        PROBABILITY SUSPENSION (2026-10-06): the per-hop probabilities and
+        the product path_prob are no longer exported (formerly
+        probabilities [223/243, 0.2] and path_prob (223/243)*0.2)."""
         df = self._build(sv_build, _enriched_type_table().to_pandas())
+        assert 'probabilities' not in df.columns
+        assert 'path_prob' not in df.columns
         row_2hop = df[df['path'] == 'A->X->Y'].iloc[0]
         assert row_2hop['weights'] == pytest.approx([15.0, 3.0])
-        assert row_2hop['probabilities'] == pytest.approx([223 / 243, 0.2])
         assert row_2hop['ratios'] == pytest.approx([0.5, 0.06])
         assert row_2hop['min_weight'] == pytest.approx(3.0)
-        assert row_2hop['path_prob'] == pytest.approx((223 / 243) * 0.2)
         assert row_2hop['min_ratio'] == pytest.approx(0.06)
         assert row_2hop['length'] == 2
         row_1hop = df[df['path'] == 'B->Y'].iloc[0]
-        assert row_1hop['path_prob'] == pytest.approx(0.6)
         assert row_1hop['min_ratio'] == pytest.approx(0.18)
         assert row_1hop['min_weight'] == pytest.approx(9.0)
         assert row_1hop['length'] == 1
@@ -633,12 +652,12 @@ class TestPathLevelMetrics:
         assert len(df_pl) == len(df_pd)
         df_pd = df_pd.sort_values('path').reset_index(drop=True)
         df_pl = df_pl.sort('path').to_pandas().reset_index(drop=True)
-        for col in ['path', 'min_weight', 'path_prob', 'min_ratio', 'length']:
+        for col in ['path', 'min_weight', 'min_ratio', 'length']:
             pd.testing.assert_series_equal(
                 df_pl[col], df_pd[col], check_dtype=False, obj=f'path {col}',
             )
         # List-valued columns: pandas keeps lists, polars stringifies them
-        for col in ('weights', 'probabilities', 'ratios'):
+        for col in ('weights', 'ratios'):
             assert isinstance(df_pd[col].iloc[0], list)
             assert isinstance(df_pl[col].iloc[0], str)
 

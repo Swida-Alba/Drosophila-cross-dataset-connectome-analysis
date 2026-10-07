@@ -83,10 +83,11 @@ class TestMatrixExportModernizedPivot:
         FindNeuronConnection._save_matrices_to_csv(
             None, _matrix_df(), str(tmp_path), level="type")
         pdf = _matrix_df().to_pandas()
+        # PROBABILITY SUSPENSION (2026-10-06): the prob pivot is no longer
+        # written.
         for name, col, agg in [
             ("weight", "weight", "sum"),
             ("ratio", "connection_ratio", "max"),
-            ("prob", "traversal_probability", "max"),
         ]:
             out = pd.read_csv(tmp_path / f"conn_mat_type_{name}.csv", index_col=0)
             expected = pd.pivot_table(
@@ -100,11 +101,13 @@ class TestMatrixExportModernizedPivot:
             pd.testing.assert_frame_equal(
                 out.sort_index().astype(float), expected.astype(float))
 
-    def test_all_four_matrix_files_written(self, tmp_path):
+    def test_all_matrix_files_written(self, tmp_path):
         FindNeuronConnection._save_matrices_to_csv(
             None, _matrix_df(), str(tmp_path), level="type")
-        for suffix in ("weight", "ratio", "prob", "nt"):
+        for suffix in ("weight", "ratio", "nt"):
             assert (tmp_path / f"conn_mat_type_{suffix}.csv").exists(), suffix
+        # PROBABILITY SUSPENSION (2026-10-06): no prob matrix file.
+        assert not (tmp_path / "conn_mat_type_prob.csv").exists()
 
 
 # =============================================================================

@@ -176,31 +176,19 @@ class TestEnrichmentStage:
             _, conn_type, _ = EnrichConnectionTablePolars(_mock_query(), **kwargs)
             conn_type = conn_type.to_pandas()
 
+        # PROBABILITY SUSPENSION (2026-10-06): the aggregate methods still
+        # run internally (the F9 threshold filter consumes them), but the
+        # suspended probability columns are no longer EXPORTED — the former
+        # hand-computed traversal_probability assertions are replaced by
+        # absence checks (the aggregate math itself is exercised by
+        # TestFilterStage through the min_traversal_probability filter).
+        assert "traversal_probability" not in conn_type.columns
+        assert "block_probability" not in conn_type.columns
+        # Ratios are unaffected and remain exported.
         rows = conn_type.set_index(["type_pre", "type_post"])
-        expected = {
-            "product": {
-                ("T1", "T3"): 0.66327,
-                ("T2", "T3"): 0.59524,
-                ("T1", "T4"): 0.98380,
-                ("T3", "T4"): 0.55556,
-            },
-            "average": {
-                ("T1", "T3"): (3 * (3 / 28) / 0.3 + 4 * (4 / 28) / 0.3) / 7,
-                ("T2", "T3"): (5 / 28) / 0.3,
-                ("T1", "T4"): (7 * (7 / 24) / 0.3 + 3 * (3 / 24) / 0.3) / 10,
-                ("T3", "T4"): (4 / 24) / 0.3,
-            },
-            "ratio": {
-                ("T1", "T3"): (7 / 28) / 0.3,
-                ("T2", "T3"): (5 / 28) / 0.3,
-                ("T1", "T4"): 1.0,  # (10/24)/0.3 = 1.389 -> capped
-                ("T3", "T4"): (4 / 24) / 0.3,
-            },
-        }[method]
-        for (pre, post), prob in expected.items():
-            assert rows.loc[(pre, post), "traversal_probability"] == pytest.approx(
-                prob, abs=1e-4
-            ), f"{method} {pre}->{post}"
+        assert set(rows.index) == {
+            ("T1", "T3"), ("T2", "T3"), ("T1", "T4"), ("T3", "T4"),
+        }
 
     def test_conn_type_ratios_global(self, globals_):
         """connection_ratio always uses the global D_3 denominators."""
@@ -238,12 +226,13 @@ class TestPathStage:
         paths = [["T1", "T3", "T4"]]
         df_pd = sv_build(paths, conn_type.to_pandas(), ["T4"], real_layer_map=None, level="type")
         row = df_pd.iloc[0]
-        # product edge probs: T1->T3 = 0.66327, T3->T4 = 0.55556
-        assert row["path_prob"] == pytest.approx(0.66327 * 0.55556, abs=1e-4)
+        # PROBABILITY SUSPENSION (2026-10-06): the per-hop probabilities and
+        # the product path_prob are no longer exported.
+        assert "path_prob" not in df_pd.columns
+        assert "probabilities" not in df_pd.columns
         assert row["min_ratio"] == pytest.approx(4 / 24, abs=1e-6)
         assert row["min_weight"] == pytest.approx(4.0)
         assert row["length"] == 2
-        assert row["probabilities"] == pytest.approx([0.66327, 0.55556], abs=1e-4)
 
     def test_polars_path_builder_agrees(self, tmp_path):
         conn_type = self._enriched_type_table(tmp_path)
@@ -252,8 +241,12 @@ class TestPathStage:
         df_pl = svp_build(paths, conn_type, ["T4"], real_layer_map=None, level="type")
         df_pl = df_pl.to_pandas().sort_values("path").reset_index(drop=True)
         df_pd = df_pd.sort_values("path").reset_index(drop=True)
-        for col in ["path_prob", "min_ratio", "min_weight", "length"]:
+        # PROBABILITY SUSPENSION (2026-10-06): neither engine exports
+        # path_prob/probabilities anymore.
+        for col in ["min_ratio", "min_weight", "length"]:
             assert df_pl[col].tolist() == pytest.approx(df_pd[col].tolist(), abs=1e-9)
+        assert "path_prob" not in df_pd.columns
+        assert "path_prob" not in df_pl.columns
 
 
 # ---------------------------------------------------------------------------

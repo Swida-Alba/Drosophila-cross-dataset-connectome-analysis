@@ -541,7 +541,10 @@ class TestPathBuilders:
         assert row["path"] == "A->B->C"
         assert row["weights"] == [12, 4]
         assert row["min_weight"] == 4
-        assert row["path_prob"] == pytest.approx(0.5 * 0.8)
+        # PROBABILITY SUSPENSION (2026-10-06): path_prob/probabilities are
+        # no longer exported.
+        assert "path_prob" not in df.columns
+        assert "probabilities" not in df.columns
         assert row["min_ratio"] == pytest.approx(0.2)
         assert row["length"] == 2
         assert row["nt_types"] == ["ACH|", "GABA"] or row["nt_types"][1] == "GABA"
@@ -646,7 +649,9 @@ class TestStreamingPipeline:
         row = out.row(0, named=True)
         assert row["src"] == "A" and row["tgt"] == "B"
         assert row["weight"] == 7
-        assert row["traversal_probability"] == pytest.approx(0.5)
+        # PROBABILITY SUSPENSION (2026-10-06): the traversal_probability edge
+        # mean is no longer aggregated.
+        assert "traversal_probability" not in out.columns
         assert row["nt_type"] == "ACH"
         # polars input passes through
         out2 = sv.prepare_connection_data(pl.from_pandas(conn), "type")
@@ -900,13 +905,17 @@ class TestVisConnMatInteractiveLocal:
         matrices = {
             "weight": base,
             "ratio": base / base.values.max(),
+            # PROBABILITY SUSPENSION (2026-10-06): a stale 'probability'
+            # entry must stay ignored, and no Traversal Probability option
+            # may render.
             "probability": base / base.values.max(),
         }
         sv.VisConnMatInteractive(base, str(out), title="Multi",
                                  matrices_dict=matrices, showfig=False,
                                  verbose=False)
         text = out.read_text(encoding="utf-8")
-        assert out.exists() and "weight" in text and "probability" in text
+        assert out.exists() and "weight" in text and "'ratio'" in text
+        assert 'value="probability"' not in text
 
     def test_conn_df_type_lookup(self, tmp_path, local_interactive):
         out = tmp_path / "bodyid.html"

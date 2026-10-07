@@ -2672,11 +2672,11 @@ def VisConnMat(cmat,filename,title='',color_scale=None,showfig=True,fontsize=12,
     '''
     
     # Determine the metric type from the title or filename
+    # PROBABILITY SUSPENSION (2026-10-06): the 'probability' metric branch
+    # is removed; transmission/probability matrices are no longer produced.
     metric_type = 'synapses'  # default
     if 'ratio' in title.lower() or 'ratio' in filename.lower():
         metric_type = 'ratio'
-    elif 'transmission' in title.lower() or 'probability' in title.lower():
-        metric_type = 'probability'
     
     # Check if this is a large matrix (optimization for performance)
     is_large = cmat.shape[0] > 100 or cmat.shape[1] > 100
@@ -2716,11 +2716,11 @@ def VisConnMat(cmat,filename,title='',color_scale=None,showfig=True,fontsize=12,
             for j, col_label in enumerate(cmat.columns):
                 value = cmat.iloc[i, j]
                 # Format value based on metric type (show original value)
-                if metric_type == 'ratio' or metric_type == 'probability':
+                if metric_type == 'ratio':
                     value_str = f'{value:.4f}'
                 else:
                     value_str = f'{int(value):,}' if value == int(value) else f'{value:,.2f}'
-                
+
                 hover_row.append(
                     f'<b>Source:</b> {row_label}<br>'
                     f'<b>Target:</b> {col_label}<br>'
@@ -2738,7 +2738,7 @@ def VisConnMat(cmat,filename,title='',color_scale=None,showfig=True,fontsize=12,
         # For synapse counts, outliers can skew the color bar. Use 99th percentile for zmax.
         if zmax > 0:
             zmax = np.percentile(z_data, 99)
-    elif metric_type in ['ratio', 'probability'] and scale == 'linear':
+    elif metric_type == 'ratio' and scale == 'linear':
         zmin = 0.0
         zmax = min(zmax, 1.0) # Cap at 1.0
 
@@ -2990,7 +2990,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
     applied when scipy manages it), init_width/init_height.
 
     Features:
-    - Metric toggle: Switch between weight/ratio/probability (if provided)
+    - Metric toggle: Switch between weight/ratio (if provided)
     - Clustering toggle: Toggle between original and clustered ordering (hierarchical clustering)
     - Scale switcher: Linear / Log2 / Log10 / Sqrt
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
@@ -3016,8 +3016,10 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
     conn_df : pd.DataFrame, optional
         Connection dataframe with type information for enhanced hover labels (bodyId heatmaps only)
     matrices_dict : dict, optional
-        Dictionary with keys 'weight', 'ratio', 'probability' containing different metric matrices
-        If provided, enables metric toggle. Otherwise uses cmat as weight matrix only.
+        Dictionary with keys 'weight' and 'ratio' containing different metric
+        matrices. (PROBABILITY SUSPENSION 2026-10-06: a 'probability' entry,
+        if any caller still passes one, is ignored.) If provided, enables
+        metric toggle. Otherwise uses cmat as weight matrix only.
     verbose : bool, optional
         Whether to print progress messages (default: True)
     zmin : float, optional
@@ -3041,11 +3043,10 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         if 'ratio' in matrices_dict and matrices_dict['ratio'] is not None:
             available_metrics.append('ratio')
             matrices_data['ratio'] = matrices_dict['ratio'].values.copy()
-        
-        if 'probability' in matrices_dict and matrices_dict['probability'] is not None:
-            available_metrics.append('probability')
-            matrices_data['probability'] = matrices_dict['probability'].values.copy()
-        
+
+        # PROBABILITY SUSPENSION (2026-10-06): a 'probability' entry in
+        # matrices_dict is ignored — the metric is no longer shown in the UI.
+
         # Use first available metric as default
         default_metric = available_metrics[0] if available_metrics else 'weight'
         data_linear = matrices_data.get(default_metric, cmat.values.copy())
@@ -3059,10 +3060,10 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         if 'ratio' in title.lower() or 'ratio' in filename.lower():
             metric_type = 'ratio'
             available_metrics = ['ratio']
-        elif 'transmission' in title.lower() or 'probability' in title.lower():
-            metric_type = 'probability'
-            available_metrics = ['probability']
-        
+        # PROBABILITY SUSPENSION (2026-10-06): the former
+        # transmission/probability branch is removed — those matrices are
+        # no longer produced.
+
         data_linear = cmat.values.copy()
         matrices_data[metric_type] = data_linear
     
@@ -3133,10 +3134,10 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
     col_order_original = list(range(data_linear.shape[1]))
     
     # For large matrices, reduce precision to save HTML size
-    # Keep more precision for ratio/probability metrics
+    # Keep more precision for ratio metrics
     if is_large:
-        if metric_type in ['ratio', 'probability']:
-            # Keep 4 decimal places for ratios/probabilities
+        if metric_type == 'ratio':
+            # Keep 4 decimal places for ratios
             data_linear = np.round(data_linear, 4)
         else:
             # For synapse counts, round to integers (no precision loss)
@@ -3181,7 +3182,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
                             -np.sqrt(-data_linear))
         
         if is_large:
-            if metric_type in ['ratio', 'probability']:
+            if metric_type == 'ratio':
                 data_log2 = np.round(data_log2, 4)
                 data_log10 = np.round(data_log10, 4)
                 data_sqrt = np.round(data_sqrt, 4)
@@ -3208,7 +3209,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         hover_row = []
         for j, col_label in enumerate(cmat.columns):
             value = cmat.iloc[i, j]
-            if metric_type == 'ratio' or metric_type == 'probability':
+            if metric_type == 'ratio':
                 value_str = f'{value:.4f}'
             else:
                 value_str = f'{int(value):,}' if value == int(value) else f'{value:,.2f}'
@@ -3245,8 +3246,8 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
     default_colorscale = 'Greens'
     if 'ratio' in filename.lower():
         default_colorscale = 'Oranges'
-    elif 'transmission' in filename.lower() or 'probability' in filename.lower():
-        default_colorscale = 'Purples'
+    # PROBABILITY SUSPENSION (2026-10-06): the former
+    # transmission/probability 'Purples' branch is removed.
     
     # Create HTML with comprehensive interactive controls
     # plotly.js is shared per output DIRECTORY (plan-offline-html-exports
@@ -3538,7 +3539,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
                     {'<select id="metricSelect" onchange="updateMetric()">' if has_multiple_metrics else ''}
                         {'<option value="weight">Synapse Count</option>' if has_multiple_metrics and 'weight' in available_metrics else ''}
                         {'<option value="ratio"' + (' selected' if metric_type == 'ratio' else '') + '>Connection Ratio</option>' if has_multiple_metrics and 'ratio' in available_metrics else ''}
-                        {'<option value="probability"' + (' selected' if metric_type == 'probability' else '') + '>Traversal Probability</option>' if has_multiple_metrics and 'probability' in available_metrics else ''}
+                        <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                     {'</select></div>' if has_multiple_metrics else ''}
                     
                     <!-- Clustering Toggle -->
@@ -3894,8 +3895,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
             // Get metric display name
             const metricNames = {{
                 'weight': 'Synapses',
-                'ratio': 'Ratio',
-                'probability': 'Probability'
+                'ratio': 'Ratio'
             }};
             const currentMetricName = metricNames[currentMetric] || currentMetric;
             
@@ -3904,7 +3904,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
                 for (let j = 0; j < cols; j++) {{
                     const value = dataLinear[i][j];
                     let valueStr;
-                    if (currentMetric === 'ratio' || currentMetric === 'probability') {{
+                    if (currentMetric === 'ratio') {{
                         valueStr = value.toFixed(4);
                     }} else {{
                         valueStr = Math.floor(value) === value ? 
@@ -4190,8 +4190,7 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
             // Get metric display name for colorbar
             const metricDisplayNames = {{
                 'weight': 'Synapses',
-                'ratio': 'Ratio',
-                'probability': 'Probability'
+                'ratio': 'Ratio'
             }};
             const metricDisplayName = metricDisplayNames[currentMetric] || currentMetric;
             
@@ -5967,7 +5966,7 @@ def path_filter(path_df, keyword_in_path_to_remove=None):
 
 def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=None, level='type', type_lookup=None, edge_lookup=None, engine='auto'):
     """
-    Build a DataFrame from a list of paths, calculating weights and probabilities.
+    Build a DataFrame from a list of paths, calculating weights and ratios.
     Optimized with dictionary lookup for O(1) edge access.
     
     UNIFIED ENTRY POINT: dispatches to the pandas implementation (below) or the
@@ -6009,19 +6008,17 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
         # Define aggregation columns and aggregate with Polars (vectorized;
         # a pandas groupby with the per-group nt lambda is slow on large
         # bodyId-level tables). Semantics are identical to the old pandas agg:
-        # weight = sum, probabilities/ratios = mean, nt_type = '|'-joined
+        # weight = sum, ratios = mean, nt_type = '|'-joined
         # sorted unique non-empty values ('Unknown' when none) - see
         # _unique_nt_types.
+        # PROBABILITY SUSPENSION (2026-10-06): the per-edge
+        # traversal_probability mean is no longer aggregated/exported.
         agg_cols = ['src_str', 'tgt_str', 'weight']
-        for col in ('traversal_probability', 'connection_ratio', 'nt_type'):
+        for col in ('connection_ratio', 'nt_type'):
             if col in conn_data.columns:
                 agg_cols.append(col)
         pl_conn = pl.from_pandas(conn_data_str[agg_cols])
         agg_exprs = [pl.col('weight').sum().alias('weight')]
-        if 'traversal_probability' in conn_data.columns:
-            # round(12): parallel group_by float means vary by ~1 ulp
-            # run-to-run; rounding keeps the path tables byte-reproducible.
-            agg_exprs.append(pl.col('traversal_probability').mean().round(12).alias('traversal_probability'))
         if 'connection_ratio' in conn_data.columns:
             agg_exprs.append(pl.col('connection_ratio').mean().round(12).alias('connection_ratio'))
         if 'nt_type' in conn_data.columns:
@@ -6048,7 +6045,6 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
     for path in path_iterator:
         # Calculate path metrics
         weights = []
-        probs = []
         ratios = []
         nt_types = []
         
@@ -6071,11 +6067,9 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
                 
             # Get metrics
             w = metrics.get('weight', 0)
-            p = metrics.get('traversal_probability', 0)
             r = metrics.get('connection_ratio', 0)
-            
+
             weights.append(_integer_synapse_count(w))
-            probs.append(p)
             ratios.append(r)
             
             if 'nt_type' in metrics:
@@ -6105,10 +6099,8 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
                 'path_str': path,
                 'path': path_formatted,
                 'weights': weights,
-                'probabilities': probs,
                 'ratios': ratios,
                 'min_weight': min(weights) if weights else 0,
-                'path_prob': np.prod(probs) if probs else 0,
                 'min_ratio': min(ratios) if ratios else 0,
                 'length': len(path) - 1
             }
@@ -6876,16 +6868,19 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
     # Fix FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated
     # Explicitly convert to numeric before filling NaNs to avoid object-dtype downcasting issues
     # Note: connection_ratio NaN means no incoming connections (undefined), keep it as NaN
+    # PROBABILITY SUSPENSION (2026-10-06): traversal_probability /
+    # block_probability stay COMPUTED above (the threshold filter and the
+    # aggregate methods consume them) but are no longer exported — the
+    # type_keep_cols selects below drop them.
     conn_aggregated = conn_type.copy()
     conn_aggregated['connection_ratio'] = pd.to_numeric(conn_aggregated['connection_ratio'], errors='coerce')
     conn_aggregated['traversal_probability'] = pd.to_numeric(conn_aggregated['traversal_probability'], errors='coerce').fillna(0.0)
     conn_aggregated['block_probability'] = pd.to_numeric(conn_aggregated['block_probability'], errors='coerce').fillna(1.0)
     # conn_aggregated = conn_aggregated.infer_objects() # No longer needed as we explicitly converted
-    
+
     # Keep nt_type in the type-level output when the input carries it (the
     # path builders use it to annotate edges; the Polars engine emits it too).
-    type_keep_cols = [group_pre, group_post, 'weight', 'connection_ratio',
-                      'traversal_probability', 'block_probability']
+    type_keep_cols = [group_pre, group_post, 'weight', 'connection_ratio']
     if 'nt_type' in conn_aggregated.columns:
         type_keep_cols.append('nt_type')
     conn_aggregated = conn_aggregated[type_keep_cols]
@@ -6978,8 +6973,9 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
             pbar_type.close()
         
         conn_type = conn_type.fillna({'traversal_probability': 0.0, 'block_probability': 1.0}).infer_objects()
-        type_keep_cols = ['type_pre', 'type_post', 'weight', 'connection_ratio',
-                          'traversal_probability', 'block_probability']
+        # PROBABILITY SUSPENSION (2026-10-06): probability columns are
+        # computed above but no longer exported.
+        type_keep_cols = ['type_pre', 'type_post', 'weight', 'connection_ratio']
         if 'nt_type' in conn_type.columns:
             type_keep_cols.append('nt_type')
         conn_type = conn_type[type_keep_cols]
@@ -7884,10 +7880,10 @@ def prepare_connection_data(conn_data, level='type'):
     aggs = [
         pl.col('weight').cast(pl.Int64, strict=False).sum().alias('weight')
     ]
-    
-    if 'traversal_probability' in df.columns:
-        aggs.append(pl.col('traversal_probability').mean().alias('traversal_probability'))
-    
+
+    # PROBABILITY SUSPENSION (2026-10-06): the per-edge traversal_probability
+    # mean is no longer aggregated — nothing downstream consumes it.
+
     if 'connection_ratio' in df.columns:
         aggs.append(pl.col('connection_ratio').mean().alias('connection_ratio'))
         
@@ -7968,7 +7964,7 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
     df_edges = df_edges.filter(pl.col('tgt').is_not_null())
     
     # 3. Join with connection data
-    # df_conn has ['src', 'tgt', 'weight', 'traversal_probability', ...]
+    # df_conn has ['src', 'tgt', 'weight', 'connection_ratio', ...]
     
     df_joined = df_edges.join(df_conn, on=['src', 'tgt'], how='left')
     
@@ -7978,21 +7974,21 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
     
     df_joined = df_joined.with_columns([
         pl.col('weight').fill_null(0).cast(pl.Int64, strict=False),
-        pl.col('traversal_probability').fill_null(0),
         pl.col('connection_ratio').fill_null(0)
     ])
     
     # 4. Aggregate back to path level
     # We want lists of weights, probs, etc. and summary stats
     
+    # PROBABILITY SUSPENSION (2026-10-06): per-hop probabilities and the
+    # product 'path_prob' are no longer aggregated/exported; weights and
+    # ratios are unchanged.
     aggs = [
         pl.col('src').alias('path_nodes_flat'), # We'll reconstruct path string later
         pl.col('weight').alias('weights'),
-        pl.col('traversal_probability').alias('probabilities'),
         pl.col('connection_ratio').alias('ratios'),
-        
+
         pl.col('weight').min().alias('min_weight'),
-        pl.col('traversal_probability').product().alias('path_prob'),
         pl.col('connection_ratio').min().alias('min_ratio'),
         pl.count('src').alias('length')
     ]
@@ -8042,7 +8038,6 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
     # Format as "[w1, w2, w3]" to match original statvis output
     list_format_cols = [
         (pl.lit("[") + pl.col('weights').list.eval(pl.element().cast(pl.Utf8)).list.join(', ') + pl.lit("]")).alias('weights'),
-        (pl.lit("[") + pl.col('probabilities').list.eval(pl.element().cast(pl.Utf8)).list.join(', ') + pl.lit("]")).alias('probabilities'),
         (pl.lit("[") + pl.col('ratios').list.eval(pl.element().cast(pl.Utf8)).list.join(', ') + pl.lit("]")).alias('ratios')
     ]
     
@@ -8071,11 +8066,13 @@ def process_batch_polars(paths_batch, df_conn, level='type', keyword_in_path_to_
                                                keyword_in_path_to_remove)
         
     # Select and rename columns to match statvis output
-    # statvis output: path_str (list), path (str), weights, probabilities, ratios, min_weight, path_prob, min_ratio, length
-    
+    # statvis output: path_str (list), path (str), weights, ratios, min_weight, min_ratio, length
+    # PROBABILITY SUSPENSION (2026-10-06): 'probabilities' and 'path_prob'
+    # are no longer exported.
+
     cols_to_keep = [
-        'path', 'weights', 'probabilities', 'ratios', 
-        'min_weight', 'path_prob', 'min_ratio', 'length'
+        'path', 'weights', 'ratios',
+        'min_weight', 'min_ratio', 'length'
     ]
     
     # Add nt_types if available
@@ -8770,18 +8767,29 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     # Aggregate by std_label (Step 4 & 5)
     # This uses std_label for mapped neurons and type for unmapped (since std_label = type for unmapped)
     conn_type = aggregate_connections('std_label_pre', 'std_label_post', ref_group_col='std_label')
-    
+
     # Rename std_label columns to type columns for backward compatibility
     conn_type = conn_type.rename({
         'std_label_pre': 'type_pre',
         'std_label_post': 'type_post'
     })
-    
+
     # Aggregate Group
     conn_group = None
     if 'custom_group_pre' in conn_df.columns:
         conn_group = aggregate_connections('custom_group_pre', 'custom_group_post', ref_group_col='custom_group')
-        
+
+    # PROBABILITY SUSPENSION (2026-10-06): traversal_probability /
+    # block_probability stay computed above (the threshold filter and the
+    # aggregate methods consume them) but are no longer exported — drop
+    # them from the returned frames. The pandas engine strips the same
+    # columns via its type_keep_cols selects.
+    _SUSPENDED_PROB_EXPORT_COLS = ['traversal_probability', 'block_probability']
+    conn_df = conn_df.drop(_SUSPENDED_PROB_EXPORT_COLS)
+    conn_type = conn_type.drop(_SUSPENDED_PROB_EXPORT_COLS)
+    if conn_group is not None:
+        conn_group = conn_group.drop(_SUSPENDED_PROB_EXPORT_COLS)
+
     # Return Polars DataFrames directly
     return conn_df, conn_type, conn_group
 

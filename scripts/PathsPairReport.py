@@ -4,7 +4,7 @@
 #
 #   python scripts/PathsPairReport.py <run_dir> [<run_dir> ...]
 #           [--top-per-length 10] [--global-edges 60]
-#           [--rank-by min_weight|path_prob|length]
+#           [--rank-by min_weight|min_ratio|length]
 import argparse
 import sys
 from pathlib import Path

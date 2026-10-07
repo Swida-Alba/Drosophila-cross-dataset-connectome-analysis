@@ -114,3 +114,37 @@ def test_early_preview_folder_uses_same_network_prefix(tmp_path):
 
     assert (preview / f'Network_{RUN}.html').exists()
     assert not (preview / 'network_early_bodyId_network.html').exists()
+
+
+def test_plotly_library_co_locates_with_moved_heatmap(tmp_path):
+    """The shared plotly.min.js follows the heatmap html into viz_dir;
+    the in-place layout (source IS viz_dir) stays a no-op, and a
+    pre-existing viz copy turns the source copy into a dropped orphan
+    (both were written from the same plotly package file)."""
+    run = tmp_path / RUN
+    run.mkdir()
+    fc = _fc(run)
+    run.joinpath(f'{RUN}_heatmap.html').write_text('<html>h</html>')
+    run.joinpath('plotly.min.js').write_text('root-copy')
+
+    fc._relocate_viz_outputs()
+    viz = run / 'visualization'
+    assert (viz / 'plotly.min.js').read_text() == 'root-copy'
+    assert not run.joinpath('plotly.min.js').exists()
+
+    # in-place: the library already sits beside the html — untouched
+    preview = run / 'network_early_bodyId'
+    preview.mkdir()
+    preview.joinpath('plotly.min.js').write_text('in-place')
+    fc._organize_vispath_artifacts(
+        source_dir=str(preview), viz_dir=str(preview), run_name=RUN)
+    assert preview.joinpath('plotly.min.js').read_text() == 'in-place'
+
+    # duplicate: viz copy wins, the source copy is dropped
+    other = run / 'other_preview'
+    other.mkdir()
+    other.joinpath('plotly.min.js').write_text('stale-source')
+    fc._organize_vispath_artifacts(
+        source_dir=str(other), viz_dir=str(viz), run_name=RUN)
+    assert viz.joinpath('plotly.min.js').read_text() == 'root-copy'
+    assert not other.joinpath('plotly.min.js').exists()

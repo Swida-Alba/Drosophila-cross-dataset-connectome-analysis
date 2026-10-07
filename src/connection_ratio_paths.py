@@ -67,7 +67,6 @@ import polars as pl
 from type_level_refill import (
     DEFAULT_DETAIL_CAP,
     _enumerate_paths,
-    _type_probability,
     build_effective_type_map,
     hop_prefilter,
 )
@@ -608,7 +607,6 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
             'synapse_bottleneck': min(syn_ws),
             'synapse_sum': sum(syn_ws),
             'ratios': [ratio_map[e] for e in hops],
-            'traversal_probability': min(1.0, bn / PROB_RATIO_SCALE),
         })
 
     w_star = max((bn for bn, _p in enum_paths), default=None)
@@ -629,7 +627,6 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         edges_out[f'{u}->{v}'] = {
             'bodyId_pre': u, 'bodyId_post': v,
             'synapse_weight': syn_map[(u, v)], 'ratio': r,
-            'traversal_probability': min(1.0, r / PROB_RATIO_SCALE),
             'traversals': e['traversals'], 'hops': e['hops'],
         }
 
@@ -646,10 +643,6 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         'ratio_to_synapse': _ratio_to_synapse(cone, totals, t_r),
     })
     return rec
-
-
-def _traversal_probability(ratio: float) -> float:
-    return min(1.0, ratio / PROB_RATIO_SCALE)
 
 
 def _type_pair_readouts(info, syn_map, type_map, totals,
@@ -678,16 +671,11 @@ def _type_pair_readouts(info, syn_map, type_map, totals,
         slot = agg.setdefault(pair, {
             'type_pre': pair[0], 'type_post': pair[1],
             'synapse_mass': 0.0, 'bodyid_pairs': 0,
-            'involved_posts': set(),
-            'pair_prob_weights': []})
+            'involved_posts': set()})
         w = syn_map[(u, v)]
         slot['synapse_mass'] += w
         slot['bodyid_pairs'] += 1
         slot['involved_posts'].add(v)
-        r = w / totals[v] if totals.get(v) else None
-        if r is not None:
-            slot['pair_prob_weights'].append(
-                (_traversal_probability(r), w))
 
     rows = []
     for pair in sorted(agg):
@@ -695,8 +683,6 @@ def _type_pair_readouts(info, syn_map, type_map, totals,
         # FULL-type denominator (round-9): every member's mass counts.
         denom = type_mass.get(pair[1], 0.0)
         mass_ratio = (slot['synapse_mass'] / denom) if denom > 0 else None
-        fold = _type_probability(slot['pair_prob_weights'],
-                                 aggregate_method, mass_ratio)
         total_n = len(members.get(pair[1], ()))
         rows.append({
             'type_pre': pair[0], 'type_post': pair[1],
@@ -707,7 +693,6 @@ def _type_pair_readouts(info, syn_map, type_map, totals,
                               if total_n else None),
             'total_incoming_type': denom,
             'connection_ratio': mass_ratio,
-            'traversal_probability': fold,
         })
     return rows
 
@@ -859,16 +844,18 @@ def _sibling_out_dir(run_dir: Path, t_r: float, bound: int) -> Path:
         f"r{_format_decimal_for_folder(t_r)}_{stamp}")
 
 
+# Probability columns SUSPENDED (2026-10-06, unverifiable fidelity) —
+# withheld from the ratio-lane exports.
 _OUTPUT_COLUMNS_PATHS = [
     'rank', 'path', 'hops', 'ratio_bottleneck', 'synapse_bottleneck',
-    'synapse_sum', 'traversal_probability', 'ratios']
+    'synapse_sum', 'ratios']
 _OUTPUT_COLUMNS_EDGES = [
     'bodyId_pre', 'bodyId_post', 'synapse_weight', 'ratio',
-    'traversal_probability', 'traversals', 'hops']
+    'traversals', 'hops']
 _OUTPUT_COLUMNS_TYPE_PAIRS = [
     'type_pre', 'type_post', 'bodyid_pairs', 'synapse_mass',
     'involved_posts', 'type_coverage', 'total_incoming_type',
-    'connection_ratio', 'traversal_probability']
+    'connection_ratio']
 _SYNAPSE_MAP_COLUMNS = [
     'bodyId_post', 'total_incoming', 'implied_syn_cutoff', 'kept_in_edges',
     'kept_syn_min', 'kept_syn_max']

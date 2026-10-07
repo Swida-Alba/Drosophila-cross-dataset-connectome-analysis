@@ -58,7 +58,8 @@ REFILL_FOLDER_NAME = 'type_level_refill'
 DEFAULT_DETAIL_CAP = 50_000
 DEFAULT_REFILL_PATH_BUDGET = 2_000_000
 _DISCLOSURE_SAMPLE_CAP = 20   # per-edge examples in the provenance JSON
-PROB_RATIO_SCALE = 0.3   # traversal_probability = ratio / 0.3, capped at 1
+# PROB_RATIO_SCALE (0.3) SUSPENDED with the probability family
+# (2026-10-06, unverifiable fidelity) — no consumer remains.
 
 STATUS_NO_REFILL = 'no_refill_needed'
 STATUS_NO_EMITTED = 'no_emitted_rows'
@@ -450,31 +451,6 @@ def filter_edges_by_hemisphere(edges, type_map, hemi_filter):
             and _code(e[1]) in (keep_code, 'U'))
 
 
-def _type_probability(pair_prob_weights: Iterable[Tuple[Optional[float],
-                                                        float]],
-                      method: str,
-                      type_ratio: Optional[float]) -> Optional[float]:
-    """Fold per-pair probabilities into the type-level
-    traversal_probability (same semantics as statvis /
-    coana.aggregate_method): 'product' compounds block probabilities
-    (reliability/OR), 'average' is the WEIGHT-weighted mean of the pair
-    probabilities, 'ratio' is min(type ratio / 0.3, 1)."""
-    pairs = [(p, w) for p, w in pair_prob_weights if p is not None and w > 0]
-    if not pairs:
-        return None
-    if method == 'average':
-        total_w = sum(w for _p, w in pairs)
-        return sum(p * w for p, w in pairs) / total_w
-    if method == 'ratio':
-        return (None if type_ratio is None
-                else min(type_ratio / PROB_RATIO_SCALE, 1.0))
-    # 'product' (default): reliability/OR model over the pair channels.
-    block = 1.0
-    for p, _w in pairs:
-        block *= (1.0 - p)
-    return 1.0 - block
-
-
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -723,6 +699,14 @@ def compute_type_level_refill(
     node_set = {str(b) for b, t in type_map.items() if t in involved}
 
     syn_of: Dict[Tuple[str, str], float] = defaultdict(float)
+    # R3 residual: raw physical >=asked mass on emitted pairs that
+    # entered the induced graph. All-mode only — the shortest branch
+    # leaves it empty and the pair rows say so (README).
+    asked_pair_mass: Dict[Tuple[str, str], float] = defaultdict(float)
+    non_emitted_pair_mass = 0.0
+    residual_active = False
+    _kept_cut_paths = None
+    _cut_paths = []
     if is_shortest:
         # -- Phase 3: structure from the run's discovery store; `edges`
         # is only the F9 denominator source. Per-pair weights are the
@@ -810,6 +794,11 @@ def compute_type_level_refill(
             for u, v, w in edges:
                 post_totals[str(v)] += float(w)
         non_involved_excluded = 0
+        # R3 residual accumulator: raw PHYSICAL mass of >=asked edges on
+        # EMITTED type pairs that entered the induced graph — the union
+        # the pair rows reconcile against (emitted + fired refill +
+        # unfired off-route residual). All-mode only.
+        residual_active = True
         # Round-13 AND mode: reproduce the run's DUAL admission rule in
         # the induced universe. ratio basis + AND -> the synapse floor;
         # synapse basis + AND -> the ratio co-threshold (F9 denominators
@@ -845,6 +834,18 @@ def compute_type_level_refill(
                 non_involved_excluded += 1
                 continue
             if exclude_intra and type_map.get(u) == type_map.get(v):
+                continue
+            _pair = (type_map[u], type_map[v])
+            if _pair in emitted:
+                asked_pair_mass[_pair] += float(w)
+            else:
+                # ROUTE SCOPE (2026-10-07): the second round builds only
+                # the GIVEN (emitted) type routes — edges on non-emitted
+                # pairs never enter the enumeration graph, so out-of-scope
+                # routes are not pathfinded at all (not merely filtered
+                # after the fact). Their >=asked mass is disclosed at pair
+                # level via non_emitted_pair_mass / unfired_residual.
+                non_emitted_pair_mass += float(w)
                 continue
             e_u.append((u, v, w_thr))
         e_pref, prefilter_dropped = hop_prefilter(
@@ -889,6 +890,13 @@ def compute_type_level_refill(
                 cut_info = {k: {'w': _w_cut[k], 'traversals': _trav[k],
                                 'hops': sorted(_hops[k])}
                             for k in _trav}
+                _kept_cut_paths = kept
+    # The EMITTED bodyId paths (complete at the applied tier; replay
+    # slices use their own kept prefix). Their type sequences are the
+    # Pair Explorer's chain scope — both refill tables are restricted
+    # to these chains (values change, structure does not).
+    _emitted_paths = (_kept_cut_paths if _kept_cut_paths is not None
+                      else _cut_paths)
 
     # -- anchor: the re-derived cut must reproduce the exported table
     edge_weight = {(u, v): w for (u, v, w) in e_pref}
@@ -950,10 +958,6 @@ def compute_type_level_refill(
             pair_ratio[(u, v)] = (
                 edge_weight[(u, v)] / denom if denom > 0 else None)
 
-    def _pair_prob(uv):
-        r = pair_ratio.get(uv)
-        return None if r is None else min(r / PROB_RATIO_SCALE, 1.0)
-
     type_in: Dict[str, float] = defaultdict(float)
     for (u, v, w) in edges:
         type_in[type_map.get(str(v), f'~{v}')] += w
@@ -988,9 +992,6 @@ def compute_type_level_refill(
                      if (_min_syn and _min_syn > 1) else denom)
         type_ratio_adj = ((emit_w + ref_w) / denom_adj) \
             if denom_adj > 0 else None
-        union_pairs = [
-            uv for uv in list(refill_edges) + list(cut_info)
-            if (type_map[uv[0]], type_map[uv[1]]) == pair]
         rows.append({
             'type_pre': pair[0], 'type_post': pair[1],
             'emitted_weight': int(emit_w),
@@ -1005,14 +1006,17 @@ def compute_type_level_refill(
             'refilled_connection_ratio_adj': (
                 round(type_ratio_adj, 6)
                 if type_ratio_adj is not None else None),
-            'refilled_traversal_probability': round(
-                _type_probability(
-                    ((_pair_prob(uv), edge_weight[uv]) for uv in union_pairs),
-                    aggregate_method, type_ratio) or 0.0, 6),
             'split_status': ('rederived_floor+topn' if (w0 is not None
                                                          and bitten)
                              else 'rederived_floor' if w0 is not None
                              else 'rederived_topn'),
+            # R3: >=asked mass on this emitted pair that entered the
+            # induced graph but fired on NO chain (off-route mass +,
+            # when the refill guard bit, guard-missed mass). Empty in
+            # shortest mode (no second-round enumeration to reconcile).
+            'unfired_residual': (
+                int(asked_pair_mass.get(pair, 0) - emit_w - ref_w)
+                if residual_active else ''),
         })
 
     ordered = sorted(refill_edges.items(),
@@ -1076,8 +1080,106 @@ def compute_type_level_refill(
             for k, v in sorted(skipped_by_pair.items())},
         'skipped_edge_examples': _cap_sample(skipped_edges),
     })
+    # ROUTE SCOPE disclosure: >=asked mass on non-emitted pairs pruned
+    # from the second-round graph (out-of-scope routes are not built).
+    rec['non_emitted_pair_mass'] = int(non_emitted_pair_mass)
     if write:
+        # Standalone mirror folder: only for the DEFAULT in-run record
+        # location — a custom --out dir means "leave the run folder
+        # untouched" (the CLI byte-stability contract).
+        build_mirrors = (rec.get('status') == 'refilled'
+                         and out_dir is None)
+        if build_mirrors:
+            # The refilled data in the path/connection data format.
+            # Refill-only ratios reuse the pair's denominators (refill
+            # mass / all-post incoming, and the threshold-conditioned
+            # variant); the complete tables reuse the rows' refilled
+            # columns verbatim.
+            mirror_type_rows = []
+            for r in rows:
+                ref_w = int(r['refill_weight'])
+                if ref_w <= 0:
+                    continue
+                denom = type_in.get(r['type_post'], 0.0)
+                denom_adj = (type_in_adj.get(r['type_post'], 0.0)
+                             if (_min_syn and _min_syn > 1) else denom)
+                plain = (ref_w / denom) if denom > 0 else None
+                adj = (ref_w / denom_adj) if denom_adj > 0 else None
+                mirror_type_rows.append({
+                    'type_pre': r['type_pre'], 'type_post': r['type_post'],
+                    'weight': ref_w, 'nt_type': '',
+                    'connection_ratio': (round(plain, 6)
+                                         if plain is not None else None),
+                    'conn_layer': '',
+                    'connection_ratio_adj': (round(adj, 6)
+                                             if adj is not None else None),
+                })
+            complete_type_rows = [{
+                'type_pre': r['type_pre'], 'type_post': r['type_post'],
+                'weight': int(r['refilled_total']), 'nt_type': '',
+                'connection_ratio': r['refilled_connection_ratio'],
+                'conn_layer': '',
+                'connection_ratio_adj': r['refilled_connection_ratio_adj'],
+            } for r in rows]
+            complete_bodyid_rows = []
+            for (u, v), meta in list(cut_info.items()) + list(
+                    refill_edges.items()):
+                hops = meta.get('hops') or []
+                ratio = pair_ratio.get((u, v))
+                complete_bodyid_rows.append({
+                    'bodyId_pre': u, 'bodyId_post': v,
+                    'weight': _anchor_w((u, v)),
+                    'roi': '', 'type_pre': type_map[u],
+                    'type_post': type_map[v], 'instance_pre': '',
+                    'instance_post': '', 'nt_type': '', 'nt_type_pre': '',
+                    'custom_group_pre': '', 'custom_group_post': '',
+                    'connection_ratio': (round(float(ratio), 6)
+                                         if ratio is not None else None),
+                    'synapse': '',
+                    'traversal_count': meta.get('traversals'),
+                    'min_hop': hops[0] if hops else None,
+                    'max_hop': hops[-1] if hops else None,
+                })
+            complete_bodyid_rows.sort(
+                key=lambda r: (-r['weight'], str(r['bodyId_pre']),
+                               str(r['bodyId_post'])))
+            # The second path-building round's product: the REFILLED
+            # type-level paths (asked-threshold enumeration restricted to
+            # paths carrying >=1 refill edge — the refill edges already
+            # carry the emitted-pairs restriction).
+            # The Pair Explorer's chain scope (emitted type sequences).
+            cut_chain_keys = {
+                tuple(type_map[n] for n in nodes)
+                for _bn, nodes in (_emitted_paths or [])}
+            path_rows, refill_bodyid_paths = _aggregate_refill_paths(
+                _paths_asked, set(refill_edges.keys()), cut_chain_keys,
+                type_map, node_set, _anchor_w, type_in, type_in_adj,
+                _min_syn)
+            rec['refill_paths_type'] = len(path_rows)
+            rec['refill_paths_bodyid'] = refill_bodyid_paths
+            # R1: the COMPLETE-AT-ASKED view — the SAME chains re-valued
+            # at the asked threshold (values change, structure does not).
+            # All-mode only (the shortest branch leaves _paths_asked
+            # None so the table is skipped and the stamp stays null).
+            if _paths_asked:
+                complete_rows, complete_stats = _aggregate_complete_paths(
+                    _paths_asked, set(cut_info.keys()),
+                    set(refill_edges.keys()), cut_chain_keys,
+                    type_map, node_set, _anchor_w, type_in, type_in_adj,
+                    _min_syn)
+                rec['complete_at_asked'] = (not refill_truncated)
+                rec['complete_paths_type'] = complete_stats['chains']
+                rec['complete_paths_bodyid'] = complete_stats[
+                    'bodyid_paths']
+            else:
+                complete_rows = None
+                rec['complete_at_asked'] = None
+            rec['mirror_folder'] = _MIRROR_FOLDER_NAME
         _write_records(run_dir, out_dir, rec, rows, detail, detail_cap)
+        if build_mirrors:
+            _write_mirrors(run_dir, mirror_type_rows, complete_type_rows,
+                           complete_bodyid_rows, path_rows,
+                           complete_path_rows=complete_rows)
     return rec
 
 
@@ -1110,7 +1212,8 @@ Files
   `table_reproduced` (the re-derived cut reproduced the exported
   `connection_type.csv` exactly — the consistency anchor), and the
   disclosure counters (`skipped_pairs_not_emitted_type_pair` census +
-  capped examples, `excluded_edges_non_involved_endpoint`,
+  capped examples — empty under the 2026-10-07 route scope, which
+  discloses pruned mass as `non_emitted_pair_mass` instead), `excluded_edges_non_involved_endpoint`,
   `boundary_refill_edge_count/weight/examples_at_or_above_w0`,
   `refill_truncated`).
 
@@ -1124,12 +1227,346 @@ recurs in, and summing `connection_type.csv`'s per-layer rows instead
 multiplied the mass by that fetch multiplicity (measured 2.18x on a
 real FAFB run). Runs without bodyId detail (`skip_bodyId=True`) fall
 back to the conn-table sums (per-layer semantics, disclosed).
+
+`unfired_residual` (refill_type_pairs.csv)
+------------------------------------------
+Every >=asked edge on an EMITTED type pair that entered the induced
+graph must fire on some enumerated chain (emitted or refilled); mass
+that fires on no chain (off-route geometry) is disclosed per pair as
+`unfired_residual = asked_pair_mass - emitted_weight - refill_weight`
+(0 on clean runs; nonzero = off-route mass +, when the refill guard
+bit, guard-missed mass). Empty in shortest mode (no second-round
+enumeration to reconcile against).
+
+Complete-at-asked table (`complete_at_asked_paths_type.csv`)
+------------------------------------------------------------
+The mirror folder also carries the COMPLETE-AT-ASKED view: the simple
+source->target paths of the PAIR EXPLORER'S chain scope (ROUTE SCOPE,
+2026-10-07: the second-round graph is pruned to emitted-pair edges, so
+out-of-scope routes are never built) within the run's hop bound on the
+induced subgraph at the ASKED threshold
+(the emitted type routes — values change, structure does not; chains
+realized only below the applied tier are excluded, and the second-round
+GRAPH is pruned to emitted-pair edges so out-of-scope routes are never
+pathfinded), aggregated into type chains with the same engine recipe as
+`refill_paths_type.csv`. Each hop's realized mass is split three ways:
+`emitted_weights` + `refill_weights` + `refill_weights` == `weights`
+    (two-way split; the pruned non-emitted-pair mass is disclosed at
+    pair level as `non_emitted_pair_mass` / `unfired_residual`).
+Completeness is a per-run EMPIRICAL property, stamped in
+`refill_provenance.json` as `complete_at_asked` (true = the table is
+the complete simple-path set at the asked tier; false = complete only
+at the drain tau — the refill guard budget bit during the second
+round; null = shortest mode, where the table is not produced). The
+pair report's Refill tab defaults to this view.
+
+Standalone mirror folder
+------------------------
+When generated inside the run flow, the refilled data is ALSO mirrored
+into `<run_folder>/type_level_refill/` (parallel to `find_reciprocal/`)
+in the path/connection data format, with heatmap/network visualizations
+built by the run flow:
+
+- `refill_connection_type.csv` — the REFILL mass only, in the
+  `connection_type.csv` column order (`connection_ratio` = refill mass
+  over the threshold-free all-post denominator, `connection_ratio_adj`
+  the threshold-conditioned one; `nt_type`/`conn_layer`
+  are not derivable for refilled edges and stay empty). Probability
+  columns are SUSPENDED (2026-10-06, unverifiable fidelity).
+- `refilled_connection_type.csv` — complete-at-asked: one row per
+  emitted pair with `weight = refilled_total` (emitted + refill) and
+  the pair's refilled ratios.
+- `refilled_connection_bodyId.csv` — complete-at-asked bodyId edges
+  (emitted-rederived + refill), the canonical connection-table columns
+  plus `traversal_count`/`min_hop`/`max_hop`; enrichment columns the
+  module cannot derive stay empty.
+- `refill_paths_type.csv` — the SECOND path-building round's product:
+  the refilled type-level paths (asked-threshold enumeration on the
+  induced subgraph, restricted to paths carrying >=1 refill edge and to
+  emitted pairs), in the exact `*_allpaths_type.csv` column order.
+  Per-hop weights are the REALIZED masses (distinct edges realizing the
+  hop position); per-hop ratios use the threshold-free all-post
+  denominator; coverage `n/N` counts distinct bodyIds realizing the
+  node in this path set over the type's membership in the induced node
+  set (not the run's discovered-network N).
 """
 
 
 _DETAIL_COLUMNS = (
     'bodyId_pre', 'bodyId_post', 'type_pre', 'type_post', 'weight',
     'traversal_count', 'min_hop', 'max_hop')
+
+# Standalone mirror folder (<run>/type_level_refill/, parallel to
+# find_reciprocal/): the refilled data in the path/connection data
+# format. Column orders mirror data_details/connection_type.csv and the
+# canonical bodyId connection table (_PATH_CONN_KEEP_COLS in coana).
+_MIRROR_FOLDER_NAME = 'type_level_refill'
+
+# SUSPENDED (2026-10-06): the probability columns
+# (traversal_probability/block_probability) are withheld — unverifiable
+# fidelity. The connection-table mirrors keep the remaining
+# connection_type.csv column order.
+_TYPE_MIRROR_COLUMNS = (
+    'type_pre', 'type_post', 'weight', 'nt_type', 'connection_ratio',
+    'conn_layer', 'connection_ratio_adj')
+
+_BODYID_MIRROR_COLUMNS = (
+    'bodyId_pre', 'bodyId_post', 'weight', 'roi', 'type_pre', 'type_post',
+    'instance_pre', 'instance_post', 'nt_type', 'nt_type_pre',
+    'custom_group_pre', 'custom_group_post', 'connection_ratio',
+    'synapse',
+    'traversal_count', 'min_hop', 'max_hop')
+
+# The refilled PATHS (the second path-building round's product) in the
+# EXACT *_allpaths_type.csv column order, so the pair report's own
+# loaders consume the file unchanged.
+# SUSPENDED (2026-10-06): the probability columns (``probabilities``,
+# ``path_prob``) are withheld — unverifiable fidelity. The order mirrors
+# the allpaths schema minus those columns.
+_PATHS_MIRROR_COLUMNS = (
+    'path', 'weights', 'ratios', 'min_weight',
+    'min_ratio', 'length', 'nt_types', 'coverage')
+
+
+def _fmt_mass(value) -> str:
+    return str(int(value)) if float(value).is_integer() else str(
+        float(value))
+
+
+def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
+                            type_map, node_set, anchor_w, type_in,
+                            type_in_adj, min_syn):
+    """Aggregate the REFILLED bodyId paths — the asked-threshold
+    enumeration on the involved-types induced subgraph (the second
+    path-building round) restricted to paths carrying >=1 refill edge.
+    The refill edges themselves were already restricted to EMITTED type
+    pairs (refill-only semantics: non-emitted pairs are counted, not
+    recovered), so this filter carries the restriction — a path's
+    ENDPOINT pair must NOT be checked against the emitted set (emitted
+    holds EDGE pairs from connection_type.csv; a source->target type
+    pair generally has no direct edge).
+
+    Engine recipe (coana rounds 9-11): per-hop REALIZED mass = the sum
+    of the DISTINCT bodyId edges realizing that hop position; per-hop
+    ratios = realized mass over the post type's full-membership incoming
+    mass (the module's F9 ``type_in`` denominator; the
+    threshold-conditioned ``type_in_adj`` variant when a Min Synapse
+    Count is active); ``min_weight``/``min_ratio`` = the weakest hop;
+    coverage ``n/N`` = distinct bodyIds realizing the node in THIS path
+    set over the type's membership in the induced node set (not the
+    run's discovered-network N — disclosed in the README). Probability
+    columns (probabilities/path_prob) are SUSPENDED (2026-10-06,
+    unverifiable fidelity) and are not emitted.
+    Returns (rows in _PATHS_MIRROR_COLUMNS order, bodyId path count)."""
+    adj_active = bool(min_syn and min_syn > 1)
+    type_n: Dict[str, int] = defaultdict(int)
+    for b in node_set:
+        label = type_map.get(str(b))
+        if label is not None:
+            type_n[label] += 1
+    seq_edges: Dict[Tuple[str, ...], List[Dict[Tuple[str, str], float]]] = {}
+    seq_nodes: Dict[Tuple[str, ...], List[set]] = {}
+    bodyid_count = 0
+    for item in (paths_asked or []):
+        nodes = item[1]
+        seq = tuple(type_map[n] for n in nodes)
+        # chain scope: only chains the Pair Explorer already shows (the
+        # emitted set) — the refill is a VALUE change on those chains,
+        # never a structural one
+        if seq not in chain_keys:
+            continue
+        carries_refill = any(
+            (nodes[i], nodes[i + 1]) in refill_edge_keys
+            for i in range(len(nodes) - 1))
+        if not carries_refill:
+            continue
+        bodyid_count += 1
+        edges_at = seq_edges.get(seq)
+        if edges_at is None:
+            edges_at = [{} for _ in range(len(seq) - 1)]
+            seq_edges[seq] = edges_at
+            seq_nodes[seq] = [set() for _ in range(len(seq))]
+        nodes_at = seq_nodes[seq]
+        for i in range(len(seq) - 1):
+            key = (nodes[i], nodes[i + 1])
+            edges_at[i][key] = anchor_w(key)
+        for i, n in enumerate(nodes):
+            nodes_at[i].add(n)
+    rows = []
+    for seq in sorted(seq_edges,
+                      key=lambda s: (s[0], s[-1], len(s), s)):
+        edges_at = seq_edges[seq]
+        nodes_at = seq_nodes[seq]
+        weights = [sum(edge.values()) for edge in edges_at]
+        ratios = []
+        probs = []
+        for i, post in enumerate(seq[1:]):
+            denom = type_in.get(post, 0.0)
+            ratios.append((weights[i] / denom) if denom > 0 else None)
+        finite = [r for r in ratios if r is not None]
+        coverage = '[' + ', '.join(
+            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
+            for i, label in enumerate(seq)) + ']'
+        ratios_txt = ('[' + ', '.join(repr(r) for r in ratios) + ']'
+                      if len(finite) == len(ratios) and ratios else '')
+        rows.append({
+            'path': '->'.join(seq),
+            'weights': '[' + ', '.join(
+                _fmt_mass(w) for w in weights) + ']',
+            'ratios': ratios_txt,
+            'min_weight': min(weights) if weights else 0,
+            'min_ratio': (min(finite) if finite else None),
+            'length': len(seq) - 1,
+            'nt_types': '',
+            'coverage': coverage,
+        })
+    # strongest-first order, mirroring the run's own allpaths files
+    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
+    return rows, bodyid_count
+
+
+# SKIPPED column DROPPED (2026-10-07): the route-scope restriction
+# prunes non-emitted-pair edges before enumeration, so the skipped class
+# cannot occur — the split is emitted + refill == weights.
+_COMPLETE_PATHS_COLUMNS = _PATHS_MIRROR_COLUMNS + (
+    'emitted_weights', 'refill_weights')
+
+
+def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,
+                              chain_keys, type_map, node_set, anchor_w,
+                              type_in, type_in_adj, min_syn):
+    """Aggregate the COMPLETE-AT-ASKED path set — EVERY path in
+    ``paths_asked`` (the asked-threshold enumeration on the involved-
+    types induced subgraph), NO filter of any kind. In particular a
+    path's ENDPOINT pair is never checked against the emitted set
+    (emitted holds EDGE pairs from connection_type.csv; a source->target
+    type pair generally has no direct edge — standing round-10 lesson).
+
+    Same engine recipe as :func:`_aggregate_refill_paths` (realized
+    per-hop masses over the F9 ``type_in`` denominator, threshold-
+    conditioned ``type_in_adj`` variant, coverage over induced
+    membership), with a two-way per-(chain, hop, edge) classification
+    recorded at insertion: ``edge in cut_keys -> 'emitted'``, otherwise
+    ``'refill'``. The former 'skipped' class CANNOT occur: the route-
+    scope restriction prunes non-emitted-pair edges before enumeration,
+    so every enumerated edge is cut or refill (the pruned mass is
+    disclosed at pair level as ``non_emitted_pair_mass`` /
+    ``unfired_residual``). Probability columns are SUSPENDED
+    (2026-10-06) — not emitted.
+
+    Returns (rows carrying _COMPLETE_PATHS_COLUMNS, stats_dict with
+    ``chains``/``bodyid_paths``)."""
+    adj_active = bool(min_syn and min_syn > 1)
+    type_n: Dict[str, int] = defaultdict(int)
+    for b in node_set:
+        label = type_map.get(str(b))
+        if label is not None:
+            type_n[label] += 1
+    # per chain: per-hop edge dicts per class + per-node bodyId sets
+    seq_cls: Dict[Tuple[str, ...], List[Dict[str, Dict[Tuple[str, str], float]]]] = {}
+    seq_nodes: Dict[Tuple[str, ...], List[set]] = {}
+    bodyid_count = 0
+    for item in (paths_asked or []):
+        nodes = item[1]
+        seq = tuple(type_map[n] for n in nodes)
+        # chain scope: the Pair Explorer's chains only — the complete view
+        # re-values THOSE chains at the asked threshold; chains realized
+        # only below the applied tier are structural additions and are
+        # excluded (their mass stays disclosed via unfired_residual)
+        if seq not in chain_keys:
+            continue
+        bodyid_count += 1
+        classes_at = seq_cls.get(seq)
+        if classes_at is None:
+            classes_at = [{} for _ in range(len(seq) - 1)]
+            seq_cls[seq] = classes_at
+            seq_nodes[seq] = [set() for _ in range(len(seq))]
+        nodes_at = seq_nodes[seq]
+        for i in range(len(seq) - 1):
+            key = (nodes[i], nodes[i + 1])
+            w = anchor_w(key)
+            # route scope: every enumerated edge is cut or refill
+            cls = 'emitted' if key in cut_keys else 'refill'
+            classes_at[i].setdefault(cls, {})
+            classes_at[i][cls][key] = w
+        for i, n in enumerate(nodes):
+            nodes_at[i].add(n)
+    rows = []
+    for seq in sorted(seq_cls,
+                      key=lambda s: (s[0], s[-1], len(s), s)):
+        classes_at = seq_cls[seq]
+        nodes_at = seq_nodes[seq]
+        weights, emitted_w, refill_w = [], [], []
+        ratios = []
+        for i, post in enumerate(seq[1:]):
+            per_cls = {cls: sum(edge.values())
+                       for cls, edge in classes_at[i].items()}
+            weights.append(sum(per_cls.values()))
+            emitted_w.append(per_cls.get('emitted', 0.0))
+            refill_w.append(per_cls.get('refill', 0.0))
+            denom = type_in.get(post, 0.0)
+            ratios.append((weights[-1] / denom) if denom > 0 else None)
+        finite = [r for r in ratios if r is not None]
+        coverage = '[' + ', '.join(
+            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
+            for i, label in enumerate(seq)) + ']'
+        ratios_txt = ('[' + ', '.join(repr(r) for r in ratios) + ']'
+                      if len(finite) == len(ratios) and ratios else '')
+
+        def _arr(vals):
+            return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'
+
+        rows.append({
+            'path': '->'.join(seq),
+            'weights': _arr(weights),
+            'ratios': ratios_txt,
+            'min_weight': min(weights) if weights else 0,
+            'min_ratio': (min(finite) if finite else None),
+            'length': len(seq) - 1,
+            'nt_types': '',
+            'coverage': coverage,
+            'emitted_weights': _arr(emitted_w),
+            'refill_weights': _arr(refill_w),
+        })
+    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
+    stats = {'chains': len(rows), 'bodyid_paths': bodyid_count}
+    return rows, stats
+
+
+def _write_mirrors(run_dir: Path, refill_type_rows, complete_type_rows,
+                   complete_bodyid_rows, path_rows=None,
+                   complete_path_rows=None):
+    """Write the standalone mirror folder. The visualizations themselves
+    are built later by the run flow's visualization stage (needs the
+    VisualizePath context); the CLI regenerates the CSVs only."""
+    out = Path(run_dir) / _MIRROR_FOLDER_NAME
+    out.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        refill_type_rows, columns=list(_TYPE_MIRROR_COLUMNS)).to_csv(
+        out / 'refill_connection_type.csv', index=False)
+    pd.DataFrame(
+        complete_type_rows, columns=list(_TYPE_MIRROR_COLUMNS)).to_csv(
+        out / 'refilled_connection_type.csv', index=False)
+    pd.DataFrame(
+        complete_bodyid_rows,
+        columns=list(_BODYID_MIRROR_COLUMNS)).to_csv(
+        out / 'refilled_connection_bodyId.csv', index=False)
+    if path_rows is not None:
+        pd.DataFrame(
+            path_rows, columns=list(_PATHS_MIRROR_COLUMNS)).to_csv(
+            out / 'refill_paths_type.csv', index=False)
+    if complete_path_rows is not None:
+        pd.DataFrame(
+            complete_path_rows,
+            columns=list(_COMPLETE_PATHS_COLUMNS)).to_csv(
+            out / 'complete_at_asked_paths_type.csv', index=False)
+    # parameters.csv completes the find_reciprocal-style mirror; the run
+    # flow's hook writes it from the live parameter frame, the post-hoc
+    # CLI copies the run's own data_details copy.
+    run_params = Path(run_dir) / 'data_details' / 'parameters.csv'
+    if run_params.exists():
+        import shutil
+        shutil.copyfile(run_params, out / 'parameters.csv')
 
 
 def _write_records(run_dir: Path, out_dir, rec: dict, rows, detail,
@@ -1143,8 +1580,16 @@ def _write_records(run_dir: Path, out_dir, rec: dict, rows, detail,
         frame = (pd.DataFrame(detail, columns=list(_DETAIL_COLUMNS))
                  if not detail else pd.DataFrame(detail))
         frame.to_csv(out / 'refill_bodyId_pairs.csv', index=False)
-        if not (out / 'README.md').exists():
-            (out / 'README.md').write_text(_README_TEXT, encoding='utf-8')
+        # (Re)write the README when missing OR predating a section — the
+        # only-if-absent rule alone left older runs' READMEs stale when
+        # the documented outputs grew (the standalone mirror folder).
+        readme = out / 'README.md'
+        if (not readme.exists()
+                or 'Standalone mirror folder' not in readme.read_text(
+                    encoding='utf-8')
+                or 'ROUTE SCOPE' not in readme.read_text(
+                    encoding='utf-8')):
+            readme.write_text(_README_TEXT, encoding='utf-8')
     (out / 'refill_provenance.json').write_text(
         json.dumps(rec, indent=2, sort_keys=True, default=str),
         encoding='utf-8')

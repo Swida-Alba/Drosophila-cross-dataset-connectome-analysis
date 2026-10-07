@@ -543,26 +543,18 @@ def test_type_ratio_is_mass_recompute_not_weighted_mean():
         40 / 105, rel=1e-12)
 
 
-def test_traversal_probability_folds():
+def test_traversal_probability_suspended():
+    """Probability SUSPENDED (2026-10-06, unverifiable fidelity): the
+    ratio-lane type-pair rows carry no traversal_probability column and
+    the fold machinery is gone."""
     rec = run_frac(aggregate_method='product')
-    rows = {(r['type_pre'], r['type_post']): r for r in rec['type_pairs']}
-    totals = compute_incoming_totals(FRAC_EDGES)
-    # MID->INNER channels: p=1-(1-p_A->C)(1-p_B->C)
-    p_ac = min(1.0, (6 / totals['C']) / 0.3)
-    p_bc = min(1.0, (2 / totals['C']) / 0.3)
-    assert rows[('MID', 'INNER')][
-        'traversal_probability'] == pytest.approx(
-        1 - (1 - p_ac) * (1 - p_bc), rel=1e-12)
+    assert rec['type_pairs']
+    for row in rec['type_pairs']:
+        assert 'traversal_probability' not in row
     rec_avg = run_frac(aggregate_method='average')
-    row = {(r['type_pre'], r['type_post']): r
-           for r in rec_avg['type_pairs']}[('MID', 'INNER')]
-    assert row['traversal_probability'] == pytest.approx(
-        (p_ac * 6 + p_bc * 2) / 8, rel=1e-12)
-    rec_ratio = run_frac(aggregate_method='ratio')
-    row = {(r['type_pre'], r['type_post']): r
-           for r in rec_ratio['type_pairs']}[('MID', 'INNER')]
-    assert row['traversal_probability'] == pytest.approx(
-        min((8 / 12) / 0.3, 1.0), rel=1e-12)
+    for row in rec_avg['type_pairs']:
+        assert 'traversal_probability' not in row
+    assert 'connection_ratio' in rec['type_pairs'][0]
 
 
 def test_no_type_map_no_type_pairs():
