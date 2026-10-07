@@ -248,6 +248,16 @@ console.log('[5] anchorPoint — exact rounded/sharp corners, exact mids, ellips
     p = geometry.anchorPoint(rect, 6);   // N
     check('round-rect N mid = (0, -30)', near(p[0], 0, 1e-6) && near(p[1], -30, 1e-6), p);
 
+    // diamond: the 45° diagonal anchors land on the rhombus edge midpoints
+    const dia = mockNode(100, 60, 'diamond');   // hw=50, hh=30
+    p = geometry.anchorPoint(dia, 1);   // SE
+    check('diamond SE anchor = 45° point on the rhombus edge (18.75, 18.75)',
+        near(p[0], 18.75, 0.01) && near(p[1], 18.75, 0.01), p);
+    check('diamond SE anchor on the rhombus edge (|x|/hw + |y|/hh == 1)',
+        near(p[0] / 50 + p[1] / 30, 1, 1e-6), p[0] / 50 + p[1] / 30);
+    p = geometry.anchorPoint(dia, 0);   // E vertex
+    check('diamond E vertex = (50, 0)', near(p[0], 50, 0.01) && near(p[1], 0, 0.01), p);
+
     const sharp = mockNode(100, 60, 'rectangle');   // sharp corners stay exact
     p = geometry.anchorPoint(sharp, 1);
     check('sharp SE corner = (50, 30)', near(p[0], 50, 1e-6) && near(p[1], 30, 1e-6), p);

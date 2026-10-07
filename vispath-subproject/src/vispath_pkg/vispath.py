@@ -9923,6 +9923,14 @@ class VisualizePath:
             if (shape === 'ellipse') {{
                 return (hw * hh) / Math.hypot(hh * adx, hw * ady);
             }}
+            if (shape === 'diamond') {{
+                // Exact ray-vs-rhombus: the diamond is |x|/hw + |y|/hh = 1
+                // (vertices on the bounding-box mid axes), so the ray
+                // distance is 1 / (|ux|/hw + |uy|/hh).  The box formula
+                // overshoots a 45° diamond diagonal by 2× (the drifted
+                // diamond corner anchors).
+                return 1 / (adx / hw + ady / hh);
+            }}
             const box = Math.min(hw / adx, hh / ady);
             if (shape !== 'round-rectangle') {{
                 return box;
@@ -10010,7 +10018,7 @@ class VisualizePath:
             const i = ((Number(idx) || 0) % 8 + 8) % 8;
             const [ux, uy] = ANCHOR8_DIRS[i];
             const shape = node.style('shape') || 'ellipse';
-            if (ux !== 0 && uy !== 0 && shape !== 'ellipse') {{
+            if (ux !== 0 && uy !== 0 && shape !== 'ellipse' && shape !== 'diamond') {{
                 const [hw, hh] = nodeHalfSizes(node);
                 if (shape === 'round-rectangle') {{
                     const r = Math.min(hw / 2, hh / 2, 8);

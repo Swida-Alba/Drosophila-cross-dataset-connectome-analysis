@@ -115,10 +115,11 @@ The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
   unless overridden. `↺ Reset anchors` in the selection panel clears
   overrides. Mode + overrides persist through
   `captureNetworkState`/`applyNetworkState` (localStorage saves and the v2
-  layout file verbatim). Node shape changes re-derive the rim pins. Known shape limits: `diamond` uses the
-  box rim formula (anchors at the bounding-box corner), and
-  round-rectangle mid anchors are unaffected by the corner radius (only
-  corner anchors ride the arcs).
+  layout file verbatim). Node shape changes re-derive the rim pins. Rim formulas are shape-exact:
+  polar rim for ellipses, corner arcs for round-rectangles (draw radius
+  min(width/4, height/4, 8)), ray-vs-rhombus for diamonds (the 45° diagonal
+  anchors land on the rhombus edge midpoints), box corners for sharp
+  rectangles.
 - **Waypoints** — bends declare `edge-distances: 'node-position'` so the
   rendered bend lands EXACTLY on the stored point (cytoscape's default
   `'intersection'` basis spans the rim-to-rim chord and drifts the bend by
