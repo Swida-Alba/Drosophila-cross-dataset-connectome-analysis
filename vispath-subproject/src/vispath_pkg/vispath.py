@@ -9903,17 +9903,42 @@ class VisualizePath:
         // gets the exact polar rim; a single box formula overshoots
         // an ellipse by up to 41% on diagonals (40px circle at 45°:
         // 28.28 vs 20), which is what used to leave line ends and
-        // arrowheads floating off diagonal nodes.  Non-ellipse
-        // shapes keep the box intersection.
+        // arrowheads floating off diagonal nodes.  ROUND-RECTANGLES
+        // pierce their CORNER ARCS on diagonal rays: cytoscape draws
+        // them with the corner radius min(width/4, height/4, 8), so
+        // the box formula overshoots the rounded rim by up to
+        // r·(√2−1) exactly at the corners (the drifted corner
+        // anchors).  Rays whose box-exit point lands inside the
+        // corner-arc span exit through the quarter-circle; everything
+        // else keeps the box intersection.
         const rimDistance = (node, wx, wy) => {{
             const [hw, hh] = nodeHalfSizes(node);
             const len = Math.hypot(wx, wy) || 1;
-            const adx = Math.abs(wx) / len || 1e-6;
-            const ady = Math.abs(wy) / len || 1e-6;
-            if ((node.style('shape') || 'ellipse') === 'ellipse') {{
+            const ux = wx / len, uy = wy / len;
+            const adx = Math.abs(ux) || 1e-6;
+            const ady = Math.abs(uy) || 1e-6;
+            const shape = node.style('shape') || 'ellipse';
+            if (shape === 'ellipse') {{
                 return (hw * hh) / Math.hypot(hh * adx, hw * ady);
             }}
-            return Math.min(hw / adx, hh / ady);
+            const box = Math.min(hw / adx, hh / ady);
+            if (shape !== 'round-rectangle') {{
+                return box;
+            }}
+            // cytoscape's own round-rectangle draw radius (its `en`
+            // helper: min(width/4, height/4, 8))
+            const r = Math.min(hw / 2, hh / 2, 8);
+            if (r <= 0) return box;
+            const bx = adx * box, by = ady * box;
+            if (bx >= hw - r && by >= hh - r) {{
+                // the exit point is on the corner arc: quarter circle
+                // centered at (hw−r, hh−r) in the ray's quadrant
+                const acx = hw - r, acy = hh - r;
+                const dot = acx * adx + acy * ady;
+                const perp2 = acx * acx + acy * acy - dot * dot;
+                return dot + Math.sqrt(Math.max(r * r - perp2, 0));
+            }}
+            return box;
         }};
         // Where the OFFSET edge line meets each node's rim, returned
         // as an offset from that node's position.  Radial
@@ -9965,22 +9990,30 @@ class VisualizePath:
             return ((step % 8) + 8) % 8;
         }};
         // The anchor's exact point, as an offset from the node
-        // center.  Mid anchors are exact for every shape; a box
-        // corner IS (±hw, ±hh) — its direction from the center is
-        // aspect-dependent, so it must not go through the polar rim
-        // formula — while an ellipse's diagonal rides the 45° rim
-        // point (±hw/√2, ±hh/√2) via rimDistance.  ANCHOR_CENTER is
-        // NOT valid here (it is direction-dependent — use
+        // center.  CORNER anchors target the node's actual corner —
+        // exact (±hw, ±hh) for sharp rectangles, pulled onto the
+        // corner arc for round-rectangles (cytoscape's own draw
+        // radius: min(width/4, height/4, 8), so the anchor sits ON
+        // the rounded rim instead of drifting off the bounding-box
+        // corner) and the 45° polar rim point for ellipses.  Mid
+        // anchors ride rimDistance for every shape.  ANCHOR_CENTER
+        // is NOT valid here (it is direction-dependent — use
         // centerRimPoint); the mod-8 wrap would silently map it to
         // east.
         const anchorPoint = (node, idx) => {{
             if (Number(idx) === ANCHOR_CENTER) {{
                 throw new Error('anchorPoint: use centerRimPoint for ANCHOR_CENTER');
             }}
-            const [hw, hh] = nodeHalfSizes(node);
             const i = ((Number(idx) || 0) % 8 + 8) % 8;
             const [ux, uy] = ANCHOR8_DIRS[i];
-            if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {{
+            const shape = node.style('shape') || 'ellipse';
+            if (ux !== 0 && uy !== 0 && shape !== 'ellipse') {{
+                const [hw, hh] = nodeHalfSizes(node);
+                if (shape === 'round-rectangle') {{
+                    const r = Math.min(hw / 2, hh / 2, 8);
+                    const k = 1 - Math.SQRT1_2;   // 45° pull-in per corner radius
+                    return [ux * (hw - r * k), uy * (hh - r * k)];
+                }}
                 return [ux * hw, uy * hh];
             }}
             const d = rimDistance(node, ux, uy);

@@ -465,10 +465,14 @@ class TestGeneratedHtmlStructure:
         assert "const ANCHOR_CENTER = 8;" in js
         assert "const centerRimPoint = (node, dx, dy) => {" in js
         assert "if (Number(idx) === ANCHOR_CENTER) {" in js  # guard: not a compass anchor
-        # box corners are exact (±hw, ±hh): their direction from the center
-        # is aspect-dependent, so they must not ride the polar rim formula
-        assert "if (ux !== 0 && uy !== 0 && (node.style('shape') || 'ellipse') !== 'ellipse') {" in js
-        assert "return [ux * hw, uy * hh];" in js
+        # corners ride the rim EXACTLY for every shape: round-rectangles
+        # pierce their corner arcs (cytoscape's own draw radius
+        # min(width/4, height/4, 8)), sharp rectangles keep the box
+        # intersection, ellipses the polar rim — anchorPoint routes all
+        # of them through rimDistance
+        assert "const r = Math.min(hw / 2, hh / 2, 8);" in js
+        assert "if (bx >= hw - r && by >= hh - r) {" in js
+        assert "return dot + Math.sqrt(Math.max(r * r - perp2, 0));" in js
         # plain (non-pair) edges anchor in auto mode OR when a per-end
         # override exists — Center mode stays byte-identical otherwise
         assert "if (edgeAnchorMode === 'auto' || hasAnyAnchorOverride(edge)) {" in js

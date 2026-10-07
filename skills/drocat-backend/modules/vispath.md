@@ -94,9 +94,11 @@ The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
   `"cy.fit();" not in js`.
 - **Edge Anchor ribbon group** (beside Edge Route) — `Center` (default,
   classic center-directed attachment on the center-line rim) vs `Auto`: every
-  edge end defaults to the nearest of 8 anchors — the 4 box corners
-  (ellipses: the exact 45° rim points via `rimDistance`) and the 4 mid-edges —
-  chosen by 45°-sector direction (`snapAnchorIndex`/`anchorPoint`/`ANCHOR_CENTER`,
+  edge end defaults to the nearest of 8 anchors — the 4 corners and the 4
+  mid-edges, each exact for its shape (polar rim for ellipses, corner arcs
+  for round-rectangles at cytoscape's draw radius min(width/4, height/4, 8),
+  box corners for sharp rectangles — via `rimDistance`), chosen by
+  45°-sector direction (`snapAnchorIndex`/`anchorPoint`/`ANCHOR_CENTER`,
   shared top-level geometry helpers). Applies in ALL edge modes (straight,
   curved pairs keep the cp-40 bow, merged canonical half, flow bows keep their
   center-line obstruction test); waypoint (segments) and self-loop edges

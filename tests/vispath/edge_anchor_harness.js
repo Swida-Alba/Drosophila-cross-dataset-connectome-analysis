@@ -233,15 +233,24 @@ console.log('[4] snapAnchorIndex — 45° sectors, mirror symmetry, degenerate n
         geometry.snapAnchorIndex(NaN, 1));
 }
 
-console.log('[5] anchorPoint — exact box corners, exact mids, ellipse 45° rim');
+console.log('[5] anchorPoint — exact rounded/sharp corners, exact mids, ellipse 45° rim');
 {
-    const rect = mockNode(100, 60, 'round-rectangle');   // hw=50, hh=30
+    const rect = mockNode(100, 60, 'round-rectangle');   // hw=50, hh=30, r=min(25,15,8)=8
+    const k = 1 - Math.SQRT1_2;                          // diagonal pull-in per corner radius
     let p = geometry.anchorPoint(rect, 1);   // SE
-    check('box SE corner = (50, 30)', near(p[0], 50, 1e-6) && near(p[1], 30, 1e-6), p);
+    check('round-rect SE anchor ON the corner arc = (47.66, 27.66)',
+        near(p[0], 50 - 8 * k, 0.01) && near(p[1], 30 - 8 * k, 0.01), p);
+    check('round-rect SE anchor lies on the corner arc (dist r from the arc center)',
+        near(Math.hypot(p[0] - (50 - 8), p[1] - (30 - 8)), 8, 0.01),
+        Math.hypot(p[0] - 42, p[1] - 22));
     p = geometry.anchorPoint(rect, 4);   // W
-    check('box W mid = (-50, 0)', near(p[0], -50, 1e-6) && near(p[1], 0, 1e-6), p);
+    check('round-rect W mid = (-50, 0)', near(p[0], -50, 1e-6) && near(p[1], 0, 1e-6), p);
     p = geometry.anchorPoint(rect, 6);   // N
-    check('box N mid = (0, -30)', near(p[0], 0, 1e-6) && near(p[1], -30, 1e-6), p);
+    check('round-rect N mid = (0, -30)', near(p[0], 0, 1e-6) && near(p[1], -30, 1e-6), p);
+
+    const sharp = mockNode(100, 60, 'rectangle');   // sharp corners stay exact
+    p = geometry.anchorPoint(sharp, 1);
+    check('sharp SE corner = (50, 30)', near(p[0], 50, 1e-6) && near(p[1], 30, 1e-6), p);
 
     const circ = mockNode(100, 100, 'ellipse');   // r=50
     p = geometry.anchorPoint(circ, 1);   // 45° rim point
@@ -259,8 +268,8 @@ console.log('[5] anchorPoint — exact box corners, exact mids, ellipse 45° rim
         near((p[0] / 30) * (p[0] / 30) + (p[1] / 50) * (p[1] / 50), 1, 1e-6),
         (p[0] / 30) * (p[0] / 30) + (p[1] / 50) * (p[1] / 50));
     // out-of-range and negative indices wrap mod 8
-    check('index wrap: 9 -> 1 (SE)', near(geometry.anchorPoint(rect, 9)[0], 50, 1e-6) &&
-        near(geometry.anchorPoint(rect, 9)[1], 30, 1e-6), geometry.anchorPoint(rect, 9));
+    check('index wrap: 9 -> 1 (SE)', near(geometry.anchorPoint(rect, 9)[0], 47.66, 0.01) &&
+        near(geometry.anchorPoint(rect, 9)[1], 27.66, 0.01), geometry.anchorPoint(rect, 9));
     check('index wrap: -4 -> 4 (W)', near(geometry.anchorPoint(rect, -4)[0], -50, 1e-6),
         geometry.anchorPoint(rect, -4));
 }
