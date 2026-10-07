@@ -4670,9 +4670,10 @@ class VisualizePath:
         explicit fit).  The Edge Anchor
         ribbon switches the DEFAULT edge attachment between center-directed
         ('center': the classic center-line rim) and 8-point anchors
-        ('auto': the 4 box corners — ellipses: the exact 45° rim points —
-        plus the 4 mid-edges, each end snapped to the anchor nearest its
-        direction).  Edges are adjustable in BOTH modes: selected edges
+        ('auto': the 4 corners — exact for every shape: corner arcs for
+        round-rectangles, the 45° polar rim point for ellipses, box
+        corners for sharp rectangles — plus the 4 mid-edges, each end
+        snapped to the anchor nearest its direction).  Edges are adjustable in BOTH modes: selected edges
         show draggable endpoint handles (diamond = compass anchor, round
         teal badge at the node center = the ninth, center-directed anchor —
         the edge end itself anchors to the near rim intersection), and a
@@ -6815,7 +6816,7 @@ class VisualizePath:
                     <code>&lt;5, &gt;100</code> hides weak and very strong edges;<br>
                     <code>(&gt;=10, &lt;=20)</code> keeps only a weight band.</p>
                     <p><strong>Save vs Export Layout</strong> — Save keeps the full view state (positions, colors + alpha, groups, filters, toggles, controls) in this browser for this file and auto-restores it on reopen; Export Layout downloads the same state as JSON to share or re-import elsewhere. The page frames the graph with a one-time fit only when nothing is saved — a saved layout always wins. On large graphs the open fit stops at a readable 0.35× zoom floor instead of zooming out to the minZoom limit; ⛶ Fit always frames everything exactly.</p>
-                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses the DEFAULT edge attachment. Center keeps the classic center-directed attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (ellipses: the exact 45° rim points) and the 4 mid-edges. Edges are adjustable in BOTH modes: selecting an edge shows its endpoint handles, and dragging one reassigns that end — around the node to one of the 8 anchors (◇ blue), or into the node body for the center-directed attachment (● teal badge moves to the node center; the edge end itself anchors to the near rim intersection, the rim point facing the other node). Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
+                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses the DEFAULT edge attachment. Center keeps the classic center-directed attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (exact for every shape: round-rectangle corner arcs, ellipse 45° rim points, sharp box corners) and the 4 mid-edges. Edges are adjustable in BOTH modes: selecting an edge shows its endpoint handles, and dragging one reassigns that end — around the node to one of the 8 anchors (◇ blue), or into the node body for the center-directed attachment (● teal badge moves to the node center; the edge end itself anchors to the near rim intersection, the rim point facing the other node). Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
                     <p><strong>Horizontal/Vertical Gap &amp; Rotate</strong> — set the center-to-center distance between neighboring nodes in px (node size unchanged); rotation turns the whole arrangement around its center — the gaps are measured along the layout's own columns/rows, so small tilts keep the values stable, while at ±90°/270° the Horizontal and Vertical values swap accordingly (↺ Reset Spacing restores the layout-run gaps for the current rotation); both reset when the layout re-runs and are undoable.</p>
                     <p><strong>Panels</strong> — ⚙️ hides the top tool panel, 🎨 the right panel; both states are remembered.</p>
                 </div>
@@ -7073,10 +7074,11 @@ class VisualizePath:
         let edgeRouteMode = 'flow';
         // Edge-anchor mode: 'center' attaches every edge end at the
         // center-line rim intersection (the classic look); 'auto' attaches
-        // ends to the nearest of 8 anchors — the 4 corners (ellipses: the
-        // 45° rim points) and the 4 mid-edges — and shows draggable
-        // endpoint handles on selected edges. The Edge Anchor ribbon
-        // switches it live.
+        // ends to the nearest of 8 anchors — the 4 corners (exact for
+        // every shape: round-rectangle corner arcs, ellipse 45° rim
+        // points, sharp box corners) and the 4 mid-edges — and shows
+        // draggable endpoint handles on selected edges. The Edge Anchor
+        // ribbon switches it live.
         let edgeAnchorMode = 'center';
         const highlightColor = '{self.highlight_color}';
         const highlightOpacity = {self.highlight_opacity};
@@ -9974,8 +9976,9 @@ class VisualizePath:
         }};
 
         // Auto edge-anchor mode ('auto'): every edge end attaches at
-        // one of 8 fixed anchors — the 4 box corners (ellipses: the
-        // rim points on the 45° diagonals) and the 4 mid-edges.
+        // one of 8 fixed anchors — the 4 corners, exact for every
+        // shape (round-rectangle corner arcs, ellipse 45° rim points,
+        // sharp box corners) and the 4 mid-edges.
         // ANCHOR8_DIRS is indexed by atan2(dy, dx) rounded to 45°
         // steps (screen coords, y down): E, SE, S, SW, W, NW, N, NE.
         const ANCHOR8_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
