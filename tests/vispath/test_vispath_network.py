@@ -523,6 +523,11 @@ class TestGeneratedHtmlStructure:
         assert "function anchorHandleModelPos(" in js
         assert "if (anchorEndIsCenter(edge, end)) return p;" in js
         assert "const p = anchorHandleModelPos(edge, end);" in js
+        # a distance-from-node orphan (endpoint reverted, distance kept)
+        # would pierce the edge to the node center — normalized every pass
+        assert "if (hasBypass(edge, which + '-distance-from-node') &&" in js
+        assert "!hasBypass(edge, which + '-endpoint')" in js
+        assert "edge.removeStyle(which + '-distance-from-node');" in js
         # a drag writes the override + endpoint style for THAT end only
         # (reciprocal halves reassign independently), tracked as one
         # queued history entry per gesture

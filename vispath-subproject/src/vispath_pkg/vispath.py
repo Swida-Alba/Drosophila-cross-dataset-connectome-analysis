@@ -10192,6 +10192,20 @@ class VisualizePath:
                 // its own direction key, not the reverse one)
                 const hasVisibleParallel = (visibleEdgeCounts.get(target + '→' + source) || 0) > 0;
 
+                // A `distance-from-node` bypass whose ENDPOINT sibling is
+                // gone makes cytoscape attach that end at the node position
+                // itself (distance 0 = the CENTER — the edge pierces the
+                // node to reach it).  Whatever wrote the orphan (an undo or
+                // a partial style restore that reverted the endpoints but
+                // kept the distances), normalize it away so the end always
+                // falls back to the rim intersection.
+                ['source', 'target'].forEach(which => {{
+                    if (hasBypass(edge, which + '-distance-from-node') &&
+                            !hasBypass(edge, which + '-endpoint')) {{
+                        edge.removeStyle(which + '-distance-from-node');
+                    }}
+                }});
+
                 if (source === target) {{
                     // Self-loop geometry: Cytoscape renders EVERY self-loop
                     // as a single cubic bezier (it forces curve-style

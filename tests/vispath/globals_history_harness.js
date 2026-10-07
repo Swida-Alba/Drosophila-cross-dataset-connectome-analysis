@@ -54,6 +54,7 @@ const FUNCTIONS = [
     'updateSelectionChip', 'historyIcon',
     'refreshEdgeStyles', 'clearEdgeEndpointOverrides', 'applyStraightEdgeStyle',
     'vpBowAroundObstructions', 'vpNodeHalfSizes', 'vpRimDistance', 'vpPointInsideNode',
+    'hasBypass',
 ];
 
 // Top-level const arrow helpers the extracted functions close over
