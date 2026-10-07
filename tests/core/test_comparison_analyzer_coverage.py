@@ -1922,10 +1922,9 @@ def test_get_ratio_and_prob_data_for_threshold(tmp_path):
         os.path.join(d1, "minsyn_1_data_original_paths.csv"), index=False)
     ratio = a._get_ratio_data_for_threshold(1)
     assert not ratio.empty
-    prob = a._get_prob_data_for_threshold(1)
-    assert not prob.empty
     assert a._get_ratio_data_for_threshold(3).empty
-    assert a._get_prob_data_for_threshold(3).empty
+    # _get_prob_data_for_threshold SUSPENDED (2026-10-06) — removed
+    assert not hasattr(a, "_get_prob_data_for_threshold")
 
 
 def test_get_edge_ratio_data_for_threshold(tmp_path):

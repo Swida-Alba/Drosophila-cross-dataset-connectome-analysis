@@ -387,23 +387,25 @@ def test_combination_similarity_html_rows_match_used_data_csv(tmp_path):
     assert len(used[used["query_id"] == "combo_001"]) == 1
 
 
-def test_combination_summary_has_ratio_and_probability_charts(tmp_path):
+def test_combination_summary_has_ratio_charts(tmp_path):
     """Phase B: the Custom summary carries the four Standard summary charts
     and their used-data files."""
     report = _build_query_report(tmp_path)
     assert 'queryEdgeCountChart' in report
     assert 'queryTotalWeightChart' in report
     assert 'queryAvgRatioChart' in report
-    assert 'queryAvgProbChart' in report
+    # queryAvgProbChart SUSPENDED (2026-10-06, unverifiable fidelity)
+    assert 'queryAvgProbChart' not in report
     used_dir = tmp_path / "comparison_report_used_data"
     for name in ("edge_count_data_by_query.csv", "total_weight_data_by_query.csv",
-                 "avg_ratio_data_by_query.csv", "avg_prob_data_by_query.csv",
+                 "avg_ratio_data_by_query.csv",
                  "provenance_by_query.csv"):
         assert (used_dir / name).exists(), name
+    assert not (used_dir / "avg_prob_data_by_query.csv").exists()
     # 2026-09-16: the per-query summary charts render as LINES (user
     # request — grouped bars were unreadable at 4 datasets x N queries),
     # same convention as the similarity-trends grid.
-    card_start = report.index('Edges, Weight, Ratio and Probability')
+    card_start = report.index('Edges, Weight and Ratio Across All Queries')
     card_js = report[card_start:card_start + 6000]
     assert "type: 'scatter', mode: 'lines+markers'" in card_js
     assert "type: 'bar'" not in card_js

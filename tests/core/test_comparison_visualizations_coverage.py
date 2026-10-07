@@ -393,14 +393,9 @@ def test_plot_ratio_heatmap_no_columns(viz, ratio_data):
     assert fig is not None
 
 
-def test_plot_traversal_probability_heatmap(viz, prob_data):
-    fig = viz.plot_traversal_probability_heatmap(prob_data, DATASETS)
-    assert fig is not None
-
-
-def test_plot_traversal_probability_heatmap_no_columns(viz, prob_data):
-    fig = viz.plot_traversal_probability_heatmap(prob_data, ["nope"])
-    assert fig is not None
+# plot_traversal_probability_heatmap(+_all_thresholds) tests removed:
+# probability values are suspended (2026-10-06, unverifiable fidelity) and
+# the plotting functions no longer exist.
 
 
 def test_plot_ratio_heatmap_all_thresholds(viz, ratio_data):
@@ -412,20 +407,6 @@ def test_plot_ratio_heatmap_all_thresholds(viz, ratio_data):
 
 def test_plot_ratio_heatmap_all_thresholds_none(viz):
     fig = viz.plot_ratio_heatmap_all_thresholds(
-        lambda t: None, THRESHOLDS, DATASETS
-    )
-    assert fig is not None
-
-
-def test_plot_traversal_probability_heatmap_all_thresholds(viz, prob_data):
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
-        lambda t: prob_data, THRESHOLDS, DATASETS
-    )
-    assert fig is not None
-
-
-def test_plot_traversal_probability_heatmap_all_thresholds_none(viz):
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
         lambda t: None, THRESHOLDS, DATASETS
     )
     assert fig is not None
@@ -549,9 +530,11 @@ def test_save_all_plots(viz, results, aligned, similarities, path_data,
     vis_data = os.path.join(out_dir, "visualization_data")
     assert os.path.isdir(vis_data)
     assert os.path.exists(os.path.join(vis_data, "path_counts.csv"))
-    # subfolders for ratio / probability heatmaps
+    # subfolder for ratio heatmaps; by_probability is suspended
+    # (2026-10-06, unverifiable fidelity) and must not be produced even
+    # though prob_data_func is still accepted (ignored) for compatibility
     assert os.path.isdir(os.path.join(out_dir, "by_ratio"))
-    assert os.path.isdir(os.path.join(out_dir, "by_probability"))
+    assert not os.path.isdir(os.path.join(out_dir, "by_probability"))
 
 
 def test_generate_vis_summary_pdf(viz, tmp_path):
@@ -665,7 +648,7 @@ def test_vprint_verbose():
 
 
 def test_heatmap_functions_require_seaborn(
-    monkeypatch, viz, results, aligned, similarities, path_data, ratio_data, prob_data
+    monkeypatch, viz, results, aligned, similarities, path_data, ratio_data
 ):
     monkeypatch.setattr(vis_module, "HAS_SEABORN", False)
     with pytest.raises(ImportError):
@@ -691,15 +674,11 @@ def test_heatmap_functions_require_seaborn(
     with pytest.raises(ImportError):
         viz.plot_ratio_heatmap(ratio_data, DATASETS)
     with pytest.raises(ImportError):
-        viz.plot_traversal_probability_heatmap(prob_data, DATASETS)
-    with pytest.raises(ImportError):
         viz.plot_ratio_heatmap_all_thresholds(
             lambda t: ratio_data, THRESHOLDS, DATASETS
         )
-    with pytest.raises(ImportError):
-        viz.plot_traversal_probability_heatmap_all_thresholds(
-            lambda t: prob_data, THRESHOLDS, DATASETS
-        )
+    # plot_traversal_probability_heatmap(+_all_thresholds) no longer exist
+    # (probability suspension, 2026-10-06) — nothing to assert here.
 
 
 def test_trend_functions_require_matplotlib(monkeypatch, viz, results, aligned, path_data):
@@ -789,7 +768,7 @@ def test_similarity_matrix_per_threshold_branches(
     assert fig is not None
 
 
-# --- Path / ratio / probability all-threshold heatmaps ------------------------
+# --- Path / ratio all-threshold heatmaps --------------------------------------
 
 def test_path_heatmap_all_thresholds_dup_index_and_bad_value(viz):
     df = pd.DataFrame(
@@ -856,42 +835,9 @@ def test_ratio_heatmap_all_thresholds_many_edges(viz):
     assert fig is not None
 
 
-def test_traversal_prob_all_thresholds_raising(viz):
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
-        _raiser, THRESHOLDS, DATASETS
-    )
-    assert fig is not None  # "No probability data available"
-
-
-def test_traversal_prob_all_thresholds_no_dataset_columns(viz):
-    df = pd.DataFrame({"zzz": [0.5, 0.6]}, index=["p1", "p2"])
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
-        lambda t: df, THRESHOLDS, ["nope"]
-    )
-    assert fig is not None
-
-
-def test_traversal_prob_all_thresholds_dup_index_and_bad_value(viz):
-    df = pd.DataFrame(
-        {"ds_one": [0.5, 0.4, 0.9], "ds_two": [0.3, 0.2, "bad"]},
-        index=["p", "p", "q"],
-    )
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
-        lambda t: df, THRESHOLDS, DATASETS
-    )
-    assert fig is not None
-
-
-def test_traversal_prob_all_thresholds_many_paths(viz):
-    n = 40
-    df = pd.DataFrame(
-        {"ds_one": np.linspace(0.01, 0.9, n), "ds_two": np.linspace(0.02, 0.8, n)},
-        index=[f"p{i}" for i in range(n)],
-    )
-    fig = viz.plot_traversal_probability_heatmap_all_thresholds(
-        lambda t: df.copy(), THRESHOLDS, DATASETS, max_paths=32
-    )
-    assert fig is not None
+# test_traversal_prob_all_thresholds_* tests removed: probability values are
+# suspended (2026-10-06, unverifiable fidelity) and the plotting function no
+# longer exists.
 
 
 # --- Conservation across thresholds -------------------------------------------

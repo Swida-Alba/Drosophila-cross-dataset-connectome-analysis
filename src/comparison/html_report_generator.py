@@ -654,9 +654,10 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
             getattr(analyzer, '_density_curves_df', None) is not None
             or getattr(analyzer, '_density_windows_df', None) is not None)))
 
-    # Summary: key findings plus the four Standard summary charts (edge
-    # counts, total weight, average connection ratio, average traversal
-    # probability), each keyed by query. The former standalone
+    # Summary: key findings plus the three Standard summary charts (edge
+    # counts, total weight, average connection ratio), each keyed by query.
+    # Probability charts are suspended (2026-10-06, unverifiable fidelity).
+    # The former standalone
     # applied-threshold banner and 🎯 provenance section are merged in here:
     # each dataset cell shows requested→applied, and the full bottleneck
     # provenance rides below the table as one collapsed block.
@@ -678,7 +679,7 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                 f'{esc(str(requested))}&rarr;{esc(str(applied))}{mark}</span>')
 
     parts.append('<div id="summary" class="section"><div class="section-header">📋 Summary &amp; Key Findings</div><div class="section-content">')
-    parts.append('<p class="card">Ratio and traversal-probability filtering is disabled for pathfinding comparisons. Counts below are keyed by query row; each dataset cell shows <strong>requested&rarr;applied</strong> Min Synapse Count (an asterisk marks an applied value resolved by the strongest-first budget rather than the request). The full bottleneck provenance is collapsed beneath the table.</p>')
+    parts.append('<p class="card">Ratio and traversal-probability filtering is disabled for pathfinding comparisons (probability values themselves are suspended — see OUTPUT_FILES.md). Counts below are keyed by query row; each dataset cell shows <strong>requested&rarr;applied</strong> Min Synapse Count (an asterisk marks an applied value resolved by the strongest-first budget rather than the request). The full bottleneck provenance is collapsed beneath the table.</p>')
     parts.append('<div class="card"><h3>Key Findings by Query</h3><div class="sticky-table-container"><table><thead><tr><th>Query</th><th>Label</th><th>Group</th>')
     parts.extend(f'<th>{esc(nickname_map.get(ds, ds))} req&rarr;app</th>' for ds in dataset_names)
     parts.append('<th>Total edges</th><th>Common edges</th><th>Edge conservation</th><th>Total paths</th><th>Common paths</th><th>Path conservation</th></tr></thead><tbody>')
@@ -713,13 +714,14 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                  + '.</p></div></details>')
     parts.append('</div>')
 
-    # Chart data, including per-query average connection ratio and traversal
-    # probability. Each dataset cell is read from the raw run at that
+    # Chart data, including per-query average connection ratio. Each dataset
+    # cell is read from the raw run at that
     # dataset's own requested threshold.
+    # (Per-query average traversal probability is suspended — 2026-10-06,
+    # unverifiable fidelity.)
     chart_counts = []
     chart_weights = []
     avg_ratio_data = []
-    avg_prob_data = []
     for query in queries:
         query_id = str(query.get('id') or query.get('query_id'))
         query_label = str(query.get('label') or query_id)
@@ -729,7 +731,6 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
             chart_counts.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'count': int(len(df))})
             chart_weights.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'weight': float(df['weight'].sum()) if not df.empty and 'weight' in df.columns else 0})
             avg_ratio = 0.0
-            avg_prob = 0.0
             try:
                 ratio_data = analyzer._get_edge_ratio_data_for_threshold(threshold)
                 if ratio_data is not None and not ratio_data.empty and dataset in ratio_data.columns:
@@ -740,31 +741,18 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                             avg_ratio = 0.0
             except Exception:
                 avg_ratio = 0.0
-            try:
-                prob_data = analyzer._get_prob_data_for_threshold(threshold)
-                if prob_data is not None and not prob_data.empty and dataset in prob_data.columns:
-                    non_zero = prob_data[dataset][prob_data[dataset] > 0]
-                    if len(non_zero) > 0:
-                        avg_prob = float(non_zero.mean())
-                        if pd.isna(avg_prob):
-                            avg_prob = 0.0
-            except Exception:
-                avg_prob = 0.0
             avg_ratio_data.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'ratio': avg_ratio})
-            avg_prob_data.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'prob': avg_prob})
     _query_report_save_used_data(analyzer, pd.DataFrame(chart_counts), 'edge_count_data_by_query.csv')
     _query_report_save_used_data(analyzer, pd.DataFrame(chart_weights), 'total_weight_data_by_query.csv')
     _query_report_save_used_data(analyzer, pd.DataFrame(avg_ratio_data), 'avg_ratio_data_by_query.csv')
-    _query_report_save_used_data(analyzer, pd.DataFrame(avg_prob_data), 'avg_prob_data_by_query.csv')
     labels_json = json.dumps([row['query_id'] for row in point_rows])
     display_labels_json = json.dumps([row['query_label'] for row in point_rows])
     datasets_json = json.dumps([nickname_map.get(ds, ds) for ds in dataset_names])
     counts_json = json.dumps(chart_counts, default=str)
     weights_json = json.dumps(chart_weights, default=str)
     ratio_json = json.dumps(avg_ratio_data, default=str)
-    prob_json = json.dumps(avg_prob_data, default=str)
     parts.append("""
-        <div class="card"><h3>Edges, Weight, Ratio and Probability Across All Queries</h3>
+        <div class="card"><h3>Edges, Weight and Ratio Across All Queries</h3>
         <style>
           .query-split { display: flex; flex-wrap: wrap; gap: 30px; }
           .query-split-col { flex: 1 1 44%; min-width: 0; }
@@ -776,21 +764,18 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                 <div id="queryEdgeCountChartV" class="chart-container"></div>
                 <div id="queryTotalWeightChartV" class="chart-container"></div>
                 <div id="queryAvgRatioChartV" class="chart-container"></div>
-                <div id="queryAvgProbChartV" class="chart-container"></div>
             </div>
             <div class="query-split-col" id="querySplitColH">
                 <h4>Density-matched analysis (horizontal rows)</h4>
                 <div id="queryEdgeCountChartH" class="chart-container"></div>
                 <div id="queryTotalWeightChartH" class="chart-container"></div>
                 <div id="queryAvgRatioChartH" class="chart-container"></div>
-                <div id="queryAvgProbChartH" class="chart-container"></div>
             </div>
             <div class="query-split-col" id="querySplitColO" style="display:none;">
                 <h4>Other queries</h4>
                 <div id="queryEdgeCountChartO" class="chart-container"></div>
                 <div id="queryTotalWeightChartO" class="chart-container"></div>
                 <div id="queryAvgRatioChartO" class="chart-container"></div>
-                <div id="queryAvgProbChartO" class="chart-container"></div>
             </div>
         </div>
         <script>
@@ -798,13 +783,12 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
             const ids = __IDS__, datasets = __DATASETS__;
             const rowsBy = {
                 counts: __COUNTS__, weights: __WEIGHTS__,
-                ratios: __RATIOS__, probs: __PROBS__,
+                ratios: __RATIOS__,
             };
             const metrics = [
                 ['counts',  'count',  'queryEdgeCountChart',  'Edge count'],
                 ['weights', 'weight', 'queryTotalWeightChart', 'Total edge weight'],
                 ['ratios',  'ratio',  'queryAvgRatioChart',   'Avg connection ratio (w_ij / W_j)'],
-                ['probs',   'prob',   'queryAvgProbChart',    'Avg traversal probability'],
             ];
             const groups = [
                 ['V', 'threshold=', 'querySplitColV'],
@@ -843,7 +827,7 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
             });
         })();
         </script>
-    """.replace('__IDS__', labels_json).replace('__DATASETS__', datasets_json).replace('__COUNTS__', counts_json).replace('__WEIGHTS__', weights_json).replace('__RATIOS__', ratio_json).replace('__PROBS__', prob_json))
+    """.replace('__IDS__', labels_json).replace('__DATASETS__', datasets_json).replace('__COUNTS__', counts_json).replace('__WEIGHTS__', weights_json).replace('__RATIOS__', ratio_json))
     parts.append('</div></div>')
     parts.append(_generate_neuron_counts_section(analyzer, dataset_names, nickname_map))
     # The Quick Navigation links #query-resolution — the section is
@@ -2808,10 +2792,11 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
     used_data_dir = os.path.join(analyzer.parameters.full_output_path, 'comparison_report_used_data')
     os.makedirs(used_data_dir, exist_ok=True)
 
-    # Calculate total weights, avg edge ratio (connection_ratio), and avg traversal probability
+    # Calculate total weights and avg edge ratio (connection_ratio).
+    # (Avg traversal probability is suspended — 2026-10-06, unverifiable
+    # fidelity; used_data/avg_prob_data.csv is no longer written.)
     total_weight_data = []
     avg_ratio_data = []
-    avg_prob_data = []
     
     # Pre-load and save ratio data for each threshold
     ratio_data_cache = {}
@@ -2854,41 +2839,14 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
             avg_ratio_data.append({'dataset': nick, 'threshold': t,
                                    'applied_threshold': applied_val,
                                    'ratio': avg_ratio})
-            
-            # Get traversal probability data if available
-            # Only average over paths that actually exist in this dataset (ignore 0s from other datasets' paths)
-            try:
-                prob_data = analyzer._get_prob_data_for_threshold(t)
-                if not prob_data.empty and d in prob_data.columns:
-                    # Only include paths where this dataset has non-zero probability
-                    # This ensures we don't dilute the average with 0s from other datasets' paths
-                    dataset_probs = prob_data[d]
-                    non_zero_probs = dataset_probs[dataset_probs > 0]
-                    if len(non_zero_probs) > 0:
-                        avg_prob = float(non_zero_probs.mean())
-                    else:
-                        avg_prob = 0.0
-                    if pd.isna(avg_prob):
-                        avg_prob = 0.0
-                else:
-                    avg_prob = 0.0
-            except Exception as e:
-                # The value lands in used_data/avg_prob_data.csv; a silent
-                # 0.0 would read as "no probability" rather than "failed".
-                print(f"[HTML Report] Warning: Failed to get probability "
-                      f"data for {nick} at threshold {t}: {e}")
-                avg_prob = 0.0
-            avg_prob_data.append({'dataset': nick, 'threshold': t, 'prob': avg_prob})
-    
+
     # Save all chart data to files for verification
     pd.DataFrame(corrected_data).to_csv(os.path.join(used_data_dir, 'edge_count_data.csv'), index=False)
     pd.DataFrame(total_weight_data).to_csv(os.path.join(used_data_dir, 'total_weight_data.csv'), index=False)
     pd.DataFrame(avg_ratio_data).to_csv(os.path.join(used_data_dir, 'avg_ratio_data.csv'), index=False)
-    pd.DataFrame(avg_prob_data).to_csv(os.path.join(used_data_dir, 'avg_prob_data.csv'), index=False)
-    
+
     weight_data_json = json.dumps(total_weight_data)
     ratio_data_json = json.dumps(avg_ratio_data)
-    prob_data_json = json.dumps(avg_prob_data)
     
     html_parts.append(f"""
                 <div class="card">
@@ -2988,40 +2946,6 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                             barmode: 'group',
                             xaxis: {{ title: 'Threshold' }},
                             yaxis: {{ title: 'Avg Connection Ratio (w_ij / W_j)', range: [0, maxY * 1.15] }},
-                            legend: {{ orientation: 'h', y: -0.15 }}
-                        }}, {{responsive: true}});
-                    }})();
-                </script>
-                
-                <div class="card">
-                    <h3>Average Path Traversal Probability</h3>
-                    <div id="avgProbChart" class="chart-container"></div>
-                </div>
-                <script>
-                    (function() {{
-                        const data = {prob_data_json};
-                        const datasets = {nicknames_json};
-                        const thresholds = {thresholds_json};
-                        const traces = datasets.map(ds => {{
-                            const yVals = thresholds.map(t => {{
-                                const item = data.find(d => d.dataset === ds && d.threshold === t);
-                                return item ? item.prob : 0;
-                            }});
-                            return {{
-                                name: ds,
-                                x: thresholds.map(t => 'T=' + t),
-                                y: yVals,
-                                type: 'bar',
-                                text: yVals.map(v => v.toFixed(4)),
-                                textposition: 'outside'
-                            }};
-                        }});
-                        const allYVals = traces.flatMap(t => t.y);
-                        const maxY = Math.max(...allYVals);
-                        Plotly.newPlot('avgProbChart', traces, {{
-                            barmode: 'group',
-                            xaxis: {{ title: 'Threshold' }},
-                            yaxis: {{ title: 'Avg Traversal Probability', range: [0, maxY * 1.15] }},
                             legend: {{ orientation: 'h', y: -0.15 }}
                         }}, {{responsive: true}});
                     }})();

@@ -10504,12 +10504,12 @@ class ComparisonAnalyzer:
                 query_id, pd.DataFrame())
             path_data_func = lambda query_id: self._get_path_data_for_query(
                 self._query_record(query_id))
-            # Ratio/probability filtering is disabled for pathfinding
-            # comparisons.  Passing None also prevents stale by_ratio/
-            # by_probability folders from being emitted by the generic
-            # visualizer.
+            # Ratio filtering is disabled for pathfinding comparisons.
+            # Passing None also prevents stale by_ratio folders from being
+            # emitted by the generic visualizer.  Probability values are
+            # suspended (2026-10-06, unverifiable fidelity): no probability
+            # data is registered or generated at all.
             ratio_data_func = None
-            prob_data_func = None
             path_presence = pd.DataFrame()
             point_metadata_func = lambda query_id: self._comparison_point_metadata(
                 query_id)
@@ -10527,12 +10527,13 @@ class ComparisonAnalyzer:
             align_func = self.get_aligned_data
             similarity_func = self.get_cached_similarities
             path_data_func = self._get_path_data_for_threshold
-            # Ratio/probability filtering is disabled for pathfinding
-            # comparisons in BOTH modes (parity with the combinations branch
-            # above).  Passing None keeps by_ratio/by_probability folders
-            # from being emitted for Standard runs as well.
+            # Ratio filtering is disabled for pathfinding comparisons in
+            # BOTH modes (parity with the combinations branch above).
+            # Passing None keeps by_ratio folders from being emitted for
+            # Standard runs as well.  Probability values are suspended
+            # (2026-10-06, unverifiable fidelity): no probability data is
+            # registered or generated at all.
             ratio_data_func = None
-            prob_data_func = None
             point_metadata_func = None
             point_label_func = None
             point_stem_func = None
@@ -10575,7 +10576,6 @@ class ComparisonAnalyzer:
                 current_threshold=mid_threshold,
                 path_data_func=path_data_func,
                 ratio_data_func=ratio_data_func,
-                prob_data_func=prob_data_func,
                 output_base_path=self.parameters.full_output_path,
                 nickname_map=nickname_map,
                 path_presence_matrix=path_presence,  # Pass path presence matrix for accurate path counts
@@ -11005,88 +11005,9 @@ class ComparisonAnalyzer:
         result_df = pd.DataFrame([r[1] for r in result_rows], index=[r[0] for r in result_rows])
         return result_df.fillna(0)
     
-    def _get_prob_data_for_threshold(self, threshold: int) -> pd.DataFrame:
-        """
-        Get traversal probability (path_prob) data aligned across datasets for a threshold.
-        
-        Reads from dataset_data/{dataset}/minsyn_{threshold}/*_original_paths.csv
-        or *_allpaths_type.csv and extracts path_prob values.
-        
-        Args:
-            threshold: The threshold level
-            
-        Returns:
-            DataFrame with path index and dataset columns containing path_prob
-        """
-        dataset_names = self.parameters.get_dataset_names()
-        all_prob_data = {}
-        
-        for dataset_name in dataset_names:
-            dataset_output_path = self._resolve_dataset_output_path(
-                dataset_name, threshold)
-            
-            # Try multiple path file patterns
-            path_files_to_try = [
-                os.path.join(dataset_output_path, f'minsyn_{threshold}_data_original_paths.csv'),
-            ]
-            
-            # Also check for source_to_target_allpaths_type.csv pattern
-            if os.path.exists(dataset_output_path):
-                for f in os.listdir(dataset_output_path):
-                    if f.endswith('_allpaths_type.csv'):
-                        path_files_to_try.append(os.path.join(dataset_output_path, f))
-            
-            # Try to read from available files
-            df = None
-            for path_file in path_files_to_try:
-                if os.path.exists(path_file):
-                    try:
-                        df = self._read_csv(path_file)
-                        break
-                    except Exception as e:
-                        self._log(f"Warning: Could not read {path_file}: {e}")
-            
-            if df is not None and 'path' in df.columns and 'path_prob' in df.columns:
-                for _, row in df.iterrows():
-                    original_path_key = row['path']
-                    path_prob = row['path_prob']
-                    
-                    # Apply type mapping to path key if auto_type_mapping is enabled
-                    if self.parameters.auto_type_mapping and self.parameters._auto_type_mapper:
-                        # Parse path nodes
-                        if '->' in str(original_path_key):
-                            path_nodes = [n.strip() for n in str(original_path_key).split('->')]
-                        elif ' → ' in str(original_path_key):
-                            path_nodes = [n.strip() for n in str(original_path_key).split(' → ')]
-                        else:
-                            path_nodes = [str(original_path_key)]
-                        
-                        # Build canonical and display keys
-                        canonical_key, display_key = self._build_path_key_with_mapping(path_nodes, dataset_name)
-                        path_key = canonical_key  # Use canonical key for merging
-                    else:
-                        path_key = original_path_key
-                        display_key = original_path_key
-                    
-                    if path_key not in all_prob_data:
-                        all_prob_data[path_key] = {'_display_key': display_key}
-                    all_prob_data[path_key][dataset_name] = path_prob
-        
-        if not all_prob_data:
-            return pd.DataFrame()
-        
-        # Build result DataFrame using display keys for index
-        result_rows = []
-        for canonical_key, data in all_prob_data.items():
-            display_key = data.pop('_display_key', canonical_key)
-            row_data = {d: data.get(d, 0) for d in dataset_names}
-            result_rows.append((display_key, row_data))
-        
-        if not result_rows:
-            return pd.DataFrame()
-        
-        result_df = pd.DataFrame([r[1] for r in result_rows], index=[r[0] for r in result_rows])
-        return result_df.fillna(0)
+    # _get_prob_data_for_threshold removed: probability values are suspended
+    # (2026-10-06, "unverifiable fidelity") and are no longer generated or
+    # displayed anywhere. Ratios are unaffected.
 
     def _get_edge_ratio_data_for_threshold(self, threshold: Any) -> pd.DataFrame:
         """
@@ -12309,10 +12230,10 @@ class ComparisonAnalyzer:
         
         self._log(f"  Found {len(conserved_edges)} conserved edges")
         
-        # Get ratio and probability data for enhanced hover labels
+        # Get ratio data for enhanced hover labels (probability hover data is
+        # suspended — 2026-10-06, unverifiable fidelity)
         ratio_data = self._get_edge_ratio_data_for_threshold(
             query or threshold)
-        # Note: prob_data is path-level, not edge-level. We'll include it if edge matches
         
         # Get NT details for all edges
         nt_details = self._get_edge_nt_details(query or threshold)

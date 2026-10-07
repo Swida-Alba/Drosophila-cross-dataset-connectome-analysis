@@ -1697,84 +1697,14 @@ class ComparisonVisualizer:
         ax.set_title(title)
         ax.set_ylabel('Edge')
         ax.set_xlabel('Dataset')
-        
+
         plt.tight_layout()
         return fig
-    
-    def plot_traversal_probability_heatmap(
-        self,
-        prob_data: pd.DataFrame,
-        datasets: List[str],
-        figsize: Optional[Tuple[int, int]] = None,
-        title: str = "Traversal Probability Across Datasets",
-        max_paths: int = 50,
-        nickname_map: Dict[str, str] = None
-    ) -> plt.Figure:
-        """
-        Plot heatmap of traversal probability values (path-level statistics).
-        
-        Args:
-            prob_data: DataFrame with path index and dataset columns containing path_prob
-            datasets: List of dataset column names
-            figsize: Figure size tuple
-            title: Plot title
-            max_paths: Maximum number of paths to show
-            nickname_map: Dict mapping dataset names to display names
-            
-        Returns:
-            matplotlib Figure
-        """
-        if not HAS_SEABORN:
-            raise ImportError("seaborn is required for heatmaps")
-        
-        available = [d for d in datasets if d in prob_data.columns]
-        
-        if not available:
-            fig, ax = plt.subplots()
-            ax.text(0.5, 0.5, "No data available", ha='center', va='center')
-            return fig
-        
-        # Select top by mean
-        plot_data = prob_data[available].copy()
-        plot_data['mean'] = plot_data.mean(axis=1)
-        plot_data = plot_data.nlargest(max_paths, 'mean').drop(columns=['mean'])
-        
-        # Rename columns to nicknames if provided
-        if nickname_map:
-            plot_data = plot_data.rename(columns={d: nickname_map.get(d, d) for d in available})
-        
-        # Create heatmap with log scale annotation for small values
-        fig_height = max(6, len(plot_data) * 0.3)
-        figsize = figsize or (10, fig_height)
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Use log scale for better visualization of small probabilities
-        import matplotlib.colors as mcolors
-        log_norm = mcolors.LogNorm(vmin=plot_data[plot_data > 0].min().min(), 
-                                    vmax=plot_data.max().max()) if (plot_data > 0).any().any() else None
-        
-        # Create annotation array that hides zeros
-        annot_array = plot_data.values.astype(float)
-        annot_array_str = np.where(annot_array == 0, '', np.char.mod('%.2e', annot_array))
-        
-        sns.heatmap(
-            plot_data,
-            annot=annot_array_str,
-            fmt='',
-            cmap='Oranges',
-            ax=ax,
-            norm=log_norm,
-            cbar_kws={'label': 'Traversal Probability'},
-            linewidths=0  # Hide grid lines
-        )
-        
-        ax.set_title(title)
-        ax.set_ylabel('Path')
-        ax.set_xlabel('Dataset')
-        
-        plt.tight_layout()
-        return fig
-    
+
+    # plot_traversal_probability_heatmap removed: probability values are
+    # suspended (2026-10-06, "unverifiable fidelity") and are no longer
+    # generated or displayed. Ratios are unaffected.
+
     def plot_ratio_heatmap_all_thresholds(
         self,
         ratio_data_func,
@@ -1904,150 +1834,14 @@ class ComparisonVisualizer:
         ax.set_ylabel('Edge')
         ax.set_xlabel('Dataset @ Threshold')
         plt.xticks(rotation=45, ha='right', fontsize=8)
-        
+
         plt.tight_layout()
         return fig
-    
-    def plot_traversal_probability_heatmap_all_thresholds(
-        self,
-        prob_data_func,
-        thresholds: List[int],
-        datasets: List[str],
-        figsize: Optional[Tuple[int, int]] = None,
-        title: str = "Traversal Probability Across All Thresholds",
-        max_paths: int = 30,
-        nickname_map: Dict[str, str] = None
-    ) -> plt.Figure:
-        """
-        Plot heatmap of traversal probability across all thresholds.
-        
-        Args:
-            prob_data_func: Function that returns probability data for a given threshold
-            thresholds: List of thresholds
-            datasets: List of dataset names
-            figsize: Figure size tuple
-            title: Plot title
-            max_paths: Maximum number of paths to show
-            nickname_map: Dict mapping dataset names to display names
-            
-        Returns:
-            matplotlib Figure
-        """
-        if not HAS_SEABORN:
-            raise ImportError("seaborn is required for heatmaps")
-        
-        # Create default nickname map if not provided
-        if nickname_map is None:
-            nickname_map = {d: d for d in datasets}
-        
-        # Helper to safely extract scalar from potentially duplicate-indexed DataFrame
-        def safe_get_value(df, row_key, col_key):
-            """Extract scalar value, handling duplicate indices by summing."""
-            try:
-                val = df.loc[row_key, col_key]
-                # If duplicate indices exist, .loc returns a Series - sum them
-                if isinstance(val, pd.Series):
-                    return float(val.sum())
-                return float(val)
-            except (KeyError, TypeError, ValueError):
-                return 0.0
-        
-        # First pass: identify top paths from first threshold to limit iteration
-        top_paths = []
-        sample_threshold = thresholds[0] if thresholds else None
-        
-        if sample_threshold is not None:
-            try:
-                prob_df = prob_data_func(sample_threshold)
-                if prob_df is not None and not prob_df.empty and len(datasets) > 0:
-                    # Sum across all dataset columns for each path
-                    dataset_cols = [d for d in datasets if d in prob_df.columns]
-                    if dataset_cols:
-                        prob_df['_total'] = prob_df[dataset_cols].sum(axis=1)
-                        top_paths = prob_df.nlargest(max_paths * 2, '_total').index.tolist()
-                    else:
-                        top_paths = list(prob_df.index[:max_paths * 2])
-            except Exception:
-                pass
-        
-        top_paths_set = set(top_paths)
-        
-        # Collect data only for top paths across all thresholds
-        all_data = {}
-        
-        for threshold in thresholds:
-            try:
-                prob_df = prob_data_func(threshold)
-                if prob_df is None or prob_df.empty:
-                    continue
-                
-                # Only process top paths
-                paths_to_process = [p for p in prob_df.index if p in top_paths_set] if top_paths_set else list(prob_df.index[:max_paths * 2])
-                
-                for path_key in paths_to_process:
-                    for dataset in datasets:
-                        if dataset in prob_df.columns:
-                            # Use nickname if available, otherwise truncate dataset name
-                            nick = nickname_map.get(dataset, dataset)[:12]
-                            col_name = f"{nick}_t{threshold}"
-                            if path_key not in all_data:
-                                all_data[path_key] = {}
-                            all_data[path_key][col_name] = safe_get_value(prob_df, path_key, dataset)
-            except Exception:
-                pass
-        
-        if not all_data:
-            fig, ax = plt.subplots()
-            ax.text(0.5, 0.5, "No probability data available", ha='center', va='center')
-            return fig
-        
-        # Create DataFrame and ensure numeric dtype
-        df = pd.DataFrame(all_data).T.fillna(0)
-        # Convert all columns to float to avoid object dtype issues
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-        
-        # Select top paths by mean
-        df['mean'] = df.mean(axis=1)
-        df = df.nlargest(max_paths, 'mean').drop(columns=['mean'])
-        
-        # Create heatmap
-        fig_height = max(8, len(df) * 0.4)
-        fig_width = max(14, len(df.columns) * 0.8)  # Wider cells
-        figsize = figsize or (fig_width, fig_height)
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Use log scale for better visualization of small probabilities
-        import matplotlib.colors as mcolors
-        log_norm = mcolors.LogNorm(vmin=df[df > 0].min().min(), 
-                                    vmax=df.max().max()) if (df > 0).any().any() else None
-        
-        # Create annotation array that hides zeros
-        if len(df) <= 30:
-            annot_array = df.values.astype(float)
-            annot_array_str = np.where(annot_array == 0, '', np.char.mod('%.2e', annot_array))
-        else:
-            annot_array_str = False
-        
-        sns.heatmap(
-            df,
-            annot=annot_array_str,
-            fmt='',
-            cmap='Oranges',
-            ax=ax,
-            norm=log_norm,
-            cbar_kws={'label': 'Traversal Probability'},
-            linewidths=0,  # Hide grid lines
-            annot_kws={'fontsize': 7}  # Smaller font for annotations
-        )
-        
-        ax.set_title(title)
-        ax.set_ylabel('Path')
-        ax.set_xlabel('Dataset @ Threshold')
-        plt.xticks(rotation=45, ha='right', fontsize=7)
-        
-        plt.tight_layout()
-        return fig
-    
+
+    # plot_traversal_probability_heatmap_all_thresholds removed: probability
+    # values are suspended (2026-10-06, "unverifiable fidelity") and are no
+    # longer generated or displayed. Ratios are unaffected.
+
     def save_all_plots(
         self,
         results: Dict[str, Dict[int, pd.DataFrame]],
@@ -2084,7 +1878,9 @@ class ComparisonVisualizer:
             current_threshold: Current threshold used for aligned_data (for labeling)
             path_data_func: Function to get path min_weight data at a given threshold
             ratio_data_func: Function to get ratio data at a given threshold
-            prob_data_func: Function to get traversal probability data at a given threshold
+            prob_data_func: Unused since the probability suspension (2026-10-06,
+                unverifiable fidelity); accepted for caller compatibility and
+                ignored — no by_probability output is produced
             output_base_path: Base path for reading original dataset data
             nickname_map: Dict mapping dataset names to short nicknames for display
             path_presence_matrix: Optional DataFrame with path presence across datasets and thresholds
@@ -2624,41 +2420,12 @@ class ComparisonVisualizer:
                     plt.close(fig)
             except Exception as e:
                 self._vprint(f"Warning: Could not create ratio heatmaps: {e}")
-        
-        # Generate traversal probability heatmaps from original dataset data (in by_probability subfolder)
-        if prob_data_func:
-            try:
-                prob_dir = os.path.join(output_dir, "by_probability")
-                os.makedirs(prob_dir, exist_ok=True)
-                prob_data_dir = os.path.join(prob_dir, "data")
-                os.makedirs(prob_data_dir, exist_ok=True)
-                
-                for threshold in thresholds:
-                    prob_df = prob_data_func(threshold)
-                    if prob_df is not None and not prob_df.empty:
-                        fig = self.plot_traversal_probability_heatmap(
-                            prob_df, datasets,
-                            title=f"Traversal Probability at Threshold={threshold}",
-                            nickname_map=nickname_map
-                        )
-                        self.save_figure(fig, os.path.join(prob_dir, f"traversal_prob_heatmap_{threshold}.png"))
-                        plt.close(fig)
-                        
-                        # Save data
-                        prob_df.to_csv(os.path.join(prob_data_dir, f"traversal_prob_heatmap_{threshold}.csv"))
-                
-                # All thresholds traversal probability heatmap
-                if len(thresholds) > 1:
-                    fig = self.plot_traversal_probability_heatmap_all_thresholds(
-                        prob_data_func, thresholds, datasets,
-                        title="Traversal Probability Across All Thresholds",
-                        nickname_map=nickname_map
-                    )
-                    self.save_figure(fig, os.path.join(prob_dir, "traversal_prob_heatmap_all_thresholds.png"))
-                    plt.close(fig)
-            except Exception as e:
-                self._vprint(f"Warning: Could not create traversal probability heatmaps: {e}")
-        
+
+        # by_probability heatmaps removed: probability values are suspended
+        # (2026-10-06, "unverifiable fidelity") and are no longer generated
+        # or displayed. Ratios are unaffected.  The ``prob_data_func``
+        # parameter is still accepted (ignored) for caller compatibility.
+
         # Trend plots below are threshold-sensitivity figures.  Custom query
         # rows have a display order, not a numeric schedule, so emitting them
         # for combinations would dress query order up as a threshold axis

@@ -441,7 +441,8 @@ def test_generate_summary_section(analyzer, tmp_path):
     assert (used / "edge_count_data.csv").exists()
     assert (used / "total_weight_data.csv").exists()
     assert (used / "avg_ratio_data.csv").exists()
-    assert (used / "avg_prob_data.csv").exists()
+    # avg_prob_data.csv SUSPENDED (2026-10-06) — no longer written
+    assert not (used / "avg_prob_data.csv").exists()
     assert (used / "ratio_data_t1.csv").exists()
 
 

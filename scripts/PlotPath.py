@@ -143,11 +143,17 @@ if __name__ == '__main__':
     all_paths = pd.read_excel(path_file, sheet_name='path_type')
     print(f"Total paths: {len(all_paths)}")
     
-    # Filter: Keep only high-probability, short paths
-    high_quality = all_paths[
-        (all_paths['traversal_probability'] > 0.5) &
-        (all_paths['inter_layer_num'] <= 2)
-    ]
+    # Filter: Keep only short paths (probability filter suspended)
+    if 'traversal_probability' in all_paths.columns:
+        high_quality = all_paths[
+            (all_paths['traversal_probability'] > 0.5) &
+            (all_paths['inter_layer_num'] <= 2)
+        ]
+    else:
+        print("Note: traversal_probability is suspended "
+              "(2026-10-06, unverifiable fidelity) — skipping the "
+              "probability filter")
+        high_quality = all_paths[all_paths['inter_layer_num'] <= 2]
     print(f"High-quality paths: {len(high_quality)}")
     
     # Visualize filtered paths
