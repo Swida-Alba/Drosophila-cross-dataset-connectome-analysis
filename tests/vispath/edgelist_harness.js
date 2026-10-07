@@ -178,8 +178,10 @@ const rows = parseCSV(csvText);
 // Dump for the pytest-side input/export comparison against conn_df.
 console.log('EXPORTED_CSV_JSON::' + JSON.stringify(rows));
 
+// PROBABILITY SUSPENSION (2026-10-06): the 'probability' column is no
+// longer exported; the header lost it accordingly.
 const HEADER = ['source', 'target', 'weight', 'color', 'nt_type', 'nt_group',
-                'source_group', 'target_group', 'custom_groups', 'ratio', 'probability',
+                'source_group', 'target_group', 'custom_groups', 'ratio',
                 'edge info', 'source info', 'target info', 'bidirectional_pair'];
 check('CSV header matches the documented columns',
     JSON.stringify(rows[0]) === JSON.stringify(HEADER),
@@ -207,8 +209,7 @@ elements.edges.forEach((embedded, i) => {
         source_group: srcInfo.node_type || 'intermediate',
         target_group: tgtInfo.node_type || 'intermediate',
         custom_groups: '',
-        ratio: d.ratio ? d.ratio : '',
-        probability: d.probability ? d.probability : ''
+        ratio: d.ratio ? d.ratio : ''
     };
     const problems = [];
     if (row[0] !== String(expected.source)) problems.push('source ' + row[0] + ' != ' + expected.source);
@@ -223,16 +224,13 @@ elements.edges.forEach((embedded, i) => {
     if (expected.ratio === '' ? row[9] !== '' : Math.abs(parseFloat(row[9]) - parseFloat(expected.ratio)) > 1e-9) {
         problems.push('ratio ' + row[9] + ' != ' + expected.ratio);
     }
-    if (expected.probability === '' ? row[10] !== '' : Math.abs(parseFloat(row[10]) - parseFloat(expected.probability)) > 1e-9) {
-        problems.push('probability ' + row[10] + ' != ' + expected.probability);
-    }
     // hover-info cells: {key:val; ...} JSON-like entries
-    if (!/^(\{.*\})?$/.test(row[11])) problems.push('edge info not {key:val; ...}: ' + row[11]);
-    if (!/^(\{.*\})?$/.test(row[12])) problems.push('source info not {key:val; ...}: ' + row[12]);
-    if (!/^(\{.*\})?$/.test(row[13])) problems.push('target info not {key:val; ...}: ' + row[13]);
-    if (row[11] !== '' && !/\{weight:[^;}]+/.test(row[11])) problems.push('edge info missing weight: ' + row[11]);
+    if (!/^(\{.*\})?$/.test(row[10])) problems.push('edge info not {key:val; ...}: ' + row[10]);
+    if (!/^(\{.*\})?$/.test(row[11])) problems.push('source info not {key:val; ...}: ' + row[11]);
+    if (!/^(\{.*\})?$/.test(row[12])) problems.push('target info not {key:val; ...}: ' + row[12]);
+    if (row[10] !== '' && !/\{weight:[^;}]+/.test(row[10])) problems.push('edge info missing weight: ' + row[10]);
     // trailing bidirectional_pair cell: plain directed edges carry no pair
-    if (row[14] !== '') problems.push('bidirectional_pair not empty for plain edge: ' + row[14]);
+    if (row[13] !== '') problems.push('bidirectional_pair not empty for plain edge: ' + row[13]);
     if (problems.length > 0) {
         rowsMatchInput = false;
         rowDetail += 'edge ' + d.source + '->' + d.target + ': ' + problems.join('; ') + ' | ';

@@ -2999,8 +2999,8 @@ class VisualizePath:
             hover_text += f"Weight: {orig_weight:,}"  # Show original (possibly negative)
             if ratios[i] != 0:
                 hover_text += f"<br>Ratio: {ratios[i]:.3f}"
-            if probs[i] != 0:
-                hover_text += f"<br>Probability: {probs[i]:.3f}"
+            # PROBABILITY SUSPENSION (2026-10-06): probability is no longer
+            # shown in hovers (internal plumbing may still carry it).
             # Add NT type to hover if available
             if nt_types_list[i] is not None:
                 hover_text += f"<br>NT: {html_escape(nt_types_list[i])}"
@@ -3518,7 +3518,7 @@ class VisualizePath:
                         <select id="metricSelect" style="padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;">
                             <option value="weight">{self.metric_option_label}</option>
                             <option value="ratio" {"disabled" if not has_ratios else ""}>Connection Ratio{" (N/A)" if not has_ratios else ""}</option>
-                            <option value="prob" {"disabled" if not has_probs else ""}>Traversal Probability{" (N/A)" if not has_probs else ""}</option>
+                            <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                         </select>
                     </div>
                 </div>
@@ -3656,10 +3656,10 @@ class VisualizePath:
         const targetIndices = {json_safe(target_indices)};
         const weights = {json_safe(weights)};
         const ratios = {json_safe(ratios)};
-        const probs = {json_safe(probs)};
+        // PROBABILITY SUSPENSION (2026-10-06): per-edge probability values
+        // are no longer shipped to the page (internal Python plumbing only).
         const originalWeights = {json_safe(original_weights)};  // Original (possibly negative) weights
         const hasRatios = {str(has_ratios).lower()};
-        const hasProbs = {str(has_probs).lower()};
         
         // NT type data for edge coloring
         const ntTypes = {json_safe(nt_types_list)};  // NT type for each edge
@@ -3769,8 +3769,6 @@ class VisualizePath:
         function getMetricDisplay(idx) {{
             if (currentMetric === 'ratio') {{
                 return ratios[idx].toFixed(4);
-            }} else if (currentMetric === 'prob') {{
-                return probs[idx].toFixed(4);
             }} else {{
                 return weights[idx];
             }}
@@ -3965,19 +3963,17 @@ class VisualizePath:
             let metricValues;
             if (currentMetric === 'ratio') {{
                 metricValues = ratios;
-            }} else if (currentMetric === 'prob') {{
-                metricValues = probs;
             }} else {{
                 metricValues = weights;
             }}
             
             // Metric display name for hover text
-            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio' : (currentMetric === 'prob' ? 'Probability' : '{self._sankey_weight_name}');
+            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio' : '{self._sankey_weight_name}';
             
-            // Ratio/probability are 0..1; normalize them to the synapse-weight
+            // Ratio is 0..1; normalize it to the synapse-weight
             // scale so link widths stay comparable without a magic ×1000 factor.
             const maxAbsWeight = Math.max(...weights.map(Math.abs), 0);
-            const metricScaleFactor = (currentMetric === 'ratio' || currentMetric === 'prob') && maxAbsWeight > 0 ? maxAbsWeight : 1;
+            const metricScaleFactor = currentMetric === 'ratio' && maxAbsWeight > 0 ? maxAbsWeight : 1;
             
             sourceIndices.forEach((src, idx) => {{
                 const tgt = targetIndices[idx];
@@ -3994,14 +3990,14 @@ class VisualizePath:
                     
                     // Use selected metric value
                     const metricValue = metricValues[idx];
-                    // Normalize ratio/prob to the weight scale (see above)
-                    const scaledValue = (currentMetric === 'ratio' || currentMetric === 'prob') 
+                    // Normalize ratio to the weight scale (see above)
+                    const scaledValue = currentMetric === 'ratio'
                         ? metricValue * metricScaleFactor
                         : metricValue;
                     visibleWeights.push(scaledValue);
                     
                     // Build custom hover text with ORIGINAL (unscaled) values
-                    const valueStr = (currentMetric === 'ratio' || currentMetric === 'prob') 
+                    const valueStr = currentMetric === 'ratio'
                         ? metricValue.toFixed(4)
                         : Math.round(metricValue).toLocaleString();
                     
@@ -4231,9 +4227,11 @@ class VisualizePath:
         (``strongest_core.path_rank_key``) so display selection and
         StrongestFirst enumeration share one definition of "strongest":
         primary = full-path bottleneck; the interior-weakest-hop strength
-        is kept as the first tie-breaker (display policy — boundary hops
-        are often weak solely because they touch the query boundary), and
-        path probability as the second.
+        is kept as the tie-breaker (display policy — boundary hops
+        are often weak solely because they touch the query boundary).
+        PROBABILITY SUSPENSION (2026-10-06): path probability is no longer
+        a ranking input — the shared core keeps its optional argument and
+        receives the 0.0 default here.
         """
         weights = [data['weight'] for _, data in records]
         if not weights:
@@ -4242,12 +4240,7 @@ class VisualizePath:
             from .strongest_core import path_rank_key
         except ImportError:  # src laid bare on sys.path
             from strongest_core import path_rank_key
-        path_probability = row.get('path_prob', row.get('path_probability', 0))
-        try:
-            path_probability = float(path_probability)
-        except (TypeError, ValueError):
-            path_probability = 0.0
-        return path_rank_key(weights, path_probability)
+        return path_rank_key(weights)
 
     @staticmethod
     def _edges_on_source_target_corridor(edges, source_nodes, target_nodes):
@@ -4291,8 +4284,9 @@ class VisualizePath:
         available, complete paths are the selection unit: a source-outgoing
         or target-incoming edge is retained only as part of a selected path.
         This prevents endpoint preservation from creating one-sided dead ends.
-        Paths are ranked by interior strength first, then path probability and
-        complete-path minimum weight, and are added without exceeding the
+        Paths are ranked by interior strength first, then complete-path
+        minimum weight (path probability is suspended as a ranking input),
+        and are added without exceeding the
         unique-edge limit whenever possible.
 
         For edge-list input, the selector uses a bounded set of strong edges
@@ -4493,7 +4487,7 @@ class VisualizePath:
 
         Creates a fully interactive network graph with:
         - Draggable nodes, arrow-key nudging (1 px, Shift = 10 px)
-        - Hover tooltips showing weight/ratio/probability (both directions
+        - Hover tooltips showing weight/ratio (both directions
           for merged bidirectional edges)
         - Right-click to hide nodes; keyboard shortcut (H) to hide selected
         - Selection panel: live position/size (W/H), per-node shape,
@@ -4938,8 +4932,8 @@ class VisualizePath:
                 # as low as ~5e-4 on real data, where a fixed .3f would
                 # render 0.000.
                 tooltip_parts.append(f"Ratio: {ratio:.4g}")
-            if not np.isnan(prob):
-                tooltip_parts.append(f"Probability: {prob:.4g}")
+            # PROBABILITY SUSPENSION (2026-10-06): probability is no longer
+            # shown in tooltips (the payload keeps carrying it inertly).
             if nt_type:
                 tooltip_parts.append(f"NT: {nt_type}")
             if self.edge_labels and (source, target) in self.edge_labels:
@@ -6374,10 +6368,10 @@ class VisualizePath:
         <div class="vp-ribbon-page" id="pageFilter">
             <div class="vp-ribbon-group" style="min-width: 150px;">
             <label class="vp-group-title">Connection Metric</label>
-            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()}, connection ratio, or traversal probability" style="width: 100%; padding: 5px;">
+            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()} or connection ratio" style="width: 100%; padding: 5px;">
                 <option value="weight">{self.metric_option_label}</option>
                 <option value="ratio">Connection Ratio</option>
-                <option value="probability">Traversal Probability</option>
+                <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
             </select>
             </div>
             <div class="vp-ribbon-group" style="min-width: 215px;">
@@ -7610,13 +7604,8 @@ class VisualizePath:
                     html += `<br><b>Ratio:</b> ${{data.ratio.toFixed(4)}}`;
                 }}
             }}
-            if (data.probability && !isNaN(data.probability)) {{
-                if (currentMetric === 'probability') {{
-                    html += `<br><b>Probability:</b> <span style="color: #4CAF50; font-weight: bold;">${{data.probability.toFixed(4)}} ⬅ Current</span>`;
-                }} else {{
-                    html += `<br><b>Probability:</b> ${{data.probability.toFixed(4)}}`;
-                }}
-            }}
+            // PROBABILITY SUSPENSION (2026-10-06): probability is no longer
+            // shown in hovers (edge data may still carry it inertly).
             
             // Display NT type if available
             if (data.nt_type && data.nt_type !== '') {{
@@ -9559,12 +9548,19 @@ class VisualizePath:
             cy.add(state.edges.map(e => ({{ data: e.data, classes: e.classes }})));
             // Re-apply the captured per-element style overrides so undo/redo
             // round-trips individual color/size edits exactly (re-added
-            // elements start with stylesheet appearance only).
+            // elements start with stylesheet appearance only).  The re-apply
+            // itself can hit the benign bypass-bookkeeping throw (the anchor
+            // endpoint/distance bypasses are among the captured styles) —
+            // swallow per element so one failure never aborts the restore.
             state.nodes.forEach(n => {{
-                if (n.style) cy.getElementById(n.data.id).style(n.style);
+                if (n.style) {{
+                    try {{ cy.getElementById(n.data.id).style(n.style); }} catch (err) {{}}
+                }}
             }});
             state.edges.forEach(e => {{
-                if (e.style) cy.getElementById(e.data.id).style(e.style);
+                if (e.style) {{
+                    try {{ cy.getElementById(e.data.id).style(e.style); }} catch (err) {{}}
+                }}
             }});
             (state.selected || []).forEach(id => {{
                 const el = cy.getElementById(id);
@@ -10240,6 +10236,7 @@ class VisualizePath:
             // Recalculate edge styles to make single edges straight (no curve)
             // This is useful when parallel/reciprocal edges are hidden
             cy.edges().forEach(edge => {{
+              try {{
                 const source = edge.source().id();
                 const target = edge.target().id();
                 // Code-unit ordering — must match the canonical source/target
@@ -10401,8 +10398,16 @@ class VisualizePath:
                         edge.removeStyle('target-distance-from-node');
                     }}
                 }}
+              }} catch (err) {{
+                  // THIS cytoscape build can throw a benign circular-JSON
+                  // error from the bypass bookkeeping while a style write
+                  // registers.  Swallow it PER EDGE: one edge's failure
+                  // must never abort the whole re-style pass — the edges
+                  // after it would keep stale anchors until a manual
+                  // Refresh Layout.
+              }}
             }});
-            
+
             if (shouldShowStatus) {{
                 updateHoverInfo('✓ Edge styles refreshed - parallel edges updated');
             }}
@@ -10598,15 +10603,13 @@ class VisualizePath:
 
 
         // Edge labels follow the ACTIVE connection metric: weight shows a
-        // BARE number — no unit suffix; ratio/probability show the plain
-        // value.
+        // BARE number — no unit suffix; ratio shows the plain value.
         function updateEdgeMetricLabels() {{
             cy.edges().forEach(edge => {{
                 const fmt = v => (v === undefined || v === null || v === '' || isNaN(Number(v)))
                     ? '' : String(Math.round(Number(v) * 1000) / 1000);
                 let label;
                 if (currentMetric === 'ratio') label = fmt(edge.data('ratio'));
-                else if (currentMetric === 'probability') label = fmt(edge.data('probability'));
                 else {{
                     // Integer-valued weights must not render with a
                     // trailing '.0' — edge lists often parse synapse
@@ -10947,8 +10950,7 @@ class VisualizePath:
             if (!input) return;
             const examples = {{
                 weight: 'OR: <5, >100 | AND: (>=5, <=10)',
-                ratio: 'OR: <0.2, >0.8 | AND: (>=0.1, <=0.5)',
-                probability: 'OR: <0.05, >0.9 | AND: (>=0.1, <=0.6)'
+                ratio: 'OR: <0.2, >0.8 | AND: (>=0.1, <=0.5)'
             }};
             input.placeholder = examples[currentMetric] || examples.weight;
         }}
@@ -10968,8 +10970,6 @@ class VisualizePath:
             
             if (currentMetric === 'ratio') {{
                 values = edges.map(e => e.data('ratio'));
-            }} else if (currentMetric === 'probability') {{
-                values = edges.map(e => e.data('probability'));
             }} else {{
                 values = edges.map(e => e.data('weight'));
             }}
@@ -10981,8 +10981,9 @@ class VisualizePath:
             
             console.log(`Values: [${{values.slice(0, 5).join(', ')}}...]`);
             
-            // For ratio and probability, scale them up for better visualization
-            const scaleFactor = (currentMetric === 'ratio' || currentMetric === 'probability') ? 1000 : 1;
+            // For ratio, scale it up for better visualization
+            // (PROBABILITY SUSPENSION 2026-10-06: probability no longer a metric.)
+            const scaleFactor = currentMetric === 'ratio' ? 1000 : 1;
             values = values.map(v => v * scaleFactor);
             
             // Calculate scaled widths based on EXACT method string
@@ -12692,18 +12693,18 @@ class VisualizePath:
         }}
 
         // ===== Edge-anchor endpoint handles =====
-        // In 'auto' anchor mode every selected edge (except waypoint and
-        // self-loop edges, which keep their own handle UI) shows its two
-        // endpoint handles — DOM overlays inside #cy, the waypoint-ring
+        // Every selected edge (except waypoint and self-loop edges, which
+        // keep their own handle UI) shows its two endpoint handles in BOTH
+        // anchor modes — DOM overlays inside #cy, the waypoint-ring
         // pattern: NOT cytoscape nodes (they would leak into layout
         // captures, orphan/dead-end re-derivation and every global style
         // applier) and pointer-events:none, with a capture-phase hit-test
-        // doing the targeting.  Dragging a handle snaps the pointer angle
-        // around the node to the nearest of the 8 anchors and reassigns
-        // THAT END ONLY — independently per reciprocal half — by writing
-        // the anchorSrc/anchorDst override plus the endpoint style.  The
-        // pointerdown handler below registers BEFORE the waypoint one, so
-        // a handle wins when the two overlays overlap.
+        // doing the targeting.  Dragging a handle reassigns THAT END ONLY
+        // — independently per reciprocal half: around the node snaps it
+        // to the nearest of the 8 compass anchors, into the node body
+        // pins it to the CENTER-directed anchor (its own round teal
+        // mark).  The pointerdown handler below registers BEFORE the
+        // waypoint one, so a handle wins when the two overlays overlap.
         let anchorDrag = null;   // {{ edge, end, startClient, moved, queued }}
 
         function anchorHandleId(edgeId, end) {{ return 'anchor-handle-' + edgeId + '-' + end; }}
@@ -12827,7 +12828,8 @@ class VisualizePath:
         // the waypoint hover listener below owns the non-handle default)
         document.getElementById('cy').addEventListener('pointermove', function(e) {{
             if (anchorDrag) return;
-            if (edgeAnchorMode !== 'auto') return;
+            // handles are live in BOTH anchor modes (Center-mode ends wear
+            // the teal center mark and are draggable too)
             const rect = this.getBoundingClientRect();
             const pan = cy.pan(), zoom = cy.zoom();
             const mx = (e.clientX - rect.left - pan.x) / zoom;
@@ -12838,7 +12840,6 @@ class VisualizePath:
 
         document.getElementById('cy').addEventListener('pointerdown', function(e) {{
             if (e.button !== 0 || dialogCtl.isActive()) return;
-            if (edgeAnchorMode !== 'auto') return;
             const rect = this.getBoundingClientRect();
             const pan = cy.pan(), zoom = cy.zoom();
             const mx = (e.clientX - rect.left - pan.x) / zoom;
@@ -13540,20 +13541,20 @@ class VisualizePath:
         }}
         
         // Edit edge properties (double-click): one in-page dialog for
-        // weight, ratio and probability (negative weight preserved).
+        // weight and ratio (negative weight preserved).
+        // PROBABILITY SUSPENSION (2026-10-06): the probability field is
+        // removed — edge probability is no longer editable or shown.
         function editEdgeProperties(edge) {{
             const source = edge.source().id();
             const target = edge.target().id();
             const currentWeight = edge.data('original_weight') || edge.data('weight') || 1;
             const currentRatio = edge.data('ratio') || '';
-            const currentProb = edge.data('probability') || '';
         
             showDialog({{
                 title: 'Edit edge: ' + source + ' → ' + target,
                 fields: [
                     {{ key: 'weight', label: 'Weight', type: 'number', value: currentWeight }},
                     {{ key: 'ratio', label: 'Connection ratio (optional)', type: 'text', value: currentRatio }},
-                    {{ key: 'probability', label: 'Traversal probability (optional)', type: 'text', value: currentProb }},
                 ],
                 confirmText: 'Apply',
             }}).then(values => {{
@@ -13563,14 +13564,9 @@ class VisualizePath:
                     return;
                 }}
                 let newRatio = String(values.ratio === undefined || values.ratio === null ? '' : values.ratio).trim();
-                let newProb = String(values.probability === undefined || values.probability === null ? '' : values.probability).trim();
                 if (newRatio !== '') {{
                     const r = parseFloat(newRatio);
                     if (isNaN(r)) newRatio = currentRatio; else newRatio = r;
-                }}
-                if (newProb !== '') {{
-                    const p = parseFloat(newProb);
-                    if (isNaN(p)) newProb = currentProb; else newProb = p;
                 }}
         
                 // Update edge data
@@ -13582,17 +13578,11 @@ class VisualizePath:
                 if (newRatio !== '') {{
                     edge.data('ratio', newRatio);
                 }}
-                if (newProb !== '') {{
-                    edge.data('probability', newProb);
-                }}
         
                 // Update tooltip
                 const tooltipParts = [`Weight: ${{weightNum}}`];
                 if (newRatio !== '' && !isNaN(newRatio)) {{
                     tooltipParts.push(`Ratio: ${{newRatio.toFixed(3)}}`);
-                }}
-                if (newProb !== '' && !isNaN(newProb)) {{
-                    tooltipParts.push(`Probability: ${{newProb.toFixed(3)}}`);
                 }}
                 edge.data('tooltip', tooltipParts.join('\\n'));
         
@@ -13981,10 +13971,11 @@ class VisualizePath:
         
         // Value of the ACTIVE connection metric for one edge — the filter
         // expressions evaluate against this (weight keeps its sign via
-        // original_weight; ratio/probability default to 0 when absent).
+        // original_weight; ratio defaults to 0 when absent).
+        // PROBABILITY SUSPENSION (2026-10-06): probability is no longer a
+        // selectable metric, so there is no probability branch here.
         function metricEdgeValue(edge) {{
             if (currentMetric === 'ratio') return Number(edge.data('ratio')) || 0;
-            if (currentMetric === 'probability') return Number(edge.data('probability')) || 0;
             return edge.data('original_weight') !== undefined
                 ? edge.data('original_weight')
                 : edge.data('weight') || 0;
@@ -14302,8 +14293,14 @@ class VisualizePath:
                 if (edge.hasClass('hidden')) classes.push('hidden');
                 if (edge.hasClass('filtered')) classes.push('filtered');
                 
+                // PROBABILITY SUSPENSION (2026-10-06): probability is not
+                // exported — drop it (edge data from older imports may
+                // still carry the field internally).
+                const edgeData = Object.assign({{}}, edge.data());
+                delete edgeData.probability;
+                
                 edgesData.push({{
-                    data: edge.data(),
+                    data: edgeData,
                     classes: classes,  // Store classes (hidden/filtered)
                     style: {{
                         'line-color': edge.style('line-color'),
@@ -14406,8 +14403,10 @@ class VisualizePath:
         // Pure CSV builder (no DOM access) - the Node test harness extracts
         // and executes this function against headless Cytoscape.
         function buildEdgeListCSV() {{
+            // PROBABILITY SUSPENSION (2026-10-06): the 'probability' column
+            // is no longer exported (older files that carry one still load).
             const header = ['source', 'target', 'weight', 'color', 'nt_type', 'nt_group',
-                            'source_group', 'target_group', 'custom_groups', 'ratio', 'probability',
+                            'source_group', 'target_group', 'custom_groups', 'ratio',
                             'edge info', 'source info', 'target info', 'bidirectional_pair'];
             const edgeWeightLabelJS = '{self.edge_weight_label}';
             // {{key:val; ...}} hover-info cells for the CSV round trip.
@@ -14441,10 +14440,9 @@ class VisualizePath:
                 const rawColor = edge.data(EDGE_BASE_COLOR_KEY) || edge.style('line-color');
                 const color = extractColorHex(rawColor);
                 const nt = edge.data('nt_type') || '';
-                // ratio/probability default to 0 when absent - export them
-                // as empty cells so re-import does not invent metrics
+                // ratio defaults to an empty cell when absent so re-import
+                // does not invent metrics (probability is no longer exported)
                 const ratio = edge.data('ratio');
-                const prob = edge.data('probability');
                 const edgeInfo = formatInfoCell(edge.data('custom_labels') || {{}},
                     [['weight', weight + ' ' + edgeWeightLabelJS]]);
                 const sourceInfo = formatInfoCell(sourceNode.data('dataset_info') || {{}});
@@ -14463,7 +14461,6 @@ class VisualizePath:
                         ...(membership[targetNode.id()] || [])
                     ])).join(';'),
                     ratio ? ratio : '',
-                    prob ? prob : '',
                     edgeInfo,
                     sourceInfo,
                     targetInfo,
@@ -15073,8 +15070,7 @@ class VisualizePath:
             2. 'original_paths': Original pathway data
             3. 'connMatrix_weight': Connection matrix (weights)
             4. 'connMatrix_ratio': Connection matrix (ratios) - if available
-            5. 'connMatrix_prob': Connection matrix (probabilities) - if available
-            6. 'connMatrix_nt_type': Connection matrix (neurotransmitters) - if available
+            5. 'connMatrix_nt_type': Connection matrix (neurotransmitters) - if available
             
         If output_format is 'csv':
             Creates multiple CSV files in the output folder:
@@ -15112,16 +15108,6 @@ class VisualizePath:
                 fill_value=0
             ).reindex(index=all_nodes, columns=all_nodes, fill_value=0)
             
-        # Probability matrix
-        prob_matrix = None
-        if 'probability' in self.conn_df.columns:
-            prob_matrix = self.conn_df.pivot_table(
-                index='source', 
-                columns='target', 
-                values='probability', 
-                fill_value=0
-            ).reindex(index=all_nodes, columns=all_nodes, fill_value=0)
-            
         # NT Type matrix
         nt_matrix = None
         if 'nt_type' in self.conn_df.columns:
@@ -15133,48 +15119,58 @@ class VisualizePath:
                 fill_value=''
             ).reindex(index=all_nodes, columns=all_nodes, fill_value='')
 
+        # Probability suspension: probability stays an internal-only metric.
+        # It is neither exported to files nor shown, so the exported
+        # connections table and the path table carry no probability data.
+        conn_cols_to_drop = ['probability']
+        conn_df_to_save = self.conn_df.drop(
+            columns=[c for c in conn_cols_to_drop if c in self.conn_df.columns])
+
+        # Cleaned path table (sorted deterministically, probability-free),
+        # shared by the CSV and the Excel export branches.
+        paths_df_to_save = self.path_df.copy()
+
+        # Sort by path length (ascending); ties break on the path string
+        # so the order stays deterministic. (Probability is suspended and
+        # is no longer a sort key or an exported column.)
+        sort_cols = []
+        ascending_order = []
+        # Check for length column (could be 'length' or 'path_length')
+        if 'length' in paths_df_to_save.columns:
+            sort_cols.append('length')
+            ascending_order.append(True)
+        elif 'path_length' in paths_df_to_save.columns:
+            sort_cols.append('path_length')
+            ascending_order.append(True)
+
+        # Deterministic tie-breaker: the path string itself
+        for tie_col in ('path_block', 'path_str', 'path'):
+            if tie_col in paths_df_to_save.columns:
+                sort_cols.append(tie_col)
+                ascending_order.append(True)
+                break
+
+        if sort_cols:
+            paths_df_to_save = paths_df_to_save.sort_values(sort_cols, ascending=ascending_order, kind='mergesort')
+
+        # Drop redundant columns
+        paths_cols_to_drop = ['path_str', 'path_block', 'connection_ratios', 'traversal_probabilities',
+                              'path_prob', 'path_probability']
+        paths_df_to_save = paths_df_to_save.drop(
+            columns=[c for c in paths_cols_to_drop if c in paths_df_to_save.columns])
+
         if self.output_format == 'csv':
             self._vprint("\nSaving data to CSV files...")
             created_files = []
-            
+
             # Save connections
             conn_path = os.path.join(self.output_folder, self.base_filename + '_data_connections.csv')
-            self._save_df_to_csv_polars(self.conn_df, conn_path, index=False)
+            self._save_df_to_csv_polars(conn_df_to_save, conn_path, index=False)
             created_files.append(conn_path)
-            
+
             # Save original paths
             paths_path = os.path.join(self.output_folder, self.base_filename + '_data_original_paths.csv')
-            
-            # Create a copy for saving to avoid modifying the original dataframe
-            df_to_save = self.path_df.copy()
-            
-            # Sort by path length (ascending) and path probability (descending)
-            sort_cols = []
-            ascending_order = []
-            # Check for length column (could be 'length' or 'path_length')
-            if 'length' in df_to_save.columns:
-                sort_cols.append('length')
-                ascending_order.append(True)
-            elif 'path_length' in df_to_save.columns:
-                sort_cols.append('path_length')
-                ascending_order.append(True)
-                
-            # Check for probability column (could be 'path_prob' or 'path_probability')
-            if 'path_prob' in df_to_save.columns:
-                sort_cols.append('path_prob')
-                ascending_order.append(False)
-            elif 'path_probability' in df_to_save.columns:
-                sort_cols.append('path_probability')
-                ascending_order.append(False)
-                
-            if sort_cols:
-                df_to_save = df_to_save.sort_values(sort_cols, ascending=ascending_order)
-            
-            # Drop redundant columns
-            cols_to_drop = ['path_str', 'path_block', 'connection_ratios', 'traversal_probabilities']
-            df_to_save = df_to_save.drop(columns=[c for c in cols_to_drop if c in df_to_save.columns])
-            
-            self._save_df_to_csv_polars(df_to_save, paths_path, index=False)
+            self._save_df_to_csv_polars(paths_df_to_save, paths_path, index=False)
             created_files.append(paths_path)
             
             # Save matrices (skipped when save_data_matrices=False — e.g.
@@ -15190,11 +15186,6 @@ class VisualizePath:
                     self._save_df_to_csv_polars(ratio_matrix, ratio_path, index=True)
                     created_files.append(ratio_path)
                     
-                if prob_matrix is not None:
-                    prob_path = os.path.join(self.output_folder, self.base_filename + '_data_connMatrix_prob.csv')
-                    self._save_df_to_csv_polars(prob_matrix, prob_path, index=True)
-                    created_files.append(prob_path)
-                    
                 if nt_matrix is not None:
                     nt_path = os.path.join(self.output_folder, self.base_filename + '_data_connMatrix_nt_type.csv')
                     self._save_df_to_csv_polars(nt_matrix, nt_path, index=True)
@@ -15209,16 +15200,14 @@ class VisualizePath:
             output_path = os.path.join(self.output_folder, self.base_filename + '_data.xlsx')
             
             data_map = {
-                'connections': (self.conn_df, False),
-                'original_paths': (self.path_df, False),
+                'connections': (conn_df_to_save, False),
+                'original_paths': (paths_df_to_save, False),
             }
             
             if self.save_data_matrices:
                 data_map['connMatrix_weight'] = (weight_matrix, True)
                 if ratio_matrix is not None:
                     data_map['connMatrix_ratio'] = (ratio_matrix, True)
-                if prob_matrix is not None:
-                    data_map['connMatrix_prob'] = (prob_matrix, True)
                 if nt_matrix is not None:
                     data_map['connMatrix_nt_type'] = (nt_matrix, True)
                 
@@ -15346,7 +15335,7 @@ class VisualizePath:
             
         Notes
         -----
-        - Creates matrices for weight, ratio, and probability (if available)
+        - Creates matrices for weight and ratio (if available)
         - Node ordering follows source -> intermediate -> target (or custom order)
         - Missing connections are shown as 0
         - Creates an interactive heatmap with metric toggle, zoom, pan, and export features
@@ -15436,7 +15425,8 @@ class VisualizePath:
         # Reindex weight matrix: rows = sources, columns = targets
         weight_matrix = weight_matrix.reindex(index=row_nodes, columns=col_nodes, fill_value=0)
         
-        # Create ratio and probability matrices if those columns exist
+        # Create ratio matrix if that column exists
+        # (probability is suspended: never visualized as a heatmap metric)
         matrices_dict = {'weight': weight_matrix}
         
         if 'ratio' in conn_df_to_use.columns:
@@ -15449,17 +15439,6 @@ class VisualizePath:
             )
             ratio_matrix = ratio_matrix.reindex(index=row_nodes, columns=col_nodes, fill_value=0)
             matrices_dict['ratio'] = ratio_matrix
-        
-        if 'probability' in conn_df_to_use.columns:
-            self._vprint("  Creating probability matrix...")
-            prob_matrix = conn_df_to_use.pivot_table(
-                index='source',
-                columns='target',
-                values='probability',
-                fill_value=0
-            )
-            prob_matrix = prob_matrix.reindex(index=row_nodes, columns=col_nodes, fill_value=0)
-            matrices_dict['probability'] = prob_matrix
         
         # Generate filename
         heatmap_file = os.path.join(self.output_folder, f'{self.base_filename}_heatmap.html')
@@ -16062,7 +16041,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     '''Create interactive heatmap with comprehensive controls similar to network visualization
 
     Features:
-    - Metric toggle: Switch between weight/ratio/probability (if provided)
+    - Metric toggle: Switch between weight/ratio (if provided)
     - Clustering toggle: Toggle between original and clustered ordering (hierarchical clustering)
     - Dendrogram: ward/average/complete/single linkage trees drawn beside the
       clustered heatmap (column tree above, row tree right) via the "🌳 Dendrogram"
@@ -16092,7 +16071,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     conn_df : pd.DataFrame, optional
         Connection dataframe with type information for enhanced hover labels (bodyId heatmaps only)
     matrices_dict : dict, optional
-        Dictionary with keys 'weight', 'ratio', 'probability' containing different metric matrices
+        Dictionary with keys 'weight', 'ratio' containing different metric matrices
+        (a 'probability' entry is ignored — probability display is suspended).
         If provided, enables metric toggle. Otherwise uses cmat as weight matrix only.
     verbose : bool, optional
         Control print output. Default True.
@@ -16135,9 +16115,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             available_metrics.append('ratio')
             matrices_data['ratio'] = matrices_dict['ratio'].values.copy()
         
-        if 'probability' in matrices_dict and matrices_dict['probability'] is not None:
-            available_metrics.append('probability')
-            matrices_data['probability'] = matrices_dict['probability'].values.copy()
+        # Probability is suspended: a 'probability' entry in matrices_dict
+        # is deliberately ignored (never toggled, never rendered).
         
         # Use first available metric as default
         default_metric = available_metrics[0] if available_metrics else 'weight'
@@ -16152,9 +16131,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         if 'ratio' in title.lower() or 'ratio' in filename.lower():
             metric_type = 'ratio'
             available_metrics = ['ratio']
-        elif 'transmission' in title.lower() or 'probability' in title.lower():
-            metric_type = 'probability'
-            available_metrics = ['probability']
+        # PROBABILITY SUSPENSION (2026-10-06): the former
+        # transmission/probability branch is removed — those matrices are
+        # no longer produced.
         
         data_linear = cmat.values.copy()
         matrices_data[metric_type] = data_linear
@@ -16370,8 +16349,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     default_colorscale = 'Greens'
     if 'ratio' in filename.lower():
         default_colorscale = 'Oranges'
-    elif 'transmission' in filename.lower() or 'probability' in filename.lower():
-        default_colorscale = 'Purples'
+    # PROBABILITY SUSPENSION (2026-10-06): the former
+    # transmission/probability 'Purples' branch is removed.
     
     # Create HTML with comprehensive interactive controls
     # Optional: open with square cells locked (callers generating similarity
@@ -16699,7 +16678,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     {'<select id="metricSelect" onchange="updateMetric()">' if has_multiple_metrics else ''}
                         {'<option value="weight">Synapse Count</option>' if has_multiple_metrics and 'weight' in available_metrics else ''}
                         {'<option value="ratio"' + (' selected' if metric_type == 'ratio' else '') + '>Connection Ratio</option>' if has_multiple_metrics and 'ratio' in available_metrics else ''}
-                        {'<option value="probability"' + (' selected' if metric_type == 'probability' else '') + '>Traversal Probability</option>' if has_multiple_metrics and 'probability' in available_metrics else ''}
+                        <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                     {'</select></div>' if has_multiple_metrics else ''}
                     
                     <!-- Clustering Toggle -->
