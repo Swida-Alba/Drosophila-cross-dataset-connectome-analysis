@@ -4674,8 +4674,9 @@ class VisualizePath:
         plus the 4 mid-edges, each end snapped to the anchor nearest its
         direction).  Edges are adjustable in BOTH modes: selected edges
         show draggable endpoint handles (diamond = compass anchor, round
-        teal badge = the ninth, center-directed anchor), and a drag
-        reassigns that one end — around the node to an 8-point anchor or
+        teal badge at the node center = the ninth, center-directed anchor —
+        the edge end itself anchors to the near rim intersection), and a
+        drag reassigns that one end — around the node to an 8-point anchor or
         into the node body for center-directed — with the override
         persisting through saved/exported layout state.  Waypoint
         bends declare ``edge-distances: 'node-position'`` so the rendered
@@ -6784,7 +6785,7 @@ class VisualizePath:
                     <h4>🖱️ Mouse</h4>
                     <table>
                         <tr><td class="vp-key">Click</td><td>Select a node / edge — a selected edge reveals its endpoint anchors and waypoint rings directly (both anchor modes)</td></tr>
-                        <tr><td class="vp-key">Drag ◇ / ● handle</td><td>Reassign ONE edge end: drag around the node to one of the 8 anchors (◇ blue), or INTO the node for the center-directed attachment (● teal). Works in both modes; reciprocal halves move independently; one undo step; ↺ Reset anchors in the panel clears</td></tr>
+                        <tr><td class="vp-key">Drag ◇ / ● handle</td><td>Reassign ONE edge end: drag around the node to one of the 8 anchors (◇ blue), or INTO the node for the center-directed attachment (● teal badge moves to the node center; the edge end anchors to the near rim intersection). Works in both modes; reciprocal halves move independently; one undo step; ↺ Reset anchors in the panel clears</td></tr>
                         <tr><td class="vp-key">Drag / click ● bend</td><td>Move a waypoint (the edge keeps bending exactly through it) or select it for the amber bundle</td></tr>
                         <tr><td class="vp-key">Shift+Click / drag</td><td>Multi-select (box select) — L→R frame: FULL; R→L dashed frame: TOUCH; frame over selected objects deselects them (⇧ toggles)</td></tr>
                         <tr><td class="vp-key">Double-click</td><td>Highlight a node's connections</td></tr>
@@ -6814,7 +6815,7 @@ class VisualizePath:
                     <code>&lt;5, &gt;100</code> hides weak and very strong edges;<br>
                     <code>(&gt;=10, &lt;=20)</code> keeps only a weight band.</p>
                     <p><strong>Save vs Export Layout</strong> — Save keeps the full view state (positions, colors + alpha, groups, filters, toggles, controls) in this browser for this file and auto-restores it on reopen; Export Layout downloads the same state as JSON to share or re-import elsewhere. The page frames the graph with a one-time fit only when nothing is saved — a saved layout always wins. On large graphs the open fit stops at a readable 0.35× zoom floor instead of zooming out to the minZoom limit; ⛶ Fit always frames everything exactly.</p>
-                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses the DEFAULT edge attachment. Center keeps the classic center-directed attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (ellipses: the exact 45° rim points) and the 4 mid-edges. Edges are adjustable in BOTH modes: selecting an edge shows its endpoint handles, and dragging one reassigns that end — around the node to one of the 8 anchors (◇ blue), or into the node body for the center-directed attachment (● teal). Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
+                    <p><strong>Edge Anchor</strong> — the Center / Auto switch beside Edge Route chooses the DEFAULT edge attachment. Center keeps the classic center-directed attachment on the center-line rim; Auto snaps every end to the nearest of 8 anchors — the 4 corners (ellipses: the exact 45° rim points) and the 4 mid-edges. Edges are adjustable in BOTH modes: selecting an edge shows its endpoint handles, and dragging one reassigns that end — around the node to one of the 8 anchors (◇ blue), or into the node body for the center-directed attachment (● teal badge moves to the node center; the edge end itself anchors to the near rim intersection, the rim point facing the other node). Reciprocal pairs keep their parallel offset lines by default; a dragged anchor reassigns just that half's end. Assignments survive Save / Export Layout, and node shape changes re-derive every attachment.</p>
                     <p><strong>Horizontal/Vertical Gap &amp; Rotate</strong> — set the center-to-center distance between neighboring nodes in px (node size unchanged); rotation turns the whole arrangement around its center — the gaps are measured along the layout's own columns/rows, so small tilts keep the values stable, while at ±90°/270° the Horizontal and Vertical values swap accordingly (↺ Reset Spacing restores the layout-run gaps for the current rotation); both reset when the layout re-runs and are undoable.</p>
                     <p><strong>Panels</strong> — ⚙️ hides the top tool panel, 🎨 the right panel; both states are remembered.</p>
                 </div>
@@ -12659,15 +12660,25 @@ class VisualizePath:
                 e.source().id() !== e.target().id();
         }}
 
+        // Handle seat: center-directed ends wear their badge at the NODE
+        // CENTER (an unambiguous in-node indicator — the edge itself still
+        // anchors to the NEAR RIM INTERSECTION, the rim point facing the
+        // other node); compass anchors sit at their rim point.
+        function anchorHandleModelPos(edge, end) {{
+            const node = end === 'src' ? edge.source() : edge.target();
+            const p = node.position();
+            if (anchorEndIsCenter(edge, end)) return p;
+            const off = anchorEndpointOffset(edge, end);
+            return {{ x: p.x + off[0], y: p.y + off[1] }};
+        }}
+
         function positionAnchorHandle(edge, end) {{
             const el = document.getElementById(anchorHandleId(edge.id(), end));
             if (!el) return;
-            const node = end === 'src' ? edge.source() : edge.target();
-            const off = anchorEndpointOffset(edge, end);
-            const p = node.position();
+            const p = anchorHandleModelPos(edge, end);
             const pan = cy.pan(), z = cy.zoom();
-            el.style.left = ((p.x + off[0]) * z + pan.x) + 'px';
-            el.style.top = ((p.y + off[1]) * z + pan.y) + 'px';
+            el.style.left = (p.x * z + pan.x) + 'px';
+            el.style.top = (p.y * z + pan.y) + 'px';
         }}
 
         // Is this edge END currently center-directed?  An explicit
@@ -12724,9 +12735,8 @@ class VisualizePath:
             cy.edges(':selected').forEach(e => {{
                 if (!anchorHandleEligible(e)) return;
                 [['src', e.source()], ['dst', e.target()]].forEach(([end, node]) => {{
-                    const off = anchorEndpointOffset(e, end);
-                    const p = node.position();
-                    const d = Math.hypot(p.x + off[0] - mx, p.y + off[1] - my);
+                    const hp = anchorHandleModelPos(e, end);
+                    const d = Math.hypot(hp.x - mx, hp.y - my);
                     if (d <= radius && (!best || d < best.d)) best = {{ d: d, edge: e, end: end }};
                 }});
             }});

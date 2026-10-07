@@ -104,9 +104,10 @@ The cytoscape page emitted by `_plot_cytoscape_network` (committed 2026-10-07):
 - **Per-end overrides (both modes adjustable)** — selected edges show
   draggable endpoint handles in BOTH modes: a blue diamond for each of the
   8 compass anchors and a round teal badge for the NINTH, center-directed
-  anchor (`ANCHOR_CENTER = 8`). Dragging around the node snaps to the
-  nearest compass anchor; dragging INTO the node body pins the
-  center-directed attachment. A drag reassigns THAT end only (reciprocal
+  anchor (`ANCHOR_CENTER = 8`) — the badge sits AT THE NODE CENTER while
+  the edge end anchors to the near rim intersection (the rim point facing
+  the other node). Dragging around the node snaps to the nearest compass
+  anchor; dragging INTO the node body pins the center-directed attachment. A drag reassigns THAT end only (reciprocal
   halves independently) by writing `anchorSrc`/`anchorDst` data + the
   endpoint style; reciprocal pairs keep their parallel offset-line look
   unless overridden. `↺ Reset anchors` in the selection panel clears

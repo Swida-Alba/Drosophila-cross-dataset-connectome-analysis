@@ -518,6 +518,11 @@ class TestGeneratedHtmlStructure:
         assert "const idx = (Math.hypot(dxp, dyp) < rimD - 5)" in js
         assert "? ANCHOR_CENTER" in js
         assert "hEl.className = 'anchor-handle' + (idx === ANCHOR_CENTER ? ' anchor-center' : '');" in js
+        # the CENTER badge sits at the NODE CENTER (unambiguous in-node
+        # indicator) while the edge end anchors to the near rim intersection
+        assert "function anchorHandleModelPos(" in js
+        assert "if (anchorEndIsCenter(edge, end)) return p;" in js
+        assert "const p = anchorHandleModelPos(edge, end);" in js
         # a drag writes the override + endpoint style for THAT end only
         # (reciprocal halves reassign independently), tracked as one
         # queued history entry per gesture
