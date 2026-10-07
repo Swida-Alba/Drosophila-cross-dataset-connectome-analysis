@@ -10034,6 +10034,18 @@ class VisualizePath:
         const hasAnyAnchorOverride = (edge) =>
             (edge.data('anchorSrc') !== undefined && edge.data('anchorSrc') !== null) ||
             (edge.data('anchorDst') !== undefined && edge.data('anchorDst') !== null);
+        // THIS cytoscape build can throw a benign circular-JSON error from
+        // the bypass bookkeeping while a style write registers (see
+        // renderEdgeWaypoints) — the value itself applies.  A MULTI-property
+        // write is worse: the throw can abort the REMAINING properties,
+        // leaving a partial write (a distance-from-node without its
+        // endpoint attaches the end at the node position — the pierce).
+        // Every anchor-path style write goes through this per-property
+        // wrapper so one property failing never drops its siblings.
+        const setStyleSafe = (e, prop, value) => {{
+            try {{ e.style(prop, value); }}
+            catch (err) {{ /* value applied despite the bookkeeping error */ }}
+        }};
         // Writes BOTH ends for a plain edge (no visible reciprocal pair),
         // per end: an override (anchorSrc/anchorDst, set by dragging an
         // endpoint handle — one of the 8 anchors or ANCHOR_CENTER) always
@@ -10063,12 +10075,12 @@ class VisualizePath:
                 }}
                 return null;  // Center default: no explicit endpoint
             }};
-            edge.style('edge-distances', 'node-position');
+            setStyleSafe(edge, 'edge-distances', 'node-position');
             [['source', edge.source(), resolveEnd(edge.source(), true)],
              ['target', edge.target(), resolveEnd(edge.target(), false)]].forEach(([which, node, pt]) => {{
                 if (pt) {{
-                    edge.style(`${{which}}-endpoint`, `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
-                    edge.style(`${{which}}-distance-from-node`, 0);
+                    setStyleSafe(edge, `${{which}}-endpoint`, `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
+                    setStyleSafe(edge, `${{which}}-distance-from-node`, 0);
                 }} else {{
                     edge.removeStyle(`${{which}}-endpoint`);
                     edge.removeStyle(`${{which}}-distance-from-node`);
@@ -10347,13 +10359,11 @@ class VisualizePath:
                             : anchorPoint(edge.target(), dstOv);
                     }}
 
-                    edge.style({{
-                        'edge-distances': 'node-position',
-                        'source-endpoint': `${{srcRim[0].toFixed(2)}} ${{srcRim[1].toFixed(2)}}`,
-                        'target-endpoint': `${{tgtRim[0].toFixed(2)}} ${{tgtRim[1].toFixed(2)}}`,
-                        'source-distance-from-node': 0,
-                        'target-distance-from-node': 0
-                    }});
+                    setStyleSafe(edge, 'edge-distances', 'node-position');
+                    setStyleSafe(edge, 'source-endpoint', `${{srcRim[0].toFixed(2)}} ${{srcRim[1].toFixed(2)}}`);
+                    setStyleSafe(edge, 'target-endpoint', `${{tgtRim[0].toFixed(2)}} ${{tgtRim[1].toFixed(2)}}`);
+                    setStyleSafe(edge, 'source-distance-from-node', 0);
+                    setStyleSafe(edge, 'target-distance-from-node', 0);
                 }} else {{
                     // Has visible parallel edge, use curved style (no offsets in curved mode)
                     edge.style('curve-style', 'bezier');
@@ -12857,12 +12867,12 @@ class VisualizePath:
                 const pt = (idx === ANCHOR_CENTER)
                     ? centerRimPoint(node, fdx, fdy)
                     : anchorPoint(node, idx);
-                anchorDrag.edge.style({{
-                    'edge-distances': 'node-position',
-                    [anchorDrag.end === 'src' ? 'source-endpoint' : 'target-endpoint']:
-                        `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`,
-                    [anchorDrag.end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node']: 0
-                }});
+                setStyleSafe(anchorDrag.edge, 'edge-distances', 'node-position');
+                setStyleSafe(anchorDrag.edge,
+                    anchorDrag.end === 'src' ? 'source-endpoint' : 'target-endpoint',
+                    `${{pt[0].toFixed(2)}} ${{pt[1].toFixed(2)}}`);
+                setStyleSafe(anchorDrag.edge,
+                    anchorDrag.end === 'src' ? 'source-distance-from-node' : 'target-distance-from-node', 0);
                 // the mark follows the anchor kind live (diamond = 8-point,
                 // round teal = center-directed)
                 const hEl = document.getElementById(anchorHandleId(anchorDrag.edge.id(), anchorDrag.end));

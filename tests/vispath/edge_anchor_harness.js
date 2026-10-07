@@ -65,7 +65,7 @@ function extractFunction(name, source) {
 // (they only read the node-size slider fallback from it).
 const geometry = (() => {
     const src = ['nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
-                 'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors',
+                 'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors', 'setStyleSafe',
                  'ANCHOR_CENTER', 'centerRimPoint', 'hasAnyAnchorOverride']
         .map(n => extractFunction(n, html)).join('\n')
         + '\nlet edgeAnchorMode = "auto";'

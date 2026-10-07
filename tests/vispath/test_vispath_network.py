@@ -378,8 +378,8 @@ class TestGeneratedHtmlStructure:
         assert "if (!v || v.bypass !== true) return;" in js
         assert "style: captureStyleBypass(n)" in js
         assert "style: captureStyleBypass(e)" in js
-        assert "if (n.style) cy.getElementById(n.data.id).style(n.style)" in js
-        assert "if (e.style) cy.getElementById(e.data.id).style(e.style)" in js
+        assert "try { cy.getElementById(n.data.id).style(n.style); } catch (err) {}" in js
+        assert "try { cy.getElementById(e.data.id).style(e.style); } catch (err) {}" in js
 
     def test_selection_highlight_visible(self, network_html):
         """Selection feedback must be clearly visible: the default highlight
@@ -433,8 +433,8 @@ class TestGeneratedHtmlStructure:
         # auto-anchor mode may reassign one end to a fixed 8-point anchor.)
         assert "let srcRim = rimPointOnOffsetLine(" in js
         assert "let tgtRim = rimPointOnOffsetLine(" in js
-        assert "'source-distance-from-node': 0," in js
-        assert "'target-distance-from-node': 0" in js
+        assert "setStyleSafe(edge, 'source-distance-from-node', 0);" in js
+        assert "setStyleSafe(edge, 'target-distance-from-node', 0);" in js
         # one canonical comparator everywhere: the offset side must be
         # decided in the same frame as the canonical positions and the
         # Python pair_canonical (str < str), not locale collation

@@ -89,7 +89,7 @@ function extractConstFunction(name, source) {
 
 const CONST_FUNCTIONS = [
     'nodeHalfSizes', 'rimDistance', 'rimPointOnOffsetLine',
-    'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors',
+    'ANCHOR8_DIRS', 'snapAnchorIndex', 'anchorPoint', 'writeEdgeAnchors', 'setStyleSafe',
     'ANCHOR_CENTER', 'centerRimPoint', 'hasAnyAnchorOverride',
 ];
 
