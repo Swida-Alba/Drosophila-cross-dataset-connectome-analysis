@@ -1273,3 +1273,33 @@ def test_shortest_mode_no_complete_table(tmp_path):
     # produced (positive control for the skip logic).
     assert (run_dir / 'type_level_refill' /
             'complete_at_asked_paths_type.csv').exists()
+
+
+def test_type_incoming_applied_written(tmp_path):
+    """The realized patch persists the applied-tier per-post incoming
+    mass (data_details/type_incoming_applied.csv) — the denominator the
+    pair report's applied-conditioned Adj. ratios use; every emitted
+    pair's post type is covered."""
+    _fc, run_dir = make_run(tmp_path, 'inapp_floor', edge_budget=7)
+    csv = run_dir / 'data_details' / 'type_incoming_applied.csv'
+    assert csv.exists()
+    frame = pd.read_csv(csv)
+    assert list(frame.columns) == ['type', 'incoming']
+    assert (frame['incoming'] > 0).all()
+    ct = pd.read_csv(run_dir / 'data_details' / 'connection_type.csv')
+    assert set(ct['type_post']) <= set(frame['type'])
+    # DEDUP: an edge backing many paths contributes its mass ONCE —
+    # reconcile against the distinct emitted edges' weights
+    edges = pd.read_csv(
+        run_dir / 'data_details' / 'connection_info_bodyId.csv',
+        dtype=str).drop_duplicates(subset=['bodyId_pre', 'bodyId_post'])
+    type_map = TYPE_MAP
+    expect = defaultdict(float)
+    for e in edges.itertuples():
+        w = {(u, v): wt for u, v, wt in EDGES}.get(
+            (e.bodyId_pre, e.bodyId_post))
+        if w is not None:
+            expect[type_map[e.bodyId_post]] += w
+    got = frame.set_index('type')['incoming'].to_dict()
+    for ty, mass in expect.items():
+        assert abs(got.get(ty, 0) - mass) < 1e-6, (ty, mass)

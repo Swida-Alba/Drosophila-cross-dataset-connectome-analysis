@@ -15103,6 +15103,28 @@ class FindNeuronConnection:
         return out
 
     @staticmethod
+    def _type_path_applied_incoming(all_paths, node_label, edge_weights):
+        """Per POST-type label: the summed weight of the distinct bodyId
+        edges realizing any hop of any EMITTED bodyId path — the
+        applied-tier incoming mass the emitted network actually carries.
+        Every such edge is >= the applied threshold (emitted bottlenecks
+        are), so this is the denominator that matches the realized
+        Weights scope; the pair report derives its applied-conditioned
+        Adj. ratios from it (data_details/type_incoming_applied.csv)."""
+        seen = set()
+        for p in all_paths:
+            for i in range(len(p) - 1):
+                seen.add((str(p[i]), str(p[i + 1])))
+        incoming: Dict[str, float] = {}
+        for a, b in seen:
+            w = edge_weights.get((a, b))
+            if w is None:
+                continue
+            post = node_label(b)
+            incoming[post] = incoming.get(post, 0.0) + w
+        return incoming
+
+    @staticmethod
     def _realized_ratio_readout(realized_weights, seq_labels, type_mass):
         """Ratio-lane path readout from REALIZED support (round-11): hop
         ratio = the hop's realized synapse mass / the post type's
@@ -21000,6 +21022,27 @@ class FindNeuronConnection:
         # there about the skip_bodyId `del`.)
         _realized_w = self._type_path_realized_hop_weights(
             all_paths, _node_type_label, _edge_w_lut)
+        # Applied-tier incoming per post type (2026-10-07): the mass the
+        # EMITTED network carries into each type — every realized edge is
+        # >= the applied threshold, so this is the denominator matching
+        # the realized Weights scope. Persisted for the pair report's
+        # applied-conditioned Adj. ratios.
+        try:
+            _in_applied = self._type_path_applied_incoming(
+                all_paths, _node_type_label, _edge_w_lut)
+            if _in_applied:
+                import pandas as _pd_in_app
+                _pd_in_app.DataFrame(
+                    [{'type': _label, 'incoming': _mass}
+                     for _label, _mass in sorted(_in_applied.items())]
+                ).to_csv(
+                    os.path.join(details_folder,
+                                 'type_incoming_applied.csv'),
+                    index=False)
+        except Exception as _in_app_exc:
+            self._warn_notes.append(
+                '- [applied incoming] type_incoming_applied.csv not '
+                f'written ({_in_app_exc!r}).')
         # Round-10: the SAME canonical map the export-phase recompute used
         # for type_coverage — one N per type across every file of the run.
         _type_n = type_membership_n

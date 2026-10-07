@@ -239,6 +239,7 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             text = ''
         for key, pattern in (
             ('min_synapse', r'min synapse number:\s*([^\s]+)'),
+            ('applied_threshold', r'applied_threshold:\s*([^\s]+)'),
             ('min_ratio', r'min connection ratio:\s*([^\s]+)'),
             ('weight_basis', r'weight basis:\s*([^\s]+)'),
             ('threshold_combination', r'threshold combination:\s*([^\s]+)'),
@@ -699,6 +700,48 @@ def _per_hop_adjusted_list(path_str, pair_ratio) -> str:
     for i in range(len(labs) - 1):
         v = (pair_ratio or {}).get((labs[i], labs[i + 1]))
         parts.append(_fmt_pct(v) if v is not None else '—')
+    return '[' + ', '.join(parts) + ']' if parts else ''
+
+
+def _load_type_incoming_applied(folder) -> Dict[str, float]:
+    """Per post TYPE: the applied-tier incoming mass the EMITTED
+    network carries (data_details/type_incoming_applied.csv, written by
+    the engine's realized patch). This is the denominator matching the
+    realized Weights scope — the pair report derives its
+    applied-conditioned Adj. ratios from it. Empty when the run predates
+    the file."""
+    out: Dict[str, float] = {}
+    path = Path(folder) / 'data_details' / 'type_incoming_applied.csv'
+    try:
+        frame = pd.read_csv(path)
+        if {'type', 'incoming'} <= set(frame.columns):
+            for _, r in frame.iterrows():
+                if pd.notna(r['incoming']):
+                    out[str(r['type'])] = float(r['incoming'])
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _realized_applied_list(path_str, weights, in_applied) -> str:
+    """Per-hop ADJUSTED ratio list computed from the REALIZED hop
+    masses over the applied-tier incoming denominator — matching the
+    Weights scope exactly (weights are emitted-network masses, every
+    edge >= the applied threshold). Hops whose post type lacks an
+    applied denominator render '—'. Empty when ``in_applied`` is None
+    (legacy run) — the caller falls back to the pair-level adj map."""
+    if not in_applied:
+        return ''
+    labs = str(path_str).split('->')
+    ws = _weight_list(weights) or []
+    parts = []
+    for i in range(len(labs) - 1):
+        denom = in_applied.get(labs[i + 1])
+        w = ws[i] if i < len(ws) else None
+        if denom and w is not None:
+            parts.append(_fmt_pct(w / denom))
+        else:
+            parts.append('—')
     return '[' + ', '.join(parts) + ']' if parts else ''
 
 
@@ -3299,7 +3342,7 @@ REPORT_JS = r"""
             td.appendChild(elt('strong', null, row.path));
             return td; } },
         { h: 'Len', cell: function(row) { return elt('td', null, row.len); } },
-        { h: 'Weights',
+        { h: 'Weights (synapse ≥ ' + (RUN.applied || RUN.min_synapse) + ')',
           title: 'Per-hop realized synapse mass, -w1-w2- (presence-matrix '
             + 'format; the BOTTLENECK — weakest hop — is bolded): the '
             + 'distinct bodyId edges backing each hop at that position — '
@@ -3320,7 +3363,7 @@ REPORT_JS = r"""
             return dashTd(row.ratios, ratioDashFmt,
               'Per-hop realized share; bold = the bottleneck; '
               + '(<0.01%) = below 0.01%.'); } },
-        hasAdj && { h: adjHeader(RUN.min_synapse),
+        hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
           title: 'Per-hop ADJUSTED ratio list, -r1-r2- (presence-matrix '
             + 'format; the weakest entry is bolded; shares below 0.01% '
             + 'show (<0.01%)): connection_ratio_adj of each (pre, post) '
@@ -3512,9 +3555,13 @@ REPORT_JS = r"""
   // Threshold labels for the ratio headers: the run's own Min Synapse
   // Count (from the sniffed metadata).
   var MIN_SYN = DATA.run.meta ? DATA.run.meta.min_synapse : null;
+  // the APPLIED threshold (the cut that defined the emitted set) — the
+  // Pair Explorer's Weights/Adj scope; refill views are asked-scoped
+  var APPLIED = DATA.run.meta ? DATA.run.meta.applied_threshold : null;
   var Explorer = makeExplorer({
     data: DATA.pairs, units: DATA.run.units,
     run: {rank_by: DATA.run.rank_by, min_synapse: MIN_SYN,
+          applied: APPLIED,
           pair_ratio_source: DATA.run.pair_ratio_source,
           shortest: DATA.run.shortest,
           top_per_length: DATA.run.top_per_length,
@@ -3657,6 +3704,7 @@ def _attach_table_groups(
     target_cov: Optional[Dict[str, str]] = None,
     pair_cov: Optional[Dict[Tuple[str, str], Tuple[str, str]]] = None,
     pair_ratio: Optional[Dict[Tuple[str, str], float]] = None,
+    in_applied: Optional[Dict[str, float]] = None,
 ) -> None:
     """Fill each pair entry's capped table groups (ranked rows per length),
     each row carrying PER-PATH ``scov``/``tcov`` bodyId n/N strings — the
@@ -3696,8 +3744,12 @@ def _attach_table_groups(
                     'ratios': _format_ratio_list(
                         '' if pd.isna(row['ratios'])
                         else str(row['ratios'])),
-                    'pradj': _per_hop_adjusted_list(
-                        row['path'], pair_ratio or {}),
+                    'pradj': (
+                        _realized_applied_list(
+                            row['path'], row.get('weights'), in_applied)
+                        if in_applied
+                        else _per_hop_adjusted_list(
+                            row['path'], pair_ratio or {})),
                     # 2026-10-07: the per-path scov/tcov fields are
                     # gone — the coverage list IS the coverage display
                     # (n1/N1>n2/N2>... via the JS cell); rows without
@@ -3777,6 +3829,7 @@ def generate_paths_pair_report(
     unit_query_cov: Dict[str, Dict[str, Tuple[int, int]]] = {}
     unit_pair_ratio_source: Dict[str, str] = {}
     unit_pair_level_ratio: Dict[str, Dict[Tuple[str, str], float]] = {}
+    unit_in_applied: Dict[str, Dict[str, float]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
@@ -3785,6 +3838,8 @@ def generate_paths_pair_report(
         unit_source_cov[unit.unit_id] = source_cov
         unit_target_cov[unit.unit_id] = target_cov
         unit_query_cov[unit.unit_id] = _load_query_coverage(unit.folder)
+        unit_in_applied[unit.unit_id] = _load_type_incoming_applied(
+            unit.folder)
         pair_bodyid = _load_pair_bodyid_coverage(unit.folder)
         pair_level_ratio, pair_ratio_source = _load_pair_level_ratios(
             unit.folder)
@@ -3827,7 +3882,8 @@ def generate_paths_pair_report(
         unit_pair_ratio_source=unit_pair_ratio_source)
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
                                unit_source_cov, unit_target_cov,
-                               unit_pair_cov, unit_pair_level_ratio)
+                               unit_pair_cov, unit_pair_level_ratio,
+                               unit_in_applied=unit_in_applied)
     payload['global'] = build_global(
         units, frames, global_pairs, global_edges,
         unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov,
@@ -4019,6 +4075,7 @@ def _attach_table_groups_multi(
                                            Tuple[str, str]]]] = None,
     unit_pair_ratio: Optional[Dict[str, Dict[Tuple[str, str],
                                              float]]] = None,
+    unit_in_applied: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -4031,4 +4088,5 @@ def _attach_table_groups_multi(
                 source_cov=(unit_source_cov or {}).get(unit.unit_id),
                 target_cov=(unit_target_cov or {}).get(unit.unit_id),
                 pair_cov=(unit_pair_cov or {}).get(unit.unit_id),
-                pair_ratio=(unit_pair_ratio or {}).get(unit.unit_id))
+                pair_ratio=(unit_pair_ratio or {}).get(unit.unit_id),
+                in_applied=(unit_in_applied or {}).get(unit.unit_id))
