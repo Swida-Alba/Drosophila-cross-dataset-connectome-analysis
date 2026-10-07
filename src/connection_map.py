@@ -110,13 +110,16 @@ class ThresholdedConnectionMap:
                 missing = required - names
                 if missing:
                     continue
-                lazy_frames.append(
-                    frame.select([
-                        pl.col("bodyId_pre").cast(pl.Utf8, strict=False).alias("bodyId_pre"),
-                        pl.col("bodyId_post").cast(pl.Utf8, strict=False).alias("bodyId_post"),
-                        pl.col("weight").cast(pl.Int64, strict=False).alias("weight"),
-                    ])
-                )
+                select_exprs = [
+                    pl.col("bodyId_pre").cast(pl.Utf8, strict=False).alias("bodyId_pre"),
+                    pl.col("bodyId_post").cast(pl.Utf8, strict=False).alias("bodyId_post"),
+                    pl.col("weight").cast(pl.Int64, strict=False).alias("weight"),
+                    # roi rides along ONLY for the crash-window dedup key
+                    # (dropped right after) — see the guard below.
+                    pl.col("roi").cast(pl.Utf8, strict=False).alias("_roi")
+                    if "roi" in names else pl.lit(None, dtype=pl.Utf8).alias("_roi"),
+                ]
+                lazy_frames.append(frame.select(select_exprs))
             if not lazy_frames:
                 return pl.LazyFrame({
                     "bodyId_pre": pl.Series([], dtype=pl.Utf8),
@@ -124,6 +127,17 @@ class ThresholdedConnectionMap:
                     "weight": pl.Series([], dtype=pl.Int64),
                 })
             lazy = pl.concat(lazy_frames, how="vertical_relaxed")
+            # Crash-window guard: consolidation writes the main parquet
+            # BEFORE removing _batch_files — an interrupted rmtree leaves
+            # the batches duplicating the main file, which would double
+            # every D_t denominator. Collapse on the CONSOLIDATION KEY
+            # (pre/post/roi — what the writer itself dedups on), so an
+            # exact re-listing collapses while genuinely distinct rows
+            # (different ROI slices, or legacy-generation rows without
+            # ROI info) survive exactly as consolidation would keep them.
+            lazy = pl.concat(lazy_frames, how="vertical_relaxed").unique(
+                subset=["bodyId_pre", "bodyId_post", "_roi"]
+            ).drop("_roi")
 
         # Normalize IDs at the read boundary.  This covers both the on-disk
         # cache and callers that provide an in-memory pandas frame.

@@ -15578,15 +15578,22 @@ class FindNeuronConnection:
                     ci[col] = ci[col].astype(str)
             # Round-15 root cause (user-approved investigation): the
             # numerator must match the exported weight column's semantics
-            # — the enrichment DEDUPLICATES bodyId pairs ("never double
+            # — the enrichment canonicalizes bodyId pairs ("never double
             # count physical edges"), while raw conn_inpath keeps ALL
-            # layer-specific occurrences, so an edge recurring at two
-            # depths was counted TWICE here (real hemibrain delegate:
-            # SMP053->PPL101 summed 307 vs the table's 187 — a 64%
-            # inflated numerator that connection_ratio_adj exposed).
+            # occurrences, so an edge recurring at two depths was counted
+            # TWICE here (real hemibrain delegate: SMP053->PPL101 summed
+            # 307 vs the table's 187 — a 64% inflated numerator that
+            # connection_ratio_adj exposed).
+            # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+            # Exact-dedup alone suffices below ONLY when conn_layer is
+            # excluded: it is fetch provenance, so a refetched edge is an
+            # exact duplicate modulo conn_layer and must still collapse
+            # (round-15 refetch double-count), while distinct per-ROI
+            # slices stay separate rows and sum inside the (type_pre,
+            # type_post) groupby that follows.
             if {'bodyId_pre', 'bodyId_post'} <= set(ci.columns):
                 ci = ci.drop_duplicates(
-                    subset=['bodyId_pre', 'bodyId_post'], keep='first')
+                    subset=[c for c in ci.columns if c != 'conn_layer'])
             grouped = ci.groupby(['type_pre', 'type_post'])
             members = getattr(self, '_ratio_lane_type_members', None) or {}
             type_mass = {label: sum(totals.get(b, 0.0) for b in bids)
@@ -15840,6 +15847,7 @@ class FindNeuronConnection:
                 target_neurons_df=neurons_in_layer_df,
                 label_mapper=self.label_mapper,
                 global_incoming_weights=global_incoming_weights,
+                global_incoming_body_weights=global_incoming_body_weights,
                 separate_hemispheres=self.separate_hemispheres
             )
             conn_df.insert(loc=0,column='conn_layer',value=str(i)+'->'+str(i+1))
@@ -20558,8 +20566,23 @@ class FindNeuronConnection:
 
         # Generate global type-level aggregation for matrix generation (avoids duplicates from layers)
         self._vprint('  Generating global type-level matrix...', level='full')
-        # Use conn_inpath (which has all edges). Deduplicate by bodyId pair to avoid double counting physical edges.
-        conn_inpath_global = conn_inpath.unique(subset=['bodyId_pre', 'bodyId_post'])
+        # Use conn_inpath (which has all edges). Canonicalize bodyId pairs to the physical pair mass.
+        # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+        # conn_layer is fetch provenance: a refetched edge is an exact
+        # duplicate modulo it and must collapse; per-ROI slices stay
+        # distinct rows and sum.
+        _glob_dedup_keys = [c for c in conn_inpath.columns
+                            if c != 'conn_layer']
+        conn_inpath_global = conn_inpath.unique(subset=_glob_dedup_keys)
+        if 'weight' in conn_inpath_global.columns:
+            _glob_cols = conn_inpath_global.columns
+            conn_inpath_global = (
+                conn_inpath_global
+                .group_by(['bodyId_pre', 'bodyId_post'])
+                .agg([pl.col('weight').sum(),
+                      pl.all().exclude(['bodyId_pre', 'bodyId_post', 'weight']).first()])
+                .select(_glob_cols)
+            )
         
         # Fetch all neurons involved for accurate post counts
         all_bodyIds = pl.concat([conn_inpath_global['bodyId_pre'], conn_inpath_global['bodyId_post']]).unique()
@@ -20689,6 +20712,29 @@ class FindNeuronConnection:
                      if hasattr(conn_inpath, 'select')
                      else conn_inpath[['bodyId_pre', 'bodyId_post',
                                        'weight']])
+            # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+            # Pre-canonicalize the frame BEFORE the loop: the raw
+            # conn_inpath may carry refetched exact duplicates (which must
+            # collapse, not accumulate) and per-ROI slices (which must
+            # sum), so accumulating with += here would double-count
+            # refetches. After canonicalization each (pre, post) key
+            # appears exactly once and setdefault below is idempotent.
+            if hasattr(_ci_w, 'group_by'):
+                _ci_w = (
+                    _ci_w.unique()
+                    .group_by(['bodyId_pre', 'bodyId_post'])
+                    .agg([pl.col('weight').sum(),
+                          pl.all().exclude(['bodyId_pre', 'bodyId_post',
+                                            'weight']).first()])
+                    .select(['bodyId_pre', 'bodyId_post', 'weight'])
+                )
+            else:
+                _ci_w = (
+                    _ci_w.drop_duplicates()
+                    .groupby(['bodyId_pre', 'bodyId_post'], as_index=False)
+                    .agg({'weight': 'sum'})
+                    [['bodyId_pre', 'bodyId_post', 'weight']]
+                )
             for _u, _v, _w in zip(_ci_w['bodyId_pre'],
                                   _ci_w['bodyId_post'], _ci_w['weight']):
                 if _w is None:

@@ -6772,7 +6772,17 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
     if has_nt:
         cols_to_keep.append(nt_col)
         
-    bodyid_pairs = conn_df[cols_to_keep].drop_duplicates(subset=['bodyId_pre', 'bodyId_post'])
+    # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+    bodyid_pairs = conn_df[cols_to_keep].drop_duplicates()
+    if 'weight' in bodyid_pairs.columns:
+        bodyid_pairs = (
+            bodyid_pairs
+            .groupby(['bodyId_pre', 'bodyId_post'], as_index=False)
+            .agg({c: ('sum' if c == 'weight' else 'first')
+                  for c in cols_to_keep
+                  if c not in ('bodyId_pre', 'bodyId_post')})
+            .loc[:, cols_to_keep]
+        )
     
     # Add progress indicator for large aggregations
     pbar = None
@@ -6903,7 +6913,17 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
                 bodyid_pairs_type_cols.append(col)
         if has_nt:
             bodyid_pairs_type_cols.append(nt_col)
-        bodyid_pairs_type = conn_df[bodyid_pairs_type_cols].drop_duplicates(subset=['bodyId_pre', 'bodyId_post'])
+        # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+        bodyid_pairs_type = conn_df[bodyid_pairs_type_cols].drop_duplicates()
+        if 'weight' in bodyid_pairs_type.columns:
+            bodyid_pairs_type = (
+                bodyid_pairs_type
+                .groupby(['bodyId_pre', 'bodyId_post'], as_index=False)
+                .agg({c: ('sum' if c == 'weight' else 'first')
+                      for c in bodyid_pairs_type_cols
+                      if c not in ('bodyId_pre', 'bodyId_post')})
+                .loc[:, bodyid_pairs_type_cols]
+            )
         
         pbar_type = None
         # if len(bodyid_pairs_type) > 50000:
@@ -8523,7 +8543,16 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     
     # Keep only existing columns
     cols_to_keep = [c for c in cols_to_keep if c in conn_df.columns]
-    bodyid_pairs = conn_df.select(cols_to_keep).unique(subset=['bodyId_pre', 'bodyId_post'])
+    # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+    bodyid_pairs = conn_df.select(cols_to_keep).unique()
+    if 'weight' in bodyid_pairs.columns:
+        bodyid_pairs = (
+            bodyid_pairs
+            .group_by(['bodyId_pre', 'bodyId_post'])
+            .agg([pl.col('weight').sum(),
+                  pl.all().exclude(['bodyId_pre', 'bodyId_post', 'weight']).first()])
+            .select(cols_to_keep)
+        )
 
     # Polars preserves a Null dtype when a whole column contains only nulls.
     # That is valid for the bodyId-level table, but it cannot be joined to the

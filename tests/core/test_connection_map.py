@@ -384,13 +384,10 @@ class TestTypeFilterConsistency:
             global_incoming_weights=global_type,
             global_incoming_body_weights=global_body,
         )
-        ab = conn_type[conn_type["type_post"] == "B1"].iloc[0]
-        assert ab["traversal_probability"] == pytest.approx(
-            1 - (1 - 10 / 100 / 0.3) * (1 - 4 / 100 / 0.3) * (1 - 6 / 100 / 0.3)
-        )
-        assert ab["traversal_probability"] > 0.5  # passes the filter threshold
-        cb = conn_type[conn_type["type_post"] == "B2"].iloc[0]
-        assert cb["traversal_probability"] < 0.5  # filtered out above
+        # traversal_probability SUSPENDED (2026-10-06, unverifiable
+        # fidelity): the returned tables carry neither probability column
+        assert "traversal_probability" not in conn_type.columns
+        assert "block_probability" not in conn_type.columns
 
 
 # =============================================================================
@@ -448,38 +445,37 @@ class TestEngineParity:
             (r["type_pre"], r["type_post"]): r
             for r in pl_type.iter_rows(named=True)
         }
+        # probability columns SUSPENDED (2026-10-06): neither engine
+        # exposes them; parity is pinned on weight + connection_ratio
+        for frame in (pd_type, pl_type):
+            assert "traversal_probability" not in frame.columns
+            assert "block_probability" not in frame.columns
         for (pre, post), prow in pd_rows.iterrows():
             rrow = pl_rows[(pre, post)]
-            assert rrow["traversal_probability"] == pytest.approx(
-                prow["traversal_probability"], abs=1e-12
-            )
-            assert rrow["block_probability"] == pytest.approx(
-                prow["block_probability"], abs=1e-12
+            assert rrow["weight"] == pytest.approx(
+                prow["weight"], abs=1e-12
             )
             assert rrow["connection_ratio"] == pytest.approx(
                 prow["connection_ratio"], abs=1e-12
             )
 
-    def test_product_compounds_deduplicated_pairs(self):
-        """Default method: 1 - prod(1 - p_pair) over the deduplicated pairs.
-
-        Pair probabilities (global bodyId denominators, capped at 1.0):
-          A1->C1: 5/20 / 0.3 = 0.8333     A2->C1: 3/20 / 0.3 = 0.5
-          A2->C2: 2/10 / 0.3 = 0.6667     B1->C2: 4/10 / 0.3 = 1.0 (capped)
-        """
+    def test_probability_columns_suspended(self):
+        """traversal/block probability SUSPENDED (2026-10-06,
+        unverifiable fidelity): the aggregate methods still run
+        internally (the F9 threshold filter consumes them), but the
+        returned tables expose neither column. The historical product
+        semantics: 1 - prod(1 - p_pair) over the deduplicated pairs."""
         global_type, global_body = self._globals()
         _, conn_type, _ = EnrichConnectionTable(
             self._input(),
             global_incoming_weights=global_type,
             global_incoming_body_weights=global_body,
         )
+        assert "traversal_probability" not in conn_type.columns
+        assert "block_probability" not in conn_type.columns
         rows = conn_type.set_index(["type_pre", "type_post"])
-        t1t3 = rows.loc[("T1", "T3")]
-        assert t1t3["traversal_probability"] == pytest.approx(
-            1 - (1 - 0.8333333333) * (1 - 0.5) * (1 - 0.6666666667), abs=1e-9
-        )
-        t2t3 = rows.loc[("T2", "T3")]
-        assert t2t3["traversal_probability"] == pytest.approx(1.0)  # capped pair
+        assert rows.loc[("T1", "T3"), "weight"] == 10  # 5+3+2, canonical
+        assert rows.loc[("T2", "T3"), "weight"] == 4
 
     def test_all_null_type_post_is_joinable_with_global_type_totals(self):
         """Untyped post neurons must fall back to their bodyId without a
@@ -502,29 +498,22 @@ class TestEngineParity:
         assert conn_type.height == 1
         assert conn_type["type_post"].to_list() == ["U"]
 
-    def test_average_is_weight_weighted_mean(self):
+    @pytest.mark.parametrize("method", ["average", "ratio"])
+    def test_aggregate_methods_keep_weights_and_suspend_probability(self, method):
+        """Historical semantics (average = weight-weighted mean of pair
+        probabilities; ratio = min(type ratio / 0.3, 1)) are SUSPENDED
+        with the probability family (2026-10-06, unverifiable fidelity):
+        neither column is exposed. The methods must still leave the
+        observable columns correct."""
         global_type, global_body = self._globals()
         _, conn_type, _ = EnrichConnectionTable(
             self._input(),
-            aggregate_method="average",
+            aggregate_method=method,
             global_incoming_weights=global_type,
             global_incoming_body_weights=global_body,
         )
+        assert "traversal_probability" not in conn_type.columns
+        assert "block_probability" not in conn_type.columns
         rows = conn_type.set_index(["type_pre", "type_post"])
-        t1t3 = rows.loc[("T1", "T3")]
-        expected = (5 * 0.8333333333 + 3 * 0.5 + 2 * 0.6666666667) / 10
-        assert t1t3["traversal_probability"] == pytest.approx(expected, abs=1e-9)
-
-    def test_ratio_matches_legacy_model(self):
-        global_type, global_body = self._globals()
-        _, conn_type, _ = EnrichConnectionTable(
-            self._input(),
-            aggregate_method="ratio",
-            global_incoming_weights=global_type,
-            global_incoming_body_weights=global_body,
-        )
-        rows = conn_type.set_index(["type_pre", "type_post"])
-        t1t3 = rows.loc[("T1", "T3")]
-        assert t1t3["traversal_probability"] == pytest.approx((10 / 100) / 0.3)
-        t2t3 = rows.loc[("T2", "T3")]
-        assert t2t3["traversal_probability"] == pytest.approx((4 / 100) / 0.3)
+        assert rows.loc[("T1", "T3"), "weight"] == 10
+        assert rows.loc[("T2", "T3"), "weight"] == 4

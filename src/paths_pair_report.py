@@ -591,27 +591,28 @@ def _load_pair_level_ratios(folder
                 break
         if col is None:
             return out, source
-        # Two row shapes share the table (2026-10-05 real-data audit):
-        # recurring pairs whose TOTAL is stamped identically on every
-        # conn_layer row (same weight per row — the pair value is the row
-        # value; summing would overcount by the row count), and SPLIT
-        # recurring pairs carrying each depth's realized weight (weights
-        # differ — the pair value is the SUM of the row ratios; they share
-        # the post type's denominator, so ratios add exactly like the
-        # weights). Picking .first() understated every split pair.
-        weight_col = ('weight' if 'weight' in ct.columns else None)
+        # Two row shapes share the table (2026-10-05 real-data audit,
+        # heuristic corrected 2026-10-07): recurring pairs whose value is
+        # a pair-level STAMP repeated identically on every conn_layer row
+        # (the pair value is the row value; summing would overcount by
+        # the row count), and SPLIT pairs carrying each depth's realized
+        # share (row values differ; the pair value is their SUM — the
+        # rows share the post type's denominator, so the shares add).
+        # The discriminator is the VALUE column's own constancy, never
+        # the weight shape: round-15 stamps the pair-level adjusted
+        # ratio as a row-constant even when the per-depth weights differ
+        # — keying on weights summed k identical stamps for exactly the
+        # split-shaped pairs this loader was written for.
         grouped = ct.groupby(['type_pre', 'type_post'])
         for (pre, post), grp in grouped:
             rows_col = grp[col].dropna()
             if rows_col.empty:
                 continue
-            if weight_col is not None:
-                w = grp['weight'].astype(float)
-                split = float(w.max()) != float(w.min())
-            else:
-                split = False
-            value = (float(rows_col.sum()) if split
-                     else float(rows_col.iloc[0]))
+            vals = rows_col.astype(float)
+            split = (len(vals) > 1
+                     and float(vals.max()) != float(vals.min()))
+            value = (float(vals.sum()) if split
+                     else float(vals.iloc[0]))
             out[(str(pre), str(post))] = value
     except (OSError, ValueError):
         pass

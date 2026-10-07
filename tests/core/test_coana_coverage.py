@@ -1173,6 +1173,11 @@ class TestRatioAdjColumns:
         # recompute's numerator must count a recurring physical edge ONCE
         # (the exported weight column's semantics). Real-data exposure:
         # SMP053->PPL101 summed 307 vs the table's 187.
+        # Canonical pair mass (2026-10-07): rows differing in weight are
+        # distinct per-ROI slices and SUM to the physical mass (30+25=55);
+        # an exact duplicate row (the second 30) is refetch multiplicity
+        # and collapses; a row pair differing only in the fetch-provenance
+        # conn_layer (the 25 repeated at another layer) also collapses.
         fc, _ = make_fc(
             weight_basis='connection_ratio',
             min_ratio=0.01,
@@ -1187,14 +1192,18 @@ class TestRatioAdjColumns:
             'connection_ratio': [0.5], 'traversal_probability': [1.0],
             'block_probability': [0.0],
         })
-        # the SAME bodyId edge recurring at two depths (307-vs-187 class)
+        # one bodyId edge spanning two ROI slices (30 and 25), one exact
+        # duplicate refetch of the 30 slice, and one conn_layer-only
+        # refetch of the 25 slice (307-vs-187 class)
         conn_inpath = pd.DataFrame({
-            'type_pre': ['A', 'A'], 'type_post': ['B', 'B'],
-            'bodyId_pre': ['a1', 'a1'], 'bodyId_post': ['b1', 'b1'],
-            'weight': [30, 25],
+            'type_pre': ['A'] * 4, 'type_post': ['B'] * 4,
+            'bodyId_pre': ['a1'] * 4, 'bodyId_post': ['b1'] * 4,
+            'conn_layer': ['0->1', '0->1', '0->1', '1->2'],
+            'weight': [30, 25, 30, 25],
         })
         out = fc._recompute_ratio_lane_type_ratios(conn_types, conn_inpath)
-        assert abs(out['connection_ratio'].iloc[0] - 30 / 100) < 1e-12
+        # physical pair mass = 30 + 25 (slices sum; both refetch copies collapse)
+        assert abs(out['connection_ratio'].iloc[0] - 55 / 100) < 1e-12
 
     def test_recompute_type_coverage_falls_back_to_frame_members(self):
         fc, _ = make_fc(

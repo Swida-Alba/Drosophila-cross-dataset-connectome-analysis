@@ -1291,3 +1291,18 @@ def test_pair_level_ratio_two_row_shapes(tmp_path):
     assert abs(mapping[("SB", "TA")]
                - (0.005356 + 0.004658 + 0.005356)) < 1e-9  # summed
     assert mapping[("SC", "TA")] == 0.02
+    # Round-15 regression (2026-10-07): the pair-level adj stamp is
+    # row-constant even when the per-depth WEIGHTS differ — the old
+    # weight-shape heuristic read this as split and summed k identical
+    # stamps (k× overcount). The value column's own constancy is the
+    # discriminator.
+    run2 = tmp_path / "find-paths-complete_FAFB_SD_to_TD_L2w3_20260101_000000"
+    (run2 / "data_details").mkdir(parents=True)
+    pd.DataFrame([
+        {"type_pre": "SD", "type_post": "TD", "weight": w,
+         "connection_ratio_adj": 0.12, "conn_layer": f"{i}->{i+1}"}
+        for i, w in enumerate([23, 20, 23])
+    ]).to_csv(run2 / "data_details" / "connection_type.csv", index=False)
+    mapping2, source2 = _load_pair_level_ratios(run2)
+    assert source2 == "adjusted"
+    assert mapping2[("SD", "TD")] == 0.12  # not 3x0.12

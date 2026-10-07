@@ -619,6 +619,36 @@ class TestPathBuilders:
             assert pre_nulls.sum() == 0
             assert post_nulls.sum() == 0
 
+    def test_enrichment_canonical_pair_mass_slices_sum_exact_dups_collapse(self):
+        """Canonical pair mass (2026-10-07): per-ROI caches (hemibrain:
+        27.1% of connection mass, 9% of pairs; male-cns 2.1%) store one
+        row per (bodyId_pre, bodyId_post, roi) — weight = that ROI's
+        slice — while refetches append EXACT duplicate rows (FAFB/BANC
+        caches are pair-level, 0 multi-row). Both engines must collapse
+        the exact duplicates and SUM the ROI slices per pair, so the
+        exported type weight carries the physical pair mass 10+5=15 —
+        not the old keep-first slice 10, and not the refetch-inflated
+        10+10+5=25."""
+        rows = {
+            "bodyId_pre": ["1", "1", "1", "2"],
+            "bodyId_post": ["3", "3", "3", "4"],
+            "type_pre": ["A", "A", "A", "C"],
+            "type_post": ["B", "B", "B", "B"],
+            "roi": ["R1", "R2", "R1", "R1"],
+            "weight": [10, 5, 10, 7],
+        }
+        # rows 1+3 are the same ROI slice refetched (exact duplicate);
+        # row 2 is a second ROI slice of the SAME pair 1->3.
+        for engine, frame in (("polars", pl.DataFrame(rows)),
+                              ("pandas", pd.DataFrame(rows))):
+            _, conn_t, _ = sv.EnrichConnectionTable(
+                frame, dataset=None, script_path=None, engine=engine)
+            weights = {(str(p), str(q)): w for p, q, w in
+                       zip(conn_t["type_pre"], conn_t["type_post"],
+                           conn_t["weight"])}
+            assert weights[("A", "B")] == 15  # slices 10+5 sum; refetch collapses
+            assert weights[("C", "B")] == 7
+
 
 # =============================================================================
 # Streaming polars pipeline

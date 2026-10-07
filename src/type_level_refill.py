@@ -211,17 +211,22 @@ def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
     """Per-type-pair emitted weight — the run's PHYSICAL edge mass.
 
     Engine round 2026-10-06: prefers ``connection_info_bodyId.csv`` and
-    dedups (bodyId_pre, bodyId_post) keep-first before aggregating. In
-    shortest runs the same physical edge is fetched once per backward
-    BFS layer it recurs in, and ``connection_type.csv`` therefore counts
-    it once per fetch (measured on a real FAFB run: the pair-level sums
-    were 2.18x the physical mass; 519 of 582 type pairs inflated) — the
-    dedup restores the mass every other surface of the run reports and
-    what the refill's own cut re-derivation (deduped per cut edge) must
-    reproduce for the anchor check to hold. In 'all' mode each pair
-    lives in exactly one layer, so both readings coincide. Runs without
-    bodyId detail (``skip_bodyId=True``) fall back to the conn-table
-    sums; there the anchor semantics stay per-layer (disclosed)."""
+    canonicalizes the pair rows before aggregating: EXACT duplicate rows
+    collapse (refetch multiplicity — identical modulo the fetch-provenance
+    ``conn_layer`` column the per-layer audit rows carry) and per-ROI
+    slices sum to the pair's physical mass. In shortest runs the same
+    physical edge is fetched once per backward BFS layer it recurs in,
+    and ``connection_type.csv`` therefore counts it once per fetch
+    (measured on a real FAFB run: the pair-level sums were 2.18x the
+    physical mass; 519 of 582 type pairs inflated) — the exact-dup
+    collapse restores the mass every other surface of the run reports
+    and what the refill's own cut re-derivation (deduped per cut edge)
+    must reproduce for the anchor check to hold; the per-ROI slice sum
+    keeps multi-ROI pairs (hemibrain/male-cns caches) at full mass
+    instead of one ROI's slice. In 'all' mode each pair lives in exactly
+    one layer, so both readings coincide. Runs without bodyId detail
+    (``skip_bodyId=True``) fall back to the conn-table sums; there the
+    anchor semantics stay per-layer (disclosed)."""
     run_dir = Path(run_dir)
     info_path = run_dir / 'data_details' / 'connection_info_bodyId.csv'
     if info_path.exists():
@@ -231,8 +236,12 @@ def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
                    'type_pre': str, 'type_post': str})
         if not ci.empty and {'bodyId_pre', 'bodyId_post',
                              'type_pre', 'type_post'} <= set(ci.columns):
+            # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
+            # conn_layer is fetch provenance: refetched rows are exact
+            # duplicates modulo it and collapse; per-ROI slice rows stay
+            # distinct and sum in the groupby below.
             ci = ci.drop_duplicates(
-                subset=['bodyId_pre', 'bodyId_post'], keep='first')
+                subset=[c for c in ci.columns if c != 'conn_layer'])
             ci = ci[ci['type_pre'].notna() & ci['type_post'].notna()]
             agg = ci.groupby(['type_pre', 'type_post'])['weight'].sum()
             return {tuple(k): int(v) for k, v in agg.items()}
@@ -666,7 +675,7 @@ def compute_type_level_refill(
         'run_dir': str(run_dir),
         'requested_threshold': asked,
         'requested_threshold_stamped':
-            _parse_int(prov.get('requested_threshold')),
+            _parse_thr(prov.get('requested_threshold')),
         'replayed_from': replayed_from,
         'applied_threshold': applied,
         'applied_threshold_source': prov.get('applied_threshold_source'),
@@ -1020,12 +1029,12 @@ def compute_type_level_refill(
         })
 
     ordered = sorted(refill_edges.items(),
-                     key=lambda kv: (-kv[1]['w'], kv[0][0], kv[0][1]))
+                     key=lambda kv: (-_anchor_w(kv[0]), kv[0][0], kv[0][1]))
     capped = ordered[:max(0, int(detail_cap))]
     detail = [{
         'bodyId_pre': u, 'bodyId_post': v,
         'type_pre': type_map[u], 'type_post': type_map[v],
-        'weight': meta['w'],
+        'weight': _anchor_w((u, v)),
         'traversal_count': meta['traversals'],
         'min_hop': meta['hops'][0], 'max_hop': meta['hops'][-1],
     } for (u, v), meta in capped]
@@ -1065,8 +1074,11 @@ def compute_type_level_refill(
         'emitted_rederived_size': len(cut_info),
         'table_reproduced': True,
         'refill_edges': len(refill_edges),
-        'refill_weight_total': int(sum(m['w'] for m in
-                                       refill_edges.values())),
+        # PHYSICAL synapse mass (the syn_of anchor in ratio mode; the
+        # enumeration weight m['w'] is the F9 RATIO there — summing it
+        # under a "synapses" label would be meaningless)
+        'refill_weight_total': int(sum(
+            _anchor_w(uv) for uv in refill_edges)),
         'detail_rows_written': len(detail),
         'detail_cap': int(detail_cap),
         'detail_capped': len(ordered) > len(capped),
@@ -1153,8 +1165,7 @@ def compute_type_level_refill(
                 for _bn, nodes in (_emitted_paths or [])}
             path_rows, refill_bodyid_paths = _aggregate_refill_paths(
                 _paths_asked, set(refill_edges.keys()), cut_chain_keys,
-                type_map, node_set, _anchor_w, type_in, type_in_adj,
-                _min_syn)
+                type_map, node_set, _anchor_w, type_in)
             rec['refill_paths_type'] = len(path_rows)
             rec['refill_paths_bodyid'] = refill_bodyid_paths
             # R1: the COMPLETE-AT-ASKED view — the SAME chains re-valued
@@ -1165,8 +1176,7 @@ def compute_type_level_refill(
                 complete_rows, complete_stats = _aggregate_complete_paths(
                     _paths_asked, set(cut_info.keys()),
                     set(refill_edges.keys()), cut_chain_keys,
-                    type_map, node_set, _anchor_w, type_in, type_in_adj,
-                    _min_syn)
+                    type_map, node_set, _anchor_w, type_in)
                 rec['complete_at_asked'] = (not refill_truncated)
                 rec['complete_paths_type'] = complete_stats['chains']
                 rec['complete_paths_bodyid'] = complete_stats[
@@ -1231,12 +1241,21 @@ back to the conn-table sums (per-layer semantics, disclosed).
 `unfired_residual` (refill_type_pairs.csv)
 ------------------------------------------
 Every >=asked edge on an EMITTED type pair that entered the induced
-graph must fire on some enumerated chain (emitted or refilled); mass
-that fires on no chain (off-route geometry) is disclosed per pair as
+graph must fire on some ENUMERATED asked-threshold path (any chain,
+not only the Pair Explorer's chain scope — the pair totals and the
+chain tables are intentionally different scopes); mass that fires on
+no enumerated path (off-route geometry) is disclosed per pair as
 `unfired_residual = asked_pair_mass - emitted_weight - refill_weight`
 (0 on clean runs; nonzero = off-route mass +, when the refill guard
-bit, guard-missed mass). Empty in shortest mode (no second-round
-enumeration to reconcile against).
+bit, guard-missed mass + pruned non-emitted-pair mass on the pair).
+Empty in shortest mode (no second-round enumeration to reconcile
+against).
+
+Partially-finite ratio rows: a path row whose post type has zero F9
+incoming mass renders a BLANK `ratios` list (per-hop shares need every
+denominator); its `min_ratio` is the minimum over the FINITE hops
+only. Zero occurrences on healthy data (every involved type has
+incoming mass by construction).
 
 Complete-at-asked table (`complete_at_asked_paths_type.csv`)
 ------------------------------------------------------------
@@ -1335,8 +1354,7 @@ def _fmt_mass(value) -> str:
 
 
 def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
-                            type_map, node_set, anchor_w, type_in,
-                            type_in_adj, min_syn):
+                            type_map, node_set, anchor_w, type_in):
     """Aggregate the REFILLED bodyId paths — the asked-threshold
     enumeration on the involved-types induced subgraph (the second
     path-building round) restricted to paths carrying >=1 refill edge.
@@ -1350,16 +1368,15 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
     Engine recipe (coana rounds 9-11): per-hop REALIZED mass = the sum
     of the DISTINCT bodyId edges realizing that hop position; per-hop
     ratios = realized mass over the post type's full-membership incoming
-    mass (the module's F9 ``type_in`` denominator; the
-    threshold-conditioned ``type_in_adj`` variant when a Min Synapse
-    Count is active); ``min_weight``/``min_ratio`` = the weakest hop;
+    mass (the module's F9 ``type_in`` denominator —
+    threshold-free all-post, matching the exported Ratios column;
+    adjusted variants live in the pair tables, not the path tables); ``min_weight``/``min_ratio`` = the weakest hop;
     coverage ``n/N`` = distinct bodyIds realizing the node in THIS path
     set over the type's membership in the induced node set (not the
     run's discovered-network N — disclosed in the README). Probability
     columns (probabilities/path_prob) are SUSPENDED (2026-10-06,
     unverifiable fidelity) and are not emitted.
     Returns (rows in _PATHS_MIRROR_COLUMNS order, bodyId path count)."""
-    adj_active = bool(min_syn and min_syn > 1)
     type_n: Dict[str, int] = defaultdict(int)
     for b in node_set:
         label = type_map.get(str(b))
@@ -1435,7 +1452,7 @@ _COMPLETE_PATHS_COLUMNS = _PATHS_MIRROR_COLUMNS + (
 
 def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,
                               chain_keys, type_map, node_set, anchor_w,
-                              type_in, type_in_adj, min_syn):
+                              type_in):
     """Aggregate the COMPLETE-AT-ASKED path set — EVERY path in
     ``paths_asked`` (the asked-threshold enumeration on the involved-
     types induced subgraph), NO filter of any kind. In particular a
@@ -1457,7 +1474,6 @@ def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,
 
     Returns (rows carrying _COMPLETE_PATHS_COLUMNS, stats_dict with
     ``chains``/``bodyid_paths``)."""
-    adj_active = bool(min_syn and min_syn > 1)
     type_n: Dict[str, int] = defaultdict(int)
     for b in node_set:
         label = type_map.get(str(b))
