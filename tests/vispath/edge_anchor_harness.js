@@ -257,6 +257,16 @@ console.log('[5] anchorPoint — exact rounded/sharp corners, exact mids, ellips
         near(p[0] / 50 + p[1] / 30, 1, 1e-6), p[0] / 50 + p[1] / 30);
     p = geometry.anchorPoint(dia, 0);   // E vertex
     check('diamond E vertex = (50, 0)', near(p[0], 50, 0.01) && near(p[1], 0, 0.01), p);
+    // asymmetric ray: toward (5,3) the ray x=5t, y=3t meets x/50 + y/30 = 1
+    // at t=5 -> the point (25, 15), distance sqrt(850) — pins the formula
+    // beyond the symmetric 45-degree ray
+    const dAsym = geometry.rimDistance(dia, 5, 3);
+    check('diamond ray (5,3) rim distance = sqrt(850)',
+        near(dAsym, Math.sqrt(850), 1e-6), dAsym);
+    const onEdge = geometry.rimDistance(dia, 5, 3) / Math.hypot(5, 3);
+    check('diamond ray (5,3) exit point on the rhombus edge',
+        near((5 * onEdge) / 50 + (3 * onEdge) / 30, 1, 1e-6),
+        (5 * onEdge) / 50 + (3 * onEdge) / 30);
 
     const sharp = mockNode(100, 60, 'rectangle');   // sharp corners stay exact
     p = geometry.anchorPoint(sharp, 1);
