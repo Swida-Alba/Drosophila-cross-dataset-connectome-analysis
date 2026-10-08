@@ -45,15 +45,16 @@ def _synthetic_conn():
 
     Total incoming per post type (denominator of every ratio):
         X=30, Y=50, Z=10, W=100
-    Includes a duplicate bodyId pair (1,10) with a large bogus weight (99) that
-    must be dropped by deduplication.
+    Canonical pair mass (2026-10-08): exact duplicate rows collapse (the
+    repeated (1,10) weight-5 row counts once), distinct rows of a pair
+    sum (5+4+6 = 15).
     """
     rows = [
         # bodyId_pre, bodyId_post, type_pre, type_post, weight, connection_ratio
         (1, 10, 'A', 'X', 5, 5 / 30.0),
+        (1, 10, 'A', 'X', 5, 5 / 30.0),     # exact duplicate -> collapses
         (1, 11, 'A', 'X', 4, 4 / 30.0),
         (2, 10, 'A', 'X', 6, 6 / 30.0),
-        (1, 10, 'A', 'X', 99, 99 / 30.0),   # duplicate pair -> must be deduped
         (3, 12, 'A', 'Y', 7, 7 / 50.0),
         (4, 12, 'B', 'Y', 9, 9 / 50.0),
         (1, 12, 'A', 'Y', 8, 8 / 50.0),
@@ -177,8 +178,8 @@ class TestTypeLevelAggregation:
 
     @pytest.mark.parametrize('impl', ['pandas', 'polars'])
     def test_duplicate_bodyid_pair_is_deduplicated(self, impl):
-        # The (1,10) pair appears twice (weight 5 and bogus 99); only the
-        # first counts, so A->X weight must be 15, not 114.
+        # Canonical pair mass: the exact duplicate (1,10) row collapses
+        # (counts once), distinct rows sum -> A->X weight 15, not 20.
         ct = self._type_table(impl)
         row = ct[(ct['t_pre'] == 'A') & (ct['t_post'] == 'X')].iloc[0]
         assert row['weight'] == pytest.approx(15.0)
