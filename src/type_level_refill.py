@@ -695,8 +695,13 @@ def compute_type_level_refill(
         'min_synapse': prov.get('min_synapse'),
     }
 
-    # -- gate (I4): refill only when a budget raised the applied threshold
-    if applied <= asked:
+    # -- gate (I4): refill only when a budget raised the applied threshold.
+    # RATIO-MODE EXCEPTION (2026-10-08, user directive): ratio runs ALWAYS
+    # fill the data — the gate is bypassed and the second round runs at
+    # the asked tier (cut == asked), producing the complete-at-asked
+    # table + records + mirror with refill mass 0 and the dedicated
+    # status 'complete_at_asked'. Synapse-basis runs keep the gate.
+    if applied <= asked and not ratio_mode:
         rec['status'] = STATUS_NO_REFILL
         if write:
             _write_records(run_dir, out_dir, rec, None, None, detail_cap)
@@ -708,6 +713,11 @@ def compute_type_level_refill(
         if write:
             _write_records(run_dir, out_dir, rec, None, None, detail_cap)
         return rec
+    # Non-bitten ratio runs (applied == asked): the second round runs at
+    # the asked tier and recovers mass 0 — the status says
+    # 'complete_at_asked' so consumers know the complete table is the
+    # full asked-threshold set (the Refill tab still shows it).
+    complete_only = ratio_mode and applied <= asked
     rec['status'] = STATUS_REFILLED
     involved = {p for pair in emitted for p in pair}
     node_set = {str(b) for b, t in type_map.items() if t in involved}
@@ -1120,8 +1130,11 @@ def compute_type_level_refill(
     if write:
         # Standalone mirror folder: only for the DEFAULT in-run record
         # location — a custom --out dir means "leave the run folder
-        # untouched" (the CLI byte-stability contract).
-        build_mirrors = (rec.get('status') == 'refilled'
+        # untouched" (the CLI byte-stability contract). Both statuses
+        # fill: 'refilled' (cut mass) and 'complete_at_asked' (non-bitten
+        # ratio runs — the complete view is the deliverable).
+        build_mirrors = (rec.get('status') in ('refilled',
+                                               'complete_at_asked')
                          and out_dir is None)
         if build_mirrors:
             # The refilled data in the path/connection data format.
@@ -1206,6 +1219,8 @@ def compute_type_level_refill(
             else:
                 complete_rows = None
                 rec['complete_at_asked'] = None
+            if complete_only:
+                rec['status'] = 'complete_at_asked'
             rec['mirror_folder'] = _MIRROR_FOLDER_NAME
         _write_records(run_dir, out_dir, rec, rows, detail, detail_cap)
         if build_mirrors:

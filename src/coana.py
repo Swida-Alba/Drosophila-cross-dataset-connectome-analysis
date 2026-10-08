@@ -17549,7 +17549,12 @@ class FindNeuronConnection:
                     and replayed < asked:
                 asked = replayed
             applied = _as_thr(prov.get('applied_threshold'))
-            if applied is None or asked is None or applied <= asked:
+            # RATIO-MODE EXCEPTION (2026-10-08): ratio runs ALWAYS fill —
+            # even non-bitten runs get the complete-at-asked table +
+            # mirror (status 'complete_at_asked', refill mass 0).
+            if applied is None or asked is None:
+                return False
+            if applied <= asked and not _ratio:
                 return False
 
             def _stream_edges():
@@ -17609,7 +17614,7 @@ class FindNeuronConnection:
             rec = compute_type_level_refill(
                 run_dir, edges=stream, type_map=type_map, out_dir=None,
                 source_note='auto (post-materialization hook)')
-            if rec.get('status') == 'refilled':
+            if rec.get('status') in ('refilled', 'complete_at_asked'):
                 # The standalone mirror folder's parameters.csv (same
                 # frame as data_details/parameters.csv, like
                 # find_reciprocal/); the refill visualizations themselves
@@ -17623,22 +17628,30 @@ class FindNeuronConnection:
                 except Exception as exc:  # best-effort mirror extra
                     self._vprint(f'[type-level refill] parameters.csv '
                                  f'not mirrored: {exc}', level='full')
-                self._warn_notes.append(
-                    '- [type-level refill] applied threshold '
-                    f'{rec["applied_threshold"]} > asked '
-                    f'{rec["requested_threshold"]} '
-                    f'({rec["applied_threshold_source"]}): standalone '
-                    'refill records written to '
-                    'data_details/type_level_refill/ — '
-                    f'{rec["refill_edges"]:,} bodyId edges / '
-                    f'{rec["refill_weight_total"]:,} synapses of '
-                    'budget-cut mass recovered behind the existing '
-                    'connection_type.csv rows (refill only; '
-                    'non-emitted type pairs are not built; their mass is disclosed '
-                    'as non_emitted_pair_mass). '
-                    'Refilled data mirrored in the type_level_refill/ '
-                    'folder (connection-table format + visualizations).')
-            return rec.get('status') == 'refilled'
+                if rec.get('status') == 'complete_at_asked':
+                    self._warn_notes.append(
+                        '- [type-level refill] ratio-basis run at the '
+                        'asked threshold: complete-at-asked data written '
+                        'to data_details/type_level_refill/ and mirrored '
+                        'in the type_level_refill/ folder (no cut mass — '
+                        'the budget did not bite).')
+                else:
+                    self._warn_notes.append(
+                        '- [type-level refill] applied threshold '
+                        f'{rec["applied_threshold"]} > asked '
+                        f'{rec["requested_threshold"]} '
+                        f'({rec["applied_threshold_source"]}): standalone '
+                        'refill records written to '
+                        'data_details/type_level_refill/ — '
+                        f'{rec["refill_edges"]:,} bodyId edges / '
+                        f'{rec["refill_weight_total"]:,} synapses of '
+                        'budget-cut mass recovered behind the existing '
+                        'connection_type.csv rows (refill only; '
+                        'non-emitted type pairs are not built; their mass is disclosed '
+                        'as non_emitted_pair_mass). '
+                        'Refilled data mirrored in the type_level_refill/ '
+                        'folder (connection-table format + visualizations).')
+            return rec.get('status') in ('refilled', 'complete_at_asked')
         except TypeLevelRefillError as exc:
             self._warn_notes.append(
                 f'- [type-level refill] NOT generated: {exc}')

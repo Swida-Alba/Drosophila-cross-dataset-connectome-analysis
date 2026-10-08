@@ -1587,7 +1587,7 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
     # provenance they answer to.
     refill = _load_refill_summary(run_dir)
     if refill:
-        if refill.get('status') == 'refilled':
+        if _refill_has_data(refill):
             rows.append(
                 f'<tr><td><strong>Type-level refill</strong></td>'
                 f'<td>{refill.get("refill_edges", 0):,} bodyId edges / '
@@ -1695,6 +1695,13 @@ def _applied_title_attr(source: str) -> str:
             if source else '')
 
 
+def _refill_has_data(prov: dict) -> bool:
+    """True when the run's refill records carry browsable data: real cut
+    mass ('refilled') or the non-bitten ratio-mode complete-at-asked
+    table ('complete_at_asked')."""
+    return str(prov.get('status') or '') in ('refilled', 'complete_at_asked')
+
+
 def _render_per_type_coverage_table(unit: dict, show_label: bool) -> str:
     """Per-TYPE breakdown under the aggregate query-coverage line: the
     same enrollment CSVs grouped by type — source rows count bodyIds on
@@ -1793,13 +1800,19 @@ def _render_refill_card(run_dir: Path) -> str:
     except Exception:  # noqa: BLE001
         return ''
     status = str(prov.get('status') or '')
-    if status and status != 'refilled':
-        return ''
+    if status and status not in ('refilled', 'complete_at_asked'):
+        return ''  # 'complete_at_asked' surfaces on the Refill tab only
     pairs_csv = folder / 'refill_type_pairs.csv'
+    complete_only = status == 'complete_at_asked'
+    if complete_only:
+        # the Overview zero-mass card stays hidden (approved plan) — the
+        # Refill tab carries the complete-at-asked explorer
+        return ''
     rows = []
     try:
         frame = pd.read_csv(pairs_csv)
-        frame = frame[frame['refill_weight'].fillna(0) > 0]
+        if status == 'refilled':
+            frame = frame[frame['refill_weight'].fillna(0) > 0]
         frame = frame.sort_values('refill_weight', ascending=False).head(12)
         for _, r in frame.iterrows():
             rows.append(
@@ -2430,7 +2443,9 @@ def _render_refill_section(folder: Path, label: str,
 
     head = (f'<div class="card"><h3>{label}</h3>')
 
-    if prov.get('status') != 'refilled' or not pairs_csv.exists():
+    if str(prov.get('status') or '') not in ('refilled',
+                                             'complete_at_asked') \
+            or not pairs_csv.exists():
         applied = asked = None
         attrs_path = folder / 'all_attributes.json'
         if attrs_path.exists():
@@ -2449,6 +2464,7 @@ def _render_refill_section(folder: Path, label: str,
                   'this threshold; there is no cut mass to recover.'
                 + detail + '</p></div>', False)
 
+    complete_only = prov.get('status') == 'complete_at_asked'
     edges = prov.get('refill_pair_count') or prov.get('refill_edges')
     syn_total = None
     try:
@@ -2457,7 +2473,10 @@ def _render_refill_section(folder: Path, label: str,
     except Exception:  # noqa: BLE001
         syn_total = None
     summary_bits = []
-    if edges is not None:
+    if complete_only:
+        summary_bits.append('complete-at-asked view — the full '
+                            'asked-threshold chain set (no cut mass)')
+    if edges:
         summary_bits.append(f'{int(edges):,} bodyId edges')
     if syn_total:
         summary_bits.append(f'{syn_total:,} synapses of budget-cut mass')
@@ -2528,10 +2547,18 @@ def _render_refill_section(folder: Path, label: str,
             'with its own visualizations: '
             + ' · '.join(standalone_html) + '</p>')
 
+    if complete_only:
+        summary_p = ('<p>Complete-at-asked view — the full '
+                     'asked-threshold chain set (no cut mass: the budget '
+                     'did not bite on this run).' + adj_note + '</p>')
+    else:
+        summary_p = ('<p>Recovered ' + ' / '.join(summary_bits)
+                     + ' — recovered behind the emitted pairs; a certified '
+                     'lower bound of the complete-at-asked refill.'
+                     + adj_note + '</p>')
+
     return (head
-            + '<p>Recovered ' + ' / '.join(summary_bits)
-            + ' — recovered behind the emitted pairs; a certified lower '
-            'bound of the complete-at-asked refill.' + adj_note + '</p>'
+            + summary_p
             + export_note
             + standalone_note
             + '</div>', True)
