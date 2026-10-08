@@ -17700,12 +17700,13 @@ class FindNeuronConnection:
                     and replayed < asked:
                 asked = replayed
             applied = _as_thr(prov.get('applied_threshold'))
-            # RATIO-MODE EXCEPTION (2026-10-08): ratio runs ALWAYS fill —
-            # even non-bitten runs get the complete-at-asked table +
-            # mirror (status 'complete_at_asked', refill mass 0).
+            # DUAL REFILL (2026-10-08): every run with emitted rows fills
+            # now — the asked view keeps its gates inside
+            # compute_type_level_refill (ratio runs always fill; synapse
+            # runs recover cut mass), and the refill-full scope
+            # (synapse >= 1, no tier) is produced for EVERY run,
+            # non-bitten synapse runs included.
             if applied is None or asked is None:
-                return False
-            if applied <= asked and not _ratio:
                 return False
 
             def _stream_edges():
@@ -17735,7 +17736,7 @@ class FindNeuronConnection:
                         for u, v, w in zip(pre, post, weight):
                             if w is not None:
                                 yield str(u), str(v), float(w)
-                return _gen()
+                return _gen(), edge_lf
 
             neuron_frame = getattr(
                 self, '_refill_neuron_frame_override', None)
@@ -17779,7 +17780,8 @@ class FindNeuronConnection:
                 rec = compute_type_level_refill(
                     run_dir, edges=stream, type_map=type_map, out_dir=None,
                     source_note='auto (post-materialization hook)')
-            if rec.get('status') in ('refilled', 'complete_at_asked'):
+            if (rec.get('status') in ('refilled', 'complete_at_asked')
+                    or rec.get('full')):
                 # The standalone mirror folder's parameters.csv (same
                 # frame as data_details/parameters.csv, like
                 # find_reciprocal/); the refill visualizations themselves
@@ -17793,6 +17795,7 @@ class FindNeuronConnection:
                 except Exception as exc:  # best-effort mirror extra
                     self._vprint(f'[type-level refill] parameters.csv '
                                  f'not mirrored: {exc}', level='full')
+                _full = rec.get('full') or {}
                 if rec.get('status') == 'complete_at_asked':
                     self._warn_notes.append(
                         '- [type-level refill] ratio-basis run at the '
@@ -17800,7 +17803,7 @@ class FindNeuronConnection:
                         'to data_details/type_level_refill/ and mirrored '
                         'in the type_level_refill/ folder (no cut mass — '
                         'the budget did not bite).')
-                else:
+                elif rec.get('status') == 'refilled':
                     self._warn_notes.append(
                         '- [type-level refill] applied threshold '
                         f'{rec["applied_threshold"]} > asked '
@@ -17816,7 +17819,17 @@ class FindNeuronConnection:
                         'as non_emitted_pair_mass). '
                         'Refilled data mirrored in the type_level_refill/ '
                         'folder (connection-table format + visualizations).')
-            return rec.get('status') in ('refilled', 'complete_at_asked')
+                if _full:
+                    self._warn_notes.append(
+                        '- [refill-full] full-connection scope written '
+                        f'({_full.get("refill_edges", 0):,} sub-threshold '
+                        f'bodyId edges / '
+                        f'{_full.get("refill_weight_total", 0):,} '
+                        'synapses behind the emitted pairs at synapse>=1, '
+                        'emitted chains only) — the Refill tab\'s '
+                        'Refill-full scope.')
+            return (rec.get('status') in ('refilled', 'complete_at_asked')
+                    or bool(rec.get('full')))
         except TypeLevelRefillError as exc:
             self._warn_notes.append(
                 f'- [type-level refill] NOT generated: {exc}')

@@ -236,10 +236,20 @@ def staged_runs(tmp_path_factory):
 # 1. Gate
 # ---------------------------------------------------------------------------
 def test_gate_complete_run_no_refill(staged_runs):
-    rec = refill(staged_runs['complete'][1])
+    """DUAL REFILL (2026-10-08): a complete synapse run keeps
+    status 'no_refill_needed' for the ASKED view (no asked tables) but
+    now produces the refill-full scope (synapse>=1, emitted chains)."""
+    run_dir = staged_runs['complete'][1]
+    rec = refill(run_dir)
     assert rec['status'] == 'no_refill_needed'
-    assert not (staged_runs['complete'][1] / 'data_details' /
-                'type_level_refill').exists()
+    assert rec.get('full'), 'the full scope must ride on the record'
+    assert rec['full']['status'] in ('ok', 'truncated')
+    full_pairs = (run_dir / 'data_details' / 'type_level_refill' /
+                  'refill_full_type_pairs.csv')
+    assert full_pairs.exists()
+    # the ASKED tables stay absent on the no-refill gate
+    assert not (run_dir / 'data_details' / 'type_level_refill' /
+                'refill_type_pairs.csv').exists()
 
 
 def test_gate_reads_replayed_from(tmp_path):
@@ -746,11 +756,17 @@ def test_auto_hook_disabled(tmp_path):
 
 
 def test_auto_hook_complete_run_silent(staged_runs):
+    """DUAL REFILL (2026-10-08): a complete synapse run gets no ASKED
+    refill data or note, but the refill-full scope IS written."""
     run_dir = staged_runs['complete'][1]
-    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+    details = run_dir / 'data_details' / 'type_level_refill'
+    assert not (details / 'refill_type_pairs.csv').exists()
+    assert (details / 'refill_full_type_pairs.csv').exists()
     notes = run_dir / 'user_warning_notes.txt'
     if notes.exists():
-        assert 'type-level refill' not in notes.read_text(encoding='utf-8')
+        text = notes.read_text(encoding='utf-8')
+        assert 'type-level refill] applied threshold' not in text
+        assert '[refill-full]' in text
 
 
 # ---------------------------------------------------------------------------

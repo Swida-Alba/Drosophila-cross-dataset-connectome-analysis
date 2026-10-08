@@ -292,6 +292,7 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
                        'typ': [type_map[k] for k in type_map]}).lazy()
     em = pl.DataFrame({'tpre': [p[0] for p in emitted],
                        'tpost': [p[1] for p in emitted]}).unique()
+    em_lazy = em.lazy()
     ns = pl.DataFrame({'nid': sorted(node_set)})
     lf = (edge_lf.select(
               pl.col('bodyId_pre').cast(pl.Utf8).alias('u'),
@@ -432,18 +433,23 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
                 full_frame = full_frame.filter(
                     pl.col('w') >= and_syn_floor)
             # NO tier: the full-connection scope keeps every floor edge
+            # (base already carries the F9-ratio `ew` enumeration weight)
         else:
             full_frame = full_frame.filter(pl.col('w') >= 1)
+            full_frame = full_frame.with_columns(
+                pl.col('w').alias('ew'))
         if exclude_intra:
             full_frame = full_frame.filter(
                 pl.col('typ_pre') != pl.col('typ_post'))
         full_frame = (full_frame
-                      .join(ns.rename({'nid': 'u'}), on='u', how='semi')
-                      .join(ns.rename({'nid': 'v'}), on='v', how='semi')
-                      .join(em, left_on=['typ_pre', 'typ_post'],
+                      .join(ns.lazy().rename({'nid': 'u'}), on='u',
+                            how='semi')
+                      .join(ns.lazy().rename({'nid': 'v'}), on='v',
+                            how='semi')
+                      .join(em_lazy, left_on=['typ_pre', 'typ_post'],
                             right_on=['tpre', 'tpost'], how='semi'))
         e_u_full = [(u, v, ew) for u, v, ew in
-                    full_frame.select(['u', 'v', 'ew']).iter_rows()]
+                    full_frame.select(['u', 'v', 'ew']).collect().iter_rows()]
 
     return {
         'body_in': body_in, 'type_in': type_in, 'type_in_adj': type_in_adj,
@@ -892,18 +898,10 @@ def compute_type_level_refill(
         'min_synapse': prov.get('min_synapse'),
     }
 
-    # -- gate (I4): refill only when a budget raised the applied threshold.
-    # RATIO-MODE EXCEPTION (2026-10-08, user directive): ratio runs ALWAYS
-    # fill the data — the gate is bypassed and the second round runs at
-    # the asked tier (cut == asked), producing the complete-at-asked
-    # table + records + mirror with refill mass 0 and the dedicated
-    # status 'complete_at_asked'. Synapse-basis runs keep the gate.
-    if applied <= asked and not ratio_mode:
-        rec['status'] = STATUS_NO_REFILL
-        if write:
-            _write_records(run_dir, out_dir, rec, None, None, detail_cap)
-        return rec
-
+    # -- DUAL REFILL (2026-10-08): emitted rows + the induced graph feed
+    # BOTH scopes — refill-asked (the gate below keeps its own semantics)
+    # and refill-full (synapse >= 1, no tier; produced for EVERY run with
+    # emitted rows, bitten or not, both modes).
     emitted = read_emitted_pairs(run_dir)
     if not emitted:
         rec['status'] = STATUS_NO_EMITTED
@@ -920,6 +918,9 @@ def compute_type_level_refill(
     node_set = {str(b) for b, t in type_map.items() if t in involved}
 
     syn_of: Dict[Tuple[str, str], float] = defaultdict(float)
+    # DUAL REFILL: the full-scope admission list (all-mode only; the
+    # shortest lane leaves it empty and skips the full scope).
+    e_u_full: List[Tuple[str, str, float]] = []
     # R3 residual: raw physical >=asked mass on emitted pairs that
     # entered the induced graph. All-mode only — the shortest branch
     # leaves it empty and the pair rows say so (README).
@@ -970,7 +971,7 @@ def compute_type_level_refill(
             ratio_mode=ratio_mode, asked=asked,
             and_syn_floor=and_syn_floor, and_ratio_tier=and_ratio_tier,
             min_syn_active=_min_syn_active, min_syn=_min_syn,
-            exclude_intra=exclude_intra, want_full=False)
+            exclude_intra=exclude_intra, want_full=True)
         body_in = pol['body_in']
         type_in = pol['type_in']
         type_in_adj = pol['type_in_adj']
@@ -992,7 +993,109 @@ def compute_type_level_refill(
                     post_totals[v_s] += wf
             elif and_ratio_tier:
                 and_post_totals[v_s] += wf
+    def _produce_full_scope(chain_keys=None, cut_edge_keys=None):
+        """REFILL-FULL (DUAL REFILL 2026-10-08): the second round on
+        the route-scoped graph admitted at SYNAPSE >= 1 only — no
+        ratio tier, no synapse tier — re-valuing the EMITTED chain
+        sequences (value change, zero structural change; mass behind
+        emitted pairs but off-chain stays disclosed via the asked
+        view's unfired residual, never tabulated). Produced for
+        EVERY all-mode run with emitted rows. Returns the 'full'
+        provenance block (the pair table is written alongside)."""
+        if not e_u_full:
+            return None
+        e_pref_full, full_drop = hop_prefilter(
+            e_u_full, sources, targets, bound)
+        _paths_full, estar_full, full_stats = _enumerate_paths(
+            e_pref_full, sources, targets, bound, budget=path_budget)
+        weight_full = {(u, v): w for (u, v, w) in e_pref_full}
+        anchor_full = (
+            (lambda uv: syn_of.get(uv, weight_full[uv]))
+            if ratio_mode else (lambda uv: weight_full[uv]))
+        # chain scope: the emitted chains. The asked flow passes its
+        # own; the no-asked-refill branch derives them from the
+        # asked-tier graph (cut == asked there, so the tier
+        # enumeration IS the run's own chain set).
+        if chain_keys is None:
+            cut_tier = max(asked, w0 or asked)
+            e_cut_full = [(u, v, w) for (u, v, w) in e_pref_full
+                          if w >= cut_tier]
+            _cut_paths_f, cut_info_f, _cs = _enumerate_paths(
+                e_cut_full, sources, targets, bound, budget=None)
+            chain_keys = {tuple(type_map[n] for n in nodes)
+                          for _bn, nodes in _cut_paths_f}
+            cut_edge_keys = set(cut_info_f)
+        refill_full_keys = set(estar_full) - set(cut_edge_keys or ())
+        full_totals: Dict[Tuple[str, str], float] = defaultdict(float)
+        for uv in refill_full_keys:
+            full_totals[(type_map[uv[0]], type_map[uv[1]])] += \
+                anchor_full(uv)
+        rows_full = []
+        for pair in sorted(emitted):
+            emit_w = int(emitted[pair])
+            ref_w = int(full_totals.get(pair, 0.0))
+            denom = type_in.get(pair[1], 0.0)
+            ratio = ((emit_w + ref_w) / denom) if denom > 0 else None
+            rows_full.append({
+                'type_pre': pair[0], 'type_post': pair[1],
+                'emitted_weight': emit_w,
+                'refill_weight': ref_w,
+                'refilled_total': emit_w + ref_w,
+                'refilled_connection_ratio': (
+                    round(ratio, 6) if ratio is not None else None),
+            })
+        carrying_rows, _carrying_bodyid = _aggregate_refill_paths(
+            _paths_full, refill_full_keys, chain_keys, type_map,
+            node_set, anchor_full, type_in)
+        complete_rows_full, complete_stats_full = \
+            _aggregate_complete_paths(
+                _paths_full, set(cut_edge_keys or ()),
+                refill_full_keys, chain_keys, type_map, node_set,
+                anchor_full, type_in)
+        block = {
+            'status': ('truncated'
+                       if full_stats.get('budget_bitten') else 'ok'),
+            'induced_edges': len(e_u_full),
+            'prefilter_dropped': full_drop,
+            'paths': len(_paths_full),
+            'chains_carrying': len(carrying_rows),
+            'chains_complete': complete_stats_full['chains'],
+            'bodyid_paths': complete_stats_full['bodyid_paths'],
+            'refill_edges': len(refill_full_keys),
+            'refill_weight_total': int(sum(
+                full_totals.get(p, 0.0) for p in emitted)),
+            'truncated': bool(full_stats.get('budget_bitten')),
+        }
+        if write:
+            full_dir = (Path(out_dir) if out_dir is not None
+                        else run_dir / 'data_details'
+                        / 'type_level_refill')
+            full_dir.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows_full).to_csv(
+                full_dir / 'refill_full_type_pairs.csv', index=False)
+            if out_dir is None:
+                mirror = run_dir / _MIRROR_FOLDER_NAME
+                mirror.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame(complete_rows_full).to_csv(
+                    mirror / 'refill_full_paths_type.csv', index=False)
+                pd.DataFrame(carrying_rows).to_csv(
+                    mirror / 'refill_full_carrying_paths_type.csv',
+                    index=False)
+                pd.DataFrame(rows_full).to_csv(
+                    mirror / 'refilled_full_connection_type.csv',
+                    index=False)
+        return block
+
     if is_shortest:
+        # DUAL REFILL: shortest mode keeps the asked-view gate (the full
+        # scope is an all-mode deliverable — the shortest lane has no
+        # second-round paths table to re-value).
+        if applied <= asked and not ratio_mode:
+            rec['status'] = STATUS_NO_REFILL
+            if write:
+                _write_records(run_dir, out_dir, rec, None, None,
+                               detail_cap)
+            return rec
         # -- Phase 3: structure from the run's discovery store; `edges`
         # is only the F9 denominator source. Per-pair weights are the
         # per-layer sums (the exported table counts cross-layer
@@ -1083,7 +1186,10 @@ def compute_type_level_refill(
         # from the same edge source). (_and_mode/and_syn_floor and the
         # Pass A accumulators are hoisted above the lane branch.)
         # -- Pass B: the asked-tier admissions (the polars fast path
-        # produced them inside `_polars_stream_passes`).
+        # produced them inside `_polars_stream_passes`, together with the
+        # full-scope admission list).
+        e_u_full: List[Tuple[str, str, float]] = (
+            list(pol['e_u_full']) if pol is not None else [])
         if pol is not None:
             e_u = pol['e_u']
             syn_of = pol['syn_of']
@@ -1093,6 +1199,23 @@ def compute_type_level_refill(
         else:
             for u, v, w in edges:
                 u, v = str(u), str(v)
+                # FULL-scope admission (DUAL REFILL 2026-10-08):
+                # synapse >= 1 only — no ratio tier, no synapse tier, and
+                # independent of the AND co-threshold. The enumeration
+                # weight stays the mode's tier unit (F9 ratio / natural
+                # synapse) for drain-order parity with the run.
+                wf_full = float(w)
+                if (wf_full >= 1 and u in node_set and v in node_set
+                        and not (exclude_intra
+                                 and type_map.get(u) == type_map.get(v))
+                        and (type_map[u], type_map[v]) in emitted):
+                    if ratio_mode:
+                        _den_f = post_totals.get(v, 0.0)
+                        e_u_full.append(
+                            (u, v, (wf_full / _den_f) if _den_f > 0
+                             else 0.0))
+                    else:
+                        e_u_full.append((u, v, wf_full))
                 if ratio_mode:
                     w = float(w)
                     if and_syn_floor is not None and w < and_syn_floor:
@@ -1128,6 +1251,18 @@ def compute_type_level_refill(
                 e_u.append((u, v, w_thr))
         e_pref, prefilter_dropped = hop_prefilter(
             e_u, sources, targets, bound)
+
+        # DUAL REFILL gate: the ASKED view keeps the synapse-run gate;
+        # the full scope runs regardless and rides on the record.
+        if applied <= asked and not ratio_mode:
+            rec['status'] = STATUS_NO_REFILL
+            full_block = _produce_full_scope()
+            if full_block is not None:
+                rec['full'] = full_block
+            if write:
+                _write_records(run_dir, out_dir, rec, None, None,
+                               detail_cap)
+            return rec
 
         # -- E*(asked): re-exploration on the induced subgraph (no
         # budgets, guarded only by the honest truncation flag)
@@ -1448,6 +1583,13 @@ def compute_type_level_refill(
             _write_mirrors(run_dir, mirror_type_rows, complete_type_rows,
                            complete_bodyid_rows, path_rows,
                            complete_path_rows=complete_rows)
+    # DUAL REFILL: the full scope rides on every all-mode record.
+    full_block = _produce_full_scope(
+        chain_keys={tuple(type_map[n] for n in nodes)
+                    for _bn, nodes in (_emitted_paths or [])},
+        cut_edge_keys=set(cut_info))
+    if full_block is not None:
+        rec['full'] = full_block
     return rec
 
 
