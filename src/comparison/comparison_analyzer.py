@@ -1292,13 +1292,24 @@ class ComparisonAnalyzer:
         mapping off, no policy, unmapped name).  No hemisphere stripping
         here: metrics passes the already-stripped lookup name when
         hemi-aware, and a native suffixed name must keep falling through
-        to the raw fallback so L/R never merge unintentionally."""
+        to the raw fallback so L/R never merge unintentionally.
+        Canonical-key unification (2026-10-09): when the chip-seeded map
+        misses, the name grows its OWN mapper-decision family
+        (`_fallback_family_label`) — so a bare fallback name lands under
+        the same family label as the compound/display rows that share its
+        cross-dataset decisions (the N:1 crosswalk-fan fix)."""
         if not (getattr(self.parameters, 'auto_type_mapping', False)
                 and getattr(self.parameters, '_auto_type_mapper', None)
                 is not None):
             return None
         try:
-            return self._path_family_map().get((str(dataset), str(type_name)))
+            fam = self._path_family_map().get((str(dataset), str(type_name)))
+            if fam:
+                return fam
+        except Exception:  # noqa: BLE001 — keying aid, never fatal
+            pass
+        try:
+            return self._fallback_family_label(dataset, str(type_name))
         except Exception:  # noqa: BLE001 — keying aid, never fatal
             return None
 
@@ -1393,32 +1404,112 @@ class ComparisonAnalyzer:
         self._path_family_cache = out
         return out
 
+    def _fallback_family_label(self, dataset: str, type_name: str) -> Optional[str]:
+        """Family label for ONE raw fallback name (canonical-key
+        unification, 2026-10-09): the mapper-decision family grown from
+        the name itself — forward decisions from every known name in
+        every direction, PLUS the reverse question (``incoming_type_names``)
+        for the seed — labeled with the same pivot/anchor/minimum rule as
+        `_path_family_map`.  Returns None when the family is trivial
+        (single dataset: nothing to unify with).  Cached per (dataset,
+        type); the growth is seed-independent once the seed's reverse
+        neighborhood is walked, so both sides of an N:1 crosswalk fan
+        land on the same label.
+        """
+        cache = getattr(self, '_fallback_family_cache', None)
+        if cache is None:
+            cache = {}
+            self._fallback_family_cache = cache
+        cache_key = (str(dataset), str(type_name))
+        if cache_key in cache:
+            return cache[cache_key]
+        label: Optional[str] = None
+        try:
+            from .merge_policy import _decision
+            mapper = self.parameters._auto_type_mapper
+            datasets = [str(d) for d in self.parameters.get_dataset_names()]
+            seed = (str(dataset), str(type_name))
+            universe: Dict[str, Set[str]] = {seed[0]: {seed[1]}}
+
+            def _note(other: str, name: str) -> bool:
+                fresh = name and name not in universe.setdefault(other, set())
+                if fresh:
+                    universe[other].add(name)
+                return fresh
+
+            incoming_cache: Dict[Tuple[str, str, str], List[str]] = {}
+
+            def _incoming(other: str, ds: str, t: str) -> List[str]:
+                ck = (other, ds, t)
+                if ck not in incoming_cache:
+                    try:
+                        names, _trunc = mapper.incoming_type_names(
+                            other, ds, t)
+                    except Exception:  # noqa: BLE001 — growth aid only
+                        names = []
+                    incoming_cache[ck] = [str(n) for n in names or []]
+                return incoming_cache[ck]
+
+            for _ in range(len(datasets) * 2 + 2):
+                added = False
+                for ds in sorted(universe):
+                    for t in sorted(universe[ds]):
+                        for other in datasets:
+                            if other == ds:
+                                continue
+                            decision = _decision(mapper, t, ds, other)
+                            for tt in self._path_family_targets(decision):
+                                if _note(other, tt):
+                                    added = True
+                            # Reverse walk (seeds and leaves alike): the
+                            # INTO-edges are where an N:1 fan's family
+                            # lives on the far side.
+                            for src_name in _incoming(other, ds, t):
+                                if _note(other, src_name):
+                                    added = True
+                if not added:
+                    break
+
+            by_ds: Dict[str, Set[str]] = {}
+            for ds, names in universe.items():
+                for t in names:
+                    by_ds.setdefault(ds, set()).add(t)
+            if len(by_ds) >= 2:
+                policy = self._merge_policy_or_none()
+                anchor = getattr(policy, 'anchor_ds', None) if policy else None
+                singles = sorted(ds for ds, names in by_ds.items()
+                                 if len(names) == 1)
+                if len(by_ds) > 1 and len(singles) == 1:
+                    label = next(iter(by_ds[singles[0]]))
+                elif (anchor is not None and anchor in by_ds
+                        and len(by_ds[anchor]) == 1):
+                    label = next(iter(by_ds[anchor]))
+                else:
+                    label = min(n for names in by_ds.values() for n in names)
+        except Exception:  # noqa: BLE001 — keying aid, never fatal
+            label = None
+        cache[cache_key] = label
+        return label
+
     def _note_mapping_status(self, status: str) -> None:
         """Count one mapping resolution by status (unique-resolution basis)."""
         counts = self._mapping_status_counts
         counts[status] = counts.get(status, 0) + 1
     
     def _get_display_type(self, canonical_name: str) -> str:
-        """Get display name for a canonical type showing all dataset variants.
-        
-        If auto_type_mapping is enabled, returns format like 'MeVPaMe1(MTe46)'.
-        Otherwise returns the canonical name unchanged.
-        
-        Args:
-            canonical_name: Canonical (male-cns) type name
-            
-        Returns:
-            Display name with variants in parentheses
+        """Display name for a canonical type — UNDECORATED (canonical-key
+        unification, 2026-10-09).
+
+        Keys and display names carry the plain canonical (or family /
+        label / residual) identity; the per-dataset variant names that
+        `get_display_name` used to append as `X(variant)` compounds now
+        live in the disclosure surfaces (report hovers via
+        `get_display_name_with_dataset_info`,
+        `comparison_results/edge_key_variants.csv`,
+        `auto_type_mapping*.csv`).  Tier-0 identities (user labels,
+        residual `T*`) pass through verbatim.
         """
-        if self._user_label_governs(canonical_name):
-            # Tier 0 (user-first type resolution): display a user label
-            # verbatim — no variant parentheses over a settled identity.
-            return canonical_name
-        if not self.parameters.auto_type_mapping or not self.parameters._auto_type_mapper:
-            return canonical_name
-        # Pass all datasets being compared to get full mapping info
-        datasets = self.parameters.get_dataset_names()
-        return self.parameters._auto_type_mapper.get_display_name(canonical_name, datasets)
+        return canonical_name
     
     def _build_path_key_with_mapping(self, path_nodes: list, dataset: str) -> Tuple[str, str]:
         """Build canonical and display path keys from path nodes.
@@ -6762,6 +6853,29 @@ class ComparisonAnalyzer:
         # drops every STATE-prefixed block already in the file, so an
         # earlier copy of this note would be wiped.
         self._write_user_mapper_tier0_note()
+
+        # Canonical-key unification (2026-10-09): export the variant
+        # disclosure behind the undecorated keys — which raw per-dataset
+        # names each canonical/family key stands for.
+        try:
+            variants = getattr(self.metrics, 'last_edge_display_names', None)
+            if variants:
+                rows = []
+                for canonical, by_name in sorted(variants.items()):
+                    for raw_name, dss in sorted(by_name.items()):
+                        for ds in sorted(dss):
+                            rows.append({'canonical_key': canonical,
+                                         'dataset': ds,
+                                         'raw_name': raw_name})
+                if rows:
+                    self._save_csv(
+                        pd.DataFrame(rows),
+                        os.path.join(comparison_results_dir,
+                                     'edge_key_variants.csv'))
+                    self._log("Saved: edge_key_variants.csv "
+                              f"({len(variants)} keys)")
+        except Exception as e:  # noqa: BLE001 — disclosure only
+            self._log(f"Warning: could not write edge_key_variants.csv: {e}")
 
         # Save report (skip logging since we already logged "Saving parameters and report")
         report_path = os.path.join(out_dir, "comparison_report.txt")

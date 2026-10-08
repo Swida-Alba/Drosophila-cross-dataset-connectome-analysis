@@ -763,3 +763,61 @@ class TestSimilarityV22RepresentativeMetrics:
         sig = metrics.netsimile_signature(w)
         assert sig is not None and sig.shape == (8,)
         assert metrics.netsimile_signature(pd.Series(dtype=float)) is None
+
+
+def test_align_keys_are_undecorated_canonical(metrics):
+    """Canonical-key unification (2026-10-09): the aligned index carries
+    the UNDECORATED canonical key — the display pass no longer appends
+    `X(variant)` compounds to keys."""
+    class DisplayStub:
+        _loaded = True
+
+        def get_display_name(self, canonical, datasets):
+            return f"{canonical}(v2)"
+
+        def get_display_name_with_dataset_info(self, canonical, datasets):
+            return f"{canonical}(v2)", {"d2": "v2"}
+
+    results = {
+        "d1": {1: pd.DataFrame({"type_pre": ["MeVPaMe1"], "type_post": ["B"],
+                                 "weight": [2.0]})},
+        "d2": {1: pd.DataFrame({"type_pre": ["MeVPaMe1"], "type_post": ["B"],
+                                 "weight": [3.0]})},
+    }
+    aligned = metrics._align_results_at_threshold(
+        results, ["d1", "d2"], 1, type_mapper=DisplayStub()
+    )
+    assert list(aligned.index) == ["MeVPaMe1 -> B"]
+    assert "(v2)" not in "|".join(aligned.index)
+
+
+def test_align_family_resolver_converges_fallback_names(metrics):
+    """Canonical-key unification: a raw fallback name whose mapper
+    decisions connect it to a cross-dataset family is re-keyed under the
+    family label (the family resolver's answer) — the compound-vs-bare
+    split fix."""
+    def resolver(dataset, type_name):
+        return {"MTe01b": "MeVP8"}.get(str(type_name))
+
+    metrics_obj = metrics
+    metrics_obj._family_resolver = resolver
+    results = {
+        "d1": {3: pd.DataFrame({"type_pre": ["MTe01b"], "type_post": ["Dm9"],
+                                 "weight": [6.0]})},
+        "d2": {3: pd.DataFrame({"type_pre": ["MeVP8"], "type_post": ["Dm9"],
+                                 "weight": [9.0]})},
+    }
+    from types import SimpleNamespace
+    aligned = metrics_obj._align_results_for_threshold_map(
+        results, ["d1", "d2"], {"d1": 3, "d2": 3},
+        label_mapper=None,
+        # a mapper must be present for the canonical block to run at all
+        # (the family tier lives inside it); this stub resolves nothing,
+        # so every non-family key keeps its raw name
+        type_mapper=SimpleNamespace(_loaded=False),
+        merge_policy=None,
+    )
+    assert "MeVP8 -> Dm9" in aligned.index
+    assert "MTe01b -> Dm9" not in aligned.index
+    assert aligned.loc["MeVP8 -> Dm9", "d1"] == 6.0
+    assert aligned.loc["MeVP8 -> Dm9", "d2"] == 9.0

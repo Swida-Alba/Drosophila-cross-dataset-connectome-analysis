@@ -973,6 +973,14 @@ display = mapper.get_display_name(
     source_dataset='male-cns:v0.9'
 )
 # Returns: 'MeVPLo2(MTe07)' if names differ across datasets
+#
+# Canonical-key unification (2026-10-09): cross-dataset comparison keys
+# (presence matrices, unified comparisons, similarity, report tables) carry
+# the UNDECORATED canonical name — the compound display form is retired from
+# keys. Which raw per-dataset names each key stands for is disclosed in
+# `comparison_results/edge_key_variants.csv` and the report's
+# "Names by dataset" hovers. Residual neurons of label-mapper-collided
+# native types are star-tagged `T*` (terminal, dataset-scoped).
 ```
 
 ### Export Methods

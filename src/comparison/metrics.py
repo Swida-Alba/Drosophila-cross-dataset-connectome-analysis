@@ -1062,12 +1062,12 @@ class ComparisonMetrics:
                 agg_df['canonical_pre'] = original_pre_series.map(canonical_map)
                 agg_df['canonical_post'] = original_post_series.map(canonical_map)
                 
-                # Track display names for later (collect all dataset-specific names)
+                # Track display names for later (collect all dataset-specific names;
+                # values are {raw variant name: set(datasets)} — exported as
+                # edge_key_variants.csv, the disclosure behind undecorated keys)
                 for original, canonical in canonical_map.items():
-                    if canonical not in edge_display_names:
-                        edge_display_names[canonical] = {canonical}  # Include canonical itself
-                    if original != canonical:
-                        edge_display_names[canonical].add(original)
+                    entry = edge_display_names.setdefault(canonical, {})
+                    entry.setdefault(original, set()).add(dataset)
                 
                 # Re-aggregate by canonical edge (in case multiple original edges map to same canonical)
                 agg_df = agg_df.groupby(['canonical_pre', 'canonical_post'])[weight_col].sum().reset_index()
@@ -1082,56 +1082,19 @@ class ComparisonMetrics:
         
         if not dfs:
             return pd.DataFrame()
-        
+
         # Merge all datasets
         aligned = pd.concat(dfs, axis=1, join='outer').fillna(0)
-        
-        # Skip expensive display name building for large datasets (>10k edges)
-        # The canonical names are sufficient for computation; display names are cosmetic
-        if type_mapper is not None and edge_display_names and len(aligned) <= 10000:
-            # Pre-compute display name mappings for all unique types (vectorized)
-            # Use type_mapper.get_display_name() for consistent format: "MeVPLo2(MTe07)"
-            # Merge-policy group labels are ALREADY the final display identity
-            # (B6): re-running get_display_name over them would reintroduce the
-            # scoped cosmetic form the policy exists to remove.
-            type_display_map = {}
-            for canonical in edge_display_names.keys():
-                if merge_policy is not None and merge_policy.is_group_label(
-                        canonical):
-                    type_display_map[canonical] = canonical
-                elif _is_identity(canonical):
-                    # User-first/residual (Phase A + Phase R): display a
-                    # comparison identity verbatim — get_display_name
-                    # would anchor it to its male-cns canonical form with
-                    # variants (`5th-LNv` ->
-                    # `5thsLNv_LNd6(5th-LNv/s-LNv_a)`), resurrecting the
-                    # residual namespace.
-                    type_display_map[canonical] = canonical
-                else:
-                    type_display_map[canonical] = type_mapper.get_display_name(
-                        canonical, datasets)
-            
-            # Vectorized: split index, map, and rebuild
-            def build_display_name(edge_key):
-                if ' -> ' not in str(edge_key):
-                    return str(edge_key)
-                parts = str(edge_key).split(' -> ')
-                pre_canonical = parts[0]
-                post_canonical = parts[1] if len(parts) > 1 else ''
-                pre_display = type_display_map.get(pre_canonical, pre_canonical)
-                post_display = type_display_map.get(post_canonical, post_canonical)
-                return f"{pre_display} -> {post_display}"
-            
-            # Use polars for fast string operations
-            edge_list = aligned.index.tolist()
-            display_index = [build_display_name(e) for e in edge_list]
-            aligned.index = pd.Index(display_index)
-            
-            # Aggregate duplicate indices (sum weights) that may result from display name merging
-            # This handles cases where different canonical names map to the same display name
-            if aligned.index.duplicated().any():
-                aligned = aligned.groupby(aligned.index).sum()
-        
+
+        # Canonical-key unification (2026-10-09): the index keeps the
+        # UNDECORATED canonical/family keys — the compound display form
+        # (`Canonical(variant)`) is retired from keys.  The variant
+        # names collected above ({canonical: {raw variant: set(datasets)}})
+        # are the disclosure: exported to
+        # comparison_results/edge_key_variants.csv by the analyzer and
+        # rendered as per-dataset hover lines in the report.
+        self.last_edge_display_names = dict(edge_display_names)
+
         return aligned
     
     # =========================================================================

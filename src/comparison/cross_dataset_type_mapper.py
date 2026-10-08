@@ -7605,6 +7605,47 @@ class CrossDatasetTypeMapper:
         # Get male-cns mapping
         mapped = self.get_mapped_type(type_name, source_dataset, 'male-cns:v1.0')
         return mapped if mapped else type_name
+
+    def forward_declared_canonicals(self, dataset: str, raw_name: str) -> set:
+        """Canonical (male-cns) names whose FORWARD cell declares
+        ``raw_name`` as this dataset's name for them (user directive
+        2026-10-09, canonical-key unification).
+
+        Scans the curated forward tables
+        (``_type_mappings['male-cns:v1.0'][canonical][dataset] == raw_name``)
+        — i.e. exactly the declarations the display pass renders as
+        ``Canonical(variant)`` compounds — and returns the set of
+        declaring canonical names.  A bare fallback name declared by
+        EXACTLY ONE canonical can be unified under it; 0 or 2+
+        declarations keep the bare fallback (ambiguity fail-safe).  This
+        is the forward-declaration view, deliberately NOT the reverse
+        licensing cells (the two disagree on partially authored
+        crosswalks — the disagreement is disclosed, the forward
+        declaration owns the unified key).
+        """
+        if not raw_name or not isinstance(raw_name, str):
+            return set()
+        if not self._loaded:
+            self.load()
+        canonical_ns = 'male-cns:v1.0'
+        forward = self._type_mappings.get(canonical_ns, {}) or {}
+        # The innermost cells are keyed by the dataset's MAPPING KEY;
+        # try the raw name plus its normalized forms.
+        dkeys = {str(dataset)}
+        try:
+            dkeys.add(self._get_type_mapping_key(str(dataset)))
+        except Exception:  # noqa: BLE001 — key helper absence is fine
+            pass
+        dkeys.add(str(dataset).replace(':', '_').replace('.', '_')
+                  .replace('-', '_'))
+        declared = set()
+        for canonical_name, target_maps in forward.items():
+            if not isinstance(target_maps, dict):
+                continue
+            if any(str(target_maps.get(k)) == str(raw_name)
+                   for k in dkeys):
+                declared.add(str(canonical_name))
+        return declared
     
     def _resolve_banc_prefix_release(
             self, base_type: str,
