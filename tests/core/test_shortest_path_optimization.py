@@ -438,10 +438,14 @@ def test_type_path_ratios_share_conn_table_denominator(
     import ast
     type_csv = os.path.join(
         fc.allpath_folder, "src_to_tgt_allpaths_type.csv")
+    type_df = pl.read_csv(type_csv)
+    # column NAME, not position — the schema shed the suspended
+    # probability column (2026-10-06) and positional indexing broke
+    ratio_i = type_df.columns.index("ratios")
     type_rows = {
-        row[0]: row for row in pl.read_csv(type_csv).iter_rows()}
+        row[0]: row for row in type_df.iter_rows()}
     assert "TS->TA->TT" in type_rows, sorted(type_rows)
-    hop_ratios = ast.literal_eval(type_rows["TS->TA->TT"][3])
+    hop_ratios = ast.literal_eval(type_rows["TS->TA->TT"][ratio_i])
     assert hop_ratios[0] == pytest.approx(9 / 77)
     assert hop_ratios[1] == pytest.approx(12 / 154)
 

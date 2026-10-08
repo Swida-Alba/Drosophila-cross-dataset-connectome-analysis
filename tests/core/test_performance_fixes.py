@@ -294,7 +294,9 @@ class TestEnrichConnectionTablePolars:
         assert cb["connection_ratio"] == pytest.approx(1 / 200)
 
     def test_ratio_method_preserves_legacy_semantics(self, tmp_path):
-        """aggregate_method='ratio' keeps min(connection_ratio / 0.3, 1)."""
+        """aggregate_method='ratio' keeps the legacy pair semantics:
+        exact-dup-collapsed per-pair mass over the global denominator
+        (the suspended traversal_probability consumed the /0.3 cap)."""
         script_path, _ = self._dataset(tmp_path)
         conn_table = pd.DataFrame(
             {
@@ -331,7 +333,13 @@ class TestEnrichConnectionTablePolars:
             for r in rows.values()
             if r["type_pre"] == "STD_A" and r["type_post"] == "STD_B"
         )
-        assert ab["traversal_probability"] == pytest.approx((10 / 200) / 0.3)
+        # PROBABILITY SUSPENSION (2026-10-06): traversal_probability is no
+        # longer exported; the legacy ratio-method semantic lives in the
+        # surviving columns — the type mass is the exact-dup-collapsed
+        # per-pair sum (5+3+2 = 10) and the ratio uses the global
+        # denominator (10/200).
+        assert ab["weight"] == pytest.approx(10.0)
+        assert ab["connection_ratio"] == pytest.approx(10 / 200)
 
 
 # =============================================================================
