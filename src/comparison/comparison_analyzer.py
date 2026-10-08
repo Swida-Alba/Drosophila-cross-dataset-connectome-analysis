@@ -9602,16 +9602,19 @@ class ComparisonAnalyzer:
         dataset_names = self.parameters.get_dataset_names()
         merge_policy = self._merge_policy_or_none()
 
-        def _count_key(dataset: str, type_val) -> str:
-            """Group label for a raw type under the resolution-order
-            contract (Phase A user-first + Phase R3): user label
-            (identity, never re-resolved) -> TRUE multi-dataset policy
-            group (a singleton per-chip group must not block the family
-            tier) -> path-family map -> raw.  Neuron counts then agree
-            with the merged presence/similarity frames."""
+        def _count_key_origin(dataset: str, type_val) -> Tuple[str, str]:
+            """(group key, key_origin) for a raw type under the
+            resolution-order contract (Phase A user-first + Phase R3):
+            user label (identity, never re-resolved) -> TRUE
+            multi-dataset policy group (a singleton per-chip group must
+            not block the family tier) -> path-family map -> raw.  The
+            origin discloses WHICH tier named the row: 'label' (the user
+            mapper's retyping), 'policy', 'family', or 'native' (raw
+            type).  Neuron counts then agree with the merged
+            presence/similarity frames."""
             raw = str(type_val)
             if self._user_label_governs(raw):
-                return raw
+                return raw, 'label'
             if merge_policy is not None:
                 label = merge_policy.key_for(dataset, raw)
                 if label:
@@ -9622,11 +9625,23 @@ class ComparisonAnalyzer:
                                 getattr(group, 'members', {}) or {}) < 2:
                             label = None  # singleton: try the family tier
                     if label is not None:
-                        return label
+                        return label, 'policy'
             family = self._edge_family_resolver(dataset, raw)
             if family:
-                return family
-            return raw
+                return family, 'family'
+            return raw, 'native'
+
+        def _count_key(dataset: str, type_val) -> str:
+            return _count_key_origin(dataset, type_val)[0]
+
+        def _set_origin(type_counts: Dict, count_key: str, origin: str) -> None:
+            """Record the key origin; 'label' wins over weaker tiers when
+            a key is reachable from several (the user mapper wins by
+            construction)."""
+            entry = type_counts[count_key]
+            prev = entry.get('_origin')
+            if prev is None or (prev != 'label' and origin == 'label'):
+                entry['_origin'] = origin
 
         def _track_member(type_counts: Dict, count_key: str, dataset: str,
                           type_val, count: int) -> None:
@@ -9785,6 +9800,10 @@ class ComparisonAnalyzer:
                                 type_cnt = int(mask.sum())
                                 if count_key not in type_counts:
                                     type_counts[count_key] = {'role': 'source'}
+                                # bodyId-tier rows are label-mapper
+                                # retypings by definition; fallback rows
+                                # keep their type-tier origin.
+                                _set_origin(type_counts, count_key, 'label')
                                 count_col = f'{safe_name}_source'
                                 type_counts[count_key][count_col] = (
                                     type_counts[count_key].get(count_col, 0)
@@ -9799,9 +9818,11 @@ class ComparisonAnalyzer:
                         else:
                             for type_val in source_df['type'].dropna().unique():
                                 type_cnt = len(source_df[source_df['type'] == type_val])
-                                count_key = _count_key(dataset, type_val)
+                                count_key, origin = _count_key_origin(
+                                    dataset, type_val)
                                 if count_key not in type_counts:
                                     type_counts[count_key] = {'role': 'source'}
+                                _set_origin(type_counts, count_key, origin)
                                 count_col = f'{safe_name}_source'
                                 type_counts[count_key][count_col] = (
                                     type_counts[count_key].get(count_col, 0)
@@ -9848,6 +9869,7 @@ class ComparisonAnalyzer:
                                 type_cnt = int(mask.sum())
                                 if count_key not in type_counts:
                                     type_counts[count_key] = {'role': 'target'}
+                                _set_origin(type_counts, count_key, 'label')
                                 count_col = f'{safe_name}_target'
                                 type_counts[count_key][count_col] = (
                                     type_counts[count_key].get(count_col, 0)
@@ -9862,9 +9884,11 @@ class ComparisonAnalyzer:
                         else:
                             for type_val in target_df['type'].dropna().unique():
                                 type_cnt = len(target_df[target_df['type'] == type_val])
-                                count_key = _count_key(dataset, type_val)
+                                count_key, origin = _count_key_origin(
+                                    dataset, type_val)
                                 if count_key not in type_counts:
                                     type_counts[count_key] = {'role': 'target'}
+                                _set_origin(type_counts, count_key, origin)
                                 count_col = f'{safe_name}_target'
                                 type_counts[count_key][count_col] = (
                                     type_counts[count_key].get(count_col, 0)
@@ -9914,7 +9938,13 @@ class ComparisonAnalyzer:
             for type_val, counts in type_counts.items():
                 counts = dict(counts)
                 members = counts.pop('_members', None)
-                row = {'type': type_val}
+                # Key-origin disclosure (user directive 2026-10-08): WHICH
+                # resolution tier named this row — 'label' (the user
+                # mapper's retyping, tier 0), 'policy' (a true
+                # multi-dataset policy group), 'family' (the symmetric
+                # mapper-decision family map), or 'native' (raw type).
+                origin = counts.pop('_origin', 'native')
+                row = {'type': type_val, 'key_origin': origin}
                 row.update(counts)
                 if members:
                     # Only MERGED groups carry a composition note — a group
@@ -9935,11 +9965,12 @@ class ComparisonAnalyzer:
             
             type_df = pd.DataFrame(type_rows)
             if 'group_members' in type_df.columns:
-                # Keep the composition note as the LAST column, after the
-                # per-dataset count columns.
+                # Keep the disclosure columns LAST, after the per-dataset
+                # count columns (key_origin right before group_members).
+                tail_cols = [c for c in ('key_origin', 'group_members')
+                             if c in type_df.columns]
                 type_df = type_df[[c for c in type_df.columns
-                                   if c != 'group_members']
-                                  + ['group_members']]
+                                   if c not in tail_cols] + tail_cols]
             # Sort by type name
             type_df = type_df.sort_values('type')
             self._save_csv(type_df, os.path.join(comparison_results_dir, "neuron_counts_by_type.csv"))
