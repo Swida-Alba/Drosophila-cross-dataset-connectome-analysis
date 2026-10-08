@@ -4090,9 +4090,13 @@ def generate_paths_pair_report(
             for (source, target), stats in sorted(
                     r_stats.items(),
                     key=lambda item: (-item[1]['paths'], item[0])):
+                # Keyed by THIS pair — `key` is the r_inter loop's stale
+                # leftover and is unbound whenever a unit has no
+                # intermediates rows (1-hop tables, network runs).
+                pair_key = (source, target)
                 pairs_k.append(build_pair_entry(
-                    unit, source, target, stats, r_counts[key],
-                    r_minhop[key], r_drawn[(source, target)]))
+                    unit, source, target, stats, r_counts[pair_key],
+                    r_minhop[pair_key], r_drawn[(source, target)]))
         used_ids: Dict[str, int] = {}
         for entry in pairs_k:
             base = _query_report_slug(
