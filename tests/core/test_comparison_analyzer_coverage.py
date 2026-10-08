@@ -2473,13 +2473,14 @@ def test_corrupt_sidecar_is_a_cache_miss_not_a_stale_pair(tmp_path):
 
 
 def test_path_keying_consults_merge_policy(analyzer):
-    """2026-10-07: the path lane's canonical keying mirrors the edge lane
-    (metrics.py): the QUERY-ANCHORED MergePolicy group label wins first,
-    else canonical_merge_key toward the policy's anchor dataset. Before,
-    the path lane keyed toward the FIXED male-cns namespace only, where
-    an N-to-1 grouping (FAFB R7 vs MCNS R7p/R7y/...) is a split that
-    fails closed to the raw name — cross-dataset path keys could never
-    merge (0 shared presence-matrix rows on a real FAFB x MCNS run)."""
+    """2026-10-07: the path lane's canonical keying converges split
+    families SYMMETRICALLY: (1) a policy group spanning >=2 datasets
+    keeps its label; (2) otherwise a union-find over BOTH directions of
+    the mapper's decisions (seeded from the policy universe) keys every
+    family member to the pivot side's name — singleton per-chip policy
+    groups are skipped, because locking each branch into its own key is
+    what left FAFB R7 and MCNS R7p on exclusive presence-matrix rows
+    (0 shared rows on a real FAFB x MCNS run)."""
     class _SplitFamilyMapper:
         _loaded = True
 
@@ -2526,11 +2527,11 @@ def test_path_keying_consults_merge_policy(analyzer):
         _policy.key_map[(DS1, label)] = label
     analyzer._merge_policy_or_none = lambda: _policy
 
-    # MCNS subtypes key to the policy group label
+    # MCNS subtypes key to the FAFB pivot's name (the family's single
+    # FAFB member): the singleton per-chip groups are skipped
     assert analyzer._get_path_merge_type("R7p", DS2) == "R7"
     assert analyzer._get_path_merge_type("R7y", DS2) == "R7"
-    # FAFB R7: no policy key -> canonical toward the ANCHOR (FAFB):
-    # native -> raw 'R7' -> MERGES with the policy-keyed subtypes
+    # FAFB R7: same family -> its own pivot name
     assert analyzer._get_path_merge_type("R7", DS1) == "R7"
     # path keys merge end to end
     fafb_key, _ = analyzer._build_path_key_with_mapping(
@@ -2539,9 +2540,9 @@ def test_path_keying_consults_merge_policy(analyzer):
         ["R7p", "aMe12", "5th-LNv"], DS2)
     assert fafb_key == "R7 → aMe12 → 5th-LNv"
     assert mcns_key == fafb_key
-    # split PARENT family (target chips): MCNS 5thsLNv_LNd6 <- FAFB
-    # 5th-LNv maps cleanly — the expansion tier keys it to the group
-    # label even though the ANCHOR-direction canonical fails closed
+    # split PARENT family (target chips): MCNS 5thsLNv_LNd6 <-> FAFB
+    # 5th-LNv union through the mapped decision — the family label is
+    # the ANCHOR dataset's single name ('5th-LNv')
     assert analyzer._get_path_merge_type("5thsLNv_LNd6", DS2) == "5th-LNv"
     tgt_fafb, _ = analyzer._build_path_key_with_mapping(
         ["R7", "aMe12", "5th-LNv"], DS1)
@@ -2551,5 +2552,5 @@ def test_path_keying_consults_merge_policy(analyzer):
     assert tgt_mcns == tgt_fafb
     # no-policy fallback stays byte-identical to the old behavior
     analyzer._merge_policy_or_none = lambda: None
-    analyzer._policy_path_member_map = {}
+    analyzer._path_family_cache = None
     assert analyzer._get_path_merge_type("R7p", DS2) == "R7p"

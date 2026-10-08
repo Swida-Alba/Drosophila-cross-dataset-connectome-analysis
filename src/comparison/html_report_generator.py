@@ -820,8 +820,17 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
                             connectgaps: false
                         }; });
                     Plotly.newPlot(div, traces, {
-                        xaxis: { title: 'Query' },
-                        yaxis: { title: yTitle }
+                        /* plotly 3 in this report ignores plain-string
+                         * axis titles (falls back to the editable
+                         * placeholder) — the {text} object form is the
+                         * one that draws (verified in-page 2026-10-08) */
+                        xaxis: { title: { text: 'Query' } },
+                        yaxis: { title: { text: yTitle,
+                                          font: { size: 14,
+                                                  color: '#495057' } },
+                                 tickfont: { size: 11 },
+                                 automargin: true },
+                        margin: { l: 70, r: 20, t: 30, b: 60 },
                     }, { responsive: true });
                 });
             });
@@ -2447,14 +2456,14 @@ def _density_curves_plotly_card(curves, aligned, windows,
                              x: 0.5, xanchor: 'center' }};
             Plotly.newPlot('{dom_prefix}_density', densityTraces, {{
                 margin: {{ l: 70, r: 20, t: 30, b: 40 }},
-                xaxis: {{ title: 'Min Synapse Count' }},
-                yaxis: {{ title: 'Edge density E(t)/N' }},
+                xaxis: {{ title: {{ text: 'Min Synapse Count' }} }},
+                yaxis: {{ title: {{ text: 'Edge density E(t)/N' }} }},
                 legend: legend, shapes: shapes, hovermode: 'x unified'
             }}, {{ responsive: true }});
             Plotly.newPlot('{dom_prefix}_paths', pathTraces, {{
                 margin: {{ l: 70, r: 20, t: 10, b: 40 }},
-                xaxis: {{ title: 'Min Synapse Count' }},
-                yaxis: {{ title: 'Enumerated paths (diagnostic)' }},
+                xaxis: {{ title: {{ text: 'Min Synapse Count' }} }},
+                yaxis: {{ title: {{ text: 'Enumerated paths (diagnostic)' }} }},
                 legend: {{ orientation: 'h', y: -0.3,
                           x: 0.5, xanchor: 'center' }},
                 hovermode: 'x unified'
@@ -2876,8 +2885,8 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                         const maxY = Math.max(...allYVals);
                         Plotly.newPlot('edgeCountChart', traces, {{
                             barmode: 'group',
-                            xaxis: {{ title: 'Threshold' }},
-                            yaxis: {{ title: 'Edge Count', range: [0, maxY * 1.15] }},
+                            xaxis: {{ title: {{ text: 'Threshold' }} }},
+                            yaxis: {{ title: {{ text: 'Edge Count' }}, range: [0, maxY * 1.15] }},
                             legend: {{ orientation: 'h', y: -0.15 }}
                         }}, {{responsive: true}});
                     }})();
@@ -2910,8 +2919,8 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                         const maxY = Math.max(...allYVals);
                         Plotly.newPlot('totalWeightChart', traces, {{
                             barmode: 'group',
-                            xaxis: {{ title: 'Threshold' }},
-                            yaxis: {{ title: 'Total Edge Weight (Synapse Count)', range: [0, maxY * 1.15] }},
+                            xaxis: {{ title: {{ text: 'Threshold' }} }},
+                            yaxis: {{ title: {{ text: 'Total Edge Weight (Synapse Count)' }}, range: [0, maxY * 1.15] }},
                             legend: {{ orientation: 'h', y: -0.15 }}
                         }}, {{responsive: true}});
                     }})();
@@ -2944,8 +2953,8 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
                         const maxY = Math.max(...allYVals);
                         Plotly.newPlot('avgRatioChart', traces, {{
                             barmode: 'group',
-                            xaxis: {{ title: 'Threshold' }},
-                            yaxis: {{ title: 'Avg Connection Ratio (w_ij / W_j)', range: [0, maxY * 1.15] }},
+                            xaxis: {{ title: {{ text: 'Threshold' }} }},
+                            yaxis: {{ title: {{ text: 'Avg Connection Ratio (w_ij / W_j)' }}, range: [0, maxY * 1.15] }},
                             legend: {{ orientation: 'h', y: -0.15 }}
                         }}, {{responsive: true}});
                     }})();
@@ -3031,8 +3040,8 @@ def _generate_neuron_counts_section(analyzer, dataset_names: List[str],
                     
                     Plotly.newPlot('neuronCountChart', traces, {{
                         barmode: 'group',
-                        xaxis: {{ title: 'Role' }},
-                        yaxis: {{ title: 'Neuron Count' }},
+                        xaxis: {{ title: {{ text: 'Role' }} }},
+                        yaxis: {{ title: {{ text: 'Neuron Count' }} }},
                         legend: {{ orientation: 'v' }}
                     }}, {{responsive: true}});
                 }})();
@@ -3287,15 +3296,15 @@ def _generate_neuron_counts_section(analyzer, dataset_names: List[str],
                 const payload = __PAYLOAD__;
                 Plotly.newPlot('combinedTypeChartSource', payload.source, {
                     barmode: 'group',
-                    xaxis: { title: 'Neuron Type', tickangle: -45, automargin: true },
-                    yaxis: { title: 'Count' },
+                    xaxis: { title: { text: 'Neuron Type' }, tickangle: -45, automargin: true },
+                    yaxis: { title: { text: 'Count' } },
                     showlegend: false,
                     margin: { b: 150 }
                 }, { responsive: true });
                 Plotly.newPlot('combinedTypeChartTarget', payload.target, {
                     barmode: 'group',
-                    xaxis: { title: 'Neuron Type', tickangle: -45, automargin: true },
-                    yaxis: { title: 'Count' },
+                    xaxis: { title: { text: 'Neuron Type' }, tickangle: -45, automargin: true },
+                    yaxis: { title: { text: 'Count' } },
                     showlegend: false,
                     margin: { b: 150 }
                 }, { responsive: true });

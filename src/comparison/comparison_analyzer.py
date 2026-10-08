@@ -1082,27 +1082,33 @@ class ComparisonAnalyzer:
 
     def _get_path_merge_type(self, type_name: str, dataset: str) -> str:
         """PATH-LANE merge key (2026-10-07): the convergent keying for
-        cross-dataset path presence. Tiers: (1) the QUERY-ANCHORED merge
-        policy's group label — the same tier the edge alignment uses;
-        (2) the query EXPANSION map — every name the query itself would
-        have expanded from a chip (the clean mapped counterpart plus
-        every valid_split/evidence_only branch), which converges the two
-        families directional resolution cannot: split BRANCHES (MCNS
-        R7p <- FAFB R7) and split PARENTS (MCNS 5thsLNv_LNd6 -> FAFB
-        5th-LNv, N:1 toward the anchor, fails closed directionally);
+        cross-dataset path presence. Tiers: (1) a policy group that is a
+        TRUE cross-dataset family (members in >=2 datasets — singleton
+        per-chip groups are skipped: locking each split branch into its
+        own key is what left FAFB R7 and MCNS R7p on exclusive rows);
+        (2) the symmetric mapper-decision family — union-find over BOTH
+        directions of the auto type mapper's decisions (mapped/bridged
+        counterparts plus every valid_split/evidence_only branch), which
+        converges split BRANCHES (MCNS R7p <- FAFB R7) and split PARENTS
+        (MCNS 5thsLNv_LNd6 -> FAFB 5th-LNv, 1-to-N toward FAFB) alike;
+        the family label is the PIVOT side's name (the one dataset that
+        contributes a single type to the family), else the policy anchor
+        dataset's single name, else the lexicographic minimum;
         (3) the shared canonical resolver toward the policy's anchor
         dataset. Non-path surfaces keep `_get_canonical_type` (canonical
         namespace semantics) untouched."""
         from .type_resolver import canonical_merge_key
         policy = self._merge_policy_or_none()
         if policy is not None:
-            group_key = policy.key_for(dataset, type_name)
-            if group_key is not None:
-                return group_key
-            members = self._policy_path_members(policy)
-            expansion_key = members.get((dataset, type_name))
-            if expansion_key is not None:
-                return expansion_key
+            label = policy.key_for(dataset, type_name)
+            if label is not None:
+                group = policy.group_by_label(label)
+                if group is not None and len(group.members) >= 2:
+                    return label
+            family_key = self._path_family_map().get(
+                (str(dataset), str(type_name)))
+            if family_key is not None:
+                return family_key
             return canonical_merge_key(
                 self.parameters._auto_type_mapper, type_name, dataset,
                 target_dataset=policy.anchor_ds,
@@ -1110,47 +1116,108 @@ class ComparisonAnalyzer:
                 on_status=self._note_mapping_status).key
         return self._get_canonical_type(type_name, dataset)
 
-    def _policy_path_members(self, policy) -> Dict[Tuple[str, str], str]:
-        """Lazily built, cached per-run: {(dataset, type): group label}
-        for every name the QUERY would have expanded from each policy
-        chip — the clean mapped counterpart plus every split branch, per
-        non-anchor dataset. Mirrors the delegate query expansion
-        (resolve_valid_targets), so path nodes land in the chip's group
-        exactly when the run itself treated them as the chip."""
-        cached = getattr(self, '_policy_path_member_map', None)
+    def _path_family_targets(self, decision: Dict[str, Any]) -> List[str]:
+        """Cross-dataset counterparts a decision carries (the same
+        statuses the query expansion licenses)."""
+        status = str(decision.get('status') or '')
+        targets: List[str] = []
+        if (status in ('mapped', 'bridged')
+                and decision.get('target_type')):
+            targets.append(str(decision['target_type']))
+        elif status in ('valid_split_evidence', 'evidence_only'):
+            targets.extend(str(x) for x in
+                           (decision.get('target_types') or []))
+        return targets
+
+    def _path_family_map(self) -> Dict[Tuple[str, str], str]:
+        """{(dataset, type): family label}, cached per run. Seeded with
+        the policy's member/anchor names, grown to fixpoint with the
+        mapper's decisions FROM every known name in every direction (so
+        reverse-reachable parents like FAFB R7 — never a chip here —
+        still enter the universe), then union-find along the same
+        decisions. Deterministic: expansion and union run in sorted
+        order."""
+        cached = getattr(self, '_path_family_cache', None)
         if cached is not None:
-            return cached if cached != {} else {}
-        from .merge_policy import _decision, _split_branches
+            return cached
+        from .merge_policy import _decision
+        policy = self._merge_policy_or_none()
         mapper = self.parameters._auto_type_mapper
-        datasets = list(self.parameters.get_dataset_names())
-        out: Dict[Tuple[str, str], str] = {}
-        try:
-            for group in policy.groups:
-                home = group.anchor[0]
-                anchor_type = group.anchor[1]
-                for ds in datasets:
-                    if ds == home:
+        datasets = [str(d) for d in self.parameters.get_dataset_names()]
+        universe: Dict[str, Set[str]] = {ds: set() for ds in datasets}
+        if policy is not None:
+            for g in policy.groups:
+                universe.setdefault(str(g.anchor[0]), set()).add(
+                    str(g.anchor[1]))
+                for ds, names in (g.members or {}).items():
+                    universe.setdefault(str(ds), set()).update(
+                        str(n) for n in names)
+        # Fixpoint: decisions FROM every known name in every direction —
+        # branch leaves (R7p) reach their parent (R7) only through the
+        # parent's own decision, so the universe must grow both ways.
+        for _ in range(len(datasets) * 2 + 2):
+            added = False
+            for ds in sorted(universe):
+                for t in sorted(universe[ds]):
+                    for other in datasets:
+                        if other == ds:
+                            continue
+                        decision = _decision(mapper, t, ds, other)
+                        for tt in self._path_family_targets(decision):
+                            if tt not in universe.setdefault(other, set()):
+                                universe[other].add(tt)
+                                added = True
+            if not added:
+                break
+        # Union-find along the decisions (sorted for determinism).
+        parent: Dict[Tuple[str, str], Tuple[str, str]] = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+
+        edges: List[Tuple[Tuple[str, str], Tuple[str, str]]] = []
+        for ds in sorted(universe):
+            for t in sorted(universe[ds]):
+                for other in datasets:
+                    if other == ds:
                         continue
-                    decision = _decision(mapper, anchor_type, home, ds)
-                    targets = []
-                    if (decision.get('status') in ('mapped', 'bridged')
-                            and decision.get('target_type')):
-                        targets.append(str(decision['target_type']))
-                    # FULL query-expansion semantics (the delegate ran
-                    # with exactly these subtype lists): the query
-                    # resolver licenses valid_split_evidence AND
-                    # evidence_only N-of-M targets; the group builder's
-                    # stricter _split_branches is alignment doctrine.
-                    if decision.get('status') in ('valid_split_evidence',
-                                                  'evidence_only'):
-                        targets.extend(
-                            str(x) for x in (decision.get('target_types')
-                                             or []))
-                    for name in targets:
-                        out.setdefault((ds, name), group.label)
-        except Exception:  # noqa: BLE001 — expansion is best-effort
-            out = {}
-        self._policy_path_member_map = out
+                    decision = _decision(mapper, t, ds, other)
+                    for tt in self._path_family_targets(decision):
+                        edge = ((ds, t), (other, tt))
+                        edges.append(edge)
+                        union(edge[0], edge[1])
+        # Family label: pivot rule.
+        families: Dict[Tuple[str, str], Set[Tuple[str, str]]] = {}
+        for ds in sorted(universe):
+            for t in sorted(universe[ds]):
+                families.setdefault(find((ds, t)), set()).add((ds, t))
+        anchor = getattr(policy, 'anchor_ds', None) if policy else None
+        out: Dict[Tuple[str, str], str] = {}
+        for members in families.values():
+            by_ds: Dict[str, Set[str]] = {}
+            for mds, mt in members:
+                by_ds.setdefault(mds, set()).add(mt)
+            singles = sorted(ds for ds, names in by_ds.items()
+                             if len(names) == 1)
+            if len(by_ds) > 1 and len(singles) == 1:
+                label = next(iter(by_ds[singles[0]]))
+            elif (anchor is not None and anchor in by_ds
+                    and len(by_ds[anchor]) == 1):
+                label = next(iter(by_ds[anchor]))
+            else:
+                label = min(mt for _, mt in members)
+            for member in members:
+                out[member] = label
+        self._path_family_cache = out
         return out
 
     def _note_mapping_status(self, status: str) -> None:
