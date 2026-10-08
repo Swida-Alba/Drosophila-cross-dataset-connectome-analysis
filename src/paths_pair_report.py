@@ -4073,8 +4073,9 @@ def generate_paths_pair_report(
     guide_link = ''
     if guide_file.exists():
         guide_link = (' &middot; <a href="_UserGuide_please_read_me.html" '
-                      'target="_blank">\U0001f4d6 user guide (ratios, '
-                      'adjusted ratios, refill explained)</a>')
+                      'target="_blank" style="color:#ffd54f">\U0001f4d6 '
+                      'user guide (ratios, adjusted ratios, refill '
+                      'explained)</a>')
     html_str = _render_page_shell(
         payload_json,
         _render_overview(payload, run_dir, breakdown_paths),
