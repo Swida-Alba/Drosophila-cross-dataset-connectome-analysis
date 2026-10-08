@@ -253,3 +253,57 @@ def test_analyzer_tier0_identity_for_user_labels():
     bare = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
     bare.label_mapper = LabelMapper()
     assert not bare._user_label_governs('5th-LNv')
+
+
+def test_edge_lane_converges_split_families():
+    """Phase R1: singleton per-chip policy groups must not leave split
+    branches (FAFB R8 vs MCNS R8p) on separate edge rows — the family
+    resolver (the analyzer's `_path_family_map`) converges them exactly
+    like the path lane."""
+    from types import SimpleNamespace
+
+    class _SingletonPolicy:
+        """Every name governed by its OWN group (the MF run's shape);
+        group_by_label -> None = singleton, no cross-dataset members."""
+        anchor_ds = None
+
+        def key_for(self, dataset, t):
+            return f'chip_{t}'
+
+        def group_by_label(self, label):
+            return None
+
+        def is_group_label(self, label):
+            return False
+
+    families = {(FAFB, 'R8'): 'R8', (MCNS, 'R8p'): 'R8'}
+    metrics = ComparisonMetrics()
+    metrics._family_resolver = lambda ds, t: families.get((str(ds), str(t)))
+    raw_results = {
+        FAFB: {3: _frame([('R8', 'Dm9', 5)])},
+        MCNS: {3: _frame([('R8p', 'Dm9', 7)])},
+    }
+    aligned = metrics._align_results_for_threshold_map(
+        raw_results, [MCNS, FAFB], {MCNS: 3, FAFB: 3},
+        label_mapper=None,
+        type_mapper=SimpleNamespace(
+            _loaded=False, get_display_name=lambda name, datasets: name),
+        merge_policy=_SingletonPolicy(),
+    )
+    assert 'R8 -> Dm9' in aligned.index
+    assert aligned.loc['R8 -> Dm9', FAFB] == 5
+    assert aligned.loc['R8 -> Dm9', MCNS] == 7
+
+    # Control: without a family resolver the legacy behavior holds —
+    # singleton key_for hits survive as the comparison keys and the rows
+    # stay separate (the policy governs every name in this stub).
+    legacy = ComparisonMetrics()
+    aligned_legacy = legacy._align_results_for_threshold_map(
+        raw_results, [MCNS, FAFB], {MCNS: 3, FAFB: 3},
+        label_mapper=None,
+        type_mapper=SimpleNamespace(
+            _loaded=False, get_display_name=lambda name, datasets: name),
+        merge_policy=_SingletonPolicy(),
+    )
+    assert 'chip_R8 -> chip_Dm9' in aligned_legacy.index
+    assert 'chip_R8p -> chip_Dm9' in aligned_legacy.index

@@ -989,6 +989,10 @@ class ComparisonMetrics:
                 # mapper may carry the run's USER label mapper, whose
                 # labels are the comparison identity already.
                 _is_user_label = getattr(label_mapper, 'is_user_label', None)
+                # Family-keying residues (Phase R1): the analyzer owns the
+                # symmetric mapper-decision family map; the edge lane must
+                # converge split families the same way the path lane does.
+                _family_resolver = getattr(self, '_family_resolver', None)
                 # Hemisphere-suffix awareness (plan R1-b): with
                 # separate_hemispheres, frame types can carry _L/_R/_U
                 # suffixes while key_map/mapper relations key base names.
@@ -1017,6 +1021,25 @@ class ComparisonMetrics:
                                 merge_policy.key_for(dataset, lookup_t)
                                 if merge_policy is not None else None
                             )
+                    # A key_for hit is final only for a TRUE cross-dataset
+                    # family (members in >= 2 datasets). Singleton per-chip
+                    # groups must not short-circuit the family tier below —
+                    # they are exactly the rows that left FAFB R8 and the
+                    # MCNS R8p/R8y/R8d/R8_unclear branches on separate
+                    # rows. Demoted only when a family resolver exists, so
+                    # policy-only callers keep today's behavior.
+                    if key is not None and _family_resolver is not None:
+                        group = (
+                            merge_policy.group_by_label(key)
+                            if merge_policy is not None else None)
+                        if group is None or len(
+                                getattr(group, 'members', {}) or {}) < 2:
+                            key = None
+                    if key is None and _family_resolver is not None:
+                        family_key = _family_resolver(dataset, lookup_t)
+                        if family_key:
+                            key = (f'{family_key}{suffix}' if suffix
+                                   else family_key)
                     if key is None:
                         resolved_key = canonical_merge_key(
                             type_mapper, lookup_t, dataset, fallback_target,

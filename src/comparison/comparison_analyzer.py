@@ -278,6 +278,12 @@ class ComparisonAnalyzer:
 
         # Initialize components
         self.metrics = ComparisonMetrics()
+        # Phase R1 (family-keying residues): the edge lane converges split
+        # families through the SAME symmetric family map the path lane
+        # uses. The resolver closes over this analyzer (which owns the
+        # cached map); metrics reads it via getattr, so bare
+        # ComparisonMetrics users (tests) are unaffected.
+        self.metrics._family_resolver = self._edge_family_resolver
         
         # Storage for results
         self.raw_results: Dict[str, Dict[int, pd.DataFrame]] = {}
@@ -1265,6 +1271,25 @@ class ComparisonAnalyzer:
             targets.extend(str(x) for x in
                            (decision.get('target_types') or []))
         return targets
+
+    def _edge_family_resolver(self, dataset: str, type_name: str) -> Optional[str]:
+        """Phase R1: family-map lookup for the EDGE alignment lane.
+
+        Returns the symmetric mapper-decision family label for
+        ``(dataset, type_name)`` — the same convergence the path lane
+        already uses — or ``None`` when the name is not governed (auto
+        mapping off, no policy, unmapped name).  No hemisphere stripping
+        here: metrics passes the already-stripped lookup name when
+        hemi-aware, and a native suffixed name must keep falling through
+        to the raw fallback so L/R never merge unintentionally."""
+        if not (getattr(self.parameters, 'auto_type_mapping', False)
+                and getattr(self.parameters, '_auto_type_mapper', None)
+                is not None):
+            return None
+        try:
+            return self._path_family_map().get((str(dataset), str(type_name)))
+        except Exception:  # noqa: BLE001 — keying aid, never fatal
+            return None
 
     def _path_family_map(self) -> Dict[Tuple[str, str], str]:
         """{(dataset, type): family label}, cached per run. Seeded with
@@ -9567,14 +9592,29 @@ class ComparisonAnalyzer:
         merge_policy = self._merge_policy_or_none()
 
         def _count_key(dataset: str, type_val) -> str:
-            """Group label for a raw type when the merge policy governs it,
-            so neuron counts agree with the merged presence/similarity
-            frames (plan acceptance: counts agree on group membership)."""
+            """Group label for a raw type under the resolution-order
+            contract (Phase A user-first + Phase R3): user label
+            (identity, never re-resolved) -> TRUE multi-dataset policy
+            group (a singleton per-chip group must not block the family
+            tier) -> path-family map -> raw.  Neuron counts then agree
+            with the merged presence/similarity frames."""
             raw = str(type_val)
+            if self._user_label_governs(raw):
+                return raw
             if merge_policy is not None:
                 label = merge_policy.key_for(dataset, raw)
                 if label:
-                    return label
+                    if getattr(self.metrics, '_family_resolver',
+                               None) is not None:
+                        group = merge_policy.group_by_label(label)
+                        if group is None or len(
+                                getattr(group, 'members', {}) or {}) < 2:
+                            label = None  # singleton: try the family tier
+                    if label is not None:
+                        return label
+            family = self._edge_family_resolver(dataset, raw)
+            if family:
+                return family
             return raw
 
         def _track_member(type_counts: Dict, count_key: str, dataset: str,
@@ -9711,9 +9751,12 @@ class ComparisonAnalyzer:
                             type_counts[count_key][count_col] = (
                                 type_counts[count_key].get(count_col, 0)
                                 + type_cnt)
-                            if merge_policy is not None:
-                                _track_member(type_counts, count_key,
-                                              dataset, type_val, type_cnt)
+                            # Always track: a family-resolved key without a
+                            # policy (Phase R3) needs the composition note
+                            # too; the >1-distinct-name filter at emission
+                            # keeps single-name rows clean.
+                            _track_member(type_counts, count_key,
+                                          dataset, type_val, type_cnt)
                     
                     # Count by custom group
                     if 'custom_group' in source_df.columns:
@@ -9744,9 +9787,8 @@ class ComparisonAnalyzer:
                             type_counts[count_key][count_col] = (
                                 type_counts[count_key].get(count_col, 0)
                                 + type_cnt)
-                            if merge_policy is not None:
-                                _track_member(type_counts, count_key,
-                                              dataset, type_val, type_cnt)
+                            _track_member(type_counts, count_key,
+                                          dataset, type_val, type_cnt)
                     
                     # Count by custom group  
                     if 'custom_group' in target_df.columns:
@@ -9930,24 +9972,30 @@ class ComparisonAnalyzer:
                     
                     # Build path key using canonical names for cross-dataset merging
                     canonical_key, display_key = self._build_path_key_with_mapping(path_nodes, dataset)
-                    
-                    # Get canonical node names
-                    canonical_nodes = [self._get_canonical_type(node, dataset) for node in path_nodes]
-                    source = canonical_nodes[0]
-                    target = canonical_nodes[-1]
-                    intermediates = canonical_nodes[1:-1] if len(canonical_nodes) > 2 else []
-                    
+
+                    # Phase R2: structural columns derive from the
+                    # converged canonical key the row is keyed by — a
+                    # separate canonical pass contradicted it (raw branch
+                    # sources like `R8p(R8)` under a family path_key).
+                    # Display stays the family label: the presence flags
+                    # carry the per-dataset truth, and the mapper evidence
+                    # lives in auto_type_mapping*.csv.
+                    key_parts = canonical_key.split(' → ')
+                    source = key_parts[0]
+                    target = key_parts[-1]
+                    intermediates = key_parts[1:-1]
+
                     # Use canonical_key for merging
                     path_key = canonical_key
-                    
-                    # Initialize path data (use display names for output)
+
+                    # Initialize path data (family label for output)
                     if path_key not in all_paths:
                         all_paths[path_key] = {
-                            'path_key': display_key,
-                            'source': self._get_display_type(source) if self.parameters.auto_type_mapping else source,
-                            'target': self._get_display_type(target) if self.parameters.auto_type_mapping else target,
+                            'path_key': canonical_key,
+                            'source': source,
+                            'target': target,
                             'hops': len(path_nodes) - 1,
-                            'intermediates': ' → '.join([self._get_display_type(i) for i in intermediates]) if intermediates else '',
+                            'intermediates': ' → '.join(intermediates) if intermediates else '',
                         }
                     
                     # Add threshold-specific data
@@ -10418,9 +10466,11 @@ class ComparisonAnalyzer:
                     
                     # Build path key using canonical names for cross-dataset merging
                     canonical_key, display_key = self._build_path_key_with_mapping(path_nodes, dataset)
-                    canonical_nodes = [self._get_canonical_type(node, dataset) for node in path_nodes]
-                    source = canonical_nodes[0]
-                    target = canonical_nodes[-1]
+                    # Phase R2: structural columns from the converged key
+                    # (a separate canonical pass contradicted the path_key).
+                    key_parts = canonical_key.split(' → ')
+                    source = key_parts[0]
+                    target = key_parts[-1]
                     path_key = canonical_key
                     
                     # Initialize path data if not exists
@@ -10507,13 +10557,14 @@ class ComparisonAnalyzer:
                 # Build path key using canonical names for cross-dataset merging
                 # and display names for the output
                 canonical_key, display_key = self._build_path_key_with_mapping(path_nodes, dataset)
-                
-                # Get canonical node names for source/intermediates/target
-                canonical_nodes = [self._get_canonical_type(node, dataset) for node in path_nodes]
-                source = canonical_nodes[0]
-                target = canonical_nodes[-1]
-                intermediates = canonical_nodes[1:-1] if len(canonical_nodes) > 2 else []
-                
+
+                # Phase R2: structural columns from the converged key
+                # (a separate canonical pass contradicted the path_key).
+                key_parts = canonical_key.split(' → ')
+                source = key_parts[0]
+                target = key_parts[-1]
+                intermediates = key_parts[1:-1]
+
                 # Use canonical_key for data merging (consistent across datasets)
                 path_key = canonical_key
                 
