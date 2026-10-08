@@ -144,7 +144,10 @@ def test_ratio_run_artifacts(tmp_path):
         encoding='utf-8')
     assert '[weight basis]' in notes
     assert '[ratio definition]' not in notes
-    # the type-level refill never fires on a ratio run (§16.1 guard)
+    # The §16.1 never-fires guard is GONE (2026-10-08 always-fill): on
+    # real runs the hook now writes the complete-at-asked data. This mock
+    # harness's hook still declines (the harness prov carries no applied
+    # threshold for the pre-gate), so no refill folder appears here.
     assert not (run_dir / 'data_details' / 'type_level_refill').exists()
 
 
@@ -297,7 +300,16 @@ def test_real_fafb_ratio_pipeline(tmp_path):
     assert param('requested_threshold') == '0.001'
     assert param('paths_complete') == 'True'
     assert (run_dir / 'data_details' / 'ratio_synapse_map.csv').exists()
-    assert not (run_dir / 'data_details' / 'type_level_refill').exists()
+    # RATIO-MODE ALWAYS-FILL (2026-10-08): even a non-bitten ratio run
+    # produces the complete-at-asked refill data (mass 0) — the Refill
+    # tab shows the full asked-threshold chain set.
+    import json as _json
+    prov = _json.loads(
+        (run_dir / 'data_details' / 'type_level_refill' /
+         'refill_provenance.json').read_text(encoding='utf-8'))
+    assert prov.get('status') == 'complete_at_asked'
+    assert prov.get('refill_weight_total') == 0
+    assert prov.get('refill_synapse_floor') == 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -731,6 +731,21 @@ def compute_type_level_refill(
     residual_active = False
     _kept_cut_paths = None
     _cut_paths = []
+    # Round-13 AND mode flag (shared by both lanes — the shortest branch
+    # filters the store's layers with it, the all-mode branch filters the
+    # streamed edges) + the RATIO-MODE FLOOR (2026-10-07, user directive):
+    # PLAIN ratio mode always refills to synapse >= 1 — the run's own
+    # forced floor — so the second round's universe is complete; "unless
+    # specified independently" = AND mode's own min_synapse. Assigned on
+    # BOTH lanes: the refill_synapse_floor provenance stamp below reads it
+    # unconditionally under ratio_mode (the shortest lane used to hit an
+    # UnboundLocalError here).
+    _and_mode = str(prov.get('threshold_combination',
+                             '')).strip().lower().startswith('and')
+    if ratio_mode:
+        and_syn_floor = (prov.get('min_synapse') if _and_mode else 1)
+    else:
+        and_syn_floor = None
     if is_shortest:
         # -- Phase 3: structure from the run's discovery store; `edges`
         # is only the F9 denominator source. Per-pair weights are the
@@ -744,8 +759,6 @@ def compute_type_level_refill(
         # Round-13 AND mode: the store's edges must respect the run's
         # co-threshold too (ratio basis + AND -> synapse floor; synapse
         # basis + AND -> ratio tier), exactly like the all-mode pass.
-        _and_mode = str(prov.get('threshold_combination',
-                                 '')).strip().lower().startswith('and')
         if _and_mode:
             _and_floor = (prov.get('min_synapse') if ratio_mode else None)
             _and_tier = (_parse_float(prov.get('min connection ratio'))
@@ -832,17 +845,8 @@ def compute_type_level_refill(
         # Round-13 AND mode: reproduce the run's DUAL admission rule in
         # the induced universe. ratio basis + AND -> the synapse floor;
         # synapse basis + AND -> the ratio co-threshold (F9 denominators
-        # from the same edge source).
-        _and_mode = str(prov.get('threshold_combination',
-                                 '')).strip().lower().startswith('and')
-        # RATIO-MODE FLOOR (2026-10-07, user directive): PLAIN ratio mode
-        # always refills to synapse >= 1 — the run's own forced floor —
-        # so the second round's universe is complete; "unless specified
-        # independently" = AND mode's own min_synapse.
-        if ratio_mode:
-            and_syn_floor = (prov.get('min_synapse') if _and_mode else 1)
-        else:
-            and_syn_floor = None
+        # from the same edge source). (_and_mode/and_syn_floor are
+        # hoisted above the lane branch.)
         and_ratio_tier = (_parse_float(prov.get('min connection ratio'))
                           if (_and_mode and not ratio_mode) else None)
         and_post_totals: Dict[str, float] = defaultdict(float)
