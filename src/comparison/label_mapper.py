@@ -1036,42 +1036,61 @@ class LabelMapper:
     def apply_to_dataframe(self, df: pd.DataFrame, dataset: str) -> pd.DataFrame:
         """
         Apply standard labels to a connection DataFrame.
-        
+
         Adds 'std_label_pre' and 'std_label_post' columns based on type columns.
         Uses get_label() to check all mappings (source, target, intermediate).
-        
+
+        User-first type resolution (Phase A, bodyId lane): when a type-name
+        lookup MISSES and the matching ``bodyId_pre``/``bodyId_post`` column
+        exists, the bodyId is retried against the mappings — so
+        bodyId-keyed mappers (e.g. a settled-type custom mapping) rename
+        bodyId-level frames even though their members are not type names.
+        A name-keyed mapper is unaffected (its members are not bodyIds, so
+        the retry never matches).
+
         Args:
             df: DataFrame with type_pre and type_post columns
             dataset: Dataset identifier for this data
-            
+
         Returns:
             DataFrame with added std_label columns
         """
         if df.empty:
             return df
-        
+
         df = df.copy()
-        
-        # Apply to pre (source) neurons
-        if 'type_pre' in df.columns:
-            df['std_label_pre'] = df['type_pre'].apply(
-                lambda x: self.get_label(dataset, x) if pd.notna(x) else ''
-            )
-        elif 'bodyId_pre' in df.columns:
-            df['std_label_pre'] = df['bodyId_pre'].apply(
-                lambda x: self.get_label(dataset, x)
-            )
-        
-        # Apply to post (target) neurons
-        if 'type_post' in df.columns:
-            df['std_label_post'] = df['type_post'].apply(
-                lambda x: self.get_label(dataset, x) if pd.notna(x) else ''
-            )
-        elif 'bodyId_post' in df.columns:
-            df['std_label_post'] = df['bodyId_post'].apply(
-                lambda x: self.get_label(dataset, x)
-            )
-        
+
+        def _std_side(type_col: str, body_col: str) -> Optional[pd.Series]:
+            if type_col not in df.columns:
+                if body_col in df.columns:
+                    return df[body_col].apply(
+                        lambda x: self.get_label(dataset, x))
+                return None
+            std = df[type_col].apply(
+                lambda x: self.get_label(dataset, x) if pd.notna(x) else '')
+            if body_col in df.columns:
+                # Retry the bodyId only where the NAME lookup missed
+                # (identity result = unmapped); adopt the bodyId's label
+                # only when the bodyId itself maps — an unmapped bodyId
+                # must never displace the type name.
+                unmapped = std.astype(str) == df[type_col].astype(str)
+                unmapped &= df[type_col].notna()
+                if unmapped.any():
+                    bids = df.loc[unmapped, body_col]
+                    by_id = bids.apply(lambda x: self.get_label(dataset, x))
+                    take = by_id.astype(str) != bids.astype(str)
+                    if take.any():
+                        std.loc[take.index[take]] = by_id[take]
+            return std
+
+        std_pre = _std_side('type_pre', 'bodyId_pre')
+        if std_pre is not None:
+            df['std_label_pre'] = std_pre
+
+        std_post = _std_side('type_post', 'bodyId_post')
+        if std_post is not None:
+            df['std_label_post'] = std_post
+
         return df
     
     def __repr__(self) -> str:

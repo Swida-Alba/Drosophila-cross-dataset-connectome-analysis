@@ -460,3 +460,157 @@ def test_verify_json_format_read_error(tmp_path):
     res = LabelMapper.verify_json_format(str(d))
     assert not res["valid"]
     assert "Failed to read file" in res["errors"][0]
+
+
+# --- user-first alignment wrapper (comparison_analyzer, Phase A) ----------
+
+
+def _wrap_user_mapper():
+    """User mapper: two bodyId-keyed labels (the settled-type shape)."""
+    return LabelMapper(
+        source_mapping_dict={DS2: [["13531", "12254"], ["14633"]]},
+        source_labels=["5th-LNv", "LNd_CRY+_ITP+"],
+        target_mapping_dict={DS2: [["13531", "12254"], ["14633"]]},
+        target_labels=["5th-LNv", "LNd_CRY+_ITP+"],
+    )
+
+
+def _wrap_policy_mapper():
+    """Synthesized-policy stand-in: maps raw names (including a USER
+    label — the re-resolution hazard the wrapper exists to stop)."""
+    return LabelMapper(
+        source_mapping_dict={DS2: [["5th-LNv", "5thsLNv_LNd6"]]},
+        source_labels=["5thsLNv_family"],
+    )
+
+
+class TestUserFirstLabelMapper:
+    def _wrap(self, user=True, policy=True):
+        from comparison.comparison_analyzer import _UserFirstLabelMapper
+
+        return _UserFirstLabelMapper(
+            _wrap_user_mapper() if user else None,
+            _wrap_policy_mapper() if policy else None,
+        )
+
+    def test_identity_tier_beats_policy(self):
+        """A user label passes through verbatim even when the policy tier
+        would re-resolve it — tier 0 is the whole point."""
+        w = self._wrap()
+        assert w.get_label(DS2, "5th-LNv") == "5th-LNv"
+        assert w.is_user_label("5th-LNv")
+
+    def test_identity_is_hemisphere_suffix_aware(self):
+        w = self._wrap()
+        assert w.is_user_label("5th-LNv_L")
+        assert w.get_label(DS2, "5th-LNv_R") == "5th-LNv_R"
+
+    def test_user_member_lookup(self):
+        """BodyId-keyed user members resolve to their labels (tier 0b)."""
+        w = self._wrap()
+        assert w.get_label(DS2, "13531") == "5th-LNv"
+        assert w.get_label(DS2, "14633") == "LNd_CRY+_ITP+"
+
+    def test_user_priority_over_policy(self):
+        """A name both mappers govern resolves by the USER mapper."""
+        user = LabelMapper(
+            source_mapping_dict={DS2: [["99999"]]},
+            source_labels=["user_label"],
+        )
+        policy = LabelMapper(
+            source_mapping_dict={DS2: [["99999"]]},
+            source_labels=["policy_label"],
+        )
+        from comparison.comparison_analyzer import _UserFirstLabelMapper
+
+        assert _UserFirstLabelMapper(user, policy).get_label(
+            DS2, "99999") == "user_label"
+
+    def test_policy_fills_unmapped_names(self):
+        w = self._wrap()
+        assert w.get_label(DS2, "5thsLNv_LNd6") == "5thsLNv_family"
+
+    def test_total_miss_returns_input(self):
+        w = self._wrap()
+        assert w.get_label(DS2, "unknown_type") == "unknown_type"
+        assert not w.is_user_label("unknown_type")
+
+    def test_apply_to_dataframe_uses_all_tiers(self):
+        w = self._wrap()
+        df = pd.DataFrame({
+            "type_pre": ["5th-LNv", "5thsLNv_LNd6"],
+            "type_post": ["13531", "unknown_type"],
+        })
+        out = w.apply_to_dataframe(df, DS2)
+        assert list(out["std_label_pre"]) == ["5th-LNv", "5thsLNv_family"]
+        # post side: bodyId member via tier 0b; a total miss passes through
+        assert list(out["std_label_post"]) == ["5th-LNv", "unknown_type"]
+
+    def test_is_empty(self):
+        w = self._wrap()
+        assert not w.is_empty
+        from comparison.comparison_analyzer import _UserFirstLabelMapper
+
+        assert _UserFirstLabelMapper(None, None).is_empty
+
+    def test_no_user_mapper_delegates_to_policy(self):
+        w = self._wrap(user=False)
+        assert w.get_label(DS2, "5thsLNv_LNd6") == "5thsLNv_family"
+        assert w.get_label(DS2, "5th-LNv") == "5thsLNv_family"
+
+
+# --- bodyId fallback lane in apply_to_dataframe (Phase A) -----------------
+
+
+def test_apply_to_dataframe_bodyid_fallback():
+    """A bodyId-keyed mapper renames bodyId-level frames even though its
+    members are not type names: rows whose NAME lookup missed retry via
+    the matching bodyId column."""
+    m = LabelMapper(
+        source_mapping_dict={DS2: [["13531", "12254"]]},
+        source_labels=["5th-LNv"],
+        target_mapping_dict={DS2: [["13531", "12254"]]},
+        target_labels=["5th-LNv"],
+    )
+    df = pd.DataFrame({
+        "type_pre": ["5thsLNv_LNd6", "known_type"],
+        "bodyId_pre": ["13531", "555"],
+        "type_post": ["other", "5thsLNv_LNd6"],
+        "bodyId_post": ["777", "12254"],
+    })
+    out = m.apply_to_dataframe(df, DS2)
+    # name miss + mapped bodyId → the bodyId's label
+    assert out["std_label_pre"].iloc[0] == "5th-LNv"
+    # name miss + unmapped bodyId → the raw type name survives (an
+    # unmapped bodyId must never displace the type name)
+    assert out["std_label_pre"].iloc[1] == "known_type"
+    assert out["std_label_post"].iloc[0] == "other"
+    assert out["std_label_post"].iloc[1] == "5th-LNv"
+
+
+def test_apply_to_dataframe_bodyid_fallback_name_mapped_wins():
+    """When the NAME maps, the bodyId is not consulted (name-first)."""
+    m = LabelMapper(
+        source_mapping_dict={DS2: [["13531"], ["legacy_name"]]},
+        source_labels=["5th-LNv", "by_name"],
+        target_mapping_dict={DS2: [["13531"], ["legacy_name"]]},
+        target_labels=["5th-LNv", "by_name"],
+    )
+    df = pd.DataFrame({
+        "type_pre": ["legacy_name"],
+        "bodyId_pre": ["13531"],
+    })
+    out = m.apply_to_dataframe(df, DS2)
+    assert out["std_label_pre"].iloc[0] == "by_name"
+
+
+def test_apply_to_dataframe_bodyid_fallback_noop_for_name_mappers():
+    """A name-keyed mapper's members are not bodyIds — the fallback lane
+    never fires, so behavior is unchanged."""
+    m = _dict_mapper()
+    df = pd.DataFrame({
+        "type_pre": ["aMe12"],
+        "bodyId_pre": ["13531"],
+    })
+    out = m.apply_to_dataframe(df, DS1)
+    assert out["std_label_pre"].iloc[0] == "aMe12_grp1"
