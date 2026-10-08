@@ -59,6 +59,10 @@ from .comparison_parameters import (
     ComparisonParameters, threshold_cell_value, threshold_folder_token,
 )
 from .label_mapper import LabelMapper
+try:
+    from .type_resolver import is_residual_key
+except ImportError:  # pragma: no cover - direct package imports
+    from type_resolver import is_residual_key
 from .data_loader import DataLoader
 from .metrics import ComparisonMetrics
 from .interactive_heatmap import generate_interactive_heatmap
@@ -1154,11 +1158,18 @@ class ComparisonAnalyzer:
         return labels
 
     def _user_label_governs(self, type_name) -> bool:
-        """Tier-0 test: is this name already a user label?  Hemisphere-
-        suffix aware (the base of a suffixed name may carry the label)."""
+        """Tier-0 test: is this name already a comparison identity?
+
+        True for user mapper labels AND for star-tagged residual keys
+        (`T*`, the type resolver's terminal rename for label-mapper
+        collided native types) — both pass through verbatim, never
+        re-resolved.  Hemisphere-suffix aware (the base of a suffixed
+        name may carry the label)."""
         s = str(type_name)
         labels = self._user_merge_label_set()
         if s in labels:
+            return True
+        if is_residual_key(s):
             return True
         base, suffix = split_hemi_suffix(s)
         return bool(suffix) and base in labels
@@ -9626,6 +9637,23 @@ class ComparisonAnalyzer:
             name = str(type_val)
             per_dataset[name] = per_dataset.get(name, 0) + int(count)
 
+        # Label-mapper tier (user directive 2026-10-08, report §3.1): the
+        # label mapper is a bodyId-level RETYPING of its neuron set —
+        # when provided, counts are keyed by the mapped label per neuron
+        # (falling back to the type-based key for enrolled-but-unmapped
+        # rows), overwriting the auto type mapper's scope on this card.
+        def _bodyid_labels(dataset: str, neuron_df) -> Dict[str, str]:
+            if (self.label_mapper is None or self.label_mapper.is_empty
+                    or neuron_df is None
+                    or 'bodyId' not in neuron_df.columns):
+                return {}
+            labels = {}
+            for b in neuron_df['bodyId'].dropna().astype(str).unique():
+                lbl = self.label_mapper.get_label(dataset, b)
+                if lbl and lbl != b:
+                    labels[b] = lbl
+            return labels
+
         # Collect neuron data from each dataset
         all_source_data = []
         all_target_data = []
@@ -9740,23 +9768,50 @@ class ComparisonAnalyzer:
                     source_count = len(source_df)
                     source_hemi = _count_hemisphere(source_df)
                     
-                    # Count by type
+                    # Count by type (by LABEL first when a label mapper is
+                    # active — see _bodyid_labels)
                     if 'type' in source_df.columns:
-                        for type_val in source_df['type'].dropna().unique():
-                            type_cnt = len(source_df[source_df['type'] == type_val])
-                            count_key = _count_key(dataset, type_val)
-                            if count_key not in type_counts:
-                                type_counts[count_key] = {'role': 'source'}
-                            count_col = f'{safe_name}_source'
-                            type_counts[count_key][count_col] = (
-                                type_counts[count_key].get(count_col, 0)
-                                + type_cnt)
-                            # Always track: a family-resolved key without a
-                            # policy (Phase R3) needs the composition note
-                            # too; the >1-distinct-name filter at emission
-                            # keeps single-name rows clean.
-                            _track_member(type_counts, count_key,
-                                          dataset, type_val, type_cnt)
+                        bodyid_labels = _bodyid_labels(dataset, source_df)
+                        if bodyid_labels:
+                            key_series = (
+                                source_df['bodyId'].astype(str)
+                                .map(bodyid_labels)
+                                .fillna(source_df['type'].astype(str)
+                                        .map(lambda t: _count_key(dataset, t))))
+                            for count_key in key_series.dropna().unique():
+                                if count_key == '':
+                                    continue
+                                mask = key_series == count_key
+                                type_cnt = int(mask.sum())
+                                if count_key not in type_counts:
+                                    type_counts[count_key] = {'role': 'source'}
+                                count_col = f'{safe_name}_source'
+                                type_counts[count_key][count_col] = (
+                                    type_counts[count_key].get(count_col, 0)
+                                    + type_cnt)
+                                for t_val in source_df.loc[
+                                        mask, 'type'].dropna().unique():
+                                    _track_member(
+                                        type_counts, count_key, dataset,
+                                        t_val,
+                                        int((source_df.loc[mask, 'type']
+                                             == t_val).sum()))
+                        else:
+                            for type_val in source_df['type'].dropna().unique():
+                                type_cnt = len(source_df[source_df['type'] == type_val])
+                                count_key = _count_key(dataset, type_val)
+                                if count_key not in type_counts:
+                                    type_counts[count_key] = {'role': 'source'}
+                                count_col = f'{safe_name}_source'
+                                type_counts[count_key][count_col] = (
+                                    type_counts[count_key].get(count_col, 0)
+                                    + type_cnt)
+                                # Always track: a family-resolved key without a
+                                # policy (Phase R3) needs the composition note
+                                # too; the >1-distinct-name filter at emission
+                                # keeps single-name rows clean.
+                                _track_member(type_counts, count_key,
+                                              dataset, type_val, type_cnt)
                     
                     # Count by custom group
                     if 'custom_group' in source_df.columns:
@@ -9776,19 +9831,46 @@ class ComparisonAnalyzer:
                     target_count = len(target_df)
                     target_hemi = _count_hemisphere(target_df)
                     
-                    # Count by type
+                    # Count by type (by LABEL first when a label mapper is
+                    # active — see _bodyid_labels)
                     if 'type' in target_df.columns:
-                        for type_val in target_df['type'].dropna().unique():
-                            type_cnt = len(target_df[target_df['type'] == type_val])
-                            count_key = _count_key(dataset, type_val)
-                            if count_key not in type_counts:
-                                type_counts[count_key] = {'role': 'target'}
-                            count_col = f'{safe_name}_target'
-                            type_counts[count_key][count_col] = (
-                                type_counts[count_key].get(count_col, 0)
-                                + type_cnt)
-                            _track_member(type_counts, count_key,
-                                          dataset, type_val, type_cnt)
+                        bodyid_labels = _bodyid_labels(dataset, target_df)
+                        if bodyid_labels:
+                            key_series = (
+                                target_df['bodyId'].astype(str)
+                                .map(bodyid_labels)
+                                .fillna(target_df['type'].astype(str)
+                                        .map(lambda t: _count_key(dataset, t))))
+                            for count_key in key_series.dropna().unique():
+                                if count_key == '':
+                                    continue
+                                mask = key_series == count_key
+                                type_cnt = int(mask.sum())
+                                if count_key not in type_counts:
+                                    type_counts[count_key] = {'role': 'target'}
+                                count_col = f'{safe_name}_target'
+                                type_counts[count_key][count_col] = (
+                                    type_counts[count_key].get(count_col, 0)
+                                    + type_cnt)
+                                for t_val in target_df.loc[
+                                        mask, 'type'].dropna().unique():
+                                    _track_member(
+                                        type_counts, count_key, dataset,
+                                        t_val,
+                                        int((target_df.loc[mask, 'type']
+                                             == t_val).sum()))
+                        else:
+                            for type_val in target_df['type'].dropna().unique():
+                                type_cnt = len(target_df[target_df['type'] == type_val])
+                                count_key = _count_key(dataset, type_val)
+                                if count_key not in type_counts:
+                                    type_counts[count_key] = {'role': 'target'}
+                                count_col = f'{safe_name}_target'
+                                type_counts[count_key][count_col] = (
+                                    type_counts[count_key].get(count_col, 0)
+                                    + type_cnt)
+                                _track_member(type_counts, count_key,
+                                              dataset, type_val, type_cnt)
                     
                     # Count by custom group  
                     if 'custom_group' in target_df.columns:
@@ -9862,10 +9944,38 @@ class ComparisonAnalyzer:
             type_df = type_df.sort_values('type')
             self._save_csv(type_df, os.path.join(comparison_results_dir, "neuron_counts_by_type.csv"))
             self._log(f"Saved: neuron_counts_by_type.csv ({len(type_df)} types)")
-            
+
             # Store for HTML report
             self._neuron_type_counts = type_df
-        
+
+        # Label-mapper enrollment used-data (report §3.4): the label x
+        # dataset table behind the Label Mapper card.
+        try:
+            mapper = self.label_mapper
+            if mapper is not None and not mapper.is_empty:
+                ds_names = self.parameters.get_dataset_names()
+                enrollment_rows = []
+                for label in sorted(mapper.get_all_std_labels('source')):
+                    row = {'label': label}
+                    total = 0
+                    for ds in ds_names:
+                        cnt = len(mapper.get_neurons_for_label(label, ds, 'source'))
+                        row[self.parameters._sanitize_name(ds)] = cnt or ''
+                        total += cnt
+                    row['total'] = total
+                    enrollment_rows.append(row)
+                used_dir = os.path.normpath(os.path.join(
+                    comparison_results_dir, '..', 'comparison_report_used_data'))
+                os.makedirs(used_dir, exist_ok=True)
+                self._save_csv(
+                    pd.DataFrame(enrollment_rows),
+                    os.path.join(used_dir, 'label_mapper_enrollment.csv'))
+                self._log("Saved: comparison_report_used_data/"
+                          "label_mapper_enrollment.csv")
+        except Exception as e:
+            self._log(f"Warning: could not write "
+                      f"label_mapper_enrollment.csv: {e}")
+
         # Save group counts CSV (if any groups exist)
         if group_counts:
             group_rows = []

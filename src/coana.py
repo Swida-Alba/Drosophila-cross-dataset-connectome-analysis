@@ -14221,6 +14221,27 @@ class FindNeuronConnection:
         # file so they surface (the writer rebuilds from the accumulated
         # list, so this is idempotent).
         self._maybe_generate_type_level_refill()
+
+        # 5. Residual registry disclosure (user directive 2026-10-08):
+        # collided native types whose unenrolled neurons the type
+        # resolver star-tags (`T*`).
+        try:
+            neuron_frame = self._refill_neuron_frame()
+            if neuron_frame is not None and self.label_mapper is not None:
+                registry = sv.residual_registry_summary(
+                    self.label_mapper, self.dataset, neuron_frame)
+                if registry:
+                    lines = '; '.join(
+                        f"{t}: {v['enrolled']} enrolled / "
+                        f"{v['population']} population "
+                        f"({v['residuals']} residual(s) -> '{t}*')"
+                        for t, v in sorted(registry.items()))
+                    self._warn_notes.append(
+                        '- [label mapper residuals] collided native types: '
+                        'their unenrolled neurons are star-tagged '
+                        f"('T*') by the type resolver — {lines}.")
+        except Exception as exc:  # noqa: BLE001 — disclosure only
+            self._vprint(f'[residual registry] skipped: {exc}', level='full')
         self._write_user_warning_notes(network_folder)
 
     def _trim_edges_with_path_integrity(self, conn, limit, label, sources, targets,
@@ -20396,6 +20417,28 @@ class FindNeuronConnection:
                 if 'bodyId' in ndf_complete.columns:
                     ndf_complete = ndf_complete.with_columns(pl.col('bodyId').cast(pl.Utf8))
                 bodyid_to_label = sv.build_bodyid_label_map(self.label_mapper, self.dataset, ndf_complete)
+                # Residual registry disclosure (user directive 2026-10-08):
+                # collided native types whose unenrolled neurons the type
+                # resolver star-tags (`T*`) — disclosed so the tagged keys
+                # are never mysterious.
+                try:
+                    registry = sv.residual_registry_summary(
+                        self.label_mapper, self.dataset, ndf_complete)
+                    if registry:
+                        self._residual_registry = registry
+                        lines = '; '.join(
+                            f"{t}: {v['enrolled']} enrolled / "
+                            f"{v['population']} population "
+                            f"({v['residuals']} residual(s) -> '{t}*')"
+                            for t, v in sorted(registry.items()))
+                        self._warn_notes.append(
+                            '- [label mapper residuals] collided native '
+                            'types: their unenrolled neurons are '
+                            f"star-tagged ('T*') by the type resolver — "
+                            f'{lines}.')
+                except Exception as exc:  # noqa: BLE001 — disclosure only
+                    self._vprint(f'[residual registry] skipped: {exc}',
+                                 level='full')
 
         # Helper to extract hemisphere suffix from a type string
         def _extract_hemi_suffix(type_str: str) -> str:

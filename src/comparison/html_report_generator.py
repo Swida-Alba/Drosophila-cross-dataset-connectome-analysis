@@ -150,6 +150,9 @@ def generate_html_report(
         thresholds,
         include_type_mapping=bool(getattr(
             analyzer.parameters, 'auto_type_mapping', False)),
+        include_label_mapper=bool(
+            getattr(getattr(analyzer, 'label_mapper', None),
+                    'is_empty', True) is False),
         include_alignment=bool(
             getattr(analyzer, '_alignment_best_df', None) is not None
             or getattr(analyzer, '_alignment_density_df', None) is not None),
@@ -165,6 +168,11 @@ def generate_html_report(
     
     # 1.5. Neuron Counts Section
     html_parts.append(_generate_neuron_counts_section(analyzer, dataset_names, nickname_map))
+
+    # 1.52. Label Mapper Section (user directive 2026-10-08: the label
+    # mapper is a RETYPING of its neuron set — displayed as a first-class
+    # governance card when provided)
+    html_parts.append(_generate_label_mapper_section(analyzer, dataset_names))
 
     # 1.55. Query Resolution Section (input token -> dataset)
     html_parts.append(_generate_query_resolution_section(
@@ -839,6 +847,8 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
     """.replace('__IDS__', labels_json).replace('__DATASETS__', datasets_json).replace('__COUNTS__', counts_json).replace('__WEIGHTS__', weights_json).replace('__RATIOS__', ratio_json))
     parts.append('</div></div>')
     parts.append(_generate_neuron_counts_section(analyzer, dataset_names, nickname_map))
+    # The Label Mapper governance card (user directive 2026-10-08).
+    parts.append(_generate_label_mapper_section(analyzer, dataset_names))
     # The Quick Navigation links #query-resolution — the section is
     # threshold-agnostic (per-token resolver records), so the combination
     # report must render it too, not just the Standard report.
@@ -2528,6 +2538,116 @@ def _query_resolution_targets(targets: List[str], limit: int = 8) -> str:
             f'{html.escape(shown)} … <em>(+{more} more)</em></span>')
 
 
+def _generate_label_mapper_section(analyzer, dataset_names) -> str:
+    """Label Mapper governance card (user directive 2026-10-08).
+
+    The label mapper is a RETYPING of its neuron set: its settled labels
+    ARE the comparison identity (tier 0 — they overwrite the auto type
+    mapper's scope on every derived surface), the auto type mapper
+    resolves only what the mapper does not govern (intermediates,
+    unlabeled neurons), and collided native types' residual neurons are
+    star-tagged (`T*`) by the type resolver.  Rendered only when a user
+    label mapper governs the run; empty string otherwise.
+    """
+    mapper = getattr(analyzer, 'label_mapper', None)
+    if mapper is None or mapper.is_empty:
+        return ''
+    try:
+        from .type_resolver import is_residual_key
+    except ImportError:  # pragma: no cover - direct package imports
+        from type_resolver import is_residual_key
+
+    dataset_names = list(dataset_names or [])
+    labels = sorted(mapper.get_all_std_labels('source'))
+
+    # Enrollment table: label x dataset member counts (source role; the
+    # target role mirrors it on symmetric runs).
+    table_rows = []
+    total_members = 0
+    for label in labels:
+        cells = []
+        row_total = 0
+        for ds in dataset_names:
+            try:
+                n = len(mapper.get_neurons_for_label(label, ds, 'source'))
+            except Exception:  # noqa: BLE001 — dataset simply absent
+                n = 0
+            cells.append(str(n) if n else '—')
+            row_total += n
+        total_members += row_total
+        table_rows.append(
+            '<tr><td><strong>' + label + '</strong></td>'
+            + ''.join(f'<td>{c}</td>' for c in cells)
+            + f'<td>{row_total}</td></tr>')
+    header_cells = ''.join(f'<th>{ds}</th>' for ds in dataset_names)
+
+    # Residual census: star-tagged keys in the run's own result frames.
+    residual_names = {}
+    raw_results = getattr(analyzer, 'raw_results', None) or {}
+    for ds, thr_map in raw_results.items():
+        for _thr, df in (thr_map or {}).items():
+            if df is None or len(df) == 0:
+                continue
+            for col in ('type_pre', 'type_post'):
+                if col not in getattr(df, 'columns', []):
+                    continue
+                try:
+                    values = df[col].dropna().astype(str)
+                except Exception:  # noqa: BLE001 — frame shape varies
+                    continue
+                for v in values:
+                    if is_residual_key(v):
+                        residual_names.setdefault(v, set()).add(str(ds))
+    residual_html = ''
+    if residual_names:
+        items = ', '.join(
+            f'{name} ({"/".join(sorted(dss))})'
+            for name, dss in sorted(residual_names.items()))
+        residual_html = (
+            '<p style="color: var(--secondary-color); font-size: 0.9em;">'
+            '<strong>Residual neurons:</strong> unenrolled neurons of '
+            'collided native types are star-tagged by the type resolver '
+            f'and stay dataset-scoped: {items}.</p>')
+
+    mapper_file = ''
+    params = getattr(analyzer, 'parameters', None)
+    for attr in ('overall_mapping_json', 'custom_mapping_file'):
+        p = getattr(params, attr, None) if params is not None else None
+        if p:
+            mapper_file = str(p)
+            break
+
+    parts = []
+    parts.append('<div class="card" id="label-mapper">'
+                 '<h3>🔖 Label Mapper (Retyping Overlay)</h3>')
+    parts.append(
+        '<p style="color: var(--secondary-color); font-size: 0.9em;">'
+        'A user label mapper governs this run: its labels ARE the '
+        'comparison identity (tier 0). They overwrite the auto type '
+        'mapper\'s scope on every derived surface — neuron counts, '
+        'presence matrices, path keys and display names pass them through '
+        'verbatim. The auto type mapper resolves only what the mapper '
+        'does not govern (intermediates, unlabeled neurons); its tables '
+        'below are reference evidence for that remainder.</p>')
+    parts.append(
+        '<p style="color: var(--secondary-color); font-size: 0.9em;">'
+        f'<strong>{len(labels)}</strong> custom label(s) · '
+        f'<strong>{total_members}</strong> enrolled member assignment(s) '
+        'across ' + ', '.join(dataset_names) + '.</p>')
+    if table_rows:
+        parts.append('<table><thead><tr><th>Label</th>' + header_cells
+                     + '<th>Total</th></tr></thead><tbody>'
+                     + ''.join(table_rows) + '</tbody></table>')
+    parts.append(residual_html)
+    if mapper_file:
+        parts.append(
+            '<p style="color: var(--secondary-color); font-size: 0.85em;">'
+            f'Mapper file: <code>{mapper_file}</code> (mirrored as '
+            '<code>label_map.json</code> in the run folder).</p>')
+    parts.append('</div>')
+    return ''.join(parts)
+
+
 def _generate_query_resolution_section(analyzer, dataset_names,
                                        nickname_map) -> str:
     """Standalone input-query resolver section (plan §7E, rev 2)."""
@@ -2569,6 +2689,17 @@ def _generate_query_resolution_section(analyzer, dataset_names,
              '<code>same_name_fallback</code> — a name echo with no native '
              'membership and no relation — remains the lowest-confidence '
              'pairing and should be reviewed.</p>']
+    _mapper = getattr(analyzer, 'label_mapper', None)
+    if _mapper is not None and not _mapper.is_empty:
+        # User directive 2026-10-08: the label mapper retypes its enrolled
+        # neurons (tier 0) — the resolution records below scope the AUTO
+        # mapper's remainder only.
+        parts.insert(3, (
+            '<p style="color: var(--secondary-color); font-size: 0.9em;">'
+            '🔖 <strong>Label mapper active:</strong> enrolled neurons are '
+            'retyped to their settled labels (tier 0) — the resolution '
+            'records below describe the AUTO type mapper and apply to the '
+            'remainder (intermediates, unlabeled neurons) only.</p>'))
 
     if same_name:
         tokens = ', '.join(sorted({r['token'] for r in same_name}))
@@ -2682,15 +2813,18 @@ def _generate_toc(thresholds: List[int],
                   include_provenance: bool = False,
                   include_type_mapping: bool = False,
                   include_alignment: bool = False,
-                  include_auto_density: bool = False) -> str:
+                  include_auto_density: bool = False,
+                  include_label_mapper: bool = False) -> str:
     """Generate the shared table of contents.
 
     Both report modes render the same section set, so the TOC lists every
     rendered section. ``include_provenance`` adds the Custom combination
     mode's ``threshold-provenance`` entry, ``include_type_mapping`` the
     type-mapping entry (rendered only when auto type mapping is on),
-    ``include_alignment`` the threshold-alignment entry and
-    ``include_auto_density`` the auto density-alignment entry. The
+    ``include_alignment`` the threshold-alignment entry,
+    ``include_auto_density`` the auto density-alignment entry and
+    ``include_label_mapper`` the label-mapper governance entry (rendered
+    only when a user label mapper governs the run). The
     ``thresholds`` argument is retained for call compatibility and is not
     rendered.
     """
@@ -2699,6 +2833,8 @@ def _generate_toc(thresholds: List[int],
                         if include_provenance else '')
     type_mapping_entry = ('<li><a href="#type-mapping">🏷️ Type Mapping'
                           '</a></li>\n' if include_type_mapping else '')
+    label_mapper_entry = ('<li><a href="#label-mapper">🔖 Label Mapper'
+                          '</a></li>\n' if include_label_mapper else '')
     alignment_entry = ('<li><a href="#threshold-alignment">📐 Threshold '
                        'Alignment</a></li>\n' if include_alignment else '')
     auto_density_entry = ('<li><a href="#auto-density-alignment">📐 Density '
@@ -2710,7 +2846,7 @@ def _generate_toc(thresholds: List[int],
             <ul>
                 <li><a href="#summary">📋 Summary & Key Findings</a></li>
                 <li><a href="#neuron-counts">🧬 Neuron Counts Comparison</a></li>
-                <li><a href="#query-resolution">🧭 Query Resolution</a></li>
+                {label_mapper_entry}<li><a href="#query-resolution">🧭 Query Resolution</a></li>
                 {type_mapping_entry}{provenance_entry}{alignment_entry}{auto_density_entry}<li><a href="#hemisphere-symmetry">🪞 Hemisphere Symmetry</a></li>
                 <li><a href="#similarity">🔢 Similarity Matrices</a></li>
                 <li><a href="#networks">🕸️ Network Visualizations</a></li>
@@ -3144,7 +3280,14 @@ def _generate_neuron_counts_section(analyzer, dataset_names: List[str],
         
         if canonical_counts:
             html_parts.append('<div class="card"><h3>Neuron Counts by Type (Source & Target)</h3>')
-            html_parts.append('<p style="color: var(--secondary-color); font-size: 0.9em; margin-bottom: 10px;">Neuron counts grouped by canonical type name (by query-anchored merge-policy group label when a policy governs the run). Dataset-specific type names shown in parentheses if they differ.</p>')
+            _user_mapper = getattr(analyzer, 'label_mapper', None)
+            if _user_mapper is not None and not _user_mapper.is_empty:
+                # User directive 2026-10-08 (report §3.1): the label mapper
+                # retypes its neuron set — counts are grouped by settled
+                # LABEL, overwriting the auto type mapper's scope here.
+                html_parts.append('<p style="color: var(--secondary-color); font-size: 0.9em; margin-bottom: 10px;">Neuron counts grouped by LABEL MAPPER label — the mapper retypes its enrolled neurons (tier 0), so these counts follow the retyping, not the native types. Residual neurons of collided native types appear under their star-tagged native type (<code>T*</code>). Dataset-specific type names are disclosed in <code>neuron_counts_by_type.csv</code> (group_members).</p>')
+            else:
+                html_parts.append('<p style="color: var(--secondary-color); font-size: 0.9em; margin-bottom: 10px;">Neuron counts grouped by canonical type name (by query-anchored merge-policy group label when a policy governs the run). Dataset-specific type names shown in parentheses if they differ.</p>')
             
             # Sort by total count
             sorted_types = sorted(
@@ -6639,6 +6782,32 @@ def _same_name_first_aggregate(mapper, dataset_names, filter_types=None):
 
 
 def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
+    """Thin wrapper: prepends the label-mapper scope annotation (user
+    directive 2026-10-08) to the auto type-mapping section — the mapper
+    retypes its enrolled neurons (tier 0), so the auto resolution below
+    describes only the remainder."""
+    body = _generate_type_mapping_section_inner(analyzer, dataset_names)
+    if not body:
+        return body
+    _user_mapper = getattr(analyzer, 'label_mapper', None)
+    if _user_mapper is None or _user_mapper.is_empty:
+        return body
+    _n_labels = len(_user_mapper.get_all_std_labels('source'))
+    banner = (
+        '<p style="color: var(--secondary-color); font-size: 0.9em;">'
+        '🔖 <strong>Label mapper active:</strong> '
+        f'{_n_labels} custom label(s) retype their enrolled neurons '
+        '(tier 0 — those identities never appear in the auto mapping '
+        'below). This section describes the AUTO type mapper\'s '
+        'resolution of the REMAINDER: intermediates and unlabeled types. '
+        'See the Label Mapper card for the governed set.</p>')
+    return body.replace(
+        '<div class="section-content">',
+        '<div class="section-content">' + banner, 1)
+
+
+def _generate_type_mapping_section_inner(analyzer,
+                                         dataset_names: List[str]) -> str:
     """🔗 Type Mapping (auto) — the run's type resolution in three tables.
 
     **Sources** — the priority-selected ``(dataset: type)`` observation per
@@ -6657,6 +6826,7 @@ def _generate_type_mapping_section(analyzer, dataset_names: List[str]) -> str:
     if params is None or not getattr(params, 'auto_type_mapping', False) \
             or mapper is None:
         return ''
+
     def _compared_threshold_set():
         """Per-dataset thresholds the compared queries actually read.
 

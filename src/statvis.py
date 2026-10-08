@@ -51,6 +51,14 @@ except ImportError:  # pragma: no cover - src laid bare on sys.path
     from utils.naming_utils import canonical_dataset_name
 
 try:
+    from .type_resolver import residual_key
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    try:
+        from comparison.type_resolver import residual_key
+    except ImportError:  # pragma: no cover - direct statvis execution
+        from type_resolver import residual_key
+
+try:
     from .flywire_ids import (
         is_banc_dataset,
         is_fafb_dataset,
@@ -6490,14 +6498,16 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
                 std_label.loc[mask_body] = mapped_body[mask_body]
                 std_label.loc[mask_type] = mapped_type[mask_type]
 
-                # Type-collision bodyId labeling (user directive
-                # 2026-10-08): a type name is COLLIDED when the mapper
-                # governs part of its population (some neurons renamed,
-                # others not) or the name is itself a mapper label.  Its
-                # UNMAPPED neurons are labeled at bodyId level — never
-                # aggregate under the type name, which would silently
-                # merge them into the governed population (or into a
-                # settled label of the same spelling).
+                # Residual renaming (type-resolver contract, user
+                # directive 2026-10-08): a type name is COLLIDED when the
+                # mapper governs part of its population (some neurons
+                # renamed, others not) or the name is itself a mapper
+                # label.  Its UNMAPPED neurons are RESIDUALS — renamed to
+                # the star-tagged native type by the resolver's naming
+                # contract; never aggregated under the type name (which
+                # would silently merge them into the governed population
+                # or into a settled label of the same spelling), and
+                # never labeled with bodyIds.
                 mapper_labels = set()
                 for md in (getattr(label_mapper, '_source_mapping', None),
                            getattr(label_mapper, '_target_mapping', None),
@@ -6518,7 +6528,8 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
                     )
                 )
                 if collided.any():
-                    std_label.loc[collided] = body_ids[collided]
+                    std_label.loc[collided] = type_vals[collided].map(
+                        residual_key)
 
                 ndf_complete['std_label'] = std_label
                 
@@ -7901,17 +7912,15 @@ def build_bodyid_label_map(label_mapper, dataset: str, neuron_df: pl.DataFrame) 
         # This handles cases where the ID might be used elsewhere
         bodyid_label_map[neuron_id] = std_label
 
-    # Type-collision bodyId labeling (user directive 2026-10-08): a type
-    # name is COLLIDED when the mapper governs its population only
-    # partially (some neurons of the type are renamed, others are not) or
-    # when the type name is itself a mapper label.  Unlabeled neurons of
-    # a collided type must be labeled AT BODYID LEVEL — aggregating them
-    # under the type name would silently merge them into the governed
-    # population (or into a settled label of the same spelling, e.g. an
-    # unenrolled intermediate natively typed `DN1pA` vs the settled
-    # `DN1pA` population).  Types with no governed neuron and no label
-    # identity are not collided: their unmapped neurons keep the
-    # ordinary type fallback.
+    # Residual renaming (type-resolver contract, user directive
+    # 2026-10-08): a type name is COLLIDED when the mapper governs its
+    # population only partially (some neurons of the type are renamed,
+    # others are not) or when the type name is itself a mapper label.
+    # Its UNLABELED neurons are RESIDUALS: the TYPE RESOLVER renames
+    # them to the star-tagged native type — a terminal key that never
+    # merges with the governed population, with a same-spelling settled
+    # label, or across datasets. They are never labeled with bodyIds
+    # (supersedes the interim e591330 bodyId-label fallback).
     mapper_labels = set()
     for mapping_dict in (getattr(label_mapper, '_source_mapping', None),
                          getattr(label_mapper, '_target_mapping', None),
@@ -7929,11 +7938,55 @@ def build_bodyid_label_map(label_mapper, dataset: str, neuron_df: pl.DataFrame) 
         collided = (mapped > 0) or (type_name in mapper_labels)
         if not collided:
             continue  # plain unmapped type: the type fallback stands
+        residual = residual_key(type_name)
         for b in bids:
             if b not in bodyid_label_map:
-                bodyid_label_map[b] = b
+                bodyid_label_map[b] = residual
 
     return bodyid_label_map
+
+
+def residual_registry_summary(label_mapper, dataset: str, neuron_df):
+    """Collided native types and their residual neuron counts.
+
+    A type is COLLIDED when the mapper governs part of its population
+    (some neurons renamed, others not) or the name is itself a mapper
+    label.  Returns ``{native_type: {'enrolled': n, 'population': m,
+    'residuals': m - n}}`` for collided types only (empty when no label
+    mapper or no neuron table).
+    """
+    if label_mapper is None or neuron_df is None:
+        return {}
+    try:
+        neuron_df = neuron_df.with_columns(pl.col('bodyId').cast(pl.Utf8))
+    except Exception:  # noqa: BLE001 — table shape guarded below
+        return {}
+    bodyid_label_map = build_bodyid_label_map(
+        label_mapper, dataset, neuron_df)
+    if not bodyid_label_map:
+        return {}
+    mapper_labels = set()
+    for mapping_dict in (getattr(label_mapper, '_source_mapping', None),
+                         getattr(label_mapper, '_target_mapping', None),
+                         getattr(label_mapper, '_intermediate_mapping', None)):
+        if isinstance(mapping_dict, dict):
+            mapper_labels.update(str(k) for k in mapping_dict.keys())
+    registry = {}
+    type_frame = neuron_df.filter(pl.col('type').is_not_null()).with_columns(
+        pl.col('type').cast(pl.Utf8))
+    for row in type_frame.group_by('type').agg(
+            pl.col('bodyId')).iter_rows(named=True):
+        t = str(row['type'])
+        bids = row['bodyId']
+        total = len(bids)
+        enrolled = sum(1 for b in bids if b in bodyid_label_map)
+        if total == 0 or enrolled >= total:
+            continue
+        if t not in mapper_labels and enrolled == 0:
+            continue
+        registry[t] = {'enrolled': enrolled, 'population': total,
+                       'residuals': total - enrolled}
+    return registry
 
 
 def prepare_connection_data(conn_data, level='type'):

@@ -288,11 +288,14 @@ class TestCanonicalInlineFormat:
         assert fc._expand_group_labels(["aMe"], "source") == ["aMe"]
 
 
-class TestTypeCollisionBodyIdLabeling:
-    """User directive 2026-10-08: when a type name is COLLIDED — the
-    mapper governs part of its population, or the name is itself a
-    mapper label — its UNMAPPED neurons are labeled at bodyId level so
-    they never silently merge into the governed population (or into a
+class TestTypeCollisionResidualRenaming:
+    """User directive 2026-10-08 (plan
+    _plan/plan-2026-10-08-label-mapper-type-resolver-coordination.md):
+    when a type name is COLLIDED — the mapper governs part of its
+    population, or the name is itself a mapper label — its UNMAPPED
+    neurons are RESIDUALS, renamed by the TYPE RESOLVER to the
+    star-tagged native type (`T*`). They are never labeled with bodyIds
+    and never silently merged into the governed population (or into a
     settled label of the same spelling)."""
 
     def _fixture(self, tmp_path, engine):
@@ -340,17 +343,20 @@ class TestTypeCollisionBodyIdLabeling:
         pairs = sorted(zip(ct["type_pre"], ct["type_post"]))
         # enrolled members keep their labels
         assert ("DN1pA", "DN2") in pairs
-        # collided unenrolled same-type intermediate -> bodyId-level key
+        # collided unenrolled same-type intermediate -> STAR-TAGGED
+        # residual key (the type resolver's naming contract); never the
+        # bare native type, never a bodyId
+        assert ("SMP540*", "DN2") in pairs, pairs
         assert ("SMP540", "DN2") not in pairs
-        assert any(a == "70002" and b == "DN2" for a, b in pairs), pairs
+        assert not any("70002" in a or "70002" in b for a, b in pairs), pairs
         # plain unmapped type keeps the type fallback
         assert ("XYZ", "DN1pA") in pairs
 
     def test_polars_engine(self, tmp_path):
-        import polars as pl
         ct = self._fixture(tmp_path, engine="polars")
         pairs = sorted(zip(ct["type_pre"], ct["type_post"]))
         assert ("DN1pA", "DN2") in pairs
+        assert ("SMP540*", "DN2") in pairs, pairs
         assert ("SMP540", "DN2") not in pairs
-        assert any(a == "70002" and b == "DN2" for a, b in pairs), pairs
+        assert not any("70002" in a or "70002" in b for a, b in pairs), pairs
         assert ("XYZ", "DN1pA") in pairs

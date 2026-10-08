@@ -104,6 +104,28 @@ _STATUS_SEVERITY = (
 
 CANONICAL_NAMESPACE = 'male-cns:v1.0'
 
+# --- Residual neurons of label-mapper-collided native types --------------
+# User directive 2026-10-08: when a native type's population is only
+# PARTIALLY governed by the label mapper (some neurons retyped to their
+# settled labels, others not), or the type name is itself a mapper
+# label, the UNLABELED neurons are RESIDUALS. The TYPE RESOLVER renames
+# them to the star-tagged native type — a TERMINAL key that never
+# resolves further and never merges with the governed population, with
+# a same-spelling settled label, or across datasets. They are never
+# labeled with bodyIds (that was the superseded e591330 approach).
+RESIDUAL_SUFFIX = '*'
+
+
+def residual_key(native_type) -> str:
+    """Star-tagged residual key for a collided native type."""
+    return f'{str(native_type).strip()}{RESIDUAL_SUFFIX}'
+
+
+def is_residual_key(key) -> bool:
+    """True when ``key`` carries the residual star tag (terminal)."""
+    s = str(key)
+    return s.endswith(RESIDUAL_SUFFIX) and len(s) > 1
+
 
 def _severity(status: str) -> int:
     try:

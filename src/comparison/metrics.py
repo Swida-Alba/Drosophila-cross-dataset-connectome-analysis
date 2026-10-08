@@ -9,6 +9,10 @@ Optimized with polars for high-performance operations on large datasets.
 
 import numpy as np
 from utils.naming_utils import split_hemi_suffix
+try:
+    from .type_resolver import is_residual_key
+except ImportError:  # pragma: no cover - direct package imports
+    from type_resolver import is_residual_key
 import pandas as pd
 import polars as pl
 from typing import Dict, List, Tuple, Optional, Any, Set
@@ -989,10 +993,17 @@ class ComparisonMetrics:
                 # mapper may carry the run's USER label mapper, whose
                 # labels are the comparison identity already.
                 _is_user_label = getattr(label_mapper, 'is_user_label', None)
-                # Family-keying residues (Phase R1): the analyzer owns the
-                # symmetric mapper-decision family map; the edge lane must
-                # converge split families the same way the path lane does.
+                # Phase R1: the analyzer owns the symmetric mapper-decision
+                # family map; the edge lane must converge split families
+                # the same way the path lane does.
                 _family_resolver = getattr(self, '_family_resolver', None)
+                # Residual keys (`T*`, the type resolver's terminal rename
+                # for label-mapper collided native types) are comparison
+                # identities too — never re-resolved.
+                def _is_identity(name):
+                    if _is_user_label is not None and _is_user_label(name):
+                        return True
+                    return is_residual_key(name)
                 # Hemisphere-suffix awareness (plan R1-b): with
                 # separate_hemispheres, frame types can carry _L/_R/_U
                 # suffixes while key_map/mapper relations key base names.
@@ -1000,12 +1011,12 @@ class ComparisonMetrics:
                 # canonical key so L and R stay DISTINCT rows that still
                 # merge across datasets.
                 for t in all_unique_types:
-                    # A name that IS a user label is never re-resolved
-                    # through the policy/canonical machinery (that
-                    # re-resolution manufactured family compounds like
-                    # `X(Y/Z)` and dataset-qualified keys out of settled
-                    # labels).
-                    if _is_user_label is not None and _is_user_label(t):
+                    # A name that IS a comparison identity (user label or
+                    # star-tagged residual) is never re-resolved through
+                    # the policy/canonical machinery (that re-resolution
+                    # manufactured family compounds like `X(Y/Z)` and
+                    # dataset-qualified keys out of settled labels).
+                    if _is_identity(t):
                         canonical_map[t] = t
                         continue
                     key = (
@@ -1088,12 +1099,13 @@ class ComparisonMetrics:
                 if merge_policy is not None and merge_policy.is_group_label(
                         canonical):
                     type_display_map[canonical] = canonical
-                elif _is_user_label is not None and _is_user_label(canonical):
-                    # User-first type resolution (Phase A): display a user
-                    # label verbatim — get_display_name would anchor it to
-                    # its male-cns canonical form with variants
-                    # (`5th-LNv` -> `5thsLNv_LNd6(5th-LNv/s-LNv_a)`),
-                    # resurrecting the residual namespace.
+                elif _is_identity(canonical):
+                    # User-first/residual (Phase A + Phase R): display a
+                    # comparison identity verbatim — get_display_name
+                    # would anchor it to its male-cns canonical form with
+                    # variants (`5th-LNv` ->
+                    # `5thsLNv_LNd6(5th-LNv/s-LNv_a)`), resurrecting the
+                    # residual namespace.
                     type_display_map[canonical] = canonical
                 else:
                     type_display_map[canonical] = type_mapper.get_display_name(
