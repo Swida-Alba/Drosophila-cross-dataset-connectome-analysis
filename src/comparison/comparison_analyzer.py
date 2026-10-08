@@ -83,6 +83,11 @@ try:
 except ImportError:  # pragma: no cover - direct package imports
     from src.utils.threshold_state import applied_threshold_provenance
 
+try:
+    from utils.naming_utils import split_hemi_suffix
+except ImportError:  # pragma: no cover - direct package imports
+    from src.utils.naming_utils import split_hemi_suffix
+
 
 def _escape_cypher_string_fallback(value):
     """Inline escape fallback (only used when src.utils.api_utils is unavailable)."""
@@ -101,6 +106,94 @@ def _wildcard_pattern_to_regex(pattern: str) -> str:
     """
     placeholder = '\x00'
     return pattern.replace('.*', placeholder).replace('*', '.*').replace(placeholder, '.*')
+
+
+class _UserFirstLabelMapper:
+    """Alignment-lane mapper that lets the run's USER label mapper govern
+    first (user-first type resolution, Phase A).
+
+    Resolution order for a type name:
+
+    0. **identity** — the name is already one of the user mapper's labels.
+       A label IS the comparison identity; it must never be re-resolved
+       through the merge-policy/canonical machinery (that re-resolution
+       manufactured family compounds like ``X(Y/Z)`` and dataset-qualified
+       keys out of settled labels).
+    0b. the user mapper's own lookup — its members (bodyIds or type names)
+       resolve to their labels.
+    1. the wrapped merge-policy synthesized mapper, filling everything the
+       user mapper does not govern (the type mapper's namespace).
+
+    ``is_user_label`` exposes tier 0 to callers that key by name after the
+    mapper stage — ``metrics._align_results_for_threshold_map`` consults it
+    before its ``canonical_merge_key`` block.
+    """
+
+    def __init__(self, user_mapper, policy_mapper=None):
+        self._user = user_mapper
+        self._policy = policy_mapper
+        labels = set()
+        if user_mapper is not None:
+            for role in ('source', 'target', 'intermediate'):
+                try:
+                    labels.update(
+                        str(x) for x in user_mapper.get_all_std_labels(role))
+                except Exception:  # noqa: BLE001 - role simply absent
+                    continue
+        self._user_labels = labels
+
+    @property
+    def is_empty(self) -> bool:
+        user_empty = self._user is None or getattr(
+            self._user, 'is_empty', False)
+        policy_empty = self._policy is None or getattr(
+            self._policy, 'is_empty', False)
+        return bool(user_empty and policy_empty and not self._user_labels)
+
+    def is_user_label(self, name) -> bool:
+        """True when ``name`` is one of the user mapper's labels (tier 0)."""
+        s = str(name)
+        if s in self._user_labels:
+            return True
+        base, suffix = split_hemi_suffix(s)
+        return bool(suffix) and base in self._user_labels
+
+    def get_label(self, dataset, original_id):
+        """User-first standard label (see class docstring for tiers)."""
+        s = str(original_id)
+        if s in self._user_labels:
+            return s
+        base, suffix = split_hemi_suffix(s)
+        if suffix and base in self._user_labels:
+            # A suffixed user label is still user identity — verbatim.
+            return s
+        if self._user is not None:
+            user_label = self._user.get_label(dataset, original_id)
+            if user_label and user_label != s:
+                return user_label
+        if self._policy is not None:
+            policy_label = self._policy.get_label(dataset, original_id)
+            if policy_label:
+                return policy_label
+        return s
+
+    def apply_to_dataframe(self, df, dataset):
+        """Write ``std_label_pre``/``std_label_post`` via :meth:`get_label`
+        (same contract as ``LabelMapper.apply_to_dataframe``)."""
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        for side in ('pre', 'post'):
+            type_col = f'type_{side}'
+            body_col = f'bodyId_{side}'
+            std_col = f'std_label_{side}'
+            if type_col in df.columns:
+                df[std_col] = df[type_col].apply(
+                    lambda x: self.get_label(dataset, x) if pd.notna(x) else '')
+            elif body_col in df.columns:
+                df[std_col] = df[body_col].apply(
+                    lambda x: self.get_label(dataset, x))
+        return df
 
 
 class ComparisonAnalyzer:
@@ -1031,6 +1124,39 @@ class ComparisonAnalyzer:
         
         return mapped_results
     
+    def _user_merge_label_set(self) -> frozenset:
+        """Labels of the run's USER label mapper (Phase A tier 0), cached.
+
+        A name in this set IS the comparison identity — the canonical,
+        path, and display lanes return it verbatim instead of
+        re-resolving it through the policy/canonical machinery."""
+        cached = getattr(self, '_user_merge_labels', None)
+        if cached is not None:
+            return cached
+        labels = frozenset()
+        mapper = self.label_mapper
+        if mapper is not None and not mapper.is_empty:
+            collected = set()
+            for role in ('source', 'target', 'intermediate'):
+                try:
+                    collected.update(
+                        str(x) for x in mapper.get_all_std_labels(role))
+                except Exception:  # noqa: BLE001 - role simply absent
+                    continue
+            labels = frozenset(collected)
+        self._user_merge_labels = labels
+        return labels
+
+    def _user_label_governs(self, type_name) -> bool:
+        """Tier-0 test: is this name already a user label?  Hemisphere-
+        suffix aware (the base of a suffixed name may carry the label)."""
+        s = str(type_name)
+        labels = self._user_merge_label_set()
+        if s in labels:
+            return True
+        base, suffix = split_hemi_suffix(s)
+        return bool(suffix) and base in labels
+
     def _get_canonical_type(self, type_name: str, dataset: str) -> str:
         """Get canonical (male-cns) type name for a given type.
 
@@ -1055,6 +1181,12 @@ class ComparisonAnalyzer:
             Canonical merge key (canonical name, dataset-scoped name for
             conflicts, or the raw name when unmapped/unavailable).
         """
+        if self._user_label_governs(type_name):
+            # Tier 0 (user-first type resolution): a user label IS the
+            # comparison identity — never re-resolve it (that re-resolution
+            # manufactured `X(Y/Z)` compounds and `ds:X` conflict keys out
+            # of settled labels).
+            return type_name
         if not self.parameters.auto_type_mapping or not self.parameters._auto_type_mapper:
             return type_name
         from .type_resolver import canonical_merge_key, get_mapper_snapshot
@@ -1097,6 +1229,11 @@ class ComparisonAnalyzer:
         (3) the shared canonical resolver toward the policy's anchor
         dataset. Non-path surfaces keep `_get_canonical_type` (canonical
         namespace semantics) untouched."""
+        if self._user_label_governs(type_name):
+            # Tier 0 (user-first type resolution): a user label IS the
+            # comparison identity — verbatim, before any policy/family/
+            # canonical tier.
+            return type_name
         from .type_resolver import canonical_merge_key
         policy = self._merge_policy_or_none()
         if policy is not None:
@@ -1237,6 +1374,10 @@ class ComparisonAnalyzer:
         Returns:
             Display name with variants in parentheses
         """
+        if self._user_label_governs(canonical_name):
+            # Tier 0 (user-first type resolution): display a user label
+            # verbatim — no variant parentheses over a settled identity.
+            return canonical_name
         if not self.parameters.auto_type_mapping or not self.parameters._auto_type_mapper:
             return canonical_name
         # Pass all datasets being compared to get full mapping info
@@ -1330,7 +1471,8 @@ class ComparisonAnalyzer:
                             '[multi-value type cells]',
                             '[merge policy]',
                             '[BANC auto labels]',
-                            '[BANC alignment fallback]')
+                            '[BANC alignment fallback]',
+                            '[user label mapper]')
     # Tagged bullet families that are NOT state-owned: their bullets always
     # survive, and one ends an enclosing state block.
     _FOREIGN_BULLET_TAGS = ('[untyped dropped]',)
@@ -1421,6 +1563,65 @@ class ComparisonAnalyzer:
                     f.write('\n' + '\n'.join(blocks) + '\n')
         except Exception as e:
             self._log(f"Warning: could not append user warning notes: {e}")
+
+    def _write_user_mapper_tier0_note(self) -> None:
+        """Disclose the user label mapper's tier-0 governance.
+
+        User-first type resolution (Phase A): when the run carries a USER
+        label mapper, its labels ARE the comparison identity — the
+        alignment, presence-matrix, path-key, and display lanes pass them
+        through verbatim — and the auto type mapper resolves only what the
+        user mapper does not govern (intermediates, unenrolled types).
+        STATE note: replaced (not accumulated) on re-export."""
+        try:
+            mapper = self.label_mapper
+            if mapper is None or mapper.is_empty:
+                return
+            labels = sorted(self._user_merge_label_set())
+            if not labels:
+                return
+            total_members = 0
+            try:
+                dump = mapper.to_dict()
+                member_ids = set()
+                for role in ('source', 'target', 'intermediate'):
+                    role_map = dump.get(f'{role}_mapping') or {}
+                    # to_dict shape: {role: {'custom_label': [...],
+                    #  dataset: [[group members per label], ...]}}
+                    for ds_key, ds_groups in role_map.items():
+                        if ds_key == 'custom_label' or not isinstance(
+                                ds_groups, list):
+                            continue
+                        for group in ds_groups:
+                            if isinstance(group, list):
+                                member_ids.update(
+                                    str(x) for x in group)
+                            elif group:
+                                member_ids.add(str(group))
+                total_members = len(member_ids)
+            except Exception:  # noqa: BLE001 — count is cosmetic
+                pass
+            listing = '\n'.join(f'- {label}' for label in labels[:25])
+            more = (f"\n... and {len(labels) - 25} more"
+                    if len(labels) > 25 else '')
+            body = (
+                '[user label mapper] '
+                f"A user label mapper is active: {len(labels)} custom "
+                f"label(s) govern merge keying (tier 0; {total_members} "
+                "enrolled member(s) across roles). Its labels are the "
+                "comparison identity: alignment, presence matrices, path "
+                "keys and display names pass them through verbatim. The "
+                "auto type mapper resolves everything the user mapper does "
+                "not govern (intermediates, unenrolled types) — "
+                "auto_type_mapping*.csv describe that machinery for "
+                f"reference.\n{listing}{more}")
+            os.makedirs(self.parameters.full_output_path, exist_ok=True)
+            self._append_user_warning_notes(
+                self.parameters.full_output_path,
+                self._replace_state_notes([body]))
+            self._log("  ℹ️ User label mapper governs merge keying (tier 0)")
+        except Exception as exc:  # noqa: BLE001 — disclosure only
+            self._log(f"User label mapper note skipped: {exc}")
 
     def _write_user_warning_notes_for_mapping(self, mapper, type_names, dataset_names):
         """Write auto-type-mapping caveats to user_warning_notes.txt.
@@ -2918,17 +3119,31 @@ class ComparisonAnalyzer:
         return policy if policy is not False else None
 
     def _policy_label_mapper(self):
-        """Synthesized raw→group-label mapper for the alignment lane
-        (Decision 8) — deliberately SEPARATE from the user's
-        ``self.label_mapper`` (user mappings win by construction)."""
+        """Alignment-lane mapper for the comparison surfaces.
+
+        User-first type resolution (Phase A): when the run carries a USER
+        label mapper (``overall_mapping_json`` / an explicit
+        ``overall_label_mapper``), it is wrapped so it governs FIRST — its
+        labels pass through verbatim (tier 0 identity) and its members
+        resolve to their labels — with the merge-policy synthesized
+        entries filling only what the user mapper does not govern.  The
+        type mapper keeps resolving the rest (intermediates, unenrolled
+        types) through the canonical machinery downstream.  Without a
+        user mapper this returns the synthesized policy mapper exactly as
+        before, so runs without custom mappings are byte-identical.
+        """
+        policy_mapper = None
         policy = self._merge_policy_or_none()
-        if policy is None:
-            return None
-        try:
-            return policy.synthesized_label_mapper()
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"Merge policy label synthesis failed ({exc})")
-            return None
+        if policy is not None:
+            try:
+                policy_mapper = policy.synthesized_label_mapper()
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"Merge policy label synthesis failed ({exc})")
+                policy_mapper = None
+        user_mapper = self.label_mapper
+        if user_mapper is not None and not user_mapper.is_empty:
+            return _UserFirstLabelMapper(user_mapper, policy_mapper)
+        return policy_mapper
 
     def _annotate_auto_type_mapping_csv(self, map_path: str, policy) -> None:
         """Additive trailing ``anchor_group``/``auto_only`` columns on the
@@ -6329,7 +6544,7 @@ class ComparisonAnalyzer:
         # Save label mapping (always generate a compatible JSON)
         label_map_path = os.path.join(out_dir, "label_map.json")
         self._export_label_map(label_map_path)
-        
+
         # Export auto type mapping if enabled (filtered to result types and used datasets only)
         if self.parameters.auto_type_mapping and self.parameters._auto_type_mapper:
             try:
@@ -6504,7 +6719,14 @@ class ComparisonAnalyzer:
                     self._log(f"Mapping visualization skipped: {map_exc}")
             except Exception as e:
                 self._log(f"Warning: Failed to export auto type mapping: {e}", level='warn')
-        
+
+        # User-first type resolution (Phase A): disclose that a user label
+        # mapper governs merge keying (tier 0). Written AFTER the
+        # merge-policy state notes: their ``_replace_state_notes`` pass
+        # drops every STATE-prefixed block already in the file, so an
+        # earlier copy of this note would be wiped.
+        self._write_user_mapper_tier0_note()
+
         # Save report (skip logging since we already logged "Saving parameters and report")
         report_path = os.path.join(out_dir, "comparison_report.txt")
         self.generate_report(report_path, _skip_log=True)

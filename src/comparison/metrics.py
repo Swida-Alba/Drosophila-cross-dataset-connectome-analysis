@@ -985,6 +985,10 @@ class ComparisonMetrics:
                     merge_policy.anchor_ds
                     if merge_policy is not None else None)
                 canonical_map = {}
+                # User-first type resolution (Phase A): the alignment-lane
+                # mapper may carry the run's USER label mapper, whose
+                # labels are the comparison identity already.
+                _is_user_label = getattr(label_mapper, 'is_user_label', None)
                 # Hemisphere-suffix awareness (plan R1-b): with
                 # separate_hemispheres, frame types can carry _L/_R/_U
                 # suffixes while key_map/mapper relations key base names.
@@ -992,6 +996,14 @@ class ComparisonMetrics:
                 # canonical key so L and R stay DISTINCT rows that still
                 # merge across datasets.
                 for t in all_unique_types:
+                    # A name that IS a user label is never re-resolved
+                    # through the policy/canonical machinery (that
+                    # re-resolution manufactured family compounds like
+                    # `X(Y/Z)` and dataset-qualified keys out of settled
+                    # labels).
+                    if _is_user_label is not None and _is_user_label(t):
+                        canonical_map[t] = t
+                        continue
                     key = (
                         merge_policy.key_for(dataset, t)
                         if merge_policy is not None else None
@@ -1052,6 +1064,13 @@ class ComparisonMetrics:
             for canonical in edge_display_names.keys():
                 if merge_policy is not None and merge_policy.is_group_label(
                         canonical):
+                    type_display_map[canonical] = canonical
+                elif _is_user_label is not None and _is_user_label(canonical):
+                    # User-first type resolution (Phase A): display a user
+                    # label verbatim — get_display_name would anchor it to
+                    # its male-cns canonical form with variants
+                    # (`5th-LNv` -> `5thsLNv_LNd6(5th-LNv/s-LNv_a)`),
+                    # resurrecting the residual namespace.
                     type_display_map[canonical] = canonical
                 else:
                     type_display_map[canonical] = type_mapper.get_display_name(

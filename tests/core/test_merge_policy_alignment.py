@@ -143,3 +143,113 @@ def test_display_pass_keeps_group_labels_verbatim():
     )
     assert '5thsLNv_LNd6 -> SMP368' in aligned.index
     assert not any('(alt1/alt2)' in name for name in aligned.index)
+
+
+def test_user_labels_pass_canonical_block_untouched():
+    """User-first type resolution (Phase A): the canonical block must not
+    re-resolve a USER label — that re-resolution manufactured the
+    family-compound (`X(Y/Z)`) and dataset-qualified (`ds:X`) residual
+    keys on the real clock run. Both datasets' rows merge under the
+    verbatim user label instead."""
+
+    class ConflictMapper:
+        """Loaded mapper that declares every lookup a CONFLICT — the
+        canonical fallback keys such names dataset-scoped (`ds:raw`),
+        exactly the residual shape under regression."""
+        _loaded = True
+        last_load_error = None
+        _neuron_df_path = None
+
+        def _detect_type_source(self, raw):
+            return MCNS
+
+        def _get_type_mapping_key(self, ds):
+            return str(ds)
+
+        def get_mapping_decision(self, token, source_ds, target_ds,
+                                 include_bridges=False, **kwargs):
+            return {'status': 'conflict', 'target_type': None,
+                    'target_types': [], 'conflicts': ['stub'],
+                    'support': None, 'relationship': None}
+
+        def get_display_name(self, name, datasets):
+            return name
+
+    from types import SimpleNamespace
+
+    from comparison.comparison_analyzer import _UserFirstLabelMapper
+    from comparison.label_mapper import LabelMapper
+
+    user = LabelMapper(
+        source_mapping_dict={FAFB: [["5th-LNv"]], MCNS: [["5th-LNv"]]},
+        source_labels=["5th-LNv"],
+    )
+    wrapper = _UserFirstLabelMapper(user, None)
+    metrics = ComparisonMetrics()
+    raw_results = {
+        FAFB: {3: _frame([('5th-LNv', 'DN1a', 4)])},
+        MCNS: {3: _frame([('5th-LNv', 'DN1a', 9)])},
+    }
+    # A plain LabelMapper has no is_user_label — pass the wrapper, which
+    # is what _policy_label_mapper produces for user-mapped runs.
+    assert getattr(wrapper, 'is_user_label', None) is not None
+    aligned = metrics._align_results_for_threshold_map(
+        raw_results, [MCNS, FAFB], {MCNS: 3, FAFB: 3},
+        label_mapper=wrapper,
+        type_mapper=SimpleNamespace(
+            _loaded=False,
+            get_display_name=lambda name, datasets: name),
+        merge_policy=None,
+    )
+    assert '5th-LNv -> DN1a' in aligned.index
+    assert aligned.loc['5th-LNv -> DN1a', FAFB] == 4
+    assert aligned.loc['5th-LNv -> DN1a', MCNS] == 9
+
+    # Control: without the wrapper, the conflict mapper dataset-qualifies
+    # the very same name on a NON-canonical source dataset (FAFB; MCNS is
+    # the canonical namespace and would short-circuit as 'native') — the
+    # residual class under regression.
+    aligned_policy = metrics._align_results_for_threshold_map(
+        {FAFB: {3: _frame([('5th-LNv', 'DN1a', 4)])}},
+        [FAFB], {FAFB: 3},
+        label_mapper=LabelMapper(),
+        type_mapper=ConflictMapper(),
+        merge_policy=None,
+    )
+    assert not any('5th-LNv -> DN1a' == name for name in aligned_policy.index)
+    assert any(':5th-LNv' in name for name in aligned_policy.index)
+
+
+def test_analyzer_tier0_identity_for_user_labels():
+    """A3: the analyzer's canonical / path-merge / display lanes return a
+    user label verbatim (tier 0) — no canonical re-resolution, no family
+    compounds, no variant parentheses over a settled identity."""
+    from types import SimpleNamespace
+
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+    from comparison.label_mapper import LabelMapper
+
+    user = LabelMapper(
+        source_mapping_dict={FAFB: [["5th-LNv"]], MCNS: [["5th-LNv", "13531"]]},
+        source_labels=["5th-LNv", "MCNS_5th"],
+    )
+    analyzer = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
+    analyzer.label_mapper = user
+    # The tier-0 check precedes every parameters touch: a bare namespace
+    # proves the auto mapper is never consulted for a user label.
+    analyzer.parameters = SimpleNamespace(
+        auto_type_mapping=True, _auto_type_mapper=object())
+
+    assert analyzer._user_label_governs('5th-LNv')
+    assert analyzer._user_label_governs('5th-LNv_L')  # suffix-aware
+    assert not analyzer._user_label_governs('5thsLNv_LNd6')
+    assert analyzer._get_canonical_type('5th-LNv', MCNS) == '5th-LNv'
+    assert analyzer._get_path_merge_type('5th-LNv', MCNS) == '5th-LNv'
+    assert analyzer._get_display_type('5th-LNv') == '5th-LNv'
+    # a raw (non-label) name is NOT governed — the type mapper's job
+    assert not analyzer._user_label_governs('5thsLNv_LNd6')
+
+    # without a user mapper there is no tier 0 at all
+    bare = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
+    bare.label_mapper = LabelMapper()
+    assert not bare._user_label_governs('5th-LNv')
