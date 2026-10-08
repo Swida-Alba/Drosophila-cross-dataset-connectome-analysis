@@ -5291,6 +5291,31 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
     except Exception:
         merge_policy = None
 
+    def _path_family_of(label: str):
+        """The symmetric mapper-decision family label for a raw type name
+        (any dataset), or None when the name is outside the universe.
+        The edge nodes are keyed by these family labels (comparison
+        analyzer `_path_family_map`), so isolated-node candidates must be
+        reconciled against them: MCNS R8p is represented by the edge node
+        'R8', FAFB 5th-LNv by '5thsLNv_LNd6' — otherwise every split
+        branch renders as a query-list orphan (2026-10-08)."""
+        try:
+            fam_map = analyzer._path_family_map()
+        except Exception:
+            return None
+        if not fam_map:
+            return None
+        labels = set()
+        for ds in dataset_names:
+            got = fam_map.get((str(ds), str(label)))
+            if got is not None:
+                labels.add(got)
+        if not labels:
+            return None
+        if len(labels) == 1:
+            return next(iter(labels))
+        return sorted(labels)[0]
+
     for label in source_neurons:
         # Skip patterns - they're not actual neuron names
         if '*' in label or '.*' in label:
@@ -5301,28 +5326,48 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
         if separate_hemispheres and not has_hemisphere_suffix(label):
             continue
         if not is_represented_in_nodes(label, node_ids):
-            # B6: the group's node supersedes this raw name.
+            # B6: a TRUE cross-dataset group's node supersedes this raw
+            # name (singleton per-chip groups do NOT — the path-family
+            # label below is the convergent identity for those).
             _group_label = (
                 merge_policy.label_for_name(label)
                 if merge_policy is not None else None)
-            if _group_label is not None and (
-                    _group_label in node_ids
-                    or is_represented_in_nodes(_group_label, node_ids)):
+            _group_is_family = False
+            if _group_label is not None:
+                _g = merge_policy.group_by_label(_group_label)
+                _group_is_family = _g is not None and len(_g.members) >= 2
+                if _group_is_family and (
+                        _group_label in node_ids
+                        or is_represented_in_nodes(_group_label, node_ids)):
+                    continue
+            # Path-family convergence: the family's edge node supersedes
+            # this raw branch name; a fully absent family adds ONE node
+            # under the family label (never one per dataset branch).
+            _fam = _path_family_of(label)
+            if _fam is not None and _fam != label and (
+                    _fam in node_ids
+                    or is_represented_in_nodes(_fam, node_ids)):
                 continue
             # Get the merged display name if type_mapper is available
             # This ensures CB0038 and GNG588 become one node: GNG588(CB0038)
             display_label = label
             dataset_info = {}
-            if _group_label is not None:
+            if _group_is_family:
                 display_label = _group_label
                 dataset_info = {
                     ds: '/'.join(names)
                     for ds, names in
                     merge_policy.names_by_dataset(_group_label).items()
                 }
+            elif _fam is not None:
+                display_label = _fam
+                if type_mapper:
+                    display_label, dataset_info = (
+                        type_mapper.get_display_name_with_dataset_info(
+                            _fam, dataset_names))
             elif type_mapper:
                 display_label, dataset_info = type_mapper.get_display_name_with_dataset_info(label, dataset_names)
-            
+
             # Extract canonical name to avoid adding duplicates
             canonical = display_label.split('(')[0] if '(' in display_label else display_label
             if canonical in added_canonical_sources:
@@ -5368,24 +5413,44 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
         if separate_hemispheres and not has_hemisphere_suffix(label):
             continue
         if not is_represented_in_nodes(label, node_ids):
-            # B6: the group's node supersedes this raw name.
+            # B6: a TRUE cross-dataset group's node supersedes this raw
+            # name (singleton per-chip groups do NOT — the path-family
+            # label below is the convergent identity for those).
             _group_label = (
                 merge_policy.label_for_name(label)
                 if merge_policy is not None else None)
-            if _group_label is not None and (
-                    _group_label in node_ids
-                    or is_represented_in_nodes(_group_label, node_ids)):
+            _group_is_family = False
+            if _group_label is not None:
+                _g = merge_policy.group_by_label(_group_label)
+                _group_is_family = _g is not None and len(_g.members) >= 2
+                if _group_is_family and (
+                        _group_label in node_ids
+                        or is_represented_in_nodes(_group_label, node_ids)):
+                    continue
+            # Path-family convergence (mirrors the source pass): the
+            # family's edge node supersedes this raw branch name; a fully
+            # absent family adds ONE node under the family label.
+            _fam = _path_family_of(label)
+            if _fam is not None and _fam != label and (
+                    _fam in node_ids
+                    or is_represented_in_nodes(_fam, node_ids)):
                 continue
             # Get the merged display name if type_mapper is available
             display_label = label
             dataset_info = {}
-            if _group_label is not None:
+            if _group_is_family:
                 display_label = _group_label
                 dataset_info = {
                     ds: '/'.join(names)
                     for ds, names in
                     merge_policy.names_by_dataset(_group_label).items()
                 }
+            elif _fam is not None:
+                display_label = _fam
+                if type_mapper:
+                    display_label, dataset_info = (
+                        type_mapper.get_display_name_with_dataset_info(
+                            _fam, dataset_names))
             elif type_mapper:
                 display_label, dataset_info = type_mapper.get_display_name_with_dataset_info(label, dataset_names)
             
