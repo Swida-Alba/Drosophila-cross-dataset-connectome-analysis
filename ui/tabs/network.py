@@ -79,18 +79,75 @@ def create_network_tab():
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-core"'):
             section_header("Core Parameters", "tune")
-            min_synapse = number_input(
-                "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
-                hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
-            )
+            with param_grid(3):
+                threshold_basis = select_input(
+                    "Threshold Basis", ["Synapse count", "Connection ratio"],
+                    default=("Connection ratio"
+                             if get_user_default("threshold_basis")
+                             == "connection_ratio" else "Synapse count"),
+                    hint="Which edge-weight basis thresholds the network: raw "
+                         "synapse counts, or the connection ratio (synapses / "
+                         "all-post incoming weight of the post neuron — "
+                         "comparable across datasets).",
+                )
+                min_synapse = number_input(
+                    "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
+                    hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
+                )
+                min_ratio_threshold = number_input(
+                    "Min Connection Ratio (%)", 1.0, 0.0, 100.0, 0.01,
+                    hint="Ratio-mode threshold in PERCENT: keep edges "
+                         "carrying at least this share of the post "
+                         "neuron's TOTAL input (F9 all-post denominator). "
+                         "Default 1% (= 0.01); finer tiers (e.g. 0.05%) "
+                         "stay typeable as decimals.",
+                ).set_visibility(False)
+                threshold_combination = select_input(
+                    "Combine Thresholds", ["Any one (default)", "Both (AND)"],
+                    default=("Both (AND)"
+                             if get_user_default("threshold_combination")
+                             == "and" else "Any one (default)"),
+                    hint="How Min Synapse Count and Min Connection Ratio "
+                         "combine when both are set. Default: they are "
+                         "alternatives — one threshold governs the network. "
+                         "Both (AND): an edge enters only when it clears "
+                         "BOTH thresholds (each on its own scale); both "
+                         "inputs stay visible and the folder token carries "
+                         "both tiers.",
+                )
+                edge_limit = number_input(
+                    "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
+                    hint="Drawing-only cap: at most this many unique edges are "
+                         "rendered per visualization (network / heatmap). It "
+                         "never changes which connections are fetched or "
+                         "exported; a single complete edge is never trimmed.",
+                )
+
+            def _sync_threshold_basis():
+                ratio_mode = threshold_basis.value == "Connection ratio"
+                and_mode = threshold_combination.value == "Both (AND)"
+                # AND mode needs BOTH knobs visible whichever basis is
+                # active (same contract as Complete Paths); single-knob
+                # regimes keep the historical visibility.
+                min_synapse.set_visibility(not ratio_mode or and_mode)
+                min_ratio_threshold.set_visibility(ratio_mode or and_mode)
+
+            threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
+            threshold_combination.on_value_change(
+                lambda _e: _sync_threshold_basis())
+            _sync_threshold_basis()
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-output"'):
             section_header("Output Options", "output")
-            with param_grid(2):
+            with param_grid(3):
                 custom_group_name = ui.input(
                     label="Custom Group Name (optional)",
                     placeholder="e.g., aMe_clock",
                 ).classes("w-full").tooltip("Custom label for the queried neuron group in output files/plots.")
+                custom_target_name = ui.input(
+                    label="Custom Target Name (optional)",
+                    placeholder="e.g., targets",
+                ).classes("w-full").tooltip("Custom label for the target side of the output files/plots (same queried set for Network).")
                 saveas = ui.input(
                     label="Save Folder Name (optional)",
                     placeholder="e.g., aMe_clock_network",
@@ -222,6 +279,14 @@ def create_network_tab():
         output_panel.clear()
         output_panel.set_running(True)
 
+        # Threshold-basis semantics identical to Complete Paths: 'or'
+        # (default) — ratio mode, the ratio IS the threshold (the backend
+        # floors the synapse count to 1); synapse mode, the ratio is a
+        # readout (sent 0). AND: BOTH knobs ride the payload and the
+        # backend co-thresholds the network.
+        ratio_mode = threshold_basis.value == "Connection ratio"
+        and_mode = threshold_combination.value == "Both (AND)"
+
         constructor_params = {
             "dataset": dataset.value,
             # FindNetwork uses the queried set as both source and target
@@ -229,18 +294,26 @@ def create_network_tab():
             "sourceNeurons": query,
             "targetNeurons": query,
             "output_dir": output_dir.value,
-            "min_synapse_num": int(min_synapse.value),
-            # F9: ratio/probability filters are disabled — hidden UI, sent 0.
-            "min_ratio": 0.0,
+            "weight_basis": "connection_ratio" if ratio_mode else "synapse",
+            "threshold_combination": "and" if and_mode else "or",
+            "min_synapse_num": (
+                int(min_synapse.value)
+                if (and_mode or not ratio_mode) else 1),
+            "min_ratio": (
+                # the field is in PERCENT — convert to the raw fraction
+                float(min_ratio_threshold.value) / 100.0
+                if (and_mode or ratio_mode) else 0.0),
+            # F9: ratio/probability filters disabled — hidden UI, sent 0.
             "min_traversal_probability": 0.0,
             "search_columns": search_columns.value,
             "network_layout": network_layout.value,
             "use_cache": use_cache.value,
-            "edgeN_limit": get_user_default("edgeN_limit"),
+            "edgeN_limit": int(edge_limit.value),
             "output_format": output_format.value,
             "skip_bodyId": skip_bodyid.value,
             "drop_untyped": drop_untyped.value,
             "custom_source_name": custom_group_name.value or '',
+            "custom_target_name": custom_target_name.value or '',
             "cache_only": cache_only.value,
             "saveas": saveas.value.strip() or "",
             "separate_hemispheres": separate_hemi.value,

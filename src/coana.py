@@ -13099,6 +13099,19 @@ class FindNeuronConnection:
         self._vprint(f'data will be saved in: {self.save_folder}\n', level='simple')
         
         # Prepare parameter dictionary (will be saved in method-specific subfolders)
+        # Phase B1 (FNC-wide ratio semantics): ratio-basis 'or' mode floors
+        # the synapse count at 1 — the threshold rides min_ratio (mirrors
+        # the Complete Paths payload; the fetch filter co-thresholds only
+        # under AND). Recorded here so parameters.txt shows the floored
+        # value the run actually used.
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio' \
+                and str(getattr(self, 'threshold_combination', 'or')
+                        ).lower() != 'and' and self.min_synapse_num != 1:
+            self.min_synapse_num = 1
+            self._vprint("Weight basis 'connection_ratio': min synapse "
+                         'floored to 1; the ratio threshold prunes '
+                         f'(min connection ratio {self.min_ratio}).',
+                         level='always')
         self.parameter_dict = {
             'source neurons': str(
                 self._requested_query_for_export("source")
@@ -13879,6 +13892,20 @@ class FindNeuronConnection:
             self._vprint("Error: Query neuron DataFrame is empty. Cannot build a network.", level='always')
             return
 
+        # Phase B1 (Network tab alignment): a network is direct-
+        # connections-only — record max_interlayer 0 (the refill's hop
+        # bound derives from it) and apply the ratio-basis semantics.
+        self.max_interlayer = 0
+        self.parameter_dict['max interlayer'] = '0'
+        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio' \
+                and str(getattr(self, 'threshold_combination', 'or')
+                        ).lower() != 'and':
+            self.min_synapse_num = 1
+            self._vprint("Weight basis 'connection_ratio': min synapse "
+                         'floored to 1; the ratio threshold prunes '
+                         '(min connection ratio '
+                         f'{self.min_ratio}).', level='always')
+
         # --- Run folder (no depth component: direct connections only) ---
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -14027,6 +14054,19 @@ class FindNeuronConnection:
         self._write_user_warning_notes(network_folder)
         self._export_untyped_drop_records(network_folder)
 
+        # --- Phase B (Network tab alignment): provenance stamps, the
+        # 1-hop path-compatible table (pair-report reuse), enrollment
+        # CSVs, and the type-level refill hook. Additive artifacts after
+        # the connection tables; never fails the run. ---
+        try:
+            self._finalize_network_run_artifacts(
+                network_folder, conn_type, conn_df, details_folder)
+        except Exception as exc:  # noqa: BLE001 — add-ons, never fatal
+            self._vprint(f'Warning: network run add-ons failed: '
+                         f'{type(exc).__name__}: {exc}', level='always')
+            import traceback
+            traceback.print_exc()
+
         # --- Visualization: network + heatmap only (NO Sankey) ---
         self._progress(5, 5, 'Building network visualizations')
         try:
@@ -14071,6 +14111,117 @@ class FindNeuronConnection:
             traceback.print_exc()
 
         self._vprint('Done\n')
+
+    def _finalize_network_run_artifacts(self, network_folder, conn_type,
+                                        conn_df, details_folder):
+        """Phase B (Network tab alignment) additive artifacts — written
+        AFTER the connection tables, never failing the run:
+
+        1. Provenance stamps on ``parameters.txt`` in the grammar the
+           type-level refill (``read_run_provenance``) and the pair
+           report's ratio sniffing read: ``weight basis``,
+           ``requested_threshold`` / ``applied_threshold`` (a network has
+           no budget/tau machinery, so applied == asked),
+           ``filter_by`` / ``max_interlayer`` (refill scope guards).
+        2. Enrollment CSVs ``source_neurons.csv`` / ``target_neurons.csv``
+           (bodyId + type + Checked) — the refill enrollment reader.
+        3. The 1-hop path-compatible table
+           ``<src>_to_<tgt>_allpaths_type.csv`` in the delegate's exact
+           column order, so the runner's pair-report hook gives network
+           runs the Pair Explorer (direct connections ARE 1-hop paths).
+        4. The type-level refill hook: ratio-mode runs always fill
+           (complete-at-asked); synapse runs refill only on a budget
+           bite, which a network never has — the hook's own pre-gate
+           handles that.
+        """
+        ratio = str(getattr(self, 'weight_basis', 'synapse')) == 'connection_ratio'
+        asked = self.min_ratio if ratio else self.min_synapse_num
+
+        # 1. Provenance stamps (append — parameters.txt exists above).
+        # The space-form keys (max interlayer / filter by / min synapse
+        # number) are already in parameter_dict and parsed by
+        # read_run_provenance; these are the underscore-form stamps it
+        # additionally collects.
+        with open(os.path.join(network_folder, 'parameters.txt'), 'a',
+                  encoding='utf-8') as f:
+            f.write('\n' + '\n'.join([
+                f'weight basis: {"connection_ratio" if ratio else "synapse"}',
+                f'requested_threshold: {asked}',
+                f'applied_threshold: {asked}',
+                'applied_threshold_source: requested',
+                'paths_complete: True',
+            ]) + '\n')
+
+        # 2. Enrollment CSVs (refill `read_enrollment` contract; the
+        # Checked flag marks every queried target as enrolled).
+        src_cols = [c for c in ('bodyId', 'type', 'custom_group')
+                    if c in self.source_df.columns]
+        tgt = self.target_df.copy()
+        if 'Checked' not in tgt.columns:
+            tgt['Checked'] = True
+        tgt_cols = [c for c in ('bodyId', 'type', 'Checked', 'custom_group')
+                    if c in tgt.columns]
+        self.source_df[src_cols].to_csv(
+            os.path.join(network_folder, 'source_neurons.csv'), index=False)
+        tgt[tgt_cols].to_csv(
+            os.path.join(network_folder, 'target_neurons.csv'), index=False)
+
+        # 3. The 1-hop path-compatible table (delegate column order).
+        ct = conn_type.to_pandas() if isinstance(conn_type, pl.DataFrame) else conn_type
+        if ct is None or len(ct) == 0:
+            self._vprint('  Network add-ons: no edges — path table '
+                         'skipped', level='full')
+            return
+        sizes = (self.source_df.assign(_b=self.source_df['bodyId'].astype(str))
+                 .groupby('type')['_b'].nunique().to_dict())
+        pre_part = (conn_df.assign(_b=conn_df['bodyId_pre'].astype(str))
+                    .groupby(['type_pre', 'type_post'])['_b'].nunique()
+                    .to_dict())
+        post_part = (conn_df.assign(_b=conn_df['bodyId_post'].astype(str))
+                     .groupby(['type_pre', 'type_post'])['_b'].nunique()
+                     .to_dict())
+        rows = []
+        for _, r in ct.iterrows():
+            tp, tpst = str(r['type_pre']), str(r['type_post'])
+            weight = float(r.get('weight', 0) or 0)
+            ratio_val = 0.0
+            if 'connection_ratio' in ct.columns and pd.notna(
+                    r.get('connection_ratio')):
+                ratio_val = float(r['connection_ratio'])
+            nt = ''
+            for col in ('nt_type', 'nt_type_pre', 'nt_type_post'):
+                if col in ct.columns and pd.notna(r.get(col)):
+                    nt = str(r[col])
+                    break
+            n_pre = int(pre_part.get((tp, tpst), 0))
+            n_post = int(post_part.get((tp, tpst), 0))
+            rows.append({
+                'path': f'{tp}->{tpst}',
+                'weights': f'[{weight:g}]',
+                'ratios': f'[{ratio_val}]',
+                'min_weight': weight,
+                'min_ratio': ratio_val,
+                'length': 1,
+                'nt_types': f'["{nt}"]' if nt else '[]',
+                'coverage': f'[{n_pre}/{sizes.get(tp, 0)}, '
+                            f'{n_post}/{sizes.get(tpst, 0)}]',
+            })
+        table = pd.DataFrame(rows, columns=[
+            'path', 'weights', 'ratios', 'min_weight', 'min_ratio',
+            'length', 'nt_types', 'coverage']).sort_values('path')
+        table_path = os.path.join(
+            network_folder,
+            f'{self.source_fname}_to_{self.target_fname}_allpaths_type.csv')
+        table.to_csv(table_path, index=False)
+        self._vprint(f'  Network add-ons: 1-hop path table written '
+                     f'({len(table)} rows) for the pair report', level='full')
+
+        # 4. Type-level refill (own pre-gate decides; never raises). Its
+        # refusal/failure notes ride self._warn_notes — re-write the notes
+        # file so they surface (the writer rebuilds from the accumulated
+        # list, so this is idempotent).
+        self._maybe_generate_type_level_refill()
+        self._write_user_warning_notes(network_folder)
 
     def _trim_edges_with_path_integrity(self, conn, limit, label, sources, targets,
                                         pre_col, post_col, max_iterations=6):

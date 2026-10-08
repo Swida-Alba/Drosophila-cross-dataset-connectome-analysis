@@ -95,8 +95,26 @@ def test_hook_never_raises_on_broken_inputs(tmp_path):
 
 def test_pair_report_files_in_pathfinding_guide_spec():
     """The run-guide file spec surfaces the report files for the three
-    pathfinding tools (the files now exist for every UI run)."""
-    for tool in ("find_path", "find_shortest", "inter_dataset"):
+    pathfinding tools AND find_network (Phase B3: network runs emit the
+    1-hop table, so the runner hook generates the same report)."""
+    for tool in ("find_path", "find_shortest", "inter_dataset",
+                 "find_network"):
         patterns = {f["pattern"] for f in guide.TOOL_GUIDE_SPECS[tool]["files"]}
         assert "path_report.html" in patterns, tool
         assert ("paths_pair_breakdown/pair_breakdown_paths.csv") in patterns, tool
+
+
+def test_network_runs_feed_the_pair_report_hook(tmp_path):
+    """Phase B3: a FindNetwork run emits `*_allpaths_type.csv` (the 1-hop
+    table), so `has_paths_tables` matches network folders and the runner
+    post-run hook gives network runs the same pair report the
+    pathfinding tools get."""
+    run = _make_run(
+        tmp_path,
+        name="find-network_FAFB_clock_21types_w3r0p0_20260101_000000")
+    assert has_paths_tables(run)
+    logs = []
+    _maybe_generate_pair_report(
+        run, log=lambda msg, level="info": logs.append(msg),
+        progress=lambda phase, label="": None)
+    assert (run / REPORT_NAME).exists()
