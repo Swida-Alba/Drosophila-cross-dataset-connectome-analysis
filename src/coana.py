@@ -17711,20 +17711,23 @@ class FindNeuronConnection:
             def _stream_edges():
                 """Stream (pre, post, weight) from the run's connection
                 database — single pass, no 20M-row materialization.
-                Returns None when no connection database exists."""
+                Returns (generator, lazy_frame_or_None); the lazy frame
+                feeds the refill's vectorized fast path (all-mode runs
+                with a plain hemisphere filter). None when no connection
+                database exists."""
                 override = getattr(self, '_refill_edges_override', None)
                 if override is not None:
                     def _ovr():
                         yield from override
-                    return _ovr()
+                    return _ovr(), None
                 db_path = self._get_connection_db_path()
                 if not os.path.exists(db_path):
                     return None
+                edge_lf = pl.scan_parquet(db_path).select(
+                    ['bodyId_pre', 'bodyId_post', 'weight'])
 
                 def _gen():
-                    lf = pl.scan_parquet(db_path).select(
-                        ['bodyId_pre', 'bodyId_post', 'weight'])
-                    for chunk in lf.collect(
+                    for chunk in edge_lf.collect(
                             engine='streaming').iter_slices(1_000_000):
                         pre = chunk['bodyId_pre'].to_list()
                         post = chunk['bodyId_post'].to_list()
@@ -17745,7 +17748,7 @@ class FindNeuronConnection:
                     f'{getattr(self, "dataset", "?")} — regenerate via '
                     'scripts/TypeLevelRefill.py with explicit --neuron-table.')
                 return True
-            stream = _stream_edges()
+            stream, edge_lf = _stream_edges()
             if stream is None:
                 self._warn_notes.append(
                     '- [type-level refill] NOT generated: the connection '
@@ -17759,12 +17762,23 @@ class FindNeuronConnection:
                 separate_hemispheres=bool(
                     getattr(self, 'separate_hemispheres', False)),
             )
-            stream = filter_edges_by_hemisphere(
-                stream, type_map,
-                str(getattr(self, 'hemisphere_filter', 'both') or 'both'))
-            rec = compute_type_level_refill(
-                run_dir, edges=stream, type_map=type_map, out_dir=None,
-                source_note='auto (post-materialization hook)')
+            hemi = str(getattr(self, 'hemisphere_filter', 'both') or 'both')
+            if (edge_lf is not None
+                    and not str(run_dir).replace('\\', '/').split('/')[-1]
+                    .startswith('find-paths-shortest_')
+                    and hemi not in ('left', 'right')):
+                # PERF (2026-10-08): the vectorized fast path — no
+                # 20M-row tuple materialization. The tuples generator
+                # stays for shortest mode / hemisphere-split runs.
+                rec = compute_type_level_refill(
+                    run_dir, edges=None, edge_lf=edge_lf, type_map=type_map,
+                    out_dir=None, hemi_filter=hemi,
+                    source_note='auto (post-materialization hook, vectorized)')
+            else:
+                stream = filter_edges_by_hemisphere(stream, type_map, hemi)
+                rec = compute_type_level_refill(
+                    run_dir, edges=stream, type_map=type_map, out_dir=None,
+                    source_note='auto (post-materialization hook)')
             if rec.get('status') in ('refilled', 'complete_at_asked'):
                 # The standalone mirror folder's parameters.csv (same
                 # frame as data_details/parameters.csv, like

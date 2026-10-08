@@ -575,6 +575,20 @@ class FastGraph:
         
         return self
 
+    def build_from_edges(self, edges, store_edge_attrs=False):
+        """Build graph from an iterable of ``(u, v, weight)`` triples
+        (modifies graph in place).
+
+        Skips the DataFrame round-trip of ``build_from_dataframe`` for
+        callers that already hold edge tuples (the refill enumerator's
+        induced lists — ``df.iterrows()`` over a pandas frame was the
+        construction bottleneck there). Returns self for chaining.
+        """
+        self.store_edge_attrs = store_edge_attrs
+        for u, v, w in edges:
+            self.add_edge(u, v, w)
+        return self
+
     def to_dataframe(self, include_attrs=True):
         """
         Convert graph edges to a pandas DataFrame.
@@ -1762,12 +1776,17 @@ class FastGraph:
 
     def find_paths_strongest_first(self, sources, targets, cutoff,
                                    budget=None, per_pair_k=None, stats=None,
-                                   verbose=False):
+                                   verbose=False, yield_bottleneck=False):
         """Budgeted best-first enumeration in DESCENDING bottleneck order.
 
         Emits complete simple paths (source -> ... -> target, at most
         ``cutoff`` edges, no repeated nodes) strongest-first, where the
         strength of a path is its BOTTLENECK (minimum edge weight).
+
+        With ``yield_bottleneck=True`` each emission is
+        ``(bottleneck, list(path))`` — the engine's own per-entry
+        bottleneck — instead of ``list(path)`` (perf: the consumer then
+        need not re-derive the minimum per hop; 2026-10-08).
 
         Semantics:
         - With ``budget=None`` (or a budget >= the total path count) the
@@ -1820,6 +1839,11 @@ class FastGraph:
         # w2, so the canonical threshold tau_min = w2 + 1 is the minimal
         # query that reproduces this output set.
         strongest_dropped = None
+        # PERF (2026-10-08): a popped node's neighbor order is
+        # deterministic ((-weight, node)) and does not change during the
+        # enumeration — sort each node's adjacency ONCE per call instead
+        # of on every pop (hubs were re-sorted hundreds of times).
+        sorted_adj_cache = {}
 
         while heap:
             neg_bound, _, node, hops, run_b, path = heapq.heappop(heap)
@@ -1842,7 +1866,8 @@ class FastGraph:
                     else:
                         pair_counts[pair] = pair_counts.get(pair, 0) + 1
                 if is_target:
-                    yield list(path)
+                    yield (run_b, list(path)) if yield_bottleneck \
+                        else list(path)
                     emitted += 1
                     tau = run_b
                     if budget is not None and emitted >= budget:
@@ -1851,9 +1876,13 @@ class FastGraph:
             if hops >= cutoff:
                 continue
             remaining = cutoff - hops - 1
-            # Deterministic expansion: strongest edge first, then node id.
-            neighbors = sorted(self.adj.get(node, {}).items(),
-                               key=lambda kv: (-kv[1], kv[0]))
+            # Deterministic expansion: strongest edge first, then node id
+            # (cached per node — the order never changes mid-enumeration).
+            neighbors = sorted_adj_cache.get(node)
+            if neighbors is None:
+                neighbors = sorted(self.adj.get(node, {}).items(),
+                                   key=lambda kv: (-kv[1], kv[0]))
+                sorted_adj_cache[node] = neighbors
             path_set = set(path)
             for v, w in neighbors:
                 if v in path_set:

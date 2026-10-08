@@ -267,6 +267,194 @@ def _load_fast_graph():
     return FastGraph
 
 
+def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
+                          ratio_mode, asked, and_syn_floor, and_ratio_tier,
+                          min_syn_active, min_syn, exclude_intra,
+                          want_full=False):
+    """Polars fast path for the all-mode stream work (PERF 2026-10-08):
+    the accumulators (body_in / type_in / type_in_adj / F9 post_totals /
+    AND post_totals) and the route-scoped induced admissions, computed by
+    vectorized group-bys and semi-joins over the lazy edge frame instead
+    of two Python passes over ~20M rows.
+
+    Exactness: natural weights are integer-valued, so every accumulator
+    sum is exact in float64 REGARDLESS of summation order — the dicts are
+    value-identical to the Python passes. The only non-exact values are
+    the F9 ratio divisions, which are pure functions of those exact
+    integers, so tier comparisons are stable too.
+
+    Returns dict with: body_in, type_in, type_in_adj, post_totals,
+    and_post_totals, e_u (asked-tier induced), e_u_full (synapse>=1
+    full-scope admission, [] unless want_full), syn_of, asked_pair_mass,
+    non_emitted_pair_mass, non_involved_excluded."""
+    import polars as pl
+    tm = pl.DataFrame({'bid': [str(k) for k in type_map],
+                       'typ': [type_map[k] for k in type_map]}).lazy()
+    em = pl.DataFrame({'tpre': [p[0] for p in emitted],
+                       'tpost': [p[1] for p in emitted]}).unique()
+    ns = pl.DataFrame({'nid': sorted(node_set)})
+    lf = (edge_lf.select(
+              pl.col('bodyId_pre').cast(pl.Utf8).alias('u'),
+              pl.col('bodyId_post').cast(pl.Utf8).alias('v'),
+              pl.col('weight').cast(pl.Float64).alias('w'))
+          .join(tm.rename({'bid': 'u', 'typ': 'typ_pre'}), on='u',
+                how='left')
+          .join(tm.rename({'bid': 'v', 'typ': 'typ_post'}), on='v',
+                how='left')
+          .with_columns([
+              pl.when(pl.col('typ_pre').is_null())
+                .then(pl.concat_str(pl.lit('~'), pl.col('u')))
+                .otherwise(pl.col('typ_pre')).alias('typ_pre'),
+              pl.when(pl.col('typ_post').is_null())
+                .then(pl.concat_str(pl.lit('~'), pl.col('v')))
+                .otherwise(pl.col('typ_post')).alias('typ_post'),
+          ]))
+
+    # -- accumulators (the Python Pass A equivalent)
+    body_in = {r[0]: r[1] for r in
+               lf.group_by('u').agg(pl.col('w').sum()).collect().iter_rows()}
+    type_in = {r[0]: r[1] for r in
+               lf.group_by('typ_post').agg(pl.col('w').sum())
+                 .collect().iter_rows()}
+    type_in_adj = {}
+    post_totals = {}
+    and_post_totals = {}
+    if ratio_mode:
+        post_totals = {r[0]: r[1] for r in
+                       lf.filter(pl.col('w') >= 1)
+                         .group_by('v').agg(pl.col('w').sum())
+                         .collect().iter_rows()}
+    elif and_ratio_tier:
+        and_post_totals = {r[0]: r[1] for r in
+                           lf.group_by('v').agg(pl.col('w').sum())
+                             .collect().iter_rows()}
+    if (not ratio_mode) and min_syn_active:
+        type_in_adj = {r[0]: r[1] for r in
+                       lf.filter(pl.col('w') >= min_syn)
+                         .group_by('typ_post').agg(pl.col('w').sum())
+                         .collect().iter_rows()}
+
+    # -- admissions. The Python pass's per-row order is: floor filter
+    # (ratio) -> syn_of -> asked tier -> involved-node check (counted) ->
+    # intra exclusion -> emitted-pair classification. Reproduce that
+    # order: tier frame first (pre-node), then the node semi-joins.
+    base = lf
+    if ratio_mode:
+        pt = (pl.DataFrame({'v': list(post_totals),
+                             'denom': [post_totals[k]
+                                        for k in post_totals]}).lazy())
+        # Python semantics: a missing denominator means w_thr = 0.0
+        # (excluded) — never w/0 = inf.
+        base = base.join(pt, on='v', how='left').with_columns(
+            pl.when(pl.col('denom') > 0)
+              .then(pl.col('w') / pl.col('denom'))
+              .otherwise(0.0).alias('ew'))
+    else:
+        if and_ratio_tier:
+            apt = (pl.DataFrame(
+                       {'v': list(and_post_totals),
+                        'adenom': [and_post_totals[k]
+                                   for k in and_post_totals]}).lazy())
+            base = base.join(apt, on='v', how='left').with_columns(
+                pl.when(pl.col('adenom') > 0)
+                  .then(pl.col('w') / pl.col('adenom'))
+                  .otherwise(0.0).alias('co_thr'))
+            base = base.filter(pl.col('co_thr') >= and_ratio_tier)
+
+    # syn_of (ratio): natural mass of every FLOOR-passing row keyed by
+    # the bodyId edge — the whole-table floor scope, exactly like the
+    # Python pass (which accumulates before the tier check). Integer
+    # weights: exact regardless of summation order.
+    syn_of = defaultdict(float)
+    if ratio_mode:
+        floor_frame = lf
+        if and_syn_floor is not None:
+            floor_frame = floor_frame.filter(pl.col('w') >= and_syn_floor)
+        syn_of = defaultdict(float)
+        for (u, v, w) in (floor_frame.group_by(['u', 'v'])
+                          .agg(pl.col('w').sum()).collect().iter_rows()):
+            syn_of[(u, v)] = w
+
+    # tier frame (asked scope)
+    tier = base
+    if ratio_mode:
+        if and_syn_floor is not None:
+            tier = tier.filter(pl.col('w') >= and_syn_floor)
+        tier = tier.filter(pl.col('ew') >= asked)
+    else:
+        tier = tier.with_columns(pl.col('w').alias('ew'))
+        tier = tier.filter(pl.col('ew') >= asked)
+    tier_collected = tier.collect()
+
+    # involved-node drop counter (pre-semi-join, like the Python pass)
+    ns_list = sorted(node_set)
+    non_involved_excluded = int(
+        tier_collected.filter(
+            (~pl.col('u').is_in(ns_list)) | (~pl.col('v').is_in(ns_list)))
+        .select(pl.len()).item())
+
+    node_passing = (tier_collected
+                    .join(ns.rename({'nid': 'u'}), on='u', how='semi')
+                    .join(ns.rename({'nid': 'v'}), on='v', how='semi'))
+    if exclude_intra:
+        node_passing = node_passing.filter(
+            pl.col('typ_pre') != pl.col('typ_post'))
+
+    # emitted-pair classification of the tier-passing, node-passing,
+    # intra-filtered mass (grouped: integer sums, order-free) — computed
+    # BEFORE the route-scope semi-join, which only the ENUMERATION edges
+    # (e_u) pass through; non-emitted mass is disclosed, not dropped.
+    asked_pair_mass = defaultdict(float)
+    non_emitted_pair_mass = 0.0
+    for tpre, tpost, wsum in (node_passing
+                              .group_by(['typ_pre', 'typ_post'])
+                              .agg(pl.col('w').sum()).iter_rows()):
+        pair = (tpre, tpost)
+        if pair in emitted:
+            asked_pair_mass[pair] += wsum
+        else:
+            non_emitted_pair_mass += wsum
+
+    # ROUTE SCOPE (2026-10-07): edges on non-emitted pairs never enter
+    # the enumeration graph.
+    node_passing = node_passing.join(
+        em, left_on=['typ_pre', 'typ_post'],
+        right_on=['tpre', 'tpost'], how='semi')
+
+    e_u = [(u, v, ew) for u, v, ew in
+           node_passing.select(['u', 'v', 'ew']).iter_rows()]
+
+    e_u_full = []
+    if want_full:
+        full_frame = base
+        if ratio_mode:
+            if and_syn_floor is not None:
+                full_frame = full_frame.filter(
+                    pl.col('w') >= and_syn_floor)
+            # NO tier: the full-connection scope keeps every floor edge
+        else:
+            full_frame = full_frame.filter(pl.col('w') >= 1)
+        if exclude_intra:
+            full_frame = full_frame.filter(
+                pl.col('typ_pre') != pl.col('typ_post'))
+        full_frame = (full_frame
+                      .join(ns.rename({'nid': 'u'}), on='u', how='semi')
+                      .join(ns.rename({'nid': 'v'}), on='v', how='semi')
+                      .join(em, left_on=['typ_pre', 'typ_post'],
+                            right_on=['tpre', 'tpost'], how='semi'))
+        e_u_full = [(u, v, ew) for u, v, ew in
+                    full_frame.select(['u', 'v', 'ew']).iter_rows()]
+
+    return {
+        'body_in': body_in, 'type_in': type_in, 'type_in_adj': type_in_adj,
+        'post_totals': post_totals, 'and_post_totals': and_post_totals,
+        'e_u': e_u, 'e_u_full': e_u_full, 'syn_of': syn_of,
+        'asked_pair_mass': asked_pair_mass,
+        'non_emitted_pair_mass': non_emitted_pair_mass,
+        'non_involved_excluded': non_involved_excluded,
+    }
+
+
 def hop_prefilter(edges: Sequence[Tuple[str, str, float]], sources,
                   targets, bound: int) -> Tuple[List, int]:
     """Lossless distS/distT hop-bound criterion on the induced edges:
@@ -315,10 +503,10 @@ def _enumerate_paths(edges, sources, targets, bound, budget=None):
     edge info = {(u, v): {'w', 'traversals', 'hops'}} over path edges and
     paths = [(bottleneck, tuple(nodes))] in emission order."""
     FastGraph = _load_fast_graph()
-    df = pd.DataFrame(edges, columns=['bodyId_pre', 'bodyId_post', 'weight'])
     g = FastGraph()
-    g.build_from_dataframe(df, 'bodyId_pre', 'bodyId_post', 'weight',
-                           store_edge_attrs=False)
+    # PERF (2026-10-08): tuple constructor — the pandas DataFrame +
+    # iterrows() round-trip was pure construction overhead.
+    g.build_from_edges(edges)
     weight = {(u, v): w for (u, v, w) in edges}
     stats: Dict[str, object] = {}
     paths: List[Tuple[float, Tuple[str, ...]]] = []
@@ -328,11 +516,10 @@ def _enumerate_paths(edges, sources, targets, bound, budget=None):
     seen_targets = {t for t in map(str, targets) if t in g}
     gen = g.find_paths_strongest_first(
         sorted(seen_sources), sorted(seen_targets), bound,
-        budget=budget, stats=stats)
-    for path in gen:
-        nodes = tuple(str(n) for n in path)
-        bn = min(weight[(nodes[i], nodes[i + 1])]
-                 for i in range(len(nodes) - 1))
+        budget=budget, stats=stats, yield_bottleneck=True)
+    for bn, raw in gen:
+        # nodes are already the str ids the induced lists pushed
+        nodes = tuple(raw)
         paths.append((bn, nodes))
         for i in range(len(nodes) - 1):
             key = (nodes[i], nodes[i + 1])
@@ -536,11 +723,8 @@ def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
         for (u, v), w in weights.items():
             if u in node_set and v in node_set:
                 physical.setdefault((u, v), w)
-    df = pd.DataFrame([(u, v, w) for (u, v), w in physical.items()],
-                      columns=['bodyId_pre', 'bodyId_post', 'weight'])
     g = FastGraph()
-    g.build_from_dataframe(df, 'bodyId_pre', 'bodyId_post', 'weight',
-                           store_edge_attrs=False)
+    g.build_from_edges(((u, v, w) for (u, v), w in physical.items()))
     stats: Dict[str, object] = {}
     target_list = sorted(t for t in targets if t in g)
     gen = g.find_paths_shortest_strongest_first(
@@ -564,14 +748,16 @@ def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
 def compute_type_level_refill(
     run_dir,
     *,
-    edges: Sequence[Tuple[str, str, float]],
-    type_map: Mapping[str, str],
+    edges: Optional[Sequence[Tuple[str, str, float]]] = None,
+    type_map: Optional[Mapping[str, str]] = None,
     detail_cap: int = DEFAULT_DETAIL_CAP,
     path_budget: int = DEFAULT_REFILL_PATH_BUDGET,
     out_dir=None,
     write: bool = True,
     source_note: str = '',
     path_mode: Optional[str] = None,
+    edge_lf=None,
+    hemi_filter: str = 'both',
 ) -> dict:
     """Compute (and by default write) the type-level refill records for
     one FindAllPath ('all' mode) run folder.
@@ -643,8 +829,19 @@ def compute_type_level_refill(
     # pass, no 20M-row materialization — the ratio lane trades that for
     # correctness; ~20M triples ≈ 2-3 GB, inside the replay-capture
     # budget class the pipeline already accepts).
-    if not isinstance(edges, (list, tuple)):
+    # PERF (2026-10-08): with a lazy polars edge frame the accumulators
+    # and admissions run vectorized (`_polars_stream_passes`) and the
+    # 20M-row tuple materialization is skipped entirely (the all-mode
+    # flow never needs the tuples). The shortest lane still consumes the
+    # tuple stream (per-layer conversion), so it materializes as before.
+    use_polars = (edge_lf is not None and not is_shortest
+                  and type_map is not None
+                  and hemi_filter not in ('left', 'right'))
+    if edges is not None and not isinstance(edges, (list, tuple)):
         edges = list(edges)
+    if not use_polars and edges is None:
+        raise TypeLevelRefillError(
+            f'{run_dir}: neither edges nor edge_lf was supplied.')
     _parse_thr = _parse_float if ratio_mode else _parse_int
     asked = _parse_thr(prov.get('requested_threshold'))
     if asked is None:
@@ -746,6 +943,55 @@ def compute_type_level_refill(
         and_syn_floor = (prov.get('min_synapse') if _and_mode else 1)
     else:
         and_syn_floor = None
+    # -- stream accumulators, SHARED by both lanes. PERF (2026-10-08):
+    # with a lazy polars edge frame the accumulators + admissions run
+    # vectorized (`_polars_stream_passes`) — the previous form was 2-6
+    # full Python passes over the ~20M-row stream (profiled: ~25s of the
+    # 23s compute was function-body looping, 40M dict.get calls). The
+    # tuple path keeps one fused accumulator pass + a per-lane admission
+    # pass; every accumulator adds in stream order, and natural weights
+    # are integer-valued, so both paths are value-identical.
+    try:
+        _min_syn = float(prov.get('min_synapse'))
+    except (TypeError, ValueError):
+        _min_syn = None
+    _min_syn_active = bool(_min_syn and _min_syn > 1)
+    and_ratio_tier = (_parse_float(prov.get('min connection ratio'))
+                      if (_and_mode and not ratio_mode) else None)
+    body_in: Dict[str, float] = defaultdict(float)
+    type_in: Dict[str, float] = defaultdict(float)
+    type_in_adj: Dict[str, float] = defaultdict(float)
+    and_post_totals: Dict[str, float] = defaultdict(float)
+    post_totals: Dict[str, float] = defaultdict(float)
+    pol = None
+    if use_polars:
+        pol = _polars_stream_passes(
+            edge_lf, type_map, emitted, node_set,
+            ratio_mode=ratio_mode, asked=asked,
+            and_syn_floor=and_syn_floor, and_ratio_tier=and_ratio_tier,
+            min_syn_active=_min_syn_active, min_syn=_min_syn,
+            exclude_intra=exclude_intra, want_full=False)
+        body_in = pol['body_in']
+        type_in = pol['type_in']
+        type_in_adj = pol['type_in_adj']
+    else:
+        for u, v, w in edges:
+            u_s, v_s = str(u), str(v)
+            wf = float(w)
+            body_in[u_s] += wf
+            type_in[type_map.get(v_s, f'~{v}')] += wf
+            if _min_syn_active and wf >= _min_syn:
+                type_in_adj[type_map.get(v_s, f'~{v}')] += wf
+            if ratio_mode:
+                if wf >= 1:
+                    # RATIO-MODE FLOOR (2026-10-07): the run itself forces
+                    # min_synapse to 1 (or the AND-specified floor) and
+                    # fetches with min_weight=1, so the F9 denominators sum
+                    # only edges the run could ever see — sub-floor stream
+                    # rows (w < 1) must not inflate them.
+                    post_totals[v_s] += wf
+            elif and_ratio_tier:
+                and_post_totals[v_s] += wf
     if is_shortest:
         # -- Phase 3: structure from the run's discovery store; `edges`
         # is only the F9 denominator source. Per-pair weights are the
@@ -816,8 +1062,7 @@ def compute_type_level_refill(
         prefilter_dropped = 0
         e_pref = e_u
     else:
-        # -- node set U + induced edges at the asked threshold (single
-        # pass over the edge source — it may be a streamed 20M-row table).
+        # -- node set U + induced edges at the asked threshold.
         # Ratio lane (Phase 3): the enumeration weights are the F9
         # connection ratios (computed here — connection_ratio_paths
         # imports this module, so no reverse import); the SYNPASE masses
@@ -826,16 +1071,6 @@ def compute_type_level_refill(
         e_u: List[Tuple[str, str, float]] = []
         # syn_of was declared above the mode branch (the shortest branch
         # fills it with per-layer multiplicity; the all-mode branch here)
-        post_totals: Dict[str, float] = defaultdict(float)
-        if ratio_mode:
-            # RATIO-MODE FLOOR (2026-10-07): the run itself forces
-            # min_synapse to 1 (or the AND-specified floor) and fetches
-            # with min_weight=1, so the F9 denominators sum only edges
-            # the run could ever see — sub-floor stream rows (w < 1)
-            # must not inflate them.
-            for u, v, w in edges:
-                if float(w) >= 1:
-                    post_totals[str(v)] += float(w)
         non_involved_excluded = 0
         # R3 residual accumulator: raw PHYSICAL mass of >=asked edges on
         # EMITTED type pairs that entered the induced graph — the union
@@ -845,49 +1080,52 @@ def compute_type_level_refill(
         # Round-13 AND mode: reproduce the run's DUAL admission rule in
         # the induced universe. ratio basis + AND -> the synapse floor;
         # synapse basis + AND -> the ratio co-threshold (F9 denominators
-        # from the same edge source). (_and_mode/and_syn_floor are
-        # hoisted above the lane branch.)
-        and_ratio_tier = (_parse_float(prov.get('min connection ratio'))
-                          if (_and_mode and not ratio_mode) else None)
-        and_post_totals: Dict[str, float] = defaultdict(float)
-        if and_ratio_tier:
-            for _u, _v, _w in edges:
-                and_post_totals[str(_v)] += float(_w)
-        for u, v, w in edges:
-            u, v = str(u), str(v)
-            if ratio_mode:
-                w = float(w)
-                if and_syn_floor is not None and w < and_syn_floor:
-                    continue
-                denom = post_totals.get(v, 0.0)
-                w_thr = (w / denom) if denom > 0 else 0.0
-                syn_of[(u, v)] += w
-            else:
-                if and_ratio_tier:
-                    _denom = and_post_totals.get(v, 0.0)
-                    if _denom <= 0 or (float(w) / _denom) < and_ratio_tier:
+        # from the same edge source). (_and_mode/and_syn_floor and the
+        # Pass A accumulators are hoisted above the lane branch.)
+        # -- Pass B: the asked-tier admissions (the polars fast path
+        # produced them inside `_polars_stream_passes`).
+        if pol is not None:
+            e_u = pol['e_u']
+            syn_of = pol['syn_of']
+            asked_pair_mass = pol['asked_pair_mass']
+            non_emitted_pair_mass = pol['non_emitted_pair_mass']
+            non_involved_excluded = pol['non_involved_excluded']
+        else:
+            for u, v, w in edges:
+                u, v = str(u), str(v)
+                if ratio_mode:
+                    w = float(w)
+                    if and_syn_floor is not None and w < and_syn_floor:
                         continue
-                w_thr = w
-            if w_thr < asked:
-                continue
-            if u not in node_set or v not in node_set:
-                non_involved_excluded += 1
-                continue
-            if exclude_intra and type_map.get(u) == type_map.get(v):
-                continue
-            _pair = (type_map[u], type_map[v])
-            if _pair in emitted:
-                asked_pair_mass[_pair] += float(w)
-            else:
-                # ROUTE SCOPE (2026-10-07): the second round builds only
-                # the GIVEN (emitted) type routes — edges on non-emitted
-                # pairs never enter the enumeration graph, so out-of-scope
-                # routes are not pathfinded at all (not merely filtered
-                # after the fact). Their >=asked mass is disclosed at pair
-                # level via non_emitted_pair_mass / unfired_residual.
-                non_emitted_pair_mass += float(w)
-                continue
-            e_u.append((u, v, w_thr))
+                    denom = post_totals.get(v, 0.0)
+                    w_thr = (w / denom) if denom > 0 else 0.0
+                    syn_of[(u, v)] += w
+                else:
+                    if and_ratio_tier:
+                        _denom = and_post_totals.get(v, 0.0)
+                        if _denom <= 0 or (float(w) / _denom) < and_ratio_tier:
+                            continue
+                    w_thr = w
+                if w_thr < asked:
+                    continue
+                if u not in node_set or v not in node_set:
+                    non_involved_excluded += 1
+                    continue
+                if exclude_intra and type_map.get(u) == type_map.get(v):
+                    continue
+                _pair = (type_map[u], type_map[v])
+                if _pair in emitted:
+                    asked_pair_mass[_pair] += float(w)
+                else:
+                    # ROUTE SCOPE (2026-10-07): the second round builds only
+                    # the GIVEN (emitted) type routes — edges on non-emitted
+                    # pairs never enter the enumeration graph, so out-of-scope
+                    # routes are not pathfinded at all (not merely filtered
+                    # after the fact). Their >=asked mass is disclosed at pair
+                    # level via non_emitted_pair_mass / unfired_residual.
+                    non_emitted_pair_mass += float(w)
+                    continue
+                e_u.append((u, v, w_thr))
         e_pref, prefilter_dropped = hop_prefilter(
             e_u, sources, targets, bound)
 
@@ -986,9 +1224,8 @@ def compute_type_level_refill(
     for (u, v), meta in refill_edges.items():
         totals[(type_map[u], type_map[v])] += (
             syn_of.get((u, v), meta['w']) if ratio_mode else meta['w'])
-    body_in: Dict[str, float] = defaultdict(float)
-    for (u, v, w) in edges:               # all-post denominators (min_weight=1)
-        body_in[str(u)] += float(w)
+    # body_in / type_in / type_in_adj are computed in the fused Pass A
+    # above (single stream pass); _min_syn is hoisted there too.
     pair_ratio = {}
     for (u, v) in list(refill_edges) + list(cut_info):
         if ratio_mode:
@@ -997,26 +1234,6 @@ def compute_type_level_refill(
             denom = body_in.get(v, 0.0)
             pair_ratio[(u, v)] = (
                 edge_weight[(u, v)] / denom if denom > 0 else None)
-
-    type_in: Dict[str, float] = defaultdict(float)
-    for (u, v, w) in edges:
-        type_in[type_map.get(str(v), f'~{v}')] += w
-
-    # Adjusted refilled ratio (plan §2.4, 2026-10-05): the threshold-
-    # CONDITIONED post-type denominator — incoming mass counting only
-    # edges at/above the run's Min Synapse Count (the same doctrine as
-    # connection_ratio_adj: always emitted, equals the plain refilled
-    # ratio when no synapse threshold is active — every ratio-basis run,
-    # where min_synapse is forced to 1).
-    try:
-        _min_syn = float(prov.get('min_synapse'))
-    except (TypeError, ValueError):
-        _min_syn = None
-    type_in_adj: Dict[str, float] = defaultdict(float)
-    if _min_syn and _min_syn > 1:
-        for (u, v, w) in edges:
-            if float(w) >= _min_syn:
-                type_in_adj[type_map.get(str(v), f'~{v}')] += w
 
     emitted_pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
     for (u, v) in cut_info:
@@ -1029,7 +1246,7 @@ def compute_type_level_refill(
         denom = type_in.get(pair[1], 0.0)
         type_ratio = ((emit_w + ref_w) / denom) if denom > 0 else None
         denom_adj = (type_in_adj.get(pair[1], 0.0)
-                     if (_min_syn and _min_syn > 1) else denom)
+                     if _min_syn_active else denom)
         type_ratio_adj = ((emit_w + ref_w) / denom_adj) \
             if denom_adj > 0 else None
         rows.append({
@@ -1153,7 +1370,7 @@ def compute_type_level_refill(
                     continue
                 denom = type_in.get(r['type_post'], 0.0)
                 denom_adj = (type_in_adj.get(r['type_post'], 0.0)
-                             if (_min_syn and _min_syn > 1) else denom)
+                             if _min_syn_active else denom)
                 plain = (ref_w / denom) if denom > 0 else None
                 adj = (ref_w / denom_adj) if denom_adj > 0 else None
                 mirror_type_rows.append({

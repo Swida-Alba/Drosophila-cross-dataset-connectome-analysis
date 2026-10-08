@@ -200,14 +200,31 @@ def main(argv=None) -> int:
             type_map = build_type_map(neuron_table, separate,
                                       mapping_file=mapping_file,
                                       dataset=dataset)
-            edges = filter_edges_by_hemisphere(
-                load_connections(connections_path), type_map, hemi_filter)
-            rec = compute_type_level_refill(
-                run_dir, edges=edges, type_map=type_map,
-                detail_cap=args.detail_cap, path_budget=args.path_budget,
-                out_dir=(None if args.in_run else out_root / run_dir.name),
-                source_note=f'CLI: connections={connections_path.name}, '
-                            f'neuron_table={neuron_table.name}')
+            if (connections_path.suffix.lower() == '.parquet'
+                    and hemi_filter not in ('left', 'right')):
+                # PERF (2026-10-08): vectorized fast path — the lazy frame
+                # feeds the refill's polars accumulators/admissions.
+                import polars as pl
+                rec = compute_type_level_refill(
+                    run_dir, edge_lf=pl.scan_parquet(connections_path),
+                    type_map=type_map, hemi_filter=hemi_filter,
+                    detail_cap=args.detail_cap,
+                    path_budget=args.path_budget,
+                    out_dir=(None if args.in_run
+                             else out_root / run_dir.name),
+                    source_note=f'CLI: connections={connections_path.name}, '
+                                f'neuron_table={neuron_table.name}')
+            else:
+                edges = filter_edges_by_hemisphere(
+                    load_connections(connections_path), type_map,
+                    hemi_filter)
+                rec = compute_type_level_refill(
+                    run_dir, edges=edges, type_map=type_map,
+                    detail_cap=args.detail_cap, path_budget=args.path_budget,
+                    out_dir=(None if args.in_run
+                             else out_root / run_dir.name),
+                    source_note=f'CLI: connections={connections_path.name}, '
+                                f'neuron_table={neuron_table.name}')
             if rec['status'] == 'refilled':
                 msg = (f"refilled: {rec['refill_edges']} bodyId edges / "
                        f"{rec['refill_weight_total']} syn "
