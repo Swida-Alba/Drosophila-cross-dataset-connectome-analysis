@@ -113,6 +113,21 @@ def test_network_runs_feed_the_pair_report_hook(tmp_path):
         tmp_path,
         name="find-network_FAFB_clock_21types_w3r0p0_20260101_000000")
     assert has_paths_tables(run)
+    # Phase B2: network runs also carry the refill-full mirror (always
+    # produced) — the pair report's full-scope refill builder reads it
+    # and must survive a unit with NO intermediates rows (1-hop table):
+    # the stale-`key` UnboundLocalError regression lived exactly here.
+    refill_dir = run / "type_level_refill"
+    refill_dir.mkdir()
+    pd.DataFrame([{
+        "path": "A->B", "weights": "[4]", "ratios": "[0.1]",
+        "min_weight": 4, "min_ratio": 0.1, "length": 1,
+        "nt_types": '["ACH"]', "coverage": "[1/1, 1/1]",
+    }], columns=[
+        "path", "weights", "ratios", "min_weight", "min_ratio",
+        "length", "nt_types", "coverage",
+    ]).to_csv(refill_dir / "refill_full_carrying_paths_type.csv",
+              index=False)
     logs = []
     _maybe_generate_pair_report(
         run, log=lambda msg, level="info": logs.append(msg),
