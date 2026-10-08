@@ -1697,9 +1697,12 @@ def _applied_title_attr(source: str) -> str:
 
 def _refill_has_data(prov: dict) -> bool:
     """True when the run's refill records carry browsable data: real cut
-    mass ('refilled') or the non-bitten ratio-mode complete-at-asked
-    table ('complete_at_asked')."""
-    return str(prov.get('status') or '') in ('refilled', 'complete_at_asked')
+    mass ('refilled'), the non-bitten ratio-mode complete-at-asked
+    table ('complete_at_asked'), or the DUAL refill-full scope
+    (synapse >= 1 — present on every all-mode run since 2026-10-08)."""
+    return (str(prov.get('status') or '')
+            in ('refilled', 'complete_at_asked')
+            or bool(prov.get('full')))
 
 
 def _render_per_type_coverage_table(unit: dict, show_label: bool) -> str:
@@ -2344,6 +2347,10 @@ def _render_refill_tab(payload: dict, run_dir: Path) -> str:
     run = payload['run']
     refill = payload.get('refill')
     refill_complete = payload.get('refill_complete')
+    # DUAL REFILL (2026-10-08): the refill-full scope (synapse >= 1, no
+    # tier) — full-only runs (non-bitten synapse) render here too.
+    refill_full = payload.get('refill_full')
+    complete_full = payload.get('complete_full')
     units = run.get('units') or []
     sections = []
     has_records = False
@@ -2374,11 +2381,17 @@ def _render_refill_tab(payload: dict, run_dir: Path) -> str:
         'default) and <b>Refill-carrying</b> (only the chains that carry '
         'recovered mass). refilled_total = emitted + refill mass; ratios '
         'use percent form and the adjusted variant carries the '
-        'threshold-conditioned denominator.</p></div>'
+        'threshold-conditioned denominator. <b>DUAL REFILL:</b> the '
+        'scope switch above the selects flips between <b>Refill-asked</b> '
+        '(the run\'s own thresholding) and <b>Refill-full</b> (synapse '
+        '>= 1, no tier — the full-connection view of the SAME emitted '
+        'chains; produced for every run).</p></div>'
     ]
     parts.extend(sections)
     has_tables = ((refill and refill.get('pairs'))
-                  or (refill_complete and refill_complete.get('pairs')))
+                  or (refill_complete and refill_complete.get('pairs'))
+                  or (refill_full and refill_full.get('pairs'))
+                  or (complete_full and complete_full.get('pairs')))
     if has_tables:
         parts.append(_render_refill_select_card(
             refill, refill_complete))
@@ -2443,6 +2456,26 @@ def _render_refill_section(folder: Path, label: str,
 
     head = (f'<div class="card"><h3>{label}</h3>')
 
+    _full_block = prov.get('full') or {}
+    if (str(prov.get('status') or '') not in ('refilled',
+                                              'complete_at_asked')
+            and _full_block):
+        # DUAL REFILL: a full-only run (non-bitten synapse) — the full
+        # scope summary instead of the no-records hint.
+        stat = ('ok' if _full_block.get('status') != 'truncated'
+                else 'truncated')
+        return (head
+                + '<p><b>Refill-full</b> (synapse &gt;= 1, no tier — the '
+                'full-connection scope): the budget did not bite on this '
+                'run, so there is no refill-asked data; the full scope is '
+                'the deliverable — '
+                f'{int(_full_block.get("chains_complete") or 0):,} emitted '
+                'chains re-valued at synapse>=1 '
+                f'({_full_block.get("refill_edges", 0):,} sub-threshold '
+                f'bodyId edges / '
+                f'{int(_full_block.get("refill_weight_total") or 0):,} '
+                'synapses recovered). Browse it in the explorer below '
+                '(Refill-full scope).</p></div>', False)
     if str(prov.get('status') or '') not in ('refilled',
                                              'complete_at_asked') \
             or not pairs_csv.exists():
@@ -3644,9 +3677,11 @@ REPORT_JS = r"""
   var RefillExplorer = makeExplorer(REFILL_CFG);
   var RefillModes = {
     sets: {},
+    scope: 'asked',
     init: function() {
       var self = this;
       this.sets = {};
+      // Scope ASKED (the run's own thresholding; budget-cut recovery).
       if (DATA.refill_complete && DATA.refill_complete.pairs &&
           DATA.refill_complete.pairs.length) {
         this.sets.complete = {
@@ -3665,25 +3700,84 @@ REPORT_JS = r"""
           csvHref: 'type_level_refill/refill_paths_type.csv',
           vispath: (DATA.refill.vispath || []) };
       }
+      // Scope FULL (DUAL REFILL 2026-10-08: synapse >= 1, no tier — the
+      // full-connection view of the SAME emitted chains).
+      if (DATA.complete_full && DATA.complete_full.pairs &&
+          DATA.complete_full.pairs.length) {
+        this.sets.complete_full = {
+          data: DATA.complete_full.pairs,
+          units: DATA.complete_full.units,
+          pair_ratio_source: DATA.complete_full.pair_ratio_source,
+          csvLabel: 'refill_full_paths_type.csv',
+          csvHref: 'type_level_refill/refill_full_paths_type.csv',
+          vispath: (DATA.complete_full.vispath || []) };
+      }
+      if (DATA.refill_full && DATA.refill_full.pairs &&
+          DATA.refill_full.pairs.length) {
+        this.sets.refill_full = {
+          data: DATA.refill_full.pairs, units: DATA.refill_full.units,
+          pair_ratio_source: DATA.refill_full.pair_ratio_source,
+          csvLabel: 'refill_full_carrying_paths_type.csv',
+          csvHref: 'type_level_refill/refill_full_carrying_paths_type.csv',
+          vispath: (DATA.refill_full.vispath || []) };
+      }
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
         bar.innerHTML = '';
         var self2 = self;
+        // Scope switch first (asked | full), then the per-scope views.
+        var hasAsked = !!(this.sets.complete || this.sets.refill);
+        var hasFull = !!(this.sets.complete_full || this.sets.refill_full);
+        var scopeBtn = function(label, scope) {
+          var b = document.createElement('button');
+          b.type = 'button'; b.className = 'page-tab-btn';
+          b.textContent = label; b.dataset.scope = scope;
+          b.addEventListener('click', function() {
+            self2.scope = scope; self2.init(); });
+          bar.appendChild(b);
+        };
+        if (hasFull) { scopeBtn('Refill-full (synapse>=1)', 'full'); }
+        if (hasAsked) { scopeBtn('Refill-asked', 'asked'); }
+        if (hasAsked && hasFull) {
+          var sep = document.createElement('span');
+          sep.style.cssText = 'color:var(--secondary-color);margin:0 6px;';
+          sep.textContent = '|';
+          bar.appendChild(sep);
+        }
+        var inScope = function(key) {
+          var isFullKey = key.indexOf('_full') >= 0;
+          return self2.scope === 'full' ? isFullKey : !isFullKey;
+        };
         [['complete', 'Complete at asked'],
-         ['refill', 'Refill-carrying']].forEach(function(item) {
+         ['refill', 'Refill-carrying'],
+         ['complete_full', 'Complete at full (synapse>=1)'],
+         ['refill_full', 'Refill-carrying (sub-threshold)']
+        ].forEach(function(item) {
           if (!self2.sets[item[0]]) { return; }
+          if (!inScope(item[0])) { return; }
           var b = document.createElement('button');
           b.type = 'button'; b.className = 'page-tab-btn';
           b.textContent = item[1]; b.dataset.mode = item[0];
           b.addEventListener('click', function() { self2.set(item[0]); });
           bar.appendChild(b);
         });
+        // scope active-marking
+        bar.querySelectorAll('button[data-scope]').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.scope === self2.scope); });
       }
-      this.set(this.sets.complete ? 'complete'
-                                 : (this.sets.refill ? 'refill' : null));
+      // DUAL default: asked (the recovery story) when it has records;
+      // full-only runs land on full.
+      var first = this.sets.complete ? 'complete'
+                                    : (this.sets.refill ? 'refill' : null);
+      if (!first && (this.sets.complete_full || this.sets.refill_full)) {
+        this.scope = 'full';
+        first = this.sets.complete_full ? 'complete_full' : 'refill_full';
+      }
+      this.set(first);
     },
     set: function(mode) {
       if (!mode || !this.sets[mode]) { return; }
+      var self = this;
       var s = this.sets[mode];
       REFILL_CFG.data = s.data; REFILL_CFG.units = s.units;
       REFILL_CFG.run.pair_ratio_source = s.pair_ratio_source;
@@ -3692,7 +3786,9 @@ REPORT_JS = r"""
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
         bar.querySelectorAll('button').forEach(function(b) {
-          b.classList.toggle('active', b.dataset.mode === mode); });
+          var active = (b.dataset.mode === mode)
+            || (b.dataset.scope === self.scope);
+          b.classList.toggle('active', active); });
       }
       RefillExplorer.mount();
     }
@@ -4067,8 +4163,18 @@ def generate_paths_pair_report(
         refill_complete_payload['complete_at_asked'] = (
             all(s is True for s in stamps) if stamps else None)
 
+    # DUAL REFILL (2026-10-08): the refill-full scope (synapse >= 1, no
+    # tier) — carrying = chains with sub-threshold edges at full scope;
+    # complete = every emitted chain re-valued at full scope.
+    refill_full_payload = _build_refill_dataset(
+        'refill_full', 'refill_full_carrying_paths_type.csv')
+    complete_full_payload = _build_refill_dataset(
+        'complete_full', 'refill_full_paths_type.csv')
+
     payload['refill'] = refill_payload
     payload['refill_complete'] = refill_complete_payload
+    payload['refill_full'] = refill_full_payload
+    payload['complete_full'] = complete_full_payload
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
 
