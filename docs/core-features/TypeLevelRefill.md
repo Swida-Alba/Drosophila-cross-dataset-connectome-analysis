@@ -27,6 +27,25 @@ true asked threshold is read from its `replayed_from` line (the stamped
 `requested_threshold` carries the canonical value), and W4
 re-enumerated slices carry their own fresh provenance.
 
+## The two refill kinds (DUAL REFILL, 2026-10-08)
+
+- **refill-asked** — everything above: the second round at the run's
+  own thresholding (the asked tier; budget-cut recovery when bitten,
+  complete-at-asked for non-bitten ratio runs). Gate: synapse runs need
+  a bite; ratio runs always fill.
+- **refill-full** — the second round admitted at **synapse >= 1 only**
+  (no ratio tier, no synapse tier): the full-connection view of the
+  SAME emitted chains, produced for EVERY all-mode run with emitted
+  rows (non-bitten synapse runs included). Tables:
+  `refill_full_type_pairs.csv` (data_details) and
+  `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv`
+  / `refilled_full_connection_type.csv` (mirror). The report's Refill
+  tab carries a Refill-asked | Refill-full scope switch. Big queries
+  may honestly stamp `truncated` when the 2M-path guard bites (the
+  full scope enumerates a larger graph than the asked tier).
+- shortest mode: asked view only (no second-round paths table to
+  re-value).
+
 ## Semantics
 
 The exported `data_details/connection_type.csv` counts only bodyId pairs
