@@ -218,11 +218,15 @@ Written when `find_reciprocal=True`:
 *   **`parameters.csv`**: Reciprocal-analysis parameters
 
 #### Type-Level Refill Standalone Folder (`type_level_refill/`)
-Written automatically whenever the run produced refill records (applied
-threshold &gt; asked — and, since 2026-10-08, on EVERY ratio-basis run
-with status `complete_at_asked` even when the budget did not bite; see
-`data_details/type_level_refill/` for the raw records): the refilled
-data mirrored in the path/connection data format, parallel to
+Written automatically by every pathfinding/network run since the
+refill-full feature (2026-10-08): the FULL-scope records — every emitted
+chain re-valued at the synapse &ge; 1 full connection scope — are always
+produced, for every weight basis (see
+`data_details/type_level_refill/` for the raw records). Additionally,
+the REFILL-ASKED records (recovering budget-cut mass) are written when
+the applied threshold &gt; asked, and on EVERY ratio-basis run with
+status `complete_at_asked` even when the budget did not bite: the
+refilled data mirrored in the path/connection data format, parallel to
 `find_reciprocal/`.
 *   **Ratio-basis refills** run at **synapse \u2265 1** (the run's own
     forced min synapse; the AND-specified value under
@@ -480,7 +484,10 @@ Example: `find-network_MCNS_aMe_w3r0p0_20260815_142745/`
 ### Key Output Files
 *   **`data_details/connection_type.csv`**: Direct connections aggregated by type pair (same columns as Section 1)
 *   **`data_details/neurons.csv`**: The resolved neuron set — key columns `bodyId`, `instance`, `type`, `pre`, `post`, `downstream`, `upstream`, `synweight`, plus the full NeuPrint neuron table
-*   **`data_details/parameters.csv`**, **`parameters.txt`**, **`all_attributes.json`**, **`user_warning_notes.txt`**: Run metadata
+*   **`data_details/parameters.csv`**, **`parameters.txt`**, **`all_attributes.json`**, **`user_warning_notes.txt`**: Run metadata. `parameters.txt` carries the provenance stamps the pair report and the type-level refill read (`weight basis`, `requested_threshold` / `applied_threshold`); a network records `max interlayer` 0 (direct connections only)
+*   **`{source}_to_{target}_allpaths_type.csv`**: 1-hop path-compatible table (same column order as Section 1's path table, with per-endpoint `coverage`) — the pair-report hook keys on it, so every network run also gets **`path_report.html`** + **`paths_pair_breakdown/`** (the per-pair explorer report)
+*   **`source_neurons.csv`** / **`target_neurons.csv`**: Enrollment (bodyId, type, Checked) consumed by the type-level refill
+*   **`type_level_refill/`**: Refill mirror (ratio-mode runs always produce complete-at-asked records; synapse runs only on a budget bite, which a network never has) — see Section 1's refill documentation
 *   **`visualization/Network_{folder}.html`** / **`Heatmap_{folder}.html`**: Network and heatmap views (no Sankey in network mode)
 *   **`visualization/visualization_data/{folder}_data_connections.csv`**, **`{folder}_data_original_paths.csv`**, **`network_edges_input.csv`**: Data backing the HTML files
 
@@ -850,6 +857,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`conserved_paths/`**: Network graphs of hemisphere-conserved connections per threshold (`conserved_network_*` HTML pages; written when the Conserved Hemisphere analysis runs) — the per-threshold sibling of `conserved_reciprocal_graph/`.
 *   **`type_resolution_topology.json`**: Machine-readable record of the type-resolution topology the union resolver used across datasets (merge-policy decisions: anchors, residuals, fan-ins).
 *   **`comparison_report_used_data/type_appearance_order.csv`**: The order in which types first appear in the comparison tables — the canonical ordering the report's tables and heatmaps follow.
+*   **`comparison_report_used_data/label_mapper_enrollment.csv`**: (runs with a user label mapper) the label × dataset enrollment table behind the report's Label Mapper card — one row per custom label with per-dataset member counts and a total. The label mapper is a bodyId-level RETYPING of its neuron set: enrolled neurons are keyed by their settled label everywhere (tier 0), residual unenrolled neurons of collided native types are star-tagged `T*` by the type resolver, and the auto type mapper resolves only the remainder.
 
 #### Visualizations (`comparison_visualizations/`)
 *   **`edge_heatmap_{N}.png`**, **`path_heatmap_{N}.png`**, **`path_counts.png`**: Standard static heatmaps/counts per threshold. Combination mode uses `edge_heatmap_query_{query_id}.png`, `path_heatmap_query_{query_id}.png`, and query-annotated CSVs for every query.

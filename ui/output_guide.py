@@ -203,6 +203,9 @@ COLUMN_GLOSSARY = {
     "coverage": ("Per endpoint of the pair: distinct enrolled bodyIds "
                  "contributing to the pair over the type's enrolled "
                  "size (`n/N`).", "list of fractions"),
+    "label": ("A user label mapper's settled label — the retyped "
+              "identity of its enrolled neurons (tier 0).", "text"),
+    "total": ("Row total across the per-dataset columns.", "integer"),
     "traversal_probability": (
         f"{SUSP_SHORT}. Historical formula: "
         "$\\min(1.0,\\ connection\\_ratio/0.3)$.", "suspended"),
@@ -918,8 +921,11 @@ _FIND_NETWORK = {
         {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
          "description": "Per-pair breakdown rows behind path_report.html."},
         {"pattern": "type_level_refill/refill_provenance.json",
-         "description": "Type-level refill record (ratio-mode runs always "
-                        "fill; synapse runs only on a budget bite)."},
+         "description": "Type-level refill record — ALWAYS produced for "
+                        "network runs: the full-scope records re-value "
+                        "every emitted chain at synapse >= 1 (ratio runs "
+                        "additionally carry complete-at-asked; synapse "
+                        "runs add refill-asked only on a budget bite)."},
         {"pattern": WARNING_FILENAME,
          "description": "Warnings/notes collected during the run "
                         "(rendered in the Warnings section above)."},
@@ -2171,6 +2177,14 @@ TOOL_GUIDE_SPECS = {
                             "taxonomy member mapping, fallbacks, conflicts).",
              "columns": ["token", "dataset", "role", "status", "method",
                          "target_types", "evidence", "confidence"]},
+            {"pattern": "comparison_report_used_data/label_mapper_enrollment.csv",
+             "description": "(runs with a user label mapper) the label x "
+                            "dataset enrollment table behind the Label "
+                            "Mapper card — enrolled neurons are retyped to "
+                            "their settled labels (tier 0); residuals of "
+                            "collided native types are star-tagged T* by "
+                            "the type resolver.",
+             "columns": ["label", "total"]},
             {"pattern": "comparison_report_used_data/*.csv",
              "description": "Aggregated metrics backing the report. Standard "
                             "files use threshold keys; Custom combination files "

@@ -78,7 +78,10 @@ python skills/drocat-usage/scripts/run_direct.py \
 - Ratio basis (`weight_basis="connection_ratio"`): the threshold rides
   `min_ratio` and the backend floors `min_synapse_num` to 1 ('or' mode;
   `"and"` co-thresholds on both scales). A network is direct-connections-only
-  (`max_interlayer` is recorded as 0). Ratio-mode runs ALWAYS produce the
-  type-level refill (complete-at-asked records + `type_level_refill/`
-  mirror); synapse-mode runs refill only when a budget bit, which a network
-  never has — the hook's pre-gate skips silently.
+  (`max_interlayer` is recorded as 0).
+- The type-level refill is ALWAYS produced for network runs: the
+  full-scope records (every emitted chain re-valued at synapse ≥ 1) land
+  in `data_details/type_level_refill/` + the `type_level_refill/` mirror.
+  Ratio-basis runs additionally carry complete-at-asked records; a
+  synapse-basis network never bites a budget, so it has no refill-asked
+  mass.

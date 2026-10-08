@@ -35,8 +35,13 @@
       (it inherits your saved default otherwise).</li>
     <li>Add the <b>Query Neurons</b> (e.g. <code>aMe12</code>,
       <code>PPL101</code>, or an uploaded list).</li>
-    <li>Set <b>Min Synapse Count</b>. Optionally define <b>Custom Groups</b>
-      (label-mapper panel) or set a <b>Custom Group Name</b> / <b>Save Folder
+    <li>Pick the <b>Threshold Basis</b> (Synapse count or Connection ratio)
+      and set the threshold — ratio mode reads <b>Min Connection Ratio
+      (%)</b>; <b>Combine Thresholds</b> (Any one / Both AND) decides
+      whether both gates apply.</li>
+    <li>Optionally define <b>Custom Groups</b>
+      (label-mapper panel) or set a <b>Custom Group Name</b> / <b>Custom
+      Target Name</b> / <b>Save Folder
       Name</b> for the run.</li>
     <li>Click <b>Find Network</b>.</li>
   </ol>
@@ -44,9 +49,11 @@
   <h2>Parameters</h2>
   <table>
     <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight</td></tr>
-    <tr><td>Min Connection Ratio</td><td>hidden</td><td>Hidden control; the run always sends 0.0. A readout column only — it no longer filters</td></tr>
-    <tr><td>Min Traversal Prob.</td><td>hidden</td><td>Hidden control; the run always sends 0.0. A readout column only — it no longer filters</td></tr>
+    <tr><td>Threshold Basis</td><td>Synapse count</td><td>Which weight basis thresholds the network: raw synapse counts or the connection ratio (weight ÷ all-post incoming weight of the post neuron — comparable across datasets)</td></tr>
+    <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight. Ratio 'or' mode: the backend floors this to 1 — the ratio threshold prunes</td></tr>
+    <tr><td>Min Connection Ratio (%)</td><td>1.0</td><td>Ratio-mode threshold in percent (0.01 raw = 1%): keep edges carrying at least this share of the post neuron's total input. Visible in ratio mode or AND mode</td></tr>
+    <tr><td>Combine Thresholds</td><td>Any one</td><td>'or': one threshold governs (synapse mode → synapse count, ratio mode → ratio). Both (AND): an edge must clear BOTH thresholds, each on its own scale</td></tr>
+    <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap on rendered edges; never changes which connections are fetched or exported</td></tr>
     <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
     <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names (Advanced Settings)</td></tr>
     <tr><td>Use Cache / Cache Only / Drop Untyped Neurons</td><td>on / off / checked</td><td>Advanced Settings: reuse cached connections, force offline, and drop edges touching untyped neurons (same shared predicate as the path tabs)</td></tr>
@@ -57,8 +64,11 @@
   </table>
 
   <h2>Score formulas</h2>
-  <p>Connection scores are computed on the <b>thresholded graph</b> D_t
-    (edges with <code>weight ≥ Min Synapse Count</code>). Ratios use the
+  <p>Connection scores are computed on the <b>thresholded graph</b>: on the
+    Synapse basis, edges with <code>weight ≥ Min Synapse Count</code>; on
+    the Connection-ratio basis, edges with <code>ratio ≥ Min Connection
+    Ratio</code> (the synapse count floors to 1 — the ratio is the
+    threshold). Ratios use the
     global total incoming weight, so the denominator reflects the whole
     dataset:</p>
   <table>
@@ -70,12 +80,31 @@
   <p>Full derivations live in
     <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
 
+  <h2>Pair report and type-level refill</h2>
+  <p>Every network run also produces the per-pair explorer report the
+    pathfinding tools generate: the run writes a 1-hop path-compatible
+    table (<code>*_allpaths_type.csv</code>), and the same post-run hook
+    builds <code>path_report.html</code> +
+    <code>paths_pair_breakdown/</code> from it — per-pair breakdown with
+    coverage hovers and a Refill tab.</p>
+  <p>The <b>type-level refill is always produced</b>: every network run
+    writes the full-scope refill records (the <code>type_level_refill/</code>
+    mirror) — every emitted chain re-valued at the synapse &ge; 1 full
+    connection scope. Ratio-basis runs additionally get the
+    complete-at-asked records; synapse-basis runs get refill-asked records
+    when a budget bit, which a network never has — so for networks the
+    refill is full-scope only.</p>
+
   <h2>Output</h2>
   <p>The folder name uses the dataset abbreviation (<code>MCNS</code> =
     male-cns, <code>FAFB</code> = flywire FAFB, ...) and a sanitized query
     name (e.g. <code>aMe.*</code> → <code>aMe</code>):</p>
   <pre><code>{output_dir}/find-network_MCNS_aMe_w3r0p0_20260815_142745/
   parameters.txt, all_attributes.json
+  *_allpaths_type.csv              # 1-hop path table (pair-report input)
+  source_neurons.csv, target_neurons.csv   # enrollment (refill reader)
+  path_report.html, paths_pair_breakdown/  # per-pair explorer report
+  type_level_refill/               # (ratio-mode runs; complete-at-asked)
   data_details/
     neurons.csv                     # all queried neurons
     connection_type.csv             # type-level mutual connections

@@ -178,6 +178,19 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
    identifiers) — or as `custom_mapping_file` on the path/network tabs, where
    mapped neurons are grouped at type level via `EnrichConnectionTable`
    (custom_group columns).
+
+   **Residual neurons of collided native types** (2026-10-08): when a
+   native type's population is only PARTIALLY governed — some of its
+   neurons are mapper members and others are not — or the type name is
+   itself one of the mapper's labels, the type resolver star-tags the
+   unenrolled neurons: they are renamed to `T*` (the native type with a
+   trailing `*`) so they can never silently merge into the governed
+   population or into a settled label of the same spelling. `T*` keys are
+   terminal (dataset-scoped, never resolved further) and disclosed in
+   `user_warning_notes.txt`. Cross-dataset name coincidences are
+   dataset-scoped and unaffected (a FAFB intermediate natively typed
+   `SMP540` keeps its raw name even when BANC's enrolled `SMP540` is
+   retyped).
 3. **Reuse a mapping later** via the board's **Load…** (parses any mapping
    JSON back onto the board) or the history menu.
 4. **Optional — save a named copy in Settings.** The Settings tab's

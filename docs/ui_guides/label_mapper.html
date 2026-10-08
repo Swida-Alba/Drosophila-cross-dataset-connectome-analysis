@@ -44,7 +44,14 @@
       mapping are renamed to their custom groups; unmapped neurons keep their
       identifiers), or as <code>custom_mapping_file</code> on the path/network
       tabs, where mapped neurons are grouped at type level via
-      <code>EnrichConnectionTable</code> (custom_group columns).</li>
+      <code>EnrichConnectionTable</code> (custom_group columns).
+      <b>Residuals of collided native types</b> (2026-10-08): when a native
+      type's population is only partially governed — some of its neurons are
+      mapper members, others are not — or the type name is itself one of the
+      mapper's labels, the type resolver star-tags the unenrolled neurons as
+      <code>T*</code> (native type + <code>*</code>), so they never silently
+      merge into the governed population; these keys are terminal and
+      dataset-scoped, and disclosed in <code>user_warning_notes.txt</code>.</li>
     <li><b>Reuse a mapping later</b> via <b>Load…</b> (parses any mapping JSON
       back onto the board, so a run is exactly reproducible from its exported
       file) or the <b>history pulldown</b> (below).</li>

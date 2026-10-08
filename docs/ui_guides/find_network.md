@@ -36,10 +36,12 @@ for enrichment, hemisphere-aware analysis, and visualization.
   (`*_allpaths_type.csv`), so the same per-pair explorer report the
   pathfinding tools generate (`path_report.html` +
   `paths_pair_breakdown/`) is produced for network runs too.
-- **Type-level refill**: ratio-basis runs always produce the
-  complete-at-asked records (`data_details/type_level_refill/` + the
-  `type_level_refill/` mirror); synapse-basis runs refill only when a
-  budget bit, which a network never has.
+- **Type-level refill (always produced)**: every network run writes the
+  full-scope refill records (`type_level_refill/` mirror) — every
+  emitted chain re-valued at the synapse ≥ 1 full connection scope.
+  Ratio-basis runs additionally get the complete-at-asked records, and
+  synapse-basis runs get refill-asked records when a budget bit (which a
+  network never has — so for networks the refill is full-scope only).
 
 ## Outputs (nothing redundant)
 
