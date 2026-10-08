@@ -410,6 +410,18 @@ raw composition in a `group_members` column. Details:
 [AUTO_TYPE_MAPPING](../AUTO_TYPE_MAPPING.md), "The query-anchored merge
 policy".
 
+**Path-lane keying (2026-10-08):** the path presence matrices converge
+split families independently of the chip grouping — singleton per-chip
+policy groups are skipped, and every path node is keyed to its
+*mapper-decision family*: a union-find over BOTH directions of the auto
+type mapper's decisions (mapped/bridged counterparts plus every
+valid_split/evidence_only branch), seeded from the policy universe. The
+family label is the pivot side's single name (e.g. FAFB `R7` for the
+MCNS R7p/R7y/R7d/R7_unclear family; MCNS `5thsLNv_LNd6` for the FAFB
+5th-LNv + LNd_CRY+_ITP+ family), so FAFB `R8 → aMe12 → 5th-LNv` and
+MCNS `R8p → aMe12 → 5thsLNv_LNd6` land on one row with per-dataset
+presence flags instead of two exclusive rows.
+
 > **UI:** the web UI builds the same mappings inline — the **Custom Mapping**
 > board on the Cross-Dataset Comparison page (the Settings tab's
 > **Custom Type Mappings** card offers the same editor and can save a stable

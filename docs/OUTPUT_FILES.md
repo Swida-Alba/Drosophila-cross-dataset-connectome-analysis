@@ -219,9 +219,11 @@ Written when `find_reciprocal=True`:
 
 #### Type-Level Refill Standalone Folder (`type_level_refill/`)
 Written automatically whenever the run produced refill records (applied
-threshold &gt; asked; see `data_details/type_level_refill/` for the raw
-records): the refilled data mirrored in the path/connection data format,
-parallel to `find_reciprocal/`.
+threshold &gt; asked — and, since 2026-10-08, on EVERY ratio-basis run
+with status `complete_at_asked` even when the budget did not bite; see
+`data_details/type_level_refill/` for the raw records): the refilled
+data mirrored in the path/connection data format, parallel to
+`find_reciprocal/`.
 *   **Ratio-basis refills** run at **synapse \u2265 1** (the run's own
     forced min synapse; the AND-specified value under
     `threshold_combination='and'`), and the second round's F9
@@ -330,7 +332,10 @@ the report's `Generated:` timestamp.
     type-pairs table and the bodyId detail stay **exported files**
     (linked on the tab), and runs whose records predate the paths table
     get a regeneration note; the explicit "budget did not bite" hint
-    appears when no records exist. An
+    appears when no records exist (synapse-basis runs). Ratio-basis runs
+    always fill the data (2026-10-08): the tab shows the complete-at-asked
+    explorer even when the budget did not bite (status
+    `complete_at_asked`, no cut mass). An
     **applied-threshold
     &amp; budget provenance card** marks explicitly what the run used
     (applied vs requested threshold, StrongestFirst budget/tau, Edge

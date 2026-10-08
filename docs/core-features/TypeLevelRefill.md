@@ -14,12 +14,18 @@ A run folder is refillable when its provenance block
 (`parameters.txt` / `all_attributes.json`) shows
 `applied_threshold > requested_threshold` — i.e.
 `applied_threshold_source` names `edge_budget`, `strongest_first_budget`,
-or both. Complete runs (`applied == requested`) are gated off and get a
-`no_refill_needed` provenance record only. Multi-threshold replay folders
-are evaluated per slice: a canon slice's true asked threshold is read
-from its `replayed_from` line (the stamped `requested_threshold` carries
-the canonical value), and W4 re-enumerated slices carry their own fresh
-provenance.
+or both. **Ratio-basis runs are the exception (2026-10-08): they always
+fill the data** — even complete runs (`applied == requested`) run the
+second round at the asked tier with the forced min-synapse floor
+(`refill_synapse_floor`, 1 unless AND-specified), producing the
+complete-at-asked table (`refill_weight_total` 0, provenance status
+`complete_at_asked`) and the standalone mirror, so the Refill tab shows
+the full asked-threshold chain set. Synapse-basis complete runs keep the
+gate and get a `no_refill_needed` provenance record only.
+Multi-threshold replay folders are evaluated per slice: a canon slice's
+true asked threshold is read from its `replayed_from` line (the stamped
+`requested_threshold` carries the canonical value), and W4
+re-enumerated slices carry their own fresh provenance.
 
 ## Semantics
 
