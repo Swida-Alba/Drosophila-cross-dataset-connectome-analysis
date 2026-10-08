@@ -6489,6 +6489,37 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
                 std_label = pd.Series('', index=ndf_complete.index, dtype=object)
                 std_label.loc[mask_body] = mapped_body[mask_body]
                 std_label.loc[mask_type] = mapped_type[mask_type]
+
+                # Type-collision bodyId labeling (user directive
+                # 2026-10-08): a type name is COLLIDED when the mapper
+                # governs part of its population (some neurons renamed,
+                # others not) or the name is itself a mapper label.  Its
+                # UNMAPPED neurons are labeled at bodyId level — never
+                # aggregate under the type name, which would silently
+                # merge them into the governed population (or into a
+                # settled label of the same spelling).
+                mapper_labels = set()
+                for md in (getattr(label_mapper, '_source_mapping', None),
+                           getattr(label_mapper, '_target_mapping', None),
+                           getattr(label_mapper, '_intermediate_mapping',
+                                   None)):
+                    if isinstance(md, dict):
+                        mapper_labels.update(str(k) for k in md.keys())
+                governed = mask_body | mask_type
+                governed_by_type = (
+                    pd.Series(governed, index=ndf_complete.index)
+                    .groupby(type_vals).sum().to_dict())
+                collided = (
+                    (type_vals != '')
+                    & (~governed)
+                    & (
+                        (type_vals.map(governed_by_type).fillna(0) > 0)
+                        | type_vals.isin(mapper_labels)
+                    )
+                )
+                if collided.any():
+                    std_label.loc[collided] = body_ids[collided]
+
                 ndf_complete['std_label'] = std_label
                 
                 # Overwrite type with std_label where available
@@ -7869,7 +7900,39 @@ def build_bodyid_label_map(label_mapper, dataset: str, neuron_df: pl.DataFrame) 
         # If none of the above, just store the mapping in case it's used directly
         # This handles cases where the ID might be used elsewhere
         bodyid_label_map[neuron_id] = std_label
-    
+
+    # Type-collision bodyId labeling (user directive 2026-10-08): a type
+    # name is COLLIDED when the mapper governs its population only
+    # partially (some neurons of the type are renamed, others are not) or
+    # when the type name is itself a mapper label.  Unlabeled neurons of
+    # a collided type must be labeled AT BODYID LEVEL — aggregating them
+    # under the type name would silently merge them into the governed
+    # population (or into a settled label of the same spelling, e.g. an
+    # unenrolled intermediate natively typed `DN1pA` vs the settled
+    # `DN1pA` population).  Types with no governed neuron and no label
+    # identity are not collided: their unmapped neurons keep the
+    # ordinary type fallback.
+    mapper_labels = set()
+    for mapping_dict in (getattr(label_mapper, '_source_mapping', None),
+                         getattr(label_mapper, '_target_mapping', None),
+                         getattr(label_mapper, '_intermediate_mapping', None)):
+        if isinstance(mapping_dict, dict):
+            mapper_labels.update(str(k) for k in mapping_dict.keys())
+
+    for type_name, bids in type_to_bodyids.items():
+        if not bids:
+            continue
+        total = len(bids)
+        mapped = sum(1 for b in bids if b in bodyid_label_map)
+        if mapped >= total:
+            continue  # fully governed — every neuron renamed
+        collided = (mapped > 0) or (type_name in mapper_labels)
+        if not collided:
+            continue  # plain unmapped type: the type fallback stands
+        for b in bids:
+            if b not in bodyid_label_map:
+                bodyid_label_map[b] = b
+
     return bodyid_label_map
 
 

@@ -286,3 +286,71 @@ class TestCanonicalInlineFormat:
         # Without a mapper the query is unchanged.
         fc.label_mapper = None
         assert fc._expand_group_labels(["aMe"], "source") == ["aMe"]
+
+
+class TestTypeCollisionBodyIdLabeling:
+    """User directive 2026-10-08: when a type name is COLLIDED — the
+    mapper governs part of its population, or the name is itself a
+    mapper label — its UNMAPPED neurons are labeled at bodyId level so
+    they never silently merge into the governed population (or into a
+    settled label of the same spelling)."""
+
+    def _fixture(self, tmp_path, engine):
+        """BANC SMP540 shape: 1 enrolled member (label DN1pD) + 4
+        unenrolled same-type neurons; plus a fully-governed pair and a
+        plain unmapped type."""
+        d = tmp_path / "datasets" / "banc_v888"
+        d.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({
+            "bodyId": ["72001", "70002", "70003", "70004", "70005",
+                       "1", "4", "9"],
+            "type": ["SMP540", "SMP540", "SMP540", "SMP540", "SMP540",
+                     "DN1pA", "DN2", "XYZ"],
+            "post": [100, 90, 80, 70, 60, 50, 40, 30],
+        }).to_csv(d / "banc_v888_allneurons_neuron_df.csv", index=False)
+        mapping = {
+            "source_mapping": {
+                "custom_label": ["DN1pD", "DN1pA", "DN2"],
+                "banc_v888": [["72001"], ["1"], ["4"]],
+            },
+            "target_mapping": {
+                "custom_label": ["DN1pD", "DN1pA", "DN2"],
+                "banc_v888": [["72001"], ["1"], ["4"]],
+            },
+        }
+        map_path = tmp_path / "mapping.json"
+        map_path.write_text(json.dumps(mapping), encoding="utf-8")
+        from comparison.label_mapper import LabelMapper
+        lm = LabelMapper(overall_mapping_json=str(map_path))
+        conn = pd.DataFrame({
+            "bodyId_pre": ["1", "1", "70002", "9"],
+            "bodyId_post": ["4", "70002", "4", "1"],
+            "type_pre": ["DN1pA", "DN1pA", "SMP540", "XYZ"],
+            "type_post": ["DN2", "SMP540", "DN2", "DN1pA"],
+            "weight": [10, 6, 3, 2],
+        })
+        from statvis import EnrichConnectionTable
+        out = EnrichConnectionTable(
+            conn.copy(), dataset="banc_v888", script_path=str(tmp_path),
+            label_mapper=lm, engine=engine)
+        return out[1]
+
+    def test_pandas_engine(self, tmp_path):
+        ct = self._fixture(tmp_path, engine="pandas")
+        pairs = sorted(zip(ct["type_pre"], ct["type_post"]))
+        # enrolled members keep their labels
+        assert ("DN1pA", "DN2") in pairs
+        # collided unenrolled same-type intermediate -> bodyId-level key
+        assert ("SMP540", "DN2") not in pairs
+        assert any(a == "70002" and b == "DN2" for a, b in pairs), pairs
+        # plain unmapped type keeps the type fallback
+        assert ("XYZ", "DN1pA") in pairs
+
+    def test_polars_engine(self, tmp_path):
+        import polars as pl
+        ct = self._fixture(tmp_path, engine="polars")
+        pairs = sorted(zip(ct["type_pre"], ct["type_post"]))
+        assert ("DN1pA", "DN2") in pairs
+        assert ("SMP540", "DN2") not in pairs
+        assert any(a == "70002" and b == "DN2" for a, b in pairs), pairs
+        assert ("XYZ", "DN1pA") in pairs
