@@ -3774,9 +3774,19 @@ REPORT_JS = r"""
           b.classList.toggle('active', b.dataset.scope === self2.scope); });
       }
       // DUAL default: asked (the recovery story) when it has records;
-      // full-only runs land on full.
-      var first = this.sets.complete ? 'complete'
-                                    : (this.sets.refill ? 'refill' : null);
+      // full-only runs land on full. RESPECT the current scope (fix
+      // 2026-10-09: clicking a scope button re-runs init(), which used
+      // to fall back to the asked view regardless — the user saw
+      // refill-full showing the asked data at '>= 3 synapses').
+      var first = null;
+      if (this.scope === 'full') {
+        first = this.sets.complete_full ? 'complete_full'
+              : (this.sets.refill_full ? 'refill_full' : null);
+      }
+      if (!first) {
+        first = this.sets.complete ? 'complete'
+              : (this.sets.refill ? 'refill' : null);
+      }
       if (!first && (this.sets.complete_full || this.sets.refill_full)) {
         this.scope = 'full';
         first = this.sets.complete_full ? 'complete_full' : 'refill_full';
