@@ -766,7 +766,23 @@ def compute_type_level_refill(
     hemi_filter: str = 'both',
 ) -> dict:
     """Compute (and by default write) the type-level refill records for
-    one FindAllPath ('all' mode) run folder.
+    one FindAllPath ('all' mode) run folder — BOTH refill kinds (DUAL
+    REFILL, 2026-10-08):
+
+    - refill-asked: the second round at the run's own thresholding (the
+      asked tier). Gate: synapse-basis runs need the applied threshold to
+      exceed the asked one; ratio-basis runs always fill (non-bitten ones
+      get the complete-at-asked view, status 'complete_at_asked', mass 0).
+    - refill-full (rec['full']): the second round admitted at
+      SYNAPSE >= 1 only — no ratio tier, no synapse tier — re-valuing the
+      SAME emitted chain sequences (value change, zero structural
+      change). Produced for EVERY all-mode run with emitted rows,
+      enumerated UNBUDGETED so the weak sub-threshold tail is never
+      lost. Writes refill_full_type_pairs.csv + the mirror's
+      refill_full_paths_type.csv / refill_full_carrying_paths_type.csv /
+      refilled_full_connection_type.csv.
+
+    Shortest mode produces the asked view only.
 
     Parameters
     ----------

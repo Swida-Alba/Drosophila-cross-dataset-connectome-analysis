@@ -884,6 +884,22 @@ def _match_path_edges_to_layers(edges_in_paths, conn_layers):
     return valid_pairs_by_layer, matched_edges
 
 
+def _run_folder_is_replay_slice(run_dir) -> bool:
+    """True when the folder's parameters.txt stamps ``replayed_from``
+    (a multi-threshold replay slice). The corridor lane runs once on the
+    base lowest-threshold folder and skips the slices — replay corridors
+    are supersets of the slice's (plan-corridor-lane.md §6 step 8, §10)."""
+    try:
+        with open(os.path.join(str(run_dir), 'parameters.txt'),
+                  'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if line.startswith('replayed_from:'):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                             pre_col='bodyId_pre', post_col='bodyId_post',
                             vprint=None, warn_notes=None, label='bodyId',
@@ -3695,6 +3711,27 @@ class FindNeuronConnection:
     0/None = off (complete cone). 'all' mode only — FindShortestPath is
     never floored (trimming can inflate hop distances).
     '''
+
+    corridor_mode: str = 'auto'
+    '''Corridor lane (plan-corridor-lane.md §23.2): 'off' | 'auto' | 'on'.
+    The lane is a standalone post-materialization pass that re-enumerates
+    pathfinding at the ASKED threshold restricted to validated top-M*
+    type-level corridors (per source-target type pair), writing its own
+    route_scope_paths/ mirror folder. 'auto' enables it iff
+    max_interlayer >= 4. Never modifies the main run's outputs; failures
+    are contained to one user_warning_notes entry.'''
+
+    route_top_m_base: int = 10
+    '''Provisional candidate quota at h=1; grows geometrically with hop
+    length h via route_length_decay (Mh_prov = M_base * decay^(h-1)).'''
+
+    route_length_decay: float = 1.5
+    '''Per-hop growth factor of the provisional corridor quota.'''
+
+    route_path_budget_per_pair_length: int = 100
+    '''Binding path budget per (source-target type pair, hop length) class:
+    the class emits the strongest head of its validated walks until 100
+    paths accumulate (tie-drain at the class tau).'''
 
     max_paths_bodyid: Optional[int] = None
     '''
@@ -12841,6 +12878,11 @@ class FindNeuronConnection:
             if not key.startswith("_")
             and key not in (
                 "source_df", "target_df", "client_hemibrain", "client_flywire",
+                # Corridor lane knobs are engine-facing only (plan-
+                # corridor-lane.md §3b Tier 1/2): every pre-lane export
+                # stays byte-identical whether or not the lane exists.
+                "corridor_mode", "route_top_m_base", "route_length_decay",
+                "route_path_budget_per_pair_length",
             )
         }
         public_attrs["requested_source_neurons"] = self._requested_query_for_export(
@@ -17673,15 +17715,68 @@ class FindNeuronConnection:
                 vp_refill_body.create_heatmap()
                 vp_refill_body.create_network()
 
+    def _maybe_generate_corridor_deep_dive(self):
+        """Corridor lane hook (plan-corridor-lane.md §23.2): after a
+        materialized run folder carries its final provenance, run the
+        standalone corridor lane into ``route_scope_paths/`` when the mode
+        resolves on ('on'; or 'auto' with max_interlayer >= 4). Never
+        raises: any failure is contained to one user_warning_notes entry
+        (refill's "never raises" pattern). Returns True when notes were
+        appended (caller re-writes the notes file); False on success —
+        lane outputs live only in the lane namespace (§3b tier 2)."""
+        mode = getattr(self, 'corridor_mode', 'auto')
+        if mode not in ('auto', 'on'):
+            return False
+        if (mode == 'auto'
+                and int(getattr(self, 'max_interlayer', 0) or 0) < 4):
+            return False
+        run_dir = getattr(self, 'allpath_folder', None)
+        if not run_dir or not os.path.isdir(run_dir):
+            return False
+        if _run_folder_is_replay_slice(run_dir):
+            # §6 step 8 / §10: multi-threshold replay slices skip the lane
+            # — the base lowest-threshold folder already carries the
+            # superset corridors (pairs only disappear as thresholds rise).
+            return False
+        try:
+            from route_plan import CorridorRefusal, run_lane
+            try:
+                run_lane(
+                    run_dir,
+                    corridor_mode=mode,
+                    top_m_base=int(getattr(self, 'route_top_m_base', 10)),
+                    length_decay=float(
+                        getattr(self, 'route_length_decay', 1.5)),
+                    per_pair_length_budget=int(
+                        getattr(self, 'route_path_budget_per_pair_length',
+                                100)),
+                    fnc=self,
+                    write_bodyid=not getattr(self, 'skip_bodyId', False))
+                return False  # success: nothing outside the lane namespace
+            except CorridorRefusal as exc:
+                self._warn_notes.append(
+                    f'- [corridor lane] not generated: {exc}')
+                return True
+        except Exception as exc:  # containment is the contract (§3b tier 3)
+            try:
+                self._warn_notes.append(
+                    f'- [corridor lane] generation failed: '
+                    f'{type(exc).__name__}: {exc}')
+            except Exception:
+                pass
+            return True
+
     def _maybe_generate_type_level_refill(self):
-        """Phase 2 hook (plan-type-level-refill): after a materialized
-        FindAllPath ('all' mode) folder carries its final provenance,
-        generate the standalone type-level refill records into
-        ``data_details/type_level_refill/`` when the applied threshold
-        exceeded the asked threshold. Never raises: a refused/failed
-        generation appends a user_warning_notes entry instead. The caller
-        re-writes the warning notes afterwards when a note was added
-        (same pattern as the shortest store-retention hook)."""
+        """DUAL REFILL hook (plan-type-level-refill + 2026-10-08 dual):
+        after a materialized FindAllPath ('all' mode) folder carries its
+        final provenance, generate the standalone type-level refill
+        records into ``data_details/type_level_refill/`` — the ASKED
+        view when a budget bit (ratio runs always fill), and the
+        REFILL-FULL scope (synapse >= 1, no tier) for every run with
+        emitted rows. Never raises: a refused/failed generation appends
+        a user_warning_notes entry instead. The caller re-writes the
+        warning notes afterwards when a note was added (same pattern as
+        the shortest store-retention hook)."""
         if not getattr(self, 'auto_type_level_refill', True):
             return False
         if getattr(self, 'weight_basis', 'synapse') != 'synapse':
@@ -18209,6 +18304,8 @@ class FindNeuronConnection:
             # slice on its own state (the module reads the slice's stamped
             # provenance, incl. the replayed_from gate).
             if self._maybe_generate_type_level_refill():
+                self._write_user_warning_notes(self.allpath_folder)
+            if self._maybe_generate_corridor_deep_dive():
                 self._write_user_warning_notes(self.allpath_folder)
             return {
                 'tau': tau,
@@ -20045,6 +20142,8 @@ class FindNeuronConnection:
         # the notes are re-written when the hook adds an entry
         # (store-retention pattern).
         if self._maybe_generate_type_level_refill():
+            self._write_user_warning_notes(self.allpath_folder)
+        if self._maybe_generate_corridor_deep_dive():
             self._write_user_warning_notes(self.allpath_folder)
 
     def _materialize_paths(

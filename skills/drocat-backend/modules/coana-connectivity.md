@@ -78,11 +78,27 @@ fc2.FindDirectConnections()
 
 ## Type-level refill (auto hook)
 
-When a materialized FindAllPath run's **applied threshold exceeded the asked
-threshold** (Edge Budget floor and/or StrongestFirst budget bite),
-`_maybe_generate_type_level_refill` re-runs path building at the ASKED
-threshold within the involved-types induced subgraph and writes the recovered
-mass WITHOUT touching run files:
+DUAL REFILL (2026-10-08) — two kinds, both written by
+`_maybe_generate_type_level_refill` without touching run files:
+
+- **refill-asked** — re-runs path building at the ASKED threshold within the
+  involved-types induced subgraph. Gate: synapse-basis runs need the applied
+  threshold to exceed the asked one (Edge Budget floor and/or
+  StrongestFirst bite); ratio-basis runs ALWAYS fill (non-bitten ones get
+  the `complete_at_asked` view with mass 0).
+- **refill-full** — the second round admitted at SYNAPSE >= 1 ONLY (no
+  ratio tier, no synapse tier), re-valuing the SAME emitted chains; the
+  full-connection scope, produced for EVERY all-mode run with emitted rows.
+  Enumerated UNBUDGETED (a strongest-first budget would drain exactly the
+  weak sub-threshold paths the scope exists for); `full.truncated` is
+  always false. Files: `refill_full_type_pairs.csv` (data_details) +
+  `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv` /
+  `refilled_full_connection_type.csv` (mirror). The report's Refill tab
+  carries a Refill-asked | Refill-full scope switch; the full scope's Adj
+  values read the full pair table's plain ratio (at floor 1, conditioned
+  == plain).
+
+Asked view (both kinds share the machinery):
 
 - `data_details/type_level_refill/` — the raw records:
   `refill_type_pairs.csv` (per emitted pair: emitted / refill /

@@ -268,6 +268,18 @@ refilled data mirrored in the path/connection data format, parallel to
     per emitted pair with `weight = refilled_total` (emitted + refill)
     and the pair's refilled ratios.
 *   **`refilled_connection_bodyId.csv`**: complete-at-asked bodyId edges
+
+DUAL REFILL (2026-10-08) — the FULL scope (synapse &gt;= 1, no tier; the
+full-connection view of the SAME emitted chains; produced for every
+all-mode run):
+*   **`refill_full_paths_type.csv`**: every emitted chain re-valued at
+    synapse &gt;= 1 (complete at full).
+*   **`refill_full_carrying_paths_type.csv`**: the chains that carry
+    sub-threshold mass at full scope.
+*   **`refilled_full_connection_type.csv`**: per emitted pair — emitted /
+    refill-full / refilled_total + the plain full ratio
+    (`refilled_connection_ratio`; at floor 1 it is also the adjusted
+    value).
     (emitted-rederived + refill), the canonical bodyId connection-table
     columns plus `traversal_count`/`min_hop`/`max_hop`; enrichment
     columns the module cannot derive stay empty.

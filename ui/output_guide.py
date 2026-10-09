@@ -260,12 +260,15 @@ COLUMN_GLOSSARY = {
                                   "ALL-post incoming weight (threshold-free "
                                   "F9 denominator, min synapse = 1).",
                                   "0-1"),
-    "refilled_traversal_probability": ("The type pair's traversal "
-                                       "probability over the UNION of "
-                                       "emitted + refilled bodyId pairs, "
-                                       "folded by the run's aggregate "
-                                       "method (product = 1 - "
-                                       "prod(1 - p_pair)).", "0-1"),
+    "refilled_connection_ratio_adj": (
+        "refilled_total over the post type's THRESHOLD-CONDITIONED "
+        "incoming weight (only edges at/above the run's Min Synapse "
+        "Count); equals the plain refilled ratio when that N <= 1 — "
+        "every ratio-basis run and the whole refill-full scope.",
+        "0-1"),
+    "refilled_traversal_probability": (
+        f"{SUSP_SHORT}. Historical formula: traversal probability over "
+        "the UNION of emitted + refilled bodyId pairs.", "suspended"),
     "split_status": ("How the emitted/refill split was reconstructed: "
                      "rederived_floor (Edge Budget), rederived_topn "
                      "(StrongestFirst bite), rederived_floor+topn (both).",
@@ -1478,21 +1481,34 @@ _PATHFINDING_EXPLANATION = [
             "'(inputs >= N synapses)' with the run's own N. The pair-level "
             "adjusted share of a path is the weakest entry of its Adj. "
             "ratios list.",
-            "The refill (budget-cut mass recovered). When a run's APPLIED "
-            "threshold exceeded the asked one (a budget bit), the exported "
-            "connection table counts only the surviving pairs. The refill "
-            "re-runs path building at the ASKED threshold within the "
-            "involved-types restricted graph and recovers the mass behind "
-            "the cut — restricted to the Pair Explorer's own chains (a "
-            "VALUE change on the given routes; out-of-scope routes are "
-            "never pathfinded). Refilled total = Emitted + Refill. "
-            "Refill mass only rides in-scope routes; mass that can fire "
-            "on no chain is disclosed per pair as unfired_residual, and "
-            "pruned non-emitted-pair mass as non_emitted_pair_mass. "
-            "Refill is a CERTIFIED LOWER BOUND of the complete-at-asked "
-            "refill; the consistency anchor table_reproduced in "
-            "refill_provenance.json guarantees the re-derived cut "
-            "reproduces connection_type.csv exactly.",
+            "The refill — TWO kinds (DUAL REFILL, 2026-10-08). Both "
+            "kinds re-run path building within the involved-types "
+            "restricted graph, restricted to the Pair Explorer's own "
+            "chains (a VALUE change on the given routes; out-of-scope "
+            "routes are never pathfinded), and both are anchored: "
+            "table_reproduced in refill_provenance.json guarantees the "
+            "re-derived cut reproduces connection_type.csv exactly. "
+            "Refill-ASKED runs at the run's own thresholding: when a "
+            "budget bit (applied > asked) it recovers the budget-cut mass "
+            "(a certified lower bound of the complete-at-asked refill); "
+            "non-bitten RATIO runs produce its complete-at-asked view "
+            "(mass 0). Refill-FULL runs at SYNAPSE >= 1 ONLY — no ratio "
+            "tier, no synapse tier — re-valuing the SAME emitted chains: "
+            "the full-connection scope, produced for EVERY all-mode run "
+            "(non-bitten synapse runs included). The report's Refill tab "
+            "carries a Refill-asked | Refill-full scope switch. Mass that "
+            "can fire on no chain is disclosed per pair as "
+            "unfired_residual (asked) and pruned non-emitted-pair mass as "
+            "non_emitted_pair_mass; the full scope enumerates UNBUDGETED "
+            "so its weak tail is never silently lost.",
+            "Adjusted ratios per scope. The Adj. ratios column is "
+            "scope-aware: in the refill-ASKED scope it is conditioned at "
+            "the run's Min Synapse Count (N); in the refill-FULL scope "
+            "the admission floor is synapse >= 1, where the conditioned "
+            "denominator EQUALS the plain all-inputs one — so the full "
+            "scope's adjusted value is its plain full ratio (per hop: "
+            "the pair's full mass over the post type's all-post "
+            "incoming).",
             "Traversal/path probability values are SUSPENDED (2026-10-06, "
             "unverifiable fidelity): they are no longer exported, "
             "displayed, or used for ranking. Ratios (plain and adjusted) "
@@ -1520,6 +1536,15 @@ _PATHFINDING_EXPLANATION = [
              "The complete-at-asked chains with the per-hop "
              "emitted/refill split; stamped complete only when the "
              "second-round enumeration was not truncated."],
+            ["refill_full_type_pairs.csv",
+             "The FULL scope's per emitted pair: emitted / refill-full "
+             "(sub-threshold mass at synapse >= 1) / refilled_total + the "
+             "plain full ratio."],
+            ["refill_full_paths_type.csv",
+             "Every emitted chain re-valued at synapse >= 1 (complete at "
+             "full)."],
+            ["refill_full_carrying_paths_type.csv",
+             "The chains that carry sub-threshold mass at full scope."],
         ],
         "values_column": False,
         "pipeline": None,
