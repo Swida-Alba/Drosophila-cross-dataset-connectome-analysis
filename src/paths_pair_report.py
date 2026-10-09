@@ -630,24 +630,32 @@ def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
 
 
 def _load_refill_pair_ratios(
-        folder: Path) -> Tuple[Dict[Tuple[str, str], float], str]:
+        folder: Path, pairs_name: str = 'refill_type_pairs.csv',
+        prefer_adj: bool = True) -> Tuple[Dict[Tuple[str, str], float], str]:
     """(type_pre, type_post) -> refilled pair-level ratio for the Refill
-    Explorer, from data_details/type_level_refill/refill_type_pairs.csv.
-    Prefers ``refilled_connection_ratio_adj`` (the threshold-conditioned
+    Explorer, from data_details/type_level_refill/<pairs_name>. Prefers
+    ``refilled_connection_ratio_adj`` (the threshold-conditioned
     denominator) over plain ``refilled_connection_ratio`` — the same
-    preference order as the main table's loader. Returns
-    ``(mapping, source)`` with source in {'adjusted', 'plain', ''}."""
+    preference order as the main table's loader. The FULL scope
+    (refill_full_type_pairs.csv) passes prefer_adj=False: its admission
+    floor is synapse >= 1, where the conditioned denominator equals the
+    plain all-inputs one, so the plain full ratio IS the adjusted value.
+    Returns ``(mapping, source)`` with source in
+    {'adjusted', 'plain', 'full-plain', ''}."""
     out: Dict[Tuple[str, str], float] = {}
     source = ''
     try:
         pairs_csv = (Path(folder) / 'data_details' / 'type_level_refill'
-                     / 'refill_type_pairs.csv')
+                     / pairs_name)
         if not pairs_csv.exists():
             return out, source
         frame = pd.read_csv(pairs_csv)
         col = None
-        for candidate, tag in (('refilled_connection_ratio_adj', 'adjusted'),
-                               ('refilled_connection_ratio', 'plain')):
+        candidates = (('refilled_connection_ratio_adj', 'adjusted'),
+                      ('refilled_connection_ratio', 'plain')) \
+            if prefer_adj else \
+            (('refilled_connection_ratio', 'full-plain'),)
+        for candidate, tag in candidates:
             if {'type_pre', 'type_post', candidate} <= set(frame.columns):
                 col, source = candidate, tag
                 break
@@ -4081,6 +4089,13 @@ def generate_paths_pair_report(
         units_k: List[Unit] = []
         ratio_k: Dict[str, Dict[Tuple[str, str], float]] = {}
         ratio_src_k: Dict[str, str] = {}
+        # DUAL REFILL: the FULL scope (synapse >= 1) reads its OWN pair
+        # table with the plain full ratio — the asked table's adjusted
+        # values are threshold-conditioned at the run's min synapse and
+        # are wrong under the full scope (user-caught 2026-10-09).
+        full_kind = kind in ('refill_full', 'complete_full')
+        pairs_name = ('refill_full_type_pairs.csv'
+                      if full_kind else 'refill_type_pairs.csv')
         for unit in units:
             csv_path = unit.folder / 'type_level_refill' / filename
             if not csv_path.exists():
@@ -4094,7 +4109,8 @@ def generate_paths_pair_report(
                 continue
             frames_k[unit.unit_id] = rframe
             units_k.append(unit)
-            ratio_map, ratio_src = _load_refill_pair_ratios(unit.folder)
+            ratio_map, ratio_src = _load_refill_pair_ratios(
+                unit.folder, pairs_name=pairs_name, prefer_adj=not full_kind)
             ratio_k[unit.unit_id] = ratio_map
             ratio_src_k[unit.unit_id] = ratio_src
         if not units_k:
