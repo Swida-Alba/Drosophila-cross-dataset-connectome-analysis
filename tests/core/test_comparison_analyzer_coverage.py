@@ -2554,3 +2554,46 @@ def test_path_keying_consults_merge_policy(analyzer):
     analyzer._merge_policy_or_none = lambda: None
     analyzer._path_family_cache = None
     assert analyzer._get_path_merge_type("R7p", DS2) == "R7p"
+
+
+def test_drop_untyped_path_rows(tmp_path):
+    """Untyped-path-row filter (canonical-key coordination follow-up,
+    2026-10-09): with Drop Untyped Neurons on, path rows traversing a
+    bodyId-fallback / sentinel node are dropped; settled labels and
+    residual T* keys survive; the gate is respected."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from comparison.comparison_analyzer import ComparisonAnalyzer
+
+    analyzer = ComparisonAnalyzer.__new__(ComparisonAnalyzer)
+    analyzer.parameters = SimpleNamespace(drop_untyped=True)
+    analyzer._log = lambda *a, **k: None
+    df = pd.DataFrame({
+        "path": ["s-CPDN3C->61276->s-CPDN3A", "A -> B", "113939 -> X",
+                 "T*_res -> B", "123_L -> B", "X -> unknown"],
+        "weight": [1, 2, 3, 4, 5, 6],
+    })
+    out = analyzer._drop_untyped_path_rows(df.copy(), "male-cns:v1.0")
+    kept = list(out["path"])
+    # digit-only and sentinel nodes are untyped -> rows dropped
+    # (the shared predicate is hemi-aware: `123_L` is a left-side
+    # bodyId fallback and is dropped with them)
+    assert "s-CPDN3C->61276->s-CPDN3A" not in kept
+    assert "113939 -> X" not in kept
+    assert "X -> unknown" not in kept
+    assert "123_L -> B" not in kept
+    # settled labels and residual T* keys survive
+    assert "A -> B" in kept
+    assert "T*_res -> B" in kept
+    assert out["weight"].sum() == 2 + 4
+
+    # gate off: nothing dropped
+    analyzer.parameters = SimpleNamespace(drop_untyped=False)
+    assert len(analyzer._drop_untyped_path_rows(df.copy(), "d")) == len(df)
+
+    # untyped-drop helper agrees on the same labels
+    for label in ("113939", "unknown", ""):
+        assert analyzer._is_untyped_type_value(label)
+    assert not analyzer._is_untyped_type_value("T*_res")

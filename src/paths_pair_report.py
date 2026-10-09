@@ -307,12 +307,37 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
 # per-unit breakdown
 # ---------------------------------------------------------------------------
 
-def load_unit_paths(csv_path: Path) -> pd.DataFrame:
-    """Load one paths CSV and derive the pair columns the report needs."""
+def _is_untyped_node(name: str) -> bool:
+    """Untyped node label: empty/sentinel or the bodyId-fallback form
+    (digit-only, optionally hemisphere-suffixed) — same predicate family
+    as ``utils.label_utils.is_untyped_type_label``."""
+    s = str(name).strip()
+    if s.endswith(('_L', '_R', '_U')):
+        s = s[:-2].strip()
+    if not s or s.lower() in {'unknown', 'nan', 'none', 'null',
+                              '<na>', '<null>'}:
+        return True
+    return s.isdigit()
+
+
+def load_unit_paths(csv_path: Path, drop_untyped: bool = True) -> pd.DataFrame:
+    """Load one paths CSV and derive the pair columns the report needs.
+
+    ``drop_untyped`` (default on, 2026-10-09): rows whose ``path``
+    traverses an untyped node — an empty/sentinel label or the
+    bodyId-fallback form (digit-only) — are dropped, matching the
+    comparison-level Drop Untyped Neurons semantics; a 2-hop path whose
+    middle node is a bodyId string is discovery noise, not a pair."""
     df = pd.read_csv(csv_path, dtype={'path': str})
     if 'path' not in df.columns:
         raise ValueError(f'{csv_path}: missing required "path" column')
     df = df[df['path'].notna()].copy()
+    if drop_untyped and not df.empty:
+        nodes = df['path'].str.split('->')
+        untyped = nodes.map(
+            lambda segs: any(_is_untyped_node(s) for s in segs))
+        if untyped.any():
+            df = df.loc[~untyped].copy()
     nodes = df['path'].str.split('->')
     df['_source'] = nodes.str[0]
     df['_target'] = nodes.str[-1]

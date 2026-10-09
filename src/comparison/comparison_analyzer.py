@@ -3851,6 +3851,52 @@ class ComparisonAnalyzer:
             return True
         return s.isdigit()
 
+    def _drop_untyped_path_rows(self, path_df, dataset: str):
+        """Drop PATH rows that traverse an untyped node when Drop Untyped
+        Neurons is on (canonical-key coordination follow-up, 2026-10-09).
+
+        The comparison delegates run with ``drop_untyped=False`` (the
+        comparison-level untyped drop fires post label-mapping on EDGE
+        rows), and that drop never saw PATH rows — so 2-hop paths through
+        an untyped intermediate leaked digit-only bodyId-fallback keys
+        into path presence, appearance ranks and the networks.  This
+        filter applies the same shared predicate (``utils.label_utils``)
+        to the delegate's path rows at read time; delegate folders
+        themselves stay raw per the keep-every-row contract.  Returns the
+        filtered frame; per-dataset counts accumulate on
+        ``self._untyped_path_rows_dropped`` for the notes writer."""
+        if path_df is None or len(path_df) == 0:
+            return path_df
+        if not getattr(self.parameters, 'drop_untyped', True):
+            return path_df
+
+        def _has_untyped_node(path_str: str) -> bool:
+            if ' → ' in path_str:
+                nodes = [n.strip() for n in path_str.split(' → ')]
+            elif '->' in path_str:
+                nodes = [n.strip() for n in path_str.split('->')]
+            else:
+                nodes = [path_str]
+            return any(self._is_untyped_type_value(n) for n in nodes)
+
+        path_values = path_df['path'].dropna().astype(str)
+        if path_values.empty:
+            return path_df
+        mask_untyped = path_values.map(_has_untyped_node)
+        dropped = int(mask_untyped.sum())
+        if not dropped:
+            return path_df
+        path_df = path_df.loc[~mask_untyped].copy()
+        tracker = getattr(self, '_untyped_path_rows_dropped', None)
+        if tracker is None:
+            tracker = {}
+            self._untyped_path_rows_dropped = tracker
+        tracker[dataset] = tracker.get(dataset, 0) + dropped
+        self._log(f"  Dropped {dropped} path rows traversing untyped "
+                  f"(bodyId-fallback) intermediates ({dataset})")
+        return path_df
+
+
     def _drop_untyped_neurons(self, dataset_name: str, threshold: int,
                               df: pd.DataFrame) -> pd.DataFrame:
         """Drop edges touching untyped neurons (drop_untyped=True).
@@ -10181,11 +10227,12 @@ class ComparisonAnalyzer:
                 for path_file in path_files_to_try:
                     if os.path.exists(path_file):
                         try:
-                            path_df = self._read_csv(path_file)
+                            path_df = self._drop_untyped_path_rows(
+                                self._read_csv(path_file), dataset)
                             break
                         except Exception:
                             continue
-                
+
                 if path_df is None or path_df.empty:
                     continue
                 
@@ -10668,7 +10715,8 @@ class ComparisonAnalyzer:
             for path_file in path_files_to_try:
                 if os.path.exists(path_file):
                     try:
-                        path_df = self._read_csv(path_file)
+                        path_df = self._drop_untyped_path_rows(
+                            self._read_csv(path_file), dataset)
                         if not silent:
                             self._log(f"Loaded path data from {os.path.basename(path_file)} for {dataset}")
                         break
@@ -11396,7 +11444,8 @@ class ComparisonAnalyzer:
             for path_file in path_files_to_try:
                 if os.path.exists(path_file):
                     try:
-                        df = self._read_csv(path_file)
+                        df = self._drop_untyped_path_rows(
+                            self._read_csv(path_file), dataset_name)
                         break
                     except Exception as e:
                         self._log(f"Warning: Could not read {path_file}: {e}")
@@ -11638,7 +11687,8 @@ class ComparisonAnalyzer:
             for path_file in path_files_to_try:
                 if os.path.exists(path_file):
                     try:
-                        df = self._read_csv(path_file)
+                        df = self._drop_untyped_path_rows(
+                            self._read_csv(path_file), dataset_name)
                         break
                     except Exception as e:
                         self._log(f"Warning: Could not read {path_file}: {e}")
