@@ -1006,8 +1006,14 @@ def compute_type_level_refill(
             return None
         e_pref_full, full_drop = hop_prefilter(
             e_u_full, sources, targets, bound)
+            # UNBUDGETED (fix 2026-10-09): a strongest-first budget drains
+            # at the tau of the N-th strongest path — exactly the weak
+            # sub-threshold paths the full scope exists to capture were
+            # being cut, collapsing the full tables onto the asked ones
+            # (user-caught on the L3w3 run). The route scope bounds the
+            # universe; memory scales with the materialized paths.
         _paths_full, estar_full, full_stats = _enumerate_paths(
-            e_pref_full, sources, targets, bound, budget=path_budget)
+            e_pref_full, sources, targets, bound, budget=None)
         weight_full = {(u, v): w for (u, v, w) in e_pref_full}
         anchor_full = (
             (lambda uv: syn_of.get(uv, weight_full[uv]))
@@ -1053,8 +1059,7 @@ def compute_type_level_refill(
                 refill_full_keys, chain_keys, type_map, node_set,
                 anchor_full, type_in)
         block = {
-            'status': ('truncated'
-                       if full_stats.get('budget_bitten') else 'ok'),
+            'status': 'ok',   # unbudgeted: never truncated
             'induced_edges': len(e_u_full),
             'prefilter_dropped': full_drop,
             'paths': len(_paths_full),
@@ -1064,7 +1069,7 @@ def compute_type_level_refill(
             'refill_edges': len(refill_full_keys),
             'refill_weight_total': int(sum(
                 full_totals.get(p, 0.0) for p in emitted)),
-            'truncated': bool(full_stats.get('budget_bitten')),
+            'truncated': False,
         }
         if write:
             full_dir = (Path(out_dir) if out_dir is not None
@@ -1578,18 +1583,21 @@ def compute_type_level_refill(
             if complete_only:
                 rec['status'] = 'complete_at_asked'
             rec['mirror_folder'] = _MIRROR_FOLDER_NAME
+        # DUAL REFILL: the full scope rides on every all-mode record —
+        # attached BEFORE the record write (fix 2026-10-09: the
+        # provenance json serialized without it, so consumers never saw
+        # the full block even though the files were written).
+        full_block = _produce_full_scope(
+            chain_keys={tuple(type_map[n] for n in nodes)
+                        for _bn, nodes in (_emitted_paths or [])},
+            cut_edge_keys=set(cut_info))
+        if full_block is not None:
+            rec['full'] = full_block
         _write_records(run_dir, out_dir, rec, rows, detail, detail_cap)
         if build_mirrors:
             _write_mirrors(run_dir, mirror_type_rows, complete_type_rows,
                            complete_bodyid_rows, path_rows,
                            complete_path_rows=complete_rows)
-    # DUAL REFILL: the full scope rides on every all-mode record.
-    full_block = _produce_full_scope(
-        chain_keys={tuple(type_map[n] for n in nodes)
-                    for _bn, nodes in (_emitted_paths or [])},
-        cut_edge_keys=set(cut_info))
-    if full_block is not None:
-        rec['full'] = full_block
     return rec
 
 

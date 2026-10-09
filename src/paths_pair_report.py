@@ -3690,7 +3690,10 @@ REPORT_JS = r"""
           pair_ratio_source: DATA.refill_complete.pair_ratio_source,
           csvLabel: 'complete_at_asked_paths_type.csv',
           csvHref: 'type_level_refill/complete_at_asked_paths_type.csv',
-          vispath: (DATA.refill_complete.vispath || []) };
+          vispath: (DATA.refill_complete.vispath || []),
+          // scope tier labels: the ASKED threshold (never the applied
+          // cut — the refill tables are re-valued at the asked tier)
+          ov: { applied: null } };
       }
       if (DATA.refill && DATA.refill.pairs && DATA.refill.pairs.length) {
         this.sets.refill = {
@@ -3698,7 +3701,8 @@ REPORT_JS = r"""
           pair_ratio_source: DATA.refill.pair_ratio_source,
           csvLabel: 'refill_paths_type.csv',
           csvHref: 'type_level_refill/refill_paths_type.csv',
-          vispath: (DATA.refill.vispath || []) };
+          vispath: (DATA.refill.vispath || []),
+          ov: { applied: null } };
       }
       // Scope FULL (DUAL REFILL 2026-10-08: synapse >= 1, no tier — the
       // full-connection view of the SAME emitted chains).
@@ -3710,7 +3714,10 @@ REPORT_JS = r"""
           pair_ratio_source: DATA.complete_full.pair_ratio_source,
           csvLabel: 'refill_full_paths_type.csv',
           csvHref: 'type_level_refill/refill_full_paths_type.csv',
-          vispath: (DATA.complete_full.vispath || []) };
+          vispath: (DATA.complete_full.vispath || []),
+          // full scope: natural weights at synapse >= 1 — never the
+          // run's ratio tier nor the applied cut
+          ov: { applied: null, min_synapse: 1, ratio_basis: false } };
       }
       if (DATA.refill_full && DATA.refill_full.pairs &&
           DATA.refill_full.pairs.length) {
@@ -3719,7 +3726,8 @@ REPORT_JS = r"""
           pair_ratio_source: DATA.refill_full.pair_ratio_source,
           csvLabel: 'refill_full_carrying_paths_type.csv',
           csvHref: 'type_level_refill/refill_full_carrying_paths_type.csv',
-          vispath: (DATA.refill_full.vispath || []) };
+          vispath: (DATA.refill_full.vispath || []),
+          ov: { applied: null, min_synapse: 1, ratio_basis: false } };
       }
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
@@ -3783,6 +3791,16 @@ REPORT_JS = r"""
       REFILL_CFG.run.pair_ratio_source = s.pair_ratio_source;
       REFILL_CFG.run.vispath = s.vispath;
       REFILL_CFG.csvLabel = s.csvLabel; REFILL_CFG.csvHref = s.csvHref;
+      // scope tier labels (fix 2026-10-09): the refill tables are
+      // re-valued at their OWN scope's tier — asked scope at the ASKED
+      // threshold, full scope at synapse >= 1 — never the pair
+      // explorer's applied cut.
+      var ov = s.ov || {};
+      REFILL_CFG.run.applied = ('applied' in ov) ? ov.applied : APPLIED;
+      REFILL_CFG.run.min_synapse =
+        ('min_synapse' in ov) ? ov.min_synapse : MIN_SYN;
+      REFILL_CFG.run.ratio_basis =
+        ('ratio_basis' in ov) ? ov.ratio_basis : RATIO_BASIS;
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
         bar.querySelectorAll('button').forEach(function(b) {
