@@ -1143,7 +1143,10 @@ def test_mapped_results_and_canonical_display_types():
 
     assert a._get_canonical_type("Src", DS1) == "SrcCanon"
     assert a._get_canonical_type("Other", DS1) == "Other"
-    assert a._get_display_type("SrcCanon") == "SrcCanon[all]"
+    # Canonical-key unification (2026-10-09): display names are
+    # UNDECORATED — the `X[all]` compound decoration is retired from
+    # display; per-dataset variants live in the disclosure surfaces.
+    assert a._get_display_type("SrcCanon") == "SrcCanon"
 
     # exercises _print_intermediate_mapping_summary
     a._print_intermediate_mapping_summary()

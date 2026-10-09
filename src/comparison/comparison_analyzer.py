@@ -1894,6 +1894,7 @@ class ComparisonAnalyzer:
             label_mapper=self.label_mapper,  # Pass label mapper for standardization
             pathfinding=self.parameters.pathfinding,  # Pass pathfinding algorithm
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,  # bodyId edge limit (deep searches)
+            corridor_mode=getattr(self.parameters, 'corridor_mode', 'auto'),  # corridor lane (plan-corridor-lane.md §8)
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -3206,6 +3207,43 @@ class ComparisonAnalyzer:
             list(self.parameters.target_neurons or []), datasets, mapper,
             role='target', source_dataset=self.parameters.source_dataset,
             taxonomy_resolver=taxonomy_resolver))
+
+        # Label-mapper retyping (user directive 2026-10-09): bodyId query
+        # tokens governed by the user label mapper resolve to their
+        # settled label — the standalone body_id record gains the mapped
+        # label as its target so the type-resolver results show the
+        # retyping instead of a bare bodyId.  ``resolve_query_inputs``
+        # returns plain dicts; read through .get with attribute fallback
+        # so both dict and dataclass records enrich.
+        lm = self.label_mapper
+        if lm is not None and not lm.is_empty:
+            for rec in records:
+                if isinstance(rec, dict):
+                    status = rec.get('status', '')
+                    token = str(rec.get('token', ''))
+                    ds = str(rec.get('dataset', ''))
+                else:
+                    status = getattr(rec, 'status', '')
+                    token = str(getattr(rec, 'token', ''))
+                    ds = str(getattr(rec, 'dataset', ''))
+                if status != 'body_id':
+                    continue
+                try:
+                    cand = lm.get_label(ds, token)
+                except Exception:  # noqa: BLE001 — disclosure enrichment
+                    cand = None
+                if cand and cand != token:
+                    if isinstance(rec, dict):
+                        rec['target_types'] = [cand]
+                        rec['note'] = (str(rec.get('note', '')).rstrip('.')
+                                       + f". Retyped to '{cand}' by the user "
+                                       'label mapper (tier 0).')
+                    else:
+                        rec.target_types = [cand]
+                        rec.note = (str(rec.note).rstrip('.') +
+                                    f". Retyped to '{cand}' by the user label "
+                                    'mapper (tier 0).')
+
         self._query_resolution_records = records
         return records
 
@@ -3869,20 +3907,29 @@ class ComparisonAnalyzer:
             return path_df
         if not getattr(self.parameters, 'drop_untyped', True):
             return path_df
-
-        def _has_untyped_node(path_str: str) -> bool:
-            if ' → ' in path_str:
-                nodes = [n.strip() for n in path_str.split(' → ')]
-            elif '->' in path_str:
-                nodes = [n.strip() for n in path_str.split('->')]
-            else:
-                nodes = [path_str]
-            return any(self._is_untyped_type_value(n) for n in nodes)
-
-        path_values = path_df['path'].dropna().astype(str)
-        if path_values.empty:
+        if 'path' not in path_df.columns and not {
+                'source', 'target'} <= set(path_df.columns):
             return path_df
-        mask_untyped = path_values.map(_has_untyped_node)
+
+        def _row_has_untyped_node(row) -> bool:
+            """True when the row's path (or its source/target endpoints)
+            contains an untyped label."""
+            for cell in (row.get('path'), row.get('source'),
+                         row.get('target')):
+                if pd.isna(cell):
+                    continue
+                s = str(cell)
+                if ' → ' in s:
+                    nodes = [n.strip() for n in s.split(' → ')]
+                elif '->' in s:
+                    nodes = [n.strip() for n in s.split('->')]
+                else:
+                    nodes = [s]
+                if any(self._is_untyped_type_value(n) for n in nodes):
+                    return True
+            return False
+
+        mask_untyped = path_df.apply(_row_has_untyped_node, axis=1)
         dropped = int(mask_untyped.sum())
         if not dropped:
             return path_df
@@ -4610,6 +4657,7 @@ class ComparisonAnalyzer:
             label_mapper=self.label_mapper,
             pathfinding=self.parameters.pathfinding,
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,
+            corridor_mode=getattr(self.parameters, 'corridor_mode', 'auto'),
             max_paths_bodyid=self.parameters.max_paths_bodyid,
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
