@@ -15510,6 +15510,85 @@ class FindNeuronConnection:
                 level='always',
             )
 
+    def _attach_viz_extra_metrics(self, paths_df, folder=None):
+        """V1 (plan-corridor-alignment-and-viz-bases §4): per-hop
+        adjusted-ratio list column on a TYPE-LEVEL paths frame, plus the
+        pair-level Refilled totals for VisualizePath's pair_extra_metrics.
+
+        - `connection_ratios_adj`: per-hop weights / the applied-tier
+          incoming of the hop's post type (data_details/
+          type_incoming_applied.csv — the same denominator the pair
+          report's Adj. ratios use). Column absent when that file is
+          missing/unreadable — the toggle then simply hides the metric.
+        - returns (paths_df, pair_extra_metrics): the frame gains the
+          list column in place; the metrics dict carries 'refilled'
+          merged from type_level_refill/refill_connection_type.csv when
+          the run's mirror has one (empty dict otherwise).
+
+        TYPE-LEVEL ONLY (user ruling 2026-10-10): bodyId-level frames
+        are never passed here — adj/refilled data stays in the CSVs."""
+        pair_extra: dict = {}
+        try:
+            if paths_df is None or len(paths_df) == 0 or folder is None:
+                return paths_df, pair_extra
+            import pandas as _pd
+            import os as _os
+            # per-hop adjusted ratios from the applied-tier incoming
+            in_csv = _os.path.join(str(folder), 'data_details',
+                                   'type_incoming_applied.csv')
+            if _os.path.exists(in_csv):
+                inc = _pd.read_csv(in_csv)
+                incoming = {str(r['type']): float(r['incoming'])
+                            for _, r in inc.iterrows()}
+                import ast as _ast
+                adj_lists = []
+                ok = True
+                for _, row in paths_df.iterrows():
+                    try:
+                        weights = (_ast.literal_eval(row['weights'])
+                                   if isinstance(row['weights'], str)
+                                   else row['weights'])
+                        hops = str(row['path']).split('->')
+                        vals = []
+                        for i, w in enumerate(weights):
+                            post = hops[i + 1] if i + 1 < len(hops) else None
+                            denom = incoming.get(str(post), 0.0)
+                            vals.append(
+                                round(float(w) / denom, 6)
+                                if denom > 0 else None)
+                        adj_lists.append(vals)
+                    except Exception:
+                        ok = False
+                        break
+                if ok and adj_lists:
+                    paths_df['connection_ratios_adj'] = adj_lists
+            # pair-level refilled totals from the refill PAIR table
+            # (refill_type_pairs.csv carries refilled_total; the
+            # connection-type MIRROR does not — its weight IS the refill
+            # mass). data_details first, then the mirror-root copy.
+            for ref_csv in (
+                    _os.path.join(str(folder), 'data_details',
+                                  'type_level_refill',
+                                  'refill_type_pairs.csv'),
+                    _os.path.join(str(folder), 'type_level_refill',
+                                  'refill_type_pairs.csv')):
+                if not _os.path.exists(ref_csv):
+                    continue
+                ref = _pd.read_csv(ref_csv)
+                if 'refilled_total' not in ref.columns:
+                    continue
+                totals = {}
+                for _, r in ref.iterrows():
+                    totals[(str(r['type_pre']),
+                            str(r['type_post']))] = float(
+                        r['refilled_total'])
+                if totals:
+                    pair_extra['refilled'] = totals
+                break
+        except Exception:  # viz extras are best-effort, never fatal
+            pass
+        return paths_df, pair_extra
+
     def _write_user_warning_notes(self, folder):
         """
         Write user_warning_notes.txt at the run folder root listing every
@@ -16626,9 +16705,13 @@ class FindNeuronConnection:
                     paths_to_visualize['connection_ratios'] = paths_to_visualize['ratios']
                 if 'probabilities' in paths_to_visualize.columns and 'traversal_probabilities' not in paths_to_visualize.columns:
                     paths_to_visualize['traversal_probabilities'] = paths_to_visualize['probabilities']
+                paths_to_visualize, _pair_extra = \
+                    self._attach_viz_extra_metrics(
+                        paths_to_visualize, self.path_folder)
 
                 vp = VisualizePath(
                     path_file=paths_to_visualize,
+                    pair_extra_metrics=(_pair_extra or None),
                     output_folder=self.path_folder,
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
                     intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
@@ -17723,7 +17806,15 @@ class FindNeuronConnection:
         raises: any failure is contained to one user_warning_notes entry
         (refill's "never raises" pattern). Returns True when notes were
         appended (caller re-writes the notes file); False on success —
-        lane outputs live only in the lane namespace (§3b tier 2)."""
+        lane outputs live only in the lane namespace (§3b tier 2).
+
+        The lane runs in a SUBPROCESS (scripts/CorridorDeepDive.py,
+        run-folder mode) with a hard wall-clock budget: in-process, the
+        drain's allocations trigger full GCs over the engine's ~10^7 live
+        objects and pathological slowdowns (>40 min for a lane that
+        completes in ~3 min standalone — verified on the FAFB bound-5
+        in-hook anchor). The child resolves connection/neuron tables from
+        the run's own parameters.txt (dataset key)."""
         mode = getattr(self, 'corridor_mode', 'auto')
         if mode not in ('auto', 'on'):
             return False
@@ -17739,24 +17830,56 @@ class FindNeuronConnection:
             # superset corridors (pairs only disappear as thresholds rise).
             return False
         try:
-            from route_plan import CorridorRefusal, run_lane
-            try:
-                run_lane(
-                    run_dir,
-                    corridor_mode=mode,
-                    top_m_base=int(getattr(self, 'route_top_m_base', 10)),
-                    length_decay=float(
-                        getattr(self, 'route_length_decay', 1.5)),
-                    per_pair_length_budget=int(
-                        getattr(self, 'route_path_budget_per_pair_length',
-                                100)),
-                    fnc=self,
-                    write_bodyid=not getattr(self, 'skip_bodyId', False))
-                return False  # success: nothing outside the lane namespace
-            except CorridorRefusal as exc:
+            import subprocess
+            import sys as _sys
+            cli = os.path.join(self.script_path, 'scripts',
+                               'CorridorDeepDive.py')
+            if not os.path.isfile(cli):
                 self._warn_notes.append(
-                    f'- [corridor lane] not generated: {exc}')
+                    '- [corridor lane] not generated: driver script '
+                    f'missing ({cli}).')
                 return True
+            cmd = [
+                _sys.executable, cli, str(run_dir), '--quiet',
+                '--top-m-base',
+                str(int(getattr(self, 'route_top_m_base', 10))),
+                '--length-decay',
+                str(float(getattr(self, 'route_length_decay', 1.5))),
+                '--pair-length-budget',
+                str(int(getattr(
+                    self, 'route_path_budget_per_pair_length', 100))),
+            ]
+            if getattr(self, 'skip_bodyId', False):
+                cmd.append('--no-bodyid')
+            budget_s = 900
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=budget_s, check=False,
+                    cwd=str(self.script_path))
+            except subprocess.TimeoutExpired:
+                self._warn_notes.append(
+                    f'- [corridor lane] not generated: the lane exceeded '
+                    f'its {budget_s}s wall-clock budget and was stopped '
+                    f'(deep bound + memory pressure; rerun '
+                    f'scripts/CorridorDeepDive.py on this folder for an '
+                    f'uncapped pass).')
+                return True
+            if proc.returncode == 0:
+                return False  # success: nothing outside the lane namespace
+            if proc.returncode == 2:
+                # CLI exit 2 = CorridorRefusal (deterministic, disclosed)
+                reason = (proc.stdout or '').strip().splitlines()
+                reason = reason[-1] if reason else 'refused'
+                reason = reason.replace('corridor lane refused: ', '')
+                self._warn_notes.append(
+                    f'- [corridor lane] not generated: {reason}')
+                return True
+            self._warn_notes.append(
+                f'- [corridor lane] generation failed (exit '
+                f'{proc.returncode}): '
+                f'{(proc.stderr or proc.stdout or "").strip()[-300:]}')
+            return True
         except Exception as exc:  # containment is the contract (§3b tier 3)
             try:
                 self._warn_notes.append(
@@ -21553,6 +21676,7 @@ class FindNeuronConnection:
                         # removed (those columns are no longer exported).
                         new_w, new_mw = [], []
                         new_r = new_mr = None
+                        _unresolvable_paths = 0
                         _ratio_cols_ok = all(
                             c in df.columns for c in
                             ('ratios', 'min_ratio'))
@@ -21601,10 +21725,15 @@ class FindNeuronConnection:
                                         repr(v) for v in ratios_) + ']')
                                     new_mr.append(mr_)
                                 else:
-                                    new_r.append(_old_r
-                                                 if _old_r is not None
-                                                 else '')
-                                    new_mr.append(_old_mr)
+                                    # UNRESOLVABLE (fix 2026-10-10, user
+                                    # directive): the realized readout
+                                    # failed (post-type incoming mass
+                                    # unresolvable) — label the row
+                                    # explicitly None instead of silently
+                                    # keeping the pair-level join values.
+                                    _unresolvable_paths += 1
+                                    new_r.append(None)
+                                    new_mr.append(None)
                         _mw_all_int = all(
                             float(v).is_integer()
                             for v in new_mw if v is not None)
@@ -21637,6 +21766,14 @@ class FindNeuronConnection:
                     self._warn_notes.append(
                         f'- [type-path weights] realized per-hop weights '
                         f'not applied ({_w_exc!r}).')
+                if _unresolvable_paths:
+                    self._warn_notes.append(
+                        f'- [ratio readout] {_unresolvable_paths:,} type '
+                        'paths have Ratios labeled None: the post type\'s '
+                        'dataset-wide incoming mass was unresolvable (F9 '
+                        'denominator unknown), so no chain-derived ratio '
+                        'exists for them; pair-level join values were '
+                        'discarded per the chain-derivation rule.')
                 if _weights_changed_paths:
                     _w_note = (
                         f'- [type-path weights] {_weights_changed_paths:,} '
@@ -21873,10 +22010,15 @@ class FindNeuronConnection:
             # Ensure column names match what VisualizePath expects
             if 'ratios' in group_paths_to_viz.columns and 'connection_ratios' not in group_paths_to_viz.columns:
                 group_paths_to_viz['connection_ratios'] = group_paths_to_viz['ratios']
+                group_paths_to_viz, _group_pair_extra = \
+                    self._attach_viz_extra_metrics(
+                        group_paths_to_viz,
+                        getattr(self, 'allpath_folder', None)
+                        or getattr(self, 'path_folder', None))
             if 'probabilities' in group_paths_to_viz.columns and 'traversal_probabilities' not in group_paths_to_viz.columns:
                 group_paths_to_viz['traversal_probabilities'] = group_paths_to_viz['probabilities']
             
-            vp_group = VisualizePath(path_file=group_paths_to_viz, output_folder=os.path.join(self.allpath_folder, 'custom_groups'), verbose=(self.verbose_mode == 'full'))
+            vp_group = VisualizePath(path_file=group_paths_to_viz, pair_extra_metrics=(_group_pair_extra or None), output_folder=os.path.join(self.allpath_folder, 'custom_groups'), verbose=(self.verbose_mode == 'full'))
             self._vprint(f'💾 Saving path_group data (rows: {len(path_df_group):,})...', level='full')
             # Check if we should save as CSV (matches type-level data format OR group data too large)
             save_group_as_csv = use_csv or (len(path_df_group) >= EXCEL_ROW_LIMIT * 0.9)
@@ -22259,6 +22401,9 @@ class FindNeuronConnection:
                     paths_to_visualize['connection_ratios'] = paths_to_visualize['ratios']
                 if 'probabilities' in paths_to_visualize.columns and 'traversal_probabilities' not in paths_to_visualize.columns:
                     paths_to_visualize['traversal_probabilities'] = paths_to_visualize['probabilities']
+                paths_to_visualize, _pair_extra = \
+                    self._attach_viz_extra_metrics(
+                        paths_to_visualize, self.path_folder)
 
                 # If find_reciprocal is enabled, override visualization with reciprocal edges
                 if find_reciprocal and hasattr(self, '_reciprocal_types'):
