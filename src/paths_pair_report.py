@@ -1888,8 +1888,11 @@ def _render_refill_card(run_dir: Path) -> str:
         summary_bits.append(f'{unfired:,} synapses unfired (off-route)')
     summary = ('Recovered ' + ' / '.join(summary_bits)
                if summary_bits else 'Refill records present')
-    # the REAL applied synapse threshold (the cut that defined the
-    # emitted set) labels the mass columns — not a static string
+    # Per-column tier labels (fix 2026-10-10, user-caught): EMITTED is
+    # the applied cut, but the REFILL and REFILLED TOTAL columns live at
+    # the ASKED tier (the refill-asked scope re-runs at the asked
+    # threshold) — labeling them with the applied cut claimed refill
+    # mass at 'synapse >= 4' when it is asked-tier (>= 3) mass.
     cutoff = prov.get('applied_threshold')
     # MODE-AWARE (2026-10-07): on ratio-basis runs the applied threshold
     # is a RATIO — labeling it "synapse >= 0.01" is wrong; the mass
@@ -1897,31 +1900,34 @@ def _render_refill_card(run_dir: Path) -> str:
     # ratio tier named separately.
     ratio_basis = str(prov.get('weight_basis') or '').startswith(
         'connection_ratio')
-    try:
-        cutoff_val = float(cutoff)
-    except (TypeError, ValueError):
-        cutoff_val = None
-    if ratio_basis:
-        min_syn = prov.get('min_synapse')
+
+    def _tier_lbl(threshold):
         try:
-            min_syn = float(min_syn)
+            val = float(threshold)
         except (TypeError, ValueError):
-            min_syn = 1.0
-        cutoff_lbl = (f'synapse \u2265 {min_syn:g}'
-                      + (f', ratio \u2265 {cutoff_val:g}'
-                         if cutoff_val is not None else ''))
-    else:
-        cutoff_lbl = (f'synapse \u2265 {cutoff_val:g}'
-                      if cutoff_val is not None else 'synapse')
+            return 'synapse'
+        if ratio_basis:
+            min_syn = prov.get('min_synapse')
+            try:
+                min_syn = float(min_syn)
+            except (TypeError, ValueError):
+                min_syn = 1.0
+            return (f'synapse \u2265 {min_syn:g}'
+                    + f', ratio \u2265 {val:g}')
+        return f'synapse \u2265 {val:g}'
+
+    cutoff_lbl = _tier_lbl(cutoff)
+    asked_lbl = _tier_lbl(prov.get('requested_threshold'))
     _th_titles = {
         'Pre type': 'The presynaptic type of the pair.',
         'Post type': 'The postsynaptic type of the pair.',
         f'Emitted ({cutoff_lbl})': 'The pair\u2019s synapse mass at the '
             'applied cutoff \u2014 what connection_type.csv counts.',
-        f'Refill ({cutoff_lbl})': 'Recovered mass behind the cutoff on '
-            'this pair, riding in-scope routes only \u2014 a certified '
-            'lower bound of the complete-at-asked refill.',
-        f'Refilled total ({cutoff_lbl})': 'Emitted + Refill \u2014 the '
+        f'Refill ({asked_lbl})': 'Recovered mass behind the applied cut, '
+            're-derived at the ASKED threshold on this pair, riding '
+            'in-scope routes only \u2014 a certified lower bound of the '
+            'complete-at-asked refill.',
+        f'Refilled total ({asked_lbl})': 'Emitted + Refill \u2014 the '
             'complete-at-asked strength of the pair.',
     }
     table_html = (
@@ -1929,10 +1935,10 @@ def _render_refill_card(run_dir: Path) -> str:
         '<th>Pre type</th><th>Post type</th>'
         f'<th title="{_esc(_th_titles[f"Emitted ({cutoff_lbl})"])}">'
         f'Emitted ({cutoff_lbl})</th>'
-        f'<th title="{_esc(_th_titles[f"Refill ({cutoff_lbl})"])}">'
-        f'Refill ({cutoff_lbl})</th>'
-        f'<th title="{_esc(_th_titles[f"Refilled total ({cutoff_lbl})"])}">'
-        f'Refilled total ({cutoff_lbl})</th>'
+        f'<th title="{_esc(_th_titles[f"Refill ({asked_lbl})"])}">'
+        f'Refill ({asked_lbl})</th>'
+        f'<th title="{_esc(_th_titles[f"Refilled total ({asked_lbl})"])}">'
+        f'Refilled total ({asked_lbl})</th>'
         '</tr></thead><tbody>'
         + ''.join(rows) + '</tbody></table></div>') if rows else ''
     return (
@@ -1942,8 +1948,10 @@ def _render_refill_card(run_dir: Path) -> str:
         'data_details/type_level_refill/; the refilled strength is a '
         'certified lower bound of the complete-at-asked refill).</p>'
         + table_html
-        + '<p class="cap-note">refilled_total = emitted + refill mass '
-          '(synapse \u2265 cutoff). Full tables: the Refill tab and '
+        + '<p class="cap-note">refilled_total = emitted + refill mass; '
+          'the refill is re-derived at the ASKED threshold '
+          f'({asked_lbl}) while emitted carries the applied cut '
+          f'({cutoff_lbl}). Full tables: the Refill tab and '
           'data_details/type_level_refill/; the standalone '
           '<code>type_level_refill/</code> folder mirrors the refilled '
           'data in the connection-table format with its own '
@@ -2367,7 +2375,136 @@ def unit_csv_candidates(run_dir: Path, unit: dict) -> List[Path]:
     return sorted(folder.glob(f'*{PATHS_SUFFIX}'))
 
 
+def _render_corridor_section(folder: Path, label: str,
+                             link_prefix: str = '') -> Tuple[str, bool]:
+    """One unit's corridor-lane summary + per-walk table + export links
+    (C2: independent mode over shared bases — same ratio conventions as
+    the Refill tab, zero refill columns). Presence-driven: returns
+    (html, found)."""
+    folder = Path(folder)
+    lane_dir = folder / 'route_scope_paths'
+    prov_path = lane_dir / 'route_provenance.json'
+    if not prov_path.exists():
+        return '', False
+    prov = {}
+    try:
+        prov = json.loads(prov_path.read_text(encoding='utf-8'))
+    except Exception:  # noqa: BLE001
+        return '', False
+    if str(prov.get('status') or '') != 'complete':
+        reason = _esc(str(prov.get('reason') or 'not generated'))
+        return ('<div class="card"><h3>' + _esc(label) + '</h3>'
+                '<p>Corridor lane: not generated &mdash; ' + reason
+                + '.</p></div>', True)
+    walks_csv = lane_dir / 'route_paths_type.csv'
+    rows_html = ''
+    if walks_csv.exists():
+        try:
+            wf = pd.read_csv(walks_csv)
+            cols = [c for c in ('path', 'weights', 'ratios', 'ratios_adj',
+                                'min_weight', 'min_ratio', 'min_ratio_adj',
+                                'length', 'coverage', 'applied_tau',
+                                'route_h', 'route_ub', 'route_floor_h',
+                                'plan_rank', 'realized_paths')
+                    if c in wf.columns]
+            wf = wf[cols].head(50)
+            body_rows = []
+            for row in wf.itertuples(index=False):
+                body_rows.append('<tr>' + ''.join(
+                    '<td>' + _esc(str(v)) + '</td>' for v in row)
+                    + '</tr>')
+            rows_html = (
+                '<table><thead><tr>' + ''.join(
+                    '<th>' + _esc(c) + '</th>' for c in cols)
+                + '</tr></thead><tbody>' + ''.join(body_rows)
+                + '</tbody></table>'
+                + '<p style="opacity:0.8;">first 50 walks &mdash; full '
+                'data in route_scope_paths/ beside this run</p>')
+        except Exception:  # noqa: BLE001
+            rows_html = '<p>walk table unreadable</p>'
+    floors = [v.get('floor') for v in (prov.get('classes') or {}).values()
+              if v.get('floor') is not None]
+    gap = prov.get('gap_partition') or {}
+    gap_txt = ''
+    if gap:
+        gap_txt = ('<p>Gap partition vs this run&#8217;s own type paths: '
+                   + str(gap.get('main_paths', '&mdash;')) + ' main / '
+                   + str(gap.get('corridor_walks', '&mdash;'))
+                   + ' corridor walks / '
+                   + str(gap.get('both', '&mdash;')) + ' shared / '
+                   + str(gap.get('corridor_only', '&mdash;'))
+                   + ' corridor-only.</p>')
+    links = []
+    for fname, lab in (('route_paths_type.csv', 'validated walks'),
+                       ('route_paths_bodyId.csv', 'bodyId paths'),
+                       ('route_connection_type.csv', 'connection table'),
+                       ('route_provenance.json', 'provenance')):
+        if (lane_dir / fname).exists():
+            links.append('<a href="' + link_prefix + 'route_scope_paths/'
+                         + fname + '">' + lab + '</a>')
+    basis = _esc(str(prov.get('validation_basis') or 'lossless_prune'))
+    floor_txt = ((str(min(floors)) + '..' + str(max(floors)))
+                 if floors else '&mdash;')
+    capped = ' &middot; <b>time-capped</b>' if prov.get('time_capped') else ''
+    return ('<div class="card"><h3>' + _esc(label) + '</h3>'
+            '<p style="color:var(--secondary-color);font-size:0.9em;">'
+            'Route-scoped pass at the ASKED threshold &mdash; same ratio '
+            'conventions as the Refill tab (plain = full-membership '
+            'incoming; adj = &ge;-threshold incoming), independent scope '
+            '(no refill columns). Validation basis: ' + basis + '.</p>'
+            '<p>Validated walks: ' + str(prov.get('validated_walks',
+                                                  '&mdash;')) + ' over '
+            + str(prov.get('scope_pairs', '&mdash;'))
+            + ' scope type-pairs &middot; bodyId paths: '
+            + str(prov.get('bodyId_paths', '&mdash;'))
+            + ' &middot; class floors: ' + floor_txt
+            + ' &middot; runtime: ' + str(prov.get('runtime_s', '&mdash;'))
+            + 's' + capped + '</p>'
+            + gap_txt + rows_html
+            + '<p>' + ' &middot; '.join(links) + '</p></div>', True)
+
+
+def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
+    """The Corridor tab (C2): presence-driven &mdash; rendered only when
+    at least one unit carries route_scope_paths/; otherwise the honest
+    how-to-enable hint. Independent of the refill datasets."""
+    run = payload['run']
+    units = run.get('units') or []
+    sections = []
+    found_any = False
+    for unit in units:
+        label = _esc(unit.get('label') or unit.get('id') or '')
+        unit_rel = unit.get('id') or ''
+        if unit.get('dataset'):
+            folder = Path(run_dir) / 'dataset_data' / unit_rel
+            link_prefix = 'dataset_data/' + unit_rel + '/'
+        else:
+            folder = Path(run_dir)
+            link_prefix = ''
+        section, found = _render_corridor_section(folder, label,
+                                                  link_prefix)
+        if section:
+            sections.append(section)
+        found_any = found_any or found
+    if not sections and units:
+        section, found = _render_corridor_section(Path(run_dir), 'Run')
+        if section:
+            sections.append(section)
+        found_any = found_any or found
+    if not found_any:
+        return ('<div class="card"><h3>Corridor lane</h3>'
+                '<p style="color:var(--secondary-color);">No corridor '
+                'artifacts under this run. The lane writes '
+                '<code>route_scope_paths/</code> after deep runs '
+                '(Corridor Lane = on, or auto with Max Intermediate '
+                'Layers &ge; 4); regenerate any run folder post-hoc with '
+                '<code>scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.'
+                '</p></div>')
+    return ''.join(sections)
+
+
 def _render_refill_tab(payload: dict, run_dir: Path) -> str:
+
     """The standalone Refill page: the SECOND path-building round (the
     asked-threshold re-enumeration within the involved-types restricted
     graph) presented as a SECOND Pair Explorer over the refilled
@@ -2654,6 +2791,7 @@ def _render_page_shell(payload_json: str, overview_html: str,
                        global_html: str, data_html: str, explorer_html: str,
                        run: dict, generated_at: str,
                        refill_html: str = '',
+                       corridor_html: str = '',
                        guide_link: str = '') -> str:
     return """<!DOCTYPE html>
 <html lang="en">
@@ -2683,6 +2821,8 @@ __VIS_NETWORK__
     onclick="TAB.show('explorer')">Pair Explorer</button>
   <button class="page-tab-btn" data-page="refill" role="tab"
     onclick="TAB.show('refill')">Refill</button>
+  <button class="page-tab-btn" data-page="corridor" role="tab"
+    onclick="TAB.show('corridor')">Corridor</button>
   <button class="page-tab-btn" data-page="data" role="tab"
     onclick="TAB.show('data')">Data</button>
 </div>
@@ -2692,6 +2832,7 @@ __VIS_NETWORK__
 <template id="tpl-explorer">__EXPLORER__</template>
 <template id="tpl-data">__DATA__</template>
 <template id="tpl-refill">__REFILL__</template>
+<template id="tpl-corridor">__CORRIDOR__</template>
 </div>
 <script type="application/json" id="pair-data">__PAYLOAD__</script>
 <script>
@@ -2711,6 +2852,7 @@ __JS__
            .replace('__EXPLORER__', explorer_html) \
            .replace('__DATA__', data_html) \
            .replace('__REFILL__', refill_html) \
+           .replace('__CORRIDOR__', corridor_html) \
            .replace('__PAYLOAD__', payload_json) \
            .replace('__JS__', REPORT_JS)
 
@@ -4291,6 +4433,7 @@ def generate_paths_pair_report(
         payload['run'],
         _generated_stamp(),
         refill_html=_render_refill_tab(payload, run_dir),
+        corridor_html=_render_corridor_tab(payload, run_dir),
         guide_link=guide_link,
     )
     report_path = run_dir / REPORT_NAME

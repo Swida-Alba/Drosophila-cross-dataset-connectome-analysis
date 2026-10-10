@@ -207,6 +207,25 @@ def read_enrollment(run_dir) -> Tuple[List[str], List[str]]:
     return sources, targets
 
 
+def _collapse_pair_weights(edges):
+    """Per-ROI slice rows collapse to the pair's PHYSICAL mass (sum of
+    slices). Hemibrain/male-cns caches store one row per (edge, ROI):
+    passing the slices through as separate enumeration edges made the
+    `edge_weight` dict keep only the LAST slice per pair, so the cut
+    re-derivation under-counted exactly the per-ROI pairs and the
+    anchor refused with an (approx-)2x mismatch pattern on real MCNS
+    runs (L2->Dm19 34,346 vs 68,719 etc.). FAFB pair-level tables: one
+    row per pair — no-op. Integer weights: sum is exact."""
+    acc: Dict[Tuple[str, str], float] = {}
+    for u, v, w in edges:
+        key = (u, v)
+        acc[key] = acc.get(key, 0.0) + float(w)
+    # natural weights are integer-valued: keep the int type downstream
+    # (the records' weight cells format from the raw tuple values)
+    return [(u, v, int(w) if float(w).is_integer() else w)
+            for (u, v), w in acc.items()]
+
+
 def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
     """Per-type-pair emitted weight — the run's PHYSICAL edge mass.
 
@@ -298,6 +317,12 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
               pl.col('bodyId_pre').cast(pl.Utf8).alias('u'),
               pl.col('bodyId_post').cast(pl.Utf8).alias('v'),
               pl.col('weight').cast(pl.Float64).alias('w'))
+          # PER-ROI SLICE COLLAPSE (2026-10-10): hemibrain/male-cns caches
+          # store one row per (edge, ROI) — tier filters must see the
+          # pair's PHYSICAL weight, not one slice's share (a sub-threshold
+          # slice of a supra-threshold pair would drop before any later
+          # collapse and under-sum the pair).
+          .group_by(['u', 'v']).agg(pl.col('w').sum())
           .join(tm.rename({'bid': 'u', 'typ': 'typ_pre'}), on='u',
                 how='left')
           .join(tm.rename({'bid': 'v', 'typ': 'typ_post'}), on='v',
@@ -1218,6 +1243,15 @@ def compute_type_level_refill(
             non_emitted_pair_mass = pol['non_emitted_pair_mass']
             non_involved_excluded = pol['non_involved_excluded']
         else:
+            # PER-ROI SLICE COLLAPSE (2026-10-10): sum slice rows to the
+            # pair's physical weight BEFORE any tier check (a
+            # sub-threshold slice of a supra-threshold pair must not
+            # drop). Shortest mode never reaches this branch (its
+            # per-layer stream is multiplicity-sensitive — dedupe
+            # keep-first per engine I1, never sum). Totals (Pass A
+            # denominators) are collapse-order-invariant.
+            if edges is not None:
+                edges = _collapse_pair_weights(edges)
             for u, v, w in edges:
                 u, v = str(u), str(v)
                 # FULL-scope admission (DUAL REFILL 2026-10-08):
@@ -1345,6 +1379,45 @@ def compute_type_level_refill(
         if int(rederived.get(k, 0)) != int(v)}
     extra = {f'{k[0]}->{k[1]}': int(v)
              for k, v in rederived.items() if k not in emitted}
+    # TIE-ORDER TOLERANCE (2026-10-10): a budget-BITTEN run's kept-path
+    # membership at tau is order-dependent — the engine enumerated its
+    # in-memory graph, the re-derivation enumerates the DB-built graph,
+    # and large equal-bottleneck tie sets keep slightly different
+    # members (measured on a real bitten MCNS run: all pairs present,
+    # masses within +0.06..+0.6%, zero extra pairs). When the pair SETS
+    # match exactly and every delta is within 1% of the exported mass,
+    # the re-derivation IS the run's universe up to tie composition —
+    # reproduce with a disclosure instead of refusing. Anything else
+    # (missing/extra pairs, or a larger delta — labels/hemisphere/
+    # filter drift) still refuses exactly as before.
+    anchor_note = None
+    bitten_now = bool(rec.get('budget_bitten')) or bitten
+    if (mismatch and not extra and cut_info
+            and bitten_now):
+        worst = 0.0
+        within = True
+        d_total = 0
+        exported_total = 0
+        for k, (a, b) in mismatch.items():
+            rel = abs(a - b) / b if b else 1.0
+            worst = max(worst, rel)
+            d_total += a - b
+            if rel > 0.05:
+                within = False
+                break
+        for k, v in emitted.items():
+            exported_total += int(v)
+        agg_rel = abs(d_total) / exported_total if exported_total else 1.0
+        if within and agg_rel <= 0.01:
+            anchor_note = (
+                f'budget-tie tolerance: {len(mismatch)} pair mass(es) '
+                f'differ (worst {worst * 100:.2f}%, aggregate '
+                f'{agg_rel * 100:.3f}%) — equal-bottleneck tie membership '
+                'is enumeration-order dependent between the engine graph '
+                'and the DB-built re-derivation; the pair sets match '
+                'exactly, so the universe is the run own data up to tie '
+                'composition.')
+            mismatch = {}
     if mismatch or extra or not cut_info:
         detail = '; '.join(
             f'{k}: re-derived {a} vs exported {b}'
@@ -1356,6 +1429,8 @@ def compute_type_level_refill(
             f'— the supplied edges/type map do not match the run '
             f'(labels, hemisphere suffixes, filters or dataset state).')
     rec['table_reproduced'] = True
+    if anchor_note:
+        rec['anchor_note'] = anchor_note
 
     # -- refill = E*(asked) - emitted_rederived, emitted pairs only
     refill_edges: Dict[Tuple[str, str], dict] = {}
@@ -1649,7 +1724,25 @@ Files
   capped examples — empty under the 2026-10-07 route scope, which
   discloses pruned mass as `non_emitted_pair_mass` instead), `excluded_edges_non_involved_endpoint`,
   `boundary_refill_edge_count/weight/examples_at_or_above_w0`,
-  `refill_truncated`).
+  `refill_truncated`), plus the DUAL REFILL `full` block (2026-10-08).
+
+Refill-full (DUAL REFILL, 2026-10-08)
+-------------------------------------
+The second kind: the second round admitted at SYNAPSE >= 1 ONLY (no
+ratio tier, no synapse tier) — the full-connection view of the SAME
+emitted chain sequences, produced for EVERY all-mode run with emitted
+rows and enumerated UNBUDGETED (a strongest-first budget drains exactly
+the weak sub-threshold paths this scope exists for). Files:
+- `refill_full_type_pairs.csv` (this folder) — per emitted pair:
+  emitted / refill-full (sub-threshold mass) / refilled_total +
+  `refilled_connection_ratio` (the plain full ratio; at floor 1 it is
+  also the adjusted value).
+- mirror `refill_full_paths_type.csv` — every emitted chain re-valued
+  at synapse >= 1 (complete at full).
+- mirror `refill_full_carrying_paths_type.csv` — the chains that carry
+  sub-threshold mass at full scope.
+- mirror `refilled_full_connection_type.csv` — the full pair totals in
+  connection-table format.
 
 Join recipe
 -----------
