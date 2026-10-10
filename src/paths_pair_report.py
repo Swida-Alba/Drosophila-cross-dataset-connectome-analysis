@@ -3619,7 +3619,7 @@ REPORT_JS = r"""
             return dashTd(row.ratios, ratioDashFmt,
               'Per-hop realized share; bold = the bottleneck; '
               + '(<0.01%) = below 0.01%.'); } },
-        !RUN.ratio_basis && hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
+        !RUN.ratio_basis && !RUN.suppress_adj && hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
           title: 'Per-hop ADJUSTED ratio list, -r1-r2- (presence-matrix '
             + 'format; the weakest entry is bolded; shares below 0.01% '
             + 'show (<0.01%)): connection_ratio_adj of each (pre, post) '
@@ -3891,8 +3891,12 @@ REPORT_JS = r"""
           csvHref: 'type_level_refill/refill_full_paths_type.csv',
           vispath: (DATA.complete_full.vispath || []),
           // full scope: natural weights at synapse >= 1 — never the
-          // run's ratio tier nor the applied cut
-          ov: { applied: null, min_synapse: 1, ratio_basis: false } };
+          // run's ratio tier nor the applied cut. suppress_adj: at the
+          // floor-1 admission the conditioned denominator EQUALS the
+          // plain all-inputs one, so an Adj column would duplicate
+          // Ratios (same doctrine as ratio-basis runs).
+          ov: { applied: null, min_synapse: 1, ratio_basis: false,
+                suppress_adj: true } };
       }
       if (DATA.refill_full && DATA.refill_full.pairs &&
           DATA.refill_full.pairs.length) {
@@ -3902,7 +3906,8 @@ REPORT_JS = r"""
           csvLabel: 'refill_full_carrying_paths_type.csv',
           csvHref: 'type_level_refill/refill_full_carrying_paths_type.csv',
           vispath: (DATA.refill_full.vispath || []),
-          ov: { applied: null, min_synapse: 1, ratio_basis: false } };
+          ov: { applied: null, min_synapse: 1, ratio_basis: false,
+                suppress_adj: true } };
       }
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
@@ -3986,6 +3991,8 @@ REPORT_JS = r"""
         ('min_synapse' in ov) ? ov.min_synapse : MIN_SYN;
       REFILL_CFG.run.ratio_basis =
         ('ratio_basis' in ov) ? ov.ratio_basis : RATIO_BASIS;
+      REFILL_CFG.run.suppress_adj =
+        ('suppress_adj' in ov) ? ov.suppress_adj : false;
       var bar = document.getElementById('refill-mode-bar');
       if (bar) {
         bar.querySelectorAll('button').forEach(function(b) {

@@ -241,6 +241,29 @@ COLUMN_GLOSSARY = {
     "min_hop_position": ("Earliest hop index (1-based) at which the "
                          "intermediate appears across the pair's paths; also "
                          "its column in the report's layered network.", "integer"),
+    # --- Corridor lane (post-hoc route-scoped pass; plan-corridor-lane
+    # --- §23.5; route_scope_paths/ mirror folder) ---
+    "applied_tau": ("Per-(pair,h)-class StrongestFirst tau of the walk's "
+                    "enumeration (>= the asked threshold; tie-drained).",
+                    "number"),
+    "route_h": ("Hop length of the validated walk (length of the class).",
+                "integer"),
+    "route_ub": ("Plan upper bound: min over the walk's hops of the "
+                 "type-pair max edge weight.", "number"),
+    "route_floor_h": ("Class floor: the lowest accepted walk's UB — paths "
+                      "below the floor are outside the kept corridors by "
+                      "certificate.", "number"),
+    "plan_rank": ("Acceptance rank of the walk within its (pair,h) class "
+                  "(1 = strongest by UB).", "integer"),
+    "realized_paths": ("bodyId paths emitted on this walk (<= the class "
+                       "path budget; ties may exceed it).", "integer"),
+    "ratios_adj": ("Adjusted per-hop shares: realized mass over the "
+                   "post type's >= THRESHOLD incoming (== ratios when "
+                   "the asked threshold is 1).", "custom"),
+    "min_ratio_adj": ("Weakest adjusted hop share of the walk.",
+                      "number"),
+    "used_by_walks": ("How many validated walks traverse this type pair.",
+                      "integer"),
     # --- Type-level refill (post-hoc, scripts/TypeLevelRefill.py --in-run) --
     "emitted_weight": ("The type pair's weight as exported by the run "
                        "itself (connection_type.csv summed across its "
@@ -961,6 +984,47 @@ _PATHFINDING_FILES = [
      "preview": True,
      "preview_title": "Path table (bodyId-level)",
      "columns": _PATH_COLUMNS},
+    {"pattern": "route_scope_paths/route_paths_type.csv",
+     "description": "Corridor lane (deep runs, Corridor Lane != off): one "
+                    "row per validated top-M* corridor walk with emitted "
+                    "paths, re-enumerated "
+                    "at the ASKED threshold. Engine path-table columns "
+                    "(weights/ratios/min_weight/nt_types/coverage) plus "
+                    "applied_tau, route_h, route_ub, route_floor_h, "
+                    "plan_rank, realized_paths. Never merged into the "
+                    "allpaths tables.",
+     "preview": True,
+     "preview_title": "Corridor walks (asked threshold)",
+     "columns": ["applied_tau", "route_ub"]},
+    {"pattern": "route_scope_paths/route_paths_bodyId.csv",
+     "description": "Corridor lane per-path detail: one row per emitted "
+                    "bodyId path on a validated walk (written when Skip "
+                    "BodyId is off)."},
+    {"pattern": "route_scope_paths/route_connection_type.csv",
+     "description": "Corridor lane type-pair masses within the validated "
+                    "scopes: total pair mass/max/pair_count from the run's "
+                    "edge universe plus realized_mass/realizing_paths/"
+                    "used_by_walks from the kept corridors."},
+    {"pattern": "route_scope_paths/route_provenance.json",
+     "description": "Corridor lane provenance: per-(pair,h)-class floors, "
+                    "floors_next, stop reasons (budget/probe_cap/exhausted/"
+                    "dry/infeasible), phantoms, off_plan/off_len "
+                    "disclosures, knobs, runtime, gap partition vs this "
+                    "run's own type paths, plan_hash."},
+    {"pattern": "route_scope_paths/route_type_heatmap.html",
+     "description": "Corridor mirror heatmap: the validated scope drawn "
+                    "like the refill views (Synapses / Ratio / Ratio "
+                    "(>= N) toggle)."},
+    {"pattern": "route_scope_paths/route_type_network.html",
+     "description": "Corridor mirror network of the validated scope "
+                    "(hover shows weight + both ratio flavors)."},
+    {"pattern": "route_scope_paths/README.md",
+     "description": "Corridor lane self-describing summary (resolved mode, "
+                    "per-class disclosure, runtime)."},
+    {"pattern": "data_details/route_plan/plan.json",
+     "description": "Corridor lane serialized plan: the validated walks "
+                    "with UBs/floors and knob values, content-hashed "
+                    "(plan_hash, also on route_provenance.json)."},
     {"pattern": "source_neurons.csv",
      "description": "Resolved source neurons. Key columns: isInPath, bodyId, "
                     "instance, type, pre, post — " + _NEURON_TABLE_NOTE,
@@ -1503,12 +1567,14 @@ _PATHFINDING_EXPLANATION = [
             "so its weak tail is never silently lost.",
             "Adjusted ratios per scope. The Adj. ratios column is "
             "scope-aware: in the refill-ASKED scope it is conditioned at "
-            "the run's Min Synapse Count (N); in the refill-FULL scope "
+            "the run's Min Synapse Count (N). In the refill-FULL scope "
             "the admission floor is synapse >= 1, where the conditioned "
-            "denominator EQUALS the plain all-inputs one — so the full "
-            "scope's adjusted value is its plain full ratio (per hop: "
-            "the pair's full mass over the post type's all-post "
-            "incoming).",
+            "denominator EQUALS the plain all-inputs one — the adjusted "
+            "measure collapses onto the plain ratio, so the full scope "
+            "OMITS the Adj. ratios column entirely (it would duplicate "
+            "Ratios). The pair-level full-connection share is still "
+            "exported: refilled_connection_ratio in "
+            "refill_full_type_pairs.csv.",
             "Traversal/path probability values are SUSPENDED (2026-10-06, "
             "unverifiable fidelity): they are no longer exported, "
             "displayed, or used for ranking. Ratios (plain and adjusted) "
