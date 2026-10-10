@@ -1119,6 +1119,14 @@ def compute_type_level_refill(
             full_dir.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(rows_full).to_csv(
                 full_dir / 'refill_full_type_pairs.csv', index=False)
+            # The >=threshold incoming per type (the Adj. ratios'
+            # conditioned denominator at the asked tier) — exported so the
+            # report computes CHAIN-derived adjusted ratios (realized hop
+            # mass / this denominator) instead of pair-level constants.
+            pd.DataFrame([
+                {'type_post': k, 'incoming_threshold': v}
+                for k, v in sorted(type_in_adj.items())]).to_csv(
+                full_dir / 'type_incoming_asked.csv', index=False)
             if out_dir is None:
                 mirror = run_dir / _MIRROR_FOLDER_NAME
                 mirror.mkdir(parents=True, exist_ok=True)

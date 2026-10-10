@@ -4270,6 +4270,7 @@ def generate_paths_pair_report(
         full_kind = kind in ('refill_full', 'complete_full')
         pairs_name = ('refill_full_type_pairs.csv'
                       if full_kind else 'refill_type_pairs.csv')
+        asked_in_k: Dict[str, Dict[str, float]] = {}
         for unit in units:
             csv_path = unit.folder / 'type_level_refill' / filename
             if not csv_path.exists():
@@ -4287,6 +4288,18 @@ def generate_paths_pair_report(
                 unit.folder, pairs_name=pairs_name, prefer_adj=not full_kind)
             ratio_k[unit.unit_id] = ratio_map
             ratio_src_k[unit.unit_id] = ratio_src
+            # CHAIN-derived Adj (fix 2026-10-10): the >=threshold incoming
+            # per type, exported by the refill — the conditioned
+            # denominator the realized hop masses divide by.
+            asked_csv = (unit.folder / 'data_details' / 'type_level_refill'
+                         / 'type_incoming_asked.csv')
+            if asked_csv.exists():
+                try:
+                    asked_in_k[unit.unit_id] = {
+                        str(r['type_post']): float(r['incoming_threshold'])
+                        for _, r in pd.read_csv(asked_csv).iterrows()}
+                except Exception:  # noqa: BLE001 - additive
+                    pass
         if not units_k:
             return None
         pairs_k: List[dict] = []
@@ -4333,7 +4346,8 @@ def generate_paths_pair_report(
                     entries,
                     source_cov=unit_source_cov.get(unit.unit_id) or {},
                     target_cov=unit_target_cov.get(unit.unit_id) or {},
-                    pair_ratio=ratio_k.get(unit.unit_id))
+                    pair_ratio=ratio_k.get(unit.unit_id),
+                    in_applied=asked_in_k.get(unit.unit_id))
         # vispath network links for the pane footer (the mirror folder's
         # per-level vispath networks cover every pair)
         vis_links: List[Dict[str, str]] = []
