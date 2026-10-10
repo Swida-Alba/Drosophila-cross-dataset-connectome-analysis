@@ -1336,5 +1336,5 @@ def test_ratio_basis_labels_and_adj_column_removed(tmp_path):
     # column gates
     assert "var RATIO_BASIS" in text
     assert "ratio_basis: RATIO_BASIS" in text
-    assert "!RUN.ratio_basis && hasAdj" in text          # Adj removed
+    assert "!RUN.ratio_basis && !RUN.suppress_adj && hasAdj" in text    # Adj removed
     assert "RUN.ratio_basis\n            ? (RUN.min_synapse || 1)" in text
