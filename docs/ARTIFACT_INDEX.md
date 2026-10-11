@@ -13,10 +13,10 @@ Pairs with, and does not replace:
 *   The **run guide inside every run folder** (`_UserGuide_please_read_me.html`) — the
     authoritative per-file, per-column description *for that run*, generated from the same
     registry (§8). If you have a run folder, open its guide before consulting this table.
-*   `_clock_production/ARTIFACT_INDEX.md` + `_clock_production/AGENTS.md` — the article repo's
+*   `clock-production/ARTIFACT_INDEX.md` + `clock-production/AGENTS.md` — the article repo's
     own artifacts and rules (§7 points there; that repo is DROCAT-ignored).
 
-Paths are relative to the DROCAT repo root unless prefixed `_clock_production/`.
+Paths are relative to the DROCAT repo root unless prefixed `clock-production/`.
 Line numbers were verified against the tree as of 2026-09-28; re-run the check in §10
 after any refactor that moves files.
 
@@ -55,11 +55,11 @@ Downloads folder, never on disk in a run folder, and nothing in-repo verifies th
 
 | Pattern | Answers | Producer (writer → naming) | Reader |
 | --- | --- | --- | --- |
-| `mapping_<src>_<tgt>_<ts>.csv` | the per-pair flow table: adopted target, bridge, bodyId pools, `mapping_status`, `relationship`, `mapping_origin` | `mapping_visualization.build_bridges_csv` → panel `_deliver_pair_csv` | `_clock_production/analysis/02,03,08` |
+| `mapping_<src>_<tgt>_<ts>.csv` | the per-pair flow table: adopted target, bridge, bodyId pools, `mapping_status`, `relationship`, `mapping_origin` | `mapping_visualization.build_bridges_csv` → panel `_deliver_pair_csv` | `clock-production/analysis/02,03,08` |
 | `mapping_branch_bodyids_<src>_<tgt>_<ts>.csv` | per-branch pools incl. `target_out_map` bodyIds | panel `_deliver_branch_bodyids` (keys via `mapping_visualization.mapping_pool_key` / `get_mapping_pool`) | panel's `219 − 204` comment block |
 | `mapping_all_pairs_<ts>.csv` | all pairs, unfiltered | panel, name literal `mapping_all_pairs_{stamp}.csv` (same builder) | — |
 | `mapping_{sankey,network}_<variant>_<foreign>_<ts>.html` | network / bridge-linker / Sankey view of the flows | `render_mapping_network_html`, `render_bridge_linker_html`, `render_mapping_sankey_html` (`src/comparison/mapping_visualization.py:898`, `:1558`, `:2402`) → panel `_deliver_flows` | — |
-| `mapping_sankey_<ts>.html` / `mapping_graph_<ts>.html` | composed multi-pair view | `render_composed_sankey_html`, `render_composed_mapping_html` (`:2545`, `:3071`) → panel literals `mapping_sankey_{stamp}.html`, `mapping_graph_{stamp}.html` | the clock query's `mapping_graph` export is versioned in `_clock_production/figures/`; that repo's own index carries its node/edge counts and the **reach-basis** reading (`docs/AUTO_TYPE_MAPPING.md`, "Evidence reach (all flows)"), so never caption its type counts as claim counts |
+| `mapping_sankey_<ts>.html` / `mapping_graph_<ts>.html` | composed multi-pair view | `render_composed_sankey_html`, `render_composed_mapping_html` (`:2545`, `:3071`) → panel literals `mapping_sankey_{stamp}.html`, `mapping_graph_{stamp}.html` | the clock query's `mapping_graph` export is versioned in `clock-production/figures/`; that repo's own index carries its node/edge counts and the **reach-basis** reading (`docs/AUTO_TYPE_MAPPING.md`, "Evidence reach (all flows)"), so never caption its type counts as claim counts |
 | `outputs/type_mapping/source_map_network.html` | which bridge sources are licensed | `scripts/render_source_map_network.py:22` ← `render_source_map_network_html` | git-ignored (`outputs/`) |
 | `auto_type_mapping.csv`, `_suspects.csv`, `_conflicts.csv`, `auto_type_mapping.json`, `type_resolution_topology.json` | the mapping a profiling run carried with it | `src/comparison/cross_dataset_type_mapper.py` writers (grep the literal filename — this file is being refactored actively); run-folder naming in `src/comparison/comparison_analyzer.py` | `src/comparison/report_tabbed.py` |
 | `neuron_indexes/<dataset>/type_mapper_snapshot_v2.pkl` | the mapper's cold-build cache — **not evidence, never cite it** | `src/comparison/cross_dataset_type_mapper.py` snapshot writer/reader (grep `snapshot_v2`) | — |
@@ -94,7 +94,7 @@ registry `RUN_FILE_LAYOUT`, schemas `_RUN_CSV_SCHEMAS`, every CSV through
 | `pooling/` | `pooling_candidates.csv` `pooling_pool.csv` `pooling_sources.csv` `pooling_cross_validation.json` | the unsupervised parallel mode's ledgers |
 | `mapping/` | `mapping_export.csv` (+`tier`) `same_name_excluded.csv` `disclosure_evidence.csv` `suspects_verification.csv` | what was claimed vs declined, and on what evidence |
 | root | `report.html` (writer: `src/comparison/mapping_validation_report.py`, grep `report.html`); `parameters.json`, `set_coverage.json`, `morphology_calibration.json`, `pipeline_progress.jsonl`, `README.txt` are all written by `src/comparison/mapping_validation.py` — grep each filename literal in its run-writing section; plus `user_warning_notes.txt` | the readable summary, the provenance, and per-stage telemetry |
-| `visualization/` | `plot-3d_<ABBREV>_branches_<TYPE>_<ts>/branches_<TYPE>.html` (`src/comparison/mapping_validation_visualize.py:605, 1203`; glob documented `src/visualize_skeleton.py:2888`) | 21 scenes, **0.4-1.2 GB per run**. `report.html` links them **relatively**, so anything that copies the report without this folder silently breaks every scene link — `_clock_production/analysis/11_relocate_tmvev_scenes.py` relocates the whole directory into that repo (git-ignored) and leaves a symlink here so this path still resolves |
+| `visualization/` | `plot-3d_<ABBREV>_branches_<TYPE>_<ts>/branches_<TYPE>.html` (`src/comparison/mapping_validation_visualize.py:605, 1203`; glob documented `src/visualize_skeleton.py:2888`) | 21 scenes, **0.4-1.2 GB per run**. `report.html` links them **relatively**, so anything that copies the report without this folder silently breaks every scene link — `clock-production/analysis/11_relocate_tmvev_scenes.py` relocates the whole directory into that repo (git-ignored) and leaves a symlink here so this path still resolves |
 
 **Readers/verifiers:** `scripts/verify_tmvev_run_exports.py:54` imports the layout and
 schemas (`:92 path_of`, `:140` discovery, `:161 check_layout`, `:170` schema equality,
@@ -213,13 +213,18 @@ Sizes on this machine (why none of it is committable): `datasets/flywire_FAFB_v7
 (`references/util-support.md:48-83`, `modules/coana-connectivity.md`), `drocat-install`
 (`references/troubleshooting.md:64, 108`), `drocat-usage` (`references/datasets-and-auth.md:42`).
 
-## 7. `_clock_production/` — the article repo (its artifacts are indexed there)
+## 7. `clock-production/` — the article repo (its artifacts are indexed there)
 
 A separate git repo (branch `clock-production`, no remote), DROCAT-ignored through
 `.git/info/exclude`. Every per-artifact row, filename token, count basis and record folder
-that used to sit in this section lives in **`_clock_production/ARTIFACT_INDEX.md`** beside its
-own rules file `_clock_production/AGENTS.md`; the split landed 2026-09-29 so this shipped doc
+that used to sit in this section lives in **`clock-production/ARTIFACT_INDEX.md`** beside its
+own rules file `clock-production/AGENTS.md`; the split landed 2026-09-29 so this shipped doc
 no longer points at files a DROCAT clone does not have.
+The folder was **renamed from `_clock_production` on 2026-10-11** (git history unaffected);
+all live references — including `local_data/drive_*.py` and the `pyproject.toml` listing —
+point at the new name, while generated files inside it still cite the old path as
+historical provenance. A stale `_clock_production/` folder beside the repo is a husk:
+safe to delete once nothing holds it open.
 
 The cross-repo fact — which DROCAT entry point each producer there drives:
 
@@ -230,7 +235,7 @@ The cross-repo fact — which DROCAT entry point each producer there drives:
 | `analysis/04, 07` — profile renders feeding the plate | §4: `src/visualize_skeleton.py:837 export_individuals_from_html` |
 | `analysis/09` — graph views | §4 Net-Viz `plot-network_` runs; the panel's `mapping_graph_` export comes from `render_composed_mapping_html` |
 | adopted neighbours (`plot-3d_*`, `homologs_*`) | §5's `src/comparison/profile_comparator.py` `homologs_*` layout, and a §4 skeleton scene |
-| record folders and the `<producer>` prefix | `_clock_production/drocat_backend.py:47 PRODUCER`, `:52 new_record()` |
+| record folders and the `<producer>` prefix | `clock-production/drocat_backend.py:47 PRODUCER`, `:52 new_record()` |
 
 Two facts in that section are DROCAT behaviour, so they stay here rather than travelling:
 **a validation mode is never in a DROCAT run folder name** (only
@@ -308,7 +313,7 @@ guide also renders applied thresholds (`:2823`, `:2864`, `:2925`), key params (`
     `:9637`), simplification caps kaleido at 100 MB / webdriver at 200 MB (`:2965-2972`),
     and Plotly JS is embedded per page (`:6150`).
 *   **The validation mode is not in DROCAT's run folder name** — only in
-    `parameters.json → validation_mode`. An article repo may add it locally (`_clock_production/ARTIFACT_INDEX.md` §1);
+    `parameters.json → validation_mode`. An article repo may add it locally (`clock-production/ARTIFACT_INDEX.md` §1);
     never infer a mode from a stamp.
 
 ## 10. Coverage gaps, and how to check this index
@@ -355,7 +360,7 @@ re-checked with:
 
 ```
 python scripts/maintenance/verify_doc_cites.py --docs docs                 # whole docs tree
-python scripts/maintenance/verify_doc_cites.py --docs _clock_production    # the article repo
+python scripts/maintenance/verify_doc_cites.py --docs clock-production    # the article repo
 ```
 
 **Read its report by class, not by count.** Over this file it flags 43 of 120 full-path cites,
