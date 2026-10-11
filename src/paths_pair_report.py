@@ -716,12 +716,24 @@ _RATIO_LIST_RE = re.compile(r'-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?')
 
 
 def _format_ratio_list(text) -> str:
-    """'[0.0263, 0.060]' -> '[2.63%, 6.00%]' (passthrough when the string
-    carries no parseable numbers — legacy/hand-edited payloads)."""
+    """'[0.0263, 0.060]' -> '[2.63%, 6.00%]'; None entries (unresolvable
+    post-type incoming, 2026-10-10) pass through positionally and render
+    '—' via _fmt_pct (passthrough when the string carries no parseable
+    numbers — legacy/hand-edited payloads)."""
     raw = '' if text is None else str(text)
     if not _RATIO_LIST_RE.search(raw):
         return raw
     parts = _RATIO_LIST_RE.findall(raw)
+    # None entries are not numbers; findall would silently SHIFT the
+    # remaining ratios left. Split on the list's own commas instead and
+    # format each element positionally.
+    inner = raw.strip()
+    if inner.startswith('[') and inner.endswith(']'):
+        inner = inner[1:-1]
+    if 'None' in inner:
+        elems = [e.strip() for e in inner.split(',') if e.strip()]
+        return '[' + ', '.join(
+            '—' if e == 'None' else _fmt_pct(float(e)) for e in elems) + ']'
     return '[' + ', '.join(_fmt_pct(p) for p in parts) + ']'
 
 
@@ -2492,7 +2504,7 @@ def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
             sections.append(section)
         found_any = found_any or found
     if not found_any:
-        return ('<div class="card"><h3>Corridor lane</h3>'
+        return ('<div class="card"><h3>Fast mode (corridor lane)</h3>'
                 '<p style="color:var(--secondary-color);">No corridor '
                 'artifacts under this run. The lane writes '
                 '<code>route_scope_paths/</code> after deep runs '
@@ -2822,7 +2834,7 @@ __VIS_NETWORK__
   <button class="page-tab-btn" data-page="refill" role="tab"
     onclick="TAB.show('refill')">Refill</button>
   <button class="page-tab-btn" data-page="corridor" role="tab"
-    onclick="TAB.show('corridor')">Corridor</button>
+    onclick="TAB.show('corridor')">Fast (corridor)</button>
   <button class="page-tab-btn" data-page="data" role="tab"
     onclick="TAB.show('data')">Data</button>
 </div>
@@ -4146,12 +4158,18 @@ def generate_paths_pair_report(
     rank_by: str = 'min_weight', log=None,
     global_pairs: int = DEFAULT_GLOBAL_PAIRS,
     global_edges: int = DEFAULT_GLOBAL_EDGES,
+    root_report: bool = True,
 ) -> Path:
     """Generate the pair report + breakdown CSVs for one run folder.
 
     Writes ONLY ``path_report.html`` and ``paths_pair_breakdown/`` into
     the run folder; every other file is left untouched. Returns the
-    report path.
+    report path, or the nested-reports directory when
+    ``root_report=False`` (cross-dataset layout, 2026-10-11 user
+    directive: the cross root keeps only ``comparison_report.html`` —
+    the per-delegate pair reports live beside each delegate in
+    ``dataset_data/<dataset>/<delegate>/``; the nested generation below
+    still runs and the root render is skipped).
     """
     run_dir = Path(run_dir).resolve()
     if not run_dir.is_dir():
@@ -4457,6 +4475,10 @@ def generate_paths_pair_report(
         corridor_html=_render_corridor_tab(payload, run_dir),
         guide_link=guide_link,
     )
+    if not root_report:
+        say('.root report skipped (cross-dataset layout — per-delegate '
+            'reports carry the pair views)')
+        return run_dir
     report_path = run_dir / REPORT_NAME
     with open(report_path, 'w', encoding='utf-8') as handle:
         handle.write(html_str)

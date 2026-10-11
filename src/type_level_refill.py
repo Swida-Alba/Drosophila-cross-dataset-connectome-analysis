@@ -1725,6 +1725,10 @@ Files
   are disclosed in the provenance, not refilled).
 - `refill_bodyId_pairs.csv` — the refilled bodyId pairs (capped,
   deterministic weight-desc order; the summary above is never capped).
+- `type_incoming_asked.csv` — the >=threshold incoming per post type
+  (the adjusted-ratio conditioned denominator at the asked tier,
+  exported since 2026-10-10); the pair report's refill-asked Adj.
+  ratios divide the chains' realized hop masses by it.
 - `refill_provenance.json` — thresholds, budgets, node/edge counts,
   `table_reproduced` (the re-derived cut reproduced the exported
   `connection_type.csv` exactly — the consistency anchor), and the
@@ -1957,8 +1961,13 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
         coverage = '[' + ', '.join(
             f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
             for i, label in enumerate(seq)) + ']'
-        ratios_txt = ('[' + ', '.join(repr(r) for r in ratios) + ']'
-                      if len(finite) == len(ratios) and ratios else '')
+        # UNRESOLVABLE hops (2026-10-10): a None hop (post-type F9
+        # mass unknown) is kept explicitly as a None entry — the report
+        # renders it as a dash — instead of silently dropping the whole
+        # list (which erased the resolved hops' record too).
+        ratios_txt = ('[' + ', '.join(
+            'None' if r is None else repr(r) for r in ratios) + ']'
+            if ratios else '')
         rows.append({
             'path': '->'.join(seq),
             'weights': '[' + ', '.join(
@@ -2059,8 +2068,13 @@ def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,
         coverage = '[' + ', '.join(
             f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
             for i, label in enumerate(seq)) + ']'
-        ratios_txt = ('[' + ', '.join(repr(r) for r in ratios) + ']'
-                      if len(finite) == len(ratios) and ratios else '')
+        # UNRESOLVABLE hops (2026-10-10): a None hop (post-type F9
+        # mass unknown) is kept explicitly as a None entry — the report
+        # renders it as a dash — instead of silently dropping the whole
+        # list (which erased the resolved hops' record too).
+        ratios_txt = ('[' + ', '.join(
+            'None' if r is None else repr(r) for r in ratios) + ']'
+            if ratios else '')
 
         def _arr(vals):
             return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'

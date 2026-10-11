@@ -86,6 +86,18 @@ DUAL REFILL (2026-10-08) — two kinds, both written by
   threshold to exceed the asked one (Edge Budget floor and/or
   StrongestFirst bite); ratio-basis runs ALWAYS fill (non-bitten ones get
   the `complete_at_asked` view with mass 0).
+RATIO DOCTRINE (chain-derivation principle, 2026-10-10): every ratio
+rendered on a chain row is derived from THAT chain — numerator = the
+realized hop mass (the bodyId edges backing that hop of that chain),
+denominator = the dataset-wide incoming (all inputs plain; >= threshold
+adjusted). The refill exports `type_incoming_asked.csv` (its
+>=threshold incoming per type) and the report's refill-asked Adj
+divides the chains' realized masses by it; the FULL scope omits the Adj
+column (floor-1 conditioning is a no-op). Rows whose post-type incoming
+is unresolvable carry Ratios/min_ratio = None explicitly plus a warning
+note — pair join values are never silently substituted. bodyId-level
+tables have no adjusted variant (threshold-free per-pair ratio only).
+
 - **refill-full** — the second round admitted at SYNAPSE >= 1 ONLY (no
   ratio tier, no synapse tier), re-valuing the SAME emitted chains; the
   full-connection scope, produced for EVERY all-mode run with emitted rows.

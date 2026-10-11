@@ -1545,6 +1545,19 @@ _PATHFINDING_EXPLANATION = [
             "'(inputs >= N synapses)' with the run's own N. The pair-level "
             "adjusted share of a path is the weakest entry of its Adj. "
             "ratios list.",
+            "The chain-derivation principle (2026-10-10, ratified). "
+            "Every ratio rendered on a chain row is derived from THAT "
+            "chain: per-hop numerator = the mass of the bodyId edges "
+            "realizing that hop of that chain; the denominator is the "
+            "dataset-wide incoming mass (all inputs for plain Ratios, "
+            "inputs >= threshold for adjusted). Pair-level constants are "
+            "never shown on a chain row — when a chain realizes only "
+            "part of a pair's edges, the pair's total and the chain's "
+            "realized share genuinely differ, and the tables always show "
+            "the chain's own value. Rows whose post-type incoming mass "
+            "is unresolvable carry Ratios/min_ratio = None explicitly "
+            "(a run warning counts them); pair-level join values are "
+            "never silently substituted.",
             "The refill — TWO kinds (DUAL REFILL, 2026-10-08). Both "
             "kinds re-run path building within the involved-types "
             "restricted graph, restricted to the Pair Explorer's own "
@@ -1566,15 +1579,21 @@ _PATHFINDING_EXPLANATION = [
             "non_emitted_pair_mass; the full scope enumerates UNBUDGETED "
             "so its weak tail is never silently lost.",
             "Adjusted ratios per scope. The Adj. ratios column is "
-            "scope-aware: in the refill-ASKED scope it is conditioned at "
-            "the run's Min Synapse Count (N). In the refill-FULL scope "
-            "the admission floor is synapse >= 1, where the conditioned "
-            "denominator EQUALS the plain all-inputs one — the adjusted "
-            "measure collapses onto the plain ratio, so the full scope "
-            "OMITS the Adj. ratios column entirely (it would duplicate "
-            "Ratios). The pair-level full-connection share is still "
-            "exported: refilled_connection_ratio in "
-            "refill_full_type_pairs.csv.",
+            "scope-aware and CHAIN-DERIVED in both refill scopes: the "
+            "refill-asked scope divides each chain's realized hop mass "
+            "by the >=threshold incoming per type (exported as "
+            "type_incoming_asked.csv beside the pair table — verified "
+            "against the raw dataset, 8,555/8,555 types exact). In the "
+            "refill-FULL scope the admission floor is synapse >= 1, "
+            "where the conditioned denominator EQUALS the plain "
+            "all-inputs one — the adjusted measure collapses onto the "
+            "plain ratio, so the full scope OMITS the Adj. ratios column "
+            "entirely (it would duplicate Ratios). The pair-level "
+            "full-connection share is still exported: "
+            "refilled_connection_ratio in refill_full_type_pairs.csv "
+            "(note: refilled_total there is the CHAIN-SCOPED pair mass — "
+            "a lower bound of the raw pair total whenever edges of the "
+            "pair ride no emitted chain).",
             "Traversal/path probability values are SUSPENDED (2026-10-06, "
             "unverifiable fidelity): they are no longer exported, "
             "displayed, or used for ranking. Ratios (plain and adjusted) "
@@ -1602,6 +1621,11 @@ _PATHFINDING_EXPLANATION = [
              "The complete-at-asked chains with the per-hop "
              "emitted/refill split; stamped complete only when the "
              "second-round enumeration was not truncated."],
+            ["type_incoming_asked.csv",
+             "The >=threshold incoming per post type (the adjusted "
+             "ratios' denominator at the asked tier), exported by the "
+             "refill; the report's refill-asked Adj. ratios divide the "
+             "chains' realized hop masses by it."],
             ["refill_full_type_pairs.csv",
              "The FULL scope's per emitted pair: emitted / refill-full "
              "(sub-threshold mass at synapse >= 1) / refilled_total + the "

@@ -288,6 +288,69 @@ all-mode run):
     refill mass drawn like the reciprocal views.
 *   **`parameters.csv`**: the run's parameters.
 
+#### Corridor Lane Standalone Folder (`route_scope_paths/`)
+Written by the corridor lane — the route-scoped deep pass
+(plan-corridor-lane.md), the second of the two analysis modes
+(**Complete mode** = the run itself: all intact paths &ge; the applied
+threshold; **Fast mode** = this lane: the strongest type-level routes
+at the ASKED threshold) — after Complete/Shortest Paths runs with
+Fast Mode = `on`, or `auto` with Max Intermediate Layers &ge; 4. The
+lane re-enumerates at the run's ASKED threshold restricted to validated
+top-M* type corridors (per source-target type pair &times; hop length,
+phantom-validated, 100-path class budgets, StrongestFirst tie-drain
+semantics). It runs in an isolated subprocess with a 900&nbsp;s
+wall-clock budget and never modifies the run's own outputs; a
+`user_warning_notes.txt` entry appears only on refusal (e.g. ratio-basis
+runs) or failure. Replay slice folders are skipped (the base
+lowest-threshold folder carries the superset corridors).
+
+*   **`route_paths_type.csv`**: one row per validated walk with emitted
+    paths (validated-but-unemitted walks — rare multi-visit deep-h cases
+    — stay in `plan.json`/provenance with their `off_len` disclosure),
+    in the
+    `*_allpaths_type.csv` column family (`path`, `weights` = per-hop
+    DISTINCT-edge realized masses, `ratios`/`min_ratio` = realized mass
+    over the post type's full-membership incoming, `ratios_adj`/
+    `min_ratio_adj` = the ADJUSTED flavor (realized mass over the
+    &ge;-threshold incoming — the same two flavors as the refill lane;
+    adj == plain when the asked threshold is 1), `min_weight`,
+    `length`, `nt_types`, `coverage` = realized-bodies/type-membership
+    per node) plus the lane columns `applied_tau` (class StrongestFirst
+    tau), `route_h`, `route_ub` (plan upper bound = widest-path
+    bottleneck), `route_floor_h` (class floor certificate), `plan_rank`
+    (acceptance rank by UB), `realized_paths`.
+*   **`route_paths_bodyId.csv`** (Skip BodyId off): one row per emitted
+    bodyId path on a validated walk (`path` = bodyId chain, per-path
+    `weights`, `applied_tau`, `route_h`, `plan_rank`).
+*   **`route_connection_type.csv`**: type-pair masses within the
+    validated scopes — the run-universe `weight_sum`/`weight_max`/
+    `pair_count` plus `realized_mass`/`realizing_paths`/`used_by_walks`
+    from the kept corridors.
+*   **`route_provenance.json`**: status, resolved mode/trigger, knobs,
+    per-(pair,h)-class disclosure (floors, `floor_next` witnesses, stop
+    reasons `budget`/`probe_cap`/`exhausted`/`dry`/`infeasible`,
+    phantoms, `unverified` work-capped probes, `off_plan`/`off_len`),
+    `gap_partition` vs this run's own `*_allpaths_type.csv` (and the
+    refill's paths when present), `plan_hash`, runtime, time-capped
+    flag.
+*   **`route_type_heatmap.html`** / **`route_type_network.html`**:
+    the corridor scope drawn like the refill views (weight + ratio +
+    adjusted-ratio matrices/toggle).
+*   **`README.md`**: self-describing summary.
+*   **`data_details/route_plan/plan.json`** (beside the run's own
+    `data_details/`): the serialized validated plan (walks with UBs,
+    floors, knob values), content-hashed.
+
+Cross-dataset comparisons forward the lane mode to each per-dataset run
+(firing at each dataset's LOWEST swept threshold only — corridors at the
+lowest tier are supersets) and render a presence-driven Fast-mode report
+section (per-dataset plan summary, canonical-type corridor comparison,
+gap partition) plus a Connection-strength section (weight / ratio /
+adjusted ratio / refilled per delegate) in ``comparison_report.html``.
+The pair report (``path_report.html``) is NOT written at the cross root
+— per-delegate pair reports live beside each delegate under
+``dataset_data/<dataset>/<delegate>/``.
+
 #### Pair Report (`path_report.html`, `paths_pair_breakdown/`)
 
 Written automatically at the end of every UI pathfinding run (Complete
@@ -344,7 +407,15 @@ the report's `Generated:` timestamp.
     `type_level_refill/refill_paths_type.csv`): source/target multi-selects
     → per-pair panes with the same badges and capped "Top paths per
     length" tables as the Pair Explorer, ranked by the same key, with the
-    refilled pair ratios as the Pair-ratio column. The per-connection
+    refilled pair ratios as the Pair-ratio column. CHAIN-DERIVATION
+    (2026-10-10): every per-hop ratio on a chain row — plain and
+    adjusted — is that chain's realized hop mass over the dataset-wide
+    incoming (all inputs / >= threshold; the asked-tier conditioned
+    denominator is exported as
+    `data_details/type_level_refill/type_incoming_asked.csv`), and rows
+    whose post-type mass is unresolvable carry Ratios/min_ratio = None
+    (counted in a run warning). The refill-full scope omits the Adj
+    column (floor-1 conditioning is a no-op). The per-connection
     type-pairs table and the bodyId detail stay **exported files**
     (linked on the tab), and runs whose records predate the paths table
     get a regeneration note; the explicit "budget did not bite" hint
@@ -858,14 +929,14 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`avg_prob_data.csv`**, **`avg_ratio_data.csv`**, **`edge_count_data.csv`**, **`total_weight_data.csv`**: Aggregated metrics per dataset (Standard; Custom uses the `*_by_query.csv` variants below)
 *   **`avg_prob_data_by_query.csv`**, **`avg_ratio_data_by_query.csv`**, **`edge_count_data_by_query.csv`**, **`total_weight_data_by_query.csv`**: The same four chart tables for Custom combination runs, with `query_id`/`query_label` columns and each dataset cell read at its requested threshold
 *   **`provenance_by_query.csv`**, **`threshold_combinations.csv`**: Query-keyed applied-threshold provenance and a copy of the canonical query manifest backing the Custom report tables
-*   **`query_resolution.csv`**: One row per query token × dataset: `token`, `dataset`, `role`, `status`, `method`, `target_types`, `matched_column`, `evidence_chain`, `confidence`, `note`, `evidence`. Statuses: `same_name_identity` (native same-name type; `evidence` = `confirmed` | `contradicted` | `none`), `taxonomy` (taxonomy-column value expanded to member types), `taxonomy_mapped` (concept bridged by mapping the members through the auto mapper), `mapped`/`bridged`/`valid_split` (mapper-evidence resolution), `evidence_only`, `same_name_fallback` (bare name echo, lowest confidence), `conflict`, `body_id`, `group`, `pattern`, `unmatched`
+*   **`query_resolution.csv`**: One row per query token × dataset: `token`, `dataset`, `role`, `status`, `method`, `target_types`, `matched_column`, `evidence_chain`, `confidence`, `note`, `evidence`, plus the display columns `display_name` / `display_role` (label-mapper display compatibility, 2026-10-10): `display_name` is what the report HTML shows — the settled label for label-mapper-governed bodyId inputs (`label`), the recovered native type for ungoverned bodyIds (`type`, `T*` residuals included), and empty for unresolvable bodyId inputs (`hidden` — omitted from the HTML, retained here verbatim). Statuses: `same_name_identity` (native same-name type; `evidence` = `confirmed` | `contradicted` | `none`), `taxonomy` (taxonomy-column value expanded to member types), `taxonomy_mapped` (concept bridged by mapping the members through the auto mapper), `mapped`/`bridged`/`valid_split` (mapper-evidence resolution), `evidence_only`, `same_name_fallback` (bare name echo, lowest confidence), `conflict`, `body_id`, `group`, `pattern`, `unmatched`
 *   **`ratio_data_t{N}.csv`**: Ratio data for threshold N (Standard)
 
 #### Comparison Results (`comparison_results/`)
 *   **`edge_key_variants.csv`** (canonical-key unification, 2026-10-09): the variant disclosure behind the UNDECORATED alignment keys — one row per (canonical/family key, dataset, raw per-dataset name). Presence/similarity/report keys carry the plain canonical (or family / user-label / residual `T*`) identity; which raw per-dataset names each key stands for is disclosed here and in the report's per-node "Names by dataset" hovers.
-*   **`edge_presence_matrix.csv`** / **`edge_presence_matrix_minsyn_{N}.csv`**: Standard-mode edge presence across datasets (per shared threshold N). Columns: `edge_key` (`source -> target`), `source`, `target`, one presence column per dataset (`{dataset}_t{N}`, boolean), one weight column per dataset (`w_{dataset}_t{N}`), one count column per dataset (`{dataset}_count`), and `conserved_at_lowest`. Combination mode uses `edge_presence_matrix_query_{query_id}.csv`, where `{query_id}` is a filesystem-safe slug; the original `query_id` is retained in the manifest and table columns. It adds `query_id`, `query_label`, and per-dataset `threshold_{dataset}` columns, plus per-endpoint `source_status_{dataset}` / `target_status_{dataset}` columns carrying the union type-resolution verdict for that endpoint type in that dataset (see `type_resolution_union.csv` below); empty when the coverage pass has no entry.
+*   **`edge_presence_matrix.csv`** / **`edge_presence_matrix_{tier-token}.csv`**: Standard-mode edge presence across datasets (per shared threshold; the tier token is `minsyn_{N}` on the synapse basis and `minratio_{decimal}` on the connection-ratio basis, matching the delegate-folder grammar — 2026-10-10, previously a hard-coded `minsyn_` prefix on ratio tiers too). Columns: `edge_key` (`source -> target`), `source`, `target`, one presence column per dataset (`{dataset}_t{N}`, boolean), one weight column per dataset (`w_{dataset}_t{N}`), one count column per dataset (`{dataset}_count`), and `conserved_at_lowest`. Combination mode uses `edge_presence_matrix_query_{query_id}.csv`, where `{query_id}` is a filesystem-safe slug; the original `query_id` is retained in the manifest and table columns. It adds `query_id`, `query_label`, and per-dataset `threshold_{dataset}` columns, plus per-endpoint `source_status_{dataset}` / `target_status_{dataset}` columns carrying the union type-resolution verdict for that endpoint type in that dataset (see `type_resolution_union.csv` below); empty when the coverage pass has no entry.
 *   **`edge_weight_comparison.csv`**: Edge weights compared across all datasets. Standard-mode columns include `edge_key`, `source`, `target`, `threshold`, `presence_count`, `total_datasets`, one `weight_{dataset}` column per dataset, `max_weight`, `avg_weight`, `weight_diff`, `weight_ratio`; combination mode adds `query_id`, `query_label`, per-dataset requested/applied threshold columns, and uses the row's threshold map rather than a scalar union.
-*   **`path_presence_matrix.csv`** / **`path_presence_matrix_minsyn_{N}.csv`**: Standard-mode path presence across datasets. With Drop Untyped Neurons on, path rows traversing an untyped (bodyId-fallback / sentinel) node — e.g. a 2-hop path through an untyped intermediate — are dropped at read time and counted in `user_warning_notes.txt`. Combination mode uses `path_presence_matrix_query_{query_id}.csv`, with a filesystem-safe query-ID slug in the filename and the original query identity plus dataset threshold columns in the file.
+*   **`path_presence_matrix.csv`** / **`path_presence_matrix_{tier-token}.csv`**: Standard-mode path presence across datasets (tier token: `minsyn_{N}` synapse basis, `minratio_{decimal}` ratio basis). With Drop Untyped Neurons on, path rows traversing an untyped (bodyId-fallback / sentinel) node — e.g. a 2-hop path through an untyped intermediate — are dropped at read time and counted in `user_warning_notes.txt`. Combination mode uses `path_presence_matrix_query_{query_id}.csv`, with a filesystem-safe query-ID slug in the filename and the original query identity plus dataset threshold columns in the file.
 *   **`unified_edge_comparison.csv`** / **`unified_summary.csv`**: Combined edge data and run summary. Standard-mode unified edge columns are `edge_key`, `source`, `target`, `threshold`, per-dataset `{dataset}_weight` / `{dataset}_present` pairs, and `conservation`. Combination-mode rows add `query_id`, `query_label`, `threshold_mode`, per-dataset requested/applied threshold columns, and per-endpoint `source_status_{dataset}` / `target_status_{dataset}` union-resolution columns. Summary provenance includes `dataset`, `threshold`, `requested_threshold`, `applied_threshold`, `applied_threshold_source`, StrongestFirst budget/tau, Edge Budget/w0/w1, `strongest_dropped_bottleneck` (w2), `strongest_retained_bottleneck` (W*), `paths_complete`, then edge totals (`total_edges`, `total_weight`, `mean_weight`, `unique_sources`, `unique_targets`).
 *   **`type_resolution_union.csv`**: Union type-resolution coverage — the resolver applied to the FULL union of types that appeared in any dataset, not only the types each dataset's own pathfinding recruited. One row per (query, type, dataset) with `present`, `resolved_type` (the dataset-native name(s) the mapper licenses), `resolution_status` and a `detail` note. Absence verdicts: `below_threshold` (neurons exist, an edge from the path-source neurons exists but all such legs are `< applied threshold` — `detail` carries the max source-side weight), `not_recruited` (a `>= threshold` edge from path sources exists but pathfinding/budget dropped the type), `no_edges`, `not_in_dataset`, and the resolver's own verdicts (`unmapped`, `conflict`, `evidence_only`, `claimed`, `mapper_unavailable`); `resolved_absent` reports that the type resolves but the diagnosis inputs (neuron table / connection cache / searched-graph list) were unavailable. Under the connection-ratio basis the same split runs on RATIOS — `detail` carries the max connection ratio vs the tier with the strongest leg in synapses (`max connection ratio ... (strongest leg w/total syn)`), computed against the post neuron's full-table total incoming (F9 semantics). This is the full-union counterpart of `query_resolution.csv` (which covers only the queried source/target tokens) and `auto_type_mapping_*.csv` (which cover the mapping tables themselves). The comparison report surfaces the same data as the network edge hovers (`MCNS: — (APL: below threshold (max connected edge weight 2 < threshold 3))`), the node-tooltip `Coverage:` line, and a per-query "Type coverage" card; `comparison_report.txt` carries a TYPE COVERAGE section listing the absent pairs.
 *   **`unique_to_{dataset}.csv`**: Edges unique to each dataset (one file per dataset that has unique edges). **Standard mode only** — Custom combination runs omit these files because the scalar helpers would silently pick a union threshold; use `edge_presence_matrix_query_{query_id}.csv` to derive per-query unique edges.
@@ -907,7 +978,7 @@ Example: `cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/` (male-c
 *   **`conserved_reciprocal_t{N}_network.html`**: Network graph of hemisphere-conserved reciprocal connections, one file per threshold (only when both hemisphere-conservation and reciprocal options are enabled)
 
 #### Dataset Data (`dataset_data/`)
-*   **`{dataset_folder}/minsyn_*/`**: Raw `FindNeuronConnection` outputs per materialized threshold (see Section 1) — each folder carries the applied-threshold provenance block of a standalone run, plus **`connections_edge.csv`** (raw edge list, written by path-mode runs — edge-mode exports live under `edge_mode_data/`) and **`connections_edge.fingerprint.json`** — the query fingerprint (source/target digests, comparison mode, interlayer, pathfinding) under which that edge list was produced. A later run into the same folder loads the cached edge list only when its fingerprint matches; a mismatch is logged and the data re-derived. Folders saved before 2026-09-25 have no sidecar and stay accepted (legacy). Includes `hemisphere_symmetry/` and `find_reciprocal/` subfolders when those options are enabled. Folder naming follows the applied-threshold grammar: a genuine requested run keeps the bare **`minsyn_{requested}`**; the collapse floor other requesters alias to is **`minsyn_{applied}_applied_floor`** (never a bare name, and no separate `_equal_...` variant when the floor value coincides with a requested level). Requested thresholds whose applied value differs get a marker folder **`minsyn_{requested}_skipped/README.txt`** instead of data; a requested level that coincides with its own floor is skipped silently. Each dataset also carries **`APPLIED_THRESHOLDS.md`** mapping requested → applied with the reason and folder.
+*   **`{dataset_folder}/minsyn_*/`** (ratio basis: **`minratio_*/`**): Raw `FindNeuronConnection` outputs per materialized threshold (see Section 1) — each folder carries the applied-threshold provenance block of a standalone run, plus **`connections_edge.csv`** (raw edge list, written by path-mode runs — edge-mode exports live under `edge_mode_data/`) and **`connections_edge.fingerprint.json`** — the query fingerprint (source/target digests, comparison mode, interlayer, pathfinding) under which that edge list was produced. A later run into the same folder loads the cached edge list only when its fingerprint matches; a mismatch is logged and the data re-derived. Folders saved before 2026-09-25 have no sidecar and stay accepted (legacy). Includes `hemisphere_symmetry/` and `find_reciprocal/` subfolders when those options are enabled. Folder naming follows the applied-threshold grammar (tier tokens: `minsyn_{int}` synapse basis, `minratio_{decimal}` ratio basis with `.`→`_`): a genuine requested run keeps the bare **`{token}_{requested}`**; the collapse floor other requesters alias to is **`minsyn_{applied}_applied_floor`** (never a bare name, and no separate `_equal_...` variant when the floor value coincides with a requested level). Requested thresholds whose applied value differs get a marker folder **`minsyn_{requested}_skipped/README.txt`** instead of data; a requested level that coincides with its own floor is skipped silently. Each dataset also carries **`APPLIED_THRESHOLDS.md`** mapping requested → applied with the reason and folder.
 
 ---
 
