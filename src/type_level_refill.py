@@ -1077,6 +1077,22 @@ def compute_type_level_refill(
         for uv in refill_full_keys:
             full_totals[(type_map[uv[0]], type_map[uv[1]])] += \
                 anchor_full(uv)
+        # OFF-CHAIN disclosure (2026-10-10, user-approved): the
+        # full-scope admitted mass on the pair whose edges fired on NO
+        # enumerated full-scope path (chain scope excludes them by
+        # design) — refilled_total is a chain-scoped lower bound of the
+        # raw pair total, and this column makes the gap self-describing:
+        # raw_pair_total ~= emitted + refill + pair_offchain_mass
+        # (+ edges outside the involved-types node set / hop bound).
+        full_edge_keys = set(estar_full)
+        offchain: Dict[Tuple[str, str], float] = defaultdict(float)
+        for uv in e_u_full:
+            if (uv[0], uv[1]) not in full_edge_keys:
+                offchain[(type_map[uv[0]], type_map[uv[1]])] += (
+                    syn_of.get((uv[0], uv[1]),
+                               weight_full.get((uv[0], uv[1]), 0.0))
+                    if ratio_mode
+                    else uv[2])
         rows_full = []
         for pair in sorted(emitted):
             emit_w = int(emitted[pair])
@@ -1090,6 +1106,7 @@ def compute_type_level_refill(
                 'refilled_total': emit_w + ref_w,
                 'refilled_connection_ratio': (
                     round(ratio, 6) if ratio is not None else None),
+                'pair_offchain_mass': int(offchain.get(pair, 0.0)),
             })
         carrying_rows, _carrying_bodyid = _aggregate_refill_paths(
             _paths_full, refill_full_keys, chain_keys, type_map,
@@ -1112,6 +1129,43 @@ def compute_type_level_refill(
                 full_totals.get(p, 0.0) for p in emitted)),
             'truncated': False,
         }
+        # FULL-SCOPE CACHE GUARD (2026-10-10, user-approved): the asked
+        # scope is anchored by table_reproduced, but the full scope had
+        # no check — an incomplete connection cache would silently
+        # undercount it. Cheap cross-check: the stream-derived all-post
+        # incoming must dominate the run's own exported applied-tier
+        # incoming (type_incoming_applied.csv) by a sane margin — the
+        # applied file sums a SUBSET of the same dataset's edges (every
+        # emitted-network edge, each >= the applied cut). type_in <
+        # applied_in is impossible under a complete cache.
+        try:
+            applied_csv = (run_dir / 'data_details'
+                           / 'type_incoming_applied.csv')
+            if applied_csv.exists():
+                _applied = pd.read_csv(applied_csv)
+                _bad = [
+                    (str(r['type']), float(r['incoming']),
+                     float(type_in.get(str(r['type']), 0.0)))
+                    for _, r in _applied.iterrows()
+                    if pd.notna(r['incoming'])
+                    and float(r['incoming'])
+                    > float(type_in.get(str(r['type']), 0.0)) + 1e-6]
+                if _bad:
+                    raise TypeLevelRefillError(
+                        f'{run_dir}: full-scope cache guard FAILED — '
+                        f'{len(_bad)} type(s) have a smaller stream-derived '
+                        'all-post incoming than the run\'s own exported '
+                        'applied-tier incoming (first: '
+                        f'{_bad[0][0]}: stream {_bad[0][2]:g} < applied '
+                        f'{_bad[0][1]:g}). The connection source appears '
+                        'incomplete relative to the run; refusing to '
+                        'write full-scope data that would silently '
+                        'undercount it.')
+                block['cache_guard'] = 'ok'
+        except TypeLevelRefillError:
+            raise
+        except Exception:  # noqa: BLE001 — guard is best-effort
+            pass
         if write:
             full_dir = (Path(out_dir) if out_dir is not None
                         else run_dir / 'data_details'
@@ -1748,7 +1802,15 @@ the weak sub-threshold paths this scope exists for). Files:
 - `refill_full_type_pairs.csv` (this folder) — per emitted pair:
   emitted / refill-full (sub-threshold mass) / refilled_total +
   `refilled_connection_ratio` (the plain full ratio; at floor 1 it is
-  also the adjusted value).
+  also the adjusted value) + `pair_offchain_mass` (the pair's
+  floor-passing mass that fired on no enumerated full-scope chain —
+  the chain scope is a lower bound of the raw pair total by design,
+  and this column makes the gap self-describing). The full scope is
+  CACHE-GUARDED: the refill refuses when the stream-derived all-post
+  incoming is smaller than the run's own exported applied-tier
+  incoming (`type_incoming_applied.csv`) — an incomplete connection
+  cache cannot silently undercount the full scope (stamped
+  `full.cache_guard: 'ok'` in the provenance).
 - mirror `refill_full_paths_type.csv` — every emitted chain re-valued
   at synapse >= 1 (complete at full).
 - mirror `refill_full_carrying_paths_type.csv` — the chains that carry

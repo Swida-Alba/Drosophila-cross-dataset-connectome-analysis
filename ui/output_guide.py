@@ -1629,7 +1629,13 @@ _PATHFINDING_EXPLANATION = [
             ["refill_full_type_pairs.csv",
              "The FULL scope's per emitted pair: emitted / refill-full "
              "(sub-threshold mass at synapse >= 1) / refilled_total + the "
-             "plain full ratio."],
+             "plain full ratio + pair_offchain_mass (the pair's "
+             "floor-passing mass that fired on no chain — with it, "
+             "emitted + refill + offchain reconstructs the raw pair "
+             "total modulo edges outside the involved-types hop-bounded "
+             "graph). The full scope is cache-guarded: the refill "
+             "refuses when the stream-derived incoming is smaller than "
+             "the run's own exported applied-tier incoming."],
             ["refill_full_paths_type.csv",
              "Every emitted chain re-valued at synapse >= 1 (complete at "
              "full)."],
